@@ -15,10 +15,10 @@ from core.models.tournament_models import GpuRequirement
 from core.models.tournament_models import TaskTrainingAssignment
 from core.models.tournament_models import TournamentTaskTraining
 from core.models.tournament_models import TournamentType
+from core.models.utility_models import Backend
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GPUInfo
 from core.models.utility_models import GPUType
-from core.models.utility_models import Backend
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
@@ -196,7 +196,7 @@ async def _fetch_tournament_tasks_ready_to_train(config: Config):
             pending_text_count += 1
 
     logger.info(f"Pending by type - Text: {pending_text_count}, Image: {pending_image_count}")
-    
+
     organic_tasks = await task_sql.get_tasks_with_status(
         TaskStatus.READY, config.psql_db, tournament_filter="exclude", benchmark_filter="exclude", backend=Backend.OBLIVUS.value
     )
@@ -346,8 +346,7 @@ async def process_pending_tournament_tasks(config: Config):
             # Filter out tasks with backend="runpod" - those are handled by dstack orchestrator
             # Only process tasks with backend="oblivus" or backend IS NULL (for backward compatibility)
             tournament_tasks = [
-                t for t in pending_training_tasks
-                if t.task.backend is None or t.task.backend.value == Backend.OBLIVUS.value
+                t for t in pending_training_tasks if t.task.backend is None or t.task.backend.value == Backend.OBLIVUS.value
             ]
 
             logger.info(f"Fetched {len(pending_training_tasks)} pending training tasks, {len(tournament_tasks)}")
@@ -691,14 +690,11 @@ async def _monitor_training_tasks(config: Config):
     """
     # Get all tasks currently in training status
     training_tasks = await tournament_sql.get_tournament_training_tasks(config.psql_db, TrainingStatus.TRAINING)
-    
+
     # Filter out tasks with backend="runpod" - those are handled by dstack orchestrator
     # Only monitor tasks with backend="oblivus" or backend IS NULL (for backward compatibility)
-    tournament_tasks = [
-        t for t in training_tasks
-        if t.task.backend is None or t.task.backend.value == Backend.OBLIVUS.value
-    ]
-    
+    tournament_tasks = [t for t in training_tasks if t.task.backend is None or t.task.backend.value == Backend.OBLIVUS.value]
+
     logger.info(f"Found {len(training_tasks)} tasks in training, {len(tournament_tasks)}")
 
     if not tournament_tasks:
@@ -734,9 +730,7 @@ async def _monitor_training_tasks(config: Config):
                 responses = []
                 for ip in trainer_ips:
                     try:
-                        task_log = await get_training_task_details(
-                            ip, str(training_task.task.task_id), training_task.hotkey
-                        )
+                        task_log = await get_training_task_details(ip, str(training_task.task.task_id), training_task.hotkey)
                         if task_log:
                             responses.append((ip, task_log))
                     except httpx.HTTPStatusError as e:
@@ -812,6 +806,7 @@ async def _update_all_trainers_gpu_availability(config: Config):
 
                 # Find GPUs that are free according to trainer but marked as used in DB
                 gpus_to_reset = []
+                gpus_to_mark_unavailable = []
                 for current_gpu in current_gpus:
                     if current_gpu.available:
                         # Check if this GPU is marked as used in our database
@@ -819,11 +814,23 @@ async def _update_all_trainers_gpu_availability(config: Config):
                             if db_gpu.gpu_id == current_gpu.gpu_id and not db_gpu.available:
                                 gpus_to_reset.append(current_gpu.gpu_id)
                                 break
+                    else:
+                        for db_gpu in trainer.gpus:
+                            if db_gpu.gpu_id == current_gpu.gpu_id and db_gpu.available:
+                                gpus_to_mark_unavailable.append(current_gpu.gpu_id)
+                                break
 
                 # Reset GPU availability in database if needed
                 if gpus_to_reset:
                     await tournament_sql.update_gpu_availability(trainer.trainer_ip, gpus_to_reset, 0, config.psql_db)
                     logger.info(f"Reset {len(gpus_to_reset)} GPUs for trainer {trainer.trainer_ip}: {gpus_to_reset}")
+
+                if gpus_to_mark_unavailable:
+                    await tournament_sql.update_gpu_availability(trainer.trainer_ip, gpus_to_mark_unavailable, 2, config.psql_db)
+                    logger.info(
+                        f"Marked {len(gpus_to_mark_unavailable)} GPUs as unavailable for trainer "
+                        f"{trainer.trainer_ip}: {gpus_to_mark_unavailable}"
+                    )
 
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
                 # Handle both server errors and unreachable trainers
