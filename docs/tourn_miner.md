@@ -63,7 +63,7 @@ This interactive script will prompt you for:
 - **Wallet name** - Your Bittensor wallet name (default: "default")
 - **Hotkey name** - Your hotkey name (default: "default")
 - **Subtensor network** - "finney" for mainnet (netuid 56) or "test" for testnet (netuid 241)
-- **Minimum stake threshold** - Default: 1000 for mainnet, 0 for testnet
+- **Minimum validator stake threshold** - Default: 1000 for mainnet, 0 for testnet. Requests to your miner from nodes with stake less than this will be blocked to protect you and reduce spam.
 
 The script will generate a `.1.env` file with your configuration.
 

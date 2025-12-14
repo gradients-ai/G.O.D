@@ -36,9 +36,8 @@ Based on `TOURNAMENT_INTERVAL_HOURS = 72`, the system automatically schedules to
 
 ### 2. Participant Registration
 
-- Miners must have minimum stake requirements (boosted by previous completions - max boost is 25%)
 - System pings miners via `/training_repo/{task_type}` endpoint
-- Top participants selected by `TOURNAMENT_TOP_N_BY_STAKE = 32`
+- All responses are checked for obfuscation and for sufficient tournament fee balance
 - Requires minimum `MIN_MINERS_FOR_TOURN = 8` to proceed
 
 ### 3. Tournament Activation (`TournamentStatus.ACTIVE`)
@@ -127,7 +126,7 @@ PENDING → ACTIVE → COMPLETED
 
 - System waits for all tasks to reach `TaskStatus.SUCCESS` or `TaskStatus.FAILURE`
 - Winners calculated using tournament scoring system
-- Losers eliminated, stake requirements checked for winners
+- Losers eliminated
 - Next round created with winners, or tournament completes
 
 ## Boss Round Mechanics
