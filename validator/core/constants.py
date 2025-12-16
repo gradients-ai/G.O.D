@@ -180,6 +180,8 @@ AFFINE_REWARD_FN_IDS = [
 LORA_SDXL_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_sdxl.json"
 LORA_SDXL_WORKFLOW_PATH_DIFFUSERS = "validator/evaluation/comfy_workflows/lora_sdxl_diffusers.json"
 LORA_FLUX_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_flux.json"
+LORA_ZIMAGE_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_z-image.json"
+LORA_QWEN_IMAGE_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_qwen-image.json"
 CHECKPOINTS_SAVE_PATH = "validator/evaluation/ComfyUI/models/checkpoints"
 UNET_SAVE_PATH = "validator/evaluation/ComfyUI/models/unet"
 DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusers"
@@ -187,7 +189,14 @@ LORAS_SAVE_PATH = "validator/evaluation/ComfyUI/models/loras"
 DIFFUSION_HF_DEFAULT_FOLDER = "checkpoint"
 DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.25
-EVAL_DEFAULTS = {"sdxl": {"steps": 20, "cfg": 8, "denoise": 0.9}, "flux": {"steps": 35, "cfg": 100, "denoise": 0.75}}
+ZIMAGE_UNET_FILENAME = "z_image_turbo_bf16.safetensors"
+QWEN_IMAGE_UNET_FILENAME = "qwen_image_fp8_e4m3fn.safetensors"
+EVAL_DEFAULTS = {
+    "sdxl": {"steps": 20, "cfg": 8, "denoise": 0.9},
+    "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},
+    "z-image": {"steps": 10, "cfg": 1, "denoise": 0.90},
+    "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93}
+}
 
 # Max jobs
 MAX_CONCURRENT_JOBS = 60
