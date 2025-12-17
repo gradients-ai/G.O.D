@@ -1,11 +1,12 @@
 import os
 
 
-FACE_IMAGE_PATH = "validator/tasks/person_synth/ComfyUI/input/person.jpg"
+FACE_IMAGE_PATH = "validator/tasks/image_synth/ComfyUI/input/person.jpg"
 FACE_IMAGE_URL = "https://thispersondoesnotexist.com/"
-LLAVA_MODEL_PATH = "/app/validator/tasks/person_synth/cache/llava-v1.5-7b"
-WORKFLOW_PATH = "validator/tasks/person_synth/person_avatars_template.json"
-DEFAULT_SAVE_DIR = "/app/avatars/"
+LLAVA_MODEL_PATH = "/app/validator/tasks/image_synth/cache/llava-v1.5-7b"
+PERSON_WORKFLOW_PATH = "validator/tasks/image_synth/person_avatars_template.json"
+STYLE_WORKFLOW_PATH = "validator/tasks/image_synth/style_template.json"
+DEFAULT_SAVE_DIR = "/app/images/"
 PROMPT_EXAMPLES = """
     1. portrait photo of Daniel, a stylish man in his 30s, walking through a neon-lit street at night, wearing a black leather jacket and jeans, glowing signs reflecting on puddles, cinematic lighting, shallow depth of field, realistic, 85mm lens
     2. photo of Ava, a young woman with auburn hair and freckles, sitting on a wooden fence in a peaceful countryside, wearing a flowy white dress, tall grass and wildflowers around her, golden hour sunlight, soft focus, realistic, DSLR look

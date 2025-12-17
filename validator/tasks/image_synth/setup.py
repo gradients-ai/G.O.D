@@ -72,7 +72,7 @@ def main():
     clone_repo(
         repo_url="https://github.com/comfyanonymous/ComfyUI.git",
         target_dir="ComfyUI",
-        commit_hash="d9277301d28e732e82d0de1d5948aa00acbf6b65",
+        commit_hash="887143854bb2ae1e0f975e4461f376844a1628c8",
     )
 
     print("Cloned ComfyUI, now downloading all models... (this might take a while)")
@@ -112,7 +112,31 @@ def main():
     print("Downloading full repo liuhaotian/llava-v1.5-7b...")
     snapshot_repo(
         repo_id="liuhaotian/llava-v1.5-7b",
-        local_dir="/app/validator/tasks/person_synth/cache/llava-v1.5-7b",
+        local_dir="/app/validator/tasks/image_synth/cache/llava-v1.5-7b",
+    )
+
+    print("Downloading mistral_3_small_flux2_fp8.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+        local_dir="ComfyUI/models/text_encoders",
+        cache_dir="ComfyUI/models/caches",
+    )
+
+    print("Downloading flux2_dev_fp8mixed.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+        local_dir="ComfyUI/models/diffusion_models",
+        cache_dir="ComfyUI/models/caches",
+    )
+
+    print("Downloading flux2-vae.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/vae/flux2-vae.safetensors",
+        local_dir="ComfyUI/models/vae",
+        cache_dir="ComfyUI/models/caches",
     )
 
     print("Setup completed successfully.")

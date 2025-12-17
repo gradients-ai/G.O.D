@@ -19,7 +19,7 @@ COPY . .
 RUN python3 -m venv /envs/comfyui && \
     python3 -m venv /envs/generate
 
-WORKDIR /app/validator/tasks/person_synth/
+WORKDIR /app/validator/tasks/image_synth/
 
 RUN . /envs/comfyui/bin/activate && \
     pip install --upgrade pip && \
@@ -39,9 +39,13 @@ WORKDIR /app
 
 RUN echo '#!/bin/bash\n\
 source /envs/comfyui/bin/activate\n\
-python /app/validator/tasks/person_synth/ComfyUI/main.py &\n\
+python /app/validator/tasks/image_synth/ComfyUI/main.py &\n\
 deactivate\n\
 source /envs/generate/bin/activate\n\
-python -m validator.tasks.person_synth.generate' > /app/start.sh && chmod +x /app/start.sh
+if [ -n "$PROMPTS" ]; then\n\
+    python -m validator.tasks.image_synth.generate_style\n\
+else\n\
+    python -m validator.tasks.image_synth.generate_person\n\
+fi' > /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]

@@ -14,11 +14,11 @@ from llava.eval.run_llava import eval_model
 from llava.mm_utils import get_model_name_from_path
 from PIL import Image
 
-import validator.tasks.person_synth.constants as cst
+import validator.tasks.image_synth.constants as cst
 import validator.utils.comfy_api_gate as api_gate
 
 
-with open(cst.WORKFLOW_PATH, "r") as file:
+with open(cst.PERSON_WORKFLOW_PATH, "r") as file:
     avatar_template = json.load(file)
 
 def get_face_image():
