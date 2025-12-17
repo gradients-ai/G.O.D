@@ -1,18 +1,7 @@
-import io
 import json
 import os
-import random
-import re
 import uuid
-from contextlib import redirect_stdout
 from copy import deepcopy
-from io import BytesIO
-
-import names
-import requests
-from llava.eval.run_llava import eval_model
-from llava.mm_utils import get_model_name_from_path
-from PIL import Image
 
 import validator.tasks.image_synth.constants as cst
 import validator.utils.comfy_api_gate as api_gate
