@@ -2,12 +2,12 @@ from fastapi import APIRouter
 from fastapi import Depends
 
 import validator.core.constants as cts
+from core.models.tournament_models import BossBattleResponse
+from core.models.tournament_models import MultiWeightProjectionResponse
 from core.models.tournament_models import TournamentBurnData
 from core.models.tournament_models import TournamentType
 from core.models.tournament_models import TournamentWeightsResponse
 from core.models.tournament_models import WeightProjectionResponse
-from core.models.tournament_models import MultiWeightProjectionResponse
-from core.models.tournament_models import BossBattleResponse
 from validator.core.config import Config
 from validator.core.dependencies import get_config
 from validator.core.weight_setting import build_tournament_audit_data
@@ -22,7 +22,7 @@ from validator.tournament.performance_utils import get_top_ranked_miners
 router = APIRouter(tags=["Performance Data"])
 
 
-@router.get("/performance/latest-tournament-weights")
+@router.get("/v1/performance/latest-tournament-weights")
 async def get_latest_tournament_weights(config: Config = Depends(get_config)) -> TournamentWeightsResponse:
     burn_data: TournamentBurnData = await get_tournament_burn_details(config.psql_db)
 
@@ -50,7 +50,7 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
     )
 
 
-@router.get("/performance/weight-projection")
+@router.get("/v1/performance/weight-projection")
 async def get_weight_projection(
     percentage_improvement: float,
     config: Config = Depends(get_config),
@@ -78,12 +78,12 @@ async def get_weight_projection(
     )
 
 
-@router.get("/performance/weight-projection-static")
+@router.get("/v1/performance/weight-projection-static")
 async def get_weight_projection_static(
     config: Config = Depends(get_config),
 ) -> MultiWeightProjectionResponse:
     percentage_improvements = [5.0, 10.0, 15.0, 20.0]
-    
+
     projections = []
     for percentage_improvement in percentage_improvements:
         text_projection = await calculate_tournament_projection(
@@ -109,35 +109,31 @@ async def get_weight_projection_static(
                 image_projection=image_projection,
             )
         )
-    
+
     return MultiWeightProjectionResponse(projections=projections)
 
 
-@router.get("/performance/last-boss-battle")
+@router.get("/v1/performance/last-boss-battle")
 async def get_last_boss_battle(
     config: Config = Depends(get_config),
 ) -> BossBattleResponse:
     # Get latest completed tournaments
     latest_text_tournament = await get_latest_completed_tournament(config.psql_db, TournamentType.TEXT)
     latest_image_tournament = await get_latest_completed_tournament(config.psql_db, TournamentType.IMAGE)
-    
+
     # Calculate boss round performance differences
     text_performance_differences = []
     text_tournament_id = None
     if latest_text_tournament:
         text_tournament_id = latest_text_tournament.tournament_id
-        text_performance_differences = await calculate_boss_round_performance_differences(
-            text_tournament_id, config.psql_db
-        )
-    
+        text_performance_differences = await calculate_boss_round_performance_differences(text_tournament_id, config.psql_db)
+
     image_performance_differences = []
     image_tournament_id = None
     if latest_image_tournament:
         image_tournament_id = latest_image_tournament.tournament_id
-        image_performance_differences = await calculate_boss_round_performance_differences(
-            image_tournament_id, config.psql_db
-        )
-    
+        image_performance_differences = await calculate_boss_round_performance_differences(image_tournament_id, config.psql_db)
+
     return BossBattleResponse(
         text_tournament_id=text_tournament_id,
         text_performance_differences=text_performance_differences,
@@ -148,4 +144,3 @@ async def get_last_boss_battle(
 
 def factory_router():
     return router
-
