@@ -26,7 +26,7 @@ from core.dataset.prepare_diffusion_dataset import prepare_dataset
 from core.models.utility_models import ImageModelType
 
 
-def create_config(task_id, model, model_type, expected_repo_name):
+def create_config(task_id, model, model_type, expected_repo_name, trigger_word: str | None = None):
     """Create the diffusion config file (TOML for SDXL/Flux, YAML for ai-toolkit models)"""
     config_template_path = train_paths.get_image_training_config_template_path(model_type)
     is_ai_toolkit = model_type in [ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value]
@@ -48,6 +48,9 @@ def create_config(task_id, model, model_type, expected_repo_name):
                     dataset_path = train_paths.get_image_training_images_dir(task_id)
                     for dataset in process['datasets']:
                         dataset['folder_path'] = dataset_path
+
+                if trigger_word:
+                    process['trigger_word'] = trigger_word
         
         config_path = os.path.join(train_cst.IMAGE_CONTAINER_CONFIG_SAVE_PATH, f"{task_id}.yaml")
         save_config(config, config_path)
@@ -131,6 +134,7 @@ async def main():
     parser.add_argument("--dataset-zip", required=True, help="Link to dataset zip file")
     parser.add_argument("--model-type", required=True, choices=["sdxl", "flux", "z-image", "qwen-image"], help="Model type")
     parser.add_argument("--expected-repo-name", help="Expected repository name")
+    parser.add_argument("--trigger-word", help="Trigger word for the training")
     parser.add_argument("--hours-to-complete", type=float, required=True, help="Number of hours to complete the task")
     args = parser.parse_args()
 
@@ -144,7 +148,8 @@ async def main():
         args.task_id,
         model_path,
         args.model_type,
-        args.expected_repo_name
+        args.expected_repo_name,
+        args.trigger_word
     )
 
     print("Preparing dataset...", flush=True)

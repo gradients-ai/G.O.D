@@ -105,11 +105,7 @@ def find_latest_lora_submission_name(repo_id: str) -> str:
 
 
 @retry_on_5xx()
-def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str | None]:
-    # For z-image and qwen-image, we download unet files directly, not from the repo
-    if model_type in [ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value]:
-        return True, None
-    
+def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str | None]:    
     files_metadata = hf_api.list_repo_tree(repo_id=repo_id, repo_type="model")
     check_size_in_gb = 6 if model_type == "sdxl" else 10
     total_check_size = check_size_in_gb * 1024 * 1024 * 1024
@@ -128,16 +124,10 @@ def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str |
 def download_base_model(repo_id: str, model_type: str, safetensors_filename: str | None = None) -> str:
     if model_type == ImageModelType.SDXL.value:
         download_dir = cst.CHECKPOINTS_SAVE_PATH
-    elif model_type in [ImageModelType.FLUX.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value]:
+    elif model_type == ImageModelType.FLUX.value:
         download_dir = cst.UNET_SAVE_PATH
-    if model_type == ImageModelType.Z_IMAGE.value:
-        model_name = cst.ZIMAGE_UNET_FILENAME
-        model_path = os.path.join(download_dir, cst.ZIMAGE_UNET_FILENAME)
-        return model_name, model_path
-    elif model_type == ImageModelType.QWEN_IMAGE.value:
-        model_name = cst.QWEN_IMAGE_UNET_FILENAME
-        model_path = os.path.join(download_dir, cst.QWEN_IMAGE_UNET_FILENAME)
-        return model_name, model_path
+    else:
+        download_dir = cst.DIFFUSION_MODELS_PATH
 
     if safetensors_filename:
         model_path = download_from_huggingface(repo_id, safetensors_filename, download_dir)
@@ -184,6 +174,7 @@ def edit_workflow(
         payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["CFG"]["inputs"]["guidance"] = edit_elements.cfg
     else:
+        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
 
     payload["Sampler"]["inputs"]["steps"] = edit_elements.steps

@@ -185,12 +185,11 @@ LORA_QWEN_IMAGE_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_qwen-
 CHECKPOINTS_SAVE_PATH = "validator/evaluation/ComfyUI/models/checkpoints"
 UNET_SAVE_PATH = "validator/evaluation/ComfyUI/models/unet"
 DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusers"
+DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusion_models"
 LORAS_SAVE_PATH = "validator/evaluation/ComfyUI/models/loras"
 DIFFUSION_HF_DEFAULT_FOLDER = "checkpoint"
 DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.25
-ZIMAGE_UNET_FILENAME = "z_image_turbo_bf16.safetensors"
-QWEN_IMAGE_UNET_FILENAME = "qwen_image_fp8_e4m3fn.safetensors"
 EVAL_DEFAULTS = {
     "sdxl": {"steps": 20, "cfg": 8, "denoise": 0.9},
     "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},

@@ -12,6 +12,7 @@ from transformers import CLIPTokenizer
 import trainer.utils.training_paths as train_paths
 from core.models.utility_models import FileFormat
 from core.models.utility_models import TaskType
+from core.models.utility_models import ImageModelType
 from core.utils import download_s3_file
 from trainer import constants as cst
 
@@ -83,7 +84,7 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
         raise e
 
 
-async def download_base_model(repo_id: str, save_root: str) -> str:
+async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType) -> str:
     model_name = repo_id.replace("/", "--")
     save_path = os.path.join(save_root, model_name)
     if os.path.exists(save_path):
@@ -91,7 +92,7 @@ async def download_base_model(repo_id: str, save_root: str) -> str:
         return save_path
     else:
         has_safetensors, safetensors_path = is_safetensors_available(repo_id)
-        if has_safetensors and safetensors_path:
+        if has_safetensors and safetensors_path and model_type in [ImageModelType.FLUX, ImageModelType.SDXL]:
             return download_from_huggingface(repo_id, safetensors_path, save_path)
         else:
             snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
@@ -139,6 +140,7 @@ async def main():
     )
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--file-format")
+    parser.add_argument("--model-type", choices=[ImageModelType.FLUX.value, ImageModelType.SDXL.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value])
     args = parser.parse_args()
 
     dataset_dir = cst.CACHE_DATASETS_DIR
@@ -153,23 +155,25 @@ async def main():
 
     if args.task_type == TaskType.IMAGETASK.value:
         dataset_zip_path = await download_image_dataset(args.dataset, args.task_id, dataset_dir)
-        model_path = await download_base_model(args.model, model_dir)
-        
-        print("Downloading Z-Image adapter...", flush=True)
-        zimage_adapter_path = await download_adapter(
-            repo_id="ostris/zimage_turbo_training_adapter",
-            filename="zimage_turbo_training_adapter_v2.safetensors",
-            adapters_dir=adapters_dir
-        )
-        print(f"Z-Image adapter downloaded to: {zimage_adapter_path}", flush=True)
-        
-        print("Downloading Qwen-Image adapter...", flush=True)
-        qwen_adapter_path = await download_adapter(
-            repo_id="ostris/accuracy_recovery_adapters",
-            filename="qwen_image_torchao_uint3.safetensors",
-            adapters_dir=adapters_dir
-        )
-        print(f"Qwen-Image adapter downloaded to: {qwen_adapter_path}", flush=True)
+        model_path = await download_base_model(args.model, model_dir, args.model_type)
+
+        if args.model_type == ImageModelType.Z_IMAGE.value:
+            print("Downloading Z-Image adapter...", flush=True)
+            zimage_adapter_path = await download_adapter(
+                repo_id="ostris/zimage_turbo_training_adapter",
+                filename="zimage_turbo_training_adapter_v2.safetensors",
+                adapters_dir=adapters_dir
+            )
+            print(f"Z-Image adapter downloaded to: {zimage_adapter_path}", flush=True)
+            
+        elif args.model_type == ImageModelType.QWEN_IMAGE.value:
+            print("Downloading Qwen-Image adapter...", flush=True)
+            qwen_adapter_path = await download_adapter(
+                repo_id="ostris/accuracy_recovery_adapters",
+                filename="qwen_image_torchao_uint3.safetensors",
+                adapters_dir=adapters_dir
+            )
+            print(f"Qwen-Image adapter downloaded to: {qwen_adapter_path}", flush=True)
         
         print("Downloading clip models", flush=True)
         CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", cache_dir=cst.HUGGINGFACE_CACHE_PATH)

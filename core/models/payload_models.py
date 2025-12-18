@@ -72,6 +72,7 @@ class TrainRequestImage(TrainRequest):
         min_length=1,
     )
     model_type: ImageModelType = ImageModelType.SDXL
+    trigger_word: str | None = None
 
 
 class TrainerProxyRequest(BaseModel):

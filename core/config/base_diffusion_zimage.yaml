@@ -5,7 +5,6 @@ config:
   - type: diffusion_trainer
     training_folder: /app/checkpoints
     device: cuda
-    trigger_word: mytrigger
     network:
       type: lora
       linear: 32

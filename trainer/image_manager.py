@@ -108,6 +108,7 @@ async def run_trainer_container_image(
     expected_repo_name: str,
     hours_to_complete: float,
     hotkey: str,
+    trigger_word: str | None = None,
     log_labels: dict[str, str] | None = None,
     gpu_ids: list[int] = [0],
 ) -> Container:
@@ -125,8 +126,11 @@ async def run_trainer_container_image(
         "--expected-repo-name",
         expected_repo_name,
         "--hours-to-complete",
-        str(hours_to_complete),
+        str(hours_to_complete)
     ]
+
+    if trigger_word:
+        command += ["--trigger-word", trigger_word]
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
@@ -281,6 +285,7 @@ def run_downloader_container(
     task_type: TaskType,
     hotkey: str,
     file_format: FileFormat | None = None,
+    model_type: ImageModelType | None = None,
     log_labels: dict[str, str] | None = None,
 ) -> tuple[int, Exception | None]:
     client = docker.from_env()
@@ -297,6 +302,9 @@ def run_downloader_container(
     ]
     if file_format:
         command += ["--file-format", file_format]
+
+    if model_type:
+        command += ["--model-type", model_type]
 
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
@@ -497,6 +505,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             task_type=task_type,
             hotkey=task.hotkey,
             file_format=getattr(training_data, "file_format", None),
+            model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
         )
 
@@ -537,6 +546,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     expected_repo_name=training_data.expected_repo_name,
                     hours_to_complete=training_data.hours_to_complete,
                     hotkey=task.hotkey,
+                    trigger_word=training_data.trigger_word if training_data.trigger_word else None,
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
                 ),
