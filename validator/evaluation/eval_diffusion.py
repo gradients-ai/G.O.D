@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import random
 
 import numpy as np
@@ -89,17 +90,28 @@ def find_latest_lora_submission_name(repo_id: str) -> str:
             return file
 
     epoch_files = []
+    
     for file in model_files:
-        if file.endswith(".safetensors") and ("last-" in file or "last_" in file):
-            try:
-                if "last-" in file:
-                    epoch_str = file.split("last-")[1].split(".")[0]
-                else:
-                    epoch_str = file.split("last_")[1].split(".")[0]
-                epoch = int(epoch_str)
+        if file.endswith(".safetensors"):
+            epoch = None
+            match = re.search(r'[-_](\d+)\.safetensors$', file)
+            if match:
+                try:
+                    epoch = int(match.group(1))
+                except ValueError:
+                    pass
+            else:
+                match = re.search(r'(\d+)\.safetensors$', file)
+                if match:
+                    try:
+                        epoch = int(match.group(1))
+                    except ValueError:
+                        pass
+            
+            if epoch is None:
+                return file
+            else:
                 epoch_files.append((epoch, file))
-            except ValueError:
-                continue
 
     if epoch_files:
         epoch_files.sort(reverse=True, key=lambda x: x[0])
