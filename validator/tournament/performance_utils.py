@@ -3,6 +3,7 @@ from datetime import timezone
 
 import validator.core.constants as cts
 from core.models.tournament_models import MinerEmissionWeight
+from core.models.tournament_models import TournamentAuditData
 from core.models.tournament_models import TournamentProjection
 from core.models.tournament_models import TournamentType
 from core.models.tournament_models import WeightProjection
@@ -16,18 +17,67 @@ from validator.db.sql.tournaments import get_tournament_where_champion_first_won
 from validator.tournament.utils import get_real_tournament_winner
 
 
+def calculate_scaled_weights(
+    tournament_audit_data: TournamentAuditData,
+) -> tuple[float, float, float, float, float, str | None, str | None]:
+    """
+    Calculate scaled weights and winner hotkeys from tournament audit data.
+    Uses the same logic as get_node_weights_from_tournament_audit_data in weight_setting.py.
+
+    Returns:
+        Tuple of (scaled_text_tournament_weight, scaled_text_base_weight,
+                 scaled_image_tournament_weight, scaled_image_base_weight,
+                 scaled_burn_weight, text_winner_hotkey, image_winner_hotkey)
+    """
+    participants: list[str] = tournament_audit_data.participants
+    participation_total: float = len(participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
+    scale_factor: float = 1.0 - participation_total if participation_total > 0 else 1.0
+
+    scaled_text_tournament_weight: float = tournament_audit_data.text_tournament_weight * scale_factor
+    scaled_image_tournament_weight: float = tournament_audit_data.image_tournament_weight * scale_factor
+    scaled_burn_weight: float = tournament_audit_data.burn_weight * scale_factor
+
+    scaled_text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT * scale_factor
+    scaled_image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT * scale_factor
+
+    text_winner_hotkey = get_real_tournament_winner(tournament_audit_data.text_tournament_data)
+    image_winner_hotkey = get_real_tournament_winner(tournament_audit_data.image_tournament_data)
+
+    return (
+        scaled_text_tournament_weight,
+        scaled_text_base_weight,
+        scaled_image_tournament_weight,
+        scaled_image_base_weight,
+        scaled_burn_weight,
+        text_winner_hotkey,
+        image_winner_hotkey,
+    )
+
+
 def get_top_ranked_miners(
     weights: dict[str, float],
     base_winner_hotkey: str | None = None,
     limit: int = 5,
+    scaled_tournament_weight: float | None = None,
+    scaled_base_weight: float | None = None,
+    winner_hotkey: str | None = None,
 ) -> list[MinerEmissionWeight]:
     real_hotkey_weights = {}
-    for hotkey, weight in weights.items():
+    for hotkey, base_weight in weights.items():
         if hotkey == EMISSION_BURN_HOTKEY and base_winner_hotkey:
             real_hotkey = base_winner_hotkey
         else:
             real_hotkey = hotkey
-        real_hotkey_weights[real_hotkey] = weight
+
+        if scaled_tournament_weight is not None and scaled_base_weight is not None:
+            if real_hotkey == winner_hotkey:
+                final_weight = base_weight * scaled_tournament_weight
+            else:
+                final_weight = base_weight * scaled_base_weight
+        else:
+            final_weight = base_weight
+        
+        real_hotkey_weights[real_hotkey] = final_weight
 
     sorted_miners = sorted(real_hotkey_weights.items(), key=lambda x: x[1], reverse=True)[:limit]
 

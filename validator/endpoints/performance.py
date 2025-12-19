@@ -12,6 +12,7 @@ from validator.core.config import Config
 from validator.core.dependencies import get_config
 from validator.core.weight_setting import build_tournament_audit_data
 from validator.core.weight_setting import get_tournament_burn_details
+from validator.tournament.performance_utils import calculate_scaled_weights
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.evaluation.tournament_scoring import get_tournament_weights_from_data
 from validator.tournament.performance_calculator import calculate_boss_round_performance_differences
@@ -40,8 +41,32 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
     if tournament_audit_data.image_tournament_data:
         image_base_winner_hotkey = tournament_audit_data.image_tournament_data.base_winner_hotkey
 
-    text_top_miners = get_top_ranked_miners(text_tournament_weights, text_base_winner_hotkey, limit=5)
-    image_top_miners = get_top_ranked_miners(image_tournament_weights, image_base_winner_hotkey, limit=5)
+    (
+        scaled_text_tournament_weight,
+        scaled_text_base_weight,
+        scaled_image_tournament_weight,
+        scaled_image_base_weight,
+        _,
+        text_winner_hotkey,
+        image_winner_hotkey,
+    ) = calculate_scaled_weights(tournament_audit_data)
+
+    text_top_miners = get_top_ranked_miners(
+        text_tournament_weights,
+        text_base_winner_hotkey,
+        limit=5,
+        scaled_tournament_weight=scaled_text_tournament_weight,
+        scaled_base_weight=scaled_text_base_weight,
+        winner_hotkey=text_winner_hotkey,
+    )
+    image_top_miners = get_top_ranked_miners(
+        image_tournament_weights,
+        image_base_winner_hotkey,
+        limit=5,
+        scaled_tournament_weight=scaled_image_tournament_weight,
+        scaled_base_weight=scaled_image_base_weight,
+        winner_hotkey=image_winner_hotkey,
+    )
 
     return TournamentWeightsResponse(
         burn_data=burn_data,
