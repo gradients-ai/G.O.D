@@ -90,9 +90,13 @@ def find_latest_lora_submission_name(repo_id: str) -> str:
 
     epoch_files = []
     for file in model_files:
-        if "last-" in file and file.endswith(".safetensors"):
+        if file.endswith(".safetensors") and ("last-" in file or "last_" in file):
             try:
-                epoch = int(file.split("last-")[1].split(".")[0])
+                if "last-" in file:
+                    epoch_str = file.split("last-")[1].split(".")[0]
+                else:
+                    epoch_str = file.split("last_")[1].split(".")[0]
+                epoch = int(epoch_str)
                 epoch_files.append((epoch, file))
             except ValueError:
                 continue
@@ -275,6 +279,15 @@ def main():
         base_model_repo, model_type=model_type, safetensors_filename=safetensors_filename
     )
     logger.info("Base model downloaded")
+
+    logger.info("test_dataset_path: ", test_dataset_path)
+    logger.info("base_model_repo: ", base_model_repo)
+    logger.info("trained_lora_model_repos: ", trained_lora_model_repos)
+    logger.info("model_type: ", model_type)
+    logger.info("is_safetensors: ", is_safetensors)
+    logger.info("safetensors_filename: ", safetensors_filename)
+    logger.info("model_name_or_path: ", model_name_or_path)
+    logger.info("model_path: ", model_path)
 
     lora_repos = [m.strip() for m in trained_lora_model_repos.split(",") if m.strip()]
 

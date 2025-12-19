@@ -1,6 +1,6 @@
 job: extension
 config:
-  name: qwen_image_lora
+  name: last
   process:
   - type: diffusion_trainer
     training_folder: /app/checkpoints
