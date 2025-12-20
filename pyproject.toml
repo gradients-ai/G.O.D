@@ -24,7 +24,7 @@ dependencies = [
     "scalar-fastapi==1.0.3",
     "fastapi>=0.110.3,<0.113.0",
     "uvicorn>=0.30.5,<0.32.0",
-    "fiber @ git+https://github.com/rayonlabs/fiber.git@2.4.0",
+    "fiber @ git+https://github.com/besimray/fiber.git@v2.6.0",
     "asyncpg==0.29.0",
     "httpx==0.27.0",
     "loguru==0.7.2",

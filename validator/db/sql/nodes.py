@@ -24,7 +24,11 @@ async def get_all_nodes(psql_db: PSQLDB) -> list[Node]:
             WHERE {dcst.NETUID} = $1
         """
         rows = await connection.fetch(query, NETUID)
-        nodes = [Node(**dict(row)) for row in rows]
+        # Filter out 'trust' field as it was removed from Node model
+        nodes = [
+            Node(**{k: v for k, v in dict(row).items() if k != dcst.TRUST})
+            for row in rows
+        ]
         return nodes
 
 
@@ -41,7 +45,6 @@ async def insert_nodes(connection: Connection, nodes: list[Node]) -> None:
             {dcst.ALPHA_STAKE},
             {dcst.TAO_STAKE},
             {dcst.STAKE},
-            {dcst.TRUST},
             {dcst.VTRUST},
             {dcst.LAST_UPDATED},
             {dcst.IP},
@@ -49,7 +52,7 @@ async def insert_nodes(connection: Connection, nodes: list[Node]) -> None:
             {dcst.PORT},
             {dcst.PROTOCOL}
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         """,
         [
             (
@@ -61,7 +64,6 @@ async def insert_nodes(connection: Connection, nodes: list[Node]) -> None:
                 node.alpha_stake,
                 node.tao_stake,
                 node.stake,
-                node.trust,
                 node.vtrust,
                 node.last_updated,
                 node.ip,
@@ -84,7 +86,8 @@ async def get_node_by_hotkey(hotkey: str, psql_db: PSQLDB) -> Node | None:
         """
         row = await connection.fetchrow(query, hotkey, NETUID)
         if row:
-            return Node(**dict(row))
+            # Filter out 'trust' field as it was removed from Node model
+            return Node(**{k: v for k, v in dict(row).items() if k != dcst.TRUST})
         return None
 
 
@@ -128,7 +131,7 @@ async def migrate_nodes_to_history(connection: Connection) -> None:
                 {dcst.ALPHA_STAKE},
                 {dcst.TAO_STAKE},
                 {dcst.STAKE},
-                {dcst.TRUST},
+                0.0,
                 {dcst.VTRUST},
                 {dcst.LAST_UPDATED},
                 {dcst.IP},

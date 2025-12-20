@@ -17,7 +17,7 @@ source $HOME/.venv/bin/activate
 ```bash
 find . -path "./venv" -prune -o -path "./.venv" -prune -o -name "requirements.txt" -exec pip install -r {} \;
 ./install_axolotl.sh
-pip install "git+https://github.com/rayonlabs/fiber.git@1.0.0#egg=fiber[full]"
+pip install "git+https://github.com/besimray/fiber.git@v2.6.0#egg=fiber[full]"
 
 ```
 

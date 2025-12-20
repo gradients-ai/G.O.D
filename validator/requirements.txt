@@ -1,4 +1,4 @@
-git+https://github.com/rayonlabs/fiber
+git+https://github.com/besimray/fiber.git@v2.6.0
 datasets==2.21.0
 peft>=0.17.0
 docker
