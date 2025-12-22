@@ -15,7 +15,6 @@ from core.models.payload_models import DpoTaskDetails
 from core.models.payload_models import GrpoTaskDetails
 from core.models.payload_models import ImageTaskDetails
 from core.models.payload_models import InstructTextTaskDetails
-from core.models.tournament_models import TournamentStatus
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
@@ -192,16 +191,7 @@ def is_task_in_flight(task: AnyTypeTask) -> bool:
     ]
 
 
-def hide_sensitive_data_till_finished(task: AnyTypeTask, tournament_status: TournamentStatus | None = None) -> AnyTypeTask:
-    if tournament_status and tournament_status != TournamentStatus.COMPLETED:
-        if task.task_type == TaskType.IMAGETASK:
-            task.image_text_pairs = [ImageTextPair(image_url="hidden", text_url="hidden")]
-        task.test_data = None
-        task.training_data = None
-        task.ds = "Hidden"
-        return task
-
-    # Otherwise, apply normal hiding logic based on task status
+def hide_sensitive_data_till_finished(task: AnyTypeTask) -> AnyTypeTask:
     if is_task_in_flight(task):
         if task.task_type == TaskType.IMAGETASK:
             task.image_text_pairs = [ImageTextPair(image_url="hidden", text_url="hidden")]

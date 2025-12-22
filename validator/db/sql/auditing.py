@@ -25,7 +25,6 @@ from validator.core.models import InstructTextTask
 from validator.core.models import InstructTextTaskWithHotkeyDetails
 from validator.db import constants as cst
 from validator.db.sql import tasks as tasks_sql
-from validator.db.sql import tournaments as tournament_sql
 from validator.utils.util import hide_sensitive_data_till_finished
 from validator.utils.util import normalise_float
 
@@ -79,7 +78,7 @@ async def get_recent_tasks(
         }
         ),
         image_pairs AS (
-            SELECT 
+            SELECT
                 itp.{cst.TASK_ID},
                 ARRAY_AGG(json_build_object(
                     'image_url', itp.{cst.IMAGE_URL},
@@ -90,7 +89,7 @@ async def get_recent_tasks(
             GROUP BY itp.{cst.TASK_ID}
         ),
         reward_functions AS (
-            SELECT 
+            SELECT
                 gtf.{cst.TASK_ID},
                 ARRAY_AGG(json_build_object(
                     'reward_func', rf.{cst.REWARD_FUNC},
@@ -104,7 +103,7 @@ async def get_recent_tasks(
             GROUP BY gtf.{cst.TASK_ID}
         )
         -- Main query joining all necessary tables
-        SELECT 
+        SELECT
             t.*,
             itt.field_system as itt_field_system,
             itt.field_instruction,
@@ -132,7 +131,7 @@ async def get_recent_tasks(
             ct.chat_user_reference,
             ct.chat_assistant_reference,
             ct.file_format as chat_file_format
-        FROM task_ids 
+        FROM task_ids
         JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID} = task_ids.{cst.TASK_ID}
         LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} itt ON t.{cst.TASK_ID} = itt.{cst.TASK_ID}
         LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
@@ -524,16 +523,7 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
 
     logger.info("Got a task!!")
 
-    tournament_id = await tournament_sql.get_tournament_id_by_task_id(task_id, config.psql_db)
-    tournament_status = None
-
-    if tournament_id:
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament:
-            tournament_status = tournament.status
-
-    # NOTE: If the task is not finished, remove details about synthetic data & test data?
-    task = hide_sensitive_data_till_finished(task_raw, tournament_status)
+    task = hide_sensitive_data_till_finished(task_raw)
 
     query = f"""
         SELECT
