@@ -46,10 +46,40 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
         scaled_text_base_weight,
         scaled_image_tournament_weight,
         scaled_image_base_weight,
-        _,
+        scaled_burn_weight,
         text_winner_hotkey,
         image_winner_hotkey,
     ) = calculate_scaled_weights(tournament_audit_data)
+
+    text_distributed = 0.0
+    for hotkey, weight in text_tournament_weights.items():
+        if hotkey == text_winner_hotkey:
+            text_distributed += weight * scaled_text_tournament_weight
+        else:
+            text_distributed += weight * scaled_text_base_weight
+
+    image_distributed = 0.0
+    for hotkey, weight in image_tournament_weights.items():
+        if hotkey == image_winner_hotkey:
+            image_distributed += weight * scaled_image_tournament_weight
+        else:
+            image_distributed += weight * scaled_image_base_weight
+
+    text_undistributed = scaled_text_tournament_weight - text_distributed
+    image_undistributed = scaled_image_tournament_weight - image_distributed
+    total_undistributed = text_undistributed + image_undistributed
+
+    total_burn_weight = scaled_burn_weight + total_undistributed
+
+    adjusted_burn_data = TournamentBurnData(
+        text_performance_diff=burn_data.text_performance_diff,
+        image_performance_diff=burn_data.image_performance_diff,
+        text_burn_proportion=burn_data.text_burn_proportion,
+        image_burn_proportion=burn_data.image_burn_proportion,
+        text_tournament_weight=burn_data.text_tournament_weight,
+        image_tournament_weight=burn_data.image_tournament_weight,
+        burn_weight=total_burn_weight,
+    )
 
     text_top_miners = get_top_ranked_miners(
         text_tournament_weights,
@@ -69,7 +99,7 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
     )
 
     return TournamentWeightsResponse(
-        burn_data=burn_data,
+        burn_data=adjusted_burn_data,
         text_top_miners=text_top_miners,
         image_top_miners=image_top_miners,
     )
