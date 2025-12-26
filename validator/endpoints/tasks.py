@@ -466,15 +466,7 @@ async def get_task_details(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    tournament_id = await tournament_sql.get_tournament_id_by_task_id(str(task_id), config.psql_db)
-    tournament_status = None
-
-    if tournament_id:
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament:
-            tournament_status = tournament.status
-
-    task = hide_sensitive_data_till_finished(task, tournament_status)
+    task = hide_sensitive_data_till_finished(task)
     return convert_task_to_task_details(task)
 
 
