@@ -77,13 +77,13 @@ INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
 }
 
 # text augmentation synth
-TEXT_SYNTH_MODEL = "ArliAI/QwQ-32B-ArliAI-RpR-v1"
+TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"
 TEXT_SYNTH_MODEL_TEMPERATURE = 0.6
 TEXT_SYNTH_MODEL_MAX_TOKENS = 5024
 END_OF_REASONING_TAG = "</think>"
 
 # image prompt generation synth
-IMAGE_PROMPT_GEN_MODEL = "ArliAI/QwQ-32B-ArliAI-RpR-v1"
+IMAGE_PROMPT_GEN_MODEL = "Qwen/Qwen3-32B"
 IMAGE_PROMPT_GEN_MODEL_TEMPERATURE = 0.4
 IMAGE_PROMPT_GEN_MODEL_MAX_TOKENS = 5024
 IMAGE_STYLE_PICKING_NUM_TRIES = 10
@@ -193,7 +193,7 @@ EVAL_DEFAULTS = {
     "sdxl": {"steps": 20, "cfg": 8, "denoise": 0.9},
     "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},
     "z-image": {"steps": 10, "cfg": 1, "denoise": 0.90},
-    "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93}
+    "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93},
 }
 
 # Max jobs
