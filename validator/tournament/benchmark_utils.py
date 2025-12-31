@@ -125,6 +125,11 @@ async def create_benchmark_tasks_for_tournament_winner(tournament_id: str, winne
                 TaskType.IMAGETASK,
             ]
             logger.info(f"Creating image benchmark tasks for {tournament.tournament_type.value} tournament")
+        elif tournament.tournament_type == TournamentType.ENVIRONMENT:
+            task_types = [
+                TaskType.ENVIRONMENTTASK,
+            ]
+            logger.info(f"Creating environment benchmark tasks for {tournament.tournament_type.value} tournament")
         else:
             logger.error(f"Unknown tournament type: {tournament.tournament_type.value}")
             return []

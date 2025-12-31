@@ -639,8 +639,9 @@ async def get_knockout_winners(
 async def get_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
 ) -> list[str]:
-    """Get winners from group round based on adjusted loss scores (top 8 performers)."""
-    TOP_WINNERS_TO_ADVANCE = 8
+    """Get winners from group round based on adjusted loss scores (top 8 performers, or 1 for final rounds)."""
+    # For final rounds (like environment tournaments), return only the top performer
+    TOP_WINNERS_TO_ADVANCE = 1 if completed_round.is_final_round else 8
     all_winners = []
 
     for task in round_tasks:

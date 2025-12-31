@@ -70,6 +70,48 @@ async def create_image_tournament_tasks(
     return [str(task.task_id) for task in tasks]
 
 
+async def create_environment_tournament_tasks(
+    round_data: Round, tournament_id: str, round_id: str, config: Config, is_final_round: bool = False
+) -> list[str]:
+    """
+    Create environment tournament tasks.
+    """
+    if not isinstance(round_data, GroupRound):
+        raise ValueError("Environment tournaments only support group rounds")
+    
+    tasks = await _create_environment_group_tasks(round_data, tournament_id, round_id, config)
+    return [str(task.task_id) for task in tasks]
+
+
+async def _create_environment_group_tasks(
+    round_data: GroupRound, tournament_id: str, round_id: str, config: Config
+) -> list[RawTask]:
+    """
+    Create a single environment task that all groups (and all participants + boss) compete on.
+    """
+    logger.info(f"Creating environment tournament with {len(round_data.groups)} groups - single task for all participants")
+    
+    existing_tasks = await _get_existing_tasks_by_identifier(round_id, config)
+    
+    if existing_tasks:
+        logger.info(f"Environment tournament round {round_id} already has {len(existing_tasks)} task(s), skipping task creation")
+        return await _get_existing_tasks(existing_tasks, config)
+    
+    models = _get_text_models(config.keypair)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    
+    logger.info("Creating single environment task for all participants")
+    task = await create_synthetic_env_task(config, models, instruct_datasets)
+
+    group_id = f"{round_id}_group_all"
+    await _create_and_register_tournament_task(
+        task, tournament_id, round_id, config, group_id=group_id
+    )
+    
+    logger.info(f"Created environment tournament task {task.task_id} for all participants")
+    return [task]
+
+
 async def _create_group_image_tasks(
     round_data: GroupRound, tournament_id: str, round_id: str, config: Config, image_models: list
 ) -> list[RawTask]:

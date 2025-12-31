@@ -293,10 +293,12 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
         elif priority == 1:
             # Priority 1: Organic (non-tournament, non-benchmark) tasks
             # Use EMISSION_BURN_HOTKEY and get last tournament winner's repo
-            if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
+            if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK]:
                 tournament_type = TournamentType.TEXT
             elif task.task_type == TaskType.IMAGETASK:
                 tournament_type = TournamentType.IMAGE
+            elif task.task_type == TaskType.ENVIRONMENTTASK:
+                tournament_type = TournamentType.ENVIRONMENT
             else:
                 tournament_type = None
 

@@ -36,6 +36,7 @@ class RoundType(str, Enum):
 class TournamentType(str, Enum):
     TEXT = "text"
     IMAGE = "image"
+    ENVIRONMENT = "environment"
 
 
 class GpuRequirement(str, Enum):

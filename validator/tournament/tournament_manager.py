@@ -60,6 +60,7 @@ from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
+from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
 from validator.tournament.task_creator import replace_tournament_task
@@ -89,9 +90,15 @@ def count_failed_trainings_percentage(trainings: dict[str, str]) -> bool:
     return (failures / total) > t_cst.PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS
 
 
-def organise_tournament_round(nodes: list[Node], config: Config) -> Round:
+def organise_tournament_round(nodes: list[Node], config: Config, tournament_type: TournamentType | None = None) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
+
+    # Environment tournaments always use a single group round with all participants
+    if tournament_type == TournamentType.ENVIRONMENT:
+        all_hotkeys = [node.hotkey for node in nodes_copy]
+        single_group = Group(member_ids=all_hotkeys, task_ids=[])
+        return GroupRound(groups=[single_group])
 
     if len(nodes_copy) <= t_cst.MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND:
         hotkeys = [node.hotkey for node in nodes_copy]
@@ -136,16 +143,19 @@ async def _create_first_round(
 ):
     round_id = generate_round_id(tournament_id, 1)
     with LogContext(round_id=round_id):
-        round_structure = organise_tournament_round(nodes, config)
+        round_structure = organise_tournament_round(nodes, config, tournament_type)
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
+        
+        # Environment tournaments only have group stage, so mark it as final
+        is_final_round = tournament_type == TournamentType.ENVIRONMENT
 
         round_data = TournamentRoundData(
             round_id=round_id,
             tournament_id=tournament_id,
             round_number=1,
             round_type=round_type,
-            is_final_round=False,
+            is_final_round=is_final_round,
             status=RoundStatus.PENDING,
         )
 
@@ -164,8 +174,12 @@ async def _create_tournament_tasks(
 ) -> list[str]:
     if tournament_type == TournamentType.TEXT:
         tasks = await create_text_tournament_tasks(round_structure, tournament_id, round_id, config, is_final)
-    else:
+    elif tournament_type == TournamentType.IMAGE:
         tasks = await create_image_tournament_tasks(round_structure, tournament_id, round_id, config, is_final)
+    elif tournament_type == TournamentType.ENVIRONMENT:
+        tasks = await create_environment_tournament_tasks(round_structure, tournament_id, round_id, config, is_final)
+    else:
+        raise ValueError(f"Unknown tournament type: {tournament_type}")
 
     return tasks
 
@@ -175,18 +189,41 @@ async def assign_nodes_to_tournament_tasks(
 ) -> None:
     """Assign nodes to tournament tasks for the given round."""
 
+    tournament = await get_tournament(tournament_id, psql_db)
+    is_environment_tournament = tournament and tournament.tournament_type == TournamentType.ENVIRONMENT
+
     if isinstance(round_structure, GroupRound):
+        # For environment tournaments, collect all participants from all groups
+        if is_environment_tournament:
+            logger.info("Processing ENVIRONMENT tournament - assigning all participants + boss to single task")
+            all_participants = []
+            for group in round_structure.groups:
+                all_participants.extend(group.member_ids)
+
+            if EMISSION_BURN_HOTKEY not in all_participants:
+                all_participants.append(EMISSION_BURN_HOTKEY)
+                logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament task")
+            group_id = f"{round_id}_group_all"
+        else:
+            all_participants = None
+            group_id = None
+        
         for i, group in enumerate(round_structure.groups):
-            group_id = f"{round_id}_group_{i + 1:03d}"
+            if is_environment_tournament:
+                current_group_id = f"{round_id}_group_all"
+                participants_to_assign = all_participants
+            else:
+                current_group_id = f"{round_id}_group_{i + 1:03d}"
+                participants_to_assign = group.member_ids
 
             group_tasks = await get_tournament_tasks(round_id, psql_db)
-            group_tasks = [task for task in group_tasks if task.group_id == group_id]
+            group_tasks = [task for task in group_tasks if task.group_id == current_group_id]
 
             for task in group_tasks:
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
 
-                for hotkey in group.member_ids:
+                for hotkey in participants_to_assign:
                     if hotkey in already_assigned_hotkeys:
                         logger.info(f"Node {hotkey} already assigned to task {task.task_id}")
                         continue
@@ -201,6 +238,10 @@ async def assign_nodes_to_tournament_tasks(
                         logger.info(
                             f"Assigned {hotkey} to group task {task.task_id} with expected_repo_name: {expected_repo_name}"
                         )
+            
+            if is_environment_tournament:
+                logger.info(f"Finished assigning {len(all_participants)} participants to environment tournament task(s)")
+                break
     else:
         logger.info("Processing KNOCKOUT round assignment")
         round_tasks = await get_tournament_tasks(round_id, psql_db)
@@ -251,6 +292,10 @@ async def create_next_round(
     tournament: TournamentData, completed_round: TournamentRoundData, winners: list[str], config, psql_db: PSQLDB
 ):
     """Create the next round of the tournament."""
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        logger.info(f"Environment tournament {tournament.tournament_id} only has group stage, no next round to create")
+        return
+    
     next_round_number = completed_round.round_number + 1
     next_round_id = generate_round_id(tournament.tournament_id, next_round_number)
 
@@ -480,9 +525,14 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
     if tournament.tournament_type == TournamentType.TEXT:
         participation_fee_rao = t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO
         fee_description = "0.2 TAO"
-    else:  # IMAGE
+    elif tournament.tournament_type == TournamentType.IMAGE:
         participation_fee_rao = t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO
         fee_description = "0.15 TAO"
+    elif tournament.tournament_type == TournamentType.ENVIRONMENT:
+        participation_fee_rao = t_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO
+        fee_description = "0.2 TAO"
+    else:
+        raise ValueError(f"Unknown tournament type: {tournament.tournament_type}")
 
     logger.info(f"Tournament type: {tournament.tournament_type.value}, participation fee: {fee_description}")
 
@@ -982,8 +1032,8 @@ async def process_tournament_scheduling(config: Config):
 
     while True:
         try:
-            # Check both tournament types
-            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE]:
+            # Check all tournament types
+            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT]:
                 await check_and_start_tournament(tournament_type, config.psql_db, config)
 
         except Exception as e:
