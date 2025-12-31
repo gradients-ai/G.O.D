@@ -1,13 +1,9 @@
 import json
-
 import pandas as pd
-
 import core.constants as cst
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
-import json
-from pathlib import Path
 
 def _dpo_format_prompt(row, format_str):
     result = format_str
@@ -121,19 +117,3 @@ def adapt_columns_for_environment_dataset(dataset_path: str, dataset_type: Envir
 
     print(f"Transformed dataset to adapt to axolotl's `{cst.GRPO_DEFAULT_FIELD_PROMPT}` expected column name.")
 
-
-def write_environment_task_proxy_dataset(
-    out_path: str,
-    dataset_size: int = 1000,
-    prompt_text: str = "Interact with this environment.",
-    prompt_field: str = "prompt",
-):
-    out_path = Path(out_path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    records = [{prompt_field: prompt_text} for _ in range(dataset_size)]
-
-    with out_path.open("w", encoding="utf-8") as f:
-        json.dump(records, f, indent=2, ensure_ascii=False)
-
-    print(f"Wrote {len(records)} records to {out_path} with field '{prompt_field}'")

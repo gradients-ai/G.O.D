@@ -454,6 +454,8 @@ async def run_evaluation_docker_environment(
 
         containers = {}
         all_results = []
+        vllm_log_task = None
+        agent_log_task = None
 
         # Start VLLM server for model inference
         try:
@@ -461,7 +463,7 @@ async def run_evaluation_docker_environment(
             networks = client.networks.list(names=["agent_eval_net"])
             if not networks: client.networks.create("agent_eval_net", driver="bridge")
             logger.info(f"Starting vLLM: {original_model} w/ lora {repo}")
-            vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --port 8000 --trust-remote-code"
+            vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --max-lora-rank 256 --port 8000 --trust-remote-code"
 
             vllm_container: Container = await asyncio.to_thread(
                 client.containers.run,
@@ -475,6 +477,8 @@ async def run_evaluation_docker_environment(
                 ports={'8000/tcp': 8000},
             )
             containers['vllm'] = vllm_container
+            vllm_log_context = {**get_all_context_tags(), "container_type": "vllm", "repo": repo}
+            vllm_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, vllm_container, None, vllm_log_context))
 
             logger.info("Starting AgentGym Server...")
             environment_container: Container = await asyncio.to_thread(
@@ -485,9 +489,25 @@ async def run_evaluation_docker_environment(
                 ports={'8000/tcp': 8001} 
             )
             containers['agent'] = environment_container
+            agent_log_context = {**get_all_context_tags(), "container_type": "agentgym", "repo": repo}
+            agent_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, environment_container, None, agent_log_context))
 
             logger.info("Waiting for vLLM health check...")
+            max_wait_time = 300  # 5 minutes timeout
+            start_time = time.time()
             while True:
+                try:
+                    vllm_container.reload()
+                    if vllm_container.status == 'exited':
+                        exit_code = vllm_container.attrs['State']['ExitCode']
+                        raise Exception(f"vLLM container exited with code {exit_code}. Check logs for details.")
+                except Exception as container_error:
+                    if "exited" in str(container_error).lower():
+                        raise container_error
+                
+                if time.time() - start_time > max_wait_time:
+                    raise TimeoutError(f"vLLM health check timeout after {max_wait_time} seconds")
+                
                 try:
                     if requests.get("http://localhost:8000/v1/models", timeout=2).status_code == 200:
                         break
@@ -504,7 +524,7 @@ async def run_evaluation_docker_environment(
             total_time = 0.0
 
             for i, task_id in enumerate(eval_list):
-                logger.info(f"[{i+1}/{NUM_EVALS}] Task ID: {task_id}...", end="", flush=True)
+                logger.info(f"[{i+1}/{NUM_EVALS}] Task ID: {task_id}...")
 
                 payload = {
                     "model": "trained_lora",
@@ -550,6 +570,14 @@ async def run_evaluation_docker_environment(
             evaluation_results[repo] = str(e)
             
         finally:
+            try:
+                if vllm_log_task is not None:
+                    vllm_log_task.cancel()
+                if agent_log_task is not None:
+                    agent_log_task.cancel()
+            except:
+                pass
+            
             for c in containers.values():
                 try: c.remove(force=True)
                 except: pass

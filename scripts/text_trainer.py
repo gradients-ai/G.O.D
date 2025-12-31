@@ -27,7 +27,6 @@ from core.config.config_handler import update_flash_attention
 from core.dataset_utils import adapt_columns_for_dpo_dataset
 from core.dataset_utils import adapt_columns_for_grpo_dataset
 from core.dataset_utils import adapt_columns_for_environment_dataset
-from core.dataset_utils import write_environment_task_proxy_dataset
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -212,13 +211,8 @@ async def main():
     elif args.task_type == TaskType.GRPOTASK.value:
         adapt_columns_for_grpo_dataset(dataset_path, dataset_type)
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
-        write_environment_task_proxy_dataset(
-            out_path=dataset_path,
-            dataset_size=1000,
-            prompt_text="Interact with this environment.",
-            prompt_field="prompt",
-        )
-        adapt_columns_for_environment_dataset(dataset_path, dataset_type)
+        #adapt_columns_for_environment_dataset(dataset_path, dataset_type) # NOTE: Remove to test RO cache
+        pass
     
     dataset_path = copy_dataset_to_axolotl_directories(dataset_path)
 

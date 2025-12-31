@@ -22,6 +22,7 @@ from core.utils import download_s3_file
 from validator.core.models import AnyTextTypeRawTask
 from validator.core.models import ChatRawTask
 from validator.core.models import DpoRawTask
+from validator.core.models import EnvRawTask
 from validator.core.models import GrpoRawTask
 from validator.core.models import InstructTextRawTask
 from validator.db.sql.tasks import update_task
@@ -373,6 +374,8 @@ def pick_columns_to_sample(task: AnyTextTypeRawTask, dataset: Dataset = None) ->
             columns_to_sample.append(cst.STANDARD_GRPO_EXTRA_COLUMN)
     elif isinstance(task, ChatRawTask):
         columns_to_sample = [task.chat_column if task.chat_column else cst.STANDARD_CHAT_MESSAGES_COLUMN]
+    elif isinstance(task, EnvRawTask):
+        raise ValueError("Environment tasks do not use datasets")
     else:
         raise ValueError(f"Unsupported task type: {task.task_type}")
     return columns_to_sample
@@ -460,6 +463,13 @@ def standardize_grpo_column_names(dataset: Dataset, task: GrpoRawTask) -> Datase
 
 # TODO changes needed here?
 async def prepare_text_task(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=None) -> tuple[str, str, str]:
+    # Environment tasks: trainer ignores the dataset and generates its own proxy dataset
+    # Just return dummy URLs to satisfy the interface - they won't be used
+    if isinstance(task, EnvRawTask):
+        logger.info("Environment task detected - returning dummy dataset URLs (trainer will generate proxy dataset)")
+        dummy_url = "env_task_dummy_dataset"
+        return (dummy_url, dummy_url)
+    
     train_dataset_name = task.training_data if task.training_data else task.ds
 
     if not task.test_data:

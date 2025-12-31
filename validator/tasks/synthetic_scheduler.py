@@ -203,6 +203,10 @@ def _get_training_hours_from_num_rows(num_rows: int) -> tuple[int, int]:
         raise ValueError(f"No training hours range found for {num_rows} rows")
     return random.randint(min_hours, max_hours)
 
+def _get_training_hours_for_environment_task() -> int:
+    """ For now get random number of hours between 4 and 6 """
+    return random.randint(4, 6)
+
 
 async def get_dataset(
     datasets_generator: AsyncGenerator[Dataset, None],
@@ -414,22 +418,23 @@ async def create_synthetic_env_task(
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
 ) -> RawTask:
-    model_id = await anext(models)
+    # hardoced model for now. the model and ds generators kept for signature compatibility
+    model_id = "Qwen/Qwen2.5-3B"
 
-    dataset = await get_dataset(datasets, task_type=TaskType.ENVIRONMENTTASK, keypair=config.keypair)
+    # Environment tasks don't use the actual dataset - trainer generates a dummy one
+    # Use a placeholder to satisfy DB constraint
+    dummy_dataset = "env_task_dummy_dataset"
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)
-    columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
+    number_of_hours = _get_training_hours_for_environment_task()
 
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     selected_environment = "alfworld"
 
-    yarn_factor = maybe_get_yarn_factor()
     task = EnvRawTask(
         model_id=model_id,
-        ds=dataset.dataset_id,
+        ds=dummy_dataset,
         status=TaskStatus.PENDING,
         environment_name=selected_environment,
         is_organic=False,
@@ -437,9 +442,9 @@ async def create_synthetic_env_task(
         termination_at=end_timestamp,
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
-        yarn_factor=yarn_factor,
+        yarn_factor=None,
     )
-    logger.info(f"New Environment task created with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"New Environment task created")
 
     task = await add_task(task, config.psql_db)
 
