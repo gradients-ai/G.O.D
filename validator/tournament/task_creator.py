@@ -103,7 +103,7 @@ async def _create_environment_group_tasks(
     logger.info("Creating single environment task for all participants")
     task = await create_synthetic_env_task(config, models, instruct_datasets)
 
-    group_id = f"{round_id}_group_all"
+    group_id = f"{round_id}_group_001"
     await _create_and_register_tournament_task(
         task, tournament_id, round_id, config, group_id=group_id
     )

@@ -203,14 +203,14 @@ async def assign_nodes_to_tournament_tasks(
             if EMISSION_BURN_HOTKEY not in all_participants:
                 all_participants.append(EMISSION_BURN_HOTKEY)
                 logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament task")
-            group_id = f"{round_id}_group_all"
+            group_id = f"{round_id}_group_001"
         else:
             all_participants = None
             group_id = None
         
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
-                current_group_id = f"{round_id}_group_all"
+                current_group_id = f"{round_id}_group_001"
                 participants_to_assign = all_participants
             else:
                 current_group_id = f"{round_id}_group_{i + 1:03d}"
