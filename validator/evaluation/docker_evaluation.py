@@ -412,6 +412,9 @@ async def run_evaluation_docker_environment(
     This approach launches one container per repo and merges results.
     """
 
+    VLLM_HOST_PORT = 53421
+    AGENT_HOST_PORT = 53422
+
     dataset_type_str = dataset_type.model_dump_json()
     dataset_filename = os.path.basename(dataset)
     dataset_dir = os.path.dirname(os.path.abspath(dataset))
@@ -457,6 +460,12 @@ async def run_evaluation_docker_environment(
         vllm_log_task = None
         agent_log_task = None
 
+        # Pre-cleanup: Ensure names are free to prevent "Conflict" errors
+        try: client.containers.get("vllm-server").remove(force=True)
+        except: pass
+        try: client.containers.get("agent-server").remove(force=True)
+        except: pass
+
         # Start VLLM server for model inference
         try:
             # Docker Network Setup
@@ -468,13 +477,14 @@ async def run_evaluation_docker_environment(
             vllm_container: Container = await asyncio.to_thread(
                 client.containers.run,
                 "vllm/vllm-openai:latest",
+                name="vllm-server"
                 command=vllm_command,
                 volumes=volume_bindings,
                 runtime="nvidia",
                 device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
                 detach=True,
                 network="agent_eval_net",
-                ports={'8000/tcp': 8000},
+                ports={'8000/tcp': VLLM_HOST_PORT},
             )
             containers['vllm'] = vllm_container
             vllm_log_context = {**get_all_context_tags(), "container_type": "vllm", "repo": repo}
@@ -484,9 +494,10 @@ async def run_evaluation_docker_environment(
             environment_container: Container = await asyncio.to_thread(
                 client.containers.run,
                 environment_server_image,
+                name="agent-server",
                 detach=True,
                 network="agent_eval_net",
-                ports={'8000/tcp': 8001} 
+                ports={'8000/tcp': AGENT_HOST_PORT} 
             )
             containers['agent'] = environment_container
             agent_log_context = {**get_all_context_tags(), "container_type": "agentgym", "repo": repo}
@@ -509,7 +520,7 @@ async def run_evaluation_docker_environment(
                     raise TimeoutError(f"vLLM health check timeout after {max_wait_time} seconds")
                 
                 try:
-                    if requests.get("http://localhost:8000/v1/models", timeout=2).status_code == 200:
+                    if requests.get(f"http://localhost:{VLLM_HOST_PORT}/v1/models", timeout=2).status_code == 200:
                         break
                 except:
                     time.sleep(5)
@@ -536,7 +547,7 @@ async def run_evaluation_docker_environment(
 
                 try:
                     start_ts = time.time()
-                    response = requests.post("http://localhost:8001/evaluate", json=payload, timeout=2500)
+                    response = requests.post(f"http://localhost:{AGENT_HOST_PORT}/evaluate", json=payload, timeout=2500)
                     result = response.json()
 
                     latency = result.get('time_taken', time.time() - start_ts)
