@@ -363,7 +363,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     number_of_hours = random.randint(cst.MIN_IMAGE_COMPETITION_HOURS, cst.MAX_IMAGE_COMPETITION_HOURS)
     num_prompts = random.randint(cst.MIN_IMAGE_SYNTH_PAIRS, cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
-    is_qwen_model = model_info.model_type == ImageModelType.QWEN
+    is_qwen_model = model_info.model_type == ImageModelType.QWEN_IMAGE
     if is_qwen_model:
         number_of_hours += 1
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)

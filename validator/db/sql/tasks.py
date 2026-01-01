@@ -237,7 +237,8 @@ async def get_nodes_assigned_to_task(task_id: str, psql_db: PSQLDB) -> list[Node
             task_id,
             NETUID,
         )
-        return [Node(**dict(row)) for row in rows]
+        # Filter out 'trust' field as it was removed from Node model
+        return [Node(**{k: v for k, v in dict(row).items() if k != cst.TRUST}) for row in rows]
 
 
 async def get_tasks_with_status(
@@ -700,7 +701,8 @@ async def get_miners_for_task(task_id: UUID, psql_db: PSQLDB) -> list[Node]:
             WHERE task_nodes.task_id = $1
         """
         rows = await connection.fetch(query, task_id)
-        return [Node(**dict(row)) for row in rows]
+        # Filter out 'trust' field as it was removed from Node model
+        return [Node(**{k: v for k, v in dict(row).items() if k != cst.TRUST}) for row in rows]
 
 
 async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None = None) -> AnyTypeTask:

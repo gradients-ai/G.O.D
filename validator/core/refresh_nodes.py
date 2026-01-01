@@ -75,3 +75,6 @@ async def refresh_nodes_periodically(config: Config) -> None:
         except asyncio.TimeoutError:
             logger.error("Node refresh timed out after 5 minutes... :( Please look into this!!")
             await asyncio.sleep(60)
+        except Exception as e:
+            logger.error(f"Error refreshing nodes: {e}", exc_info=True)
+            await asyncio.sleep(60)  # Wait 1 minute before retrying on error
