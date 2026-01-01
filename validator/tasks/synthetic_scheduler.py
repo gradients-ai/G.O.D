@@ -24,6 +24,7 @@ from validator.core.config import Config
 from validator.core.models import Dataset
 from validator.core.models import DpoRawTask
 from validator.core.models import GrpoRawTask
+from validator.core.models import EnvRawTask
 from validator.core.models import InstructTextRawTask
 from validator.core.models import RawTask
 from validator.core.models import RewardFunction
@@ -201,6 +202,10 @@ def _get_training_hours_from_num_rows(num_rows: int) -> tuple[int, int]:
     if min_hours == 0 and max_hours == 0:
         raise ValueError(f"No training hours range found for {num_rows} rows")
     return random.randint(min_hours, max_hours)
+
+def _get_training_hours_for_environment_task() -> int:
+    """ For now get random number of hours between 4 and 6 """
+    return random.randint(4, 6)
 
 
 async def get_dataset(
@@ -406,6 +411,46 @@ async def create_synthetic_grpo_task(
     return task
 
 
+# NOTE: only alfworld env for now
+@retry_with_backoff
+async def create_synthetic_env_task(
+    config: Config,
+    models: AsyncGenerator[str, None],
+    datasets: AsyncGenerator[Dataset, None],
+) -> RawTask:
+    # hardoced model for now. the model and ds generators kept for signature compatibility
+    model_id = "Qwen/Qwen2.5-3B-Instruct"
+
+    # Environment tasks don't use the actual dataset - trainer generates a dummy one
+    # Use a placeholder to satisfy DB constraint
+    dummy_dataset = "env_task_dummy_dataset"
+
+    number_of_hours = _get_training_hours_for_environment_task()
+
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=number_of_hours)
+
+    selected_environment = "alfworld"
+
+    task = EnvRawTask(
+        model_id=model_id,
+        ds=dummy_dataset,
+        status=TaskStatus.PENDING,
+        environment_name=selected_environment,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=number_of_hours,
+        account_id=vcst.NULL_ACCOUNT_ID,
+        yarn_factor=None,
+    )
+    logger.info(f"New Environment task created")
+
+    task = await add_task(task, config.psql_db)
+
+    return task
+
+
 @retry_with_backoff
 async def create_synthetic_affine_grpo_task(
     config: Config,
@@ -484,6 +529,7 @@ async def create_synthetic_affine_grpo_task(
 
     except Exception as e:
         logger.error(f"Failed to create affine GRPO task: {e}")
+        
 
 
 @retry_with_backoff

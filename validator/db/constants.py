@@ -19,8 +19,10 @@ OFFER_RESPONSES_TABLE = "offer_responses"
 LATEST_SCORES_URL_TABLE = "latest_scores_url"
 IMAGE_TEXT_PAIRS_TABLE = "image_text_pairs"
 GRPO_TASKS_TABLE = "grpo_tasks"
+ENV_TASKS_TABLE = "env_tasks"
 REWARD_FUNCTIONS_TABLE = "reward_functions"
 GRPO_TASK_FUNCTIONS_TABLE = "grpo_task_functions"
+
 
 # Tournament Tables
 TOURNAMENTS_TABLE = "tournaments"
@@ -127,6 +129,9 @@ IS_MANUAL = "is_manual"
 
 # GRPO Task Functions Table Columns
 REWARD_WEIGHT = "reward_weight"
+
+# Environment Task Functions Table Columns
+ENVIRONMENT_NAME = "environment_name"
 
 # Submissions Table Columns
 SUBMISSION_ID = "submission_id"

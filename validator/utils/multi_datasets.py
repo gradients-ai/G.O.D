@@ -65,6 +65,8 @@ async def get_dataset_column_mapping(dataset_id: str, task_type: TaskType, keypa
         return column_mapping
     elif task_type == TaskType.GRPOTASK:
         return {"prompt": response.get("field_prompt", "prompt")}
+    elif task_type == TaskType.ENVIRONMENTTASK:
+        return {"prompt": "prompt"}
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 

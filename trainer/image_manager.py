@@ -19,6 +19,7 @@ from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import TaskType
 from trainer import constants as cst
 from trainer.tasks import complete_task
@@ -97,6 +98,32 @@ def delete_image_and_cleanup(tag: str):
         logger.info("Cleaned up dangling images and build cache.")
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
+
+
+async def wait_for_env_container_ip(environment_server_container) -> str:
+    ip_address = None
+    for _ in range(10):
+        environment_server_container.reload()
+        settings = environment_server_container.attrs.get('NetworkSettings', {})
+
+        # Try the direct field first
+        ip_address = settings.get('IPAddress')
+
+        # If empty, look inside the Networks dictionary
+        if not ip_address:
+            networks = settings.get('Networks', {})
+            # This safely checks 'bridge' or any first available network
+            for net_name in networks:
+                ip_address = networks[net_name].get('IPAddress')
+                if ip_address: break
+
+        if ip_address: break
+        await asyncio.sleep(0.5)
+
+    if not ip_address:
+        raise RuntimeError("Environment server started but could not retrieve internal IP.")
+
+    return ip_address
 
 
 async def run_trainer_container_image(
@@ -187,17 +214,20 @@ async def run_trainer_container_text(
     tag: str,
     model: str,
     dataset: str,
-    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType,
+    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
     task_type: TaskType,
     file_format: FileFormat,
     expected_repo_name: str,
     hours_to_complete: float,
     log_labels: dict[str, str] | None = None,
     gpu_ids: list[int] = [0],
+    env_server_urls: str | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
     environment = build_wandb_env(task_id, hotkey)
+    if env_server_urls:
+        environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
 
     command: list[str] = [
         "--task-id",
@@ -236,7 +266,7 @@ async def run_trainer_container_text(
                 command=command,
                 volumes={
                     cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
+                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"}, # NOTE: may require rw fixing
                 },
                 remove=False,
                 shm_size=shm_size,
@@ -351,6 +381,26 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
+async def run_environment_server_container(environment_name: str, log_labels: dict) -> Container:
+    client = docker.from_env()
+    container_name = f"environment-server-{uuid.uuid4().hex[:8]}"
+    logger.info(f"Starting env server container: {container_name}", extra=log_labels)
+
+    if environment_name == "alfworld":
+        # Run the alfworld server
+        container = await asyncio.to_thread(
+            client.containers.run,
+            image="affinefoundation/agentgym:alfworld",
+            name=container_name,
+            detach=True,
+            labels=log_labels,
+            network_mode="bridge",
+        )
+        return container
+    else:
+        return None
+
+
 async def upload_repo_to_hf(
     task_id: str,
     hotkey: str,
@@ -446,6 +496,8 @@ def get_task_type(request: TrainerProxyRequest) -> TaskType:
             return TaskType.CHATTASK
         elif isinstance(training_data.dataset_type, GrpoDatasetType):
             return TaskType.GRPOTASK
+        elif isinstance(training_data.dataset_type, EnvironmentDatasetType):
+            return TaskType.ENVIRONMENTTASK
         else:
             raise ValueError(f"Unsupported dataset_type for text task: {type(training_data.dataset_type)}")
 
@@ -473,6 +525,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         training_data = task.training_data
         success = False
         container = None
+        env_server_containers = []
         tag = None
         timeout_seconds = int(training_data.hours_to_complete * 3600)
         task_type = get_task_type(task)
@@ -535,6 +588,21 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
         await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
 
+
+        env_urls = []
+        env_server_url_str = None
+        if task_type == TaskType.ENVIRONMENTTASK:
+            logger.info("Running Environment Server Containers", extra=log_labels)
+            await log_task(training_data.task_id, task.hotkey, "Starting Environment Servers...")
+            for gpu in task.gpu_ids:
+                environment_server_container = await run_environment_server_container(task.training_data.dataset_type.environment_name, log_labels)
+                env_server_containers.append(environment_server_container)
+                ip_address = await wait_for_env_container_ip(environment_server_container)
+                env_urls.append(f"http://{ip_address}:8000")
+            env_server_url_str = ",".join(env_urls)
+            await log_task(training_data.task_id, task.hotkey, f"Environment servers ready.")
+
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
@@ -567,6 +635,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     hours_to_complete=training_data.hours_to_complete,
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
+                    env_server_urls=env_server_url_str,
                 ),
                 timeout=60,
             )
@@ -614,6 +683,14 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
             if cancel_log_message:
                 await log_task(training_data.task_id, task.hotkey, cancel_log_message)
+
+            # Clean up all environment servers
+            for srv in env_server_containers:
+                try:
+                    srv.stop()
+                    srv.remove(force=True)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup server {srv.name}: {e}")
 
             if container and isinstance(container, Container):
                 try:

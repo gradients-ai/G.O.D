@@ -17,12 +17,14 @@ from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import TaskType
 from core.utils import download_s3_file
 from validator.core.models import ChatTaskWithHotkeyDetails
 from validator.core.models import DpoTaskWithHotkeyDetails
 from validator.core.models import GrpoTaskWithHotkeyDetails
 from validator.core.models import ImageTaskWithHotkeyDetails
+from validator.core.models import EnvTaskWithHotkeyDetails
 from validator.core.models import InstructTextTaskWithHotkeyDetails
 from validator.evaluation.docker_evaluation import run_evaluation_docker_image
 from validator.evaluation.docker_evaluation import run_evaluation_docker_text
@@ -63,6 +65,8 @@ async def fetch_task_details(task_id: str):
             return DpoTaskWithHotkeyDetails(**data)
         elif task_type == TaskType.GRPOTASK.value:
             return GrpoTaskWithHotkeyDetails(**data)
+        elif task_type == TaskType.ENVIRONMENTTASK.value:
+            return EnvTaskWithHotkeyDetails(**data)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
 
@@ -156,6 +160,8 @@ async def run_evaluation_from_task_id(
         )
     elif task_type == TaskType.GRPOTASK:
         dataset_type = GrpoDatasetType(field_prompt=task_details.field_prompt, reward_functions=task_details.reward_functions)
+    elif task_type == TaskType.ENVIRONMENTTASK:
+        dataset_type = EnvironmentDatasetType(environment_name=task_details.environment_name)
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 

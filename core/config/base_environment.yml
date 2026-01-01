@@ -1,0 +1,80 @@
+base_model: Qwen/Qwen2.5-3B-Instruct
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+load_in_8bit: false
+load_in_4bit: false
+strict: false
+
+chat_template: llama3
+datasets:
+dataset_prepared_path:
+val_set_size: 0.0
+output_dir: miner_id_24
+
+rl: grpo
+vllm:
+  tensor_parallel_size: 1
+  gpu_memory_utilization: 0.15
+  max_model_len: 24000
+  enable_prefix_caching: False
+trl:
+  beta: 0.01
+  max_completion_length: 256
+  temperature: 0.7
+  use_vllm: true
+  vllm_mode: colocate
+  vllm_enable_sleep_mode: false
+  num_generations: 4
+  rollout_func:
+
+eval_strategy: "no"
+sequence_len: 24000
+sample_packing: false
+pad_to_sequence_len: true
+trust_remote_code: true
+
+adapter: lora
+lora_model_dir:
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.0
+lora_target_linear: true
+lora_fan_in_fan_out:
+
+gradient_accumulation_steps: 1
+micro_batch_size: 4
+optimizer: adamw_bnb_8bit
+lr_scheduler: cosine
+learning_rate: 5e-6
+max_grad_norm: 1.0
+
+train_on_inputs: false
+group_by_length: false
+bf16: auto
+fp16:
+tf32: false
+
+gradient_checkpointing: false
+early_stopping_patience:
+resume_from_checkpoint:
+local_rank:
+logging_steps: 1
+xformers_attention:
+flash_attention: true
+s2_attention:
+
+use_wandb: true
+wandb_project: Gradients-Rollout
+wandb_entity:
+wandb_mode:
+wandb_run: Gradients-Rollout
+wandb_runid: default
+
+eval_table_size:
+max_steps: 1000
+debug:
+deepspeed:
+weight_decay: 0.0
+fsdp:
+fsdp_config:

@@ -20,6 +20,7 @@ from validator.tasks.synthetic_scheduler import _get_image_models
 from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
 from validator.tasks.synthetic_scheduler import _get_text_models
 from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
+from validator.tasks.synthetic_scheduler import create_synthetic_env_task
 from validator.tasks.synthetic_scheduler import create_synthetic_grpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
@@ -172,6 +173,8 @@ async def _create_task_by_type(
         return await create_synthetic_dpo_task(config, models, dpo_datasets)
     elif task_type == TaskType.GRPOTASK:
         return await create_synthetic_grpo_task(config, models, instruct_datasets)
+    elif task_type == TaskType.ENVIRONMENTTASK:
+        return await create_synthetic_env_task(config, models, instruct_datasets)
     else:
         # Default to instruct text task
         return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
@@ -413,7 +416,7 @@ async def _create_single_new_text_task(
 ) -> RawTask | None:
     """Create a single new synthetic text task of a specific type."""
     try:
-        if task_type not in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]:
+        if task_type not in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
             logger.error(f"Unknown task type {task_type} for boss round text task")
             return None
         

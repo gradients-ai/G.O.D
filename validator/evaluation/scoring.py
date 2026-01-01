@@ -15,6 +15,7 @@ from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
@@ -38,7 +39,6 @@ from validator.utils.minio import async_minio_client
 
 
 logger = get_logger(__name__)
-
 
 def calculate_miner_ranking_and_scores(
     miner_results: list[MinerResultsText | MinerResultsImage],
@@ -75,6 +75,14 @@ def calculate_miner_ranking_and_scores(
         else:
             logger.info(f"Processing {valid_results[0].task_type} - using test_loss for ranking")
 
+    is_env_task = False
+    if valid_results and isinstance(valid_results[0], MinerResultsText):
+        is_env_task = valid_results[0].task_type == TaskType.ENVIRONMENTTASK
+        if is_env_task:
+            logger.info("Processing Env task - higher score is better")
+        else:
+            logger.info(f"Processing {valid_results[0].task_type} - using test_loss for ranking")
+
     logger.info("Using test loss for ranking")
     ranked_results = []
     for result in valid_results:
@@ -86,6 +94,10 @@ def calculate_miner_ranking_and_scores(
         # For GRPO, sort in reverse order (higher value is better)
         ranked_results.sort(key=lambda x: float("-inf") if math.isnan(x[1]) else -x[1])
         ranking_type = "GRPO score (bigger is better)"
+    elif is_env_task:
+        # For Env taks, sort in reverse order (higher value is better)
+        ranked_results.sort(key=lambda x: float("-inf") if math.isnan(x[1]) else -x[1])
+        ranking_type = "Environment score (bigger is better)"
     else:
         # For other tasks, sort normally (lower loss is better)
         ranked_results.sort(key=lambda x: float("inf") if math.isnan(x[1]) else x[1])
@@ -185,6 +197,10 @@ def _get_dataset_type(task: AnyTypeRawTask) -> TextDatasetType | None:
             reward_functions=task.reward_functions,
             extra_column=task.extra_column,
         )
+    elif task.task_type == TaskType.ENVIRONMENTTASK:
+        return EnvironmentDatasetType(
+            environment_name=task.environment_name
+        )
     elif task.task_type == TaskType.CHATTASK:
         return ChatTemplateDatasetType(
             chat_template=task.chat_template,
@@ -201,7 +217,7 @@ def _get_dataset_type(task: AnyTypeRawTask) -> TextDatasetType | None:
 def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskType) -> MinerResults:
     """Create a result object for failed miner submissions with initial score of 0.0.
     The score may later be adjusted to a penalty if valid submissions exist."""
-    if task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK]:
+    if task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
         return MinerResultsText(
             hotkey=hotkey,
             test_loss=np.nan,
@@ -249,7 +265,7 @@ async def _evaluate_submissions(
     if len(unique_repos) != len(submission_repos):
         logger.warning(f"Found duplicate repos. Deduplicating {len(submission_repos)} repos to {len(unique_repos)} unique repos")
 
-    if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK]:
+    if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
         results: dict[str, EvaluationResultText | Exception] = {}
         repos_to_evaluate = []
         for repo in unique_repos:
@@ -262,7 +278,8 @@ async def _evaluate_submissions(
         if not repos_to_evaluate:
             return results
 
-        assert task.test_data is not None, "Test data shouldn't be none for text tasks"
+        if task.task_type != TaskType.ENVIRONMENTTASK:
+            assert task.test_data is not None, "Test data shouldn't be none for text tasks"
 
         evaluation_params = {
             "file_format": FileFormat.JSON,
@@ -273,13 +290,15 @@ async def _evaluate_submissions(
         }
 
         logger.info("Starting test evaluation")
-        test_data_filepath = await download_s3_file(task.test_data)
-        test_results = await run_evaluation_docker_text(dataset=test_data_filepath, **evaluation_params)
-
-        try:
-            os.remove(test_data_filepath)
-        except Exception as e:
-            logger.warning(f"Failed to remove test data file {test_data_filepath}: {e}")
+        if task.task_type != TaskType.ENVIRONMENTTASK:
+            test_data_filepath = await download_s3_file(task.test_data)
+            test_results = await run_evaluation_docker_text(dataset=test_data_filepath, **evaluation_params)
+            try:
+                os.remove(test_data_filepath)
+            except Exception as e:
+                logger.warning(f"Failed to remove test data file {test_data_filepath}: {e}")
+        else:
+            test_results = await run_evaluation_docker_text(dataset="proxy", **evaluation_params)
 
         test_eval_results = test_results.results
         task.model_params_count = test_results.base_model_params_count
@@ -532,7 +551,7 @@ async def process_miners_pool(
                             )
                         )
                         continue
-                    elif task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK]:
+                    elif task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
                         test_result = eval_result
                     elif task.task_type == TaskType.IMAGETASK:
                         test_result = eval_result
@@ -548,7 +567,7 @@ async def process_miners_pool(
                         updated_on=datetime.now(),
                     )
 
-                if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK]:
+                if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
                     results.append(
                         MinerResultsText(
                             hotkey=miner.hotkey,
@@ -637,6 +656,7 @@ async def evaluate_and_score(task: AnyTypeRawTask, gpu_ids: list[int], config: C
             TaskType.GRPOTASK,
             TaskType.CHATTASK,
             TaskType.IMAGETASK,
+            TaskType.ENVIRONMENTTASK
         ]:
             files_to_delete = [task.training_data, task.test_data]
         else:

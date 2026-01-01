@@ -103,6 +103,10 @@ class GrpoDatasetType(BaseModel):
     extra_column: str | None = None
 
 
+class EnvironmentDatasetType(BaseModel):
+    environment_name: str | None = None
+
+
 class DpoDatasetType(BaseModel):
     field_prompt: str | None = None
     field_system: str | None = None
@@ -137,7 +141,7 @@ class Job(BaseModel):
     expected_repo_name: str | None = None
 
 
-TextDatasetType = InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType
+TextDatasetType = InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType
 
 
 class TextJob(Job):
@@ -182,6 +186,7 @@ class TaskType(str, Enum):
     DPOTASK = "DpoTask"
     GRPOTASK = "GrpoTask"
     CHATTASK = "ChatTask"
+    ENVIRONMENTTASK = "EnvTask"
 
     def __hash__(self):
         return hash(str(self))

@@ -7,6 +7,7 @@ from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 
 
 def get_checkpoints_output_path(task_id: str, repo_name: str) -> str:
@@ -52,6 +53,8 @@ def get_axolotl_base_config_path(dataset_type) -> str:
         return str(root_dir / "base.yml")
     elif isinstance(dataset_type, GrpoDatasetType):
         return str(root_dir / "base_grpo.yml")
+    elif isinstance(dataset_type, EnvironmentDatasetType):
+        return str(root_dir / "base_environment.yml")
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
 

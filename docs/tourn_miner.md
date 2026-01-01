@@ -183,7 +183,7 @@ Your training scripts accept these standardised CLI arguments:
 --model               # Base model to finetune
 --dataset             # S3 dataset URL
 --dataset-type        # JSON structure of dataset (columns, format)
---task-type           # "InstructTextTask", "DpoTask", or "GrpoTask"
+--task-type           # "InstructTextTask", "DpoTask", "ChatTask", "GrpoTask", or "EnvTask"
 --expected-repo-name  # Expected HuggingFace repository name for upload
 --hours-to-complete   # Time limit in hours for the job to finish
 ```

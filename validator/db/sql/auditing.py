@@ -15,6 +15,8 @@ from validator.core.models import AnyTypeTaskWithHotkeyDetails
 from validator.core.models import ChatTask
 from validator.core.models import ChatTaskWithHotkeyDetails
 from validator.core.models import DpoTask
+from validator.core.models import EnvTask
+from validator.core.models import EnvTaskWithHotkeyDetails
 from validator.core.models import DpoTaskWithHotkeyDetails
 from validator.core.models import GrpoTask
 from validator.core.models import GrpoTaskWithHotkeyDetails
@@ -180,6 +182,9 @@ async def get_recent_tasks(
                 task_data["field_prompt"] = task_data.pop("dpo_field_prompt")
                 task_data["file_format"] = task_data.pop("dpo_file_format")
                 task = DpoTask(**{k: v for k, v in task_data.items() if k in DpoTask.model_fields})
+            elif task_type == TaskType.ENVIRONMENTTASK.value:
+                task_data["environment_name"] = task_data.pop("environment_name")
+                task = EnvTask(**{k: v for k, v in task_data.items() if k in EnvTask.model_fields})
             elif task_type == TaskType.GRPOTASK.value:
                 task_data["field_prompt"] = task_data.pop("grpo_field_prompt")
                 task_data["file_format"] = task_data.pop("grpo_file_format")
@@ -306,6 +311,7 @@ async def _process_task_batch(
     dpo_task_ids = []
     grpo_task_ids = []
     chat_task_ids = []
+    env_task_ids = []
 
     for task_id, task_data in tasks_by_id.items():
         task_type = task_data.get(cst.TASK_TYPE)
@@ -317,6 +323,8 @@ async def _process_task_batch(
             dpo_task_ids.append(task_id)
         elif task_type == TaskType.GRPOTASK.value:
             grpo_task_ids.append(task_id)
+        elif task_type == TaskType.ENVIRONMENTTASK.value:
+            env_task_ids.append(task_id)
         elif task_type == TaskType.CHATTASK.value:
             chat_task_ids.append(task_id)
 
@@ -363,6 +371,17 @@ async def _process_task_batch(
         """
         rows = await connection.fetch(query, *dpo_task_ids)
         dpo_task_data = {str(row[cst.TASK_ID]): dict(row) for row in rows}
+
+    # Get all EnvTask specific data in one query
+    env_task_data = {}
+    if env_task_ids:
+        placeholders = ", ".join("$%d::uuid" % (i + 1) for i in range(len(env_task_ids)))
+        query = f"""
+            SELECT * FROM {cst.ENV_TASKS_TABLE}
+            WHERE {cst.TASK_ID} IN ({placeholders})
+        """
+        rows = await connection.fetch(query, *env_task_ids)
+        env_task_data = {str(row[cst.TASK_ID]): dict(row) for row in rows}
 
     # Get all GrpoTask specific data in one query
     grpo_task_data = {}
@@ -413,6 +432,8 @@ async def _process_task_batch(
             task_data.update(dpo_task_data[task_id])
         elif task_type == TaskType.GRPOTASK.value and task_id in grpo_task_data:
             task_data.update(grpo_task_data[task_id])
+        elif task_type == TaskType.ENVIRONMENTTASK.value and task_id in env_task_data:
+            task_data.update(env_task_data[task_id])
         elif task_type == TaskType.CHATTASK.value and task_id in chat_task_data:
             task_data.update(chat_task_data[task_id])
 
@@ -458,6 +479,11 @@ async def _process_task_batch(
             task = GrpoTask(**task_fields)
             task = hide_sensitive_data_till_finished(task)
             tasks_with_details.append(GrpoTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
+        elif task_type == TaskType.ENVIRONMENTTASK.value:
+            task_fields = {k: v for k, v in task_data.items() if k in EnvTask.model_fields}
+            task = EnvTask(**task_fields)
+            task = hide_sensitive_data_till_finished(task)
+            tasks_with_details.append(EnvTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
 
     return tasks_with_details
 
@@ -571,6 +597,8 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
         return DpoTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
     elif task.task_type == TaskType.GRPOTASK:
         return GrpoTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
+    elif task.task_type == TaskType.ENVIRONMENTTASK:
+        return EnvTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
     elif task.task_type == TaskType.CHATTASK:
         return ChatTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
 

@@ -21,6 +21,7 @@ from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import ImageTextPair
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import RewardFunction
 from core.models.utility_models import TaskType
 
@@ -158,6 +159,17 @@ class GrpoRawTask(RawTask):
             if reward_function.func_hash is None:
                 reward_function.func_hash = hashlib.sha256(reward_function.reward_func.encode()).hexdigest()
         return self
+    
+
+class EnvRawTask(RawTask):
+    """
+    Environment task data as stored in the database. It expand the RawTask with fields from the EnvTask table.
+    """
+
+    environment_name: str | None = None
+    task_type: TaskType = TaskType.ENVIRONMENTTASK
+    synthetic_data: str | None = None
+
 
 
 class InstructTextRawTask(RawTask):
@@ -230,6 +242,8 @@ class DpoTask(DpoRawTask):
 class GrpoTask(GrpoRawTask):
     trained_model_repository: str | None = None
 
+class EnvTask(EnvRawTask):
+    trained_model_repository: str | None = None
 
 class ChatTask(ChatRawTask):
     trained_model_repository: str | None = None
@@ -322,8 +336,8 @@ class MinerResultsText(MinerResults):
 
     @field_validator("task_type")
     def validate_task_type(cls, v):
-        if v not in {TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK}:
-            raise ValueError("Must be INSTRUCTTEXTTASK, CHATTASK, DPOTASK or GRPOTASK")
+        if v not in {TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK}:
+            raise ValueError("Must be INSTRUCTTEXTTASK, CHATTASK, DPOTASK, GRPOTASK or ENVIRONMENTTASK")
         return v
 
 
@@ -470,6 +484,9 @@ class DpoTaskWithHotkeyDetails(DpoTask):
 class GrpoTaskWithHotkeyDetails(GrpoTask):
     hotkey_details: list[HotkeyDetails]
 
+class EnvTaskWithHotkeyDetails(EnvTask):
+    hotkey_details: list[HotkeyDetails]
+
 
 class ChatTaskWithHotkeyDetails(ChatTask):
     hotkey_details: list[HotkeyDetails]
@@ -488,7 +505,7 @@ class Dataset(BaseModel):
 class EvaluationArgs(BaseModel):
     dataset: str
     original_model: str
-    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType
+    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType
     file_format: FileFormat
     repo: str
 
@@ -511,19 +528,22 @@ class EvaluationArgs(BaseModel):
                     return DpoDatasetType.model_validate(data)
                 elif "reward_functions" in data:
                     return GrpoDatasetType.model_validate(data)
+                elif "rollout_function" in data:
+                    return EnvironmentDatasetType.model_validate(data)
             except Exception as e:
                 raise ValueError(f"Failed to parse dataset type: {e}")
         return value
 
 
 # Type aliases for common task type groupings
-AnyTextTypeRawTask = InstructTextRawTask | DpoRawTask | GrpoRawTask | ChatRawTask
+AnyTextTypeRawTask = InstructTextRawTask | DpoRawTask | GrpoRawTask | ChatRawTask | EnvRawTask
 AnyTypeRawTask = AnyTextTypeRawTask | ImageRawTask
-AnyTypeTask = InstructTextTask | DpoTask | ImageTask | GrpoTask | ChatTask
+AnyTypeTask = InstructTextTask | DpoTask | ImageTask | GrpoTask | ChatTask | EnvTask
 AnyTypeTaskWithHotkeyDetails = (
     InstructTextTaskWithHotkeyDetails
     | ImageTaskWithHotkeyDetails
     | DpoTaskWithHotkeyDetails
     | GrpoTaskWithHotkeyDetails
     | ChatTaskWithHotkeyDetails
+    | EnvTaskWithHotkeyDetails
 )

@@ -21,6 +21,7 @@ from core.models.utility_models import TaskMinerResult
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from validator.core.models import AllNodeStats
 
 
@@ -62,6 +63,15 @@ class TrainRequestGrpo(TrainRequest):
         min_length=1,
     )
     dataset_type: GrpoDatasetType
+    file_format: FileFormat
+
+class TrainRequestEnvironment(TrainRequest):
+    dataset: str = Field(
+        ...,
+        description="Path to the dataset file or Hugging Face dataset name",
+        min_length=1,
+    )
+    dataset_type: EnvironmentDatasetType
     file_format: FileFormat
 
 
@@ -230,6 +240,26 @@ class NewTaskRequestChat(NewTaskRequest):
             "chat_content_field",
             "chat_user_reference",
             "chat_assistant_reference",
+        ]
+        for field in string_fields:
+            if field in values and isinstance(values[field], str):
+                values[field] = values[field].strip() or None
+        return values
+    
+class NewTaskRequestEnvironment(NewTaskRequest):
+    environment_name: str = Field(..., description="The name of the specific environment we are training for.", examples=["alfworld"])
+
+
+    ds_repo: str = Field(..., description="The repository for the dataset", examples=["Magpie-Align/Magpie-Pro-300K-Filtered"])
+    model_repo: str = Field(..., description="The repository for the model", examples=["Qwen/Qwen2.5-Coder-32B-Instruct"])
+
+    # Turn off protected namespace for model
+    model_config = ConfigDict(protected_namespaces=())
+
+    @model_validator(mode="before")
+    def convert_empty_strings(cls, values):
+        string_fields = [
+            "environment_name",
         ]
         for field in string_fields:
             if field in values and isinstance(values[field], str):
@@ -442,6 +472,15 @@ class GrpoTaskDetails(TaskDetails):
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
 
+class EnvironmentTaskDetails(TaskDetails):
+    task_type: TaskType = TaskType.ENVIRONMENTTASK
+    environment_name: str
+    base_model_repository: str
+    ds_repo: str
+
+    # Turn off protected namespace for model
+    model_config = ConfigDict(protected_namespaces=())
+
 
 class ImageTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.IMAGETASK
@@ -532,7 +571,7 @@ class AddRewardFunctionRequest(BaseModel):
 
 
 # Type alias for task details types
-AnyTypeTaskDetails = InstructTextTaskDetails | ChatTaskDetails| ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails
+AnyTypeTaskDetails = InstructTextTaskDetails | ChatTaskDetails| ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails | EnvironmentTaskDetails
 
 
 class DstackRunStatus(BaseModel):

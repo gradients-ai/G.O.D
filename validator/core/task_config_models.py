@@ -9,6 +9,7 @@ from validator.core.models import AnyTypeRawTask
 from validator.core.models import ChatRawTask
 from validator.core.models import DpoRawTask
 from validator.core.models import GrpoRawTask
+from validator.core.models import EnvRawTask
 from validator.core.models import ImageRawTask
 from validator.core.models import InstructTextRawTask
 from validator.cycle.util_functions import get_fake_text_dataset_size
@@ -65,6 +66,14 @@ class GrpoTaskConfig(TaskConfig):
     start_training_endpoint: str = cst.START_TRAINING_GRPO_ENDPOINT
 
 
+class EnvTaskConfig(TaskConfig):
+    task_type: TaskType = TaskType.ENVIRONMENTTASK
+    data_size_function: Callable = get_fake_text_dataset_size
+    task_prep_function: Callable = run_text_task_prep
+    task_request_prepare_function: Callable = prepare_text_task_request
+    start_training_endpoint: str = cst.START_TRAINING_GRPO_ENDPOINT
+
+
 class ChatTaskConfig(TaskConfig):
     task_type: TaskType = TaskType.CHATTASK
     data_size_function: Callable = get_fake_text_dataset_size
@@ -84,5 +93,7 @@ def get_task_config(task: AnyTypeRawTask) -> TaskConfig:
         return GrpoTaskConfig()
     elif isinstance(task, ChatRawTask):
         return ChatTaskConfig()
+    elif isinstance(task, EnvRawTask):
+        return EnvTaskConfig()
     else:
         raise ValueError(f"Unsupported task type: {type(task).__name__}")

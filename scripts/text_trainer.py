@@ -15,12 +15,9 @@ import sys
 import yaml
 from transformers import AutoTokenizer
 
-
 script_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(script_dir)
 sys.path.append(project_root)
-
-from miner.logic.job_handler import create_reward_funcs_file
 
 import trainer.constants as train_cst
 import trainer.utils.training_paths as train_paths
@@ -29,12 +26,15 @@ from core.config.config_handler import save_config
 from core.config.config_handler import update_flash_attention
 from core.dataset_utils import adapt_columns_for_dpo_dataset
 from core.dataset_utils import adapt_columns_for_grpo_dataset
+from core.dataset_utils import adapt_columns_for_environment_dataset
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
+from core.config.config_handler import create_reward_funcs_file
 
 
 def patch_wandb_symlinks(base_dir: str):
@@ -108,6 +108,12 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
         )
         config["trl"]["reward_funcs"] = [f"{filename}.{func_name}" for func_name in reward_funcs_names]
         config["trl"]["reward_weights"] = [reward_function.reward_weight for reward_function in dataset_type.reward_functions]
+    elif isinstance(dataset_type, EnvironmentDatasetType):
+        # Switch based on the environment
+        if dataset_type.environment_name == "alfworld":
+            config["trl"]["rollout_func"] = "alfworld.alfworld_rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = ["alfworld.alfworld_rollout_reward_func"]
+            config["trl"]["reward_weights"] = [1.0]
 
     if file_format != FileFormat.HF.value:
         for ds in config["datasets"]:
@@ -121,6 +127,11 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token_id is None and tokenizer.eos_token_id is not None:
         config["special_tokens"] = {"pad_token": tokenizer.eos_token}
+    if tokenizer.bos_token_id is None:
+        if tokenizer.eos_token is not None:
+            config["special_tokens"] = {"bos_token": tokenizer.eos_token}
+        else:
+            config["special_tokens"] = {"bos_token": ""}
 
     config_path = os.path.join(train_cst.AXOLOTL_DIRECTORIES["configs"], f"{task_id}.yml")
     save_config(config, config_path)
@@ -167,7 +178,7 @@ async def main():
     parser.add_argument("--dataset", required=True, help="Dataset path or HF dataset name")
     parser.add_argument("--dataset-type", required=True, help="JSON string of dataset type config")
     parser.add_argument(
-        "--task-type", required=True, choices=["InstructTextTask", "DpoTask", "GrpoTask", "ChatTask"], help="Type of task"
+        "--task-type", required=True, choices=["InstructTextTask", "DpoTask", "GrpoTask", "ChatTask", "EnvTask"], help="Type of task"
     )
     parser.add_argument("--file-format", required=True, choices=["csv", "json", "hf", "s3"], help="File format")
     parser.add_argument("--expected-repo-name", help="Expected repository name")
@@ -187,6 +198,8 @@ async def main():
             dataset_type = ChatTemplateDatasetType(**dataset_type_dict)
         elif args.task_type == TaskType.GRPOTASK.value:
             dataset_type = GrpoDatasetType(**dataset_type_dict)
+        elif args.task_type == TaskType.ENVIRONMENTTASK.value:
+            dataset_type = EnvironmentDatasetType(**dataset_type_dict)
         else:
             sys.exit(f"Unsupported task type: {args.task_type}")
     except Exception as e:
@@ -197,7 +210,10 @@ async def main():
         adapt_columns_for_dpo_dataset(dataset_path, dataset_type, apply_formatting=True)
     elif args.task_type == TaskType.GRPOTASK.value:
         adapt_columns_for_grpo_dataset(dataset_path, dataset_type)
-
+    elif args.task_type == TaskType.ENVIRONMENTTASK.value:
+        #adapt_columns_for_environment_dataset(dataset_path, dataset_type) # NOTE: Remove to test RO cache
+        pass
+    
     dataset_path = copy_dataset_to_axolotl_directories(dataset_path)
 
     output_dir = train_paths.get_checkpoints_output_path(args.task_id, args.expected_repo_name)

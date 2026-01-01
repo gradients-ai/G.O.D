@@ -16,6 +16,7 @@ from core.models.payload_models import LeaderboardRow
 from core.models.payload_models import NewTaskRequestChat
 from core.models.payload_models import NewTaskRequestDPO
 from core.models.payload_models import NewTaskRequestGrpo
+from core.models.payload_models import NewTaskRequestEnvironment
 from core.models.payload_models import NewTaskRequestImage
 from core.models.payload_models import NewTaskRequestInstructText
 from core.models.payload_models import NewTaskResponse
@@ -35,6 +36,7 @@ from validator.core.models import ChatRawTask
 from validator.core.models import DetailedNetworkStats
 from validator.core.models import DpoRawTask
 from validator.core.models import GrpoRawTask
+from validator.core.models import EnvRawTask
 from validator.core.models import ImageRawTask
 from validator.core.models import InstructTextRawTask
 from validator.core.models import NetworkStats
@@ -114,6 +116,38 @@ async def create_task_dpo(
         hours_to_complete=request.hours_to_complete,
         account_id=request.account_id,
         task_type=TaskType.DPOTASK,
+        result_model_name=request.result_model_name,
+        backend=Backend(request.backend or Backend.OBLIVUS.value),
+        yarn_factor=request.yarn_factor,
+    )
+
+    task = await task_sql.add_task(task, config.psql_db)
+
+    logger.info(f"Task of type {task.task_type} created: {task.task_id}")
+    if config.discord_url:
+        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
+
+    return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
+
+
+async def create_task_environment(
+    request: NewTaskRequestEnvironment,
+    config: Config = Depends(get_config),
+) -> NewTaskResponse:
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
+
+    task = EnvRawTask(
+        model_id=request.model_repo,
+        ds=request.ds_repo,
+        environment_name=request.environment_name,
+        is_organic=True,
+        status=TaskStatus.PENDING,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=request.hours_to_complete,
+        account_id=request.account_id,
+        task_type=TaskType.ENVIRONMENTTASK,
         result_model_name=request.result_model_name,
         backend=Backend(request.backend or Backend.OBLIVUS.value),
         yarn_factor=request.yarn_factor,
