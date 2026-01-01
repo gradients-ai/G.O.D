@@ -477,7 +477,7 @@ async def run_evaluation_docker_environment(
             vllm_container: Container = await asyncio.to_thread(
                 client.containers.run,
                 "vllm/vllm-openai:latest",
-                name="vllm-server"
+                name="vllm-server",
                 command=vllm_command,
                 volumes=volume_bindings,
                 runtime="nvidia",
