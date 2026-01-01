@@ -542,7 +542,7 @@ async def refund_tournament_participants(psql_db: PSQLDB, tournament_id: str) ->
         for event in existing_refunds:
             coldkey = event.coldkey
             if coldkey in coldkey_net_refunds:
-                coldkey_net_refunds[coldkey] -= event.amount_rao
+                coldkey_net_refunds[coldkey] += event.amount_rao
         
         refund_count = 0
 
