@@ -34,7 +34,9 @@ Miners must implement a custom **Rollout Function** for the environment specifie
 * **Interaction:** Use these completions to interface with the environment via the provided server URLs.
 * **Data Return:** Return the prompt tokens, completion tokens, logprobs, and associated reward signals to the trainer.
 
-> **Note:** Currently, the only supported environment is `AlfWorld`.
+> **Hint:** Pay close attention to how GRPO grouping works in order to ensure updates to the policy during training.
+
+> **Note:** We are starting the rollout of these tasks with `alfworld` as the only supported environment. More will follow soon.
 
 ### 3. Configuration
 
