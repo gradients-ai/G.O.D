@@ -1,46 +1,58 @@
 # Environment Tasks & Rollout Functions
 
-Gradients now supports **Environment Tasks**, leveraging new functionality within the TRL `GRPOTrainer`. This feature allows for custom rollout logic during training, enabling models to interact with external environments in real-time to receive dynamic rewards.
+Gradients now supports **Environment Tasks**, leveraging the custom rollout capabilities within the TRL `GRPOTrainer`. This framework enables models to interact with external environments during the training loop to optimize based on dynamic feedback and sparse rewards.
 
 ## Evaluation Protocol
 
-Following training, Gradients evaluates the model by running **500 episodes** within the target environment. The final performance is determined by the **average score** across these episodes.
+Post-training, Gradients assesses model performance by executing **500 episodes** within the target environment. The primary metric for success is the **average score** across this full evaluation set.
 
 ---
 
 ## Miner Requirements
 
-During the training phase, miners are granted access to environment servers that host the specific task logic. To optimize throughput, one environment server is typically provided per GPU.
+During training, miners are provisioned with environment servers hosting specific task logic. To maximize throughput and minimize latency, one dedicated environment server is typically allocated per GPU.
 
-### 1. Connecting to Environment Servers
+### 1. Environment Connectivity
 
-The server addresses are provided via the `ENVIRONMENT_SERVER_URLS` environment variable as a comma-separated string.
+Server addresses are exposed via the `ENVIRONMENT_SERVER_URLS` environment variable as a comma-separated string.
 
-**Example Extraction:**
+**Python Implementation:**
 
 ```python
 import os
 
+# Extract and clean server URLs
 raw_urls = os.environ.get("ENVIRONMENT_SERVER_URLS", "")
 server_list = [url.strip() for url in raw_urls.split(",") if url.strip()]
 
 ```
 
-### 2. Implementing the Rollout Function
+### 2. The Rollout Function Workflow
 
-Miners must implement a custom **Rollout Function** for the environment specified in `dataset_type.environment_name`. The function is responsible for the following workflow:
+Miners must implement a custom **Rollout Function** associated with the `dataset_type.environment_name`. This function manages the following lifecycle:
 
-* **Generation:** Produce model completions using `generate_rollout_completions`.
-* **Interaction:** Use these completions to interface with the environment via the provided server URLs.
-* **Data Return:** Return the prompt tokens, completion tokens, logprobs, and associated reward signals to the trainer.
+* **Sampling:** Generate model completions via `generate_rollout_completions`.
+* **Execution:** Interface with environment servers using these completions to drive state changes.
+* **Synchronization:** Return prompt tokens, completion tokens, logprobs, and reward signals to the trainer.
 
-> **Hint:** Pay close attention to how GRPO grouping works in order to ensure updates to the policy during training. Top miners will use grouping to their advantage to maximize training efficiency on multi-turn environments.
+> [!TIP]
+> **Optimizing for GRPO Grouping:** Understanding how GRPO groups trajectories is critical for policy stability. Top-performing miners leverage grouping to maximize training efficiency, especially in complex, multi-turn environments.
 
-> **Note:** We are starting the rollout of these tasks with `alfworld` as the only supported environment. More will follow soon.
+> [!IMPORTANT]
+> **Supported Environments:** Currently, `alfworld` is the sole supported environment. Support for additional environments will be phased in shortly.
 
-### 3. Configuration
+### 3. Axolotl Configuration
 
-The Rollout Function is defined within your **Axolotl configuration**, following a syntax similar to standard GRPO Reward Functions. A reference implementation used by the default miner can be found in `dockerfiles/environment_functions`.
+Declare your Rollout Function within your **Axolotl config**, mirroring the syntax used for standard GRPO Reward Functions. A reference implementation is available in `dockerfiles/environment_functions`.
+
+---
+
+## Testing & Validation
+
+To ensure local parity with Gradients' evaluation systems, two utility scripts are provided:
+
+* **Local Training:** Use `examples/run_environment_task.sh` to trigger a training run in a local environment.
+* **Standardized Evaluation:** Use `scripts/manual_environment_eval.py` to evaluate your trained model using the exact parameters and episode count used by Gradients.
 
 ---
 
@@ -48,7 +60,7 @@ The Rollout Function is defined within your **Axolotl configuration**, following
 
 | Resource | Description |
 | --- | --- |
-| **[Affinetes](https://github.com/AffineFoundation/affinetes)** | The standard protocol used by Gradients for running environment servers. |
-| **[OpenEnv Rollout Functions](https://huggingface.co/docs/trl/main/en/openenv)** | TRL documentation regarding the implementation of custom rollout logic. |
+| **[Affinetes](https://github.com/AffineFoundation/affinetes)** | The standard protocol for Gradients environment server communication. |
+| **[OpenEnv Rollout Functions](https://huggingface.co/docs/trl/main/en/openenv)** | TRL's official guide on implementing custom rollout logic. |
 
 ---

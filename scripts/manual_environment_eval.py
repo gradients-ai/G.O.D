@@ -6,13 +6,13 @@ from datetime import datetime
 
 # --- Configuration ---
 BASE_MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
-LORA_MODEL_NAME = None
+LORA_MODEL_NAME = None # Place the name of your HuggingFace repo with the trained LORA here.
 VLLM_IMAGE = "vllm/vllm-openai:latest"
 AGENTGYM_IMAGE = "affinefoundation/agentgym:alfworld"
 NETWORK_NAME = "agent_eval_net"
 
 # Evaluation Params
-NUM_EVALS = 400
+NUM_EVALS = 500
 DATA_LEN_RANGE = 2500
 TEMPERATURE = 0.0
 RANDOM_SEED = 42
