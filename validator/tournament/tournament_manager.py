@@ -442,18 +442,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
             )
 
-            try:
-                participant1, participant2 = await get_final_round_participants(completed_round, psql_db)
-                logger.info(f"Final round participants from DB: {participant1}, {participant2}")
-                logger.info(f"Winner determined by get_round_winners: {winner}")
-                logger.info(f"Tournament base_winner_hotkey (previous champion): {tournament.base_winner_hotkey}")
-
-                loser = participant2 if participant1 == winner else participant1
-                logger.info(f"Loser determined: {loser}")
-
-                position_1_upload = winner
-                position_2_upload = loser
-
+            if tournament.tournament_type == TournamentType.ENVIRONMENT:
+                logger.info(f"Environment tournament: uploading winner repository only")
                 if winner != cst.EMISSION_BURN_HOTKEY:
                     try:
                         logger.info(f"Creating benchmark tasks for tournament winner {winner}")
@@ -464,20 +454,47 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     except Exception as e:
                         logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
 
-                logger.info(f"Uploading position 1 repository for hotkey: {position_1_upload}")
-                await upload_participant_repository(
-                    tournament.tournament_id, tournament.tournament_type, position_1_upload, 1, config, psql_db
-                )
-
-                logger.info(f"Uploading position 2 repository for hotkey: {position_2_upload}")
-                await upload_participant_repository(
-                    tournament.tournament_id, tournament.tournament_type, position_2_upload, 2, config, psql_db
-                )
-            except Exception as e:
-                logger.error(f"Error determining final round participants: {e}")
+                logger.info(f"Uploading position 1 repository for hotkey: {winner}")
                 await upload_participant_repository(
                     tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
                 )
+            else:
+                try:
+                    participant1, participant2 = await get_final_round_participants(completed_round, psql_db)
+                    logger.info(f"Final round participants from DB: {participant1}, {participant2}")
+                    logger.info(f"Winner determined by get_round_winners: {winner}")
+                    logger.info(f"Tournament base_winner_hotkey (previous champion): {tournament.base_winner_hotkey}")
+
+                    loser = participant2 if participant1 == winner else participant1
+                    logger.info(f"Loser determined: {loser}")
+
+                    position_1_upload = winner
+                    position_2_upload = loser
+
+                    if winner != cst.EMISSION_BURN_HOTKEY:
+                        try:
+                            logger.info(f"Creating benchmark tasks for tournament winner {winner}")
+                            benchmark_task_ids = await create_benchmark_tasks_for_tournament_winner(
+                                tournament.tournament_id, winner, config
+                            )
+                            logger.info(f"Created {len(benchmark_task_ids)} benchmark tasks for tournament winner {winner}")
+                        except Exception as e:
+                            logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
+
+                    logger.info(f"Uploading position 1 repository for hotkey: {position_1_upload}")
+                    await upload_participant_repository(
+                        tournament.tournament_id, tournament.tournament_type, position_1_upload, 1, config, psql_db
+                    )
+
+                    logger.info(f"Uploading position 2 repository for hotkey: {position_2_upload}")
+                    await upload_participant_repository(
+                        tournament.tournament_id, tournament.tournament_type, position_2_upload, 2, config, psql_db
+                    )
+                except Exception as e:
+                    logger.error(f"Error determining final round participants: {e}")
+                    await upload_participant_repository(
+                        tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
+                    )
             return
         else:
             await create_next_round(tournament, completed_round, winners, config, psql_db)
