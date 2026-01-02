@@ -3,7 +3,8 @@ import asyncio
 import os
 import shutil
 import tempfile
-
+import json
+from pathlib import Path
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
 from huggingface_hub import snapshot_download
@@ -64,6 +65,23 @@ def is_safetensors_available(repo_id: str) -> tuple[bool, str | None]:
     if largest_file:
         return True, largest_file.path
     return False, None
+
+
+def write_environment_task_proxy_dataset(
+    out_path: str,
+    dataset_size: int = 1000,
+    prompt_text: str = "Interact with this environment.",
+    prompt_field: str = "prompt",
+):
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    records = [{prompt_field: prompt_text} for _ in range(dataset_size)]
+
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(records, f, indent=2, ensure_ascii=False)
+
+    print(f"Wrote {len(records)} records to {out_path} with field '{prompt_field}'")
 
 
 def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> str:
@@ -187,6 +205,13 @@ async def main():
         )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir)
+        input_data_path = train_paths.get_text_dataset_path(args.task_id)
+        write_environment_task_proxy_dataset(
+            out_path=input_data_path,
+            dataset_size=1000,
+            prompt_text="Interact with this environment.",
+            prompt_field="prompt",
+        )
     else:
         dataset_path, _ = await download_text_dataset(args.task_id, args.dataset, args.file_format, dataset_dir)
         model_path = await download_axolotl_base_model(args.model, model_dir)

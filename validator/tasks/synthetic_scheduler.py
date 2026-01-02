@@ -419,7 +419,7 @@ async def create_synthetic_env_task(
     datasets: AsyncGenerator[Dataset, None],
 ) -> RawTask:
     # hardoced model for now. the model and ds generators kept for signature compatibility
-    model_id = "Qwen/Qwen2.5-3B"
+    model_id = "Qwen/Qwen2.5-3B-Instruct"
 
     # Environment tasks don't use the actual dataset - trainer generates a dummy one
     # Use a placeholder to satisfy DB constraint
