@@ -95,7 +95,14 @@ def organise_tournament_round(nodes: list[Node], config: Config, tournament_type
     random.shuffle(nodes_copy)
 
     # Environment tournaments always use a single group round with all participants
+    # Minimum group size of 5 required for environment tournaments
     if tournament_type == TournamentType.ENVIRONMENT:
+        if len(nodes_copy) < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
+            logger.warning(
+                f"Environment tournament requires minimum 5 participants, but only {len(nodes_copy)} provided. "
+                f"Cannot create tournament round."
+            )
+            raise ValueError(f"Environment tournament requires minimum 5 participants, got {len(nodes_copy)}")
         all_hotkeys = [node.hotkey for node in nodes_copy]
         single_group = Group(member_ids=all_hotkeys, task_ids=[])
         return GroupRound(groups=[single_group])
@@ -655,16 +662,21 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
         logger.info(f"Successfully populated {miners_that_accept_and_give_repos} participants for tournament {tournament_id}")
 
-        if miners_that_accept_and_give_repos >= cst.MIN_MINERS_FOR_TOURN:
+        if tournament.tournament_type == TournamentType.ENVIRONMENT:
+            min_required_miners = 4
+        else:
+            min_required_miners = cst.MIN_MINERS_FOR_TOURN
+
+        if miners_that_accept_and_give_repos >= min_required_miners:
             logger.info(
                 f"Tournament {tournament_id} has sufficient miners "
-                f"({miners_that_accept_and_give_repos} >= {cst.MIN_MINERS_FOR_TOURN})"
+                f"({miners_that_accept_and_give_repos} >= {min_required_miners})"
             )
             return miners_that_accept_and_give_repos
 
         logger.warning(
             f"Tournament {tournament_id} only has {miners_that_accept_and_give_repos} miners that accept and give repos, "
-            f"need at least {cst.MIN_MINERS_FOR_TOURN}. Waiting 30 minutes and retrying..."
+            f"need at least {min_required_miners}. Waiting 30 minutes and retrying..."
         )
         await asyncio.sleep(30 * 60)
 

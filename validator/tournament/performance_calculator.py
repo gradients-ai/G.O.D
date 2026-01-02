@@ -104,7 +104,7 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             )
             continue
 
-        if task_obj.task_type == TaskType.GRPOTASK:
+        if task_obj.task_type in [TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
             if boss_score > 0:
                 perf_diff = (challenger_score - boss_score) / boss_score
             else:
@@ -187,9 +187,9 @@ async def get_tournament_performance_data(tournament_id: str, psql_db) -> list[T
         if synthetic_scores:
             task_type = TaskType(task_pair.task_type)
 
-            if task_type == TaskType.GRPOTASK:
+            if task_type in [TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
                 best_synthetic_score = max(score.test_loss for score in synthetic_scores)
-                logger.info(f"Best synthetic score (GRPO - higher is better): {best_synthetic_score}")
+                logger.info(f"Best synthetic score (GRPO/Environment - higher is better): {best_synthetic_score}")
             else:
                 best_synthetic_score = min(score.test_loss for score in synthetic_scores)
                 logger.info(f"Best synthetic score (lower is better): {best_synthetic_score}")
@@ -198,7 +198,7 @@ async def get_tournament_performance_data(tournament_id: str, psql_db) -> list[T
             task_type = TaskType(task_pair.task_type)
             logger.info(f"Task type: {task_type}")
 
-            if task_type == TaskType.GRPOTASK:
+            if task_type in [TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
                 if best_synthetic_score > 0:
                     # For GRPO: higher is better, so positive diff means tournament is worse
                     performance_diff = (best_synthetic_score - winner_tournament_score) / best_synthetic_score
