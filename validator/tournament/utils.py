@@ -750,13 +750,11 @@ async def get_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config = None
 ) -> list[str]:
     """Get winners from group round based on adjusted loss scores (top 8 performers, or 1 for final rounds)."""
-    # Check if this is an environment tournament final round - use specialized function
     if completed_round.is_final_round and config:
         task_object = await get_task(round_tasks[0].task_id, psql_db) if round_tasks else None
         if task_object and task_object.task_type == TaskType.ENVIRONMENTTASK:
             return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
 
-    # For final rounds, return only the top performer
     TOP_WINNERS_TO_ADVANCE = 1 if completed_round.is_final_round else 8
     all_winners = []
 
@@ -795,7 +793,6 @@ async def get_group_winners(
             logger.warning(f"Group {group_id} has no valid scores - proceeding with no winners")
             continue
 
-        # Group rounds only have TEXT/IMAGE tasks where lower scores are better
         sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
         ranking_direction = "ascending (lower is better)"
         
