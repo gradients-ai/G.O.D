@@ -1,5 +1,7 @@
 import statistics
 
+import numpy as np
+
 from core.models.tournament_models import TaskPerformanceDifference
 from core.models.tournament_models import TournamentPerformanceData
 from core.models.utility_models import TaskType
@@ -58,33 +60,64 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
 
         ranked_results = calculate_miner_ranking_and_scores(miner_results)
 
+        is_higher_better = task_obj.task_type in [TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]
+
         boss_score = None
         challenger_score = None
         challenger_hotkey = None
 
-        for result in ranked_results:
-            if result.hotkey == EMISSION_BURN_HOTKEY:
-                boss_score = result.adjusted_loss
-            elif challenger_hotkey is None:
-                challenger_hotkey = result.hotkey
-                challenger_score = result.adjusted_loss
+        if task_obj.task_type == TaskType.ENVIRONMENTTASK:
+            valid_participants = [
+                (result.hotkey, result.adjusted_loss)
+                for result in ranked_results
+                if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+            ]
+            
+            valid_participants.sort(key=lambda x: x[1], reverse=True) 
+
+            for hotkey, score in valid_participants:
+                if hotkey == EMISSION_BURN_HOTKEY:
+                    boss_score = score
+                    break
+            
+            if boss_score is None:
+                logger.warning(f"Boss {boss_hotkey} not found in scores for task {task.task_id}")
+                continue
+
+            boss_won = tournament.winner_hotkey == EMISSION_BURN_HOTKEY
+            
+            if boss_won:
+                for hotkey, score in valid_participants:
+                    if hotkey != EMISSION_BURN_HOTKEY:
+                        challenger_score = score
+                        challenger_hotkey = hotkey
+                        break
+            else:
+                challenger_hotkey = valid_participants[0][0]
+                challenger_score = valid_participants[0][1]
+        else:
+            for result in ranked_results:
+                if result.hotkey == EMISSION_BURN_HOTKEY:
+                    boss_score = result.adjusted_loss
+                elif challenger_hotkey is None:
+                    challenger_hotkey = result.hotkey
+                    challenger_score = result.adjusted_loss
 
         if boss_score is None and challenger_score is None:
             logger.warning(f"Both boss and challenger missing scores for task {task.task_id}")
             continue
 
-        # Handle cases where one participant failed
         if boss_score is None:
             logger.warning(f"Boss failed evaluation for task {task.task_id} - challenger wins by default")
             performance_differences.append(
                 TaskPerformanceDifference(
                     task_id=str(task.task_id),
                     task_type=task_obj.task_type.value,
-                    boss_score=None,  # Boss failed
+                    boss_score=None,
                     challenger_score=challenger_score,
                     threshold_used=threshold,
-                    performance_difference=None,  # No comparison possible
-                    challenger_won=True,  # Challenger wins by default
+                    performance_difference=None,
+                    challenger_won=True,
                 )
             )
             continue
@@ -96,15 +129,15 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                     task_id=str(task.task_id),
                     task_type=task_obj.task_type.value,
                     boss_score=boss_score,
-                    challenger_score=None,  # Challenger failed
+                    challenger_score=None,
                     threshold_used=threshold,
-                    performance_difference=None,  # No comparison possible
-                    challenger_won=False,  # Boss wins by default
+                    performance_difference=None,
+                    challenger_won=False,
                 )
             )
             continue
 
-        if task_obj.task_type in [TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
+        if is_higher_better:
             if boss_score > 0:
                 perf_diff = (challenger_score - boss_score) / boss_score
             else:
@@ -130,9 +163,9 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         )
 
         logger.info(
-            f"Task {task.task_id}: Boss={boss_score:.6f}, Challenger={challenger_score:.6f}, "
-            f"Diff={perf_diff * 100:.2f}%, Threshold={threshold * 100:.1f}%, "
-            f"Challenger won: {challenger_won}"
+            f"Task {task.task_id}: Boss={boss_hotkey if task_obj.task_type == TaskType.ENVIRONMENTTASK else 'EMISSION_BURN'} "
+            f"({boss_score:.6f}), Challenger={challenger_hotkey} ({challenger_score:.6f}), "
+            f"Diff={perf_diff * 100:.2f}%, Threshold={threshold * 100:.1f}%, Challenger won: {challenger_won}"
         )
 
     return performance_differences

@@ -270,9 +270,11 @@ class TournamentDetailsResponse(BaseModel):
 class TournamentAuditData(BaseModel):
     text_tournament_data: TournamentResultsWithWinners | None = None
     image_tournament_data: TournamentResultsWithWinners | None = None
+    environment_tournament_data: TournamentResultsWithWinners | None = None
     participants: list[str] = []
     text_tournament_weight: float = 0.0
     image_tournament_weight: float = 0.0
+    environment_tournament_weight: float = 0.0
     burn_weight: float = 0.0
     weekly_participation: list["HotkeyTaskParticipation"] = []
 
@@ -339,10 +341,13 @@ class TournamentBurnData(BaseModel):
 
     text_performance_diff: float | None
     image_performance_diff: float | None
+    environment_performance_diff: float | None = None
     text_burn_proportion: float
     image_burn_proportion: float
+    environment_burn_proportion: float = 0.0
     text_tournament_weight: float
     image_tournament_weight: float
+    environment_tournament_weight: float = 0.0
     burn_weight: float
 
 

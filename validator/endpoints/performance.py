@@ -29,8 +29,10 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
 
     tournament_audit_data = await build_tournament_audit_data(config.psql_db)
 
-    text_tournament_weights, image_tournament_weights = get_tournament_weights_from_data(
-        tournament_audit_data.text_tournament_data, tournament_audit_data.image_tournament_data
+    text_tournament_weights, image_tournament_weights, environment_tournament_weights = get_tournament_weights_from_data(
+        tournament_audit_data.text_tournament_data, 
+        tournament_audit_data.image_tournament_data,
+        tournament_audit_data.environment_tournament_data
     )
 
     text_base_winner_hotkey = None
