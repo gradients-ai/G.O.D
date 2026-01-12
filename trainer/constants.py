@@ -9,6 +9,7 @@ TRAINER_DOWNLOADER_DOCKER_IMAGE = "trainer-downloader:latest"
 CACHE_CLEANER_DOCKER_IMAGE = "diagonalge/cache-cleaner:latest"
 IMAGE_TASKS_HF_SUBFOLDER_PATH = "checkpoints"
 VECTOR_URL = "http://localhost:8688"  # Vector http_server for logging
+INTERNAL_BRIDGE_NAME = "internal_bridge"
 
 # Dynamic resource allocation based on GPU count
 # For 8xH100 with 1440GB RAM and 252 CPUs
@@ -18,9 +19,9 @@ CPUS_PER_GPU = 24  # Conservative allocation leaving headroom
 CACHE_CLEANUP_CUTOFF_HOURS = 72
 STALE_TASK_GRACE_MINUTES = 10
 CONTAINER_START_MAX_RETRIES = 3
-CONTAINER_START_RETRY_DELAY_SECONDS = 3 
+CONTAINER_START_RETRY_DELAY_SECONDS = 3
 
-#TRAINING PATHS 
+# TRAINING PATHS
 CACHE_ROOT_PATH = "/cache"
 HUGGINGFACE_CACHE_PATH = "/cache/hf_cache"
 OUTPUT_CHECKPOINTS_PATH = "/app/checkpoints/"
@@ -31,7 +32,7 @@ IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH = "/workspace/core/config"
 IMAGE_CONTAINER_CONFIG_SAVE_PATH = "/dataset/configs"
 IMAGE_CONTAINER_IMAGES_PATH = "/dataset/images"
 
-#Directories
+# Directories
 
 AXOLOTL_DIRECTORIES = {
     "data": "/workspace/axolotl/data",
@@ -40,7 +41,7 @@ AXOLOTL_DIRECTORIES = {
     "outputs": "/workspace/axolotl/outputs",
     "input": "/workspace/input_data",
     "root": "/workspace/axolotl",
-    "src": "/workspace/axolotl/src/"
+    "src": "/workspace/axolotl/src/",
 }
 
 WANDB_DIRECTORIES = [
