@@ -27,13 +27,13 @@ async def replace_task(task_id: str, psql_db: PSQLDB) -> None:
             WHERE {cst.TASK_ID} = $2
         """
         result = await connection.execute(update_query, "prep_task_failure", task_id)
-
+        
         # asyncpg returns string like "UPDATE 1" or "UPDATE 0" - check if any rows were affected
         rows_affected = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
         if rows_affected == 0:
             logger.error(f"Task {task_id} not found in database.")
             return
-
+        
         logger.info(f"Successfully set task {task_id} status to prep_task_failure. Replacement will be created automatically.")
 
 
@@ -54,13 +54,13 @@ async def retry_task(task_id: str, psql_db: PSQLDB) -> None:
             WHERE {cst.TASK_ID} = $2
         """
         result = await connection.execute(update_task_query, "training", task_id)
-
+        
         # asyncpg returns string like "UPDATE 1" or "UPDATE 0" - check if any rows were affected
         rows_affected = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
         if rows_affected == 0:
             logger.error(f"Task {task_id} not found in database.")
             return
-
+        
         logger.info(f"Successfully set task {task_id} status to training.")
 
         # Reset all training attempts in tournament_task_hotkey_trainings table
@@ -93,11 +93,11 @@ async def allow_task(task_id: str, psql_db: PSQLDB) -> None:
             LIMIT 1
         """
         round_id = await connection.fetchval(get_round_query, task_id)
-
+        
         if not round_id:
             logger.error(f"Task {task_id} not found in tournament_tasks table.")
             return
-
+        
         # Update round status to COMPLETED (allows tournament to proceed)
         # Winner determination will handle missing results gracefully
         update_round_query = f"""
@@ -106,13 +106,13 @@ async def allow_task(task_id: str, psql_db: PSQLDB) -> None:
             WHERE {cst.ROUND_ID} = $2
         """
         result = await connection.execute(update_round_query, "completed", round_id)
-
+        
         # asyncpg returns string like "UPDATE 1" or "UPDATE 0" - check if any rows were affected
         rows_affected = int(result.split()[-1]) if result.split()[-1].isdigit() else 0
         if rows_affected == 0:
             logger.error(f"Round {round_id} not found in database.")
             return
-
+        
         logger.info(
             f"Successfully set round {round_id} status to completed. "
             f"Tournament will proceed - winner determination will handle missing results."
@@ -142,7 +142,7 @@ async def main():
     try:
         # Connect to database
         await psql_db.connect()
-
+        
         if action == "replace":
             await replace_task(task_id, psql_db)
         elif action == "retry":
@@ -158,3 +158,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

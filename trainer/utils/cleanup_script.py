@@ -53,6 +53,7 @@ def clean_checkpoints(task_history: list[dict]):
         task_id_to_times.setdefault(task_id, []).append(finished_at)
 
     for task_id, finished_list in task_id_to_times.items():
+
         if all(is_older_than(finished_at, CUTOFF_HOURS) for finished_at in finished_list):
             target = Path(CHECKPOINTS_DIR, task_id)
             print(f"Deleting checkpoints for task {task_id} at {target}")
@@ -64,7 +65,10 @@ def clean_datasets(task_history: list[dict]):
         task_id = task.get("training_data", {}).get("task_id")
         finished_at = task.get("finished_at")
         if task_id and is_older_than(finished_at, CUTOFF_HOURS):
-            candidate_files = [CACHE_DATASETS_DIR / f"{task_id}_train_data.json", CACHE_DATASETS_DIR / f"{task_id}_tourn.zip"]
+            candidate_files = [
+                CACHE_DATASETS_DIR / f"{task_id}_train_data.json",
+                CACHE_DATASETS_DIR / f"{task_id}_tourn.zip"
+            ]
             for dataset_file in candidate_files:
                 if dataset_file.exists():
                     print(f"Deleting dataset file: {dataset_file}")
@@ -87,7 +91,11 @@ def clean_models(task_history: list[dict]):
         started_at = task.get("started_at")
         finished_at = task.get("finished_at")
 
-        if status == "training" or not is_older_than(started_at, CUTOFF_HOURS) or not is_older_than(finished_at, CUTOFF_HOURS):
+        if (
+            status == "training"
+            or not is_older_than(started_at, CUTOFF_HOURS)
+            or not is_older_than(finished_at, CUTOFF_HOURS)
+        ):
             recent_models.add(model_folder)
 
     if CACHE_MODELS_DIR.exists():

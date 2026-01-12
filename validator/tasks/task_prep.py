@@ -461,7 +461,6 @@ def standardize_grpo_column_names(dataset: Dataset, task: GrpoRawTask) -> Datase
 
     return dataset
 
-
 # TODO changes needed here?
 async def prepare_text_task(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=None) -> tuple[str, str, str]:
     # Environment tasks: trainer ignores the dataset and generates its own proxy dataset
@@ -470,7 +469,7 @@ async def prepare_text_task(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=
         logger.info("Environment task detected - returning dummy dataset URLs (trainer will generate proxy dataset)")
         dummy_url = "env_task_dummy_dataset"
         return (dummy_url, dummy_url)
-
+    
     train_dataset_name = task.training_data if task.training_data else task.ds
 
     if not task.test_data:

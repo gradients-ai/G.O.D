@@ -153,7 +153,7 @@ async def _create_first_round(
         round_structure = organise_tournament_round(nodes, config, tournament_type)
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
-
+        
         # Environment tournaments only have group stage, so mark it as final
         is_final_round = tournament_type == TournamentType.ENVIRONMENT
 
@@ -214,7 +214,7 @@ async def assign_nodes_to_tournament_tasks(
         else:
             all_participants = None
             group_id = None
-
+        
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 current_group_id = f"{round_id}_group_001"
@@ -245,7 +245,7 @@ async def assign_nodes_to_tournament_tasks(
                         logger.info(
                             f"Assigned {hotkey} to group task {task.task_id} with expected_repo_name: {expected_repo_name}"
                         )
-
+            
             if is_environment_tournament:
                 logger.info(f"Finished assigning {len(all_participants)} participants to environment tournament task(s)")
                 break
@@ -302,7 +302,7 @@ async def create_next_round(
     if tournament.tournament_type == TournamentType.ENVIRONMENT:
         logger.info(f"Environment tournament {tournament.tournament_id} only has group stage, no next round to create")
         return
-
+    
     next_round_number = completed_round.round_number + 1
     next_round_id = generate_round_id(tournament.tournament_id, next_round_number)
 
@@ -686,7 +686,8 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
         if miners_that_accept_and_give_repos >= min_required_miners:
             logger.info(
-                f"Tournament {tournament_id} has sufficient miners ({miners_that_accept_and_give_repos} >= {min_required_miners})"
+                f"Tournament {tournament_id} has sufficient miners "
+                f"({miners_that_accept_and_give_repos} >= {min_required_miners})"
             )
             return miners_that_accept_and_give_repos
 

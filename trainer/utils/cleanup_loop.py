@@ -69,23 +69,23 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
         try:
             client = docker.from_env()
             all_containers = client.containers.list(all=True)
-
+            
             containers_to_remove = []
             for container in all_containers:
-                if container.status in ["created", "exited"]:
+                if container.status in ['created', 'exited']:
                     try:
-                        created_str = container.attrs.get("Created", "")
+                        created_str = container.attrs.get('Created', '')
                         if created_str:
                             created_dt = isoparse(created_str)
                             now = datetime.now(timezone.utc)
                             age_hours = (now - created_dt).total_seconds() / 3600
-
+                            
                             if age_hours > 1:
                                 containers_to_remove.append(container)
                     except Exception as e:
                         logger.warning(f"Could not parse creation time for {container.name}: {e}")
                         containers_to_remove.append(container)
-
+            
             if containers_to_remove:
                 logger.info(f"Cleaning up {len(containers_to_remove)} stopped/created containers...")
                 for container in containers_to_remove:
@@ -94,14 +94,14 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                         logger.debug(f"Removed container: {container.name or container.id[:12]}")
                     except Exception as e:
                         logger.warning(f"Failed to remove container {container.name or container.id[:12]}: {e}")
-
+            
             try:
                 prune_result = client.volumes.prune()
-                if prune_result.get("SpaceReclaimed", 0) > 0:
+                if prune_result.get('SpaceReclaimed', 0) > 0:
                     logger.info(f"Pruned volumes: {prune_result}")
             except Exception as e:
                 logger.warning(f"Failed to prune volumes: {e}")
-
+                
             logger.info("Container and volume cleanup completed.")
         except Exception as e:
             logger.error(f"Error during container cleanup: {e}")

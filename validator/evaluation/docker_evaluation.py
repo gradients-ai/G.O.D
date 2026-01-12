@@ -101,7 +101,7 @@ def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
         if isinstance(repo_data, str):  # Skip error entries
             continue
 
-        final_raw_rewards = repo_data.get("final_raw_rewards", {})
+        final_raw_rewards = repo_data.get('final_raw_rewards', {})
 
         for reward_name, reward_value in final_raw_rewards.items():
             if reward_name not in reward_collections:
@@ -155,7 +155,7 @@ def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
         if isinstance(repo_data, str):  # Skip error entries
             continue
 
-        weights = repo_data.get("weights", {})
+        weights = repo_data.get('weights', {})
         normalized_rewards = normalized_rewards_per_repo.get(repo_key, {})
 
         # Calculate weighted sum
@@ -173,10 +173,10 @@ def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
             continue
 
         if i < len(final_scores):
-            kl_divergence = repo_data.get("kl_divergence", 0.0)
+            kl_divergence = repo_data.get('kl_divergence', 0.0)
             # Final score: weighted_sum - BETA_GRPO * kl_divergence
             new_eval_loss = final_scores[i] - (vcst.BETA_GRPO * kl_divergence)
-            repo_data["eval_loss"] = new_eval_loss
+            repo_data['eval_loss'] = new_eval_loss
 
     return evaluation_results
 
@@ -195,7 +195,10 @@ def process_evaluation_results(results: dict, is_image: bool = False) -> DockerE
             else:
                 processed_results[repo] = EvaluationResultText.model_validate(result)
 
-    return DockerEvaluationResults(results=processed_results, base_model_params_count=model_params_count)
+    return DockerEvaluationResults(
+        results=processed_results,
+        base_model_params_count=model_params_count
+    )
 
 
 async def run_evaluation_docker_text(
@@ -206,6 +209,7 @@ async def run_evaluation_docker_text(
     file_format: FileFormat,
     gpu_ids: list[int],
 ) -> DockerEvaluationResults:
+
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
@@ -213,9 +217,7 @@ async def run_evaluation_docker_text(
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(
-            dataset, models, original_model, dataset_type, file_format, gpu_ids, num_eval_samples=250
-        )
+        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, num_eval_samples=250)
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
@@ -243,7 +245,7 @@ async def run_evaluation_docker_text(
         os.path.expanduser(cst.CACHE_DIR_HUB): {
             "bind": "/root/.cache/huggingface/hub",
             "mode": "rw",
-        },
+        }
     }
 
     try:
@@ -295,7 +297,10 @@ async def run_evaluation_docker_grpo(
     logger.info(f"Downloading original GRPO model: {original_model}")
     cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
     original_model_path = await asyncio.to_thread(
-        snapshot_download, repo_id=original_model, cache_dir=cache_dir, ignore_patterns=None
+        snapshot_download,
+        repo_id=original_model,
+        cache_dir=cache_dir,
+        ignore_patterns=None
     )
 
     command = ["python", "-m", "validator.evaluation.eval_grpo"]
@@ -323,7 +328,7 @@ async def run_evaluation_docker_grpo(
         os.path.expanduser(cst.CACHE_DIR_HUB): {
             "bind": "/root/.cache/huggingface/hub",
             "mode": "rw",
-        },
+        }
     }
 
     logger.info(f"Starting sequential GRPO evaluation for {len(models)} repos: {models}")
@@ -338,7 +343,7 @@ async def run_evaluation_docker_grpo(
                 snapshot_download,
                 repo_id=repo,
                 cache_dir=cache_dir,
-                ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"],
+                ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"]
             )
 
         except Exception as e:
@@ -348,6 +353,7 @@ async def run_evaluation_docker_grpo(
 
         container = None  # Initialize container variable
         try:
+
             container: Container = await asyncio.to_thread(
                 client.containers.run,
                 cst.VALIDATOR_DOCKER_IMAGE,
@@ -365,6 +371,7 @@ async def run_evaluation_docker_grpo(
             log_task.cancel()
 
             if result["StatusCode"] != 0:
+
                 logger.error(f"Container for {repo} exited with non-zero status: {result['StatusCode']}")
                 evaluation_results[repo] = f"Container for {repo} exited with status {result['StatusCode']}"
 
@@ -433,7 +440,7 @@ async def run_evaluation_docker_environment(
         os.path.expanduser(cst.CACHE_DIR_HUB): {
             "bind": "/root/.cache/huggingface/hub",
             "mode": "rw",
-        },
+        }
     }
 
     logger.info(f"Starting sequential environment evaluation for {len(models)} repos: {models}")
@@ -444,6 +451,7 @@ async def run_evaluation_docker_environment(
 
     evaluation_results = {}
     for repo in models:
+
         client = docker.from_env()
         environment = base_environment.copy()
         environment["MODELS"] = repo
@@ -454,21 +462,16 @@ async def run_evaluation_docker_environment(
         agent_log_task = None
 
         # Pre-cleanup: Ensure names are free to prevent "Conflict" errors
-        try:
-            client.containers.get("vllm-server").remove(force=True)
-        except:
-            pass
-        try:
-            client.containers.get("agent-server").remove(force=True)
-        except:
-            pass
+        try: client.containers.get("vllm-server").remove(force=True)
+        except: pass
+        try: client.containers.get("agent-server").remove(force=True)
+        except: pass
 
         # Start VLLM server for model inference
         try:
             # Docker Network Setup
             networks = client.networks.list(names=["agent_eval_net"])
-            if not networks:
-                client.networks.create("agent_eval_net", driver="bridge")
+            if not networks: client.networks.create("agent_eval_net", driver="bridge")
             logger.info(f"Starting vLLM: {original_model} w/ lora {repo}")
             vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --max-lora-rank 256 --port 8000 --trust-remote-code"
 
@@ -482,9 +485,9 @@ async def run_evaluation_docker_environment(
                 device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
                 detach=True,
                 network="agent_eval_net",
-                ports={"8000/tcp": VLLM_HOST_PORT},
+                ports={'8000/tcp': VLLM_HOST_PORT},
             )
-            containers["vllm"] = vllm_container
+            containers['vllm'] = vllm_container
             vllm_log_context = {**get_all_context_tags(), "container_type": "vllm", "repo": repo}
             vllm_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, vllm_container, None, vllm_log_context))
 
@@ -495,13 +498,11 @@ async def run_evaluation_docker_environment(
                 name="agent-server",
                 detach=True,
                 network="agent_eval_net",
-                ports={"8000/tcp": AGENT_HOST_PORT},
+                ports={'8000/tcp': AGENT_HOST_PORT} 
             )
-            containers["agent"] = environment_container
+            containers['agent'] = environment_container
             agent_log_context = {**get_all_context_tags(), "container_type": "agentgym", "repo": repo}
-            agent_log_task = asyncio.create_task(
-                asyncio.to_thread(stream_container_logs, environment_container, None, agent_log_context)
-            )
+            agent_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, environment_container, None, agent_log_context))
 
             logger.info("Waiting for vLLM health check...")
             max_wait_time = 300  # 5 minutes timeout
@@ -509,16 +510,16 @@ async def run_evaluation_docker_environment(
             while True:
                 try:
                     vllm_container.reload()
-                    if vllm_container.status == "exited":
-                        exit_code = vllm_container.attrs["State"]["ExitCode"]
+                    if vllm_container.status == 'exited':
+                        exit_code = vllm_container.attrs['State']['ExitCode']
                         raise Exception(f"vLLM container exited with code {exit_code}. Check logs for details.")
                 except Exception as container_error:
                     if "exited" in str(container_error).lower():
                         raise container_error
-
+                
                 if time.time() - start_time > max_wait_time:
                     raise TimeoutError(f"vLLM health check timeout after {max_wait_time} seconds")
-
+                
                 try:
                     if requests.get(f"http://localhost:{VLLM_HOST_PORT}/v1/models", timeout=2).status_code == 200:
                         break
@@ -534,14 +535,14 @@ async def run_evaluation_docker_environment(
             total_time = 0.0
 
             for i, task_id in enumerate(eval_list):
-                logger.info(f"[{i + 1}/{num_eval_samples}] Task ID: {task_id}...")
+                logger.info(f"[{i+1}/{num_eval_samples}] Task ID: {task_id}...")
 
                 payload = {
                     "model": "trained_lora",
                     "base_url": "http://vllm-server:8000/v1",
                     "task_id": task_id,
                     "temperature": 0.0,
-                    "max_round": 30,
+                    "max_round": 30
                 }
 
                 try:
@@ -549,22 +550,20 @@ async def run_evaluation_docker_environment(
                     response = requests.post(f"http://localhost:{AGENT_HOST_PORT}/evaluate", json=payload, timeout=2500)
                     result = response.json()
 
-                    latency = result.get("time_taken", time.time() - start_ts)
-                    score = result.get("score", 0.0)
+                    latency = result.get('time_taken', time.time() - start_ts)
+                    score = result.get('score', 0.0)
 
                     total_score += score
                     total_time += latency
 
-                    all_results.append(
-                        {
-                            "task_id": task_id,
-                            "task_name": result.get("task_name", "unknown"),
-                            "score": score,
-                            "success": result.get("success", False),
-                            "time": latency,
-                            "error": result.get("error"),
-                        }
-                    )
+                    all_results.append({
+                        "task_id": task_id,
+                        "task_name": result.get('task_name', 'unknown'),
+                        "score": score,
+                        "success": result.get('success', False),
+                        "time": latency,
+                        "error": result.get('error')
+                    })
                     logger.info(f" Done (Score: {score})")
                 except Exception as e:
                     logger.info(f" Failed: {e}")
@@ -575,12 +574,15 @@ async def run_evaluation_docker_environment(
             avg_time = total_time / len(all_results) if all_results else 0
             logger.info(f"Calculated average time of model to be: {avg_time}")
 
-            evaluation_results[repo] = {"is_finetune": True, "eval_loss": avg_score}
+            evaluation_results[repo] = {
+                'is_finetune': True,
+                'eval_loss': avg_score
+            }
 
         except Exception as e:
             logger.error(f"Failed to evaluate repo {repo}: {str(e)}", exc_info=True)
             evaluation_results[repo] = str(e)
-
+            
         finally:
             try:
                 if vllm_log_task is not None:
@@ -589,12 +591,10 @@ async def run_evaluation_docker_environment(
                     agent_log_task.cancel()
             except:
                 pass
-
+            
             for c in containers.values():
-                try:
-                    c.remove(force=True)
-                except:
-                    pass
+                try: c.remove(force=True)
+                except: pass
             client.close()
 
     logger.info(f"Environment evaluation results: {evaluation_results}")
@@ -602,7 +602,11 @@ async def run_evaluation_docker_environment(
 
 
 async def run_evaluation_docker_image(
-    test_split_url: str, original_model_repo: str, models: list[str], model_type: ImageModelType, gpu_ids: list[int]
+    test_split_url: str,
+    original_model_repo: str,
+    models: list[str],
+    model_type: ImageModelType,
+    gpu_ids: list[int]
 ) -> DockerEvaluationResults:
     raw_data = await download_s3_file(test_split_url)
     test_split_path = unzip_to_temp_path(raw_data)
@@ -613,9 +617,24 @@ async def run_evaluation_docker_image(
 
     base_path = "/app/validator/evaluation/ComfyUI/models"
     mounts = [
-        Mount(target=container_dataset_path, source=dataset_dir, type="bind", read_only=True),
-        Mount(target=f"{base_path}/checkpoints", source=cst.CACHE_DIR_HUB, type="bind", read_only=False),
-        Mount(target=f"{base_path}/diffusers", source=cst.CACHE_DIR_HUB, type="bind", read_only=False),
+        Mount(
+            target=container_dataset_path,
+            source=dataset_dir,
+            type='bind',
+            read_only=True
+        ),
+        Mount(
+            target=f"{base_path}/checkpoints",
+            source=cst.CACHE_DIR_HUB,
+            type='bind',
+            read_only=False
+        ),
+        Mount(
+            target=f"{base_path}/diffusers",
+            source=cst.CACHE_DIR_HUB,
+            type='bind',
+            read_only=False
+        )
     ]
 
     environment = {

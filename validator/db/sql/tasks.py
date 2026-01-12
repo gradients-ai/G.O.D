@@ -233,7 +233,11 @@ async def _insert_env_task(connection: Connection, task: EnvRawTask, task_record
         ({cst.TASK_ID}, {cst.ENVIRONMENT_NAME})
         VALUES ($1, $2)
     """
-    await connection.execute(query_env, task_record[cst.TASK_ID], task.environment_name)
+    await connection.execute(
+        query_env,
+        task_record[cst.TASK_ID],
+        task.environment_name
+    )
 
 
 async def get_nodes_assigned_to_task(task_id: str, psql_db: PSQLDB) -> list[Node]:
@@ -296,15 +300,16 @@ async def get_tasks_with_status(
         """
 
     if backend:
-        backend_clause = f"AND ({cst.BACKEND} = $2 OR {cst.BACKEND} IS NULL)"
-        query_params = [status.value, backend]
+            backend_clause = f"AND ({cst.BACKEND} = $2 OR {cst.BACKEND} IS NULL)"
+            query_params = [status.value, backend]
     else:
         backend_clause = ""
         query_params = [status.value]
+        
 
     async with await psql_db.connection() as connection:
         connection: Connection
-
+        
         base_query = f"""
             SELECT * FROM {cst.TASKS_TABLE}
             WHERE {cst.STATUS} = $1
@@ -694,6 +699,7 @@ async def get_detailed_task_stats(psql_db: PSQLDB, include_tournament_tasks=Fals
                     setattr(stats, f"{prefix}_{status}", count)
 
         return stats
+
 
 
 async def delete_task(task_id: UUID, psql_db: PSQLDB) -> None:

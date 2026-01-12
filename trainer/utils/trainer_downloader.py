@@ -130,11 +130,11 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
     """Download adapter file and save it in the adapters directory"""
     adapter_path = os.path.join(adapters_dir, filename)
     os.makedirs(adapters_dir, exist_ok=True)
-
+    
     if os.path.exists(adapter_path):
         print(f"Adapter {filename} already exists at {adapter_path}. Skipping download.", flush=True)
         return adapter_path
-
+    
     print(f"Downloading adapter {filename} from {repo_id}...", flush=True)
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -154,26 +154,11 @@ async def main():
     parser.add_argument(
         "--task-type",
         required=True,
-        choices=[
-            TaskType.IMAGETASK.value,
-            TaskType.INSTRUCTTEXTTASK.value,
-            TaskType.DPOTASK.value,
-            TaskType.GRPOTASK.value,
-            TaskType.CHATTASK.value,
-            TaskType.ENVIRONMENTTASK.value,
-        ],
+        choices=[TaskType.IMAGETASK.value, TaskType.INSTRUCTTEXTTASK.value, TaskType.DPOTASK.value, TaskType.GRPOTASK.value, TaskType.CHATTASK.value, TaskType.ENVIRONMENTTASK.value],
     )
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--file-format")
-    parser.add_argument(
-        "--model-type",
-        choices=[
-            ImageModelType.FLUX.value,
-            ImageModelType.SDXL.value,
-            ImageModelType.Z_IMAGE.value,
-            ImageModelType.QWEN_IMAGE.value,
-        ],
-    )
+    parser.add_argument("--model-type", choices=[ImageModelType.FLUX.value, ImageModelType.SDXL.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value])
     args = parser.parse_args()
 
     dataset_dir = cst.CACHE_DATASETS_DIR
@@ -195,19 +180,19 @@ async def main():
             zimage_adapter_path = await download_adapter(
                 repo_id="ostris/zimage_turbo_training_adapter",
                 filename="zimage_turbo_training_adapter_v2.safetensors",
-                adapters_dir=adapters_dir,
+                adapters_dir=adapters_dir
             )
             print(f"Z-Image adapter downloaded to: {zimage_adapter_path}", flush=True)
-
+            
         elif args.model_type == ImageModelType.QWEN_IMAGE.value:
             print("Downloading Qwen-Image adapter...", flush=True)
             qwen_adapter_path = await download_adapter(
                 repo_id="ostris/accuracy_recovery_adapters",
                 filename="qwen_image_torchao_uint3.safetensors",
-                adapters_dir=adapters_dir,
+                adapters_dir=adapters_dir
             )
             print(f"Qwen-Image adapter downloaded to: {qwen_adapter_path}", flush=True)
-
+        
         print("Downloading clip models", flush=True)
         CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
         CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", cache_dir=cst.HUGGINGFACE_CACHE_PATH)

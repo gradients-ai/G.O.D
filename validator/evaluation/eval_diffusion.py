@@ -29,9 +29,8 @@ hf_api = HfApi()
 
 
 def generate_reproducible_seeds(master_seed: int, n: int = 10) -> list[int]:
-    random.seed(master_seed)
+    random.seed(master_seed) 
     return [random.randint(0, 2**32 - 1) for _ in range(n)]
-
 
 def load_comfy_workflows(model_type: str):
     if model_type == ImageModelType.SDXL.value:
@@ -91,24 +90,24 @@ def find_latest_lora_submission_name(repo_id: str) -> str:
             return file
 
     epoch_files = []
-
+    
     for file in model_files:
         if file.endswith(".safetensors"):
             epoch = None
-            match = re.search(r"[-_](\d+)\.safetensors$", file)
+            match = re.search(r'[-_](\d+)\.safetensors$', file)
             if match:
                 try:
                     epoch = int(match.group(1))
                 except ValueError:
                     pass
             else:
-                match = re.search(r"(\d+)\.safetensors$", file)
+                match = re.search(r'(\d+)\.safetensors$', file)
                 if match:
                     try:
                         epoch = int(match.group(1))
                     except ValueError:
                         pass
-
+            
             if epoch is None:
                 return file
             else:
@@ -122,7 +121,7 @@ def find_latest_lora_submission_name(repo_id: str) -> str:
 
 
 @retry_on_5xx()
-def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str | None]:
+def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str | None]:    
     files_metadata = hf_api.list_repo_tree(repo_id=repo_id, repo_type="model")
     check_size_in_gb = 6 if model_type == "sdxl" else 10
     total_check_size = check_size_in_gb * 1024 * 1024 * 1024
@@ -186,7 +185,7 @@ def edit_workflow(
             payload["Checkpoint_loader"]["inputs"]["ckpt_name"] = edit_elements.ckpt_name
         else:
             payload["Checkpoint_loader"]["inputs"]["model_path"] = edit_elements.ckpt_name
-        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
+        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg        
     elif model_type == ImageModelType.FLUX.value:
         payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["CFG"]["inputs"]["guidance"] = edit_elements.cfg

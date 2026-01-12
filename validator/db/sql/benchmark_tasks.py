@@ -36,22 +36,22 @@ async def get_all_benchmark_copies(psql_db: PSQLDB) -> List[BenchmarkTaskCopy]:
             WHERE btc.{cst.TOURNAMENT_ID} IS NOT NULL
             ORDER BY btc.{cst.ROOT_TASK_ID}, btc.{cst.CREATED_AT}
         """
-
+        
         results = await connection.fetch(query)
         return [
             BenchmarkTaskCopy(
-                copy_task_id=row["copy_task_id"],
-                root_task_id=row["root_task_id"],
-                participant_hotkey=row["participant_hotkey"],
-                tournament_id=row["tournament_id"],
-                created_at=row["created_at"],
-                task_type=TaskType(row["task_type"]),
-                model_id=row["model_id"],
-                dataset=row["dataset"],
-                hours_to_complete=row["hours_to_complete"],
-                model_params_count=row["model_params_count"],
-                is_organic=row["is_organic"],
-                task_created_at=row["task_created_at"],
+                copy_task_id=row['copy_task_id'],
+                root_task_id=row['root_task_id'],
+                participant_hotkey=row['participant_hotkey'],
+                tournament_id=row['tournament_id'],
+                created_at=row['created_at'],
+                task_type=TaskType(row['task_type']),
+                model_id=row['model_id'],
+                dataset=row['dataset'],
+                hours_to_complete=row['hours_to_complete'],
+                model_params_count=row['model_params_count'],
+                is_organic=row['is_organic'],
+                task_created_at=row['task_created_at']
             )
             for row in results
         ]
@@ -82,22 +82,22 @@ async def get_benchmark_copies_by_tournament(tournament_id: str, psql_db: PSQLDB
             WHERE btc.{cst.TOURNAMENT_ID} = $1
             ORDER BY btc.{cst.ROOT_TASK_ID}, btc.{cst.CREATED_AT}
         """
-
+        
         results = await connection.fetch(query, tournament_id)
         return [
             BenchmarkTaskCopy(
-                copy_task_id=row["copy_task_id"],
-                root_task_id=row["root_task_id"],
-                participant_hotkey=row["participant_hotkey"],
-                tournament_id=row["tournament_id"],
-                created_at=row["created_at"],
-                task_type=TaskType(row["task_type"]),
-                model_id=row["model_id"],
-                dataset=row["dataset"],
-                hours_to_complete=row["hours_to_complete"],
-                model_params_count=row["model_params_count"],
-                is_organic=row["is_organic"],
-                task_created_at=row["task_created_at"],
+                copy_task_id=row['copy_task_id'],
+                root_task_id=row['root_task_id'],
+                participant_hotkey=row['participant_hotkey'],
+                tournament_id=row['tournament_id'],
+                created_at=row['created_at'],
+                task_type=TaskType(row['task_type']),
+                model_id=row['model_id'],
+                dataset=row['dataset'],
+                hours_to_complete=row['hours_to_complete'],
+                model_params_count=row['model_params_count'],
+                is_organic=row['is_organic'],
+                task_created_at=row['task_created_at']
             )
             for row in results
         ]
@@ -109,16 +109,16 @@ async def build_benchmark_timelines(benchmark_copies: List[BenchmarkTaskCopy], p
     """
     if not benchmark_copies:
         return []
-
+    
     copy_task_ids = list(set(copy.copy_task_id for copy in benchmark_copies))
-
+    
     task_results = await get_task_scores_batch(copy_task_ids, psql_db)
-
+    
     timelines_dict = {}
-
+    
     for copy in benchmark_copies:
         root_task_id = copy.root_task_id
-
+        
         if root_task_id not in timelines_dict:
             timelines_dict[root_task_id] = BenchmarkTimeline(
                 root_task_id=root_task_id,
@@ -129,26 +129,26 @@ async def build_benchmark_timelines(benchmark_copies: List[BenchmarkTaskCopy], p
                 model_params_count=copy.model_params_count,
                 is_organic=copy.is_organic,
                 task_created_at=copy.task_created_at,
-                benchmarks=[],
+                benchmarks=[]
             )
-
+        
         test_loss = None
         copy_results = task_results.get(copy.copy_task_id, [])
         for result in copy_results:
             if result.hotkey == copy.participant_hotkey:
                 test_loss = result.test_loss
                 break
-
+        
         benchmark_instance = BenchmarkInstance(
             copy_task_id=copy.copy_task_id,
             participant_hotkey=copy.participant_hotkey,
             tournament_id=copy.tournament_id,
             created_at=copy.created_at,
-            test_loss=test_loss,
+            test_loss=test_loss
         )
-
+        
         timelines_dict[root_task_id].benchmarks.append(benchmark_instance)
-
+    
     return sorted(timelines_dict.values(), key=lambda x: x.root_task_id)
 
 

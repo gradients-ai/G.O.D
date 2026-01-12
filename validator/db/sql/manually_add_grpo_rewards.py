@@ -11,7 +11,11 @@ from validator.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-async def manually_store_reward_functions(connection_string: str, reward_functions: list[Callable], is_generic: bool = True):
+async def manually_store_reward_functions(
+    connection_string: str,
+    reward_functions: list[Callable],
+    is_generic: bool = True
+):
     """Manually store reward functions in the database."""
 
     pool = await asyncpg.create_pool(connection_string)
@@ -40,7 +44,11 @@ async def manually_store_reward_functions(connection_string: str, reward_functio
         await pool.close()
 
 
-async def update_is_manual_for_reward_functions(connection_string: str, is_manual: bool, func_names: list[str] | None):
+async def update_is_manual_for_reward_functions(
+    connection_string: str,
+    is_manual: bool,
+    func_names: list[str] | None
+):
     """Update the is_manual field for reward functions.
 
     Args:

@@ -45,9 +45,10 @@ async def verify_orchestrator_ip(request: Request):
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     if not are_gpus_available(req.gpu_ids):
         raise HTTPException(
-            status_code=409, detail=f"GPU conflict detected. Requested GPUs are already in use by running training tasks."
+            status_code=409,
+            detail=f"GPU conflict detected. Requested GPUs are already in use by running training tasks."
         )
-
+    
     await start_task(req)
 
     try:

@@ -51,26 +51,26 @@ def patch_model_metadata(output_dir: str, base_model_id: str):
         print(f"Error updating metadata: {e}", flush=True)
         pass
 
-
+            
 def is_folder_empty_or_metadata_only(folder_path: str) -> bool:
     """Check if folder is empty or only contains small metadata files like .gitattributes."""
     if not os.path.isdir(folder_path):
         return True
-
+    
     items = os.listdir(folder_path)
     if not items:
         return True
-
-    metadata_files = {".git", ".gitattributes", ".gitignore", ".gitkeep"}
+    
+    metadata_files = {'.git', '.gitattributes', '.gitignore', '.gitkeep'}
     for item in items:
         item_path = os.path.join(folder_path, item)
         if os.path.isdir(item_path):
-            if item != ".git":
+            if item != '.git':
                 return False
         elif item not in metadata_files:
             if os.path.getsize(item_path) > 1024:
                 return False
-
+    
     return True
 
 
@@ -87,7 +87,12 @@ def sync_wandb_logs(cache_dir: str):
         print(f"Syncing run: {run_dir}")
 
         try:
-            proc = subprocess.run(["wandb", "sync", "--include-offline", run_dir], check=True, capture_output=True, text=True)
+            proc = subprocess.run(
+                ["wandb", "sync", "--include-offline", run_dir],
+                check=True,
+                capture_output=True,
+                text=True
+            )
             output = proc.stdout + proc.stderr
             match = re.search(r"https://wandb\.ai/\S+", output)
             run_url = match.group(0) if match else None
@@ -113,13 +118,13 @@ def detect_subfolder(base_folder: str) -> str | None:
         has_checkpoint_files = False
         for file in os.listdir(item_path):
             file_path = os.path.join(item_path, file)
-            if file.endswith(".safetensors"):
+            if file.endswith('.safetensors'):
                 has_checkpoint_files = True
                 break
-
+        
         if has_checkpoint_files:
             return item_path
-
+    
     return None
 
 
@@ -150,7 +155,7 @@ def main():
     checkpoint_subfolder = detect_subfolder(local_folder)
     if checkpoint_subfolder:
         local_folder = checkpoint_subfolder
-
+    
     if is_folder_empty_or_metadata_only(local_folder):
         raise ValueError(f"Local folder {local_folder} is empty or only contains metadata files. Nothing to upload.")
 

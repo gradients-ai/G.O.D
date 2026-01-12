@@ -532,24 +532,24 @@ async def refund_tournament_participants(psql_db: PSQLDB, tournament_id: str) ->
         existing_refunds = [event for event in participation_events if event.event_type == "refund"]
 
         coldkey_net_refunds = {}
-
+        
         for event in participation_fees:
             coldkey = event.coldkey
             if coldkey not in coldkey_net_refunds:
                 coldkey_net_refunds[coldkey] = 0
             coldkey_net_refunds[coldkey] += event.amount_rao
-
+        
         for event in existing_refunds:
             coldkey = event.coldkey
             if coldkey in coldkey_net_refunds:
                 coldkey_net_refunds[coldkey] += event.amount_rao
-
+        
         refund_count = 0
 
         for coldkey, net_amount in coldkey_net_refunds.items():
             if net_amount < 0:
                 refund_amount = abs(net_amount)
-
+                
                 refund_event = await create_balance_event(
                     psql_db=psql_db,
                     tournament_id=tournament_id,

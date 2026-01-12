@@ -726,7 +726,8 @@ async def _monitor_training_tasks(config: Config):
                     trainer_ips = [trainer_ip]
 
                 logger.info(
-                    f"Checking task {training_task.task.task_id} with hotkey {training_task.hotkey} on trainer(s) {trainer_ips}"
+                    f"Checking task {training_task.task.task_id} with hotkey {training_task.hotkey} "
+                    f"on trainer(s) {trainer_ips}"
                 )
                 responses = []
                 for ip in trainer_ips:

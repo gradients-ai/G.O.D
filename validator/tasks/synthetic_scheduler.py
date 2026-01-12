@@ -203,9 +203,8 @@ def _get_training_hours_from_num_rows(num_rows: int) -> tuple[int, int]:
         raise ValueError(f"No training hours range found for {num_rows} rows")
     return random.randint(min_hours, max_hours)
 
-
 def _get_training_hours_for_environment_task() -> int:
-    """For now get random number of hours between 4 and 6"""
+    """ For now get random number of hours between 4 and 6 """
     return random.randint(4, 6)
 
 
@@ -530,6 +529,7 @@ async def create_synthetic_affine_grpo_task(
 
     except Exception as e:
         logger.error(f"Failed to create affine GRPO task: {e}")
+        
 
 
 @retry_with_backoff

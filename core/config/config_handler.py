@@ -129,7 +129,7 @@ def _process_chat_template_dataset_fields(dataset_dict: dict) -> dict:
 
     processed_dict["message_property_mappings"] = {
         "role": dataset_dict.chat_role_field,
-        "content": dataset_dict.chat_content_field,
+        "content": dataset_dict.chat_content_field
     }
 
     return processed_dict
@@ -157,3 +157,5 @@ def create_reward_funcs_file(reward_funcs: list[str], task_id: str, destination_
             f.write(f"{reward_func}\n\n")
 
     return filename, func_names
+
+

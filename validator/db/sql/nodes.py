@@ -25,7 +25,10 @@ async def get_all_nodes(psql_db: PSQLDB) -> list[Node]:
         """
         rows = await connection.fetch(query, NETUID)
         # Filter out 'trust' field as it was removed from Node model
-        nodes = [Node(**{k: v for k, v in dict(row).items() if k != dcst.TRUST}) for row in rows]
+        nodes = [
+            Node(**{k: v for k, v in dict(row).items() if k != dcst.TRUST})
+            for row in rows
+        ]
         return nodes
 
 

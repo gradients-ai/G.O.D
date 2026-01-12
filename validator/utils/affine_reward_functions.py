@@ -15,7 +15,7 @@ def sat_reward_function(completions, extra_data=None, **kwargs):
     import json
     import re
 
-    extra_data_list = extra_data if extra_data is not None else kwargs.get("extra_data", [])
+    extra_data_list = extra_data if extra_data is not None else kwargs.get('extra_data', [])
 
     if not extra_data_list:
         return [0.0] * len(completions)
@@ -34,7 +34,7 @@ def sat_reward_function(completions, extra_data=None, **kwargs):
             except json.JSONDecodeError:
                 scores.append(0.0)
                 continue
-
+        
         if not isinstance(extra_data_item, dict):
             scores.append(0.0)
             continue
@@ -54,9 +54,9 @@ def sat_reward_function(completions, extra_data=None, **kwargs):
                 continue
 
             assignments = {}
-            for match in re.findall(r"x(\d+)\s*=\s*(True|False|1|0)", str(completion), re.IGNORECASE):
+            for match in re.findall(r'x(\d+)\s*=\s*(True|False|1|0)', str(completion), re.IGNORECASE):
                 var_num = int(match[0])
-                value = match[1].lower() in ("true", "1")
+                value = match[1].lower() in ('true', '1')
                 assignments[var_num] = value
 
             if not assignments:
@@ -101,7 +101,7 @@ def abd_reward_function(completions, extra_data=None, **kwargs):
     import json
     import re
 
-    extra_data_list = extra_data if extra_data is not None else kwargs.get("extra_data", [])
+    extra_data_list = extra_data if extra_data is not None else kwargs.get('extra_data', [])
 
     if not extra_data_list:
         return [0.0] * len(completions)
@@ -120,7 +120,7 @@ def abd_reward_function(completions, extra_data=None, **kwargs):
             except json.JSONDecodeError:
                 scores.append(0.0)
                 continue
-
+        
         if not isinstance(extra_data_item, dict):
             scores.append(0.0)
             continue
@@ -197,7 +197,7 @@ def ded_reward_function(completions, extra_data=None, **kwargs):
     import json
     import re
 
-    extra_data_list = extra_data if extra_data is not None else kwargs.get("extra_data", [])
+    extra_data_list = extra_data if extra_data is not None else kwargs.get('extra_data', [])
 
     if not extra_data_list:
         return [0.0] * len(completions)
@@ -216,7 +216,7 @@ def ded_reward_function(completions, extra_data=None, **kwargs):
             except json.JSONDecodeError:
                 scores.append(0.0)
                 continue
-
+        
         if not isinstance(extra_data_item, dict):
             scores.append(0.0)
             continue
@@ -246,7 +246,7 @@ def ded_reward_function(completions, extra_data=None, **kwargs):
             submitted_code = match.group(1).strip()
 
             try:
-                compile(submitted_code, "<string>", "exec")
+                compile(submitted_code, '<string>', 'exec')
             except:
                 scores.append(0.2)
                 continue

@@ -6,7 +6,7 @@ from datetime import datetime
 
 # --- Configuration ---
 BASE_MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
-LORA_MODEL_NAME = None  # Place the name of your HuggingFace repo with the trained LORA here.
+LORA_MODEL_NAME = None # Place the name of your HuggingFace repo with the trained LORA here.
 VLLM_IMAGE = "vllm/vllm-openai:latest"
 AGENTGYM_IMAGE = "affinefoundation/agentgym:alfworld"
 NETWORK_NAME = "agent_eval_net"
@@ -20,7 +20,6 @@ RANDOM_SEED = 42
 
 client = docker.from_env()
 
-
 def run_random_eval_suite():
     containers = {}
     all_results = []
@@ -28,8 +27,7 @@ def run_random_eval_suite():
     try:
         # 1. Infrastructure Setup
         networks = client.networks.list(names=[NETWORK_NAME])
-        if not networks:
-            client.networks.create(NETWORK_NAME, driver="bridge")
+        if not networks: client.networks.create(NETWORK_NAME, driver="bridge")
 
         if LORA_MODEL_NAME:
             print(f"🚀 Starting vLLM: {BASE_MODEL_NAME} w/ lora {LORA_MODEL_NAME}")
@@ -45,16 +43,20 @@ def run_random_eval_suite():
             name="vllm-server",
             detach=True,
             network=NETWORK_NAME,
-            ports={"8000/tcp": 8000},
-            device_requests=[docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])],
+            ports={'8000/tcp': 8000},
+            device_requests=[docker.types.DeviceRequest(count=-1, capabilities=[['gpu']])],
         )
-        containers["vllm"] = vllm
+        containers['vllm'] = vllm
 
         print("🚀 Starting AgentGym Server...")
         agent = client.containers.run(
-            AGENTGYM_IMAGE, name="agentgym-server", detach=True, network=NETWORK_NAME, ports={"8000/tcp": 8001}
+            AGENTGYM_IMAGE,
+            name="agentgym-server",
+            detach=True,
+            network=NETWORK_NAME,
+            ports={'8000/tcp': 8001} 
         )
-        containers["agent"] = agent
+        containers['agent'] = agent
 
         # 2. Wait for Readiness
         print("⏳ Waiting for vLLM health check...")
@@ -78,14 +80,14 @@ def run_random_eval_suite():
             inference_model_name = BASE_MODEL_NAME
 
         for i, task_id in enumerate(eval_list):
-            print(f"🔄 [{i + 1}/{NUM_EVALS}] Task ID: {task_id}...", end="", flush=True)
+            print(f"🔄 [{i+1}/{NUM_EVALS}] Task ID: {task_id}...", end="", flush=True)
 
             payload = {
                 "model": inference_model_name,
                 "base_url": "http://vllm-server:8000/v1",
                 "task_id": task_id,
                 "temperature": TEMPERATURE,
-                "max_round": 30,
+                "max_round": 30
             }
 
             try:
@@ -93,22 +95,20 @@ def run_random_eval_suite():
                 response = requests.post("http://localhost:8001/evaluate", json=payload, timeout=2500)
                 result = response.json()
 
-                latency = result.get("time_taken", time.time() - start_ts)
-                score = result.get("score", 0.0)
+                latency = result.get('time_taken', time.time() - start_ts)
+                score = result.get('score', 0.0)
 
                 total_score += score
                 total_time += latency
 
-                all_results.append(
-                    {
-                        "task_id": task_id,
-                        "task_name": result.get("task_name", "unknown"),
-                        "score": score,
-                        "success": result.get("success", False),
-                        "time": latency,
-                        "error": result.get("error"),
-                    }
-                )
+                all_results.append({
+                    "task_id": task_id,
+                    "task_name": result.get('task_name', 'unknown'),
+                    "score": score,
+                    "success": result.get('success', False),
+                    "time": latency,
+                    "error": result.get('error')
+                })
                 print(f" Done (Score: {score})")
             except Exception as e:
                 print(f" Failed: {e}")
@@ -116,6 +116,7 @@ def run_random_eval_suite():
         # 4. Final Aggregation & File Writing
         avg_score = total_score / len(all_results) if all_results else 0
         avg_time = total_time / len(all_results) if all_results else 0
+
 
         safe_model_name = BASE_MODEL_NAME.split("/")[1]
 
@@ -126,10 +127,10 @@ def run_random_eval_suite():
             filename = f"eval_results_{safe_model_name}.txt"
 
         with open(filename, "w") as f:
-            f.write("=" * 40 + "\n")
+            f.write("="*40 + "\n")
             f.write(f"EVALUATION REPORT - {datetime.now()}\n")
             f.write(f"Model: {BASE_MODEL_NAME}\n")
-            f.write("=" * 40 + "\n\n")
+            f.write("="*40 + "\n\n")
             f.write(f"SUMMARY STATS:\n")
             f.write(f"- Total Tasks: {len(all_results)}\n")
             f.write(f"- Average Score: {avg_score:.4f}\n")
@@ -138,10 +139,8 @@ def run_random_eval_suite():
             f.write(f"{'Task ID':<10} | {'Name':<15} | {'Score':<7} | {'Success':<8} | {'Time':<7}\n")
             f.write("-" * 60 + "\n")
             for res in all_results:
-                f.write(
-                    f"{res['task_id']:<10} | {res['task_name']:<15} | {res['score']:<7} | {str(res['success']):<8} | {res['time']:<7.2f}s\n"
-                )
-                if res["error"]:
+                f.write(f"{res['task_id']:<10} | {res['task_name']:<15} | {res['score']:<7} | {str(res['success']):<8} | {res['time']:<7.2f}s\n")
+                if res['error']:
                     f.write(f"   └─ Error: {res['error']}\n")
 
         print(f"\n✅ Evaluation complete. Results saved to: {filename}")
@@ -149,11 +148,8 @@ def run_random_eval_suite():
     finally:
         print("🧹 Cleaning up containers...")
         for c in containers.values():
-            try:
-                c.remove(force=True)
-            except:
-                pass
-
+            try: c.remove(force=True)
+            except: pass
 
 if __name__ == "__main__":
     run_random_eval_suite()

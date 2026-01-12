@@ -19,7 +19,11 @@ async def run_validator_cycles() -> None:
 
     cleanup_temp_files()
 
-    await asyncio.gather(process_pending_tasks(config), refresh_nodes_periodically(config), process_completed_tasks(config))
+    await asyncio.gather(
+        process_pending_tasks(config),
+        refresh_nodes_periodically(config),
+        process_completed_tasks(config)
+    )
 
 
 if __name__ == "__main__":

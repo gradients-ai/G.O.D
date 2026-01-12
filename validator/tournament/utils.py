@@ -191,13 +191,7 @@ async def get_task_results_for_ranking(task_id: str, psql_db: PSQLDB) -> list[Mi
             continue
 
         # Create appropriate MinerResults object
-        if task_type in [
-            TaskType.INSTRUCTTEXTTASK,
-            TaskType.CHATTASK,
-            TaskType.DPOTASK,
-            TaskType.GRPOTASK,
-            TaskType.ENVIRONMENTTASK,
-        ]:
+        if task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.CHATTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
             miner_result = MinerResultsText(
                 hotkey=hotkey,
                 test_loss=test_loss,
@@ -672,7 +666,7 @@ async def get_environment_group_winners(
 
         participant_scores = {}
         boss_score = None
-
+        
         for result in ranked_results:
             hotkey = result.hotkey
             adjusted_loss = result.adjusted_loss
@@ -706,22 +700,26 @@ async def get_environment_group_winners(
         if boss_score is not None:
             boss_multiplier = 1 + threshold_percentage
             boss_threshold_score = boss_score * boss_multiplier
-
+            
             logger.info(
                 f"Boss score: {boss_score:.6f}, Threshold: {threshold_percentage * 100:.1f}%, "
                 f"Boss threshold score: {boss_threshold_score:.6f}"
             )
-
+            
             eligible_participants = {}
             for hotkey, score in participant_scores.items():
                 if hotkey == boss_hotkey:
                     eligible_participants[hotkey] = score
                 elif score >= boss_threshold_score:
                     eligible_participants[hotkey] = score
-                    logger.info(f"Challenger {hotkey} beats boss threshold: {score:.6f} >= {boss_threshold_score:.6f}")
+                    logger.info(
+                        f"Challenger {hotkey} beats boss threshold: {score:.6f} >= {boss_threshold_score:.6f}"
+                    )
                 else:
-                    logger.info(f"Challenger {hotkey} does not beat boss threshold: {score:.6f} < {boss_threshold_score:.6f}")
-
+                    logger.info(
+                        f"Challenger {hotkey} does not beat boss threshold: {score:.6f} < {boss_threshold_score:.6f}"
+                    )
+            
             if len(eligible_participants) == 1 and boss_hotkey in eligible_participants:
                 logger.info(f"No challengers beat boss threshold. Boss {boss_hotkey} wins.")
                 return [boss_hotkey]
@@ -732,7 +730,7 @@ async def get_environment_group_winners(
 
         # Sort descending for environment tasks (higher is better)
         sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=True)
-
+        
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss (descending, higher is better): "
             f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"
@@ -798,7 +796,7 @@ async def get_group_winners(
 
         sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
         ranking_direction = "ascending (lower is better)"
-
+        
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss ({ranking_direction}): "
             f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"

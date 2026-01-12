@@ -64,7 +64,10 @@ def evaluate_kl_divergence_repo(evaluation_args: EvaluationArgs) -> None:
 
         # Calculate KL divergence
         kl_divergence = calculate_kl_divergence(
-            original_model=original_model, finetuned_model=finetuned_model, dataset=eval_dataset, tokenizer=tokenizer
+            original_model=original_model,
+            finetuned_model=finetuned_model,
+            dataset=eval_dataset,
+            tokenizer=tokenizer
         )
 
         # Update results with KL divergence
@@ -83,7 +86,9 @@ def evaluate_kl_divergence_repo(evaluation_args: EvaluationArgs) -> None:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         logger.error(f"Expected 1 argument, got {len(sys.argv) - 1}")
-        logger.error("Usage: python -m validator.evaluation.single_eval_kl_divergence <serialized_evaluation_args>")
+        logger.error(
+            "Usage: python -m validator.evaluation.single_eval_kl_divergence <serialized_evaluation_args>"
+        )
         sys.exit(1)
 
     evaluation_args = EvaluationArgs.model_validate_json(sys.argv[1])

@@ -5,7 +5,6 @@ from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
 
-
 def _dpo_format_prompt(row, format_str):
     result = format_str
     if "{prompt}" in format_str and cst.DPO_DEFAULT_FIELD_PROMPT in row and pd.notna(row[cst.DPO_DEFAULT_FIELD_PROMPT]):
@@ -46,7 +45,7 @@ def adapt_columns_for_dpo_dataset(dataset_path: str, dataset_type: DpoDatasetTyp
         dataset_type: DpoDatasetType with field mappings
         apply_formatting: If True, apply formatting templates to the content
     """
-    with open(dataset_path, "r") as f:
+    with open(dataset_path, 'r') as f:
         data = json.load(f)
     df = pd.DataFrame(data)
 
@@ -54,7 +53,7 @@ def adapt_columns_for_dpo_dataset(dataset_path: str, dataset_type: DpoDatasetTyp
         dataset_type.field_prompt: cst.DPO_DEFAULT_FIELD_PROMPT,
         dataset_type.field_system: cst.DPO_DEFAULT_FIELD_SYSTEM,
         dataset_type.field_chosen: cst.DPO_DEFAULT_FIELD_CHOSEN,
-        dataset_type.field_rejected: cst.DPO_DEFAULT_FIELD_REJECTED,
+        dataset_type.field_rejected: cst.DPO_DEFAULT_FIELD_REJECTED
     }
     df = df.rename(columns=column_mapping)
 
@@ -69,8 +68,8 @@ def adapt_columns_for_dpo_dataset(dataset_path: str, dataset_type: DpoDatasetTyp
             format_str = dataset_type.rejected_format
             df[cst.DPO_DEFAULT_FIELD_REJECTED] = df.apply(lambda row: _dpo_format_rejected(row, format_str), axis=1)
 
-    output_data = df.to_dict(orient="records")
-    with open(dataset_path, "w") as f:
+    output_data = df.to_dict(orient='records')
+    with open(dataset_path, 'w') as f:
         json.dump(output_data, f, indent=2)
 
     print("Transformed dataset to include chatml.intel field names:")
@@ -86,14 +85,14 @@ def adapt_columns_for_grpo_dataset(dataset_path: str, dataset_type: GrpoDatasetT
         dataset_path: Path to the JSON dataset file
         dataset_type: GrpoDatasetType with field mappings
     """
-    with open(dataset_path, "r") as f:
+    with open(dataset_path, 'r') as f:
         data = json.load(f)
     df = pd.DataFrame(data)
     df = df.rename(columns={dataset_type.field_prompt: cst.GRPO_DEFAULT_FIELD_PROMPT})
     # Remove records where the prompt field is empty or None
     df = df[df[cst.GRPO_DEFAULT_FIELD_PROMPT].notna() & (df[cst.GRPO_DEFAULT_FIELD_PROMPT] != "")]
-    output_data = df.to_dict(orient="records")
-    with open(dataset_path, "w") as f:
+    output_data = df.to_dict(orient='records')
+    with open(dataset_path, 'w') as f:
         json.dump(output_data, f, indent=2)
 
     print(f"Transformed dataset to adapt to axolotl's `{cst.GRPO_DEFAULT_FIELD_PROMPT}` expected column name.")
@@ -106,14 +105,15 @@ def adapt_columns_for_environment_dataset(dataset_path: str, dataset_type: Envir
         dataset_path: Path to the JSON dataset file
         dataset_type: EnvironmentDatasetType with field mappings
     """
-    with open(dataset_path, "r") as f:
+    with open(dataset_path, 'r') as f:
         data = json.load(f)
     df = pd.DataFrame(data)
     df = df.rename(columns={"prompt": cst.GRPO_DEFAULT_FIELD_PROMPT})
     # Remove records where the prompt field is empty or None
     df = df[df[cst.GRPO_DEFAULT_FIELD_PROMPT].notna() & (df[cst.GRPO_DEFAULT_FIELD_PROMPT] != "")]
-    output_data = df.to_dict(orient="records")
-    with open(dataset_path, "w") as f:
+    output_data = df.to_dict(orient='records')
+    with open(dataset_path, 'w') as f:
         json.dump(output_data, f, indent=2)
 
     print(f"Transformed dataset to adapt to axolotl's `{cst.GRPO_DEFAULT_FIELD_PROMPT}` expected column name.")
+

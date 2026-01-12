@@ -65,7 +65,6 @@ class TrainRequestGrpo(TrainRequest):
     dataset_type: GrpoDatasetType
     file_format: FileFormat
 
-
 class TrainRequestEnvironment(TrainRequest):
     dataset: str = Field(
         ...,
@@ -175,14 +174,8 @@ class NewTaskRequest(BaseModel):
     account_id: UUID
     hours_to_complete: float = Field(..., description="The number of hours to complete the task", examples=[1])
     result_model_name: str | None = Field(None, description="The name to give to a model that is created by this task")
-    backend: str = Field(
-        default="oblivus", description="The backend to use for training: 'oblivus' or 'runpod'", examples=["runpod", "oblivus"]
-    )
-    yarn_factor: int | None = Field(
-        None,
-        description=f"YaRN extension factor for extending context length (powers of 2: {cst.YARN_VALID_FACTORS})",
-        examples=[2, 4, 8, 16],
-    )
+    backend: str = Field(default="oblivus", description="The backend to use for training: 'oblivus' or 'runpod'", examples=["runpod", "oblivus"])
+    yarn_factor: int | None = Field(None, description=f"YaRN extension factor for extending context length (powers of 2: {cst.YARN_VALID_FACTORS})", examples=[2, 4, 8, 16])
 
     @field_validator("yarn_factor")
     @classmethod
@@ -252,12 +245,10 @@ class NewTaskRequestChat(NewTaskRequest):
             if field in values and isinstance(values[field], str):
                 values[field] = values[field].strip() or None
         return values
-
-
+    
 class NewTaskRequestEnvironment(NewTaskRequest):
-    environment_name: str = Field(
-        ..., description="The name of the specific environment we are training for.", examples=["alfworld"]
-    )
+    environment_name: str = Field(..., description="The name of the specific environment we are training for.", examples=["alfworld"])
+
 
     ds_repo: str = Field(..., description="The repository for the dataset", examples=["Magpie-Align/Magpie-Pro-300K-Filtered"])
     model_repo: str = Field(..., description="The repository for the model", examples=["Qwen/Qwen2.5-Coder-32B-Instruct"])
@@ -481,7 +472,6 @@ class GrpoTaskDetails(TaskDetails):
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
 
-
 class EnvironmentTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.ENVIRONMENTTASK
     environment_name: str
@@ -581,38 +571,35 @@ class AddRewardFunctionRequest(BaseModel):
 
 
 # Type alias for task details types
-AnyTypeTaskDetails = (
-    InstructTextTaskDetails | ChatTaskDetails | ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails | EnvironmentTaskDetails
-)
+AnyTypeTaskDetails = InstructTextTaskDetails | ChatTaskDetails| ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails | EnvironmentTaskDetails
 
 
 class DstackRunStatus(BaseModel):
     """Dstack run status response model"""
-
     status: str = Field(..., description="Run status: submitted, provisioning, running, done, failed, aborted, terminated")
     latest_job_submission: dict | None = None
-
+    
     def get_status(self) -> str:
         """Get the status string, handling both string and dict formats"""
         if isinstance(self.status, dict):
             return self.status.get("status", "Unknown")
         return str(self.status)
-
+    
     def is_provisioning(self) -> bool:
         """Check if run is in provisioning state"""
         status = self.get_status().lower()
         return "provisioning" in status or "submitted" in status
-
+    
     def is_running(self) -> bool:
         """Check if run is in running state"""
         status = self.get_status().lower()
         return "running" in status
-
+    
     def is_done(self) -> bool:
         """Check if run is done (successfully completed)"""
         status = self.get_status().lower()
         return status == "done"
-
+    
     def is_failed(self) -> bool:
         """Check if run has failed"""
         status = self.get_status().lower()

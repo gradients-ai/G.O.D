@@ -52,9 +52,7 @@ async def debug_weight_calculation():
         print(f"  Winner: {tournament_audit_data.text_tournament_data.winner_hotkey}")
         print(f"  Number of rounds: {len(tournament_audit_data.text_tournament_data.rounds)}")
         for idx, round_data in enumerate(tournament_audit_data.text_tournament_data.rounds):
-            print(
-                f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks"
-            )
+            print(f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks")
     else:
         print("  ❌ No text tournament data")
 
@@ -65,9 +63,7 @@ async def debug_weight_calculation():
         print(f"  Winner: {tournament_audit_data.image_tournament_data.winner_hotkey}")
         print(f"  Number of rounds: {len(tournament_audit_data.image_tournament_data.rounds)}")
         for idx, round_data in enumerate(tournament_audit_data.image_tournament_data.rounds):
-            print(
-                f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks"
-            )
+            print(f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks")
     else:
         print("  ❌ No image tournament data")
 

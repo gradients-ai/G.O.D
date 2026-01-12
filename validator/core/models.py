@@ -159,7 +159,7 @@ class GrpoRawTask(RawTask):
             if reward_function.func_hash is None:
                 reward_function.func_hash = hashlib.sha256(reward_function.reward_func.encode()).hexdigest()
         return self
-
+    
 
 class EnvRawTask(RawTask):
     """
@@ -169,6 +169,7 @@ class EnvRawTask(RawTask):
     environment_name: str | None = None
     task_type: TaskType = TaskType.ENVIRONMENTTASK
     synthetic_data: str | None = None
+
 
 
 class InstructTextRawTask(RawTask):
@@ -241,10 +242,8 @@ class DpoTask(DpoRawTask):
 class GrpoTask(GrpoRawTask):
     trained_model_repository: str | None = None
 
-
 class EnvTask(EnvRawTask):
     trained_model_repository: str | None = None
-
 
 class ChatTask(ChatRawTask):
     trained_model_repository: str | None = None
@@ -484,7 +483,6 @@ class DpoTaskWithHotkeyDetails(DpoTask):
 
 class GrpoTaskWithHotkeyDetails(GrpoTask):
     hotkey_details: list[HotkeyDetails]
-
 
 class EnvTaskWithHotkeyDetails(EnvTask):
     hotkey_details: list[HotkeyDetails]

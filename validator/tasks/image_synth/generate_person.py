@@ -21,13 +21,11 @@ import validator.utils.comfy_api_gate as api_gate
 with open(cst.PERSON_WORKFLOW_PATH, "r") as file:
     avatar_template = json.load(file)
 
-
 def get_face_image():
     response = requests.get(cst.FACE_IMAGE_URL)
     response.raise_for_status()
     image = Image.open(BytesIO(response.content))
     return image
-
 
 def gen_name() -> str:
     titles = ["Mr.", "Dr.", "Mrs.", "Ms.", "Miss", "Lord", "Lady", "Prof.", "Sir", ""]
@@ -70,30 +68,25 @@ def gen_name() -> str:
             else:
                 return names.get_full_name()
 
-
 if __name__ == "__main__":
     face_image = get_face_image()
     face_image.save(cst.FACE_IMAGE_PATH)
 
     person_prompt = cst.PERSON_PROMPT.replace("'person_name'", gen_name())
 
-    prompts_config = type(
-        "Args",
-        (),
-        {
-            "model_path": cst.LLAVA_MODEL_PATH,
-            "model_base": None,
-            "model_name": get_model_name_from_path(cst.LLAVA_MODEL_PATH),
-            "query": person_prompt,
-            "conv_mode": None,
-            "image_file": cst.FACE_IMAGE_PATH,
-            "sep": ",",
-            "temperature": 0.8,
-            "top_p": None,
-            "num_beams": 1,
-            "max_new_tokens": 6000,
-        },
-    )()
+    prompts_config = type('Args', (), {
+        "model_path": cst.LLAVA_MODEL_PATH,
+        "model_base": None,
+        "model_name": get_model_name_from_path(cst.LLAVA_MODEL_PATH),
+        "query": person_prompt,
+        "conv_mode": None,
+        "image_file": cst.FACE_IMAGE_PATH,
+        "sep": ",",
+        "temperature": 0.8,
+        "top_p": None,
+        "num_beams": 1,
+        "max_new_tokens": 6000
+    })()
 
     f = io.StringIO()
     with redirect_stdout(f):
@@ -115,3 +108,5 @@ if __name__ == "__main__":
         image.save(f"{save_dir}{image_id}.png")
         with open(f"{save_dir}{image_id}.txt", "w") as file:
             file.write(prompt)
+
+

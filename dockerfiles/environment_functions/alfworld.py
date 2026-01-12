@@ -9,14 +9,13 @@ This is a unoptimized implementation that only trains the model on its first int
 Read more about rollout functions here: https://huggingface.co/docs/trl/main/en/openenv
 """
 
-
 def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: int = 30) -> dict[str, list]:
     from trl.experimental.openenv import generate_rollout_completions
     import os
     import random
     import requests
     import json
-
+    
     # --- 1. Static Initialization (Once per Rank) ---
     # We check if the function has already established a connection for this worker
     if not getattr(alfworld_rollout_first_prompt_and_completion, "initialized", False):
@@ -26,7 +25,7 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
         # Get env server for that local rank
         raw_urls = os.environ.get("ENVIRONMENT_SERVER_URLS", "")
         server_list = [url.strip() for url in raw_urls.split(",") if url.strip()]
-
+        
         # Determine endpoint
         if not server_list:
             # Fallback (though likely fatal for the task)
@@ -37,7 +36,7 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
 
         # Store endpoint on the function to avoid re-parsing
         alfworld_rollout_first_prompt_and_completion.base_url = base_url
-
+        
         # Create environment (POST /create) - ONLY ONCE
         try:
             print(f"Initializing AlfWorld environment on rank {rank} at {base_url}...")
@@ -74,7 +73,7 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
         {
             "from": "gpt",
             "value": "OK. I'll follow your instructions and try my best to solve the task.",
-        },
+        }
     ]
 
     # --- 3. Batch Loop ---
@@ -89,16 +88,16 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
         done = False
         solved = False
         turn_number = 0
-
+        
         # --- Reset Environment (POST /reset) ---
         # Reuse existing env_id, just change the game
         payload = {"id": env_id, "game": game_id, "world_type": "Text"}
-
+        
         try:
             reset_res = requests.post(f"{env_endpoint}/reset", json=payload, timeout=TIMEOUT)
             reset_res.raise_for_status()
             reset_data = reset_res.json()
-
+            
             # Construct Initial Observation
             current_observation = reset_data["observation"]
             current_available_actions = reset_data["available_actions"]
@@ -114,7 +113,7 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
                 messages.append({"role": "user", "content": message["value"]})
             elif message["from"] == "gpt":
                 messages.append({"role": "assistant", "content": message["value"]})
-
+        
         messages.append({"role": "user", "content": formatted_observation})
 
         # --- Interaction Loop ---
@@ -141,7 +140,7 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
             # Parse ReAct format
             if "Action:" in action_to_send:
                 action_to_send = action_to_send.split("Action:")[-1].strip()
-
+            
             # --- Step Environment (POST /step) ---
             step_reward = 0.0
             step_done = False
@@ -158,13 +157,13 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
                 step_reward = step_data["reward"]
                 step_done = step_data["done"]
                 current_available_actions = step_data["available_actions"]
-
+                
                 # Format next observation
                 formatted_observation = f"{step_state}\nAVAILABLE ACTIONS: {','.join(current_available_actions)}"
-
+                
             except Exception as e:
                 print(f"Step failed: {e}")
-                formatted_observation = "Invalid Action.\n\n" + formatted_observation
+                formatted_observation = "Invalid Action.\n\n" + formatted_observation 
                 step_reward = 0.0
                 step_done = False
 
@@ -174,14 +173,14 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
 
             if "Nothing happens" in step_state:
                 invalid_count += 1
-
+            
             done = step_done
 
             if not done:
                 messages.append({"role": "user", "content": formatted_observation})
 
             turn_number += 1
-
+        
         train_reward = (1.0 if solved else 0.0) - 0.01 * float(invalid_count)
         all_episode_prompt_ids.append(episode_prompt_ids)
         all_episode_completion_ids.append(episode_completion_ids)
@@ -192,9 +191,8 @@ def alfworld_rollout_first_prompt_and_completion(prompts: list[str], trainer, ma
         "prompt_ids": all_episode_prompt_ids,
         "completion_ids": all_episode_completion_ids,
         "logprobs": all_episode_logprobs,
-        "env_rewards": all_episode_rewards,
+        "env_rewards": all_episode_rewards
     }
-
 
 def alfworld_rollout_reward_func(completions, **kwargs):
     rewards = kwargs.get("env_rewards") if kwargs else None

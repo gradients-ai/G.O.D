@@ -1,3 +1,5 @@
+
+
 def reward_specific_char_count(completions, **kwargs):
     """Rewards completions that are close to n_chars characters."""
     n_chars = 100
@@ -28,7 +30,7 @@ def reward_high_unique_words_percentage(completions, **kwargs):
         if not words:
             scores.append(0.0)
         else:
-            scores.append(len(set(words)) / len(words))
+            scores.append(len(set(words))/len(words))
     return scores
 
 
@@ -40,14 +42,13 @@ def reward_low_unique_words_percentage(completions, **kwargs):
         if not words:
             scores.append(0.0)
         else:
-            scores.append(-len(set(words)) / len(words))
+            scores.append(-len(set(words))/len(words))
     return scores
 
 
 def reward_think_answer_format(completions, **kwargs):
     """Reward function that checks if the completion has a specific format."""
     import re
-
     pattern = r"^<think>.*?</think><answer>.*?</answer>$"
     try:
         matches = [re.match(pattern, content) for content in completions]
@@ -61,55 +62,25 @@ def reward_reasoning_keywords(completions, **kwargs):
     """Rewards presence of important reasoning keywords."""
     keywords = [
         # Cause and effect
-        "because",
-        "therefore",
-        "thus",
-        "hence",
-        "consequently",
-        "as a result",
+        'because', 'therefore', 'thus', 'hence', 'consequently', 'as a result',
         # Contrast and comparison
-        "however",
-        "nevertheless",
-        "nonetheless",
-        "although",
-        "despite",
-        "whereas",
-        "while",
+        'however', 'nevertheless', 'nonetheless', 'although', 'despite', 'whereas', 'while',
         # Examples and evidence
-        "example",
-        "instance",
-        "specifically",
-        "particularly",
-        "notably",
+        'example', 'instance', 'specifically', 'particularly', 'notably',
         # Addition and sequence
-        "furthermore",
-        "moreover",
-        "additionally",
-        "first",
-        "second",
-        "finally",
+        'furthermore', 'moreover', 'additionally', 'first', 'second', 'finally',
         # Logical connections
-        "if",
-        "then",
-        "unless",
-        "since",
-        "given that",
-        "assuming that",
+        'if', 'then', 'unless', 'since', 'given that', 'assuming that',
         # Analysis and evaluation
-        "analyze",
-        "evaluate",
-        "consider",
-        "examine",
-        "assess",
-        "determine",
+        'analyze', 'evaluate', 'consider', 'examine', 'assess', 'determine'
     ]
-    return [sum(keyword in completion.lower() for keyword in keywords) for completion in completions]
+    return [sum(keyword in completion.lower() for keyword in keywords)
+            for completion in completions]
 
 
 def reward_high_difficult_words_percentage(completions, **kwargs):
     """Rewards text with higher difficult words percentage."""
     import textstat
-
     scores = []
     for comp in completions:
         words = comp.split()
@@ -117,14 +88,13 @@ def reward_high_difficult_words_percentage(completions, **kwargs):
             scores.append(0.0)
         else:
             difficult_words = textstat.difficult_words(comp)
-            scores.append(difficult_words / len(words))
+            scores.append(difficult_words/len(words))
     return scores
 
 
 def reward_low_difficult_words_percentage(completions, **kwargs):
     """Rewards text with lower difficult words percentage."""
     import textstat
-
     scores = []
     for comp in completions:
         words = comp.split()
@@ -132,14 +102,13 @@ def reward_low_difficult_words_percentage(completions, **kwargs):
             scores.append(0.0)
         else:
             difficult_words = textstat.difficult_words(comp)
-            scores.append(-difficult_words / len(words))
+            scores.append(-difficult_words/len(words))
     return scores
 
 
 def reward_long_sentences(completions, **kwargs):
     """Rewards text with longer average sentence length."""
     import textstat
-
     scores = [textstat.words_per_sentence(comp) for comp in completions]
     return scores
 
@@ -147,7 +116,6 @@ def reward_long_sentences(completions, **kwargs):
 def reward_short_sentences(completions, **kwargs):
     """Rewards text with shorter average sentence length."""
     import textstat
-
     scores = [textstat.words_per_sentence(comp) for comp in completions]
     return [-s for s in scores]
 
@@ -155,7 +123,6 @@ def reward_short_sentences(completions, **kwargs):
 def reward_long_words(completions, **kwargs):
     """Rewards text with more characters per word."""
     import textstat
-
     scores = [textstat.avg_character_per_word(comp) for comp in completions]
     return scores
 
@@ -163,7 +130,6 @@ def reward_long_words(completions, **kwargs):
 def reward_short_words(completions, **kwargs):
     """Rewards text with fewer characters per word."""
     import textstat
-
     scores = [textstat.avg_character_per_word(comp) for comp in completions]
     return [-s for s in scores]
 
@@ -171,7 +137,6 @@ def reward_short_words(completions, **kwargs):
 def reward_high_syllables_per_word(completions, **kwargs):
     """Rewards text with more syllables per word."""
     import textstat
-
     scores = [textstat.avg_syllables_per_word(comp) for comp in completions]
     return scores
 
@@ -179,7 +144,6 @@ def reward_high_syllables_per_word(completions, **kwargs):
 def reward_low_syllables_per_word(completions, **kwargs):
     """Rewards text with fewer syllables per word."""
     import textstat
-
     scores = [textstat.avg_syllables_per_word(comp) for comp in completions]
     return [-s for s in scores]
 
@@ -187,7 +151,6 @@ def reward_low_syllables_per_word(completions, **kwargs):
 def reward_high_readability(completions, **kwargs):
     """Rewards more readable text using Flesch reading ease score."""
     import textstat
-
     scores = [textstat.flesch_reading_ease(comp) for comp in completions]
     return scores
 
@@ -195,7 +158,6 @@ def reward_high_readability(completions, **kwargs):
 def reward_low_readability(completions, **kwargs):
     """Rewards less readable text using Flesch reading ease score."""
     import textstat
-
     scores = [textstat.flesch_reading_ease(comp) for comp in completions]
     return [-s for s in scores]
 
@@ -203,16 +165,14 @@ def reward_low_readability(completions, **kwargs):
 def reward_flesch_kincaid_grade(completions, **kwargs):
     """Rewards text matching target grade level via Flesch-Kincaid Grade Level."""
     import textstat
-
     target_grade = 12
     scores = [textstat.flesch_kincaid_grade(comp) for comp in completions]
-    return [1 - min(abs(s - target_grade) / 10, 1) for s in scores]
+    return [1 - min(abs(s - target_grade)/10, 1) for s in scores]
 
 
 def reward_positive_sentiment(completions, **kwargs):
     """Rewards completions with more positive sentiment."""
     import langcheck
-
     scores = langcheck.metrics.sentiment(completions)
     return scores.metric_values
 
@@ -220,7 +180,6 @@ def reward_positive_sentiment(completions, **kwargs):
 def reward_negative_sentiment(completions, **kwargs):
     """Rewards completions with more negative sentiment."""
     import langcheck
-
     scores = langcheck.metrics.sentiment(completions)
     return [-s for s in scores.metric_values]
 
@@ -228,7 +187,6 @@ def reward_negative_sentiment(completions, **kwargs):
 def reward_high_fluency(completions, **kwargs):
     """Rewards completions that are fluent."""
     import langcheck
-
     scores = langcheck.metrics.fluency(completions)
     return scores.metric_values
 
@@ -236,7 +194,6 @@ def reward_high_fluency(completions, **kwargs):
 def reward_low_fluency(completions, **kwargs):
     """Rewards completions that are less fluent."""
     import langcheck
-
     scores = langcheck.metrics.fluency(completions)
     return [-s for s in scores.metric_values]
 
@@ -244,109 +201,97 @@ def reward_low_fluency(completions, **kwargs):
 def reward_high_toxicity_score(completions, **kwargs):
     """Rewards completions with higher general toxicity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["toxicity"]]
+    return [score for score in results['toxicity']]
 
 
 def reward_low_toxicity_score(completions, **kwargs):
     """Rewards completions with lower general toxicity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["toxicity"]]
+    return [1 - score for score in results['toxicity']]
 
 
 def reward_high_severe_toxicity_score(completions, **kwargs):
     """Rewards completions with higher severe toxicity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["severe_toxicity"]]
+    return [score for score in results['severe_toxicity']]
 
 
 def reward_low_severe_toxicity_score(completions, **kwargs):
     """Rewards completions with lower severe toxicity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["severe_toxicity"]]
+    return [1 - score for score in results['severe_toxicity']]
 
 
 def reward_high_obscene_score(completions, **kwargs):
     """Rewards completions with higher obscenity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["obscene"]]
+    return [score for score in results['obscene']]
 
 
 def reward_low_obscene_score(completions, **kwargs):
     """Rewards completions with lower obscenity scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["obscene"]]
+    return [1 - score for score in results['obscene']]
 
 
 def reward_high_threat_score(completions, **kwargs):
     """Rewards completions with higher threat scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["threat"]]
+    return [score for score in results['threat']]
 
 
 def reward_low_threat_score(completions, **kwargs):
     """Rewards completions with lower threat scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["threat"]]
+    return [1 - score for score in results['threat']]
 
 
 def reward_high_insult_score(completions, **kwargs):
     """Rewards completions with higher insult scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["insult"]]
+    return [score for score in results['insult']]
 
 
 def reward_low_insult_score(completions, **kwargs):
     """Rewards completions with lower insult scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["insult"]]
+    return [1 - score for score in results['insult']]
 
 
 def reward_high_identity_attack_score(completions, **kwargs):
     """Rewards completions with higher identity attack scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [score for score in results["identity_attack"]]
+    return [score for score in results['identity_attack']]
 
 
 def reward_low_identity_attack_score(completions, **kwargs):
     """Rewards completions with lower identity attack scores."""
     from detoxify import Detoxify
-
-    model = Detoxify("original")
+    model = Detoxify('original')
     results = model.predict(completions)
-    return [1 - score for score in results["identity_attack"]]
+    return [1 - score for score in results['identity_attack']]
 
 
 def test_download_all_rewards():

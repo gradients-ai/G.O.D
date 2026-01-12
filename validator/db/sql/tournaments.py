@@ -1321,3 +1321,5 @@ async def get_weekly_task_participation_data(psql_db: PSQLDB) -> list[HotkeyTask
 
         logger.info(f"Found weekly task participation for {len(result)} hotkeys over 7 days")
         return result
+
+

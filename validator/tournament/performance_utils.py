@@ -76,12 +76,14 @@ def get_top_ranked_miners(
                 final_weight = base_weight * scaled_base_weight
         else:
             final_weight = base_weight
-
+        
         real_hotkey_weights[real_hotkey] = final_weight
 
     sorted_miners = sorted(real_hotkey_weights.items(), key=lambda x: x[1], reverse=True)[:limit]
 
-    return [MinerEmissionWeight(hotkey=hotkey, rank=idx + 1, weight=weight) for idx, (hotkey, weight) in enumerate(sorted_miners)]
+    return [
+        MinerEmissionWeight(hotkey=hotkey, rank=idx + 1, weight=weight) for idx, (hotkey, weight) in enumerate(sorted_miners)
+    ]
 
 
 async def calculate_innovation_incentive_for_new_champion(
@@ -192,3 +194,4 @@ async def calculate_tournament_projection(
         initial_weight=initial_weight,
         projections=projections,
     )
+

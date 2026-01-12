@@ -84,44 +84,44 @@ def create_finetuned_cache_dir():
 def patch_base_model_config_if_needed(base_model_name: str, cache_dir: str, context: str = "") -> bool:
     """
     Patch base model config.json if head_dim or partial_rotary_factor is None.
-
+    
     This fixes issues with Yarn models where head_dim is None in the config,
     which causes TypeError: unsupported operand type(s) for *: 'NoneType' and 'float'
     during model loading.
-
+    
     Args:
         base_model_name: The base model name (e.g., "NousResearch/Yarn-Mistral-7b-128k")
         cache_dir: The HuggingFace cache directory
         context: Optional context string for logging (e.g., "fallback path")
-
+    
     Returns:
         True if a patch was applied, False otherwise
     """
     try:
         base_cache_path = os.path.join(cache_dir, "hub", f"models--{base_model_name.replace('/', '--')}")
-
+        
         if not os.path.exists(base_cache_path):
             return False
-
+        
         base_snapshots_dir = os.path.join(base_cache_path, "snapshots")
         if not os.path.exists(base_snapshots_dir):
             return False
-
+        
         base_snapshots = sorted(os.listdir(base_snapshots_dir))
         if not base_snapshots:
             return False
-
+        
         base_snapshot_path = os.path.join(base_snapshots_dir, base_snapshots[-1])
         base_config_file = os.path.join(base_snapshot_path, "config.json")
-
+        
         if not os.path.exists(base_config_file):
             return False
-
-        with open(base_config_file, "r") as cfg_f:
+        
+        with open(base_config_file, 'r') as cfg_f:
             base_config_dict = json.load(cfg_f)
-
+        
         needs_patch = False
-
+        
         if base_config_dict.get("head_dim") is None:
             if base_config_dict.get("hidden_size") and base_config_dict.get("num_attention_heads"):
                 calculated_head_dim = base_config_dict["hidden_size"] // base_config_dict["num_attention_heads"]
@@ -129,23 +129,20 @@ def patch_base_model_config_if_needed(base_model_name: str, cache_dir: str, cont
                 context_str = f" ({context})" if context else ""
                 logger.info(f"Patching head_dim={calculated_head_dim} in base model config{context_str}")
                 needs_patch = True
-
-        if (
-            base_config_dict.get("partial_rotary_factor") is None
-            and base_config_dict.get("rope_scaling", {}).get("type") == "yarn"
-        ):
+        
+        if base_config_dict.get("partial_rotary_factor") is None and base_config_dict.get("rope_scaling", {}).get("type") == "yarn":
             base_config_dict["partial_rotary_factor"] = 1.0
             context_str = f" ({context})" if context else ""
             logger.info(f"Patching partial_rotary_factor=1.0 in base model config{context_str}")
             needs_patch = True
-
+        
         if needs_patch:
-            with open(base_config_file, "w") as cfg_f:
+            with open(base_config_file, 'w') as cfg_f:
                 json.dump(base_config_dict, cfg_f, indent=2)
             context_str = f" ({context})" if context else ""
             logger.info(f"Patched base model config.json at {base_config_file}{context_str}")
             return True
-
+        
         return False
     except Exception as e:
         logger.warning(f"Failed to patch base model config for {base_model_name}: {e}", exc_info=True)
@@ -285,10 +282,10 @@ def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftM
                                     with open(adapter_config_path) as f:
                                         adapter_config = json.load(f)
                                         base_model_name = adapter_config.get("base_model_name_or_path")
-
+                                        
                                         if base_model_name:
                                             patch_base_model_config_if_needed(base_model_name, cache_dir)
-
+                                
                                 model = AutoPeftModelForCausalLM.from_pretrained(
                                     snapshot_path,
                                     is_trainable=False,

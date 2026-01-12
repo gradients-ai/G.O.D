@@ -60,13 +60,11 @@ async def add_reward_function(
     try:
         logger.error(f"ENDPOINT DEBUG: About to process code for '{request.name}', code length: {len(request.code)}")
         logger.error(f"ENDPOINT DEBUG: Code contains 'restricted_execution': {'restricted_execution' in request.code}")
-
+        
         code_to_store = process_reward_function_code(request.code)
-
+        
         logger.error(f"ENDPOINT DEBUG: Processed code length: {len(code_to_store)}")
-        logger.error(
-            f"ENDPOINT DEBUG: Processed code contains 'def restricted_execution': {'def restricted_execution' in code_to_store}"
-        )
+        logger.error(f"ENDPOINT DEBUG: Processed code contains 'def restricted_execution': {'def restricted_execution' in code_to_store}")
 
         reward_id = await grpo_sql.add_reward_function(
             config.psql_db,

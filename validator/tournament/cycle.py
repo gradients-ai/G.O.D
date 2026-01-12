@@ -28,7 +28,7 @@ async def cycle():
         # this advances the tournament till completion
         process_active_tournaments(config),
         # this automatically creates new tournaments when previous ones complete
-        process_tournament_scheduling(config),
+        process_tournament_scheduling(config)
     )
 
 

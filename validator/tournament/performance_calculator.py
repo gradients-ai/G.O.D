@@ -72,20 +72,20 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 for result in ranked_results
                 if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
             ]
-
-            valid_participants.sort(key=lambda x: x[1], reverse=True)
+            
+            valid_participants.sort(key=lambda x: x[1], reverse=True) 
 
             for hotkey, score in valid_participants:
                 if hotkey == EMISSION_BURN_HOTKEY:
                     boss_score = score
                     break
-
+            
             if boss_score is None:
                 logger.warning(f"Boss {boss_hotkey} not found in scores for task {task.task_id}")
                 continue
 
             boss_won = tournament.winner_hotkey == EMISSION_BURN_HOTKEY
-
+            
             if boss_won:
                 for hotkey, score in valid_participants:
                     if hotkey != EMISSION_BURN_HOTKEY:

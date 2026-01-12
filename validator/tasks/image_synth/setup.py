@@ -53,15 +53,16 @@ def download_file(*, repo_id: str, filename: str, local_dir: str, cache_dir: str
         print(f"Warning: Failed to remove cache file: {e}")
 
 
+
 def snapshot_repo(repo_id: str, local_dir: str) -> None:
     os.makedirs(local_dir, exist_ok=True)
     print(f"Downloading snapshot of {repo_id} into {local_dir} ...")
     snapshot_download(
         repo_id=repo_id,
-        local_dir=os.path.abspath(local_dir),
-        local_dir_use_symlinks=False,
+        local_dir=os.path.abspath(local_dir),   
+        local_dir_use_symlinks=False,           
         resume_download=True,
-        ignore_patterns=["*.msgpack", "*.h5"],
+        ignore_patterns=["*.msgpack", "*.h5"],  
     )
     print(f"Snapshot of {repo_id} downloaded to {local_dir}")
 

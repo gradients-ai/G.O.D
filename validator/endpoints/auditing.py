@@ -18,7 +18,9 @@ router = APIRouter(tags=["auditing"])
 
 
 @router.get("/auditing/tasks")
-async def audit_recent_tasks_endpoint(limit: int = 100, page: int = 1, config: Config = Depends(get_config)) -> list[AnyTypeTask]:
+async def audit_recent_tasks_endpoint(
+    limit: int = 100, page: int = 1, config: Config = Depends(get_config)
+) -> list[AnyTypeTask]:
     return await get_recent_tasks(None, limit=limit, page=page, config=config)
 
 
@@ -30,7 +32,9 @@ async def audit_recent_tasks_for_hotkey_endpoint(
 
 
 @router.get("/auditing/tasks/{task_id}")
-async def audit_task_details_endpoint(task_id: str, config: Config = Depends(get_config)) -> AnyTypeTaskWithHotkeyDetails:
+async def audit_task_details_endpoint(
+    task_id: str, config: Config = Depends(get_config)
+) -> AnyTypeTaskWithHotkeyDetails:
     logger.info(f"Getting task details for task {task_id}")
     return await get_task_with_hotkey_details(task_id, config)
 

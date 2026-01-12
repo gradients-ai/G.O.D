@@ -452,7 +452,6 @@ class NodeWeightsResult(BaseModel):
         """Convert to tuple format for compatibility with existing code"""
         return self.node_ids, self.node_weights
 
-
 class MinerEmissionWeight(BaseModel):
     hotkey: str
     rank: int
@@ -490,7 +489,7 @@ class MultiWeightProjectionResponse(BaseModel):
 
 class BossBattleResponse(BaseModel):
     """Response for boss battle performance differences"""
-
+    
     text_tournament_id: str | None
     text_performance_differences: list[TaskPerformanceDifference]
     image_tournament_id: str | None

@@ -181,10 +181,7 @@ async def main():
     parser.add_argument("--dataset", required=True, help="Dataset path or HF dataset name")
     parser.add_argument("--dataset-type", required=True, help="JSON string of dataset type config")
     parser.add_argument(
-        "--task-type",
-        required=True,
-        choices=["InstructTextTask", "DpoTask", "GrpoTask", "ChatTask", "EnvTask"],
-        help="Type of task",
+        "--task-type", required=True, choices=["InstructTextTask", "DpoTask", "GrpoTask", "ChatTask", "EnvTask"], help="Type of task"
     )
     parser.add_argument("--file-format", required=True, choices=["csv", "json", "hf", "s3"], help="File format")
     parser.add_argument("--expected-repo-name", help="Expected repository name")
@@ -217,9 +214,9 @@ async def main():
     elif args.task_type == TaskType.GRPOTASK.value:
         adapt_columns_for_grpo_dataset(dataset_path, dataset_type)
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
-        # adapt_columns_for_environment_dataset(dataset_path, dataset_type) # NOTE: Remove to test RO cache
+        #adapt_columns_for_environment_dataset(dataset_path, dataset_type) # NOTE: Remove to test RO cache
         pass
-
+    
     dataset_path = copy_dataset_to_axolotl_directories(dataset_path)
 
     output_dir = train_paths.get_checkpoints_output_path(args.task_id, args.expected_repo_name)

@@ -23,7 +23,7 @@ _task_lock = asyncio.Lock()
 async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
     async with _task_lock:
         load_task_history()
-
+        
         task_id = task.training_data.task_id
         hotkey = task.hotkey
 
@@ -51,7 +51,7 @@ async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
 async def complete_task(task_id: str, hotkey: str, success: bool = True):
     async with _task_lock:
         load_task_history()
-
+        
         task = get_task(task_id, hotkey)
         if task is None:
             return
@@ -70,7 +70,7 @@ def get_task(task_id: str, hotkey: str) -> TrainerTaskLog | None:
 async def log_task(task_id: str, hotkey: str, message: str):
     async with _task_lock:
         load_task_history()
-
+        
         task = get_task(task_id, hotkey)
         if task:
             timestamped_message = f"[{datetime.utcnow().isoformat()}] {message}"
@@ -81,7 +81,7 @@ async def log_task(task_id: str, hotkey: str, message: str):
 async def update_wandb_url(task_id: str, hotkey: str, wandb_url: str):
     async with _task_lock:
         load_task_history()
-
+        
         task = get_task(task_id, hotkey)
         if task:
             task.wandb_url = wandb_url

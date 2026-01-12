@@ -79,7 +79,7 @@ async def create_environment_tournament_tasks(
     """
     if not isinstance(round_data, GroupRound):
         raise ValueError("Environment tournaments only support group rounds")
-
+    
     tasks = await _create_environment_group_tasks(round_data, tournament_id, round_id, config)
     return [str(task.task_id) for task in tasks]
 
@@ -91,22 +91,24 @@ async def _create_environment_group_tasks(
     Create a single environment task that all groups (and all participants + boss) compete on.
     """
     logger.info(f"Creating environment tournament with {len(round_data.groups)} groups - single task for all participants")
-
+    
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config)
-
+    
     if existing_tasks:
         logger.info(f"Environment tournament round {round_id} already has {len(existing_tasks)} task(s), skipping task creation")
         return await _get_existing_tasks(existing_tasks, config)
-
+    
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-
+    
     logger.info("Creating single environment task for all participants")
     task = await create_synthetic_env_task(config, models, instruct_datasets)
 
     group_id = f"{round_id}_group_001"
-    await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
-
+    await _create_and_register_tournament_task(
+        task, tournament_id, round_id, config, group_id=group_id
+    )
+    
     logger.info(f"Created environment tournament task {task.task_id} for all participants")
     return [task]
 
@@ -142,7 +144,9 @@ async def _create_single_group_image_tasks(
     logger.info(f"    Group {group_index + 1} has {existing_count}/{t_cst.IMAGE_TASKS_PER_GROUP} task, creating 1 more")
 
     task = await _create_single_image_task_with_retry(config, image_models, 0, group_index)
-    await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+    await _create_and_register_tournament_task(
+        task, tournament_id, round_id, config, group_id=group_id
+    )
 
     return [task]
 
@@ -180,7 +184,9 @@ async def _create_single_knockout_image_task(
 
     logger.info(f"    Pair {pair_index + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
     task = await _create_single_image_task_with_retry(config, image_models, 0, pair_index)
-    await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+    await _create_and_register_tournament_task(
+        task, tournament_id, round_id, config, pair_id=pair_id
+    )
     return [task]
 
 
@@ -255,18 +261,14 @@ async def _create_and_register_tournament_task(
     )
     await add_tournament_tasks([tournament_task], config.psql_db)
     gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
-
+    
     # Format log message based on task type
     if task.task_type == TaskType.IMAGETASK:
         logger.info(f"Image: {task.task_id} - Model: {task.model_id} - GPU: {gpu_req}")
     else:
-        dataset_info = f" - Dataset: {task.ds}" if hasattr(task, "ds") and task.ds else ""
-        duration_info = (
-            f" - Duration: {task.hours_to_complete} hours"
-            if hasattr(task, "hours_to_complete") and task.hours_to_complete
-            else ""
-        )
-        task_type_info = f"{task.task_type.value}: " if hasattr(task.task_type, "value") else ""
+        dataset_info = f" - Dataset: {task.ds}" if hasattr(task, 'ds') and task.ds else ""
+        duration_info = f" - Duration: {task.hours_to_complete} hours" if hasattr(task, 'hours_to_complete') and task.hours_to_complete else ""
+        task_type_info = f"{task.task_type.value}: " if hasattr(task.task_type, 'value') else ""
         logger.info(f"{task_type_info}{task.task_id} - Model: {task.model_id}{dataset_info} - GPU: {gpu_req}{duration_info}")
 
 
@@ -314,7 +316,9 @@ async def _create_single_group_text_tasks(
     task.hours_to_complete = 2
     await task_sql.update_task(task, config.psql_db)
 
-    await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+    await _create_and_register_tournament_task(
+        task, tournament_id, round_id, config, group_id=group_id
+    )
 
     return [task]
 
@@ -357,7 +361,9 @@ async def _create_probability_based_text_tasks(
         logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
         task = await _create_single_probability_task(config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob)
 
-        await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+        await _create_and_register_tournament_task(
+            task, tournament_id, round_id, config, pair_id=pair_id
+        )
         tasks.append(task)
     return tasks
 
@@ -378,7 +384,7 @@ async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask
     if task.task_type == TaskType.IMAGETASK:
         models = _get_image_models(config.keypair)
         return await _create_task_by_type(task.task_type, config, models, [], [])
-
+    
     model_params_b = int(task.model_params_count / t_cst.MODEL_PARAMS_TO_BILLIONS)
 
     # Handle case where model params is 0 or very small
@@ -440,9 +446,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
                 models = big_models
             else:
                 models = standard_models
-            task = await _create_single_new_text_task(
-                task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets
-            )
+            task = await _create_single_new_text_task(task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets)
             if task:
                 tasks.append(task)
 
@@ -450,23 +454,18 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
 
 
 async def _create_single_new_text_task(
-    task_type: TaskType,
-    tournament_id: str,
-    round_id: str,
-    pair_id: str,
-    config: Config,
-    models: list,
-    instruct_datasets: list,
-    dpo_datasets: list,
+    task_type: TaskType, tournament_id: str, round_id: str, pair_id: str, config: Config, models: list, instruct_datasets: list, dpo_datasets: list
 ) -> RawTask | None:
     """Create a single new synthetic text task of a specific type."""
     try:
         if task_type not in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
             logger.error(f"Unknown task type {task_type} for boss round text task")
             return None
-
+        
         task = await _create_task_by_type(task_type, config, models, instruct_datasets, dpo_datasets)
-        await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+        await _create_and_register_tournament_task(
+            task, tournament_id, round_id, config, pair_id=pair_id
+        )
         return task
     except Exception as e:
         logger.error(f"Failed to create boss round {task_type.value} task: {e}", exc_info=True)
@@ -488,11 +487,10 @@ async def _create_new_image_boss_round_tasks(tournament_id: str, round_id: str, 
 
     existing_task_objects = await _get_existing_tasks(existing_tasks, config)
     existing_qwen_zimage = sum(
-        1
-        for task in existing_task_objects
-        if hasattr(task, "model_type") and task.model_type in [ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
+        1 for task in existing_task_objects 
+        if hasattr(task, 'model_type') and task.model_type in [ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
     )
-
+    
     tasks = existing_task_objects
     num_needed = t_cst.FINAL_ROUND_IMAGE_TASKS - existing_count
     num_qwen_zimage = min(t_cst.FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS - existing_qwen_zimage, num_needed)
@@ -547,7 +545,9 @@ async def replace_tournament_task(
         raise
 
     try:
-        await _create_and_register_tournament_task(new_task, tournament_id, round_id, config, group_id=group_id, pair_id=pair_id)
+        await _create_and_register_tournament_task(
+            new_task, tournament_id, round_id, config, group_id=group_id, pair_id=pair_id
+        )
         logger.info(f"Created replacement task {new_task.task_id} for round {round_id}")
     except Exception as e:
         logger.error(f"Failed to add tournament task to database: {str(e)}", exc_info=True)

@@ -26,7 +26,9 @@ class GRPOStrategy:
     """Strategy for GRPO training"""
 
     @classmethod
-    def get_trainer_class(cls, sequence_parallel: bool) -> type[AxolotlGRPOTrainer] | type[AxolotlGRPOSequenceParallelTrainer]:
+    def get_trainer_class(
+        cls, sequence_parallel: bool
+    ) -> type[AxolotlGRPOTrainer] | type[AxolotlGRPOSequenceParallelTrainer]:
         if sequence_parallel:
             return AxolotlGRPOSequenceParallelTrainer
         return AxolotlGRPOTrainer
@@ -51,14 +53,20 @@ class GRPOStrategy:
                 grpo_args_kwargs["vllm_mode"] = trl.vllm_mode
             if trl.vllm_mode == "colocate":
                 grpo_args_kwargs["vllm_enable_sleep_mode"] = trl.vllm_enable_sleep_mode  # type: ignore[attr-defined]
-                grpo_args_kwargs["vllm_gpu_memory_utilization"] = vllm_cfg.gpu_memory_utilization
-                grpo_args_kwargs["vllm_tensor_parallel_size"] = vllm_cfg.tensor_parallel_size
+                grpo_args_kwargs["vllm_gpu_memory_utilization"] = (
+                    vllm_cfg.gpu_memory_utilization
+                )
+                grpo_args_kwargs["vllm_tensor_parallel_size"] = (
+                    vllm_cfg.tensor_parallel_size
+                )
             grpo_args_kwargs["vllm_server_host"] = trl.vllm_server_host or trl.vllm.host  # type: ignore[attr-defined]
             grpo_args_kwargs["vllm_server_port"] = trl.vllm_server_port or trl.vllm.port  # type: ignore[attr-defined]
             if trl.vllm_server_timeout:
                 grpo_args_kwargs["vllm_server_timeout"] = trl.vllm_server_timeout
             if trl.vllm_guided_decoding_regex:
-                grpo_args_kwargs["vllm_guided_decoding_regex"] = trl.vllm_guided_decoding_regex
+                grpo_args_kwargs["vllm_guided_decoding_regex"] = (
+                    trl.vllm_guided_decoding_regex
+                )
 
         if trl.num_generations:
             grpo_args_kwargs["num_generations"] = trl.num_generations
@@ -80,7 +88,9 @@ class GRPOStrategy:
             grpo_args_kwargs["context_parallel_size"] = cfg.context_parallel_size
 
         if trl.importance_sampling_level is not None:
-            grpo_args_kwargs["importance_sampling_level"] = trl.importance_sampling_level
+            grpo_args_kwargs["importance_sampling_level"] = (
+                trl.importance_sampling_level
+            )
 
         if trl.reward_weights:
             grpo_args_kwargs["reward_weights"] = trl.reward_weights
@@ -91,7 +101,9 @@ class GRPOStrategy:
         if trl.loss_type is not None:
             grpo_args_kwargs["loss_type"] = trl.loss_type
         if trl.mask_truncated_completions is not None:
-            grpo_args_kwargs["mask_truncated_completions"] = trl.mask_truncated_completions
+            grpo_args_kwargs["mask_truncated_completions"] = (
+                trl.mask_truncated_completions
+            )
 
         if trl.temperature is not None:
             grpo_args_kwargs["temperature"] = trl.temperature
@@ -133,7 +145,9 @@ class GRPOStrategy:
         if cfg.trl and cfg.trl.rollout_func:
             trainer_kwargs["rollout_func"] = cls.get_rollout_func(cfg.trl.rollout_func)
         if cfg.trl and cfg.trl.reward_processing_classes:
-            trainer_kwargs["reward_processing_classes"] = cfg.trl.reward_processing_classes
+            trainer_kwargs["reward_processing_classes"] = (
+                cfg.trl.reward_processing_classes
+            )
 
         return trainer_kwargs
 
@@ -165,10 +179,14 @@ class GRPOStrategy:
         try:
             # use importlib to dynamically load the reward function from the module
             reward_func_module_name = reward_func_fqn.split(".")[-1]
-            reward_func_module = importlib.import_module(".".join(reward_func_fqn.split(".")[:-1]))
+            reward_func_module = importlib.import_module(
+                ".".join(reward_func_fqn.split(".")[:-1])
+            )
             reward_func = getattr(reward_func_module, reward_func_module_name)
             if not len(inspect.signature(reward_func).parameters) >= 2:
-                raise ValueError("Reward function must accept at least two arguments: prompts: list and completions: list")
+                raise ValueError(
+                    "Reward function must accept at least two arguments: prompts: list and completions: list"
+                )
             return reward_func
         except ModuleNotFoundError as exc:
             # the user has passed a string (ideally indicating the path of a reward model)
@@ -182,7 +200,9 @@ class GRPOStrategy:
                 LOG.info(pretrained_log_msg)
                 return reward_func_fqn
             except HTTPError:
-                raise ValueError(f"Reward function {reward_func_fqn} not found.") from exc
+                raise ValueError(
+                    f"Reward function {reward_func_fqn} not found."
+                ) from exc
 
     @classmethod
     def get_rollout_func(cls, rollout_func_fqn: str):
@@ -198,11 +218,15 @@ class GRPOStrategy:
         """
         try:
             rollout_func_module_name = rollout_func_fqn.split(".")[-1]
-            rollout_func_module = importlib.import_module(".".join(rollout_func_fqn.split(".")[:-1]))
+            rollout_func_module = importlib.import_module(
+                ".".join(rollout_func_fqn.split(".")[:-1])
+            )
             rollout_func = getattr(rollout_func_module, rollout_func_module_name)
 
             if not callable(rollout_func):
-                raise ValueError(f"Rollout function {rollout_func_fqn} must be callable")
+                raise ValueError(
+                    f"Rollout function {rollout_func_fqn} must be callable"
+                )
 
             return rollout_func
 

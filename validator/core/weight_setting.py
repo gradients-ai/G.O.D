@@ -291,9 +291,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     logger.info(f"[TEXT] innovation_incentive={text_innovation_incentive:.4f} (perf_diff={text_performance_diff})")
     logger.info(f"[IMAGE] innovation_incentive={image_innovation_incentive:.4f} (perf_diff={image_performance_diff})")
-    logger.info(
-        f"[ENVIRONMENT] innovation_incentive={environment_innovation_incentive:.4f} (perf_diff={environment_performance_diff})"
-    )
+    logger.info(f"[ENVIRONMENT] innovation_incentive={environment_innovation_incentive:.4f} (perf_diff={environment_performance_diff})")
 
     text_consecutive_wins = 0
     image_consecutive_wins = 0
@@ -355,12 +353,8 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
     environment_old_decay, environment_new_decay, apply_hybrid_to_environment = 0.0, 0.0, False
     environment_champion_hotkey = get_real_tournament_winner(latest_environment_tournament)
     if environment_champion_hotkey:
-        environment_consecutive_wins = await count_champion_consecutive_wins(
-            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
-        )
-        first_win_tournament = await get_tournament_where_champion_first_won(
-            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
-        )
+        environment_consecutive_wins = await count_champion_consecutive_wins(psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey)
+        first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey)
 
         environment_old_decay, environment_new_decay, apply_hybrid_to_environment = calculate_hybrid_decays(
             first_win_tournament.updated_at, environment_consecutive_wins
@@ -385,13 +379,9 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     text_burn_proportion = (cts.MAX_TEXT_TOURNAMENT_WEIGHT - text_tournament_weight) / cts.MAX_TEXT_TOURNAMENT_WEIGHT
     image_burn_proportion = (cts.MAX_IMAGE_TOURNAMENT_WEIGHT - image_tournament_weight) / cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-    environment_burn_proportion = (
-        cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_tournament_weight
-    ) / cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT
+    environment_burn_proportion = (cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_tournament_weight) / cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT
 
-    logger.info(
-        f"Weights - Text tournament: {text_tournament_weight}, Image tournament: {image_tournament_weight}, Environment tournament: {environment_tournament_weight}"
-    )
+    logger.info(f"Weights - Text tournament: {text_tournament_weight}, Image tournament: {image_tournament_weight}, Environment tournament: {environment_tournament_weight}")
     logger.info(f"Total burn weight: {burn_weight}")
 
     return TournamentBurnData(
@@ -554,22 +544,14 @@ async def get_node_weights_from_tournament_audit_data(
     scaled_environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT * scale_factor
 
     # Check that scaled weights + participation still sum to 1.0
-    scaled_weight_sum = (
-        scaled_text_tournament_weight
-        + scaled_image_tournament_weight
-        + scaled_environment_tournament_weight
-        + scaled_burn_weight
-        + participation_total
-    )
-    logger.info(
-        f"Scaled weights sum (scaled_text + scaled_image + scaled_environment + scaled_burn + participation): {scaled_weight_sum:.10f}"
-    )
+    scaled_weight_sum = scaled_text_tournament_weight + scaled_image_tournament_weight + scaled_environment_tournament_weight + scaled_burn_weight + participation_total
+    logger.info(f"Scaled weights sum (scaled_text + scaled_image + scaled_environment + scaled_burn + participation): {scaled_weight_sum:.10f}")
     logger.info(f"Scaled weights sum to 1.0? {abs(scaled_weight_sum - 1.0) < 0.0001}")
 
     text_tournament_weights, image_tournament_weights, environment_tournament_weights = get_tournament_weights_from_data(
-        tournament_audit_data.text_tournament_data,
+        tournament_audit_data.text_tournament_data, 
         tournament_audit_data.image_tournament_data,
-        tournament_audit_data.environment_tournament_data,
+        tournament_audit_data.environment_tournament_data
     )
 
     text_winner_hotkey = get_real_tournament_winner(tournament_audit_data.text_tournament_data)

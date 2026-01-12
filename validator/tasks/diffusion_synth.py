@@ -385,7 +385,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     # Log image and text URLs for testing
     logger.info(f"Generated {len(image_text_pairs)} image-text pairs with prefix: {ds_prefix}")
     for i, pair in enumerate(image_text_pairs):
-        logger.info(f"Pair {i + 1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
+        logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
     if len(image_text_pairs) >= 10:
         task = ImageRawTask(
