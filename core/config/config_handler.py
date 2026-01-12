@@ -33,15 +33,15 @@ def create_dataset_entry(
         else:
             dataset_entry = {"path": f"/workspace/input_data/{os.path.basename(dataset)}"}
 
-    if isinstance(dataset_type, InstructTextDatasetType):
+    if isinstance(dataset_type, EnvironmentDatasetType):
+        dataset_entry.update(_process_environment_dataset_fields(dataset_type))
+    elif isinstance(dataset_type, InstructTextDatasetType):
         instruct_type_dict = {key: value for key, value in dataset_type.model_dump().items() if value is not None}
         dataset_entry.update(_process_instruct_dataset_fields(instruct_type_dict))
     elif isinstance(dataset_type, DpoDatasetType):
         dataset_entry.update(_process_dpo_dataset_fields(dataset_type))
     elif isinstance(dataset_type, GrpoDatasetType):
         dataset_entry.update(_process_grpo_dataset_fields(dataset_type))
-    elif isinstance(dataset_type, EnvironmentDatasetType):
-        dataset_entry.update(_process_environment_dataset_fields(dataset_type))
     elif isinstance(dataset_type, ChatTemplateDatasetType):
         dataset_entry.update(_process_chat_template_dataset_fields(dataset_type))
     else:
