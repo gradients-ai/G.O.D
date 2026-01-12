@@ -114,13 +114,17 @@ async def wait_for_env_container_ip(environment_server_container) -> str:
         environment_server_container.reload()
         settings = environment_server_container.attrs.get("NetworkSettings", {})
 
-        # Try the direct field first
-        ip_address = settings.get("IPAddress")
-
-        # If empty, look inside the Networks dictionary
+        # First, try to get IP from the specific internal_bridge network
+        networks = settings.get("Networks", {})
+        if cst.INTERNAL_BRIDGE_NAME in networks:
+            ip_address = networks[cst.INTERNAL_BRIDGE_NAME].get("IPAddress")
+        
+        # Fallback: try the direct field (for default bridge network)
         if not ip_address:
-            networks = settings.get("Networks", {})
-            # This safely checks 'bridge' or any first available network
+            ip_address = settings.get("IPAddress")
+
+        # Fallback: check any other network (shouldn't happen, but safer)
+        if not ip_address:
             for net_name in networks:
                 ip_address = networks[net_name].get("IPAddress")
                 if ip_address:

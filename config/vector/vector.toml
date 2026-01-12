@@ -18,7 +18,6 @@ type     = "http_server"
 address  = "0.0.0.0:8688"   # expose 8688 if Vector runs in Docker
 encoding = "json"
 
-
 [sources.internal_metrics]
 type = "internal_metrics"
 
@@ -100,14 +99,22 @@ del(.label_task_type)
 del(.label_expected_repo)
 """
 
+# -------------------------
+# Noise filters
+# -------------------------
+
+# Filter docker logs (after parsing)
 [transforms.filter_noise]
 type = "filter"
 inputs = ["parse_logs"]
 condition = """
-m, err = to_string(.message)
-!contains(m, "Downloading shards") &&
-!contains(m, "Loading checkpoint shards") &&
-!contains(m, "heartbeat")
+m = to_string(.message) ?? ""
+ml = downcase(m)
+
+!contains(ml, "downloading shards") &&
+!contains(ml, "loading checkpoint shards") &&
+!contains(ml, "heartbeat") &&
+!match(ml, r'\\bpost\\s+/(step|health|reset)\\b')
 """
 
 # --- FastAPI normalizer (host logs → same fields/labels as Docker) ---
@@ -159,12 +166,26 @@ if ts_ms != null && ts_ms > 1_600_000_000_000 && ts_ms < 4_100_000_000_000 {
 .count = 1
 """
 
+# Filter FastAPI logs too (so they don't bypass filtering)
+[transforms.filter_noise_fastapi]
+type = "filter"
+inputs = ["normalize_fastapi"]
+condition = """
+m = to_string(.message) ?? ""
+ml = downcase(m)
+
+!contains(ml, "downloading shards") &&
+!contains(ml, "loading checkpoint shards") &&
+!contains(ml, "heartbeat") &&
+!match(ml, r'\\bpost\\s+/(step|health|reset)\\b')
+"""
+
 # -------------------------
 # Sinks
 # -------------------------
 [sinks.loki]
 type = "loki"
-inputs = ["parse_logs", "normalize_fastapi"]
+inputs = ["filter_noise", "filter_noise_fastapi"]
 endpoint = "${LOKI_ENDPOINT}"
 auth.strategy = "basic"
 auth.user = "${LOKI_USERNAME}"
@@ -176,7 +197,6 @@ request.timeout_secs = 30
 request.retry_attempts = 3
 request.retry_initial_backoff_secs = 1
 tls.verify_certificate = false
-
 
 labels.job = "docker-training-containers"
 labels.task_id = "{{ task_id }}"
@@ -191,5 +211,4 @@ labels.model = "{{ model }}"
 type = "prometheus_exporter"
 inputs = ["internal_metrics"]
 address = "0.0.0.0:9090"
-
 default_namespace = "vector"
