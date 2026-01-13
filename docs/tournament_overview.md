@@ -19,50 +19,15 @@ Unlike real-time serving where miners train models on their own hardware for [Gr
 
 ## Tournament Schedule & Timing
 
-The system automatically schedules tournaments on a weekly basis:
+The system automatically schedules tournaments on a weekly basis with separate schedules for each type:
 
 - **Duration**: 4-7 days per tournament
-- **Schedule**: Tournaments start every week on a specific day and time (configured in `validator/core/constants.py`)
-- **Tournament Types**: Text and Image tournaments run independently via `TournamentType.TEXT` and `TournamentType.IMAGE`
+- **Tournament Types**:
+  - `TournamentType.ENVIRONMENT` - Starts every Monday at 14:00 UTC
+  - `TournamentType.TEXT` - Starts every Thursday at 14:00 UTC
+  - `TournamentType.IMAGE` - Starts every Thursday at 14:00 UTC
 - **Auto-Creation**: `process_tournament_scheduling()` creates new tournaments when previous ones complete and the scheduled time arrives
 
-### Weekly Scheduling Configuration
-
-Tournaments are scheduled to start on a specific day and hour each week. Configure these constants in `validator/core/constants.py`:
-
-```python
-TOURNAMENT_SCHEDULE_DAY_OF_WEEK = 0  # 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday
-TOURNAMENT_SCHEDULE_HOUR = 14  # 0-23 (UTC time)
-```
-
-**How it works:**
-
-1. When a tournament completes, the system calculates the next occurrence of the scheduled day/hour
-2. At the scheduled time, a new tournament automatically starts (if no tournament is currently running)
-3. Both text and image tournaments follow the same schedule but run independently
-4. All times are in UTC
-
-**Example schedules:**
-
-```python
-# Start tournaments every Monday at 14:00 UTC
-TOURNAMENT_SCHEDULE_DAY_OF_WEEK = 0
-TOURNAMENT_SCHEDULE_HOUR = 14
-
-# Start tournaments every Friday at 09:00 UTC
-TOURNAMENT_SCHEDULE_DAY_OF_WEEK = 4
-TOURNAMENT_SCHEDULE_HOUR = 9
-
-# Start tournaments every Sunday at 20:00 UTC
-TOURNAMENT_SCHEDULE_DAY_OF_WEEK = 6
-TOURNAMENT_SCHEDULE_HOUR = 20
-```
-
-**Important notes:**
-
-- If a tournament is already running, no new tournament will start regardless of the schedule
-- The system checks for new tournaments every 15 minutes via `process_tournament_scheduling()`
-- Tournaments always start on the hour (minute = 0)
 
 ## Tournament Lifecycle
 
