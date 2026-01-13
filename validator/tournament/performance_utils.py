@@ -79,10 +79,18 @@ def get_top_ranked_miners(
         
         real_hotkey_weights[real_hotkey] = final_weight
 
-    sorted_miners = sorted(real_hotkey_weights.items(), key=lambda x: x[1], reverse=True)[:limit]
+    all_sorted_miners = sorted(real_hotkey_weights.items(), key=lambda x: x[1], reverse=True)
+
+    if winner_hotkey and winner_hotkey in real_hotkey_weights:
+        winner_weight = real_hotkey_weights[winner_hotkey]
+        rest = [(hk, w) for hk, w in all_sorted_miners if hk != winner_hotkey]
+        sorted_miners = [(winner_hotkey, winner_weight)] + rest[: limit - 1]
+    else:
+        sorted_miners = all_sorted_miners[:limit]
 
     return [
-        MinerEmissionWeight(hotkey=hotkey, rank=idx + 1, weight=weight) for idx, (hotkey, weight) in enumerate(sorted_miners)
+        MinerEmissionWeight(hotkey=hotkey, rank=idx + 1, weight=weight)
+        for idx, (hotkey, weight) in enumerate(sorted_miners)
     ]
 
 
