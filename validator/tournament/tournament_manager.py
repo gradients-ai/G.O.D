@@ -553,7 +553,7 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         fee_description = "0.15 TAO"
     elif tournament.tournament_type == TournamentType.ENVIRONMENT:
         participation_fee_rao = t_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO
-        fee_description = "0.25 TAO"
+        fee_description = "0.20 TAO"
     else:
         raise ValueError(f"Unknown tournament type: {tournament.tournament_type}")
 

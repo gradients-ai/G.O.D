@@ -22,7 +22,7 @@ To compete in tournaments, miners must meet the following requirements:
 
 3. **Sufficient Balance** The tournaments require a small fee to participate. All collected fees are burned
 
-   - The current fee for participanting is 0.2 TAO for text tournaments and 0.15 for image ones. You can always check the current fee using the api endpoint:
+   - The current fee for participanting is 0.2 TAO for text tournaments, 0.15 TAO for image tournaments, and 0.20 TAO for environment tournaments. You can always check the current fee using the api endpoint:
      `curl https://api.gradients.io/tournament/fees`
    - To get balance you need to transfer TAO from your coldkey to the collection address: `5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo`
    - The balance is credited per coldkey, so all miner hotkeys with the same coldkey will have a shared balance
@@ -139,6 +139,7 @@ Where `task_type` can be:
 
 - `"text"` - For text-based tournaments (Instruct, DPO, GRPO, Chat)
 - `"image"` - For image-based tournaments (SDXL, Flux)
+- `"environment"` - For environment-based tournaments (e.g., AlfWorld)
 
 **Important**: The repository and commit hash you configure will be used by validators to build and run your training code during tournaments.
 
@@ -189,6 +190,8 @@ Your training scripts accept these standardised CLI arguments:
 ```
 
 **Note:** For GRPO tasks, the reward functions used for training can be found in [`core/manual_reward_funcs.py`](https://github.com/rayonlabs/G.O.D/blob/main/core/manual_reward_funcs.py).
+
+**Note:** For Environment tasks (EnvTask), you must implement rollout functions. See the [Environment Tasks documentation](environment_tasks.md) for details.
 
 ### Image Training Arguments
 
@@ -351,25 +354,45 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 - **Text**: Instruct, DPO, GRPO tasks
 - **Image**: SDXL and Flux diffusion tasks
+- **Environment**: Environment-based reinforcement learning tasks (e.g., AlfWorld)
 
 ### Group Stage
 
+**Text/Image Tournaments:**
 - Miners are organized into groups of 6-8 participants
 - Each group competes on 3 tasks (text tournaments: 1 Instruct task; image tournaments: 1 image task; total of 3 required)
 - Top 8 performers overall across all groups advance to knockout rounds
 
+**Environment Tournaments:**
+- All participants (including boss) compete in a single large group
+- Minimum 5 participants required to start
+- All participants compete on the same environment task
+- Only one round (group stage) - no knockout rounds
+- One winner selected based on highest GRPO score
+
 ### Knockout Rounds
 
+**Text/Image Tournaments:**
 - Single elimination format
 - Runs when field is reduced to 14 or fewer miners
 - Head-to-head competition
 
+**Environment Tournaments:**
+- No knockout rounds - tournament ends after group stage
+
 ### Boss Round
 
+**Text/Image Tournaments:**
 - Tournament winner must face defending champion
 - Uses progressive threshold system with exponential decay based on consecutive wins
 - **Winning Requirements**: Challenger wins by **majority rule** (4+ out of 6 tasks) for **both text and image tournaments**
 - Defending champion retains title unless challenger wins the majority of tasks
+
+**Environment Tournaments:**
+- Boss (defending champion) competes directly in the single group stage
+- Uses progressive threshold system: challengers must beat `boss_score * (1 + threshold_percentage)` to be eligible
+- Winner is the participant with the highest GRPO score among eligible participants
+- If no challenger beats the threshold, boss retains title automatically
 
 #### Championship Defense Thresholds
 
@@ -414,11 +437,40 @@ This system ensures:
 4. **Don't skip validation** - Test with various model sizes and datasets
 5. **Don't upload/download in the training script** - Training container is run with no access to internet or host machine
 
+## Environment Tournaments
+
+Environment tournaments are a specialized tournament type focused on reinforcement learning with environment interactions.
+
+### Key Differences
+
+- **Single Round Structure**: Only one group stage round (no knockout rounds)
+- **All Participants Together**: Boss and all participants compete in a single large group on the same task
+- **Minimum Participants**: Requires at least 5 participants (vs 8 for text/image tournaments)
+- **Participation Fee**: 0.20 TAO per tournament
+- **Schedule**: Starts every Monday at 14:00 UTC
+
+### Scoring System
+
+- **GRPO-Based**: Uses Group Relative Policy Optimization scoring where **higher scores are better**
+- **Progressive Threshold**: Defending champion benefits from progressive threshold (same system as text/image tournaments)
+  - Challengers must beat: `boss_score * (1 + threshold_percentage)` to be eligible
+  - If no challenger beats threshold, boss automatically wins
+- **Winner Selection**: Highest GRPO score among eligible participants wins
+
+### Technical Requirements
+
+- **Rollout Functions**: Must implement custom rollout functions for environment interaction
+- **Environment Servers**: Environment servers are provisioned during training (typically one per GPU)
+- **Environment Variable**: Server URLs provided via `ENVIRONMENT_SERVER_URLS` environment variable
+- **Evaluation**: Post-training evaluation uses 250 episodes to determine final scores
+
+For detailed information on implementing environment tasks, see the [Environment Tasks documentation](environment_tasks.md).
+
 ## Reference Implementation
 
 The G.O.D repository provides base training scripts that you can customize:
 
-- `scripts/text_trainer.py` - Base implementation for text tasks
+- `scripts/text_trainer.py` - Base implementation for text tasks (including environment tasks)
 - `scripts/image_trainer.py` - Base implementation for image tasks
 
 These scripts handle all required functionality including dataset preparation, training configuration, and model saving. You can modify and enhance these scripts to improve performance.
