@@ -298,7 +298,11 @@ async def _evaluate_submissions(
             except Exception as e:
                 logger.warning(f"Failed to remove test data file {test_data_filepath}: {e}")
         else:
-            test_results = await run_evaluation_docker_text(dataset="proxy", **evaluation_params)
+            for attempt in range(3):
+                test_results = await run_evaluation_docker_text(dataset="proxy", **evaluation_params)
+                test_eval_results = test_results.results
+                if test_eval_results.eval_loss != 0.0:
+                    break
 
         test_eval_results = test_results.results
         task.model_params_count = test_results.base_model_params_count
