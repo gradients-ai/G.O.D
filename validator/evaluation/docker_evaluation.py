@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import tarfile
+from datetime import datetime
+from typing import Optional
 
 import docker
 from docker.models.containers import Container
@@ -12,6 +14,9 @@ from huggingface_hub import snapshot_download
 import requests
 import time
 import random
+import basilica
+from requests.adapters import HTTPAdapter
+
 from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
@@ -29,6 +34,11 @@ from validator.tasks.task_prep import unzip_to_temp_path
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
 from validator.utils.logging import stream_container_logs
+from validator.evaluation.utils import (
+    deploy_vllm_basilica,
+    deploy_agentgym_basilica,
+    wait_for_basilica_health,
+)
 
 
 logger = get_logger(__name__)
@@ -409,196 +419,332 @@ async def run_evaluation_docker_environment(
     num_eval_samples: int,
 ) -> DockerEvaluationResults:
     """
-    Run environment evaluation with separate containers for each model repo.
-    This approach launches one container per repo and merges results.
+    Run environment evaluation using Basilica deployments for vLLM and AgentGym.
+    Each model repo gets its own deployments with separate logging and retry logic.
     """
+    logger.info(f"Starting Basilica-based environment evaluation for {len(models)} repos: {models}")
 
-    VLLM_HOST_PORT = 53421
-    AGENT_HOST_PORT = 53422
-
-    dataset_type_str = dataset_type.model_dump_json()
-    dataset_filename = os.path.basename(dataset)
-    dataset_dir = os.path.dirname(os.path.abspath(dataset))
-
-    # Shared environment settings
-    base_environment = {
-        "DATASET": f"/workspace/input_data/{dataset_filename}",
-        "ORIGINAL_MODEL": original_model,
-        "DATASET_TYPE": dataset_type_str,
-        "FILE_FORMAT": file_format.value,
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-    }
-
-    volume_bindings = {
-        dataset_dir: {
-            "bind": "/workspace/input_data",
-            "mode": "ro",
-        },
-        os.path.expanduser(cst.CACHE_DIR_HUB): {
-            "bind": "/root/.cache/huggingface/hub",
-            "mode": "rw",
-        }
-    }
-
-    logger.info(f"Starting sequential environment evaluation for {len(models)} repos: {models}")
-
-    environment_server_image = ""
-    if dataset_type.environment_name == "alfworld":
-        environment_server_image = "affinefoundation/agentgym:alfworld"
-
-    evaluation_results = {}
-    for repo in models:
-
-        client = docker.from_env()
-        environment = base_environment.copy()
-        environment["MODELS"] = repo
-
-        containers = {}
-        all_results = []
-        vllm_log_task = None
-        agent_log_task = None
-
-        # Pre-cleanup: Ensure names are free to prevent "Conflict" errors
-        try: client.containers.get("vllm-server").remove(force=True)
-        except: pass
-        try: client.containers.get("agent-server").remove(force=True)
-        except: pass
-
-        # Start VLLM server for model inference
-        try:
-            # Docker Network Setup
-            networks = client.networks.list(names=["agent_eval_net"])
-            if not networks: client.networks.create("agent_eval_net", driver="bridge")
-            logger.info(f"Starting vLLM: {original_model} w/ lora {repo}")
-            vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --max-lora-rank 256 --port 8000 --trust-remote-code"
-
-            vllm_container: Container = await asyncio.to_thread(
-                client.containers.run,
-                "vllm/vllm-openai:latest",
-                name="vllm-server",
-                command=vllm_command,
-                volumes=volume_bindings,
-                runtime="nvidia",
-                device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-                detach=True,
-                network="agent_eval_net",
-                ports={'8000/tcp': VLLM_HOST_PORT},
-            )
-            containers['vllm'] = vllm_container
-            vllm_log_context = {**get_all_context_tags(), "container_type": "vllm", "repo": repo}
-            vllm_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, vllm_container, None, vllm_log_context))
-
-            logger.info("Starting AgentGym Server...")
-            environment_container: Container = await asyncio.to_thread(
-                client.containers.run,
-                environment_server_image,
-                name="agent-server",
-                detach=True,
-                network="agent_eval_net",
-                ports={'8000/tcp': AGENT_HOST_PORT} 
-            )
-            containers['agent'] = environment_container
-            agent_log_context = {**get_all_context_tags(), "container_type": "agentgym", "repo": repo}
-            agent_log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, environment_container, None, agent_log_context))
-
-            logger.info("Waiting for vLLM health check...")
-            max_wait_time = 300  # 5 minutes timeout
-            start_time = time.time()
-            while True:
-                try:
-                    vllm_container.reload()
-                    if vllm_container.status == 'exited':
-                        exit_code = vllm_container.attrs['State']['ExitCode']
-                        raise Exception(f"vLLM container exited with code {exit_code}. Check logs for details.")
-                except Exception as container_error:
-                    if "exited" in str(container_error).lower():
-                        raise container_error
-                
-                if time.time() - start_time > max_wait_time:
-                    raise TimeoutError(f"vLLM health check timeout after {max_wait_time} seconds")
-                
-                try:
-                    if requests.get(f"http://localhost:{VLLM_HOST_PORT}/v1/models", timeout=2).status_code == 200:
-                        break
-                except:
-                    time.sleep(5)
-            logger.info("vLLM Ready.\n")
-
-            # Evaluation Loop
-            DATA_LEN_RANGE = 2500
-            random.seed(42)
-            eval_list = random.sample(range(1, DATA_LEN_RANGE + 1), num_eval_samples)
-            total_score = 0.0
-            total_time = 0.0
-
-            for i, task_id in enumerate(eval_list):
-                logger.info(f"[{i+1}/{num_eval_samples}] Task ID: {task_id}...")
-
-                payload = {
-                    "model": "trained_lora",
-                    "base_url": "http://vllm-server:8000/v1",
-                    "task_id": task_id,
-                    "temperature": 0.0,
-                    "max_round": 30
-                }
-
-                try:
-                    start_ts = time.time()
-                    response = requests.post(f"http://localhost:{AGENT_HOST_PORT}/evaluate", json=payload, timeout=2500)
-                    result = response.json()
-
-                    latency = result.get('time_taken', time.time() - start_ts)
-                    score = result.get('score', 0.0)
-
-                    total_score += score
-                    total_time += latency
-
-                    all_results.append({
-                        "task_id": task_id,
-                        "task_name": result.get('task_name', 'unknown'),
-                        "score": score,
-                        "success": result.get('success', False),
-                        "time": latency,
-                        "error": result.get('error')
-                    })
-                    logger.info(f" Done (Score: {score})")
-                except Exception as e:
-                    logger.info(f" Failed: {e}")
-
-            # Final Aggregation & File Writing
-            avg_score = total_score / len(all_results) if all_results else 0
-            logger.info(f"Calculated average score of model to be: {avg_score}")
-            avg_time = total_time / len(all_results) if all_results else 0
-            logger.info(f"Calculated average time of model to be: {avg_time}")
-
-            evaluation_results[repo] = {
-                'is_finetune': True,
-                'eval_loss': avg_score
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to evaluate repo {repo}: {str(e)}", exc_info=True)
-            evaluation_results[repo] = str(e)
-            
-        finally:
+    # Evaluation configuration
+    DATA_LEN_RANGE = 2500
+    RANDOM_SEED = 42
+    TEMPERATURE = 0.0
+    MAX_RETRIES_PER_MODEL = 3  # Retry entire evaluation if deployment fails
+    
+    async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
+        """Evaluate a single repo and return (repo, result)."""
+        log_prefix = f"[Repo-{repo_idx}] "
+        # Create logs directory if it doesn't exist
+        logs_dir = "logs/basilica_eval"
+        os.makedirs(logs_dir, exist_ok=True)
+        safe_repo_name = repo.split('/')[-1]
+        # Use timestamp and repo_idx to ensure unique log files even with duplicate repos
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # Include milliseconds
+        log_file = os.path.join(logs_dir, f"basilica_eval_{safe_repo_name}_{repo_idx}_{timestamp}.log")
+        
+        # Initialize log file
+        with open(log_file, "w") as f:
+            f.write(f"{'='*60}\n")
+            f.write(f"Basilica Environment Evaluation Log\n")
+            f.write(f"Repo: {repo}\n")
+            f.write(f"Repo Index: {repo_idx}\n")
+            f.write(f"Base Model: {original_model}\n")
+            f.write(f"Started: {datetime.now()}\n")
+            f.write(f"{'='*60}\n\n")
+        
+        deployments = {}
+        success = False
+        repo_result = None
+        
+        # Retry logic for entire evaluation
+        for retry_attempt in range(MAX_RETRIES_PER_MODEL):
             try:
-                if vllm_log_task is not None:
-                    vllm_log_task.cancel()
-                if agent_log_task is not None:
-                    agent_log_task.cancel()
-            except:
-                pass
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Attempt {retry_attempt + 1}/{MAX_RETRIES_PER_MODEL}\n")
+                
+                # Create unique deployment names using repo_idx and timestamp to avoid conflicts
+                # Even if same repo appears multiple times, each gets unique deployment
+                safe_repo_name = repo.split("/")[-1][:30]  # Shorter to leave room for suffix
+                unique_suffix = f"{repo_idx}-{int(time.time() * 1000) % 100000}"  # repo_idx + timestamp ms
+                vllm_deployment_name = f"vllm-{safe_repo_name}-{unique_suffix}"
+                agentgym_deployment_name = f"agentgym-{safe_repo_name}-{unique_suffix}"
+                
+                # Deploy vLLM
+                logger.info(f"{log_prefix}Deploying vLLM: {original_model} w/ LoRA {repo}")
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Deploying vLLM...\n")
+                
+                vllm_deployment = await asyncio.to_thread(
+                    deploy_vllm_basilica,
+                    original_model,
+                    repo,
+                    vllm_deployment_name,
+                    log_file
+                )
+                deployments['vllm'] = vllm_deployment
+                
+                # Wait for vLLM health
+                await asyncio.to_thread(wait_for_basilica_health, vllm_deployment.url, log_file=log_file)
+                logger.info(f"{log_prefix}vLLM Ready at: {vllm_deployment.url}")
+                
+                # Deploy AgentGym
+                logger.info(f"{log_prefix}Deploying AgentGym...")
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Deploying AgentGym...\n")
+                
+                agentgym_deployment = await asyncio.to_thread(
+                    deploy_agentgym_basilica,
+                    agentgym_deployment_name,
+                    log_file
+                )
+                deployments['agentgym'] = agentgym_deployment
+                
+                # Wait for AgentGym health
+                try:
+                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/health", log_file=log_file)
+                except:
+                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/v1/models", log_file=log_file)
+                logger.info(f"{log_prefix}AgentGym Ready at: {agentgym_deployment.url}")
+                
+                # Run evaluation
+                avg_score = await _run_basilica_evaluation(
+                    vllm_deployment.url,
+                    agentgym_deployment.url,
+                    num_eval_samples,
+                    DATA_LEN_RANGE,
+                    RANDOM_SEED,
+                    TEMPERATURE,
+                    log_prefix,
+                    log_file
+                )
+                
+                repo_result = {
+                    'is_finetune': True,
+                    'eval_loss': avg_score
+                }
+                
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}✅ Evaluation completed successfully. Average score: {avg_score:.4f}\n")
+                
+                success = True
+                break  # Success, exit retry loop
+                
+            except Exception as e:
+                error_msg = f"{log_prefix}Evaluation attempt {retry_attempt + 1} failed: {str(e)}"
+                logger.error(error_msg, exc_info=True)
+                with open(log_file, "a") as f:
+                    f.write(f"{error_msg}\n")
+                    import traceback
+                    f.write(traceback.format_exc() + "\n")
+                
+                # Cleanup deployments on failure
+                for name, deployment in deployments.items():
+                    try:
+                        deployment.delete()
+                        with open(log_file, "a") as f:
+                            f.write(f"{log_prefix}Cleaned up {name} deployment\n")
+                    except Exception as cleanup_error:
+                        with open(log_file, "a") as f:
+                            f.write(f"{log_prefix}Failed to cleanup {name}: {cleanup_error}\n")
+                deployments = {}
+                
+                if retry_attempt < MAX_RETRIES_PER_MODEL - 1:
+                    wait_time = 5 * (2 ** retry_attempt)
+                    with open(log_file, "a") as f:
+                        f.write(f"{log_prefix}Retrying in {wait_time}s...\n")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Final failure after all retries
+                    repo_result = str(e)
+                    with open(log_file, "a") as f:
+                        f.write(f"{log_prefix}❌ All retry attempts exhausted\n")
             
-            for c in containers.values():
-                try: c.remove(force=True)
-                except: pass
-            client.close()
+            finally:
+                # Cleanup deployments
+                for name, deployment in deployments.items():
+                    try:
+                        deployment.delete()
+                        logger.info(f"{log_prefix}Cleaned up {name} deployment")
+                    except Exception as e:
+                        logger.warning(f"{log_prefix}Failed to cleanup {name}: {e}")
+        
+        if success:
+            logger.info(f"{log_prefix}✅ Evaluation completed. Log saved to: {log_file}")
+        else:
+            logger.error(f"{log_prefix}❌ Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts. Log saved to: {log_file}")
+        
+        # Return result (or error string if failed)
+        return (repo, repo_result if repo_result is not None else "Evaluation failed")
+    
+    # Run all evaluations in parallel
+    logger.info(f"🚀 Starting {len(models)} parallel evaluations...")
+    tasks = [evaluate_single_repo(repo, idx) for idx, repo in enumerate(models)]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Collect results
+    evaluation_results = {}
+    for result in results:
+        if isinstance(result, Exception):
+            logger.error(f"Evaluation task failed with exception: {result}", exc_info=True)
+            # Can't identify which repo failed from exception alone
+            continue
+        repo, result_data = result
+        evaluation_results[repo] = result_data
 
     logger.info(f"Environment evaluation results: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
+
+
+async def _run_basilica_evaluation(
+    vllm_url: str,
+    agentgym_url: str,
+    num_eval_samples: int,
+    data_len_range: int,
+    random_seed: int,
+    temperature: float,
+    log_prefix: str,
+    log_file: str
+) -> float:
+    """Run evaluation loop using Basilica deployments."""
+    # Create session with connection pooling disabled
+    session = requests.Session()
+    adapter = HTTPAdapter(
+        pool_connections=1,
+        pool_maxsize=1,
+        max_retries=0
+    )
+    session.mount('http://', adapter)
+    session.mount('https://', adapter)
+    
+    # Evaluation loop
+    random.seed(random_seed)
+    eval_list = random.sample(range(1, data_len_range + 1), num_eval_samples)
+    total_score = 0.0
+    total_time = 0.0
+    all_results = []
+    
+    max_retries = 5
+    retry_delay = 2.0
+    
+    for i, task_id in enumerate(eval_list):
+        with open(log_file, "a") as f:
+            f.write(f"{log_prefix}[{i+1}/{num_eval_samples}] Task ID: {task_id}...\n")
+        
+        payload = {
+            "model": "trained_lora",
+            "base_url": f"{vllm_url}/v1",
+            "task_id": task_id,
+            "temperature": temperature,
+            "max_round": 30
+        }
+        
+        # Retry logic for individual task
+        for attempt in range(max_retries):
+            try:
+                start_ts = time.time()
+                response = session.post(
+                    f"{agentgym_url}/evaluate",
+                    json=payload,
+                    timeout=2500,
+                    headers={'Connection': 'close'}
+                )
+                
+                # Check response status
+                if response.status_code != 200:
+                    if response.status_code >= 500 or response.status_code == 503:
+                        if attempt < max_retries - 1:
+                            wait_time = retry_delay * (2 ** attempt)
+                            with open(log_file, "a") as f:
+                                f.write(f"{log_prefix}HTTP {response.status_code} (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...\n")
+                            await asyncio.sleep(wait_time)
+                            continue
+                    
+                    error_msg = f"HTTP {response.status_code}"
+                    with open(log_file, "a") as f:
+                        f.write(f"{log_prefix}Failed: {error_msg}\n")
+                    all_results.append({
+                        "task_id": task_id,
+                        "score": 0.0,
+                        "time": time.time() - start_ts,
+                        "error": error_msg
+                    })
+                    break
+                
+                # Parse JSON
+                try:
+                    result = response.json()
+                except ValueError as e:
+                    error_msg = f"Invalid JSON: {e}"
+                    with open(log_file, "a") as f:
+                        f.write(f"{log_prefix}Failed: {error_msg}\n")
+                    all_results.append({
+                        "task_id": task_id,
+                        "score": 0.0,
+                        "time": time.time() - start_ts,
+                        "error": error_msg
+                    })
+                    break
+                
+                latency = result.get('time_taken', time.time() - start_ts)
+                score = result.get('score', 0.0)
+                
+                total_score += score
+                total_time += latency
+                
+                all_results.append({
+                    "task_id": task_id,
+                    "score": score,
+                    "time": latency
+                })
+                
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Done (Score: {score})\n")
+                break  # Success
+                
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    with open(log_file, "a") as f:
+                        f.write(f"{log_prefix}Connection error (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...\n")
+                    await asyncio.sleep(wait_time)
+                    continue
+                
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Failed: {str(e)}\n")
+                all_results.append({
+                    "task_id": task_id,
+                    "score": 0.0,
+                    "time": 2500.0 if isinstance(e, requests.exceptions.Timeout) else time.time() - start_ts,
+                    "error": str(e)
+                })
+                break
+            except Exception as e:
+                with open(log_file, "a") as f:
+                    f.write(f"{log_prefix}Failed: {str(e)}\n")
+                all_results.append({
+                    "task_id": task_id,
+                    "score": 0.0,
+                    "time": time.time() - start_ts if 'start_ts' in locals() else 0.0,
+                    "error": str(e)
+                })
+                break
+        
+        # Small delay between evaluations
+        if i < len(eval_list) - 1:
+            await asyncio.sleep(1.0)
+    
+    session.close()
+    
+    # Calculate average score
+    avg_score = total_score / len(all_results) if all_results else 0.0
+    avg_time = total_time / len(all_results) if all_results else 0.0
+    
+    with open(log_file, "a") as f:
+        f.write(f"\n{log_prefix}Summary:\n")
+        f.write(f"  Total Tasks: {len(all_results)}\n")
+        f.write(f"  Average Score: {avg_score:.4f}\n")
+        f.write(f"  Average Time: {avg_time:.2f}s\n")
+    
+    return avg_score
 
 
 async def run_evaluation_docker_image(

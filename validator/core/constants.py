@@ -318,3 +318,16 @@ DEFAULT_PARTICIPANT_COMMIT = "8631451156e2915070f77e5547ca0d5ed3d0eb8a"
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
+
+# Basilica deployment constants
+BASILICA_VLLM_IMAGE = "vllm/vllm-openai:latest"
+BASILICA_AGENTGYM_IMAGE = "affinefoundation/agentgym:alfworld"
+BASILICA_VLLM_GPU_COUNT = 1
+BASILICA_VLLM_MIN_GPU_MEMORY_GB = 80
+BASILICA_VLLM_MEMORY = "16Gi"
+BASILICA_VLLM_TTL_SECONDS = 3600
+BASILICA_VLLM_TIMEOUT = 1800  # 30 minutes to allow for model download
+BASILICA_AGENTGYM_CPU = "500m"
+BASILICA_AGENTGYM_MEMORY = "1Gi"
+BASILICA_AGENTGYM_TTL_SECONDS = 3600
+BASILICA_AGENTGYM_TIMEOUT = 300

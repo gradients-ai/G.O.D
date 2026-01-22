@@ -1,10 +1,13 @@
 import base64
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from io import BytesIO
 
+import basilica
+import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
@@ -12,6 +15,7 @@ from PIL import Image
 from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
+from validator.core import constants as cst
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
 
@@ -229,3 +233,201 @@ def read_prompt_file(text_file_path: str) -> str:
         with open(text_file_path, "r", encoding="utf-8") as text_file:
             return text_file.read()
     return None
+
+
+def create_vllm_deployment_source(base_model: str, lora_model: str | None = None) -> str:
+    """Create the source code for vLLM deployment with model download."""
+    if lora_model:
+        func_source = f"""import subprocess
+import sys
+import os
+
+# Set HF_HOME to ensure vLLM uses the same cache location
+os.environ['HF_HOME'] = '/root/.cache/huggingface'
+os.environ['TRANSFORMERS_CACHE'] = '/root/.cache/huggingface'
+
+# Download base model first (blocking) - use local_files_only=False to ensure download
+print("Downloading base model: {base_model}")
+try:
+    result = subprocess.run(
+        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{base_model}', local_files_only=False)"],
+        check=True,
+        timeout=3600
+    )
+    print("Base model downloaded successfully")
+except subprocess.TimeoutExpired:
+    print("ERROR: Base model download timed out after 1 hour")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Failed to download base model: {{e}}")
+    sys.exit(1)
+
+# Download LoRA (blocking)
+print("Downloading LoRA: {lora_model}")
+try:
+    result = subprocess.run(
+        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{lora_model}', local_files_only=False)"],
+        check=True,
+        timeout=3600
+    )
+    print("LoRA downloaded successfully")
+except subprocess.TimeoutExpired:
+    print("ERROR: LoRA download timed out after 1 hour")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Failed to download LoRA: {{e}}")
+    sys.exit(1)
+
+# Verify downloads completed
+print("Verifying downloads...")
+hf_cache = "/root/.cache/huggingface"
+if not os.path.exists(hf_cache):
+    print(f"ERROR: HuggingFace cache directory not found at {{hf_cache}}")
+    sys.exit(1)
+print("Downloads verified")
+
+# Now start vLLM server with LoRA (models are already downloaded)
+print("Starting vLLM server with LoRA...")
+cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
+subprocess.Popen(cmd, shell=True).wait()
+"""
+    else:
+        func_source = f"""import subprocess
+import sys
+import os
+
+os.environ['HF_HOME'] = '/root/.cache/huggingface'
+os.environ['TRANSFORMERS_CACHE'] = '/root/.cache/huggingface'
+
+print("Downloading base model: {base_model}")
+try:
+    result = subprocess.run(
+        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{base_model}', local_files_only=False)"],
+        check=True,
+        timeout=3600
+    )
+    print("Base model downloaded successfully")
+except subprocess.TimeoutExpired:
+    print("ERROR: Base model download timed out after 1 hour")
+    sys.exit(1)
+except Exception as e:
+    print(f"ERROR: Failed to download base model: {{e}}")
+    sys.exit(1)
+
+print("Verifying download...")
+hf_cache = "/root/.cache/huggingface"
+if not os.path.exists(hf_cache):
+    print(f"ERROR: HuggingFace cache directory not found at {{hf_cache}}")
+    sys.exit(1)
+print("Download verified")
+
+print("Starting vLLM server...")
+cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
+subprocess.Popen(cmd, shell=True).wait()
+"""
+    return func_source
+
+
+def deploy_vllm_basilica(
+    base_model: str,
+    lora_model: str | None,
+    deployment_name: str,
+    log_file: str | None = None
+) -> basilica.Deployment:
+    """Deploy vLLM server to Basilica."""
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(f"[{deployment_name}] Creating vLLM deployment: {base_model}" + (f" w/ LoRA {lora_model}" if lora_model else "") + "\n")
+    
+    func_source = create_vllm_deployment_source(base_model, lora_model)
+    
+    client = basilica.BasilicaClient()
+    deployment = client.deploy(
+        name=deployment_name,
+        source=func_source,
+        image=cst.BASILICA_VLLM_IMAGE,
+        port=8000,
+        gpu_count=cst.BASILICA_VLLM_GPU_COUNT,
+        min_gpu_memory_gb=cst.BASILICA_VLLM_MIN_GPU_MEMORY_GB,
+        memory=cst.BASILICA_VLLM_MEMORY,
+        ttl_seconds=cst.BASILICA_VLLM_TTL_SECONDS,
+        timeout=cst.BASILICA_VLLM_TIMEOUT,
+        env={
+            "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+            "HF_HUB_DISABLE_XET": "1",
+        },
+    )
+    
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(f"[{deployment_name}] Waiting for vLLM deployment to be ready...\n")
+    
+    try:
+        deployment.wait_until_ready(timeout=cst.BASILICA_VLLM_TIMEOUT)
+        if log_file:
+            with open(log_file, "a") as f:
+                f.write(f"[{deployment_name}] vLLM deployment ready at: {deployment.url}\n")
+    except Exception as e:
+        error_msg = f"[{deployment_name}] Deployment wait failed: {e}"
+        if log_file:
+            with open(log_file, "a") as f:
+                f.write(error_msg + "\n")
+        logger.warning(error_msg)
+    
+    return deployment
+
+
+def deploy_agentgym_basilica(
+    deployment_name: str,
+    log_file: str | None = None
+) -> basilica.Deployment:
+    """Deploy AgentGym server to Basilica."""
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(f"[{deployment_name}] Creating AgentGym deployment...\n")
+    
+    client = basilica.BasilicaClient()
+    
+    llm_api_key = os.getenv("CHUTES_API_KEY", "")
+    env_vars = {}
+    if llm_api_key:
+        env_vars["CHUTES_API_KEY"] = llm_api_key
+    
+    deployment = client.deploy(
+        name=deployment_name,
+        image=cst.BASILICA_AGENTGYM_IMAGE,
+        port=8000,
+        cpu=cst.BASILICA_AGENTGYM_CPU,
+        memory=cst.BASILICA_AGENTGYM_MEMORY,
+        ttl_seconds=cst.BASILICA_AGENTGYM_TTL_SECONDS,
+        timeout=cst.BASILICA_AGENTGYM_TIMEOUT,
+        env=env_vars,
+    )
+    
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(f"[{deployment_name}] AgentGym deployment created at: {deployment.url}\n")
+    
+    return deployment
+
+
+def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models", log_file: str | None = None) -> bool:
+    """Wait for Basilica service to be healthy."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(f"{url}{path}", timeout=5)
+            if response.status_code == 200:
+                if log_file:
+                    with open(log_file, "a") as f:
+                        f.write(f"Service at {url} is healthy\n")
+                return True
+        except:
+            pass
+        time.sleep(5)
+    
+    error_msg = f"Service at {url} did not become healthy within {timeout} seconds"
+    if log_file:
+        with open(log_file, "a") as f:
+            f.write(f"ERROR: {error_msg}\n")
+    raise TimeoutError(error_msg)
