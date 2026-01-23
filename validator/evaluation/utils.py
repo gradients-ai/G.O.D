@@ -288,7 +288,7 @@ print("Downloads verified")
 
 # Now start vLLM server with LoRA (models are already downloaded)
 print("Starting vLLM server with LoRA...")
-cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
+cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code --enable-log-outputs"
 subprocess.Popen(cmd, shell=True).wait()
 """
     else:
@@ -322,7 +322,7 @@ if not os.path.exists(hf_cache):
 print("Download verified")
 
 print("Starting vLLM server...")
-cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
+cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code --enable-log-outputs"
 subprocess.Popen(cmd, shell=True).wait()
 """
     return func_source
@@ -348,6 +348,7 @@ def deploy_vllm_basilica(
         image=cst.BASILICA_VLLM_IMAGE,
         port=8000,
         gpu_count=cst.BASILICA_VLLM_GPU_COUNT,
+        gpu_models=cst.BASILICA_VLLM_GPU_MODELS,
         min_gpu_memory_gb=cst.BASILICA_VLLM_MIN_GPU_MEMORY_GB,
         memory=cst.BASILICA_VLLM_MEMORY,
         ttl_seconds=cst.BASILICA_VLLM_TTL_SECONDS,
@@ -379,9 +380,17 @@ def deploy_vllm_basilica(
 
 def deploy_agentgym_basilica(
     deployment_name: str,
-    log_file: str | None = None
+    log_file: str | None = None,
+    env_image: str | None = None
 ) -> basilica.Deployment:
-    """Deploy AgentGym server to Basilica."""
+    """Deploy AgentGym server to Basilica.
+    
+    Args:
+        deployment_name: Name for the deployment
+        log_file: Optional log file path
+        env_image: Optional custom image (e.g., "openspiel:v1" for games). 
+                   If None, uses default from constants.
+    """
     if log_file:
         with open(log_file, "a") as f:
             f.write(f"[{deployment_name}] Creating AgentGym deployment...\n")
@@ -393,9 +402,11 @@ def deploy_agentgym_basilica(
     if llm_api_key:
         env_vars["CHUTES_API_KEY"] = llm_api_key
     
+    image_to_use = env_image if env_image else cst.BASILICA_AGENTGYM_IMAGE
+    
     deployment = client.deploy(
         name=deployment_name,
-        image=cst.BASILICA_AGENTGYM_IMAGE,
+        image=image_to_use,
         port=8000,
         cpu=cst.BASILICA_AGENTGYM_CPU,
         memory=cst.BASILICA_AGENTGYM_MEMORY,

@@ -11,11 +11,10 @@ import docker
 from docker.models.containers import Container
 from docker.types import Mount
 from huggingface_hub import snapshot_download
-import requests
+import aiohttp
 import time
 import random
 import basilica
-from requests.adapters import HTTPAdapter
 
 from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
@@ -38,6 +37,7 @@ from validator.evaluation.utils import (
     deploy_vllm_basilica,
     deploy_agentgym_basilica,
     wait_for_basilica_health,
+    check_for_lora,
 )
 
 
@@ -417,6 +417,8 @@ async def run_evaluation_docker_environment(
     file_format: FileFormat,
     gpu_ids: list[int],
     num_eval_samples: int,
+    env_image: str | None = None,
+    task_id_range: tuple[int, int] | None = None,
 ) -> DockerEvaluationResults:
     """
     Run environment evaluation using Basilica deployments for vLLM and AgentGym.
@@ -424,88 +426,77 @@ async def run_evaluation_docker_environment(
     """
     logger.info(f"Starting Basilica-based environment evaluation for {len(models)} repos: {models}")
 
-    # Evaluation configuration
-    DATA_LEN_RANGE = 2500
+    DATA_LEN_RANGE = 2500  
     RANDOM_SEED = 42
     TEMPERATURE = 0.0
-    MAX_RETRIES_PER_MODEL = 3  # Retry entire evaluation if deployment fails
+    MAX_RETRIES_PER_MODEL = 3  
+    
+    if task_id_range is not None:
+        task_id_min, task_id_max = task_id_range
+        DATA_LEN_RANGE = task_id_max 
+        TASK_ID_MIN = task_id_min
+    else:
+        TASK_ID_MIN = 1 
     
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
         """Evaluate a single repo and return (repo, result)."""
         log_prefix = f"[Repo-{repo_idx}] "
-        # Create logs directory if it doesn't exist
-        logs_dir = "logs/basilica_eval"
-        os.makedirs(logs_dir, exist_ok=True)
-        safe_repo_name = repo.split('/')[-1]
-        # Use timestamp and repo_idx to ensure unique log files even with duplicate repos
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]  # Include milliseconds
-        log_file = os.path.join(logs_dir, f"basilica_eval_{safe_repo_name}_{repo_idx}_{timestamp}.log")
-        
-        # Initialize log file
-        with open(log_file, "w") as f:
-            f.write(f"{'='*60}\n")
-            f.write(f"Basilica Environment Evaluation Log\n")
-            f.write(f"Repo: {repo}\n")
-            f.write(f"Repo Index: {repo_idx}\n")
-            f.write(f"Base Model: {original_model}\n")
-            f.write(f"Started: {datetime.now()}\n")
-            f.write(f"{'='*60}\n\n")
         
         deployments = {}
         success = False
         repo_result = None
         
-        # Retry logic for entire evaluation
         for retry_attempt in range(MAX_RETRIES_PER_MODEL):
             try:
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Attempt {retry_attempt + 1}/{MAX_RETRIES_PER_MODEL}\n")
-                
-                # Create unique deployment names using repo_idx and timestamp to avoid conflicts
-                # Even if same repo appears multiple times, each gets unique deployment
-                safe_repo_name = repo.split("/")[-1][:30]  # Shorter to leave room for suffix
-                unique_suffix = f"{repo_idx}-{int(time.time() * 1000) % 100000}"  # repo_idx + timestamp ms
+                safe_repo_name = repo.split("/")[-1][:30]
+                unique_suffix = f"{repo_idx}-{int(time.time() * 1000) % 100000}"
                 vllm_deployment_name = f"vllm-{safe_repo_name}-{unique_suffix}"
                 agentgym_deployment_name = f"agentgym-{safe_repo_name}-{unique_suffix}"
                 
-                # Deploy vLLM
-                logger.info(f"{log_prefix}Deploying vLLM: {original_model} w/ LoRA {repo}")
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Deploying vLLM...\n")
+                is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+                
+                if is_lora:
+                    base_model = original_model
+                    lora_model = repo
+                    inference_model_name = "trained_lora"
+                    logger.info(f"{log_prefix}Deploying vLLM: {original_model} w/ LoRA {repo}")
+                else:
+                    base_model = repo
+                    lora_model = None
+                    inference_model_name = repo
+                    logger.info(f"{log_prefix}Deploying vLLM: {repo} (base model, ignoring original_model={original_model})")
                 
                 vllm_deployment = await asyncio.to_thread(
                     deploy_vllm_basilica,
-                    original_model,
-                    repo,
+                    base_model,
+                    lora_model,
                     vllm_deployment_name,
-                    log_file
+                    None
                 )
                 deployments['vllm'] = vllm_deployment
                 
-                # Wait for vLLM health
-                await asyncio.to_thread(wait_for_basilica_health, vllm_deployment.url, log_file=log_file)
+                await asyncio.to_thread(wait_for_basilica_health, vllm_deployment.url, log_file=None)
                 logger.info(f"{log_prefix}vLLM Ready at: {vllm_deployment.url}")
                 
-                # Deploy AgentGym
                 logger.info(f"{log_prefix}Deploying AgentGym...")
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Deploying AgentGym...\n")
+                
+                env_image_to_use = env_image if env_image else None
                 
                 agentgym_deployment = await asyncio.to_thread(
                     deploy_agentgym_basilica,
                     agentgym_deployment_name,
-                    log_file
+                    None,
+                    env_image_to_use
                 )
                 deployments['agentgym'] = agentgym_deployment
                 
-                # Wait for AgentGym health
                 try:
-                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/health", log_file=log_file)
+                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/health", log_file=None)
                 except:
-                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/v1/models", log_file=log_file)
+                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/v1/models", log_file=None)
                 logger.info(f"{log_prefix}AgentGym Ready at: {agentgym_deployment.url}")
                 
-                # Run evaluation
+                is_game = task_id_range is not None
                 avg_score = await _run_basilica_evaluation(
                     vllm_deployment.url,
                     agentgym_deployment.url,
@@ -514,52 +505,37 @@ async def run_evaluation_docker_environment(
                     RANDOM_SEED,
                     TEMPERATURE,
                     log_prefix,
-                    log_file
+                    inference_model_name,
+                    TASK_ID_MIN,
+                    is_game_eval=is_game
                 )
                 
                 repo_result = {
-                    'is_finetune': True,
+                    'is_finetune': is_finetune,
                     'eval_loss': avg_score
                 }
                 
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}✅ Evaluation completed successfully. Average score: {avg_score:.4f}\n")
-                
                 success = True
-                break  # Success, exit retry loop
+                break
                 
             except Exception as e:
                 error_msg = f"{log_prefix}Evaluation attempt {retry_attempt + 1} failed: {str(e)}"
                 logger.error(error_msg, exc_info=True)
-                with open(log_file, "a") as f:
-                    f.write(f"{error_msg}\n")
-                    import traceback
-                    f.write(traceback.format_exc() + "\n")
                 
-                # Cleanup deployments on failure
                 for name, deployment in deployments.items():
                     try:
                         deployment.delete()
-                        with open(log_file, "a") as f:
-                            f.write(f"{log_prefix}Cleaned up {name} deployment\n")
                     except Exception as cleanup_error:
-                        with open(log_file, "a") as f:
-                            f.write(f"{log_prefix}Failed to cleanup {name}: {cleanup_error}\n")
+                        logger.warning(f"{log_prefix}Failed to cleanup {name}: {cleanup_error}")
                 deployments = {}
                 
                 if retry_attempt < MAX_RETRIES_PER_MODEL - 1:
                     wait_time = 5 * (2 ** retry_attempt)
-                    with open(log_file, "a") as f:
-                        f.write(f"{log_prefix}Retrying in {wait_time}s...\n")
                     await asyncio.sleep(wait_time)
                 else:
-                    # Final failure after all retries
                     repo_result = str(e)
-                    with open(log_file, "a") as f:
-                        f.write(f"{log_prefix}❌ All retry attempts exhausted\n")
             
             finally:
-                # Cleanup deployments
                 for name, deployment in deployments.items():
                     try:
                         deployment.delete()
@@ -568,24 +544,20 @@ async def run_evaluation_docker_environment(
                         logger.warning(f"{log_prefix}Failed to cleanup {name}: {e}")
         
         if success:
-            logger.info(f"{log_prefix}✅ Evaluation completed. Log saved to: {log_file}")
+            logger.info(f"{log_prefix} Evaluation completed.")
         else:
-            logger.error(f"{log_prefix}❌ Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts. Log saved to: {log_file}")
+            logger.error(f"{log_prefix} Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts.")
         
-        # Return result (or error string if failed)
         return (repo, repo_result if repo_result is not None else "Evaluation failed")
     
-    # Run all evaluations in parallel
-    logger.info(f"🚀 Starting {len(models)} parallel evaluations...")
+    logger.info(f"Starting {len(models)} parallel evaluations...")
     tasks = [evaluate_single_repo(repo, idx) for idx, repo in enumerate(models)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Collect results
     evaluation_results = {}
     for result in results:
         if isinstance(result, Exception):
             logger.error(f"Evaluation task failed with exception: {result}", exc_info=True)
-            # Can't identify which repo failed from exception alone
             continue
         repo, result_data = result
         evaluation_results[repo] = result_data
@@ -602,147 +574,157 @@ async def _run_basilica_evaluation(
     random_seed: int,
     temperature: float,
     log_prefix: str,
-    log_file: str
+    inference_model_name: str = "trained_lora",
+    task_id_min: int = 1,
+    is_game_eval: bool = False
 ) -> float:
-    """Run evaluation loop using Basilica deployments."""
-    # Create session with connection pooling disabled
-    session = requests.Session()
-    adapter = HTTPAdapter(
-        pool_connections=1,
-        pool_maxsize=1,
-        max_retries=0
-    )
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
-    
-    # Evaluation loop
+    """Run evaluation loop using Basilica deployments with concurrent task processing."""
     random.seed(random_seed)
-    eval_list = random.sample(range(1, data_len_range + 1), num_eval_samples)
-    total_score = 0.0
-    total_time = 0.0
-    all_results = []
-    
+    eval_list = random.sample(range(task_id_min, data_len_range + 1), num_eval_samples)
     max_retries = 5
     retry_delay = 2.0
+    max_concurrent_tasks = 5
     
-    for i, task_id in enumerate(eval_list):
-        with open(log_file, "a") as f:
-            f.write(f"{log_prefix}[{i+1}/{num_eval_samples}] Task ID: {task_id}...\n")
-        
+    all_results = []
+    
+    async def evaluate_single_task(session: aiohttp.ClientSession, semaphore: asyncio.Semaphore, task_id: int, task_idx: int) -> dict:
+        """Evaluate a single task with retry logic and concurrency control."""
         payload = {
-            "model": "trained_lora",
+            "model": inference_model_name,
             "base_url": f"{vllm_url}/v1",
             "task_id": task_id,
             "temperature": temperature,
-            "max_round": 30
+            "seed": random_seed,
         }
+        if not is_game_eval:
+            payload["max_round"] = 30
+        else:
+            payload["opponent"] = "random"
+            payload["api_key"] = "dummy-key"
         
-        # Retry logic for individual task
-        for attempt in range(max_retries):
-            try:
-                start_ts = time.time()
-                response = session.post(
-                    f"{agentgym_url}/evaluate",
-                    json=payload,
-                    timeout=2500,
-                    headers={'Connection': 'close'}
-                )
-                
-                # Check response status
-                if response.status_code != 200:
-                    if response.status_code >= 500 or response.status_code == 503:
-                        if attempt < max_retries - 1:
-                            wait_time = retry_delay * (2 ** attempt)
-                            with open(log_file, "a") as f:
-                                f.write(f"{log_prefix}HTTP {response.status_code} (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...\n")
-                            await asyncio.sleep(wait_time)
-                            continue
-                    
-                    error_msg = f"HTTP {response.status_code}"
-                    with open(log_file, "a") as f:
-                        f.write(f"{log_prefix}Failed: {error_msg}\n")
-                    all_results.append({
-                        "task_id": task_id,
-                        "score": 0.0,
-                        "time": time.time() - start_ts,
-                        "error": error_msg
-                    })
-                    break
-                
-                # Parse JSON
+        async with semaphore:
+            for attempt in range(max_retries):
                 try:
-                    result = response.json()
-                except ValueError as e:
-                    error_msg = f"Invalid JSON: {e}"
-                    with open(log_file, "a") as f:
-                        f.write(f"{log_prefix}Failed: {error_msg}\n")
-                    all_results.append({
+                    start_ts = time.time()
+                    
+                    # Log task start
+                    logger.info(f"{log_prefix}[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
+                    
+                    # Make async HTTP request
+                    timeout = aiohttp.ClientTimeout(total=2500)
+                    async with session.post(
+                        f"{agentgym_url}/evaluate",
+                        json=payload,
+                        timeout=timeout,
+                        headers={'Connection': 'close'}
+                    ) as response:
+                        # Check response status
+                        if response.status != 200:
+                            if response.status >= 500 or response.status == 503:
+                                if attempt < max_retries - 1:
+                                    wait_time = retry_delay * (2 ** attempt)
+                                    logger.warning(f"{log_prefix}HTTP {response.status} (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...")
+                                    await asyncio.sleep(wait_time)
+                                    continue
+                            
+                            error_msg = f"HTTP {response.status}"
+                            logger.error(f"{log_prefix}Failed: {error_msg}")
+                            return {
+                                "task_id": task_id,
+                                "score": 0.0,
+                                "time": time.time() - start_ts,
+                                "error": error_msg
+                            }
+                        
+                        try:
+                            response_data = await response.json()
+                            if 'result' in response_data:
+                                result = response_data.get('result', {})
+                            else:
+                                result = response_data
+                        except Exception as e:
+                            error_msg = f"Invalid JSON: {e}"
+                            logger.error(f"{log_prefix}Failed: {error_msg}")
+                            return {
+                                "task_id": task_id,
+                                "score": 0.0,
+                                "time": time.time() - start_ts,
+                                "error": error_msg
+                            }
+                        
+                        latency = result.get('time_taken', time.time() - start_ts)
+                        score = result.get('score', 0.0)
+                        
+                        logger.info(f"{log_prefix}Done (Score: {score})")
+                        
+                        return {
+                            "task_id": task_id,
+                            "score": score,
+                            "time": latency
+                        }
+                        
+                except asyncio.TimeoutError:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"{log_prefix}Timeout error (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    logger.error(f"{log_prefix}Failed: Request timeout")
+                    return {
                         "task_id": task_id,
                         "score": 0.0,
-                        "time": time.time() - start_ts,
-                        "error": error_msg
-                    })
-                    break
-                
-                latency = result.get('time_taken', time.time() - start_ts)
-                score = result.get('score', 0.0)
-                
-                total_score += score
-                total_time += latency
-                
-                all_results.append({
-                    "task_id": task_id,
-                    "score": score,
-                    "time": latency
-                })
-                
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Done (Score: {score})\n")
-                break  # Success
-                
-            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError, requests.exceptions.ChunkedEncodingError) as e:
-                if attempt < max_retries - 1:
-                    wait_time = retry_delay * (2 ** attempt)
-                    with open(log_file, "a") as f:
-                        f.write(f"{log_prefix}Connection error (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...\n")
-                    await asyncio.sleep(wait_time)
-                    continue
-                
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Failed: {str(e)}\n")
-                all_results.append({
-                    "task_id": task_id,
-                    "score": 0.0,
-                    "time": 2500.0 if isinstance(e, requests.exceptions.Timeout) else time.time() - start_ts,
-                    "error": str(e)
-                })
-                break
-            except Exception as e:
-                with open(log_file, "a") as f:
-                    f.write(f"{log_prefix}Failed: {str(e)}\n")
-                all_results.append({
-                    "task_id": task_id,
-                    "score": 0.0,
-                    "time": time.time() - start_ts if 'start_ts' in locals() else 0.0,
-                    "error": str(e)
-                })
-                break
+                        "time": 2500.0,
+                        "error": "Request timeout"
+                    }
+                except (aiohttp.ClientError, aiohttp.ClientConnectionError) as e:
+                    if attempt < max_retries - 1:
+                        wait_time = retry_delay * (2 ** attempt)
+                        logger.warning(f"{log_prefix}Connection error (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...")
+                        await asyncio.sleep(wait_time)
+                        continue
+                    
+                    logger.error(f"{log_prefix}Failed: {str(e)}")
+                    return {
+                        "task_id": task_id,
+                        "score": 0.0,
+                        "time": time.time() - start_ts if 'start_ts' in locals() else 0.0,
+                        "error": str(e)
+                    }
+                except Exception as e:
+                    logger.error(f"{log_prefix}Failed: {str(e)}")
+                    return {
+                        "task_id": task_id,
+                        "score": 0.0,
+                        "time": time.time() - start_ts if 'start_ts' in locals() else 0.0,
+                        "error": str(e)
+                    }
+            
+            return {
+                "task_id": task_id,
+                "score": 0.0,
+                "time": 0.0,
+                "error": "All retries exhausted"
+            }
+    
+    semaphore = asyncio.Semaphore(max_concurrent_tasks)
+    
+    async with aiohttp.ClientSession() as session:
+        tasks = [
+            evaluate_single_task(session, semaphore, task_id, idx)
+            for idx, task_id in enumerate(eval_list)
+        ]
         
-        # Small delay between evaluations
-        if i < len(eval_list) - 1:
-            await asyncio.sleep(1.0)
+        logger.info(f"{log_prefix}Starting {len(eval_list)} evaluations (Concurrency: {max_concurrent_tasks})...")
+        
+        all_results = await asyncio.gather(*tasks)
     
-    session.close()
-    
-    # Calculate average score
+    total_score = sum(r.get('score', 0.0) for r in all_results)
+    total_time = sum(r.get('time', 0.0) for r in all_results)
     avg_score = total_score / len(all_results) if all_results else 0.0
     avg_time = total_time / len(all_results) if all_results else 0.0
     
-    with open(log_file, "a") as f:
-        f.write(f"\n{log_prefix}Summary:\n")
-        f.write(f"  Total Tasks: {len(all_results)}\n")
-        f.write(f"  Average Score: {avg_score:.4f}\n")
-        f.write(f"  Average Time: {avg_time:.2f}s\n")
+    logger.info(f"{log_prefix}Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 
