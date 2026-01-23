@@ -288,7 +288,7 @@ print("Downloads verified")
 
 # Now start vLLM server with LoRA (models are already downloaded)
 print("Starting vLLM server with LoRA...")
-cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code --enable-log-outputs"
+cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
 subprocess.Popen(cmd, shell=True).wait()
 """
     else:
@@ -322,7 +322,7 @@ if not os.path.exists(hf_cache):
 print("Download verified")
 
 print("Starting vLLM server...")
-cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code --enable-log-outputs"
+cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
 subprocess.Popen(cmd, shell=True).wait()
 """
     return func_source
