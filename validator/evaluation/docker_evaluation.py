@@ -511,7 +511,7 @@ async def run_evaluation_docker_environment(
                 )
                 
                 repo_result = {
-                    'is_finetune': is_finetune,
+                    'is_finetune': True,
                     'eval_loss': avg_score
                 }
                 
