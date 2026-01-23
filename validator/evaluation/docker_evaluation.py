@@ -618,17 +618,22 @@ async def _run_basilica_evaluation(
                         timeout=timeout,
                         headers={'Connection': 'close'}
                     ) as response:
-                        # Check response status
                         if response.status != 200:
+                            try:
+                                error_text = await response.text()
+                                error_detail = f": {error_text[:200]}" if error_text else ""
+                            except:
+                                error_detail = ""
+                            
                             if response.status >= 500 or response.status == 503:
                                 if attempt < max_retries - 1:
                                     wait_time = retry_delay * (2 ** attempt)
-                                    logger.warning(f"{log_prefix}HTTP {response.status} (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)...")
+                                    logger.warning(f"{log_prefix}Task ID {task_id}: HTTP {response.status}{error_detail} (retry {attempt + 1}/{max_retries} in {wait_time:.1f}s)")
                                     await asyncio.sleep(wait_time)
                                     continue
                             
-                            error_msg = f"HTTP {response.status}"
-                            logger.error(f"{log_prefix}Failed: {error_msg}")
+                            error_msg = f"HTTP {response.status}{error_detail}"
+                            logger.error(f"{log_prefix}Task ID {task_id}: Failed after {max_retries} retries - {error_msg}")
                             return {
                                 "task_id": task_id,
                                 "score": 0.0,
@@ -644,7 +649,7 @@ async def _run_basilica_evaluation(
                                 result = response_data
                         except Exception as e:
                             error_msg = f"Invalid JSON: {e}"
-                            logger.error(f"{log_prefix}Failed: {error_msg}")
+                            logger.error(f"{log_prefix}Task ID {task_id}: Failed - {error_msg}")
                             return {
                                 "task_id": task_id,
                                 "score": 0.0,
@@ -655,7 +660,10 @@ async def _run_basilica_evaluation(
                         latency = result.get('time_taken', time.time() - start_ts)
                         score = result.get('score', 0.0)
                         
-                        logger.info(f"{log_prefix}Done (Score: {score})")
+                        if attempt > 0:
+                            logger.info(f"{log_prefix}Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt} retries")
+                        else:
+                            logger.info(f"{log_prefix}Task ID {task_id}: Done (Score: {score})")
                         
                         return {
                             "task_id": task_id,
@@ -709,7 +717,8 @@ async def _run_basilica_evaluation(
     
     semaphore = asyncio.Semaphore(max_concurrent_tasks)
     
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=1800)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         tasks = [
             evaluate_single_task(session, semaphore, task_id, idx)
             for idx, task_id in enumerate(eval_list)
@@ -717,14 +726,22 @@ async def _run_basilica_evaluation(
         
         logger.info(f"{log_prefix}Starting {len(eval_list)} evaluations (Concurrency: {max_concurrent_tasks})...")
         
-        all_results = await asyncio.gather(*tasks)
+        all_results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    total_score = sum(r.get('score', 0.0) for r in all_results)
-    total_time = sum(r.get('time', 0.0) for r in all_results)
-    avg_score = total_score / len(all_results) if all_results else 0.0
-    avg_time = total_time / len(all_results) if all_results else 0.0
+    processed_results = []
+    for result in all_results:
+        if isinstance(result, Exception):
+            logger.error(f"{log_prefix}Task failed: {result}")
+            processed_results.append({"score": 0.0, "time": 0.0})
+        else:
+            processed_results.append(result)
     
-    logger.info(f"{log_prefix}Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    total_score = sum(r.get('score', 0.0) for r in processed_results)
+    total_time = sum(r.get('time', 0.0) for r in processed_results)
+    avg_score = total_score / len(processed_results) if processed_results else 0.0
+    avg_time = total_time / len(processed_results) if processed_results else 0.0
+    
+    logger.info(f"{log_prefix}Summary: Total Tasks: {len(processed_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 
