@@ -332,13 +332,9 @@ def deploy_vllm_basilica(
     base_model: str,
     lora_model: str | None,
     deployment_name: str,
-    log_file: str | None = None
 ) -> basilica.Deployment:
     """Deploy vLLM server to Basilica."""
-    if log_file:
-        with open(log_file, "a") as f:
-            f.write(f"[{deployment_name}] Creating vLLM deployment: {base_model}" + (f" w/ LoRA {lora_model}" if lora_model else "") + "\n")
-    
+
     func_source = create_vllm_deployment_source(base_model, lora_model)
     
     client = basilica.BasilicaClient()
@@ -359,41 +355,26 @@ def deploy_vllm_basilica(
         },
     )
     
-    if log_file:
-        with open(log_file, "a") as f:
-            f.write(f"[{deployment_name}] Waiting for vLLM deployment to be ready...\n")
-    
     try:
         deployment.wait_until_ready(timeout=cst.BASILICA_VLLM_TIMEOUT)
-        if log_file:
-            with open(log_file, "a") as f:
-                f.write(f"[{deployment_name}] vLLM deployment ready at: {deployment.url}\n")
     except Exception as e:
         error_msg = f"[{deployment_name}] Deployment wait failed: {e}"
-        if log_file:
-            with open(log_file, "a") as f:
-                f.write(error_msg + "\n")
         logger.warning(error_msg)
     
     return deployment
 
 
-def deploy_agentgym_basilica(
+def deploy_env_basilica(
     deployment_name: str,
-    log_file: str | None = None,
     env_image: str | None = None
 ) -> basilica.Deployment:
-    """Deploy AgentGym server to Basilica.
+    """Deploy Environment Server to Basilica.
     
     Args:
         deployment_name: Name for the deployment
-        log_file: Optional log file path
         env_image: Optional custom image (e.g., "openspiel:v1" for games). 
                    If None, uses default from constants.
     """
-    if log_file:
-        with open(log_file, "a") as f:
-            f.write(f"[{deployment_name}] Creating AgentGym deployment...\n")
     
     client = basilica.BasilicaClient()
     
@@ -408,37 +389,27 @@ def deploy_agentgym_basilica(
         name=deployment_name,
         image=image_to_use,
         port=8000,
-        cpu=cst.BASILICA_AGENTGYM_CPU,
-        memory=cst.BASILICA_AGENTGYM_MEMORY,
-        ttl_seconds=cst.BASILICA_AGENTGYM_TTL_SECONDS,
-        timeout=cst.BASILICA_AGENTGYM_TIMEOUT,
+        cpu=cst.BASILICA_ENV_CPU,
+        memory=cst.BASILICA_ENV_MEMORY,
+        ttl_seconds=cst.BASILICA_ENV_TTL_SECONDS,
+        timeout=cst.BASILICA_ENV_TIMEOUT,
         env=env_vars,
     )
-    
-    if log_file:
-        with open(log_file, "a") as f:
-            f.write(f"[{deployment_name}] AgentGym deployment created at: {deployment.url}\n")
     
     return deployment
 
 
-def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models", log_file: str | None = None) -> bool:
+def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models") -> bool:
     """Wait for Basilica service to be healthy."""
     start_time = time.time()
     while time.time() - start_time < timeout:
         try:
             response = requests.get(f"{url}{path}", timeout=5)
             if response.status_code == 200:
-                if log_file:
-                    with open(log_file, "a") as f:
-                        f.write(f"Service at {url} is healthy\n")
                 return True
         except:
             pass
         time.sleep(5)
     
     error_msg = f"Service at {url} did not become healthy within {timeout} seconds"
-    if log_file:
-        with open(log_file, "a") as f:
-            f.write(f"ERROR: {error_msg}\n")
     raise TimeoutError(error_msg)

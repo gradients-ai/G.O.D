@@ -321,14 +321,29 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Basilica deployment constants
 BASILICA_VLLM_IMAGE = "vllm/vllm-openai:latest"
-BASILICA_AGENTGYM_IMAGE = "affinefoundation/agentgym:alfworld"
+BASILICA_ENV_IMAGE = "affinefoundation/agentgym:alfworld"
 BASILICA_VLLM_GPU_COUNT = 1
-BASILICA_VLLM_GPU_MODELS = ["A100"]  # Use H100 GPUs for faster inference
+BASILICA_VLLM_GPU_MODELS = ["A100"]
 BASILICA_VLLM_MIN_GPU_MEMORY_GB = 80
 BASILICA_VLLM_MEMORY = "16Gi"
-BASILICA_VLLM_TTL_SECONDS = 3600
-BASILICA_VLLM_TIMEOUT = 1800  # 30 minutes to allow for model download
-BASILICA_AGENTGYM_CPU = "4"  # Increased from 500m (0.5 cores) to 4 cores for faster environment simulation
-BASILICA_AGENTGYM_MEMORY = "16Gi"
-BASILICA_AGENTGYM_TTL_SECONDS = 3600
-BASILICA_AGENTGYM_TIMEOUT = 300
+BASILICA_VLLM_TTL_SECONDS = 10800
+BASILICA_VLLM_TIMEOUT = 1800
+BASILICA_ENV_CPU = "4"
+BASILICA_ENV_MEMORY = "16Gi"
+BASILICA_ENV_TTL_SECONDS = 10800
+BASILICA_ENV_TIMEOUT = 300
+
+ENVIRONMENTS = {
+    "alfworld": {
+        "task_id_range": (1, 2500),
+        "env_image": "affinefoundation/agentgym:alfworld"
+    },
+    "openspiel": {
+        "task_id_range": (300000000, 399999999),
+        "env_image": "diagonalge/openspiel:latest"
+    }
+}
+
+DEFAULT_ENV = "alfworld"
+NUM_EVAL_SAMPLES = 500
+

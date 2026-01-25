@@ -18,14 +18,6 @@ MODELS = [
     "gradients-io-tournaments/affine_gin_rummy_random"
 ]
 
-GAME_NAME = "gin_rummy"
-GAMES_TO_TASK_ID_RANGE = {
-    "gin_rummy": (300000000, 399999999),
-}
-TASK_ID_RANGE = GAMES_TO_TASK_ID_RANGE[GAME_NAME]
-AGENTGYM_IMAGE = "diagonalge/openspiel:latest" 
-
-# Test configuration
 DATASET = "test_dataset"  
 NUM_EVAL_SAMPLES = 500 
 
@@ -39,18 +31,15 @@ async def main():
         return
     
     print("=" * 60)
-    print("Testing run_evaluation_docker_environment with Basilica (Gin Rummy)")
+    print("Testing run_evaluation_docker_environment with Basilica (OpenSpiel)")
     print("=" * 60)
     print(f"Base Model: {BASE_MODEL_NAME}")
     print(f"Models to Evaluate: {MODELS}")
-    print(f"Game: {GAME_NAME}")
-    print(f"Task ID Range: {TASK_ID_RANGE}")
-    print(f"AgentGym Image: {AGENTGYM_IMAGE}")
+    print(f"Environment: openspiel")
     print(f"Dataset: {DATASET}")
-    print(f"Num Eval Samples: {NUM_EVAL_SAMPLES}")
     print()
     
-    dataset_type = EnvironmentDatasetType(environment_name=GAME_NAME)
+    dataset_type = EnvironmentDatasetType(environment_name="openspiel")
     
     try:
         results = await run_evaluation_docker_environment(
@@ -60,9 +49,6 @@ async def main():
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=[], 
-            num_eval_samples=NUM_EVAL_SAMPLES,
-            env_image=AGENTGYM_IMAGE,
-            task_id_range=TASK_ID_RANGE,
         )
         
         print("\n" + "=" * 60)

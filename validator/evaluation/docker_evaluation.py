@@ -35,7 +35,7 @@ from validator.utils.logging import get_logger
 from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
     deploy_vllm_basilica,
-    deploy_agentgym_basilica,
+    deploy_env_basilica,
     wait_for_basilica_health,
     check_for_lora,
 )
@@ -227,7 +227,7 @@ async def run_evaluation_docker_text(
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, num_eval_samples=250)
+        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
@@ -416,9 +416,6 @@ async def run_evaluation_docker_environment(
     dataset_type: EnvironmentDatasetType,
     file_format: FileFormat,
     gpu_ids: list[int],
-    num_eval_samples: int,
-    env_image: str | None = None,
-    task_id_range: tuple[int, int] | None = None,
 ) -> DockerEvaluationResults:
     """
     Run environment evaluation using Basilica deployments for vLLM and AgentGym.
@@ -426,32 +423,52 @@ async def run_evaluation_docker_environment(
     """
     logger.info(f"Starting Basilica-based environment evaluation for {len(models)} repos: {models}")
 
-    DATA_LEN_RANGE = 2500  
+    env_name = dataset_type.environment_name
+    if env_name not in vcst.ENVIRONMENTS:
+        raise ValueError(f"Environment '{env_name}' not found in ENVIRONMENTS. Supported environments: {list(vcst.ENVIRONMENTS.keys())}")
+    
+    env_config = vcst.ENVIRONMENTS[env_name]
+    task_id_range = env_config["task_id_range"]
+    env_image = env_config["env_image"]
+    
+    task_id_min, task_id_max = task_id_range
+    DATA_LEN_RANGE = task_id_max
+    TASK_ID_MIN = task_id_min
+    
     RANDOM_SEED = 42
     TEMPERATURE = 0.0
-    MAX_RETRIES_PER_MODEL = 3  
-    
-    if task_id_range is not None:
-        task_id_min, task_id_max = task_id_range
-        DATA_LEN_RANGE = task_id_max 
-        TASK_ID_MIN = task_id_min
-    else:
-        TASK_ID_MIN = 1 
+    MAX_RETRIES_PER_MODEL = 3 
     
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
         """Evaluate a single repo and return (repo, result)."""
-        log_prefix = f"[Repo-{repo_idx}] "
+        repo_name_stripped = repo.split("/")[-1]
+        log_prefix = f"[{repo_name_stripped}] "
         
         deployments = {}
         success = False
         repo_result = None
         
+        def log_deployment_logs(deployment, deployment_type: str):
+            """Fetch and log deployment logs with prefix."""
+            try:
+                logs = deployment.logs()
+                if logs:
+                    for line in logs.strip().split('\n'):
+                        if line.strip():
+                            try:
+                                log_data = json.loads(line)
+                                message = log_data.get("message", line)
+                                logger.info(f"{log_prefix}[{deployment_type}] {message}")
+                            except (json.JSONDecodeError, AttributeError):
+                                logger.info(f"{log_prefix}[{deployment_type}] {line}")
+            except Exception as e:
+                logger.warning(f"{log_prefix}Failed to fetch {deployment_type} logs: {e}")
+        
         for retry_attempt in range(MAX_RETRIES_PER_MODEL):
             try:
-                safe_repo_name = repo.split("/")[-1][:30]
                 unique_suffix = f"{repo_idx}-{int(time.time() * 1000) % 100000}"
-                vllm_deployment_name = f"vllm-{safe_repo_name}-{unique_suffix}"
-                agentgym_deployment_name = f"agentgym-{safe_repo_name}-{unique_suffix}"
+                vllm_deployment_name = f"vllm-{repo_name_stripped}-{unique_suffix}"
+                env_deployment_name = f"agentgym-{repo_name_stripped}-{unique_suffix}"
                 
                 is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
                 
@@ -471,49 +488,55 @@ async def run_evaluation_docker_environment(
                     base_model,
                     lora_model,
                     vllm_deployment_name,
-                    None
                 )
                 deployments['vllm'] = vllm_deployment
                 
-                await asyncio.to_thread(wait_for_basilica_health, vllm_deployment.url, log_file=None)
+                await asyncio.to_thread(wait_for_basilica_health, vllm_deployment.url)
                 logger.info(f"{log_prefix}vLLM Ready at: {vllm_deployment.url}")
                 
-                logger.info(f"{log_prefix}Deploying AgentGym...")
+                logger.info(f"{log_prefix}Deploying Environment Server...")
                 
-                env_image_to_use = env_image if env_image else None
-                
-                agentgym_deployment = await asyncio.to_thread(
-                    deploy_agentgym_basilica,
-                    agentgym_deployment_name,
-                    None,
-                    env_image_to_use
+                env_deployment = await asyncio.to_thread(
+                    deploy_env_basilica,
+                    env_deployment_name,
+                    env_image
                 )
-                deployments['agentgym'] = agentgym_deployment
+                deployments['env'] = env_deployment
                 
                 try:
-                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/health", log_file=None)
+                    await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, path="/health")
                 except:
-                    await asyncio.to_thread(wait_for_basilica_health, agentgym_deployment.url, path="/v1/models", log_file=None)
-                logger.info(f"{log_prefix}AgentGym Ready at: {agentgym_deployment.url}")
+                    await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, path="/v1/models")
+                logger.info(f"{log_prefix}Environment Server Ready at: {env_deployment.url}")
                 
-                is_game = task_id_range is not None
                 avg_score = await _run_basilica_evaluation(
                     vllm_deployment.url,
-                    agentgym_deployment.url,
-                    num_eval_samples,
+                    env_deployment.url,
+                    vcst.NUM_EVAL_SAMPLES,
                     DATA_LEN_RANGE,
                     RANDOM_SEED,
                     TEMPERATURE,
                     log_prefix,
                     inference_model_name,
                     TASK_ID_MIN,
-                    is_game_eval=is_game
+                    env_name=env_name
                 )
                 
                 repo_result = {
                     'is_finetune': True,
                     'eval_loss': avg_score
                 }
+                
+                await asyncio.to_thread(log_deployment_logs, vllm_deployment, "vLLM")
+                await asyncio.to_thread(log_deployment_logs, env_deployment, "Env")
+                
+                for name, deployment in deployments.items():
+                    try:
+                        deployment.delete()
+                        logger.info(f"{log_prefix}Cleaned up {name} deployment")
+                    except Exception as e:
+                        logger.warning(f"{log_prefix}Failed to cleanup {name}: {e}")
+                deployments = {}
                 
                 success = True
                 break
@@ -524,7 +547,9 @@ async def run_evaluation_docker_environment(
                 
                 for name, deployment in deployments.items():
                     try:
+                        await asyncio.to_thread(log_deployment_logs, deployment, name)
                         deployment.delete()
+                        logger.info(f"{log_prefix}Cleaned up {name} deployment")
                     except Exception as cleanup_error:
                         logger.warning(f"{log_prefix}Failed to cleanup {name}: {cleanup_error}")
                 deployments = {}
@@ -534,14 +559,6 @@ async def run_evaluation_docker_environment(
                     await asyncio.sleep(wait_time)
                 else:
                     repo_result = str(e)
-            
-            finally:
-                for name, deployment in deployments.items():
-                    try:
-                        deployment.delete()
-                        logger.info(f"{log_prefix}Cleaned up {name} deployment")
-                    except Exception as e:
-                        logger.warning(f"{log_prefix}Failed to cleanup {name}: {e}")
         
         if success:
             logger.info(f"{log_prefix} Evaluation completed.")
@@ -568,15 +585,15 @@ async def run_evaluation_docker_environment(
 
 async def _run_basilica_evaluation(
     vllm_url: str,
-    agentgym_url: str,
+    env_url: str,
     num_eval_samples: int,
     data_len_range: int,
     random_seed: int,
     temperature: float,
     log_prefix: str,
-    inference_model_name: str = "trained_lora",
+    inference_model_name: str,
     task_id_min: int = 1,
-    is_game_eval: bool = False
+    env_name: str = "alfworld"
 ) -> float:
     """Run evaluation loop using Basilica deployments with concurrent task processing."""
     random.seed(random_seed)
@@ -596,24 +613,23 @@ async def _run_basilica_evaluation(
             "temperature": temperature,
             "seed": random_seed,
         }
-        if not is_game_eval:
-            payload["max_round"] = 30
-        else:
+        
+        if env_name == "openspiel":
             payload["opponent"] = "random"
             payload["api_key"] = "dummy-key"
+        else:
+            payload["max_round"] = 30
         
         async with semaphore:
             for attempt in range(max_retries):
                 try:
                     start_ts = time.time()
                     
-                    # Log task start
                     logger.info(f"{log_prefix}[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
                     
-                    # Make async HTTP request
-                    timeout = aiohttp.ClientTimeout(total=2500)
+                    timeout = aiohttp.ClientTimeout(total=60)
                     async with session.post(
-                        f"{agentgym_url}/evaluate",
+                        f"{env_url}/evaluate",
                         json=payload,
                         timeout=timeout,
                         headers={'Connection': 'close'}
@@ -678,11 +694,11 @@ async def _run_basilica_evaluation(
                         await asyncio.sleep(wait_time)
                         continue
                     
-                    logger.error(f"{log_prefix}Failed: Request timeout")
+                    logger.error(f"{log_prefix}Task ID {task_id}: Failed after {max_retries} retries - Request timeout")
                     return {
                         "task_id": task_id,
                         "score": 0.0,
-                        "time": 2500.0,
+                        "time": 60.0,
                         "error": "Request timeout"
                     }
                 except (aiohttp.ClientError, aiohttp.ClientConnectionError) as e:
