@@ -165,7 +165,7 @@ tasks:
             docker run --rm -v $(pwd)/config/nginx:/work httpd:alpine htpasswd -b -B -c /work/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD}
           fi
         fi
-      - docker-compose -f docker-compose.observability-server.yml --env-file .env.observability up -d
+      - docker compose -f docker-compose.observability-server.yml --env-file .env.observability up -d
       - |
         export $(cat .vali.env | grep -v '^#' | xargs)
         echo "========================================="
@@ -177,7 +177,7 @@ tasks:
   stop-observability-server:
     desc: "Stop the observability server"
     cmds:
-      - docker-compose -f docker-compose.observability-server.yml down
+      - docker compose -f docker-compose.observability-server.yml down
 
   deploy-trainer-logs:
     desc: "Deploy log shipping on trainer node (uses .trainer.env)"
@@ -222,21 +222,21 @@ tasks:
   logs-observability:
     desc: "View logs from observability server"
     cmds:
-      - docker-compose -f docker-compose.observability-server.yml logs -f
+      - docker compose -f docker-compose.observability-server.yml logs -f
 
   logs-trainer-shipper:
     desc: "View logs from trainer log shipper"
     cmds:
-      - docker-compose -f docker-compose.trainer-server.yml logs -f vector-log-shipper
+      - docker compose -f docker-compose.trainer-server.yml logs -f vector-log-shipper
 
   status-trainer-logs:
     desc: "Check status of trainer logging system"
     cmds:
       - echo "=== Observability Server Status ==="
-      - docker-compose -f docker-compose.observability-server.yml ps 2>/dev/null || echo "Not running on this server"
+      - docker compose -f docker-compose.observability-server.yml ps 2>/dev/null || echo "Not running on this server"
       - echo ""
       - echo "=== Trainer Log Shipper Status ==="
-      - docker-compose -f docker-compose.trainer-server.yml ps 2>/dev/null || echo "Not running on this server"
+      - docker compose -f docker-compose.trainer-server.yml ps 2>/dev/null || echo "Not running on this server"
       - echo ""
       - echo "=== Vector Metrics ==="
       - curl -s http://localhost:8686/health 2>/dev/null && echo "Vector is healthy" || echo "Vector not accessible"

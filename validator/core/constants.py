@@ -320,14 +320,14 @@ YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
 
 # Basilica deployment constants
-BASILICA_VLLM_IMAGE = "vllm/vllm-openai:latest"
+BASILICA_SGLANG_IMAGE = "lmsysorg/sglang:latest"
 BASILICA_ENV_IMAGE = "affinefoundation/agentgym:alfworld"
-BASILICA_VLLM_GPU_COUNT = 1
-BASILICA_VLLM_GPU_MODELS = ["A100"]
-BASILICA_VLLM_MIN_GPU_MEMORY_GB = 80
-BASILICA_VLLM_MEMORY = "16Gi"
-BASILICA_VLLM_TTL_SECONDS = 10800
-BASILICA_VLLM_TIMEOUT = 1800
+BASILICA_SGLANG_GPU_COUNT = 1
+BASILICA_SGLANG_GPU_MODELS = ["A100"]
+BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
+BASILICA_SGLANG_MEMORY = "16Gi"
+BASILICA_SGLANG_TTL_SECONDS = 10800
+BASILICA_SGLANG_TIMEOUT = 1800
 BASILICA_ENV_CPU = "4"
 BASILICA_ENV_MEMORY = "16Gi"
 BASILICA_ENV_TTL_SECONDS = 10800
@@ -338,12 +338,12 @@ ENVIRONMENTS = {
         "task_id_range": (1, 2500),
         "env_image": "affinefoundation/agentgym:alfworld"
     },
-    "openspiel": {
-        "task_id_range": (300000000, 399999999),
+    "goofspiel": {
+        "task_id_range": (0, 99999999),
         "env_image": "diagonalge/openspiel:latest"
     }
 }
 
 DEFAULT_ENV = "alfworld"
-NUM_EVAL_SAMPLES = 500
+NUM_EVAL_SAMPLES = 250
 

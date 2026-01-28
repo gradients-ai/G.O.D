@@ -15,11 +15,11 @@ from validator.evaluation.docker_evaluation import run_evaluation_docker_environ
 BASE_MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct" 
 
 MODELS = [
-    "gradients-io-tournaments/affine_gin_rummy_random"
+    "Qwen/Qwen2.5-3B-Instruct",
+    "gradients-io-tournaments/goofspiel_8x_h100_mcts_opponent_thinking_4hr",
+    "gradients-io-tournaments/affine_goofspiel_random" 
 ]
-
-DATASET = "test_dataset"  
-NUM_EVAL_SAMPLES = 500 
+DATASET = "test_dataset"
 
 
 async def main():
@@ -31,15 +31,15 @@ async def main():
         return
     
     print("=" * 60)
-    print("Testing run_evaluation_docker_environment with Basilica (OpenSpiel)")
+    print("Testing run_evaluation_docker_environment with Basilica (GoofSpiel)")
     print("=" * 60)
     print(f"Base Model: {BASE_MODEL_NAME}")
     print(f"Models to Evaluate: {MODELS}")
-    print(f"Environment: openspiel")
+    print(f"Environment: goofspiel")
     print(f"Dataset: {DATASET}")
     print()
     
-    dataset_type = EnvironmentDatasetType(environment_name="openspiel")
+    dataset_type = EnvironmentDatasetType(environment_name="goofspiel")
     
     try:
         results = await run_evaluation_docker_environment(

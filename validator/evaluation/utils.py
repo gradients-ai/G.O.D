@@ -235,128 +235,108 @@ def read_prompt_file(text_file_path: str) -> str:
     return None
 
 
-def create_vllm_deployment_source(base_model: str, lora_model: str | None = None) -> str:
-    """Create the source code for vLLM deployment with model download."""
+def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42) -> str:
+    """Create the source code for SGLang deployment with model download.
+    
+    Args:
+        base_model: Base model name/path
+        lora_model: Optional LoRA model name/path
+        seed: Random seed for determinism
+    """
+    # Build SGLang command
+    sglang_args = [
+        "python3 -m sglang.launch_server",
+        f"--model-path {base_model}",
+    ]
     if lora_model:
-        func_source = f"""import subprocess
-import sys
-import os
-
-# Set HF_HOME to ensure vLLM uses the same cache location
-os.environ['HF_HOME'] = '/root/.cache/huggingface'
-os.environ['TRANSFORMERS_CACHE'] = '/root/.cache/huggingface'
-
-# Download base model first (blocking) - use local_files_only=False to ensure download
-print("Downloading base model: {base_model}")
-try:
-    result = subprocess.run(
-        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{base_model}', local_files_only=False)"],
-        check=True,
-        timeout=3600
-    )
-    print("Base model downloaded successfully")
-except subprocess.TimeoutExpired:
-    print("ERROR: Base model download timed out after 1 hour")
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR: Failed to download base model: {{e}}")
-    sys.exit(1)
-
-# Download LoRA (blocking)
+        sglang_args.append("--enable-lora --lora-paths trained_lora=/tmp/lora/trained_lora --lora-backend triton")
+    sglang_args.extend([
+        "--host 0.0.0.0 --port 8000",
+        "--tensor-parallel-size 1 --dtype float16",
+        "--enable-deterministic-inference",
+        f"--random-seed {seed}",
+    ])
+    sglang_cmd = " ".join(sglang_args)
+    
+    # Download section
+    download_lora_code = f'''
+# Download LoRA
 print("Downloading LoRA: {lora_model}")
-try:
-    result = subprocess.run(
-        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{lora_model}', local_files_only=False)"],
-        check=True,
-        timeout=3600
-    )
-    print("LoRA downloaded successfully")
-except subprocess.TimeoutExpired:
-    print("ERROR: LoRA download timed out after 1 hour")
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR: Failed to download LoRA: {{e}}")
-    sys.exit(1)
-
-# Verify downloads completed
-print("Verifying downloads...")
-hf_cache = "/root/.cache/huggingface"
-if not os.path.exists(hf_cache):
-    print(f"ERROR: HuggingFace cache directory not found at {{hf_cache}}")
-    sys.exit(1)
-print("Downloads verified")
-
-# Now start vLLM server with LoRA (models are already downloaded)
-print("Starting vLLM server with LoRA...")
-cmd = "vllm serve {base_model} --enable-lora --lora-modules trained_lora={lora_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
-subprocess.Popen(cmd, shell=True).wait()
-"""
-    else:
-        func_source = f"""import subprocess
+from huggingface_hub import snapshot_download
+snapshot_download("{lora_model}", local_dir="/tmp/lora/trained_lora", local_dir_use_symlinks=False)
+print("LoRA downloaded")
+''' if lora_model else ''
+    
+    server_type = "with LoRA" if lora_model else ""
+    
+    return f'''import subprocess
 import sys
 import os
 
+# HuggingFace cache configuration
 os.environ['HF_HOME'] = '/root/.cache/huggingface'
 os.environ['TRANSFORMERS_CACHE'] = '/root/.cache/huggingface'
+os.environ['HUGGINGFACE_HUB_CACHE'] = '/root/.cache/huggingface'
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
 
+# Determinism environment variables
+os.environ['PYTHONHASHSEED'] = '{seed}'
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+os.environ['NVIDIA_TF32_OVERRIDE'] = '0'
+
+# Download base model
 print("Downloading base model: {base_model}")
-try:
-    result = subprocess.run(
-        ["python3", "-c", f"from huggingface_hub import snapshot_download; snapshot_download('{base_model}', local_files_only=False)"],
-        check=True,
-        timeout=3600
-    )
-    print("Base model downloaded successfully")
-except subprocess.TimeoutExpired:
-    print("ERROR: Base model download timed out after 1 hour")
-    sys.exit(1)
-except Exception as e:
-    print(f"ERROR: Failed to download base model: {{e}}")
-    sys.exit(1)
-
-print("Verifying download...")
-hf_cache = "/root/.cache/huggingface"
-if not os.path.exists(hf_cache):
-    print(f"ERROR: HuggingFace cache directory not found at {{hf_cache}}")
-    sys.exit(1)
-print("Download verified")
-
-print("Starting vLLM server...")
-cmd = "vllm serve {base_model} --host 0.0.0.0 --port 8000 --trust-remote-code"
-subprocess.Popen(cmd, shell=True).wait()
-"""
-    return func_source
+from huggingface_hub import snapshot_download
+snapshot_download("{base_model}", local_files_only=False)
+print("Base model downloaded")
+{download_lora_code}
+# Start SGLang server {server_type}
+print("Starting SGLang server {server_type}...")
+subprocess.Popen("{sglang_cmd}", shell=True).wait()
+'''
 
 
-def deploy_vllm_basilica(
+def deploy_sglang_basilica(
     base_model: str,
     lora_model: str | None,
     deployment_name: str,
+    seed: int = 42,
 ) -> basilica.Deployment:
-    """Deploy vLLM server to Basilica."""
+    """Deploy SGLang server to Basilica.
+    
+    Args:
+        base_model: Base model name/path
+        lora_model: Optional LoRA model name/path
+        deployment_name: Name for the deployment
+        seed: Random seed for determinism (default: 42)
+    """
 
-    func_source = create_vllm_deployment_source(base_model, lora_model)
+    func_source = create_sglang_deployment_source(base_model, lora_model, seed)
     
     client = basilica.BasilicaClient()
     deployment = client.deploy(
         name=deployment_name,
         source=func_source,
-        image=cst.BASILICA_VLLM_IMAGE,
+        image=cst.BASILICA_SGLANG_IMAGE,
         port=8000,
-        gpu_count=cst.BASILICA_VLLM_GPU_COUNT,
-        gpu_models=cst.BASILICA_VLLM_GPU_MODELS,
-        min_gpu_memory_gb=cst.BASILICA_VLLM_MIN_GPU_MEMORY_GB,
-        memory=cst.BASILICA_VLLM_MEMORY,
-        ttl_seconds=cst.BASILICA_VLLM_TTL_SECONDS,
-        timeout=cst.BASILICA_VLLM_TIMEOUT,
+        gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
+        gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
+        min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        memory=cst.BASILICA_SGLANG_MEMORY,
+        ttl_seconds=cst.BASILICA_SGLANG_TTL_SECONDS,
+        timeout=cst.BASILICA_SGLANG_TIMEOUT,
         env={
             "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
             "HF_HUB_DISABLE_XET": "1",
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            "PYTHONHASHSEED": str(seed),
+            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+            "NVIDIA_TF32_OVERRIDE": "0",
         },
     )
     
     try:
-        deployment.wait_until_ready(timeout=cst.BASILICA_VLLM_TIMEOUT)
+        deployment.wait_until_ready(timeout=cst.BASILICA_SGLANG_TIMEOUT)
     except Exception as e:
         error_msg = f"[{deployment_name}] Deployment wait failed: {e}"
         logger.warning(error_msg)
@@ -372,17 +352,11 @@ def deploy_env_basilica(
     
     Args:
         deployment_name: Name for the deployment
-        env_image: Optional custom image (e.g., "openspiel:v1" for games). 
-                   If None, uses default from constants.
+        env_image: Optional custom image
     """
     
     client = basilica.BasilicaClient()
-    
-    llm_api_key = os.getenv("CHUTES_API_KEY", "")
-    env_vars = {}
-    if llm_api_key:
-        env_vars["CHUTES_API_KEY"] = llm_api_key
-    
+
     image_to_use = env_image if env_image else cst.BASILICA_AGENTGYM_IMAGE
     
     deployment = client.deploy(
@@ -392,8 +366,7 @@ def deploy_env_basilica(
         cpu=cst.BASILICA_ENV_CPU,
         memory=cst.BASILICA_ENV_MEMORY,
         ttl_seconds=cst.BASILICA_ENV_TTL_SECONDS,
-        timeout=cst.BASILICA_ENV_TIMEOUT,
-        env=env_vars,
+        timeout=cst.BASILICA_ENV_TIMEOUT
     )
     
     return deployment
