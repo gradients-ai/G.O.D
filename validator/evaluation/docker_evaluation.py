@@ -687,18 +687,30 @@ async def _run_basilica_evaluation(
             "error": "All retries exhausted"
         }
     
+    # Concurrency settings
+    max_concurrent = 4 
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    async def evaluate_with_semaphore(session: aiohttp.ClientSession, task_id: int, task_idx: int) -> dict:
+        async with semaphore:
+            return await evaluate_single_task(session, task_id, task_idx)
+    
     session_timeout = aiohttp.ClientTimeout(total=7200)  # 2 hours for full evaluation
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        env_logger.info(f"Starting {len(eval_list)} evaluations...")
+        env_logger.info(f"Starting {len(eval_list)} evaluations with concurrency={max_concurrent}...")
         
-        # Process tasks sequentially - only send next request when previous is successful
-        for idx, task_id in enumerate(eval_list):
-            result = await evaluate_single_task(session, task_id, idx)
-            
+        # Process tasks concurrently with semaphore limit
+        tasks = [
+            evaluate_with_semaphore(session, task_id, idx) 
+            for idx, task_id in enumerate(eval_list)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 env_logger.error(f"Task {idx}: Failed with exception: {result}")
                 all_results.append({
-                    "task_id": task_id,
+                    "task_id": eval_list[idx],
                     "score": 0.0,
                     "time": 0.0,
                     "error": str(result)
@@ -711,7 +723,7 @@ async def _run_basilica_evaluation(
     avg_score = total_score / len(all_results) if all_results else 0.0
     avg_time = total_time / len(all_results) if all_results else 0.0
     
-    logger.info(f"Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    env_logger.info(f"Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 
