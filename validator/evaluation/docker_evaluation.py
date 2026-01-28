@@ -695,7 +695,7 @@ async def _run_basilica_evaluation(
         async with semaphore:
             return await evaluate_single_task(session, task_id, task_idx)
     
-    session_timeout = aiohttp.ClientTimeout(total=7200)  # 2 hours for full evaluation
+    session_timeout = aiohttp.ClientTimeout(total=7200)
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
         env_logger.info(f"Starting {len(eval_list)} evaluations with concurrency={max_concurrent}...")
         
