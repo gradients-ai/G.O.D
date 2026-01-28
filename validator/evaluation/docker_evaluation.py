@@ -29,6 +29,7 @@ from validator.tasks.task_prep import unzip_to_temp_path
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
 from validator.utils.logging import stream_container_logs
+from validator.evaluation.utils import check_for_lora
 
 
 logger = get_logger(__name__)
@@ -472,8 +473,14 @@ async def run_evaluation_docker_environment(
             # Docker Network Setup
             networks = client.networks.list(names=["agent_eval_net"])
             if not networks: client.networks.create("agent_eval_net", driver="bridge")
-            logger.info(f"Starting vLLM: {original_model} w/ lora {repo}")
-            vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --max-lora-rank 256 --port 8000 --trust-remote-code"
+            
+            is_lora = check_for_lora(repo)
+            if is_lora:
+                logger.info(f"Starting vLLM: {original_model} w/ lora {repo}")
+                vllm_command = f"--model {original_model} --enable-lora --lora-modules trained_lora={repo} --max-lora-rank 256 --port 8000 --trust-remote-code"
+            else:
+                logger.info(f"Starting vLLM: {repo} (not a LoRA)")
+                vllm_command = f"--model {repo} --port 8000 --trust-remote-code"
 
             vllm_container: Container = await asyncio.to_thread(
                 client.containers.run,

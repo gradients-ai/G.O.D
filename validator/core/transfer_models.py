@@ -124,6 +124,7 @@ class TournamentFeesResponse(BaseModel):
 
     text_tournament_fee_rao: int = Field(..., description="Text tournament participation fee in RAO")
     image_tournament_fee_rao: int = Field(..., description="Image tournament participation fee in RAO")
+    environment_tournament_fee_rao: int = Field(..., description="Environment tournament participation fee in RAO")
 
 
 class BalanceEvent(BaseModel):

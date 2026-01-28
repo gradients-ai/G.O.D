@@ -1213,6 +1213,8 @@ def _calculate_next_tournament_start_time(last_created_at: datetime, tournament_
     # If days_until_target is 0, we're on the target day - check if time has passed
     if days_until_target == 0:
         candidate = reference_time.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+        if reference_time.hour == target_hour:
+            return candidate
         if candidate > reference_time:
             return candidate
         # Time has passed today, schedule for next week
