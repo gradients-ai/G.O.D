@@ -258,4 +258,3 @@ def get_environment_logger(
     
     return logger
 
-
