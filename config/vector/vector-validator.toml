@@ -1,0 +1,85 @@
+# Vector configuration for validator - receives HTTP logs and sends to Loki
+
+[api]
+enabled = true
+address = "0.0.0.0:8687"
+
+# -------------------------
+# Sources
+# -------------------------
+[sources.http_logs]
+type = "http_server"
+address = "0.0.0.0:8689"
+encoding = "json"
+
+[sources.internal_metrics]
+type = "internal_metrics"
+
+# -------------------------
+# Transforms
+# -------------------------
+[transforms.normalize_logs]
+type = "remap"
+inputs = ["http_logs"]
+source = """
+# Normalize message
+.message, _ = to_string(.message)
+
+# Level handling
+lvl, _ = to_string(.level)
+if lvl != null && lvl != "" {
+  .level = upcase(lvl)
+} else {
+  .level = "INFO"
+}
+
+# Direct fields from payload
+repo, _ = to_string(.repo_id)
+eid, _ = to_string(.eval_id)
+mdl, _ = to_string(.model)
+tt, _ = to_string(.task_type)
+srv, _ = to_string(.server)
+
+.repo_id = if repo != null && repo != "" { repo } else { "unknown" }
+.eval_id = if eid != null && eid != "" { eid } else { "unknown" }
+.model = if mdl != null && mdl != "" { mdl } else { "unknown" }
+.task_type = if tt != null && tt != "" { tt } else { "environment" }
+.server = if srv != null && srv != "" { srv } else { "validator" }
+
+# Timestamp handling
+ts_ms, _ = to_int(.timestamp)
+if ts_ms != null && ts_ms > 1_600_000_000_000 && ts_ms < 4_100_000_000_000 {
+  .timestamp = from_unix_timestamp(ts_ms, unit: "milliseconds") ?? now()
+} else {
+  .timestamp = now()
+}
+"""
+
+# -------------------------
+# Sinks
+# -------------------------
+[sinks.loki]
+type = "loki"
+inputs = ["normalize_logs"]
+endpoint = "${LOKI_ENDPOINT}"
+encoding.codec = "text"
+batch.timeout_secs = 5
+batch.max_bytes = 524288
+request.timeout_secs = 30
+request.retry_attempts = 3
+request.retry_initial_backoff_secs = 1
+
+labels.job = "environment-evaluation"
+labels.repo_id = "{{ repo_id }}"
+labels.eval_id = "{{ eval_id }}"
+labels.model = "{{ model }}"
+labels.task_type = "{{ task_type }}"
+labels.server = "{{ server }}"
+labels.level = "{{ level }}"
+
+# Prometheus exporter
+[sinks.prometheus]
+type = "prometheus_exporter"
+inputs = ["internal_metrics"]
+address = "0.0.0.0:9598"
+default_namespace = "vector_validator"

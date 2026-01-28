@@ -14,6 +14,7 @@ services:
       - ./config/grafana-validator-general.json:/var/lib/grafana/dashboards/grafana-validator-general.json
       - ./config/grafana-validator-errors.json:/var/lib/grafana/dashboards/grafana-validator-errors.json
       - ./config/grafana-tournament.json:/var/lib/grafana/dashboards/grafana-tournament.json
+      - ./config/grafana-environment-dashboard.json:/var/lib/grafana/dashboards/grafana-environment-dashboard.json
     ports:
       - ${GRAFANA_PORT:-3000}:3000
 
@@ -94,6 +95,27 @@ services:
     volumes:
       - loki:/loki
       - ./config/loki-config.yaml:/etc/loki/local-config.yaml
+
+  # Vector for environment evaluation logs
+  vector-validator:
+    container_name: god-vector-validator
+    image: timberio/vector:latest-alpine
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: always
+    environment:
+      LOKI_ENDPOINT: http://loki:3100
+      VECTOR_LOG: ${VECTOR_LOG_LEVEL:-info}
+    volumes:
+      - ./config/vector/vector-validator.toml:/etc/vector/vector.toml:ro
+    ports:
+      - "8689:8689"
+    depends_on:
+      - loki
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8687/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
   prometheus:
     container_name: god-prometheus

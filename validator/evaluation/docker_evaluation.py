@@ -33,6 +33,7 @@ from validator.core import constants as vcst
 from validator.tasks.task_prep import unzip_to_temp_path
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
+from validator.utils.logging import get_environment_logger
 from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
     deploy_sglang_basilica,
@@ -442,16 +443,22 @@ async def run_evaluation_docker_environment(
     
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
         """Evaluate a single repo and return (repo, result)."""
+        eval_id = str(random.randint(1, 1000000))
         repo_name_stripped = repo.split("/")[-1]
-        eval_id = random.randint(1, 1000000)
-        log_prefix = f"[{repo_name_stripped}:{eval_id}] "
-        
+
+        # Create environment logger with labels for Grafana/Loki
+        env_logger = get_environment_logger(
+            name=repo_name_stripped,
+            repo_id=repo,
+            eval_id=eval_id,
+            model=original_model,
+        )
         deployments = {}
         success = False
         repo_result = None
         
         def log_deployment_logs(deployment, deployment_type: str):
-            """Fetch and log deployment logs with prefix."""
+            """Fetch and log deployment logs."""
             try:
                 logs = deployment.logs()
                 if logs:
@@ -460,11 +467,11 @@ async def run_evaluation_docker_environment(
                             try:
                                 log_data = json.loads(line)
                                 message = log_data.get("message", line)
-                                logger.info(f"{log_prefix}[{deployment_type}] {message}")
+                                env_logger.info(f"[{deployment_type}] {message}")
                             except (json.JSONDecodeError, AttributeError):
-                                logger.info(f"{log_prefix}[{deployment_type}] {line}")
+                                env_logger.info(f"[{deployment_type}] {line}")
             except Exception as e:
-                logger.warning(f"{log_prefix}Failed to fetch {deployment_type} logs: {e}")
+                env_logger.warning(f"Failed to fetch {deployment_type} logs: {e}")
         
         async def cleanup_deployments(deployments_dict: dict, fetch_logs: bool = False):
             """Clean up all deployments and optionally fetch their logs first."""
@@ -473,9 +480,9 @@ async def run_evaluation_docker_environment(
                     if fetch_logs:
                         await asyncio.to_thread(log_deployment_logs, deployment, name)
                     deployment.delete()
-                    logger.info(f"{log_prefix}Cleaned up {name} deployment")
+                    env_logger.info(f"Cleaned up {name} deployment")
                 except Exception as e:
-                    logger.warning(f"{log_prefix}Failed to cleanup {name}: {e}")
+                    env_logger.warning(f"Failed to cleanup {name}: {e}")
             deployments_dict.clear()
         
         for retry_attempt in range(MAX_RETRIES_PER_MODEL):
@@ -489,12 +496,12 @@ async def run_evaluation_docker_environment(
                     base_model = original_model
                     lora_model = repo
                     inference_model_name = f"{original_model}:trained_lora"
-                    logger.info(f"{log_prefix}Deploying SGLang: {original_model} w/ LoRA {repo}")
+                    env_logger.info(f"Deploying SGLang: {original_model} w/ LoRA {repo}")
                 else:
                     base_model = repo
                     lora_model = None
                     inference_model_name = repo
-                    logger.info(f"{log_prefix}Deploying SGLang: {repo} (base model, ignoring original_model={original_model})")
+                    env_logger.info(f"Deploying SGLang: {repo} (base model, ignoring original_model={original_model})")
                 
                 sglang_deployment = await asyncio.to_thread(
                     deploy_sglang_basilica,
@@ -506,9 +513,9 @@ async def run_evaluation_docker_environment(
                 deployments['sglang'] = sglang_deployment
                 
                 await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
-                logger.info(f"{log_prefix}SGLang Ready at: {sglang_deployment.url}")
+                env_logger.info(f"SGLang Ready at: {sglang_deployment.url}")
                 
-                logger.info(f"{log_prefix}Deploying Environment Server...")
+                env_logger.info(f"Deploying Environment Server...")
                 
                 env_deployment = await asyncio.to_thread(
                     deploy_env_basilica,
@@ -518,7 +525,7 @@ async def run_evaluation_docker_environment(
                 deployments['env'] = env_deployment
                 
                 await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, timeout=300, path="/health")
-                logger.info(f"{log_prefix}Environment Server Ready at: {env_deployment.url}")
+                env_logger.info(f"Environment Server Ready at: {env_deployment.url}")
                 
                 avg_score = await _run_basilica_evaluation(
                     sglang_deployment.url,
@@ -527,7 +534,7 @@ async def run_evaluation_docker_environment(
                     DATA_LEN_RANGE,
                     RANDOM_SEED,
                     TEMPERATURE,
-                    log_prefix,
+                    env_logger,
                     inference_model_name,
                     TASK_ID_MIN,
                     env_name=env_name
@@ -547,8 +554,7 @@ async def run_evaluation_docker_environment(
                 break
                 
             except Exception as e:
-                error_msg = f"{log_prefix}Evaluation attempt {retry_attempt + 1} failed: {str(e)}"
-                logger.error(error_msg, exc_info=True)
+                env_logger.error(f"Evaluation attempt {retry_attempt + 1} failed: {str(e)}", exc_info=True)
                 
                 await cleanup_deployments(deployments, fetch_logs=True)
                 
@@ -559,9 +565,9 @@ async def run_evaluation_docker_environment(
                     repo_result = str(e)
         
         if success:
-            logger.info(f"{log_prefix}Evaluation completed.")
+            env_logger.info(f"Evaluation completed.")
         else:
-            logger.error(f"{log_prefix}Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts.")
+            env_logger.error(f"Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts.")
         
         return (repo, repo_result if repo_result is not None else "Evaluation failed")
     
@@ -588,7 +594,7 @@ async def _run_basilica_evaluation(
     data_len_range: int,
     random_seed: int,
     temperature: float,
-    log_prefix: str,
+    env_logger: logging.Logger,
     inference_model_name: str,
     task_id_min: int = 1,
     env_name: str = "alfworld"
@@ -622,7 +628,7 @@ async def _run_basilica_evaluation(
         
         for attempt in range(max_retries):
             try:
-                logger.info(f"{log_prefix}[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
+                env_logger.info(f"[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
                 
                 timeout = aiohttp.ClientTimeout(total=120)  # 5 min per task
                 async with session.post(
@@ -649,9 +655,9 @@ async def _run_basilica_evaluation(
                     score = result.get('score', 0.0)
                     
                     if attempt > 0:
-                        logger.info(f"{log_prefix}Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt} retries")
+                        env_logger.info(f"Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt} retries")
                     else:
-                        logger.info(f"{log_prefix}Task ID {task_id}: Done (Score: {score})")
+                        env_logger.info(f"Task ID {task_id}: Done (Score: {score})")
                     
                     return {
                         "task_id": task_id,
@@ -662,11 +668,11 @@ async def _run_basilica_evaluation(
             except Exception as e:
                 last_error = str(e)
                 if attempt < max_retries - 1:
-                    logger.warning(f"{log_prefix}Task ID {task_id}: Error (retry {attempt + 1}/{max_retries} in {retry_delay:.1f}s): {last_error}")
+                    env_logger.warning(f"Task ID {task_id}: Error (retry {attempt + 1}/{max_retries} in {retry_delay:.1f}s): {last_error}")
                     await asyncio.sleep(retry_delay)
                     continue
                 
-                logger.error(f"{log_prefix}Task ID {task_id}: Failed after {max_retries} retries - {last_error}")
+                env_logger.error(f"Task ID {task_id}: Failed after {max_retries} retries - {last_error}")
                 return {
                     "task_id": task_id,
                     "score": 0.0,
@@ -683,14 +689,14 @@ async def _run_basilica_evaluation(
     
     session_timeout = aiohttp.ClientTimeout(total=7200)  # 2 hours for full evaluation
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        logger.info(f"{log_prefix}Starting {len(eval_list)} evaluations...")
+        env_logger.info(f"Starting {len(eval_list)} evaluations...")
         
         # Process tasks sequentially - only send next request when previous is successful
         for idx, task_id in enumerate(eval_list):
             result = await evaluate_single_task(session, task_id, idx)
             
             if isinstance(result, Exception):
-                logger.error(f"{log_prefix}Task {idx}: Failed with exception: {result}")
+                env_logger.error(f"Task {idx}: Failed with exception: {result}")
                 all_results.append({
                     "task_id": task_id,
                     "score": 0.0,
@@ -705,7 +711,7 @@ async def _run_basilica_evaluation(
     avg_score = total_score / len(all_results) if all_results else 0.0
     avg_time = total_time / len(all_results) if all_results else 0.0
     
-    logger.info(f"{log_prefix}Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    logger.info(f"Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 
