@@ -99,7 +99,3 @@ pm2 start \
 # Start Grafana and observability stack
 echo "Starting Grafana and observability stack..."
 docker compose --env-file .vali.env -f docker-compose.observability.yml up -d grafana
-
-echo "Grafana started. Access at http://localhost:${GRAFANA_PORT:-3000}"
-echo "Username: ${GRAFANA_USERNAME:-admin}"
-echo "Password: ${GRAFANA_PASSWORD:-admin}"

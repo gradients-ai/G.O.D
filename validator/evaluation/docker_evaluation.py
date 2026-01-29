@@ -531,7 +531,7 @@ async def run_evaluation_docker_environment(
                             env_logger.warning(f"Failed to dump logs for {name}: {log_error}")
             deployments_dict.clear()
         
-        MAX_EVAL_RETRIES = 3
+        MAX_EVAL_RETRIES = 5
         retry_attempt = 0
         while retry_attempt < MAX_EVAL_RETRIES:
             retry_attempt += 1
@@ -624,12 +624,14 @@ async def run_evaluation_docker_environment(
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     evaluation_results = {}
-    for result in results:
+    for idx, result in enumerate(results):
+        repo = models[idx]  # Get repo name from original list by index
         if isinstance(result, Exception):
-            logger.error(f"Evaluation task failed with exception: {result}", exc_info=True)
-            continue
-        repo, result_data = result
-        evaluation_results[repo] = result_data
+            logger.error(f"Evaluation task for {repo} failed with exception: {result}", exc_info=True)
+            evaluation_results[repo] = f"Evaluation failed: {str(result)}"
+        else:
+            _, result_data = result
+            evaluation_results[repo] = result_data
 
     logger.info(f"Environment evaluation results: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
