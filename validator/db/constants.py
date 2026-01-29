@@ -132,6 +132,7 @@ REWARD_WEIGHT = "reward_weight"
 
 # Environment Task Functions Table Columns
 ENVIRONMENT_NAME = "environment_name"
+EVAL_SEED = "eval_seed"
 
 # Submissions Table Columns
 SUBMISSION_ID = "submission_id"

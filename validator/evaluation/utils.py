@@ -1,10 +1,13 @@
 import base64
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 from io import BytesIO
 
+import basilica
+import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
@@ -12,6 +15,7 @@ from PIL import Image
 from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
+from validator.core import constants as cst
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
 
@@ -229,3 +233,156 @@ def read_prompt_file(text_file_path: str) -> str:
         with open(text_file_path, "r", encoding="utf-8") as text_file:
             return text_file.read()
     return None
+
+
+def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42) -> str:
+    """Create the source code for SGLang deployment with model download.
+    
+    Args:
+        base_model: Base model name/path
+        lora_model: Optional LoRA model name/path
+        seed: Random seed for determinism
+    """
+    # Build SGLang command
+    sglang_args = [
+        "python3 -m sglang.launch_server",
+        f"--model-path {base_model}",
+    ]
+    if lora_model:
+        sglang_args.append("--enable-lora --lora-paths trained_lora=/tmp/lora/trained_lora --lora-backend triton")
+    sglang_args.extend([
+        "--host 0.0.0.0 --port 8000",
+        "--tensor-parallel-size 1 --dtype float16",
+        "--enable-deterministic-inference",
+        f"--random-seed {seed}",
+    ])
+    sglang_cmd = " ".join(sglang_args)
+    
+    # Download section
+    download_lora_code = f'''
+# Download LoRA
+print("Downloading LoRA: {lora_model}")
+from huggingface_hub import snapshot_download
+snapshot_download("{lora_model}", local_dir="/tmp/lora/trained_lora", local_dir_use_symlinks=False)
+print("LoRA downloaded")
+''' if lora_model else ''
+    
+    server_type = "with LoRA" if lora_model else ""
+    
+    return f'''import subprocess
+import sys
+import os
+
+# HuggingFace cache configuration
+os.environ['HF_HOME'] = '/root/.cache/huggingface'
+os.environ['TRANSFORMERS_CACHE'] = '/root/.cache/huggingface'
+os.environ['HUGGINGFACE_HUB_CACHE'] = '/root/.cache/huggingface'
+os.environ['HF_HUB_ENABLE_HF_TRANSFER'] = '1'
+
+# Determinism environment variables
+os.environ['PYTHONHASHSEED'] = '{seed}'
+os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+os.environ['NVIDIA_TF32_OVERRIDE'] = '0'
+
+# Download base model
+print("Downloading base model: {base_model}")
+from huggingface_hub import snapshot_download
+snapshot_download("{base_model}", local_files_only=False)
+print("Base model downloaded")
+{download_lora_code}
+# Start SGLang server {server_type}
+print("Starting SGLang server {server_type}...")
+subprocess.Popen("{sglang_cmd}", shell=True).wait()
+'''
+
+
+def deploy_sglang_basilica(
+    base_model: str,
+    lora_model: str | None,
+    deployment_name: str,
+    seed: int = 42,
+) -> basilica.Deployment:
+    """Deploy SGLang server to Basilica.
+    
+    Args:
+        base_model: Base model name/path
+        lora_model: Optional LoRA model name/path
+        deployment_name: Name for the deployment
+        seed: Random seed for determinism (default: 42)
+    """
+
+    func_source = create_sglang_deployment_source(base_model, lora_model, seed)
+    
+    client = basilica.BasilicaClient()
+    deployment = client.deploy(
+        name=deployment_name,
+        source=func_source,
+        image=cst.BASILICA_SGLANG_IMAGE,
+        port=8000,
+        gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
+        gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
+        min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        memory=cst.BASILICA_SGLANG_MEMORY,
+        ttl_seconds=cst.BASILICA_SGLANG_TTL_SECONDS,
+        timeout=cst.BASILICA_SGLANG_TIMEOUT,
+        env={
+            "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+            "HF_HUB_DISABLE_XET": "1",
+            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+            "PYTHONHASHSEED": str(seed),
+            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+            "NVIDIA_TF32_OVERRIDE": "0",
+        },
+    )
+    
+    try:
+        deployment.wait_until_ready(timeout=cst.BASILICA_SGLANG_TIMEOUT)
+    except Exception as e:
+        error_msg = f"[{deployment_name}] Deployment wait failed: {e}"
+        logger.warning(error_msg)
+    
+    return deployment
+
+
+def deploy_env_basilica(
+    deployment_name: str,
+    env_image: str | None = None
+) -> basilica.Deployment:
+    """Deploy Environment Server to Basilica.
+    
+    Args:
+        deployment_name: Name for the deployment
+        env_image: Optional custom image
+    """
+    
+    client = basilica.BasilicaClient()
+
+    image_to_use = env_image if env_image else cst.BASILICA_AGENTGYM_IMAGE
+    
+    deployment = client.deploy(
+        name=deployment_name,
+        image=image_to_use,
+        port=8000,
+        cpu=cst.BASILICA_ENV_CPU,
+        memory=cst.BASILICA_ENV_MEMORY,
+        ttl_seconds=cst.BASILICA_ENV_TTL_SECONDS,
+        timeout=cst.BASILICA_ENV_TIMEOUT
+    )
+    
+    return deployment
+
+
+def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models") -> bool:
+    """Wait for Basilica service to be healthy."""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            response = requests.get(f"{url}{path}", timeout=5)
+            if response.status_code == 200:
+                return True
+        except:
+            pass
+        time.sleep(5)
+    
+    error_msg = f"Service at {url} did not become healthy within {timeout} seconds"
+    raise TimeoutError(error_msg)

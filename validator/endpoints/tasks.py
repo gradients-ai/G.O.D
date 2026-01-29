@@ -721,7 +721,6 @@ def factory_router() -> APIRouter:
     router.add_api_route(LEADERBOARD_ENDPOINT, get_leaderboard, methods=["GET"])
     router.add_api_route(GET_NETWORK_STATUS, get_network_status, methods=["GET"])
     router.add_api_route(GET_NETWORK_DETAILED_STATUS, get_network_detailed_status, methods=["GET"])
-    router.add_api_route(COMPLETED_ORGANIC_TASKS_ENDPOINT, get_completed_organic_tasks, methods=["GET"])
     router.add_api_route(UPDATE_TRAINING_REPO_BACKUP_ENDPOINT, update_training_repo_backup, methods=["PUT"])
     router.add_api_route(UPDATE_RESULT_MODEL_NAME_ENDPOINT, update_result_model_name, methods=["PUT"])
     router.add_api_route(CREATE_BENCHMARK_ROOT_TASK_ENDPOINT, create_benchmark_root_task_from_existing, methods=["POST"])

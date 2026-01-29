@@ -230,13 +230,14 @@ async def _insert_grpo_task(connection: Connection, task: GrpoRawTask, task_reco
 async def _insert_env_task(connection: Connection, task: EnvRawTask, task_record: dict) -> None:
     query_env = f"""
         INSERT INTO {cst.ENV_TASKS_TABLE}
-        ({cst.TASK_ID}, {cst.ENVIRONMENT_NAME})
-        VALUES ($1, $2)
+        ({cst.TASK_ID}, {cst.ENVIRONMENT_NAME}, {cst.EVAL_SEED})
+        VALUES ($1, $2, $3)
     """
     await connection.execute(
         query_env,
         task_record[cst.TASK_ID],
-        task.environment_name
+        task.environment_name,
+        task.eval_seed
     )
 
 
@@ -1656,3 +1657,21 @@ async def copy_task_for_benchmark(
     except Exception as e:
         logger.error(f"Error copying task {original_task.task_id}: {str(e)}", exc_info=True)
         raise
+
+
+async def get_env_task_eval_seed(task_id: UUID, psql_db: PSQLDB) -> int | None:
+    """
+    Get the eval_seed for an environment task.
+    This is kept separate from normal task fetches to keep eval_seed confidential.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            SELECT {cst.EVAL_SEED}
+            FROM {cst.ENV_TASKS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+        """
+        row = await connection.fetchrow(query, task_id)
+        if row:
+            return row[cst.EVAL_SEED]
+        return None

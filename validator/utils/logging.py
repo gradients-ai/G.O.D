@@ -1,12 +1,19 @@
+import json
 import logging
+import os
+import socket
 import time
 from contextvars import ContextVar
 from logging import Logger
 from logging import LogRecord
 
+import requests
 from docker.models.containers import Container
 from fiber.logging_utils import get_logger as fiber_get_logger
 
+
+HOSTNAME = socket.gethostname()
+VECTOR_URL = os.getenv("VECTOR_URL", "http://localhost:8689")
 
 current_context = ContextVar[dict[str, str | dict]]("current_context", default={})
 
@@ -172,4 +179,82 @@ class TimeBasedLogger:
             return True
         return False
 
+
+class VectorHandler(logging.Handler):
+    """Handler that sends logs to Vector's HTTP endpoint for forwarding to Loki."""
+    
+    def __init__(self, url: str = None, default_labels: dict = None):
+        super().__init__()
+        self.url = url or VECTOR_URL
+        self.default_labels = default_labels or {}
+
+    def emit(self, record):
+        try:
+            log_entry = {
+                "message": record.getMessage(),
+                "level": record.levelname,
+                "logger": record.name,
+                "timestamp": int(time.time() * 1000),
+                "server": HOSTNAME,
+                **self.default_labels,
+            }
+
+            # Include any extra attributes from the record
+            for key, value in record.__dict__.items():
+                if key not in log_entry and not key.startswith("_") and key not in (
+                    "name", "msg", "args", "created", "filename", "funcName", 
+                    "levelname", "levelno", "lineno", "module", "msecs", 
+                    "pathname", "process", "processName", "relativeCreated",
+                    "stack_info", "exc_info", "exc_text", "thread", "threadName"
+                ):
+                    try:
+                        json.dumps(value)
+                        log_entry[key] = value
+                    except Exception:
+                        log_entry[key] = str(value)
+            
+            requests.post(self.url, json=log_entry, timeout=0.5)
+        except Exception:
+            pass  # Don't let logging errors break the application
+
+
+def get_environment_logger(
+    name: str,
+    repo_id: str = None,
+    eval_id: str = None,
+    model: str = None,
+) -> Logger:
+    """Get a logger configured to send environment evaluation logs to Vector/Loki.
+    
+    Args:
+        name: Logger name
+        repo_id: Repository ID being evaluated
+        eval_id: Unique evaluation ID
+        model: Model name being evaluated
+    
+    Returns:
+        Logger configured with VectorHandler for environment logs
+    """
+    logger = logging.getLogger(f"environment.{name}")
+    logger.setLevel(logging.INFO)
+    
+    # Remove existing VectorHandlers to avoid duplicates
+    logger.handlers = [h for h in logger.handlers if not isinstance(h, VectorHandler)]
+    
+    # Add VectorHandler with labels
+    labels = {
+        "repo_id": repo_id or "unknown",
+        "eval_id": eval_id or "unknown", 
+        "model": model or "unknown",
+        "task_type": "environment",
+    }
+    logger.addHandler(VectorHandler(default_labels=labels))
+    
+    # Also keep console output for local debugging
+    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, VectorHandler) for h in logger.handlers):
+        console = logging.StreamHandler()
+        console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
+        logger.addHandler(console)
+    
+    return logger
 

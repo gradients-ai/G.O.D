@@ -167,6 +167,7 @@ class EnvRawTask(RawTask):
     """
 
     environment_name: str | None = None
+    eval_seed: int | None = None
     task_type: TaskType = TaskType.ENVIRONMENTTASK
     synthetic_data: str | None = None
 

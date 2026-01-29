@@ -161,7 +161,7 @@ async def run_evaluation_from_task_id(
     elif task_type == TaskType.GRPOTASK:
         dataset_type = GrpoDatasetType(field_prompt=task_details.field_prompt, reward_functions=task_details.reward_functions)
     elif task_type == TaskType.ENVIRONMENTTASK:
-        dataset_type = EnvironmentDatasetType(environment_name=task_details.environment_name)
+        dataset_type = EnvironmentDatasetType(environment_name=task_details.environment_name, eval_seed=task_details.eval_seed)
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
