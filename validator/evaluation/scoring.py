@@ -28,6 +28,7 @@ from validator.core.models import MinerResultsText
 from validator.core.models import Submission
 from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
+from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.evaluation.docker_evaluation import run_evaluation_docker_image
@@ -260,6 +261,7 @@ async def _evaluate_submissions(
     submission_repos: list[str],
     gpu_ids: list[int],
     dataset_type: TextDatasetType | None = None,
+    config: "Config | None" = None,
 ) -> dict[str, EvaluationResultText | EvaluationResultImage | Exception]:
     unique_repos = list(set(submission_repos))
     if len(unique_repos) != len(submission_repos):
@@ -281,12 +283,19 @@ async def _evaluate_submissions(
         if task.task_type != TaskType.ENVIRONMENTTASK:
             assert task.test_data is not None, "Test data shouldn't be none for text tasks"
 
+        # Fetch eval_seed for environment tasks
+        eval_seed = None
+        if task.task_type == TaskType.ENVIRONMENTTASK and config is not None and task.task_id is not None:
+            eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
+            logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
+
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": task.model_id,
             "models": repos_to_evaluate,
             "dataset_type": dataset_type,
             "gpu_ids": gpu_ids,
+            "eval_seed": eval_seed,
         }
 
         logger.info("Starting test evaluation")
@@ -444,7 +453,7 @@ async def process_miners_pool(
     if miner_repos:
         try:
             eval_results = await _evaluate_submissions(
-                task=task, submission_repos=list(miner_repos.values()), gpu_ids=gpu_ids, dataset_type=dataset_type or None
+                task=task, submission_repos=list(miner_repos.values()), gpu_ids=gpu_ids, dataset_type=dataset_type or None, config=config
             )
 
             for miner in miners:

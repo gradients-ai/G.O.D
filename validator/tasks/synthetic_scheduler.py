@@ -205,7 +205,7 @@ def _get_training_hours_from_num_rows(num_rows: int) -> tuple[int, int]:
 
 def _get_training_hours_for_environment_task() -> int:
     """ For now get random number of hours between 4 and 6 """
-    return random.randint(4, 6)
+    return 3
 
 
 async def get_dataset(
@@ -430,13 +430,17 @@ async def create_synthetic_env_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    selected_environment = "alfworld"
+    selected_environment = "goofspiel"
+
+    # Generate a random seed for evaluation reproducibility
+    eval_seed = random.randint(0, 2**31 - 1)
 
     task = EnvRawTask(
         model_id=model_id,
         ds=dummy_dataset,
         status=TaskStatus.PENDING,
         environment_name=selected_environment,
+        eval_seed=eval_seed,
         is_organic=False,
         created_at=current_time,
         termination_at=end_timestamp,
@@ -444,7 +448,7 @@ async def create_synthetic_env_task(
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=None,
     )
-    logger.info(f"New Environment task created")
+    logger.info(f"New Environment task created with eval_seed={eval_seed}")
 
     task = await add_task(task, config.psql_db)
 

@@ -220,6 +220,7 @@ async def run_evaluation_docker_text(
     dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
     file_format: FileFormat,
     gpu_ids: list[int],
+    eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
 
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
@@ -229,7 +230,7 @@ async def run_evaluation_docker_text(
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids)
+        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
@@ -260,34 +261,47 @@ async def run_evaluation_docker_text(
         }
     }
 
+    container = None
+    retry_delay = 5.0
+    
     try:
-        container: Container = await asyncio.to_thread(
-            client.containers.run,
-            cst.VALIDATOR_DOCKER_IMAGE,
-            command=command,
-            environment=environment,
-            volumes=volume_bindings,
-            runtime="nvidia",
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-            detach=True,
-        )
-        log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-        result = await asyncio.to_thread(container.wait)
-        log_task.cancel()
+        while True:
+            try:
+                container: Container = await asyncio.to_thread(
+                    client.containers.run,
+                    cst.VALIDATOR_DOCKER_IMAGE,
+                    command=command,
+                    environment=environment,
+                    volumes=volume_bindings,
+                    runtime="nvidia",
+                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
+                    detach=True,
+                )
+                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
+                result = await asyncio.to_thread(container.wait)
+                log_task.cancel()
 
-        if result["StatusCode"] != 0:
-            raise Exception(f"Container exited with status {result['StatusCode']}")
+                if result["StatusCode"] != 0:
+                    raise Exception(f"Container exited with status {result['StatusCode']}")
 
-        eval_results = await get_evaluation_results(container)
-        return process_evaluation_results(eval_results, is_image=False)
+                eval_results = await get_evaluation_results(container)
+                return process_evaluation_results(eval_results, is_image=False)
 
-    except Exception as e:
-        logger.error(f"Failed to retrieve {task_type} evaluation results: {str(e)}", exc_info=True)
-        raise Exception(f"Failed to retrieve {task_type} evaluation results: {str(e)}")
+            except Exception as e:
+                logger.error(f"Failed to retrieve {task_type} evaluation results: {str(e)}, retrying in {retry_delay}s...", exc_info=True)
+                if container is not None:
+                    try:
+                        await asyncio.to_thread(container.remove, force=True)
+                        container = None
+                    except:
+                        pass
+                await asyncio.sleep(retry_delay)
+                continue
 
     finally:
         try:
-            await asyncio.to_thread(container.remove, force=True)
+            if container is not None:
+                await asyncio.to_thread(container.remove, force=True)
             await cleanup_resources(client)
         except Exception as e:
             logger.info(f"A problem with cleaning up {e}")
@@ -350,61 +364,70 @@ async def run_evaluation_docker_grpo(
         client = docker.from_env()
         environment = base_environment.copy()
         environment["MODELS"] = repo
-        try:
-            model_path = await asyncio.to_thread(
-                snapshot_download,
-                repo_id=repo,
-                cache_dir=cache_dir,
-                ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"]
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to download {repo}: {str(e)}")
-            evaluation_results[repo] = f"Failed to download model: {str(e)}"
-            continue
+        retry_delay = 5.0
+        
+        # Infinite retry for model download
+        model_path = None
+        while model_path is None:
+            try:
+                model_path = await asyncio.to_thread(
+                    snapshot_download,
+                    repo_id=repo,
+                    cache_dir=cache_dir,
+                    ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"]
+                )
+            except Exception as e:
+                logger.error(f"Failed to download {repo}: {str(e)}, retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
 
         container = None  # Initialize container variable
-        try:
+        
+        # Infinite retry for container execution
+        while True:
+            try:
+                container: Container = await asyncio.to_thread(
+                    client.containers.run,
+                    cst.VALIDATOR_DOCKER_IMAGE,
+                    command=command,
+                    environment=environment,
+                    volumes=volume_bindings,
+                    runtime="nvidia",
+                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
+                    detach=True,
+                    network_mode="none",
+                )
 
-            container: Container = await asyncio.to_thread(
-                client.containers.run,
-                cst.VALIDATOR_DOCKER_IMAGE,
-                command=command,
-                environment=environment,
-                volumes=volume_bindings,
-                runtime="nvidia",
-                device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-                detach=True,
-                network_mode="none",
-            )
+                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
+                result = await asyncio.to_thread(container.wait)
+                log_task.cancel()
 
-            log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-            result = await asyncio.to_thread(container.wait)
-            log_task.cancel()
+                if result["StatusCode"] != 0:
+                    raise Exception(f"Container for {repo} exited with non-zero status: {result['StatusCode']}")
 
-            if result["StatusCode"] != 0:
-
-                logger.error(f"Container for {repo} exited with non-zero status: {result['StatusCode']}")
-                evaluation_results[repo] = f"Container for {repo} exited with status {result['StatusCode']}"
-
-            else:
                 eval_results = await get_evaluation_results(container)
                 evaluation_results[repo] = eval_results[repo]
                 if "model_params_count" in eval_results and "model_params_count" not in evaluation_results:
                     evaluation_results["model_params_count"] = eval_results["model_params_count"]
+                break  # Success, exit retry loop
 
-        except Exception as e:
-            logger.error(f"Failed to evaluate repo {repo}: {str(e)}", exc_info=True)
-            evaluation_results[repo] = str(e)
-
-        finally:
-            try:
-                if container is not None:
-                    await asyncio.to_thread(container.remove, force=True)
-                await cleanup_resources(client)
             except Exception as e:
-                logger.info(f"Problem with cleaning up container for {repo}: {e}")
-            client.close()
+                logger.error(f"Failed to evaluate repo {repo}: {str(e)}, retrying in {retry_delay}s...", exc_info=True)
+                if container is not None:
+                    try:
+                        await asyncio.to_thread(container.remove, force=True)
+                    except:
+                        pass
+                await asyncio.sleep(retry_delay)
+                continue
+
+            finally:
+                if container is not None:
+                    try:
+                        await asyncio.to_thread(container.remove, force=True)
+                        await cleanup_resources(client)
+                    except Exception as e:
+                        logger.info(f"Problem with cleaning up container for {repo}: {e}")
+        client.close()
 
     evaluation_results = normalize_rewards_and_compute_loss(evaluation_results)
     logger.info(f"Grpo evaluation results post normalization: {evaluation_results}")
@@ -418,10 +441,14 @@ async def run_evaluation_docker_environment(
     dataset_type: EnvironmentDatasetType,
     file_format: FileFormat,
     gpu_ids: list[int],
+    eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
     """
     Run environment evaluation using Basilica deployments for vLLM and AgentGym.
     Each model repo gets its own deployments with separate logging and retry logic.
+    
+    Args:
+        eval_seed: Random seed for evaluation reproducibility. If None, falls back to 42.
     """
     logger.info(f"Starting Basilica-based environment evaluation for {len(models)} repos: {models}")
 
@@ -437,16 +464,17 @@ async def run_evaluation_docker_environment(
     DATA_LEN_RANGE = task_id_max
     TASK_ID_MIN = task_id_min
     
-    RANDOM_SEED = 42
+    RANDOM_SEED = eval_seed if eval_seed is not None else 42
     TEMPERATURE = 0.0
-    MAX_RETRIES_PER_MODEL = 3 
+    logger.info(f"Using eval_seed={RANDOM_SEED} for environment evaluation")
+    retry_delay = 5.0  # for individual task retries
+    eval_retry_delay = 300.0  # for evaluation retries (deployment failures)
     
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
         """Evaluate a single repo and return (repo, result)."""
         eval_id = str(random.randint(1, 1000000))
         repo_name_stripped = repo.split("/")[-1]
 
-        # Create environment logger with labels for Grafana/Loki
         env_logger = get_environment_logger(
             name=repo_name_stripped,
             repo_id=repo,
@@ -463,13 +491,22 @@ async def run_evaluation_docker_environment(
                 logs = deployment.logs()
                 if logs:
                     for line in logs.strip().split('\n'):
-                        if line.strip():
-                            try:
-                                log_data = json.loads(line)
-                                message = log_data.get("message", line)
-                                env_logger.info(f"[{deployment_type}] {message}")
-                            except (json.JSONDecodeError, AttributeError):
-                                env_logger.info(f"[{deployment_type}] {line}")
+                        if not line.strip():
+                            continue
+                        
+                        try:
+                            log_data = json.loads(line)
+                            message = log_data.get("message", "")
+                            if message:
+                                message = re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*', '', message)
+                                message = re.sub(r'^data:\s*', '', message)
+                                message = message.rstrip(', ')
+                                if message.strip():
+                                    env_logger.info(f"[{deployment_type}] {message}")
+                        except (json.JSONDecodeError, AttributeError):
+                            cleaned_line = line.strip()
+                            if cleaned_line:
+                                env_logger.info(f"[{deployment_type}] {cleaned_line}")
             except Exception as e:
                 env_logger.warning(f"Failed to fetch {deployment_type} logs: {e}")
         
@@ -478,14 +515,26 @@ async def run_evaluation_docker_environment(
             for name, deployment in deployments_dict.items():
                 try:
                     if fetch_logs:
+                        env_logger.info(f"Dumping logs for {name} deployment before cleanup...")
                         await asyncio.to_thread(log_deployment_logs, deployment, name)
+                        env_logger.info(f"Finished dumping logs for {name} deployment")
+                    
                     deployment.delete()
                     env_logger.info(f"Cleaned up {name} deployment")
                 except Exception as e:
-                    env_logger.warning(f"Failed to cleanup {name}: {e}")
+                    env_logger.warning(f"Failed to cleanup {name}: {e}", exc_info=True)
+                    if fetch_logs:
+                        try:
+                            env_logger.info(f"Attempting to dump logs for {name} after cleanup error...")
+                            await asyncio.to_thread(log_deployment_logs, deployment, name)
+                        except Exception as log_error:
+                            env_logger.warning(f"Failed to dump logs for {name}: {log_error}")
             deployments_dict.clear()
         
-        for retry_attempt in range(MAX_RETRIES_PER_MODEL):
+        MAX_EVAL_RETRIES = 3
+        retry_attempt = 0
+        while retry_attempt < MAX_EVAL_RETRIES:
+            retry_attempt += 1
             try:
                 sglang_deployment_name = f"sglang-{repo_name_stripped}-{eval_id}"
                 env_deployment_name = f"agentgym-{repo_name_stripped}-{eval_id}"
@@ -554,20 +603,19 @@ async def run_evaluation_docker_environment(
                 break
                 
             except Exception as e:
-                env_logger.error(f"Evaluation attempt {retry_attempt + 1} failed: {str(e)}", exc_info=True)
+                if retry_attempt < MAX_EVAL_RETRIES:
+                    env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, retrying in {eval_retry_delay/60:.1f} minutes...", exc_info=True)
+                else:
+                    env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, max retries reached.", exc_info=True)
                 
                 await cleanup_deployments(deployments, fetch_logs=True)
-                
-                if retry_attempt < MAX_RETRIES_PER_MODEL - 1:
-                    wait_time = 5
-                    await asyncio.sleep(wait_time)
-                else:
-                    repo_result = str(e)
+                if retry_attempt < MAX_EVAL_RETRIES:
+                    await asyncio.sleep(eval_retry_delay)
         
         if success:
-            env_logger.info(f"Evaluation completed.")
+            env_logger.info(f"Evaluation completed successfully after {retry_attempt} attempt(s).")
         else:
-            env_logger.error(f"Evaluation failed after {MAX_RETRIES_PER_MODEL} attempts.")
+            env_logger.error(f"Evaluation failed after {MAX_EVAL_RETRIES} attempts.")
         
         return (repo, repo_result if repo_result is not None else "Evaluation failed")
     
@@ -596,12 +644,12 @@ async def _run_basilica_evaluation(
     temperature: float,
     env_logger: logging.Logger,
     inference_model_name: str,
-    task_id_min: int = 1,
+    task_id_min: int = 0,
     env_name: str = "alfworld"
 ) -> float:
     """Run evaluation loop using Basilica deployments with sequential task processing."""
     random.seed(random_seed)
-    eval_list = random.sample(range(task_id_min, data_len_range + 1), num_eval_samples)
+    eval_list = random.sample(range(task_id_min + 1, data_len_range + 1), num_eval_samples)
     max_retries = 5
     retry_delay = 10.0
     
@@ -623,14 +671,16 @@ async def _run_basilica_evaluation(
         else:
             payload["max_round"] = 30
         
-        start_ts = time.time()
         last_error = None
+        attempt = 0
         
-        for attempt in range(max_retries):
+        while True:
+            attempt += 1
+            start_ts = time.time()
             try:
                 env_logger.info(f"[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
                 
-                timeout = aiohttp.ClientTimeout(total=120)  # 5 min per task
+                timeout = aiohttp.ClientTimeout(total=120)
                 async with session.post(
                     f"{env_url}/evaluate",
                     json=payload,
@@ -654,8 +704,8 @@ async def _run_basilica_evaluation(
                     latency = result.get('time_taken', time.time() - start_ts)
                     score = result.get('score', 0.0)
                     
-                    if attempt > 0:
-                        env_logger.info(f"Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt} retries")
+                    if attempt > 1:
+                        env_logger.info(f"Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt - 1} retries")
                     else:
                         env_logger.info(f"Task ID {task_id}: Done (Score: {score})")
                     
@@ -667,25 +717,9 @@ async def _run_basilica_evaluation(
                     
             except Exception as e:
                 last_error = str(e)
-                if attempt < max_retries - 1:
-                    env_logger.warning(f"Task ID {task_id}: Error (retry {attempt + 1}/{max_retries} in {retry_delay:.1f}s): {last_error}")
-                    await asyncio.sleep(retry_delay)
-                    continue
-                
-                env_logger.error(f"Task ID {task_id}: Failed after {max_retries} retries - {last_error}")
-                return {
-                    "task_id": task_id,
-                    "score": 0.0,
-                    "time": time.time() - start_ts,
-                    "error": last_error
-                }
-        
-        return {
-            "task_id": task_id,
-            "score": 0.0,
-            "time": 0.0,
-            "error": "All retries exhausted"
-        }
+                env_logger.warning(f"Task ID {task_id}: Error (retry {attempt} in {retry_delay:.1f}s): {last_error}")
+                await asyncio.sleep(retry_delay)
+                continue
     
     # Concurrency settings
     max_concurrent = 4 
@@ -699,7 +733,6 @@ async def _run_basilica_evaluation(
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
         env_logger.info(f"Starting {len(eval_list)} evaluations with concurrency={max_concurrent}...")
         
-        # Process tasks concurrently with semaphore limit
         tasks = [
             evaluate_with_semaphore(session, task_id, idx) 
             for idx, task_id in enumerate(eval_list)
@@ -708,13 +741,7 @@ async def _run_basilica_evaluation(
         
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                env_logger.error(f"Task {idx}: Failed with exception: {result}")
-                all_results.append({
-                    "task_id": eval_list[idx],
-                    "score": 0.0,
-                    "time": 0.0,
-                    "error": str(result)
-                })
+                env_logger.error(f"Task {eval_list[idx]}: Failed with exception: {result}")
             else:
                 all_results.append(result)
     
@@ -723,7 +750,9 @@ async def _run_basilica_evaluation(
     avg_score = total_score / len(all_results) if all_results else 0.0
     avg_time = total_time / len(all_results) if all_results else 0.0
     
-    env_logger.info(f"Summary: Total Tasks: {len(all_results)}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    successful_tasks = len(all_results)
+    total_attempted = len(eval_list)
+    env_logger.info(f"Summary: Successful Tasks: {successful_tasks}/{total_attempted}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 
@@ -772,33 +801,46 @@ async def run_evaluation_docker_image(
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
     }
 
+    container = None
+    retry_delay = 5.0
+    
     try:
-        container = await asyncio.to_thread(
-            client.containers.run,
-            cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
-            mounts=mounts,
-            environment=environment,
-            runtime="nvidia",
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-            detach=True,
-        )
-        log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-        result = await asyncio.to_thread(container.wait)
-        log_task.cancel()
+        while True:
+            try:
+                container = await asyncio.to_thread(
+                    client.containers.run,
+                    cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+                    mounts=mounts,
+                    environment=environment,
+                    runtime="nvidia",
+                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
+                    detach=True,
+                )
+                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
+                result = await asyncio.to_thread(container.wait)
+                log_task.cancel()
 
-        if result["StatusCode"] != 0:
-            raise Exception(f"Container exited with status {result['StatusCode']}")
+                if result["StatusCode"] != 0:
+                    raise Exception(f"Container exited with status {result['StatusCode']}")
 
-        eval_results_dict = await get_evaluation_results(container)
-        return process_evaluation_results(eval_results_dict, is_image=True)
+                eval_results_dict = await get_evaluation_results(container)
+                return process_evaluation_results(eval_results_dict, is_image=True)
 
-    except Exception as e:
-        logger.error(f"Failed to retrieve evaluation results: {str(e)}")
-        raise Exception(f"Failed to retrieve evaluation results: {str(e)}")
+            except Exception as e:
+                logger.error(f"Failed to retrieve evaluation results: {str(e)}, retrying in {retry_delay}s...")
+                if container is not None:
+                    try:
+                        await asyncio.to_thread(container.remove, force=True)
+                        container = None
+                    except:
+                        pass
+                await asyncio.sleep(retry_delay)
+                continue
 
     finally:
         try:
-            await asyncio.to_thread(container.remove, force=True)
+            if container is not None:
+                await asyncio.to_thread(container.remove, force=True)
             await cleanup_resources(client)
             if os.path.exists(dataset_dir):
                 shutil.rmtree(dataset_dir)
