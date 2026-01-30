@@ -464,7 +464,7 @@ async def run_evaluation_docker_environment(
     DATA_LEN_RANGE = task_id_max
     TASK_ID_MIN = task_id_min
     
-    RANDOM_SEED = eval_seed if eval_seed is not None else 42
+    RANDOM_SEED = 123454
     TEMPERATURE = 0.0
     logger.info(f"Using eval_seed={RANDOM_SEED} for environment evaluation")
     retry_delay = 5.0  # for individual task retries
