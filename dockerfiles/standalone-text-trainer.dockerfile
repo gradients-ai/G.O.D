@@ -15,6 +15,8 @@ RUN uv pip install packaging setuptools wheel awscli pydantic \
 
 RUN uv pip install --no-build-isolation vllm==0.10.2
 
+RUN pip install protobuf==3.20.3
+
 WORKDIR /workspace/axolotl
 RUN mkdir -p /workspace/axolotl/configs \
     /workspace/axolotl/outputs \
