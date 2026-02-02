@@ -230,8 +230,8 @@ MAX_IMAGE_TOURNAMENT_WEIGHT = 0.4
 # Tournament scheduling settings
 # Tournaments start every week on these days and hours (UTC)
 # Environment tournaments: Monday at 14:00 UTC
-TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
-TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 4  # 0=Monday
+TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 9  # 0-23 (UTC time)
 
 # Text and Image tournaments: Thursday at 14:00 UTC
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
