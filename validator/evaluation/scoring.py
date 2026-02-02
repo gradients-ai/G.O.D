@@ -19,6 +19,7 @@ from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
+from core.models.utility_models import TrainingStatus
 from core.utils import download_s3_file
 from validator.core.config import Config
 from validator.core.models import AnyTypeRawTask
@@ -31,6 +32,8 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql.tournaments import get_tournament_id_by_task_id
+from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_docker_image
 from validator.evaluation.docker_evaluation import run_evaluation_docker_text
 from validator.utils.logging import LogContext
@@ -542,6 +545,33 @@ async def evaluate_and_score(task: AnyTypeRawTask, gpu_ids: list[int], config: C
     assert task.test_data is not None, "Test data must be present"
 
     miner_pool = await get_nodes_assigned_to_task(str(task.task_id), config.psql_db)
+    
+    # For tournament tasks, only evaluate miners with training status "success"
+    tournament_id = await get_tournament_id_by_task_id(str(task.task_id), config.psql_db)
+    if tournament_id:
+        logger.info(f"Task {task.task_id} is a tournament task (tournament_id: {tournament_id}), filtering to only evaluate miners with training status 'success'")
+        hotkeys = [node.hotkey for node in miner_pool]
+        training_statuses = await get_training_status_for_task_and_hotkeys(str(task.task_id), hotkeys, config.psql_db)
+        
+        # Filter to only include miners with SUCCESS training status
+        filtered_miner_pool = [
+            node for node in miner_pool 
+            if training_statuses.get(node.hotkey) == TrainingStatus.SUCCESS.value
+        ]
+        
+        skipped_count = len(miner_pool) - len(filtered_miner_pool)
+        if skipped_count > 0:
+            skipped_hotkeys = [
+                node.hotkey for node in miner_pool 
+                if training_statuses.get(node.hotkey) != TrainingStatus.SUCCESS.value
+            ]
+            logger.info(
+                f"Skipping {skipped_count} miners without 'success' training status: {skipped_hotkeys}"
+            )
+        
+        miner_pool = filtered_miner_pool
+        logger.info(f"Filtered to {len(miner_pool)} miners with 'success' training status for tournament task evaluation")
+    
     dataset_type = _get_dataset_type(task)
 
     logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
