@@ -1,10 +1,13 @@
 import asyncio
+import glob
 import io
 import json
 import logging
 import os
+import re
 import shutil
 import tarfile
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -13,6 +16,7 @@ from docker.models.containers import Container
 from docker.types import Mount
 from huggingface_hub import snapshot_download
 import aiohttp
+import requests
 import time
 import random
 import basilica
@@ -444,13 +448,13 @@ async def run_evaluation_docker_environment(
     eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
     """
-    Run environment evaluation using Basilica deployments for vLLM and AgentGym.
-    Each model repo gets its own deployments with separate logging and retry logic.
+    Run environment evaluation using local Docker containers for vLLM and AgentGym.
+    Each model repo gets its own containers with separate logging and retry logic.
     
     Args:
         eval_seed: Random seed for evaluation reproducibility. If None, falls back to 42.
     """
-    logger.info(f"Starting Basilica-based environment evaluation for {len(models)} repos: {models}")
+    logger.info(f"Starting local Docker-based environment evaluation for {len(models)} repos: {models}")
 
     env_name = dataset_type.environment_name
     if env_name not in vcst.ENVIRONMENTS:
@@ -464,15 +468,62 @@ async def run_evaluation_docker_environment(
     DATA_LEN_RANGE = task_id_max
     TASK_ID_MIN = task_id_min
     
-    RANDOM_SEED = eval_seed if eval_seed is not None else 42
+    # Generate 100 random seeds at the start of evaluation (to be used by every repo)
+    EVAL_SEEDS = [random.randint(1, 1000000) for _ in range(100)]
+    logger.info(f"Generated 100 random seeds for evaluation: {EVAL_SEEDS}")
     TEMPERATURE = 0.0
-    logger.info(f"Using eval_seed={RANDOM_SEED} for environment evaluation")
     retry_delay = 5.0  # for individual task retries
     eval_retry_delay = 300.0  # for evaluation retries (deployment failures)
     
-    async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
-        """Evaluate a single repo and return (repo, result)."""
-        eval_id = str(random.randint(1, 1000000))
+    # Initialize Docker client and network
+    docker_client = docker.from_env()
+    NETWORK_NAME = "agent_eval_net"
+    
+    # Create network if it doesn't exist
+    try:
+        networks = docker_client.networks.list(names=[NETWORK_NAME])
+        if not networks:
+            docker_client.networks.create(NETWORK_NAME, driver="bridge")
+            logger.info(f"Created Docker network: {NETWORK_NAME}")
+    except Exception as e:
+        logger.warning(f"Network setup issue (may already exist): {e}")
+    
+    # Clean up any existing containers that might be using our ports
+    async def cleanup_existing_containers():
+        """Clean up any existing stopped/exited sglang or agentgym containers."""
+        try:
+            all_containers = docker_client.containers.list(all=True)
+            for container in all_containers:
+                try:
+                    if container.name.startswith(("sglang-", "agentgym-")):
+                        # Only clean up stopped/exited containers, not running ones
+                        container_status = container.status.lower()
+                        if container_status in ['exited', 'stopped', 'created']:
+                            logger.info(f"Cleaning up existing stopped container: {container.name} (status: {container_status})")
+                            container.remove(force=True)
+                        else:
+                            logger.info(f"Skipping running container: {container.name} (status: {container_status})")
+                except Exception as e:
+                    logger.warning(f"Failed to remove container {container.name}: {e}")
+        except Exception as e:
+            logger.warning(f"Error during container cleanup: {e}")
+    
+    await asyncio.to_thread(cleanup_existing_containers)
+    
+    # GPU and port configuration for concurrent evaluations
+    NUM_GPUS = 1  # Hardcoded to 1 GPU (one evaluation at a time)
+    SGLANG_BASE_PORT = 30000
+    ENV_BASE_PORT = 8001
+    
+    # Semaphore to limit concurrent evaluations to number of GPUs
+    eval_semaphore = asyncio.Semaphore(NUM_GPUS)
+    gpu_available = asyncio.Queue()  # Queue to track available GPU slots
+    for gpu_id in range(NUM_GPUS):
+        await gpu_available.put(gpu_id)  # Initialize with all GPU slots available
+    
+    async def evaluate_single_repo(repo: str, repo_idx: int, gpu_id: int) -> tuple[str, dict | str]:
+        """Evaluate a single repo 100 times with different seeds and return (repo, result)."""
+        eval_id = str(uuid.uuid4())[:8]
         repo_name_stripped = repo.split("/")[-1]
 
         env_logger = get_environment_logger(
@@ -481,146 +532,363 @@ async def run_evaluation_docker_environment(
             eval_id=eval_id,
             model=original_model,
         )
-        deployments = {}
-        success = False
-        repo_result = None
         
-        def log_deployment_logs(deployment, deployment_type: str):
-            """Fetch and log deployment logs."""
-            try:
-                logs = deployment.logs()
-                if logs:
-                    for line in logs.strip().split('\n'):
-                        if not line.strip():
-                            continue
-                        
-                        try:
-                            log_data = json.loads(line)
-                            message = log_data.get("message", "")
-                            if message:
-                                message = re.sub(r'^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*', '', message)
-                                message = re.sub(r'^data:\s*', '', message)
-                                message = message.rstrip(', ')
-                                if message.strip():
-                                    env_logger.info(f"[{deployment_type}] {message}")
-                        except (json.JSONDecodeError, AttributeError):
-                            cleaned_line = line.strip()
-                            if cleaned_line:
-                                env_logger.info(f"[{deployment_type}] {cleaned_line}")
-            except Exception as e:
-                env_logger.warning(f"Failed to fetch {deployment_type} logs: {e}")
+        # Allocate ports based on GPU ID (each GPU gets its own port range)
+        sglang_port = SGLANG_BASE_PORT + gpu_id
+        env_port = ENV_BASE_PORT + gpu_id
         
-        async def cleanup_deployments(deployments_dict: dict, fetch_logs: bool = False):
-            """Clean up all deployments and optionally fetch their logs first."""
-            for name, deployment in deployments_dict.items():
+        # Generate unique container names using UUID and GPU ID (same names for all seeds)
+        sglang_uuid = str(uuid.uuid4())[:8]
+        env_uuid = str(uuid.uuid4())[:8]
+        sglang_container_name = f"sglang-gpu{gpu_id}-{sglang_uuid}"
+        env_container_name = f"agentgym-gpu{gpu_id}-{env_uuid}"
+        
+        containers = {}
+        
+        async def cleanup_containers(containers_dict: dict):
+            """Clean up all containers."""
+            for name, container in containers_dict.items():
                 try:
-                    if fetch_logs:
-                        env_logger.info(f"Dumping logs for {name} deployment before cleanup...")
-                        await asyncio.to_thread(log_deployment_logs, deployment, name)
-                        env_logger.info(f"Finished dumping logs for {name} deployment")
-                    
-                    deployment.delete()
-                    env_logger.info(f"Cleaned up {name} deployment")
+                    container.remove(force=True)
+                    env_logger.info(f"Cleaned up {name} container")
                 except Exception as e:
                     env_logger.warning(f"Failed to cleanup {name}: {e}", exc_info=True)
-                    if fetch_logs:
-                        try:
-                            env_logger.info(f"Attempting to dump logs for {name} after cleanup error...")
-                            await asyncio.to_thread(log_deployment_logs, deployment, name)
-                        except Exception as log_error:
-                            env_logger.warning(f"Failed to dump logs for {name}: {log_error}")
-            deployments_dict.clear()
+            containers_dict.clear()
         
-        MAX_EVAL_RETRIES = 5
-        retry_attempt = 0
-        while retry_attempt < MAX_EVAL_RETRIES:
-            retry_attempt += 1
-            try:
-                sglang_deployment_name = f"sglang-{repo_name_stripped}-{eval_id}"
-                env_deployment_name = f"agentgym-{repo_name_stripped}-{eval_id}"
-                
-                is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
-                
-                if is_lora:
-                    base_model = original_model
-                    lora_model = repo
-                    inference_model_name = f"{original_model}:trained_lora"
-                    env_logger.info(f"Deploying SGLang: {original_model} w/ LoRA {repo}")
-                else:
-                    base_model = repo
-                    lora_model = None
-                    inference_model_name = repo
-                    env_logger.info(f"Deploying SGLang: {repo} (base model, ignoring original_model={original_model})")
-                
-                sglang_deployment = await asyncio.to_thread(
-                    deploy_sglang_basilica,
-                    base_model,
-                    lora_model,
-                    sglang_deployment_name,
-                    RANDOM_SEED,
-                )
-                deployments['sglang'] = sglang_deployment
-                
-                await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
-                env_logger.info(f"SGLang Ready at: {sglang_deployment.url}")
-                
-                env_logger.info(f"Deploying Environment Server...")
-                
-                env_deployment = await asyncio.to_thread(
-                    deploy_env_basilica,
-                    env_deployment_name,
-                    env_image
-                )
-                deployments['env'] = env_deployment
-                
-                await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, timeout=300, path="/health")
-                env_logger.info(f"Environment Server Ready at: {env_deployment.url}")
-                
-                avg_score = await _run_basilica_evaluation(
-                    sglang_deployment.url,
-                    env_deployment.url,
-                    vcst.NUM_EVAL_SAMPLES,
-                    DATA_LEN_RANGE,
-                    RANDOM_SEED,
-                    TEMPERATURE,
-                    env_logger,
-                    inference_model_name,
-                    TASK_ID_MIN,
-                    env_name=env_name
-                )
-                
-                repo_result = {
-                    'is_finetune': True,
-                    'eval_loss': avg_score
-                }
-                
-                await asyncio.to_thread(log_deployment_logs, sglang_deployment, "SGLang")
-                await asyncio.to_thread(log_deployment_logs, env_deployment, "Env")
-                
-                await cleanup_deployments(deployments)
-                
-                success = True
-                break
-                
-            except Exception as e:
-                if retry_attempt < MAX_EVAL_RETRIES:
-                    env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, retrying in {eval_retry_delay/60:.1f} minutes...", exc_info=True)
-                else:
-                    env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, max retries reached.", exc_info=True)
-                
-                await cleanup_deployments(deployments, fetch_logs=True)
-                if retry_attempt < MAX_EVAL_RETRIES:
-                    await asyncio.sleep(eval_retry_delay)
-        
-        if success:
-            env_logger.info(f"Evaluation completed successfully after {retry_attempt} attempt(s).")
+        # Check if repo is LoRA (only need to check once)
+        is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+        lora_dir = None
+        if is_lora:
+            base_model = original_model
+            lora_model = repo
+            inference_model_name = f"{original_model}:trained_lora"
+            env_logger.info(f"Repo uses LoRA: {original_model} w/ LoRA {repo}")
+            
+            # Download LoRA (only once)
+            safe_lora_name = lora_model.replace("/", "_")
+            lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
+            await asyncio.to_thread(
+                snapshot_download,
+                repo_id=lora_model,
+                local_dir=lora_dir,
+                local_dir_use_symlinks=False,
+                tqdm_class=None,
+            )
+            # Remove incompatible model safetensors files
+            model_files = glob.glob(os.path.join(lora_dir, "model-*.safetensors"))
+            for model_file in model_files:
+                try:
+                    os.remove(model_file)
+                    env_logger.info(f"Removed incompatible LoRA file: {os.path.basename(model_file)}")
+                except Exception as e:
+                    env_logger.warning(f"Failed to remove {model_file}: {e}")
+            index_file = os.path.join(lora_dir, "model.safetensors.index.json")
+            if os.path.exists(index_file):
+                try:
+                    os.remove(index_file)
+                    env_logger.info("Removed model.safetensors.index.json")
+                except Exception as e:
+                    env_logger.warning(f"Failed to remove index file: {e}")
         else:
-            env_logger.error(f"Evaluation failed after {MAX_EVAL_RETRIES} attempts.")
+            base_model = repo
+            lora_model = None
+            inference_model_name = repo
+            env_logger.info(f"Repo is base model: {repo}")
         
-        return (repo, repo_result if repo_result is not None else "Evaluation failed")
+        # Create containers once before the seed loop (use first seed for container initialization)
+        INIT_SEED = EVAL_SEEDS[0] if EVAL_SEEDS else 42
+        
+        def wait_for_local_health(url: str, timeout: int = 600, path: str = "/v1/models") -> bool:
+            """Wait for local service to be healthy."""
+            start_time = time.time()
+            while time.time() - start_time < timeout:
+                try:
+                    response = requests.get(f"{url}{path}", timeout=5)
+                    if response.status_code == 200:
+                        return True
+                except:
+                    pass
+                time.sleep(5)
+            
+            error_msg = f"Service at {url} did not become healthy within {timeout} seconds"
+            raise TimeoutError(error_msg)
+        
+        # Build SGLang command (use INIT_SEED for container startup)
+        if is_lora:
+            sglang_command = (
+                f"python3 -m sglang.launch_server --model-path {base_model} "
+                "--enable-lora --lora-paths trained_lora=/lora/trained_lora "
+                "--lora-backend triton "
+                f"--host 0.0.0.0 --port 30000 --tensor-parallel-size 1 --dtype float16 --enable-deterministic-inference "
+                f"--random-seed {INIT_SEED}"
+            )
+        else:
+            sglang_command = (
+                f"python3 -m sglang.launch_server --model-path {base_model} "
+                f"--host 0.0.0.0 --port 30000 --tensor-parallel-size 1 --dtype float16 --enable-deterministic-inference "
+                f"--random-seed {INIT_SEED}"
+            )
+        
+        env_logger.info(f"Creating containers for repo {repo} (will be reused for all 100 seeds)")
+        env_logger.info(f"SGLang container name: {sglang_container_name}, GPU: {gpu_id}, port: {sglang_port}")
+        
+        # Check if container name already exists and remove it
+        try:
+            existing = docker_client.containers.get(sglang_container_name)
+            env_logger.warning(f"Container {sglang_container_name} already exists, removing it...")
+            existing.remove(force=True)
+            await asyncio.sleep(1)
+        except docker.errors.NotFound:
+            pass
+        except Exception as e:
+            env_logger.warning(f"Error checking for existing container {sglang_container_name}: {e}")
+        
+        # Start SGLang container
+        try:
+            sglang_container = await asyncio.to_thread(
+                docker_client.containers.run,
+                vcst.BASILICA_SGLANG_IMAGE,
+                command=sglang_command,
+                name=sglang_container_name,
+                detach=True,
+                network=NETWORK_NAME,
+                ports={f"30000/tcp": sglang_port},
+                device_requests=[docker.types.DeviceRequest(device_ids=[str(gpu_id)], capabilities=[['gpu']])],
+                environment={
+                    "HF_HOME": "/hf",
+                    "TRANSFORMERS_CACHE": "/hf",
+                    "HUGGINGFACE_HUB_CACHE": "/hf",
+                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                    "PYTHONHASHSEED": str(INIT_SEED),
+                    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+                    "NVIDIA_TF32_OVERRIDE": "0",
+                },
+                volumes={
+                    "/mnt/hf_cache": {"bind": "/hf", "mode": "rw"},
+                    **({lora_dir: {"bind": "/lora/trained_lora", "mode": "ro"}} if is_lora and lora_dir else {}),
+                },
+                ipc_mode="host",
+                remove=False,
+            )
+            containers['sglang'] = sglang_container
+        except docker.errors.APIError as e:
+            error_str = str(e)
+            if "port is already allocated" in error_str or "409" in error_str or "Conflict" in error_str:
+                env_logger.error(f"Container creation conflict (port or name). Attempting to find and remove conflicting containers...")
+                try:
+                    all_containers = docker_client.containers.list(all=True)
+                    removed_any = False
+                    for container in all_containers:
+                        try:
+                            if container.name == sglang_container_name:
+                                env_logger.info(f"Found container with same name {container.name}, removing it...")
+                                container.remove(force=True)
+                                removed_any = True
+                                continue
+                            ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                            if ports:
+                                for port_binding in ports.values():
+                                    if port_binding and any(binding.get('HostPort') == str(sglang_port) for binding in port_binding):
+                                        env_logger.info(f"Found container {container.name} using port {sglang_port}, removing it...")
+                                        container.remove(force=True)
+                                        removed_any = True
+                                        break
+                        except Exception as container_err:
+                            env_logger.warning(f"Error processing container {container.name}: {container_err}")
+                    
+                    if removed_any:
+                        await asyncio.sleep(2)
+                    
+                    sglang_container = await asyncio.to_thread(
+                        docker_client.containers.run,
+                        vcst.BASILICA_SGLANG_IMAGE,
+                        command=sglang_command,
+                        name=sglang_container_name,
+                        detach=True,
+                        network=NETWORK_NAME,
+                        ports={f"30000/tcp": sglang_port},
+                        device_requests=[docker.types.DeviceRequest(device_ids=[str(gpu_id)], capabilities=[['gpu']])],
+                        environment={
+                            "HF_HOME": "/hf",
+                            "TRANSFORMERS_CACHE": "/hf",
+                            "HUGGINGFACE_HUB_CACHE": "/hf",
+                            "HF_HUB_ENABLE_HF_TRANSFER": "1",
+                            "PYTHONHASHSEED": str(INIT_SEED),
+                            "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
+                            "NVIDIA_TF32_OVERRIDE": "0",
+                        },
+                        volumes={
+                            "/mnt/hf_cache": {"bind": "/hf", "mode": "rw"},
+                            **({lora_dir: {"bind": "/lora/trained_lora", "mode": "ro"}} if is_lora and lora_dir else {}),
+                        },
+                        ipc_mode="host",
+                        remove=False,
+                    )
+                    containers['sglang'] = sglang_container
+                except Exception as retry_error:
+                    env_logger.error(f"Failed to recover from container conflict: {retry_error}")
+                    raise
+            else:
+                raise
+        
+        sglang_url = f"http://localhost:{sglang_port}"
+        await asyncio.to_thread(wait_for_local_health, sglang_url)
+        env_logger.info(f"SGLang Ready at: {sglang_url}")
+        
+        env_logger.info(f"Starting Environment Server locally...")
+        env_logger.info(f"Environment container name: {env_container_name}, GPU: {gpu_id}, port: {env_port}")
+        
+        # Check if container name already exists and remove it
+        try:
+            existing = docker_client.containers.get(env_container_name)
+            env_logger.warning(f"Container {env_container_name} already exists, removing it...")
+            existing.remove(force=True)
+            await asyncio.sleep(1)
+        except docker.errors.NotFound:
+            pass
+        except Exception as e:
+            env_logger.warning(f"Error checking for existing container {env_container_name}: {e}")
+        
+        # Start Environment container
+        try:
+            env_container = await asyncio.to_thread(
+                docker_client.containers.run,
+                env_image,
+                name=env_container_name,
+                detach=True,
+                network=NETWORK_NAME,
+                ports={'8000/tcp': env_port},
+                remove=False,
+            )
+            containers['env'] = env_container
+        except docker.errors.APIError as e:
+            error_str = str(e)
+            if "port is already allocated" in error_str or "409" in error_str or "Conflict" in error_str:
+                env_logger.error(f"Container creation conflict (port or name). Attempting to find and remove conflicting containers...")
+                try:
+                    all_containers = docker_client.containers.list(all=True)
+                    removed_any = False
+                    for container in all_containers:
+                        try:
+                            if container.name == env_container_name:
+                                env_logger.info(f"Found container with same name {container.name}, removing it...")
+                                container.remove(force=True)
+                                removed_any = True
+                                continue
+                            ports = container.attrs.get('NetworkSettings', {}).get('Ports', {})
+                            if ports:
+                                for port_binding in ports.values():
+                                    if port_binding and any(binding.get('HostPort') == str(env_port) for binding in port_binding):
+                                        env_logger.info(f"Found container {container.name} using port {env_port}, removing it...")
+                                        container.remove(force=True)
+                                        removed_any = True
+                                        break
+                        except Exception as container_err:
+                            env_logger.warning(f"Error processing container {container.name}: {container_err}")
+                    
+                    if removed_any:
+                        await asyncio.sleep(2)
+                    
+                    env_container = await asyncio.to_thread(
+                        docker_client.containers.run,
+                        env_image,
+                        name=env_container_name,
+                        detach=True,
+                        network=NETWORK_NAME,
+                        ports={'8000/tcp': env_port},
+                        remove=False,
+                    )
+                    containers['env'] = env_container
+                except Exception as retry_error:
+                    env_logger.error(f"Failed to recover from container conflict: {retry_error}")
+                    raise
+            else:
+                raise
+        
+        env_url = f"http://localhost:{env_port}"
+        await asyncio.to_thread(wait_for_local_health, env_url, timeout=300, path="/health")
+        env_logger.info(f"Environment Server Ready at: {env_url}")
+        
+        sglang_container_url = f"http://{sglang_container_name}:30000"
+        
+        # Evaluate repo 100 times with different seeds, then average
+        seed_scores = []
+        for seed_idx, RANDOM_SEED in enumerate(EVAL_SEEDS, 1):
+            env_logger.info(f"Starting evaluation {seed_idx}/100 for repo {repo} with seed {RANDOM_SEED}")
+            seed_score = None
+            MAX_EVAL_RETRIES = 5
+            retry_attempt = 0
+            while retry_attempt < MAX_EVAL_RETRIES:
+                retry_attempt += 1
+                try:
+                    # Evaluate with 10 samples (containers are already running)
+                    avg_score = await _run_basilica_evaluation(
+                        sglang_container_url,
+                        env_url,
+                        10,  # Use 10 samples per seed
+                        DATA_LEN_RANGE,
+                        RANDOM_SEED,
+                        TEMPERATURE,
+                        env_logger,
+                        inference_model_name,
+                        TASK_ID_MIN,
+                        env_name=env_name
+                    )
+                    
+                    seed_score = avg_score
+                    break
+                except Exception as e:
+                    if retry_attempt < MAX_EVAL_RETRIES:
+                        env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, retrying...", exc_info=True)
+                        await asyncio.sleep(10)  # Short delay before retry
+                    else:
+                        env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, max retries reached.", exc_info=True)
+            
+            if seed_score is not None:
+                env_logger.info(f"Evaluation {seed_idx}/100 completed successfully with seed {RANDOM_SEED}, score: {seed_score:.4f}")
+                seed_scores.append(seed_score)
+            else:
+                env_logger.error(f"Evaluation {seed_idx}/100 failed after {MAX_EVAL_RETRIES} attempts with seed {RANDOM_SEED}.")
+        
+        # Clean up containers after all seeds are done
+        env_logger.info(f"All 100 seeds completed for repo {repo}. Cleaning up containers...")
+        await cleanup_containers(containers)
+        
+        # Average the scores from all 100 seeds
+        if seed_scores:
+            final_avg_score = sum(seed_scores) / len(seed_scores)
+            env_logger.info(f"Repo {repo} evaluation complete. Scores: {seed_scores}, Final averaged score: {final_avg_score:.4f}")
+            repo_result = {
+                'is_finetune': True,
+                'eval_loss': final_avg_score
+            }
+        else:
+            env_logger.error(f"Repo {repo} evaluation failed on all 100 seeds.")
+            repo_result = "Evaluation failed on all seeds"
+        
+        return (repo, repo_result)
     
-    logger.info(f"Starting {len(models)} parallel evaluations...")
-    tasks = [evaluate_single_repo(repo, idx) for idx, repo in enumerate(models)]
+    # Evaluate repos concurrently (up to 4 at a time, one per GPU)
+    # Each repo evaluation still uses 4 concurrent requests internally
+    logger.info(f"Starting {len(models)} evaluations with {NUM_GPUS} concurrent evaluations (one per GPU)...")
+    
+    async def evaluate_with_gpu_slot(repo: str, repo_idx: int) -> tuple[str, dict | str]:
+        """Wrapper to acquire GPU slot, run evaluation, and release GPU slot."""
+        # Acquire GPU slot
+        async with eval_semaphore:
+            gpu_id = await gpu_available.get()
+            try:
+                logger.info(f"Repo {repo} (idx {repo_idx}): Acquired GPU {gpu_id}, ports: SGLang={SGLANG_BASE_PORT + gpu_id}, Env={ENV_BASE_PORT + gpu_id}")
+                result = await evaluate_single_repo(repo, repo_idx, gpu_id)
+                logger.info(f"Repo {repo} (idx {repo_idx}): Completed evaluation on GPU {gpu_id}")
+                return result
+            finally:
+                # Release GPU slot
+                await gpu_available.put(gpu_id)
+                logger.info(f"Repo {repo} (idx {repo_idx}): Released GPU {gpu_id}")
+    
+    # Run evaluations concurrently (limited by semaphore to NUM_GPUS)
+    tasks = [evaluate_with_gpu_slot(repo, idx) for idx, repo in enumerate(models)]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
     evaluation_results = {}
@@ -657,7 +925,7 @@ async def _run_basilica_evaluation(
     
     all_results = []
     
-    async def evaluate_single_task(session: aiohttp.ClientSession, task_id: int, task_idx: int) -> dict:
+    async def evaluate_single_task(session: aiohttp.ClientSession, task_id: int, task_idx: int) -> dict | None:
         """Evaluate a single task with retry logic."""
         payload = {
             "model": inference_model_name,
@@ -676,7 +944,7 @@ async def _run_basilica_evaluation(
         last_error = None
         attempt = 0
         
-        while True:
+        while attempt < max_retries:
             attempt += 1
             start_ts = time.time()
             try:
@@ -719,9 +987,15 @@ async def _run_basilica_evaluation(
                     
             except Exception as e:
                 last_error = str(e)
-                env_logger.warning(f"Task ID {task_id}: Error (retry {attempt} in {retry_delay:.1f}s): {last_error}")
+                if attempt >= max_retries:
+                    env_logger.error(f"Task ID {task_id}: Failed after {max_retries} attempts. Last error: {last_error}. This task will be excluded from average score calculation.")
+                    return None
+                env_logger.warning(f"Task ID {task_id}: Error (retry {attempt}/{max_retries} in {retry_delay:.1f}s): {last_error}")
                 await asyncio.sleep(retry_delay)
-                continue
+        
+        # If we exit the loop without returning, all retries failed
+        env_logger.error(f"Task ID {task_id}: Failed after {max_retries} attempts. Last error: {last_error}. This task will be excluded from average score calculation.")
+        return None
     
     # Concurrency settings
     max_concurrent = 4 
@@ -744,6 +1018,8 @@ async def _run_basilica_evaluation(
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 env_logger.error(f"Task {eval_list[idx]}: Failed with exception: {result}")
+            elif result is None:
+                env_logger.warning(f"Task {eval_list[idx]}: Failed after {max_retries} retries, excluded from average")
             else:
                 all_results.append(result)
     
@@ -754,7 +1030,8 @@ async def _run_basilica_evaluation(
     
     successful_tasks = len(all_results)
     total_attempted = len(eval_list)
-    env_logger.info(f"Summary: Successful Tasks: {successful_tasks}/{total_attempted}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    failed_tasks = total_attempted - successful_tasks
+    env_logger.info(f"Summary: Successful Tasks: {successful_tasks}/{total_attempted}, Failed Tasks: {failed_tasks}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 

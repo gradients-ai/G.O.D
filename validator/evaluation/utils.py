@@ -372,7 +372,7 @@ def deploy_env_basilica(
     return deployment
 
 
-def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models") -> bool:
+def wait_for_basilica_health(url: str, timeout: int = 600, path: str = "/v1/models") -> bool:
     """Wait for Basilica service to be healthy."""
     start_time = time.time()
     while time.time() - start_time < timeout:
