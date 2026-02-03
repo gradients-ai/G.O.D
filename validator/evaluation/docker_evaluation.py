@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import tarfile
+import uuid
 from datetime import datetime
 from typing import Optional
 
@@ -463,10 +464,12 @@ async def run_evaluation_docker_environment(
     task_id_min, task_id_max = task_id_range
     DATA_LEN_RANGE = task_id_max
     TASK_ID_MIN = task_id_min
-    
-    RANDOM_SEED = eval_seed if eval_seed is not None else 42
+
     TEMPERATURE = 0.0
-    logger.info(f"Using eval_seed={RANDOM_SEED} for environment evaluation")
+    # random.seed(2351782)
+    random.seed(72547824)
+    eval_seeds = [random.randint(0, 2**31 - 1) for _ in range(vcst.NUM_EVAL_SEEDS)]
+    logger.info(f"Usign seeds: {eval_seeds}")
     retry_delay = 5.0  # for individual task retries
     eval_retry_delay = 300.0  # for evaluation retries (deployment failures)
     
@@ -536,8 +539,8 @@ async def run_evaluation_docker_environment(
         while retry_attempt < MAX_EVAL_RETRIES:
             retry_attempt += 1
             try:
-                sglang_deployment_name = f"sglang-{repo_name_stripped}-{eval_id}"
-                env_deployment_name = f"agentgym-{repo_name_stripped}-{eval_id}"
+                sglang_deployment_name = str(uuid.uuid4())
+                env_deployment_name = str(uuid.uuid4())
                 
                 is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
                 
@@ -557,7 +560,6 @@ async def run_evaluation_docker_environment(
                     base_model,
                     lora_model,
                     sglang_deployment_name,
-                    RANDOM_SEED,
                 )
                 deployments['sglang'] = sglang_deployment
                 
@@ -579,9 +581,8 @@ async def run_evaluation_docker_environment(
                 avg_score = await _run_basilica_evaluation(
                     sglang_deployment.url,
                     env_deployment.url,
-                    vcst.NUM_EVAL_SAMPLES,
+                    eval_seeds,
                     DATA_LEN_RANGE,
-                    RANDOM_SEED,
                     TEMPERATURE,
                     env_logger,
                     inference_model_name,
@@ -640,31 +641,36 @@ async def run_evaluation_docker_environment(
 async def _run_basilica_evaluation(
     vllm_url: str,
     env_url: str,
-    num_eval_samples: int,
+    eval_seeds: list[int],
     data_len_range: int,
-    random_seed: int,
     temperature: float,
     env_logger: logging.Logger,
     inference_model_name: str,
     task_id_min: int = 0,
     env_name: str = "alfworld"
 ) -> float:
-    """Run evaluation loop using Basilica deployments with sequential task processing."""
-    random.seed(random_seed)
-    eval_list = random.sample(range(task_id_min + 1, data_len_range + 1), num_eval_samples)
-    max_retries = 5
+    """Run evaluation loop using Basilica deployments with 1 episode per seed.
+    
+    Each seed is used for a single evaluation episode, with task_id derived from the seed.
+    The same set of seeds is used for all repos to ensure fair comparison.
+    """
+    num_eval_episodes = len(eval_seeds)
     retry_delay = 10.0
     
     all_results = []
     
-    async def evaluate_single_task(session: aiohttp.ClientSession, task_id: int, task_idx: int) -> dict:
-        """Evaluate a single task with retry logic."""
+    async def evaluate_single_task(session: aiohttp.ClientSession, seed: int, task_idx: int) -> dict:
+        """Evaluate a single task with retry logic. Each episode gets its own unique seed."""
+        # Derive task_id from seed to ensure reproducibility
+        task_id_range = data_len_range - task_id_min
+        task_id = task_id_min + (seed % task_id_range) + 1
+        
         payload = {
             "model": inference_model_name,
             "base_url": f"{vllm_url}/v1",
             "task_id": task_id,
             "temperature": temperature,
-            "seed": random_seed,
+            "seed": seed,  # Each episode gets its own unique seed
         }
         
         if env_name == "goofspiel":
@@ -680,7 +686,7 @@ async def _run_basilica_evaluation(
             attempt += 1
             start_ts = time.time()
             try:
-                env_logger.info(f"[{task_idx+1}/{num_eval_samples}] Task ID: {task_id}...")
+                env_logger.info(f"[{task_idx+1}/{num_eval_episodes}] Seed: {seed}, Task ID: {task_id}...")
                 
                 timeout = aiohttp.ClientTimeout(total=120)
                 async with session.post(
@@ -707,11 +713,12 @@ async def _run_basilica_evaluation(
                     score = result.get('score', 0.0)
                     
                     if attempt > 1:
-                        env_logger.info(f"Task ID {task_id}: Done (Score: {score}) - succeeded after {attempt - 1} retries")
+                        env_logger.info(f"Seed {seed}: Done (Score: {score}) - succeeded after {attempt - 1} retries")
                     else:
-                        env_logger.info(f"Task ID {task_id}: Done (Score: {score})")
+                        env_logger.info(f"Seed {seed}: Done (Score: {score})")
                     
                     return {
+                        "seed": seed,
                         "task_id": task_id,
                         "score": score,
                         "time": latency
@@ -719,7 +726,7 @@ async def _run_basilica_evaluation(
                     
             except Exception as e:
                 last_error = str(e)
-                env_logger.warning(f"Task ID {task_id}: Error (retry {attempt} in {retry_delay:.1f}s): {last_error}")
+                env_logger.warning(f"Seed {seed}: Error (retry {attempt} in {retry_delay:.1f}s): {last_error}")
                 await asyncio.sleep(retry_delay)
                 continue
     
@@ -727,23 +734,23 @@ async def _run_basilica_evaluation(
     max_concurrent = 4 
     semaphore = asyncio.Semaphore(max_concurrent)
     
-    async def evaluate_with_semaphore(session: aiohttp.ClientSession, task_id: int, task_idx: int) -> dict:
+    async def evaluate_with_semaphore(session: aiohttp.ClientSession, seed: int, task_idx: int) -> dict:
         async with semaphore:
-            return await evaluate_single_task(session, task_id, task_idx)
+            return await evaluate_single_task(session, seed, task_idx)
     
     session_timeout = aiohttp.ClientTimeout(total=7200)
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        env_logger.info(f"Starting {len(eval_list)} evaluations with concurrency={max_concurrent}...")
+        env_logger.info(f"Starting {num_eval_episodes} evaluations (1 per seed) with concurrency={max_concurrent}...")
         
         tasks = [
-            evaluate_with_semaphore(session, task_id, idx) 
-            for idx, task_id in enumerate(eval_list)
+            evaluate_with_semaphore(session, seed, idx) 
+            for idx, seed in enumerate(eval_seeds)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
-                env_logger.error(f"Task {eval_list[idx]}: Failed with exception: {result}")
+                env_logger.error(f"Seed {eval_seeds[idx]}: Failed with exception: {result}")
             else:
                 all_results.append(result)
     
@@ -752,9 +759,9 @@ async def _run_basilica_evaluation(
     avg_score = total_score / len(all_results) if all_results else 0.0
     avg_time = total_time / len(all_results) if all_results else 0.0
     
-    successful_tasks = len(all_results)
-    total_attempted = len(eval_list)
-    env_logger.info(f"Summary: Successful Tasks: {successful_tasks}/{total_attempted}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
+    successful_episodes = len(all_results)
+    total_attempted = num_eval_episodes
+    env_logger.info(f"Summary: Successful Episodes: {successful_episodes}/{total_attempted}, Average Score: {avg_score:.4f}, Average Time: {avg_time:.2f}s")
     
     return avg_score
 

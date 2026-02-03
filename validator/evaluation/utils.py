@@ -265,6 +265,26 @@ print("Downloading LoRA: {lora_model}")
 from huggingface_hub import snapshot_download
 snapshot_download("{lora_model}", local_dir="/tmp/lora/trained_lora", local_dir_use_symlinks=False)
 print("LoRA downloaded")
+
+# Remove full model files, keep only adapter files for SGLang LoRA loading
+import glob
+lora_dir = "/tmp/lora/trained_lora"
+model_files = glob.glob(os.path.join(lora_dir, "model-*.safetensors"))
+for model_file in model_files:
+    try:
+        os.remove(model_file)
+        print(f"Removed model file: {{os.path.basename(model_file)}}")
+    except Exception as e:
+        print(f"Warning: Failed to remove {{model_file}}: {{e}}")
+
+index_file = os.path.join(lora_dir, "model.safetensors.index.json")
+if os.path.exists(index_file):
+    try:
+        os.remove(index_file)
+        print("Removed model.safetensors.index.json")
+    except Exception as e:
+        print(f"Warning: Failed to remove index file: {{e}}")
+print("LoRA cleanup complete - adapter files only")
 ''' if lora_model else ''
     
     server_type = "with LoRA" if lora_model else ""
@@ -321,6 +341,7 @@ def deploy_sglang_basilica(
         port=8000,
         gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
         gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
+        cpu=cst.BASILICA_ENV_CPU,
         min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
         memory=cst.BASILICA_SGLANG_MEMORY,
         ttl_seconds=cst.BASILICA_SGLANG_TTL_SECONDS,
@@ -372,7 +393,7 @@ def deploy_env_basilica(
     return deployment
 
 
-def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models") -> bool:
+def wait_for_basilica_health(url: str, timeout: int = 1800, path: str = "/v1/models") -> bool:
     """Wait for Basilica service to be healthy."""
     start_time = time.time()
     while time.time() - start_time < timeout:
