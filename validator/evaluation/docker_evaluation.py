@@ -468,9 +468,11 @@ async def run_evaluation_docker_environment(
     DATA_LEN_RANGE = task_id_max
     TASK_ID_MIN = task_id_min
     
-    # Generate 100 random seeds at the start of evaluation (to be used by every repo)
-    EVAL_SEEDS = [random.randint(1, 1000000) for _ in range(100)]
-    logger.info(f"Generated 100 random seeds for evaluation: {EVAL_SEEDS}")
+    # Generate 2000 random seeds at the start of evaluation (to be used by every repo)
+    # Use eval_seed for reproducibility so same eval_seed always generates same task sequence
+    seed_generator = random.Random(eval_seed if eval_seed is not None else 42)
+    EVAL_SEEDS = [seed_generator.randint(1, 1000000) for _ in range(2000)]
+    logger.info(f"Generated 2000 random seeds for evaluation (eval_seed={eval_seed}): first 10={EVAL_SEEDS[:10]}")
     TEMPERATURE = 0.0
     retry_delay = 5.0  # for individual task retries
     eval_retry_delay = 300.0  # for evaluation retries (deployment failures)
@@ -522,7 +524,7 @@ async def run_evaluation_docker_environment(
         await gpu_available.put(gpu_id)  # Initialize with all GPU slots available
     
     async def evaluate_single_repo(repo: str, repo_idx: int, gpu_id: int) -> tuple[str, dict | str]:
-        """Evaluate a single repo 100 times with different seeds and return (repo, result)."""
+        """Evaluate a single repo 2000 times with different seeds and return (repo, result)."""
         eval_id = str(uuid.uuid4())[:8]
         repo_name_stripped = repo.split("/")[-1]
 
@@ -629,7 +631,7 @@ async def run_evaluation_docker_environment(
                 f"--random-seed {INIT_SEED}"
             )
         
-        env_logger.info(f"Creating containers for repo {repo} (will be reused for all 100 seeds)")
+        env_logger.info(f"Creating containers for repo {repo} (will be reused for all 2000 seeds)")
         env_logger.info(f"SGLang container name: {sglang_container_name}, GPU: {gpu_id}, port: {sglang_port}")
         
         # Check if container name already exists and remove it
@@ -811,21 +813,21 @@ async def run_evaluation_docker_environment(
         
         sglang_container_url = f"http://{sglang_container_name}:30000"
         
-        # Evaluate repo 100 times with different seeds, then average
+        # Evaluate repo 2000 times with different seeds, then average
         seed_scores = []
         for seed_idx, RANDOM_SEED in enumerate(EVAL_SEEDS, 1):
-            env_logger.info(f"Starting evaluation {seed_idx}/100 for repo {repo} with seed {RANDOM_SEED}")
+            env_logger.info(f"Starting evaluation {seed_idx}/2000 for repo {repo} with seed {RANDOM_SEED}")
             seed_score = None
             MAX_EVAL_RETRIES = 5
             retry_attempt = 0
             while retry_attempt < MAX_EVAL_RETRIES:
                 retry_attempt += 1
                 try:
-                    # Evaluate with 10 samples (containers are already running)
+                    # Evaluate with 1 sample per seed (containers are already running)
                     avg_score = await _run_basilica_evaluation(
                         sglang_container_url,
                         env_url,
-                        10,  # Use 10 samples per seed
+                        1,  # Use 1 sample per seed (2000 seeds total)
                         DATA_LEN_RANGE,
                         RANDOM_SEED,
                         TEMPERATURE,
@@ -845,16 +847,16 @@ async def run_evaluation_docker_environment(
                         env_logger.error(f"Evaluation attempt {retry_attempt}/{MAX_EVAL_RETRIES} failed: {str(e)}, max retries reached.", exc_info=True)
             
             if seed_score is not None:
-                env_logger.info(f"Evaluation {seed_idx}/100 completed successfully with seed {RANDOM_SEED}, score: {seed_score:.4f}")
+                env_logger.info(f"Evaluation {seed_idx}/2000 completed successfully with seed {RANDOM_SEED}, score: {seed_score:.4f}")
                 seed_scores.append(seed_score)
             else:
-                env_logger.error(f"Evaluation {seed_idx}/100 failed after {MAX_EVAL_RETRIES} attempts with seed {RANDOM_SEED}.")
+                env_logger.error(f"Evaluation {seed_idx}/2000 failed after {MAX_EVAL_RETRIES} attempts with seed {RANDOM_SEED}.")
         
         # Clean up containers after all seeds are done
-        env_logger.info(f"All 100 seeds completed for repo {repo}. Cleaning up containers...")
+        env_logger.info(f"All 2000 seeds completed for repo {repo}. Cleaning up containers...")
         await cleanup_containers(containers)
         
-        # Average the scores from all 100 seeds
+        # Average the scores from all 2000 seeds
         if seed_scores:
             final_avg_score = sum(seed_scores) / len(seed_scores)
             env_logger.info(f"Repo {repo} evaluation complete. Scores: {seed_scores}, Final averaged score: {final_avg_score:.4f}")
@@ -863,7 +865,7 @@ async def run_evaluation_docker_environment(
                 'eval_loss': final_avg_score
             }
         else:
-            env_logger.error(f"Repo {repo} evaluation failed on all 100 seeds.")
+            env_logger.error(f"Repo {repo} evaluation failed on all 2000 seeds.")
             repo_result = "Evaluation failed on all seeds"
         
         return (repo, repo_result)

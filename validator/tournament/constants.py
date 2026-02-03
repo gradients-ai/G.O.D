@@ -68,6 +68,7 @@ MODEL_PARAMS_TO_BILLIONS = 1e9
 
 # Progressive championship threshold constants
 EXPONENTIAL_BASE_THRESHOLD = 0.10  # Starting threshold for new champions
+EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = 0.05  # Starting threshold for new champions
 EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
 EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
 

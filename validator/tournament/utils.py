@@ -86,11 +86,16 @@ def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int,
         return GpuRequirement.H100_8X
 
 
-def get_progressive_threshold(consecutive_wins: int) -> float:
+def get_progressive_threshold(consecutive_wins: int, tournament_type: TournamentType | None = None) -> float:
     """
     Calculate the progressive threshold using exponential decay.
     """
-    current_threshold = t_cst.EXPONENTIAL_BASE_THRESHOLD * (t_cst.EXPONENTIAL_DECAY_RATE ** (consecutive_wins - 1))
+    max_threshold = t_cst.EXPONENTIAL_BASE_THRESHOLD
+
+    if tournament_type and tournament_type == TournamentType.ENVIRONMENT:
+        max_threshold = t_cst.EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT
+        
+    current_threshold = max_threshold * (t_cst.EXPONENTIAL_DECAY_RATE ** (consecutive_wins - 1))
     return max(t_cst.EXPONENTIAL_MIN_THRESHOLD, current_threshold)
 
 
@@ -515,7 +520,7 @@ async def get_knockout_winners(
         consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
 
         # Calculate the progressive threshold
-        threshold_percentage = get_progressive_threshold(consecutive_wins)
+        threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
         logger.info(
             f"Champion {current_champion} has {consecutive_wins} consecutive wins, "
             f"using {threshold_percentage * 100:.1f}% threshold"
@@ -690,7 +695,7 @@ async def get_environment_group_winners(
 
         current_champion = tournament.base_winner_hotkey or boss_hotkey
         consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
-        threshold_percentage = get_progressive_threshold(consecutive_wins)
+        threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
         logger.info(
             f"Environment tournament final round: Champion {current_champion} has {consecutive_wins} consecutive wins, "
             f"using {threshold_percentage * 100:.1f}% threshold"

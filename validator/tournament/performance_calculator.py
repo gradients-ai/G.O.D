@@ -36,7 +36,7 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
     consecutive_wins = await count_champion_consecutive_wins_at_tournament(
         psql_db, tournament.tournament_type, current_champion, tournament_id
     )
-    threshold = get_progressive_threshold(consecutive_wins)
+    threshold = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
 
     logger.info(
         f"Calculating boss round performance for tournament {tournament_id}, champion {current_champion} "
