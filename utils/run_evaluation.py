@@ -165,10 +165,16 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    logger.info("Downloading test and synth data...")
-    test_data_path = await download_s3_file(test_data_url)
-    synth_data_path = await download_s3_file(task_details.synthetic_data)
-    logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
+    if task_type == TaskType.ENVIRONMENTTASK:
+        # For environment tasks, use dummy dataset paths (not actual files)
+        test_data_path = "/tmp/dummy_test_data.json"
+        synth_data_path = "/tmp/dummy_synth_data.json"
+        logger.info("Skipping file download for environment tasks, using dummy dataset paths")
+    else:
+        logger.info("Downloading test and synth data...")
+        test_data_path = await download_s3_file(test_data_url)
+        synth_data_path = await download_s3_file(task_details.synthetic_data)
+        logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
 
     try:
         logger.info(f"Running test data evaluation for models: {models_to_evaluate}")
@@ -179,6 +185,7 @@ async def run_evaluation_from_task_id(
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
+            eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
         )
 
         test_data_results_dict = test_data_results.model_dump()
@@ -198,6 +205,7 @@ async def run_evaluation_from_task_id(
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
+            eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
         )
 
         synth_data_results_dict = synth_data_results.model_dump()
@@ -212,8 +220,9 @@ async def run_evaluation_from_task_id(
     except Exception as e:
         logger.error(f"Text evaluation failed with error: {e}", exc_info=True)
     finally:
-        os.remove(test_data_path)
-        os.remove(synth_data_path)
+        if task_type != TaskType.ENVIRONMENTTASK:
+            os.remove(test_data_path)
+            os.remove(synth_data_path)
 
 
 if __name__ == "__main__":
