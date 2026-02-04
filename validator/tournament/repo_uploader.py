@@ -46,6 +46,26 @@ async def repository_exists(name: str, token: str, username: str) -> bool:
             return response.status == 200
 
 
+async def update_repository_description(name: str, description: str, token: str, username: str) -> bool:
+    url = f"https://api.github.com/repos/{username}/{name}"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": "GOD-Tournament-Winner-Reuploader",
+    }
+    data = {"description": description}
+
+    async with aiohttp.ClientSession() as session:
+        async with session.patch(url, json=data, headers=headers) as response:
+            if response.status == 200:
+                logger.info(f"Successfully updated description for repository {name}")
+                return True
+            else:
+                error_text = await response.text()
+                logger.error(f"Failed to update repository description: {response.status} - {error_text}")
+                return False
+
+
 def clone_and_push_repository(repo_url: str, new_repo_url: str, github_token: str, commit_hash: Optional[str] = None) -> None:
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -126,6 +146,7 @@ async def upload_tournament_participant_repository(
         if await repository_exists(repo_name, github_token, github_username):
             logger.info(f"Repository {repo_name} already exists, will force push to it...")
             new_repo_url = f"https://github.com/{github_username}/{repo_name}.git"
+            await update_repository_description(repo_name, description, github_token, github_username)
         else:
             logger.info(f"Creating repository: {repo_name}")
             new_repo = await create_github_repository(repo_name, description, github_token, github_username)
