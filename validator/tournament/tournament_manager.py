@@ -414,8 +414,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
-
-        if len(winners) == 1 and completed_round.is_final_round:
+        
+        if len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT:
             winner = winners[0]
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes
@@ -441,8 +441,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
             )
 
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                logger.info("Environment tournament: uploading winner repository only")
+            if completed_round.is_final_round and tournament.tournament_type == TournamentType.ENVIRONMENT:
+                logger.info("Uploading winner and 2nd place repositories")
                 if winner != cst.EMISSION_BURN_HOTKEY:
                     try:
                         logger.info(f"Creating benchmark tasks for tournament winner {winner}")
@@ -457,6 +457,13 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 await upload_participant_repository(
                     tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
                 )
+                
+                if len(winners) >= 2:
+                    second_place = winners[1]
+                    logger.info(f"Uploading position 2 repository for hotkey: {second_place}")
+                    await upload_participant_repository(
+                        tournament.tournament_id, tournament.tournament_type, second_place, 2, config, psql_db
+                    )
             else:
                 try:
                     participant1, participant2 = await get_final_round_participants(completed_round, psql_db)
