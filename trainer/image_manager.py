@@ -742,26 +742,27 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             else:
                 logger.info("No Docker image to clean up.", extra=log_labels)
 
-            try:
-                path_in_repo = cst.IMAGE_TASKS_HF_SUBFOLDER_PATH if task_type == TaskType.IMAGETASK else None
-                wandb_token = os.getenv("WANDB_TOKEN") if task_type != TaskType.IMAGETASK else None
-                await upload_repo_to_hf(
-                    task_id=training_data.task_id,
-                    hotkey=task.hotkey,
-                    expected_repo_name=training_data.expected_repo_name,
-                    huggingface_username=os.getenv("HUGGINGFACE_USERNAME"),
-                    huggingface_token=os.getenv("HUGGINGFACE_TOKEN"),
-                    model=training_data.model,
-                    docker_labels=log_labels,
-                    wandb_token=wandb_token,
-                    path_in_repo=path_in_repo,
-                )
+            if success:
+                try:
+                    path_in_repo = cst.IMAGE_TASKS_HF_SUBFOLDER_PATH if task_type == TaskType.IMAGETASK else None
+                    wandb_token = os.getenv("WANDB_TOKEN") if task_type != TaskType.IMAGETASK else None
+                    await upload_repo_to_hf(
+                        task_id=training_data.task_id,
+                        hotkey=task.hotkey,
+                        expected_repo_name=training_data.expected_repo_name,
+                        huggingface_username=os.getenv("HUGGINGFACE_USERNAME"),
+                        huggingface_token=os.getenv("HUGGINGFACE_TOKEN"),
+                        model=training_data.model,
+                        docker_labels=log_labels,
+                        wandb_token=wandb_token,
+                        path_in_repo=path_in_repo,
+                    )
 
-                await log_task(training_data.task_id, task.hotkey, "Repo uploaded successfully.")
-            except Exception as upload_err:
-                log_message = f"[ERROR] Upload container failed | ExitCode: Unknown | LastError: {upload_err}"
-                await log_task(training_data.task_id, task.hotkey, log_message)
-                success = False
+                    await log_task(training_data.task_id, task.hotkey, "Repo uploaded successfully.")
+                except Exception as upload_err:
+                    log_message = f"[ERROR] Upload container failed | ExitCode: Unknown | LastError: {upload_err}"
+                    await log_task(training_data.task_id, task.hotkey, log_message)
+                    success = False
 
             await complete_task(training_data.task_id, task.hotkey, success=success)
 
