@@ -6,8 +6,7 @@ import shutil
 import subprocess
 
 import wandb
-from huggingface_hub import HfApi
-from huggingface_hub import login
+from huggingface_hub import CommitOperationDelete, HfApi, login
 
 
 def patch_model_metadata(output_dir: str, base_model_id: str):
@@ -128,6 +127,38 @@ def detect_subfolder(base_folder: str) -> str | None:
     return None
 
 
+def clear_repo_contents(api: HfApi, repo_id: str, token: str):
+    """Delete all files in the repo before uploading new content."""
+    try:
+        files = api.list_repo_files(repo_id=repo_id, token=token)
+        
+        if not files:
+            print("Repo is empty, nothing to clear.", flush=True)
+            return
+        
+        files_to_delete = [f for f in files if f != ".gitattributes"]
+        
+        if not files_to_delete:
+            print("No files to clear.", flush=True)
+            return
+        
+        print(f"Clearing {len(files_to_delete)} existing files from repo...", flush=True)
+        
+        delete_ops = [CommitOperationDelete(path_in_repo=f) for f in files_to_delete]
+        
+        api.create_commit(
+            repo_id=repo_id,
+            operations=delete_ops,
+            commit_message="Clear repo before new upload",
+            token=token,
+        )
+        
+        print(f"Cleared {len(files_to_delete)} files from repo.", flush=True)
+        
+    except Exception as e:
+        print(f"Warning: Failed to clear repo contents: {e}", flush=True)
+
+
 def main():
     hf_token = os.getenv("HUGGINGFACE_TOKEN")
     hf_user = os.getenv("HUGGINGFACE_USERNAME")
@@ -164,6 +195,9 @@ def main():
     print(f"Creating repo {repo_id}...", flush=True)
     api = HfApi()
     api.create_repo(repo_id=repo_id, token=hf_token, exist_ok=True, private=False)
+
+    # Clear existing files before uploading
+    clear_repo_contents(api, repo_id, hf_token)
 
     print(f"Uploading contents of {local_folder} to {repo_id}", flush=True)
     if repo_subfolder:
