@@ -319,7 +319,7 @@ YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to to
 YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
 
-# Basilica deployment constants
+# Environment evaluation constants
 BASILICA_SGLANG_IMAGE = "lmsysorg/sglang:latest"
 BASILICA_ENV_IMAGE = "affinefoundation/agentgym:alfworld"
 BASILICA_SGLANG_GPU_COUNT = 1
@@ -336,13 +336,32 @@ BASILICA_ENV_TIMEOUT = 600
 ENVIRONMENTS = {
     "alfworld": {
         "task_id_range": (1, 2500),
-        "env_image": "affinefoundation/agentgym:alfworld"
+        "env_image": "affinefoundation/agentgym:alfworld",
+        "eval_payload_extra": {"max_round": 30},
     },
     "goofspiel": {
         "task_id_range": (0, 99999999),
-        "env_image": "diagonalge/openspiel:latest"
-    }
+        "env_image": "diagonalge/openspiel:latest",
+        "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
+    },
 }
 
 DEFAULT_ENV = "goofspiel"
 NUM_EVAL_SAMPLES = 250
+
+ENV_EVAL_NUM_SEEDS = 2000
+ENV_EVAL_DEFAULT_SEED = 42
+ENV_EVAL_TEMPERATURE = 0.0
+ENV_EVAL_MAX_CONCURRENT_REQUESTS = 4
+ENV_EVAL_MAX_RETRIES = 5
+ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 600
+ENV_EVAL_TASK_RETRY_DELAY = 10.0
+ENV_EVAL_TASK_TIMEOUT = 120
+ENV_EVAL_SESSION_TIMEOUT = 7200
+
+LOCAL_ENV_DOCKER_NETWORK = "agent_eval_net"
+LOCAL_ENV_SGLANG_PORT = 30000
+LOCAL_ENV_SERVER_PORT = 8001
+LOCAL_ENV_SGLANG_HEALTH_TIMEOUT = 600
+LOCAL_ENV_SERVER_HEALTH_TIMEOUT = 300
+LOCAL_ENV_HF_CACHE_PATH = "/mnt/hf_cache"
