@@ -137,6 +137,7 @@ async def run_single_evaluation(run_num: int, timestamp: str) -> tuple:
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=[], 
+            eval_seed=423516563,
         )
         
         # Save results to JSON

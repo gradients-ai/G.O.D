@@ -474,9 +474,9 @@ def build_env_health_check(startup_minutes: int = 5) -> HealthCheckConfig:
     Returns:
         HealthCheckConfig with tested probe settings.
     """
-    initial_delay = 30  # 30 seconds - environment servers start faster
-    period = 30  # 30 seconds - reasonable probe interval
-    timeout = 30  # 30 seconds - allows for slow /health responses
+    initial_delay = 120
+    period = 120
+    timeout = 120
     failure_threshold = max(1, (startup_minutes * 60 - initial_delay) // period)
     
     return HealthCheckConfig(
@@ -510,7 +510,7 @@ def build_env_health_check(startup_minutes: int = 5) -> HealthCheckConfig:
 def deploy_env_basilica(
     deployment_name: str,
     env_image: str | None = None,
-    startup_minutes: int = 5,
+    startup_minutes: int = 30,
 ) -> basilica.Deployment:
     """Deploy Environment Server to Basilica with health checks.
     
@@ -548,7 +548,7 @@ def deploy_env_basilica(
 def wait_for_basilica_health(url: str, timeout: int = 300, path: str = "/v1/models") -> bool:
     """Wait for Basilica service to be healthy."""
     start_time = time.time()
-    timeout = 1800
+    timeout = 3600
     while time.time() - start_time < timeout:
         try:
             response = requests.get(f"{url}{path}", timeout=5)

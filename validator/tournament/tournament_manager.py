@@ -415,7 +415,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
 
-        if len(winners) == 1 and completed_round.is_final_round:
+        if (len(winners) == 1 and completed_round.is_final_round) or tournament.tournament_type == TournamentType.ENVIRONMENT:
             winner = winners[0]
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes

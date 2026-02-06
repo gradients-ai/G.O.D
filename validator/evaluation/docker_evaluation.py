@@ -15,6 +15,7 @@ from huggingface_hub import snapshot_download
 import aiohttp
 import time
 import random
+import uuid
 import basilica
 
 from core import constants as cst
@@ -542,8 +543,8 @@ async def run_evaluation_docker_environment(
         while retry_attempt < MAX_EVAL_RETRIES:
             retry_attempt += 1
             try:
-                sglang_deployment_name = f"sglang-{repo_name_stripped}-{eval_id}"
-                env_deployment_name = f"agentgym-{repo_name_stripped}-{eval_id}"
+                sglang_deployment_name = str(uuid.uuid4())
+                env_deployment_name = str(uuid.uuid4())
                 
                 is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
                 
