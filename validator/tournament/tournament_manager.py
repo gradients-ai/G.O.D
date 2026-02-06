@@ -389,8 +389,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Active participants before elimination: {len(active_participants)} - {active_participants}")
 
         # Eliminate losers (those who didn't win)
-        losers = [p for p in active_participants if p not in winners]
+        losers = [
+            p for p in active_participants
+            if p not in winners and not (p == cst.EMISSION_BURN_HOTKEY and not completed_round.is_final_round)
+        ]
         logger.info(f"Losers to be eliminated: {len(losers)} - {losers}")
+        
 
         all_eliminated = losers
         if all_eliminated:
