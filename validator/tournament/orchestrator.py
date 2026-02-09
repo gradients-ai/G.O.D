@@ -435,8 +435,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     gpu_ids,
                     training_task.training_repo,
                     training_task.training_commit_hash,
-                    config,
-                    n_training_attempts=training_task.n_training_attempts,
+                    config
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
 
@@ -581,7 +580,7 @@ def _get_gpu_count_from_requirement(requirement: GpuRequirement) -> int:
 
 
 async def _create_training_request(
-    task: AnyTypeRawTask, hotkey: str, available_gpu_ids: list[int], training_repo: str, training_commit_hash: str, config: Config, n_training_attempts: int = 0
+    task: AnyTypeRawTask, hotkey: str, available_gpu_ids: list[int], training_repo: str, training_commit_hash: str, config: Config
 ) -> TrainerProxyRequest:
     """
     Create a TrainerProxyRequest based on the task type.
@@ -628,12 +627,6 @@ async def _create_training_request(
         )
     else:
         dataset_type = _get_dataset_type(task)
-        
-        # Workaround: For environment tasks on retry (n_training_attempts >= 1), change environment_name to "game"
-        if task.task_type == TaskType.ENVIRONMENTTASK and n_training_attempts == 0:
-            if isinstance(dataset_type, EnvironmentDatasetType):
-                logger.info(f"Environment task retry detected (attempts={n_training_attempts}), changing environment_name to 'game'")
-                dataset_type = EnvironmentDatasetType(environment_name="game")
         
         training_data = TrainRequestText(
             model=task.model_id,

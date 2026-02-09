@@ -7,6 +7,7 @@ import time
 from io import BytesIO
 
 import basilica
+from basilica import HealthCheckConfig, ProbeConfig
 import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
@@ -235,13 +236,56 @@ def read_prompt_file(text_file_path: str) -> str:
     return None
 
 
-def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42) -> str:
-    """Create the source code for SGLang deployment with model download.
+def build_sglang_health_check(startup_minutes: int = 30) -> HealthCheckConfig:
+    """Build an SGLang health check config with a configurable startup window.
+    
+    Args:
+        startup_minutes: Maximum minutes to wait for model loading (default: 30)
+    
+    Returns:
+        HealthCheckConfig with tested probe settings.
+    """
+    initial_delay = 900 
+    period = 120  
+    timeout = 120 
+    failure_threshold = max(1, (startup_minutes * 60 - initial_delay) // period)
+    
+    return HealthCheckConfig(
+        startup=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=failure_threshold,
+        ),
+        liveness=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=10,
+        ),
+        readiness=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=10,
+        ),
+    )
+
+
+def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42, max_retries: int = 3) -> str:
+    """Create the source code for SGLang deployment with robust model download and retry logic.
     
     Args:
         base_model: Base model name/path
         lora_model: Optional LoRA model name/path
         seed: Random seed for determinism
+        max_retries: Number of download retry attempts (default: 3)
     """
     # Build SGLang command
     sglang_args = [
@@ -258,13 +302,82 @@ def create_sglang_deployment_source(base_model: str, lora_model: str | None = No
     ])
     sglang_cmd = " ".join(sglang_args)
     
-    # Download section
+    # Download with retry logic
+    download_base_model_code = f'''
+def download_model_with_retry():
+    """Download base model with retry logic for reliability."""
+    from huggingface_hub import snapshot_download
+    import time
+    
+    for attempt in range(1, {max_retries} + 1):
+        try:
+            print(f"Downloading base model (attempt {{attempt}}/{max_retries}): {base_model}", flush=True)
+            start = time.time()
+            path = snapshot_download("{base_model}", local_files_only=False)
+            elapsed = time.time() - start
+            print(f"Base model downloaded in {{elapsed:.1f}}s: {{path}}", flush=True)
+            return path
+        except Exception as e:
+            print(f"Download attempt {{attempt}} failed: {{e}}", flush=True)
+            if attempt < {max_retries}:
+                wait = 30 * attempt
+                print(f"Retrying in {{wait}}s...", flush=True)
+                time.sleep(wait)
+            else:
+                print("All download attempts failed", flush=True)
+                raise
+
+download_model_with_retry()
+'''
+    
     download_lora_code = f'''
-# Download LoRA
-print("Downloading LoRA: {lora_model}")
-from huggingface_hub import snapshot_download
-snapshot_download("{lora_model}", local_dir="/tmp/lora/trained_lora", local_dir_use_symlinks=False)
-print("LoRA downloaded")
+def download_lora_with_retry():
+    """Download LoRA with retry logic for reliability."""
+    from huggingface_hub import snapshot_download
+    import time
+    import os
+    import glob
+    
+    lora_dir = "/tmp/lora/trained_lora"
+    
+    for attempt in range(1, {max_retries} + 1):
+        try:
+            print(f"Downloading LoRA (attempt {{attempt}}/{max_retries}): {lora_model}", flush=True)
+            start = time.time()
+            snapshot_download("{lora_model}", local_dir=lora_dir, local_dir_use_symlinks=False)
+            elapsed = time.time() - start
+            print(f"LoRA downloaded in {{elapsed:.1f}}s", flush=True)
+            
+            # Remove incompatible model safetensors files (full model files, not adapter files)
+            model_files = glob.glob(os.path.join(lora_dir, "model-*.safetensors"))
+            for model_file in model_files:
+                try:
+                    os.remove(model_file)
+                    print(f"Removed incompatible LoRA file: {{os.path.basename(model_file)}}", flush=True)
+                except Exception as e:
+                    print(f"Failed to remove {{model_file}}: {{e}}", flush=True)
+            
+            # Remove model index file if it exists
+            index_file = os.path.join(lora_dir, "model.safetensors.index.json")
+            if os.path.exists(index_file):
+                try:
+                    os.remove(index_file)
+                    print("Removed model.safetensors.index.json", flush=True)
+                except Exception as e:
+                    print(f"Failed to remove index file: {{e}}", flush=True)
+            
+            return
+        except Exception as e:
+            print(f"Download attempt {{attempt}} failed: {{e}}", flush=True)
+            if attempt < {max_retries}:
+                wait = 30 * attempt
+                print(f"Retrying in {{wait}}s...", flush=True)
+                time.sleep(wait)
+            else:
+                print("All download attempts failed", flush=True)
+                raise
+
+download_lora_with_retry()
 ''' if lora_model else ''
     
     server_type = "with LoRA" if lora_model else ""
@@ -272,6 +385,7 @@ print("LoRA downloaded")
     return f'''import subprocess
 import sys
 import os
+import time
 
 # HuggingFace cache configuration
 os.environ['HF_HOME'] = '/root/.cache/huggingface'
@@ -284,15 +398,11 @@ os.environ['PYTHONHASHSEED'] = '{seed}'
 os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
 os.environ['NVIDIA_TF32_OVERRIDE'] = '0'
 
-# Download base model
-print("Downloading base model: {base_model}")
-from huggingface_hub import snapshot_download
-snapshot_download("{base_model}", local_files_only=False)
-print("Base model downloaded")
+{download_base_model_code}
 {download_lora_code}
 # Start SGLang server {server_type}
-print("Starting SGLang server {server_type}...")
-subprocess.Popen("{sglang_cmd}", shell=True).wait()
+print("Starting SGLang server {server_type}...", flush=True)
+subprocess.run({repr(sglang_cmd)}, shell=True, check=True)
 '''
 
 
@@ -301,17 +411,25 @@ def deploy_sglang_basilica(
     lora_model: str | None,
     deployment_name: str,
     seed: int = 42,
+    startup_minutes: int = 30,
 ) -> basilica.Deployment:
-    """Deploy SGLang server to Basilica.
+    """Deploy SGLang server to Basilica with health checks and retry logic.
     
     Args:
         base_model: Base model name/path
         lora_model: Optional LoRA model name/path
         deployment_name: Name for the deployment
         seed: Random seed for determinism (default: 42)
+        startup_minutes: Maximum minutes to wait for model loading (default: 30)
     """
-
-    func_source = create_sglang_deployment_source(base_model, lora_model, seed)
+    health_check = build_sglang_health_check(startup_minutes=startup_minutes)
+    func_source = create_sglang_deployment_source(base_model, lora_model, seed, max_retries=3)
+    
+    startup_max = (
+        health_check.startup.initial_delay_seconds
+        + health_check.startup.failure_threshold * health_check.startup.period_seconds
+    )
+    deployment_timeout = startup_max + 60
     
     client = basilica.BasilicaClient()
     deployment = client.deploy(
@@ -319,12 +437,14 @@ def deploy_sglang_basilica(
         source=func_source,
         image=cst.BASILICA_SGLANG_IMAGE,
         port=8000,
+        health_check=health_check,
         gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
         gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
         min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
         memory=cst.BASILICA_SGLANG_MEMORY,
+        cpu=cst.BASILICA_ENV_CPU,
         ttl_seconds=cst.BASILICA_SGLANG_TTL_SECONDS,
-        timeout=cst.BASILICA_SGLANG_TIMEOUT,
+        timeout=deployment_timeout,
         env={
             "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
             "HF_HUB_DISABLE_XET": "1",
@@ -336,7 +456,7 @@ def deploy_sglang_basilica(
     )
     
     try:
-        deployment.wait_until_ready(timeout=cst.BASILICA_SGLANG_TIMEOUT)
+        deployment.wait_until_ready(timeout=deployment_timeout)
     except Exception as e:
         error_msg = f"[{deployment_name}] Deployment wait failed: {e}"
         logger.warning(error_msg)
@@ -344,35 +464,86 @@ def deploy_sglang_basilica(
     return deployment
 
 
+def build_env_health_check(startup_minutes: int = 30) -> HealthCheckConfig:
+    """Build an environment server health check config.
+    
+    Args:
+        startup_minutes: Maximum minutes to wait for environment server startup (default: 5)
+    
+    Returns:
+        HealthCheckConfig with tested probe settings.
+    """
+    initial_delay = 120
+    period = 120
+    timeout = 120
+    failure_threshold = max(1, (startup_minutes * 60 - initial_delay) // period)
+    
+    return HealthCheckConfig(
+        startup=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=failure_threshold,
+        ),
+        liveness=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=10,
+        ),
+        readiness=ProbeConfig(
+            path="/health",
+            port=8000,
+            initial_delay_seconds=initial_delay,
+            period_seconds=period,
+            timeout_seconds=timeout,
+            failure_threshold=10,
+        ),
+    )
+
+
 def deploy_env_basilica(
     deployment_name: str,
-    env_image: str | None = None
+    env_image: str | None = None,
+    startup_minutes: int = 30,
 ) -> basilica.Deployment:
-    """Deploy Environment Server to Basilica.
+    """Deploy Environment Server to Basilica with health checks.
     
     Args:
         deployment_name: Name for the deployment
         env_image: Optional custom image
+        startup_minutes: Maximum minutes to wait for environment server startup (default: 5)
     """
+    health_check = build_env_health_check(startup_minutes=startup_minutes)
+
+    startup_max = (
+        health_check.startup.initial_delay_seconds
+        + health_check.startup.failure_threshold * health_check.startup.period_seconds
+    )
+    deployment_timeout = startup_max + 60
     
     client = basilica.BasilicaClient()
-
-    image_to_use = env_image if env_image else cst.BASILICA_AGENTGYM_IMAGE
+    image_to_use = env_image if env_image else cst.BASILICA_ENV_IMAGE
     
     deployment = client.deploy(
         name=deployment_name,
         image=image_to_use,
         port=8000,
+        health_check=health_check,
         cpu=cst.BASILICA_ENV_CPU,
         memory=cst.BASILICA_ENV_MEMORY,
         ttl_seconds=cst.BASILICA_ENV_TTL_SECONDS,
-        timeout=cst.BASILICA_ENV_TIMEOUT
+        timeout=deployment_timeout,
     )
     
     return deployment
 
 
-def wait_for_basilica_health(url: str, timeout: int = 600, path: str = "/v1/models") -> bool:
+def wait_for_basilica_health(url: str, timeout: int = 3600, path: str = "/v1/models") -> bool:
     """Wait for Basilica service to be healthy."""
     start_time = time.time()
     while time.time() - start_time < timeout:
