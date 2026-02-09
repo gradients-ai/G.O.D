@@ -7,5 +7,6 @@ debugpy
 textstat==0.7.7
 langcheck==0.9.0
 detoxify
-transformers>=4.55.0
+transformers>=4.55.0,<5.0.0
 astor
+basilica-sdk==0.13.0
