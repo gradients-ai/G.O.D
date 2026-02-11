@@ -18,10 +18,10 @@ from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
 from trainer.tasks import start_task
-from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
 from trainer.utils.misc import get_gpu_info
+from trainer.utils.trainer_logging import logger
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import GET_RECENT_TASKS_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
@@ -42,13 +42,13 @@ async def verify_orchestrator_ip(request: Request):
         raise HTTPException(status_code=403, detail="Access forbidden")
     return client_ip
 
+
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     if not are_gpus_available(req.gpu_ids):
         raise HTTPException(
-            status_code=409,
-            detail=f"GPU conflict detected. Requested GPUs are already in use by running training tasks."
+            status_code=409, detail="GPU conflict detected. Requested GPUs are already in use by running training tasks."
         )
-    
+
     await start_task(req)
 
     try:
@@ -58,6 +58,7 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
             parent_dir=cst.TEMP_REPO_PATH,
             branch=req.github_branch,
             commit_hash=req.github_commit_hash,
+            github_token=req.github_token,
         )
     except Exception as e:
         await log_task(req.training_data.task_id, req.hotkey, f"Failed to clone repo: {str(e)}")

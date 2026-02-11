@@ -135,6 +135,25 @@ github_repo="https://github.com/gradients-opensource/position-1-tournament-xyz"
 commit_hash="main"
 ```
 
+### Private Repositories (Optional)
+
+If your training repository is private, include a GitHub fine-grained PAT in the response so validators can clone it.
+
+1. Go to: `https://github.com/settings/personal-access-tokens/new`
+2. Create a **Fine-grained personal access token**
+3. Set repository access to **Only select repositories** and choose your training repo
+4. Set **Repository permissions -> Contents: Read-only**
+5. Copy the token and set it as `github_token`
+
+```python
+async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
+    return TrainingRepoResponse(
+        github_repo="https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO.git",
+        commit_hash="YOUR_COMMIT_HASH",
+        github_token="github_pat_xxx",  # Fine-grained, read-only token
+    )
+```
+
 Where `task_type` can be:
 
 - `"text"` - For text-based tournaments (Instruct, DPO, GRPO, Chat)

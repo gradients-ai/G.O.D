@@ -5,6 +5,8 @@ import aiohttp
 from git import Repo
 from git.exc import GitCommandError
 
+from core.utils import build_authenticated_git_url
+from core.utils import sanitize_git_text
 from validator.core.config import Config
 from validator.utils.logging import get_logger
 
@@ -66,10 +68,17 @@ async def update_repository_description(name: str, description: str, token: str,
                 return False
 
 
-def clone_and_push_repository(repo_url: str, new_repo_url: str, github_token: str, commit_hash: Optional[str] = None) -> None:
+def clone_and_push_repository(
+    repo_url: str,
+    new_repo_url: str,
+    github_token: str,
+    commit_hash: Optional[str] = None,
+    source_github_token: Optional[str] = None,
+) -> None:
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            repo = Repo.clone_from(repo_url, temp_dir)
+            source_clone_url = build_authenticated_git_url(repo_url, source_github_token)
+            repo = Repo.clone_from(source_clone_url, temp_dir)
 
             if commit_hash:
                 repo.git.fetch("--all")
@@ -110,9 +119,9 @@ def clone_and_push_repository(repo_url: str, new_repo_url: str, github_token: st
             logger.info(f"Successfully pushed to {new_repo_url} with only the specified commit")
 
     except GitCommandError as e:
-        raise RuntimeError(f"Git operation failed: {str(e)}")
+        raise RuntimeError(f"Git operation failed: {sanitize_git_text(str(e), source_github_token, github_token)}")
     except Exception as e:
-        raise RuntimeError(f"Unexpected error: {str(e)}")
+        raise RuntimeError(f"Unexpected error: {sanitize_git_text(str(e), source_github_token, github_token)}")
 
 
 async def upload_tournament_participant_repository(
@@ -123,6 +132,7 @@ async def upload_tournament_participant_repository(
     commit_hash: str,
     config: Config,
     position: Optional[int] = None,
+    participant_github_token: Optional[str] = None,
 ) -> Optional[str]:
     """Upload a tournament participant's repository to GitHub."""
     github_token = config.github_token
@@ -138,7 +148,10 @@ async def upload_tournament_participant_repository(
 
     try:
         repo_name = f"god-{tournament_type}-{tournament_id}-position-{position}".replace("_", "-")
-        description = f"G.O.D {tournament_type.title()} Tournament {position}{'st' if position == 1 else 'nd' if position == 2 else 'rd' if position == 3 else 'th'} Place - {tournament_id} - Participant: {participant_hotkey}"
+        description = (
+            f"G.O.D {tournament_type.title()} Tournament Position {position} - "
+            f"{tournament_id} - Participant: {participant_hotkey}"
+        )
 
         logger.info(f"Processing tournament participant repository: {training_repo}")
         logger.info(f"Generated name: {repo_name}")
@@ -153,7 +166,13 @@ async def upload_tournament_participant_repository(
             new_repo_url = new_repo["clone_url"]
 
         logger.info(f"Cloning and pushing {training_repo}...")
-        clone_and_push_repository(training_repo, new_repo_url, github_token, commit_hash)
+        clone_and_push_repository(
+            training_repo,
+            new_repo_url,
+            github_token,
+            commit_hash,
+            source_github_token=participant_github_token,
+        )
 
         logger.info(f"Successfully re-uploaded {training_repo} to {new_repo_url}")
 

@@ -19,6 +19,8 @@ from core.models.tournament_models import TournamentTask
 from core.models.tournament_models import TournamentType
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
+from core.utils import build_authenticated_git_url
+from core.utils import sanitize_git_text
 from validator.core.config import Config
 from validator.core.constants import DEFAULT_PARTICIPANT_COMMIT
 from validator.core.constants import DEFAULT_PARTICIPANT_REPO
@@ -94,7 +96,7 @@ def get_progressive_threshold(consecutive_wins: int, tournament_type: Tournament
 
     if tournament_type and tournament_type == TournamentType.ENVIRONMENT:
         max_threshold = t_cst.EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT
-        
+
     current_threshold = max_threshold * (t_cst.EXPONENTIAL_DECAY_RATE ** (consecutive_wins - 1))
     return max(t_cst.EXPONENTIAL_MIN_THRESHOLD, current_threshold)
 
@@ -196,7 +198,13 @@ async def get_task_results_for_ranking(task_id: str, psql_db: PSQLDB) -> list[Mi
             continue
 
         # Create appropriate MinerResults object
-        if task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.CHATTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
+        if task_type in [
+            TaskType.INSTRUCTTEXTTASK,
+            TaskType.CHATTASK,
+            TaskType.DPOTASK,
+            TaskType.GRPOTASK,
+            TaskType.ENVIRONMENTTASK,
+        ]:
             miner_result = MinerResultsText(
                 hotkey=hotkey,
                 test_loss=test_loss,
@@ -617,7 +625,8 @@ async def get_knockout_winners(
                 else:
                     task_winners.append(opponent_hotkey)
                     logger.info(
-                        f"Environment task: Opponent wins (higher is better): {opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
+                        "Environment task: Opponent wins (higher is better): "
+                        f"{opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
                     )
             else:
                 # For other tasks, lower scores are better
@@ -674,7 +683,7 @@ async def get_environment_group_winners(
 
         participant_scores = {}
         boss_score = None
-        
+
         for result in ranked_results:
             hotkey = result.hotkey
             adjusted_loss = result.adjusted_loss
@@ -710,25 +719,21 @@ async def get_environment_group_winners(
         if boss_score is not None:
             boss_multiplier = 1 + threshold_percentage
             boss_threshold_score = boss_score * boss_multiplier
-            
+
             logger.info(
                 f"Boss score: {boss_score:.6f}, Threshold: {threshold_percentage * 100:.1f}%, "
                 f"Boss threshold score: {boss_threshold_score:.6f}"
             )
-            
+
             for hotkey, score in participant_scores.items():
                 if hotkey == boss_hotkey:
                     eligible_participants[hotkey] = score
                 elif score >= boss_threshold_score:
                     eligible_participants[hotkey] = score
-                    logger.info(
-                        f"Challenger {hotkey} beats boss threshold: {score:.6f} >= {boss_threshold_score:.6f}"
-                    )
+                    logger.info(f"Challenger {hotkey} beats boss threshold: {score:.6f} >= {boss_threshold_score:.6f}")
                 else:
-                    logger.info(
-                        f"Challenger {hotkey} does not beat boss threshold: {score:.6f} < {boss_threshold_score:.6f}"
-                    )
-            
+                    logger.info(f"Challenger {hotkey} does not beat boss threshold: {score:.6f} < {boss_threshold_score:.6f}")
+
             if len(eligible_participants) == 1 and boss_hotkey in eligible_participants:
                 logger.info(f"No challengers beat boss threshold. Boss {boss_hotkey} wins.")
                 # Boss wins - 2nd place is highest scoring non-boss participant
@@ -747,7 +752,7 @@ async def get_environment_group_winners(
 
         # Sort eligible participants descending for environment tasks (higher is better)
         sorted_participants = sorted(eligible_participants.items(), key=lambda x: x[1], reverse=True)
-        
+
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss (descending, higher is better): "
             f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"
@@ -756,13 +761,13 @@ async def get_environment_group_winners(
         if sorted_participants:
             winner = sorted_participants[0][0]
             logger.info(f"Group {group_id}: Environment tournament winner: {winner}")
-            
+
             # Determine 2nd place
             second_place = None
             if len(sorted_participants) >= 2:
                 # Challenger won - 2nd place is second in eligible list
                 second_place = sorted_participants[1][0]
-            
+
             if second_place:
                 logger.info(f"Group {group_id}: 2nd place: {second_place}")
                 return [winner, second_place]
@@ -823,7 +828,7 @@ async def get_group_winners(
 
         sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
         ranking_direction = "ascending (lower is better)"
-        
+
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss ({ranking_direction}): "
             f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"
@@ -896,7 +901,7 @@ async def notify_organic_task_created(task_id: str, task_type: str, discord_url:
         logger.error(f"Failed to send Discord notification for task creation: {e}")
 
 
-async def validate_repo_obfuscation(repo_url: str) -> bool:
+async def validate_repo_obfuscation(repo_url: str, github_token: str | None = None) -> bool:
     """
     Validate that a repository is not obfuscated using the obfuscation detection.
 
@@ -907,8 +912,9 @@ async def validate_repo_obfuscation(repo_url: str) -> bool:
         bool: True if repo is not obfuscated, False if obfuscated
     """
     try:
+        clone_url = build_authenticated_git_url(repo_url, github_token)
         proc = subprocess.run(
-            [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", repo_url],
+            [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", clone_url],
             capture_output=True,
             text=True,
             timeout=30,
@@ -931,7 +937,7 @@ async def validate_repo_obfuscation(repo_url: str) -> bool:
         return False
 
 
-async def validate_repo_license(repo_url: str) -> bool:
+async def validate_repo_license(repo_url: str, github_token: str | None = None) -> bool:
     """
     Validate that a repository has verbatim LICENSE and NOTICE files matching the current repository.
 
@@ -944,16 +950,18 @@ async def validate_repo_license(repo_url: str) -> bool:
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(f"Cloning repository {repo_url} for license validation")
+            clone_url = build_authenticated_git_url(repo_url, github_token)
 
             clone_proc = subprocess.run(
-                ["git", "clone", repo_url, temp_dir],
+                ["git", "clone", clone_url, temp_dir],
                 capture_output=True,
                 text=True,
                 timeout=60,
             )
 
             if clone_proc.returncode != 0:
-                logger.error(f"Failed to clone repository {repo_url}: {clone_proc.stderr}")
+                sanitized_stderr = sanitize_git_text(clone_proc.stderr, github_token)
+                logger.error(f"Failed to clone repository {repo_url}: {sanitized_stderr}")
                 return False
 
             temp_path = Path(temp_dir)

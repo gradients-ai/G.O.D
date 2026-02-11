@@ -111,6 +111,7 @@ class TournamentParticipant(BaseModel):
     final_position: int | None = None
     training_repo: str | None = None
     training_commit_hash: str | None = None
+    github_token: str | None = None
     backup_repo: str | None = None
 
 
@@ -165,6 +166,7 @@ class TaskTrainingAssignment(BaseModel):
     )
     training_repo: str | None = None
     training_commit_hash: str | None = None
+    github_token: str | None = None
 
 
 class TournamentTaskTraining(BaseModel):
@@ -176,6 +178,7 @@ class TournamentTaskTraining(BaseModel):
     updated_at: datetime
     training_repo: str | None = None
     training_commit_hash: str | None = None
+    github_token: str | None = None
     priority: int = 1  # Training priority: 1=organic, 2=tournament, 3=benchmark
     trainer_ip: str | None = None
 

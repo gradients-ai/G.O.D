@@ -9,10 +9,18 @@ from git import Repo
 import trainer.constants as cst
 from core.models.utility_models import GPUInfo
 from core.models.utility_models import GPUType
+from core.utils import build_authenticated_git_url
+from core.utils import sanitize_git_text
 from trainer.tasks import get_running_tasks
 
 
-def clone_repo(repo_url: str, parent_dir: str, branch: str = None, commit_hash: str = None) -> str:
+def clone_repo(
+    repo_url: str,
+    parent_dir: str,
+    branch: str = None,
+    commit_hash: str = None,
+    github_token: str | None = None,
+) -> str:
     repo_name = os.path.basename(urlparse(repo_url).path)
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
@@ -29,11 +37,12 @@ def clone_repo(repo_url: str, parent_dir: str, branch: str = None, commit_hash: 
             elif branch and repo.active_branch.name == branch:
                 return repo_dir
             shutil.rmtree(repo_dir)
-        except:
+        except Exception:
             shutil.rmtree(repo_dir)
 
     try:
-        repo = Repo.clone_from(repo_url, repo_dir, branch=branch) if branch else Repo.clone_from(repo_url, repo_dir)
+        clone_url = build_authenticated_git_url(repo_url, github_token)
+        repo = Repo.clone_from(clone_url, repo_dir, branch=branch) if branch else Repo.clone_from(clone_url, repo_dir)
 
         if commit_hash:
             repo.git.fetch("--all")
@@ -50,10 +59,10 @@ def clone_repo(repo_url: str, parent_dir: str, branch: str = None, commit_hash: 
         return repo_dir
 
     except GitCommandError as e:
-        raise RuntimeError(f"Error in cloning: {str(e)}")
+        raise RuntimeError(f"Error in cloning: {sanitize_git_text(str(e), github_token)}")
 
     except Exception as e:
-        raise RuntimeError(f"Unexpected error while cloning: {str(e)}")
+        raise RuntimeError(f"Unexpected error while cloning: {sanitize_git_text(str(e), github_token)}")
 
 
 async def get_gpu_info() -> list[GPUInfo]:
@@ -103,12 +112,10 @@ async def get_gpu_info() -> list[GPUInfo]:
 def build_wandb_env(task_id: str, hotkey: str) -> dict:
     wandb_path = f"{cst.WANDB_LOGS_DIR}/{task_id}_{hotkey}"
 
-    env = {
-        "WANDB_MODE": "offline",
-        **{key: wandb_path for key in cst.WANDB_DIRECTORIES}
-    }
+    env = {"WANDB_MODE": "offline", **{key: wandb_path for key in cst.WANDB_DIRECTORIES}}
 
     return env
+
 
 def extract_container_error(logs: str) -> str | None:
     lines = logs.strip().splitlines()
@@ -124,16 +131,15 @@ def extract_container_error(logs: str) -> str | None:
 def are_gpus_available(requested_gpu_ids: list[int]) -> bool:
     """
     Check if any of the requested GPU IDs are already in use by training tasks.
-    
+
     Returns:
         bool: True if all requested GPUs are available, False otherwise
     """
     running_tasks = get_running_tasks()
-    
+
     for task in running_tasks:
         for gpu_id in requested_gpu_ids:
             if gpu_id in task.gpu_ids:
                 return False
-    
-    return True
 
+    return True
