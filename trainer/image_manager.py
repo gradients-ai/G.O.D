@@ -64,7 +64,7 @@ def build_docker_image(
     context_path: str = ".",
     is_image_task: bool = False,
     tag: str = None,
-    no_cache: bool = False,
+    no_cache: bool = True,
 ) -> tuple[str, str | None]:
     client: docker.DockerClient = docker.from_env()
 
