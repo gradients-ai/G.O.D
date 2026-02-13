@@ -37,7 +37,7 @@ GAMES_TO_TASK_ID_RANGE = {
     "clobber": (700000000, 799999999),
 }
 SGLANG_IMAGE = "lmsysorg/sglang:latest"
-AGENTGYM_IMAGE = "openspiel:v1"
+AGENTGYM_IMAGE = "phoenixbeaudry/game:mcts-api"
 NETWORK_NAME = "agent_eval_net"
 SGLANG_PORT = 30000
 HF_CACHE_DIR = "/mnt/hf_cache"
