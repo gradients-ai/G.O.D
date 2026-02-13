@@ -1,4 +1,3 @@
-
 def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: int = 30) -> dict[str, list]:
     from trl.experimental.openenv import generate_rollout_completions
     import os
@@ -44,7 +43,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         # Create environment (POST /create) - ONLY ONCE
         try:
             print(f"Initializing environment on rank {rank} at {base_url}...")
-            payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts"}
+            payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
             create_res = requests.post(f"{base_url}/reset", json=payload, timeout=300)
             create_res.raise_for_status()
             rollout_first_prompt_and_completion.initialized = True
@@ -80,7 +79,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         
         # --- Reset Environment (POST /reset) ---
         # Reuse existing env_id, just change the game
-        payload = {"task_id": game_id, "seed": game_id, "opponent": "random"}
+        payload = {"task_id": game_id, "seed": game_id, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
         
         try:
             reset_res = requests.post(f"{env_endpoint}/reset", json=payload, timeout=TIMEOUT)
