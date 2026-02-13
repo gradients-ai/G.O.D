@@ -940,6 +940,12 @@ async def _run_basilica_evaluation(
         if env_name == "goofspiel":
             payload["opponent"] = "random"
             payload["api_key"] = "dummy-key"
+        elif env_name == "gin_rummy":
+            # TODO Ensure basilica uses correct image phoenixbeaudry/game:mcts-api
+            payload["opponent"] = "mcts"
+            payload["mcts_max_simulations"] = 25
+            payload["mcts_num_rollouts"] = 1
+            payload["api_key"] = "dummy-key"
         else:
             payload["max_round"] = 30
         

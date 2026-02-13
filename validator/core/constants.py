@@ -321,7 +321,7 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Basilica deployment constants
 BASILICA_SGLANG_IMAGE = "lmsysorg/sglang:latest"
-BASILICA_ENV_IMAGE = "affinefoundation/agentgym:alfworld"
+BASILICA_ENV_IMAGE = "phoenixbeaudry/game:mcts-api"
 BASILICA_SGLANG_GPU_COUNT = 1
 BASILICA_SGLANG_GPU_MODELS = ["A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
@@ -341,8 +341,16 @@ ENVIRONMENTS = {
     "goofspiel": {
         "task_id_range": (0, 99999999),
         "env_image": "diagonalge/openspiel:latest"
+    },
+    "gin_rummy": {
+        "task_id_range": (300000000, 399999999),
+        "env_image": "phoenixbeaudry/game:mcts-api"
+    },
+    "liars_dice": {
+        "task_id_range": (100000000, 199999999),
+        "env_image": "phoenixbeaudry/game:mcts-api"
     }
 }
 
-DEFAULT_ENV = "goofspiel"
+DEFAULT_ENV = "gin_rummy"
 NUM_EVAL_SAMPLES = 250
