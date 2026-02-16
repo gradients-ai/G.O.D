@@ -323,7 +323,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by(level) (rate({job=\"docker-training-containers\"} |~ \"(?i)(error|warning|info|debug)\" | pattern `<level>` [$__interval]))",
+          "expr": "sum by(level) (count_over_time({job=\"docker-training-containers\"} | regexp `(?P<level>ERROR|WARN(?:ING)?|INFO|DEBUG|CRITICAL)` [$__interval]))",
           "refId": "A"
         }
       ],

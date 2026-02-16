@@ -212,6 +212,8 @@ def hide_sensitive_data_till_finished(task: AnyTypeTask) -> AnyTypeTask:
     if is_task_in_flight(task):
         if task.task_type == TaskType.IMAGETASK:
             task.image_text_pairs = [ImageTextPair(image_url="hidden", text_url="hidden")]
+        if task.task_type == TaskType.ENVIRONMENTTASK:
+            task.eval_seed = None
         task.test_data = None
 
         task.training_data = None

@@ -6,8 +6,7 @@ import shutil
 import subprocess
 
 import wandb
-from huggingface_hub import HfApi
-from huggingface_hub import login
+from huggingface_hub import HfApi, login
 
 
 def patch_model_metadata(output_dir: str, base_model_id: str):
@@ -175,6 +174,7 @@ def main():
         path_in_repo=repo_subfolder if repo_subfolder else None,
         commit_message=f"Upload task output {task_id}",
         token=hf_token,
+        delete_patterns=["*"],
     )
 
     print(f"Uploaded successfully to https://huggingface.co/{repo_id}", flush=True)

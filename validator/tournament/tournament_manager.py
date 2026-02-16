@@ -389,8 +389,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Active participants before elimination: {len(active_participants)} - {active_participants}")
 
         # Eliminate losers (those who didn't win)
-        losers = [p for p in active_participants if p not in winners]
+        losers = [
+            p for p in active_participants
+            if p not in winners and not (p == cst.EMISSION_BURN_HOTKEY and not completed_round.is_final_round)
+        ]
         logger.info(f"Losers to be eliminated: {len(losers)} - {losers}")
+        
 
         all_eliminated = losers
         if all_eliminated:
@@ -415,7 +419,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
         
-        if len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT:
+        if (len(winners) == 1 and completed_round.is_final_round) or tournament.tournament_type == TournamentType.ENVIRONMENT:
             winner = winners[0]
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes

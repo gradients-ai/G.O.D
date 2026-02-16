@@ -847,8 +847,7 @@ async def get_round_winners(completed_round: TournamentRoundData, psql_db: PSQLD
     else:
         winners = await get_group_winners(completed_round, round_tasks, psql_db, config)
 
-    # Ensure unique winners by converting to set and back to list
-    unique_winners = list(set(winners))
+    unique_winners = list(dict.fromkeys(winners))
     if len(winners) != len(unique_winners):
         logger.info(f"Removed {len(winners) - len(unique_winners)} duplicate winners from round {completed_round.round_id}")
         logger.info(f"Original winners: {winners}")

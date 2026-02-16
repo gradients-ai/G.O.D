@@ -47,6 +47,7 @@ limits_config:
   max_entries_limit_per_query: 10000
   max_streams_per_user: 10000
   max_global_streams_per_user: 10000
+  max_query_series: 5000
 
 ruler:
   alertmanager_url: http://prometheus-training:9090
