@@ -341,7 +341,7 @@ ENVIRONMENTS = {
     },
     "goofspiel": {
         "task_id_range": (0, 99999999),
-        "env_image": "diagonalge/openspiel:latest"
+        "env_image": "diagonalge/openspiel:latest",
         "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
     },
     "gin_rummy": {
