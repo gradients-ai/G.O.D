@@ -460,13 +460,14 @@ async def run_evaluation_docker_environment(
 
     env_config = vcst.ENVIRONMENTS[env_name]
     task_id_min, task_id_max = env_config["task_id_range"]
+    num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
     env_image = env_config["env_image"]
     env_payload_extra = env_config.get("eval_payload_extra", {})
 
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
     seed_generator = random.Random(base_seed)
-    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(vcst.ENV_EVAL_NUM_SEEDS)]
-    logger.info(f"Generated {vcst.ENV_EVAL_NUM_SEEDS} seeds from base_seed={base_seed}")
+    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(num_seeds)]
+    logger.info(f"Generated {num_seeds} seeds from base_seed={base_seed}")
 
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
         """Deploy, evaluate, and cleanup a single repo on Basilica."""
@@ -619,13 +620,14 @@ async def run_evaluation_local_environment(
 
     env_config = vcst.ENVIRONMENTS[env_name]
     task_id_min, task_id_max = env_config["task_id_range"]
+    num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
     env_image = env_config["env_image"]
     env_payload_extra = env_config.get("eval_payload_extra", {})
 
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
     seed_generator = random.Random(base_seed)
-    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(vcst.ENV_EVAL_NUM_SEEDS)]
-    logger.info(f"Generated {vcst.ENV_EVAL_NUM_SEEDS} seeds from base_seed={base_seed}")
+    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(num_seeds)]
+    logger.info(f"Generated {num_seeds} seeds from base_seed={base_seed}")
 
     docker_client = docker.from_env()
 
@@ -834,18 +836,7 @@ async def _run_environment_evaluation(
         }
         if env_payload_extra:
             payload.update(env_payload_extra)
-        if env_name == "goofspiel":
-            payload["opponent"] = "random"
-            payload["api_key"] = "dummy-key"
-        elif env_name == "gin_rummy":
-            # TODO Ensure basilica uses correct image phoenixbeaudry/game:mcts-api
-            payload["opponent"] = "mcts"
-            payload["mcts_max_simulations"] = 25
-            payload["mcts_num_rollouts"] = 1
-            payload["api_key"] = "dummy-key"
-        else:
-            payload["max_round"] = 30
-        
+
         last_error = None
 
         attempt = 0

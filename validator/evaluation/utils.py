@@ -295,10 +295,16 @@ def create_sglang_deployment_source(base_model: str, lora_model: str | None = No
     if lora_model:
         sglang_args.append("--enable-lora --lora-paths trained_lora=/tmp/lora/trained_lora --lora-backend triton")
     sglang_args.extend([
-        "--host 0.0.0.0 --port 8000",
-        "--tensor-parallel-size 1 --dtype float16",
+        "--host", "0.0.0.0",
+        "--port", "8000",
+        "--tensor-parallel-size", "1",
+        "--dtype", "float16",
+        "--attention-backend", "triton",
+        "--prefill-attention-backend", "triton",
+        "--decode-attention-backend", "triton",
+        "--sampling-backend", "pytorch",
         "--enable-deterministic-inference",
-        f"--random-seed {seed}",
+        "--random-seed", str(seed),
     ])
     sglang_cmd = " ".join(sglang_args)
     

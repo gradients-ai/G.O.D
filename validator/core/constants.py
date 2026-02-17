@@ -336,23 +336,38 @@ BASILICA_ENV_TIMEOUT = 600
 ENVIRONMENTS = {
     "alfworld": {
         "task_id_range": (1, 2500),
+        "num_seeds": 100,
         "env_image": "affinefoundation/agentgym:alfworld",
         "eval_payload_extra": {"max_round": 30},
     },
     "goofspiel": {
         "task_id_range": (0, 99999999),
+        "num_seeds": 2000,
         "env_image": "diagonalge/openspiel:latest",
         "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
     },
     "gin_rummy": {
         "task_id_range": (300000000, 399999999),
-        "env_image": "phoenixbeaudry/game:mcts-api"
+        "num_seeds": 500,
+        "env_image": "phoenixbeaudry/game:mcts-api",
+        "eval_payload_extra": {
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
     },
     "liars_dice": {
         "task_id_range": (100000000, 199999999),
-        "env_image": "phoenixbeaudry/game:mcts-api"
-    }
-
+        "num_seeds": 2000,
+        "env_image": "phoenixbeaudry/game:mcts-api",
+        "eval_payload_extra": {
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    },
 }
 
 DEFAULT_ENV = "gin_rummy"
