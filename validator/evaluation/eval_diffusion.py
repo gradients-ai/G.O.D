@@ -2,6 +2,10 @@ import json
 import os
 import re
 import random
+import shutil
+import tempfile
+import urllib.request
+import zipfile
 
 import numpy as np
 import safetensors.torch
@@ -277,9 +281,21 @@ def _count_model_parameters(model_path: str, is_safetensors: bool) -> int:
 
 def main():
     test_dataset_path = os.environ.get("DATASET")
+    test_split_url = os.environ.get("TEST_SPLIT_URL")
     base_model_repo = os.environ.get("ORIGINAL_MODEL_REPO")
     trained_lora_model_repos = os.environ.get("MODELS", "")
     model_type = os.environ.get("MODEL_TYPE")
+    if not test_dataset_path and test_split_url:
+        tmp_dir = tempfile.mkdtemp(prefix="eval_diffusion_")
+        zip_path = os.path.join(tmp_dir, "test_split.zip")
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        urllib.request.urlretrieve(test_split_url, zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(extract_dir)
+        test_dataset_path = extract_dir
+        logger.info(f"Downloaded and extracted TEST_SPLIT_URL to {extract_dir}")
+
     if not all([test_dataset_path, base_model_repo, trained_lora_model_repos, model_type]):
         logger.error("Missing required environment variables.")
         exit(1)

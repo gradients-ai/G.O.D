@@ -1,6 +1,8 @@
 import json
 import os
 import subprocess
+import tempfile
+import urllib.request
 from pathlib import Path
 
 from pydantic import TypeAdapter
@@ -172,10 +174,17 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
 def main():
     logger.info("=== INSTRUCT TEXT EVALUATION SCRIPT STARTING ===")
     dataset = os.environ.get("DATASET")
+    dataset_url = os.environ.get("DATASET_URL")
     original_model = os.environ.get("ORIGINAL_MODEL")
     dataset_type_str = os.environ.get("DATASET_TYPE", "")
     file_format_str = os.environ.get("FILE_FORMAT")
     models_str = os.environ.get("MODELS", "")  # Comma-separated list of LoRA repos
+
+    if not dataset and dataset_url:
+        parsed_name = os.path.basename(dataset_url.split("?")[0]) or "dataset.json"
+        dataset = os.path.join(tempfile.gettempdir(), parsed_name)
+        urllib.request.urlretrieve(dataset_url, dataset)
+        logger.info(f"Downloaded dataset from DATASET_URL to {dataset}")
 
     if not all([dataset, original_model, file_format_str, models_str]):
         logger.error("Missing required environment variables.")
