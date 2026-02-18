@@ -348,7 +348,7 @@ ENVIRONMENTS = {
     },
     "gin_rummy": {
         "task_id_range": (300000000, 399999999),
-        "num_seeds": 500,
+        "num_seeds": 1000,
         "env_image": "phoenixbeaudry/game:mcts-api",
         "eval_payload_extra": {
             "opponent": "mcts",
