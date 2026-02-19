@@ -1318,7 +1318,7 @@ async def run_evaluation_basilica_image(
 ) -> DockerEvaluationResults:
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
-    command = ["python", "-m", "validator.evaluation.eval_diffusion"]
+    command = ["/app/start.sh"]
     source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
@@ -1340,7 +1340,7 @@ async def run_evaluation_basilica_image(
 
     repo_results = await _run_basilica_eval_repos_with_retry_pass(
         repos=models,
-        image=cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+        image="diagonalge/tuning_validator_diffusion:basilica",
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, len(gpu_ids)),

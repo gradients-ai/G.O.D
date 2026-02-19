@@ -308,14 +308,14 @@ def main():
     )
     logger.info("Base model downloaded")
 
-    logger.info("test_dataset_path: ", test_dataset_path)
-    logger.info("base_model_repo: ", base_model_repo)
-    logger.info("trained_lora_model_repos: ", trained_lora_model_repos)
-    logger.info("model_type: ", model_type)
-    logger.info("is_safetensors: ", is_safetensors)
-    logger.info("safetensors_filename: ", safetensors_filename)
-    logger.info("model_name_or_path: ", model_name_or_path)
-    logger.info("model_path: ", model_path)
+    logger.info(f"test_dataset_path: {test_dataset_path}")
+    logger.info(f"base_model_repo: {base_model_repo}")
+    logger.info(f"trained_lora_model_repos: {trained_lora_model_repos}")
+    logger.info(f"model_type: {model_type}")
+    logger.info(f"is_safetensors: {is_safetensors}")
+    logger.info(f"safetensors_filename: {safetensors_filename}")
+    logger.info(f"model_name_or_path: {model_name_or_path}")
+    logger.info(f"model_path: {model_path}")
 
     lora_repos = [m.strip() for m in trained_lora_model_repos.split(",") if m.strip()]
 

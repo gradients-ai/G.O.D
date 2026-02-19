@@ -73,11 +73,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 def _run_eval():
     try:
-        proc = subprocess.run(COMMAND, capture_output=True, text=True)
-        if proc.stdout:
-            print(proc.stdout, end="")
-        if proc.stderr:
-            print(proc.stderr, end="")
+        proc = subprocess.run(COMMAND, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"Eval command failed with exit code {{proc.returncode}}")
         with open(RESULT_PATH, "r", encoding="utf-8") as f:
