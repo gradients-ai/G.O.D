@@ -13,7 +13,7 @@ Environment="ENV=DEV"
 # Deploy log shipping before starting the server
 ExecStartPre=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && task deploy-trainer-logs'
 # Start uvicorn server directly
-ExecStart=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && uvicorn trainer.asgi:app --reload --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
+ExecStart=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
 # Restart on failure with exponential backoff
 Restart=on-failure
 RestartSec=5
