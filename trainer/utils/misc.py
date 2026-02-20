@@ -2,6 +2,7 @@ import os
 import shutil
 from urllib.parse import urlparse
 
+import docker
 import pynvml
 from git import GitCommandError
 from git import Repo
@@ -134,6 +135,31 @@ def are_gpus_available(requested_gpu_ids: list[int]) -> bool:
         for gpu_id in requested_gpu_ids:
             if gpu_id in task.gpu_ids:
                 return False
+
+    busy_gpu_ids = _get_busy_gpu_ids_from_running_containers()
+    for gpu_id in requested_gpu_ids:
+        if gpu_id in busy_gpu_ids:
+            return False
     
     return True
+
+
+def _get_busy_gpu_ids_from_running_containers() -> set[int]:
+    busy_gpu_ids: set[int] = set()
+    try:
+        client = docker.from_env()
+        containers = client.containers.list()
+        trainer_containers = [
+            c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-")
+        ]
+        for container in trainer_containers:
+            device_requests = container.attrs.get("HostConfig", {}).get("DeviceRequests", []) or []
+            for request in device_requests:
+                device_ids = request.get("DeviceIDs") or []
+                for device_id in device_ids:
+                    if str(device_id).isdigit():
+                        busy_gpu_ids.add(int(device_id))
+    except Exception:
+        return set()
+    return busy_gpu_ids
 

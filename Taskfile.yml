@@ -31,7 +31,7 @@ tasks:
   trainer:
     cmds:
       - pm2 delete trainer || true
-      - pm2 start bash --name trainer -- -c 'ENV=DEV uvicorn trainer.asgi:app --reload --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
+      - pm2 start bash --name trainer -- -c 'ENV=DEV uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
 
   dbdown:
     cmds:
