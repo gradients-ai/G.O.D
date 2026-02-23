@@ -99,6 +99,7 @@ class TrainerTaskLog(TrainerProxyRequest):
     status: TaskStatus
     started_at: datetime | None
     finished_at: datetime | None
+    container_name: str | None = None
     wandb_url: str | None = None
     logs: list[str] = []
 
