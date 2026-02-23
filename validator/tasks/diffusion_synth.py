@@ -3,15 +3,12 @@ import json
 import os
 import random
 import re
-import shutil
-import tempfile
 import uuid
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 from typing import AsyncGenerator
 
-import docker
 from fiber import Keypair
 
 import validator.core.constants as cst
@@ -25,13 +22,12 @@ from validator.core.config import Config
 from validator.core.models import ImageRawTask
 from validator.core.models import RawTask
 from validator.db.sql.tasks import add_task
-from validator.tasks.task_prep import upload_file_to_minio
+from validator.tasks.utils import parse_synth_image_text_pairs
+from validator.tasks.utils import run_basilica_synth
 from validator.utils.call_endpoint import post_to_nineteen_image
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
-from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
-from validator.utils.logging import stream_container_logs
 from validator.utils.util import retry_with_backoff
 
 
@@ -289,71 +285,40 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
         logger.error(f"Failed to generate prompts for {first_style} and {second_style}: {e}")
         raise e
 
-    client = docker.from_env()
-    image_text_pairs = []
-    with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as tmp_dir_path:
-        container = await asyncio.to_thread(
-            client.containers.run,
-            image=cst.IMAGE_SYNTH_DOCKER_IMAGE,
-            environment={
-                "SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH,
-                "PROMPTS": json.dumps(prompts),
-            },
-            volumes={tmp_dir_path: {"bind": cst.SYNTH_CONTAINER_SAVE_PATH, "mode": "rw"}},
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=["0"])],
-            detach=True,
-        )
-        log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
-        result = await asyncio.to_thread(container.wait)
-        log_task.cancel()
-        images_dir = Path(tmp_dir_path)
-        for file in images_dir.iterdir():
-            if file.is_file() and file.suffix == ".png":
-                txt_path = images_dir / f"{file.stem}.txt"
-                if txt_path.exists() and txt_path.stat().st_size > 0:
-                    img_url = await upload_file_to_minio(str(file), cst.BUCKET_NAME, f"{os.urandom(8).hex()}.png")
-                    txt_url = await upload_file_to_minio(str(txt_path), cst.BUCKET_NAME, f"{os.urandom(8).hex()}.txt")
-                    image_text_pairs.append(ImageTextPair(image_url=img_url, text_url=txt_url))
-        if os.path.exists(tmp_dir_path):
-            shutil.rmtree(tmp_dir_path)
-
-    await asyncio.to_thread(client.containers.prune)
-    await asyncio.to_thread(client.images.prune, filters={"dangling": True})
-    await asyncio.to_thread(client.volumes.prune)
-
+    env = {
+        "SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH,
+        "PROMPTS": json.dumps(prompts),
+        "S3_BUCKET_NAME": cst.BUCKET_NAME,
+        "S3_COMPATIBLE_ENDPOINT": os.environ.get("S3_COMPATIBLE_ENDPOINT"),
+        "S3_COMPATIBLE_ACCESS_KEY": os.environ.get("S3_COMPATIBLE_ACCESS_KEY"),
+        "S3_COMPATIBLE_SECRET_KEY": os.environ.get("S3_COMPATIBLE_SECRET_KEY"),
+        "S3_REGION": os.environ.get("S3_REGION"),
+    }
+    synth_result = await run_basilica_synth(
+        command=["python", "-m", "validator.tasks.image_synth.generate_style"],
+        env=env,
+        task_label="style-synth",
+    )
+    image_text_pairs = parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, ds_prefix
 
 
 async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
-    client = docker.from_env()
-    image_text_pairs = []
-    with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as tmp_dir_path:
-        container = await asyncio.to_thread(
-            client.containers.run,
-            image=cst.IMAGE_SYNTH_DOCKER_IMAGE,
-            environment={"SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH, "NUM_PROMPTS": num_prompts},
-            volumes={tmp_dir_path: {"bind": cst.SYNTH_CONTAINER_SAVE_PATH, "mode": "rw"}},
-            device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=["0"])],
-            detach=True,
-        )
-        log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
-        result = await asyncio.to_thread(container.wait)
-        log_task.cancel()
-        images_dir = Path(tmp_dir_path)
-        for file in images_dir.iterdir():
-            if file.is_file() and file.suffix == ".png":
-                txt_path = images_dir / f"{file.stem}.txt"
-                if txt_path.exists() and txt_path.stat().st_size > 0:
-                    img_url = await upload_file_to_minio(str(file), cst.BUCKET_NAME, f"{os.urandom(8).hex()}.png")
-                    txt_url = await upload_file_to_minio(str(txt_path), cst.BUCKET_NAME, f"{os.urandom(8).hex()}.txt")
-                    image_text_pairs.append(ImageTextPair(image_url=img_url, text_url=txt_url))
-        if os.path.exists(tmp_dir_path):
-            shutil.rmtree(tmp_dir_path)
-
-    await asyncio.to_thread(client.containers.prune)
-    await asyncio.to_thread(client.images.prune, filters={"dangling": True})
-    await asyncio.to_thread(client.volumes.prune)
-
+    env = {
+        "SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH,
+        "NUM_PROMPTS": str(num_prompts),
+        "S3_BUCKET_NAME": cst.BUCKET_NAME,
+        "S3_COMPATIBLE_ENDPOINT": os.environ.get("S3_COMPATIBLE_ENDPOINT", "localhost:9000"),
+        "S3_COMPATIBLE_ACCESS_KEY": os.environ.get("S3_COMPATIBLE_ACCESS_KEY", "minioadmin"),
+        "S3_COMPATIBLE_SECRET_KEY": os.environ.get("S3_COMPATIBLE_SECRET_KEY", "minioadmin"),
+        "S3_REGION": os.environ.get("S3_REGION", "us-east-1"),
+    }
+    synth_result = await run_basilica_synth(
+        command=["python", "-m", "validator.tasks.image_synth.generate_person"],
+        env=env,
+        task_label="person-synth",
+    )
+    image_text_pairs = parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, cst.PERSON_SYNTH_DS_PREFIX
 
 

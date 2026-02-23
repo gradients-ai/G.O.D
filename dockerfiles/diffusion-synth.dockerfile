@@ -31,7 +31,7 @@ RUN . /envs/generate/bin/activate && \
 
 ENV SAVE_DIR=""
 
-RUN pip install --no-cache-dir --upgrade pip setuptools wheel huggingface_hub
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel huggingface_hub minio
 
 RUN python setup.py
 

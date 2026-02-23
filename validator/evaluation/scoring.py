@@ -34,8 +34,8 @@ from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
-from validator.evaluation.docker_evaluation import run_evaluation_docker_image
-from validator.evaluation.docker_evaluation import run_evaluation_docker_text
+from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
+from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
@@ -304,13 +304,13 @@ async def _evaluate_submissions(
         logger.info("Starting test evaluation")
         if task.task_type != TaskType.ENVIRONMENTTASK:
             test_data_filepath = await download_s3_file(task.test_data)
-            test_results = await run_evaluation_docker_text(dataset=test_data_filepath, **evaluation_params)
+            test_results = await run_evaluation_basilica_text(dataset=test_data_filepath, **evaluation_params)
             try:
                 os.remove(test_data_filepath)
             except Exception as e:
                 logger.warning(f"Failed to remove test data file {test_data_filepath}: {e}")
         else:
-            test_results = await run_evaluation_docker_text(dataset="proxy", **evaluation_params)
+            test_results = await run_evaluation_basilica_text(dataset="proxy", **evaluation_params)
             test_eval_results = test_results.results
 
         test_eval_results = test_results.results
@@ -348,7 +348,7 @@ async def _evaluate_submissions(
 
         assert task.test_data is not None, "Test data shouldn't be none for image tasks"
         logger.info("Starting image model evaluation")
-        image_results = await run_evaluation_docker_image(**evaluation_params)
+        image_results = await run_evaluation_basilica_image(**evaluation_params)
         image_eval_results = image_results.results
         task.model_params_count = image_results.base_model_params_count
         for repo in repos_to_evaluate:

@@ -8,11 +8,7 @@ import re
 import shutil
 import tarfile
 import uuid
-from datetime import datetime
-from typing import Optional
-
 import docker
-from docker.models.containers import Container
 from docker.types import Mount
 from huggingface_hub import snapshot_download
 import aiohttp
@@ -253,19 +249,6 @@ async def _poll_basilica_result(
     return f"Timed out waiting for result after {max_poll_seconds}s"
 
 
-def _build_basilica_env(
-    base_env: dict[str, str],
-    dataset_url: str | None = None,
-    test_split_url: str | None = None,
-) -> dict[str, str]:
-    env = dict(base_env)
-    if dataset_url is not None:
-        env["DATASET_URL"] = dataset_url
-    if test_split_url is not None:
-        env["TEST_SPLIT_URL"] = test_split_url
-    return env
-
-
 async def _run_single_basilica_eval_repo(
     *,
     repo: str,
@@ -275,11 +258,11 @@ async def _run_single_basilica_eval_repo(
     gpu_count: int,
     gpu_models: list[str],
     min_gpu_memory_gb: int,
-    retry_label: str,
 ) -> dict | str:
+    """Run one repo eval with retries (3 attempts, 15-minute backoff)."""
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
-        deployment_name = f"eval-{repo.split('/')[-1]}-{uuid.uuid4().hex[:8]}"
+        deployment_name = str(uuid.uuid4())
         try:
             client = basilica.BasilicaClient()
             deployment = await asyncio.to_thread(
@@ -298,7 +281,7 @@ async def _run_single_basilica_eval_repo(
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
 
-            logger.info(f"[{retry_label}] [{repo}] deployment started: {deployment_name}")
+            logger.info(f"[{repo}] deployment started: {deployment_name}")
             result = await _poll_basilica_result(deployment, repo)
             if isinstance(result, dict):
                 return result
@@ -306,10 +289,14 @@ async def _run_single_basilica_eval_repo(
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
             logger.error(
-                f"[{retry_label}] [{repo}] attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES} failed: {e}",
+                f"[{repo}] attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES} failed: {e}",
                 exc_info=True,
             )
             if remaining > 0:
+                logger.info(
+                    f"[{repo}] retrying in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
+                    f"({remaining} attempts remaining)"
+                )
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
                 return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
@@ -323,7 +310,7 @@ async def _run_single_basilica_eval_repo(
     return "Evaluation failed"
 
 
-async def _run_basilica_eval_repos_with_retry_pass(
+async def _run_basilica_eval_repos(
     *,
     repos: list[str],
     image: str,
@@ -333,41 +320,26 @@ async def _run_basilica_eval_repos_with_retry_pass(
     gpu_models: list[str],
     min_gpu_memory_gb: int,
 ) -> dict[str, dict | str]:
-    async def run_batch(batch_repos: list[str], label: str) -> dict[str, dict | str]:
-        tasks = [
-            _run_single_basilica_eval_repo(
-                repo=repo,
-                image=image,
-                source=source,
-                env=build_env_for_repo(repo),
-                gpu_count=gpu_count,
-                gpu_models=gpu_models,
-                min_gpu_memory_gb=min_gpu_memory_gb,
-                retry_label=label,
-            )
-            for repo in batch_repos
-        ]
-        task_results = await asyncio.gather(*tasks, return_exceptions=True)
-        out: dict[str, dict | str] = {}
-        for repo, result in zip(batch_repos, task_results):
-            if isinstance(result, Exception):
-                out[repo] = f"Evaluation failed: {result}"
-            else:
-                out[repo] = result
-        return out
-
-    first_pass = await run_batch(repos, "pass-1")
-    failed_repos = [repo for repo, result in first_pass.items() if not isinstance(result, dict)]
-    if not failed_repos:
-        return first_pass
-
-    logger.info(f"Re-running failed evaluations in second pass: {failed_repos}")
-    second_pass = await run_batch(failed_repos, "pass-2")
-    merged = dict(first_pass)
-    for repo, result in second_pass.items():
-        if isinstance(result, dict):
-            merged[repo] = result
-    return merged
+    tasks = [
+        _run_single_basilica_eval_repo(
+            repo=repo,
+            image=image,
+            source=source,
+            env=build_env_for_repo(repo),
+            gpu_count=gpu_count,
+            gpu_models=gpu_models,
+            min_gpu_memory_gb=min_gpu_memory_gb,
+        )
+        for repo in repos
+    ]
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: dict[str, dict | str] = {}
+    for repo, result in zip(repos, task_results):
+        if isinstance(result, Exception):
+            out[repo] = f"Evaluation failed: {result}"
+        else:
+            out[repo] = result
+    return out
 
 
 async def run_evaluation_docker_text(
@@ -618,18 +590,16 @@ async def run_evaluation_basilica_text(
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
-        return _build_basilica_env(
-            repo_env,
-            dataset_url=dataset,
-        )
+        repo_env["DATASET_URL"] = dataset
+        return repo_env
 
-    repo_results = await _run_basilica_eval_repos_with_retry_pass(
+    repo_results = await _run_basilica_eval_repos(
         repos=models,
         image=cst.VALIDATOR_DOCKER_IMAGE,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, len(gpu_ids)),
-        gpu_models=vcst.BASILICA_SGLANG_GPU_MODELS,
+        gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )
 
@@ -694,18 +664,16 @@ async def run_evaluation_basilica_grpo(
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_environment)
         repo_env["MODELS"] = repo
-        return _build_basilica_env(
-            repo_env,
-            dataset_url=dataset,
-        )
+        repo_env["DATASET_URL"] = dataset
+        return repo_env
 
-    repo_results = await _run_basilica_eval_repos_with_retry_pass(
+    repo_results = await _run_basilica_eval_repos(
         repos=models,
         image=cst.VALIDATOR_DOCKER_IMAGE,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, len(gpu_ids)),
-        gpu_models=vcst.BASILICA_SGLANG_GPU_MODELS,
+        gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )
 
@@ -1336,15 +1304,16 @@ async def run_evaluation_basilica_image(
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
-        return _build_basilica_env(repo_env, test_split_url=test_split_url)
+        repo_env["TEST_SPLIT_URL"] = test_split_url
+        return repo_env
 
-    repo_results = await _run_basilica_eval_repos_with_retry_pass(
+    repo_results = await _run_basilica_eval_repos(
         repos=models,
         image="diagonalge/tuning_validator_diffusion:basilica",
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, len(gpu_ids)),
-        gpu_models=vcst.BASILICA_SGLANG_GPU_MODELS,
+        gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )
 

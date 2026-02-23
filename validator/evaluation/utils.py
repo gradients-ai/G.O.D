@@ -514,7 +514,7 @@ def deploy_sglang_basilica(
         port=8000,
         health_check=health_check,
         gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
-        gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
+        gpu_models=cst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
         memory=cst.BASILICA_SGLANG_MEMORY,
         cpu=cst.BASILICA_ENV_CPU,

@@ -141,8 +141,8 @@ def evaluate_dpo_model(
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
-    dataset_path = evaluation_config.datasets[0]["path"]
-    eval_dataset = load_dataset("json", data_files=dataset_path, split="train")
+    data_files = evaluation_config.datasets[0].get("data_files", [evaluation_config.datasets[0]["path"]])
+    eval_dataset = load_dataset("json", data_files=data_files, split="train")
     eval_dataset = _adapt_dpo_columns_to_trl(eval_dataset, evaluation_args.dataset_type)
 
     _log_dataset_and_model_info(eval_dataset, finetuned_model, tokenizer)
