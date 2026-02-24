@@ -853,15 +853,28 @@ async def _run_environment_evaluation(
                     timeout=timeout,
                     headers={"Connection": "close"},
                 ) as response:
+                    raw_text = await response.text()
                     if response.status != 200:
-                        try:
-                            error_text = await response.text()
-                            error_detail = f": {error_text[:200]}" if error_text else ""
-                        except Exception:
-                            error_detail = ""
+                        error_detail = f": {raw_text[:500]}" if raw_text else ""
+                        env_logger.error(
+                            "Env evaluate failed: status=%s, task_id=%s, payload=%s, response_body=%s",
+                            response.status,
+                            task_id,
+                            payload,
+                            raw_text[:1000] if raw_text else "(empty)",
+                        )
                         raise Exception(f"HTTP {response.status}{error_detail}")
 
-                    response_data = await response.json()
+                    try:
+                        response_data = json.loads(raw_text)
+                    except json.JSONDecodeError:
+                        env_logger.error(
+                            "Env evaluate invalid JSON: task_id=%s, raw_body=%s",
+                            task_id,
+                            raw_text[:1000] if raw_text else "(empty)",
+                            exc_info=True,
+                        )
+                        raise
                     result = response_data.get("result", response_data)
                     latency = result.get("time_taken", time.time() - start_ts)
                     score = result.get("score", 0.0)
@@ -874,8 +887,14 @@ async def _run_environment_evaluation(
                     return {"task_id": task_id, "score": score, "time": latency}
 
             except Exception as e:
+                err_msg = f"{type(e).__name__}: {e}" if str(e) else repr(e)
                 env_logger.warning(
-                    f"Task ID {task_id}: Error (retry {attempt} in {vcst.ENV_EVAL_TASK_RETRY_DELAY:.0f}s): {e}"
+                    "Task ID %s: Error (retry %s in %.0fs): %s",
+                    task_id,
+                    attempt,
+                    vcst.ENV_EVAL_TASK_RETRY_DELAY,
+                    err_msg,
+                    exc_info=isinstance(e, (TimeoutError, ConnectionError)),
                 )
                 await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
 
