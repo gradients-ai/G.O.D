@@ -9,6 +9,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import AsyncGenerator
 
+import httpx
 from fiber import Keypair
 
 import validator.core.constants as cst
@@ -22,8 +23,6 @@ from validator.core.config import Config
 from validator.core.models import ImageRawTask
 from validator.core.models import RawTask
 from validator.db.sql.tasks import add_task
-from validator.tasks.utils import parse_synth_image_text_pairs
-from validator.tasks.utils import run_basilica_synth
 from validator.utils.call_endpoint import post_to_nineteen_image
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
@@ -32,6 +31,10 @@ from validator.utils.util import retry_with_backoff
 
 
 logger = get_logger(__name__)
+
+
+
+
 
 IMAGE_STYLES = [
     "Watercolor Painting",
@@ -110,6 +113,13 @@ IMAGE_STYLES = [
 
 with open(cst.EXAMPLE_PROMPTS_PATH, "r") as f:
     FULL_PROMPTS = json.load(f)
+
+
+def _parse_synth_image_text_pairs(synth_result: dict) -> list[ImageTextPair]:
+    pairs_raw = synth_result.get("image_text_pairs", [])
+    if not isinstance(pairs_raw, list) or not pairs_raw:
+        raise RuntimeError(f"Synth result missing image_text_pairs: {synth_result}")
+    return [ImageTextPair.model_validate(pair) for pair in pairs_raw]
 
 
 def create_image_style_compatibility_messages(first_style: str, second_style: str) -> list[Message]:
@@ -207,39 +217,6 @@ async def generate_diffusion_prompts(first_style: str, second_style: str | None,
         raise ValueError(f"Failed to generate valid diffusion prompts: {e}")
 
 
-@retry_with_backoff
-async def generate_image(prompt: str, keypair: Keypair, width: int, height: int) -> str:
-    """Generate an image using the Nineteen AI API.
-
-    Args:
-        prompt: The text prompt to generate an image from
-        keypair: The keypair containing the API key
-        width: The width in pixels of the image to generate
-        height: The height in pixels of the image to generate
-
-    Returns:
-        str: The base64-encoded image data
-    """
-    payload = {
-        "prompt": prompt,
-        "model": cst.IMAGE_GEN_MODEL,
-        "num_inference_steps": cst.IMAGE_GEN_STEPS,
-        "guidance_scale": cst.IMAGE_GEN_CFG_SCALE,
-        "height": height,
-        "width": width,
-        "negative_prompt": "",
-    }
-
-    result = await post_to_nineteen_image(payload, keypair)
-
-    try:
-        image_bytes = result.content
-        return image_bytes
-    except (json.JSONDecodeError, KeyError) as e:
-        logger.error(f"Error parsing image generation response: {e}")
-        raise ValueError("Failed to generate image")
-
-
 async def check_style_compatibility(first_style: str, second_style: str, config: Config) -> bool:
     messages = create_image_style_compatibility_messages(first_style, second_style)
     payload = convert_to_nineteen_payload(messages, cst.IMAGE_PROMPT_GEN_MODEL, cst.IMAGE_PROMPT_GEN_MODEL_TEMPERATURE)
@@ -285,43 +262,61 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
         logger.error(f"Failed to generate prompts for {first_style} and {second_style}: {e}")
         raise e
 
-    env = {
-        "SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH,
-        "PROMPTS": json.dumps(prompts),
-        "S3_BUCKET_NAME": cst.BUCKET_NAME,
-        "S3_COMPATIBLE_ENDPOINT": os.environ.get("S3_COMPATIBLE_ENDPOINT"),
-        "S3_COMPATIBLE_ACCESS_KEY": os.environ.get("S3_COMPATIBLE_ACCESS_KEY"),
-        "S3_COMPATIBLE_SECRET_KEY": os.environ.get("S3_COMPATIBLE_SECRET_KEY"),
-        "S3_REGION": os.environ.get("S3_REGION"),
-    }
-    synth_result = await run_basilica_synth(
-        command=["/app/start.sh"],
-        env=env,
-        task_label="style-synth",
-        image=cst.IMAGE_SYNTH_STYLE_DOCKER_IMAGE,
+    synth_result = await _runpod_image_synth(
+        payload={"prompts": prompts}
     )
-    image_text_pairs = parse_synth_image_text_pairs(synth_result)
+    image_text_pairs = _parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, ds_prefix
 
 
 async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
-    env = {
-        "SAVE_DIR": cst.SYNTH_CONTAINER_SAVE_PATH,
-        "NUM_PROMPTS": str(num_prompts),
-        "S3_BUCKET_NAME": cst.BUCKET_NAME,
-        "S3_COMPATIBLE_ENDPOINT": os.environ.get("S3_COMPATIBLE_ENDPOINT", "localhost:9000"),
-        "S3_COMPATIBLE_ACCESS_KEY": os.environ.get("S3_COMPATIBLE_ACCESS_KEY", "minioadmin"),
-        "S3_COMPATIBLE_SECRET_KEY": os.environ.get("S3_COMPATIBLE_SECRET_KEY", "minioadmin"),
-        "S3_REGION": os.environ.get("S3_REGION", "us-east-1"),
-    }
-    synth_result = await run_basilica_synth(
-        command=["/app/start.sh"],
-        env=env,
-        task_label="person-synth",
-        image=cst.IMAGE_SYNTH_PERSON_DOCKER_IMAGE,
+    synth_result = await _runpod_image_synth(
+        payload={"num_prompts": num_prompts}
     )
-    image_text_pairs = parse_synth_image_text_pairs(synth_result)
+    image_text_pairs = _parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, cst.PERSON_SYNTH_DS_PREFIX
+
+
+def _get_runpod_synth_url() -> str:
+    endpoint = cst.RUNPOD_IMAGE_SYNTH_ENDPOINT
+    if not endpoint:
+        raise ValueError("RUNPOD_IMAGE_SYNTH_ENDPOINT is not set")
+    if endpoint.startswith("http://") or endpoint.startswith("https://"):
+        return endpoint.rstrip("/")
+    return f"https://api.runpod.ai/v2/{endpoint}/runsync"
+
+
+@retry_with_backoff
+async def _runpod_image_synth(payload: dict) -> dict:
+    url = _get_runpod_synth_url()
+    headers = {
+        "Content-Type": "application/json",
+        "Connection": "keep-alive",
+    }
+    if cst.RUNPOD_API_KEY:
+        headers["Authorization"] = f"Bearer {cst.RUNPOD_API_KEY}"
+
+    timeout = httpx.Timeout(
+        timeout=cst.RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS,
+        connect=60.0,
+        read=cst.RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS,
+        write=60.0,
+        pool=60.0,
+    )
+    logger.info("Calling RunPod synth endpoint")
+    async with httpx.AsyncClient(timeout=timeout, headers=headers, limits=httpx.Limits(max_keepalive_connections=10)) as client:
+        response = await client.post(url, json={"input": payload})
+        if response.status_code != 200:
+            logger.error(f"RunPod synth error: {response.status_code} - {response.text}")
+            response.raise_for_status()
+
+        data = response.json()
+
+    if "output" in data and isinstance(data["output"], dict):
+        return data["output"]
+    if isinstance(data, dict) and "image_text_pairs" in data:
+        return data
+    raise RuntimeError(f"Invalid RunPod synth response payload: {data}")
 
 
 async def create_synthetic_image_task(config: Config, models: AsyncGenerator[ImageModelInfo, None]) -> RawTask:

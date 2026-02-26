@@ -34,6 +34,8 @@ COMFY_PORT = 8188
 
 with open(cst.PERSON_WORKFLOW_PATH, "r") as file:
     avatar_template = json.load(file)
+with open(cst.STYLE_WORKFLOW_PATH, "r") as file:
+    style_template = json.load(file)
 
 
 def _wait_for_port(host: str, port: int, timeout_seconds: int = 180) -> None:
@@ -197,8 +199,35 @@ def run_person_generation(num_prompts: int, save_dir: str) -> list[dict[str, str
     return _upload_pairs(save_dir)
 
 
+def run_style_generation(prompts: list[str], save_dir: str) -> list[dict[str, str]]:
+    _ensure_comfy_running()
+    api_gate.connect()
+
+    os.makedirs(save_dir, exist_ok=True)
+    for prompt in prompts:
+        workflow = deepcopy(style_template)
+        workflow["Prompt"]["inputs"]["text"] += prompt
+        image = api_gate.generate(workflow)[0]
+        image_id = uuid.uuid4()
+        image.save(f"{save_dir}{image_id}.png")
+        with open(f"{save_dir}{image_id}.txt", "w") as file:
+            file.write(prompt)
+
+    if os.environ.get("S3_COMPATIBLE_ENDPOINT"):
+        return _upload_pairs(save_dir)
+    return []
+
+
 def handler(job):
     payload = job.get("input", {}) or {}
+    if "prompts" in payload:
+        prompts = payload.get("prompts")
+        if not isinstance(prompts, list) or not prompts or not all(isinstance(p, str) for p in prompts):
+            raise ValueError("input.prompts must be a non-empty list of strings")
+        with tempfile.TemporaryDirectory(prefix="style_synth_") as tmp_dir:
+            pairs = run_style_generation(prompts, f"{tmp_dir}/")
+        return {"status": "ok", "mode": "style", "num_pairs": len(pairs), "image_text_pairs": pairs}
+
     num_prompts = int(payload.get("num_prompts", cst.NUM_PROMPTS))
     with tempfile.TemporaryDirectory(prefix="person_synth_") as tmp_dir:
         pairs = run_person_generation(num_prompts, f"{tmp_dir}/")
