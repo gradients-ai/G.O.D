@@ -33,9 +33,6 @@ from validator.utils.util import retry_with_backoff
 logger = get_logger(__name__)
 
 
-
-
-
 IMAGE_STYLES = [
     "Watercolor Painting",
     "Oil Painting",
