@@ -113,7 +113,10 @@ with open(cst.EXAMPLE_PROMPTS_PATH, "r") as f:
 
 
 def _parse_synth_image_text_pairs(synth_result: dict) -> list[ImageTextPair]:
-    pairs_raw = synth_result.get("image_text_pairs", [])
+    if synth_result is None:
+        raise RuntimeError("Synth result is None")
+    data = synth_result.get("output") if isinstance(synth_result.get("output"), dict) else synth_result
+    pairs_raw = data.get("image_text_pairs") if data else None
     if not isinstance(pairs_raw, list) or not pairs_raw:
         raise RuntimeError(f"Synth result missing image_text_pairs: {synth_result}")
     return [ImageTextPair.model_validate(pair) for pair in pairs_raw]
@@ -346,21 +349,21 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     for i, pair in enumerate(image_text_pairs):
         logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
-    if len(image_text_pairs) >= 10:
-        task = ImageRawTask(
-            model_id=model_info.model_id,
-            ds=ds_prefix.replace(" ", "_").lower() + "_" + str(uuid.uuid4()),
-            image_text_pairs=image_text_pairs,
-            status=TaskStatus.PENDING,
-            is_organic=False,
-            created_at=datetime.utcnow(),
-            termination_at=datetime.utcnow() + timedelta(hours=number_of_hours),
-            hours_to_complete=number_of_hours,
-            account_id=cst.NULL_ACCOUNT_ID,
-            model_type=model_info.model_type,
-        )
+    # if len(image_text_pairs) >= 10:
+    #     task = ImageRawTask(
+    #         model_id=model_info.model_id,
+    #         ds=ds_prefix.replace(" ", "_").lower() + "_" + str(uuid.uuid4()),
+    #         image_text_pairs=image_text_pairs,
+    #         status=TaskStatus.PENDING,
+    #         is_organic=False,
+    #         created_at=datetime.utcnow(),
+    #         termination_at=datetime.utcnow() + timedelta(hours=number_of_hours),
+    #         hours_to_complete=number_of_hours,
+    #         account_id=cst.NULL_ACCOUNT_ID,
+    #         model_type=model_info.model_type,
+    #     )
 
-        logger.info(f"New task created and added to the queue {task}")
+    #     logger.info(f"New task created and added to the queue {task}")
         task = await add_task(task, config.psql_db)
         return task
     else:
