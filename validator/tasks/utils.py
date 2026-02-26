@@ -178,8 +178,9 @@ async def poll_basilica_synth_result(deployment, deployment_name: str) -> dict:
     raise TimeoutError(f"[{deployment_name}] Timed out waiting for synth result")
 
 
-async def run_basilica_synth(command: list[str], env: dict[str, str], task_label: str) -> dict:
+async def run_basilica_synth(command: list[str], env: dict[str, str], task_label: str, image: str | None = None) -> dict:
     source = create_basilica_synth_runner_source(command)
+    target_image = image or cst.IMAGE_SYNTH_DOCKER_IMAGE
 
     for attempt in range(1, cst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
@@ -190,7 +191,7 @@ async def run_basilica_synth(command: list[str], env: dict[str, str], task_label
                 client.deploy,
                 name=deployment_name,
                 source=source,
-                image=cst.IMAGE_SYNTH_DOCKER_IMAGE,
+                image=target_image,
                 port=8000,
                 cpu=cst.EVAL_BASILICA_CPU,
                 memory=cst.EVAL_BASILICA_MEMORY,

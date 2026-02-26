@@ -295,9 +295,10 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
         "S3_REGION": os.environ.get("S3_REGION"),
     }
     synth_result = await run_basilica_synth(
-        command=["python", "-m", "validator.tasks.image_synth.generate_style"],
+        command=["/app/start.sh"],
         env=env,
         task_label="style-synth",
+        image=cst.IMAGE_SYNTH_STYLE_DOCKER_IMAGE,
     )
     image_text_pairs = parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, ds_prefix
@@ -314,9 +315,10 @@ async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPai
         "S3_REGION": os.environ.get("S3_REGION", "us-east-1"),
     }
     synth_result = await run_basilica_synth(
-        command=["python", "-m", "validator.tasks.image_synth.generate_person"],
+        command=["/app/start.sh"],
         env=env,
         task_label="person-synth",
+        image=cst.IMAGE_SYNTH_PERSON_DOCKER_IMAGE,
     )
     image_text_pairs = parse_synth_image_text_pairs(synth_result)
     return image_text_pairs, cst.PERSON_SYNTH_DS_PREFIX

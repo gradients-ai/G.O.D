@@ -159,7 +159,8 @@ PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
-IMAGE_SYNTH_DOCKER_IMAGE = "diagonalge/image_synth:latest"
+IMAGE_SYNTH_STYLE_DOCKER_IMAGE = "diagonalge/image-synth:style"
+IMAGE_SYNTH_PERSON_DOCKER_IMAGE = "diagonalge/image-synth:person"
 SYNTH_CONTAINER_SAVE_PATH = "/app/images/"
 
 # grpo synth
