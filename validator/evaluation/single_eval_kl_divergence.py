@@ -35,21 +35,21 @@ def evaluate_kl_divergence_repo(evaluation_args: EvaluationArgs) -> None:
 
     try:
         logger.info(f"Loading tokenizer for {evaluation_args.original_model}")
-        tokenizer = load_tokenizer(evaluation_args.original_model, local_files_only=True)
+        tokenizer = load_tokenizer(evaluation_args.original_model)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
 
         logger.info(f"Loading original model: {evaluation_args.original_model}")
-        original_model = load_model(evaluation_args.original_model, is_base_model=True, local_files_only=True)
+        original_model = load_model(evaluation_args.original_model, is_base_model=True)
         original_model.eval()
 
         logger.info(f"Loading finetuned model: {repo}")
-        has_lora = check_for_lora(repo, local_files_only=True)
+        has_lora = check_for_lora(repo)
         if has_lora:
-            finetuned_model = load_finetuned_model(repo, local_files_only=True)
+            finetuned_model = load_finetuned_model(repo)
         else:
-            finetuned_model = load_model(repo, is_base_model=False, local_files_only=True)
+            finetuned_model = load_model(repo, is_base_model=False)
         finetuned_model.eval()
 
         # Load evaluation dataset

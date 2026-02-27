@@ -67,16 +67,19 @@ def snapshot_repo(repo_id: str, local_dir: str) -> None:
     print(f"Snapshot of {repo_id} downloaded to {local_dir}")
 
 
-def main():
+def ensure_comfyui() -> None:
+    """Clone ComfyUI repo. Idempotent."""
     print("Cloning ComfyUI...")
     clone_repo(
         repo_url="https://github.com/comfyanonymous/ComfyUI.git",
         target_dir="ComfyUI",
-        commit_hash="887143854bb2ae1e0f975e4461f376844a1628c8",
+        commit_hash="38ca94599f7444f55589308d1cf611fb77f6ca16",
     )
+    print("Cloned ComfyUI.")
 
-    print("Cloned ComfyUI, now downloading all models... (this might take a while)")
 
+def _download_shared_models() -> None:
+    """Shared text encoders and base VAE used by both style and person."""
     print("Downloading t5xxl_fp16.safetensors")
     download_file(
         repo_id="comfyanonymous/flux_text_encoders",
@@ -84,7 +87,6 @@ def main():
         local_dir="ComfyUI/models/text_encoders",
         cache_dir="ComfyUI/models/caches",
     )
-
     print("Downloading clip_l.safetensors")
     download_file(
         repo_id="comfyanonymous/flux_text_encoders",
@@ -92,7 +94,6 @@ def main():
         local_dir="ComfyUI/models/text_encoders",
         cache_dir="ComfyUI/models/caches",
     )
-
     print("Downloading ae.safetensors")
     download_file(
         repo_id="tripathiarpan20/FLUX.1-schnell",
@@ -101,20 +102,52 @@ def main():
         cache_dir="ComfyUI/models/caches",
     )
 
-    print("flux1-kontext-dev.safetensors")
+
+def setup_style_models() -> None:
+    """ComfyUI + shared models + flux2 for style synthesis.
+    style_template.json uses flux2 (flux2_dev_fp8mixed, flux2-vae, mistral_3_small_flux2)."""
+    ensure_comfyui()
+    _download_shared_models()
+    print("mistral_3_small_flux2_fp8.safetensors")
     download_file(
-        repo_id="diagonalge/kontext",
-        filename="flux1-kontext-dev.safetensors",
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+        local_dir="ComfyUI/models/text_encoders",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("flux2_dev_fp8mixed.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
         local_dir="ComfyUI/models/diffusion_models",
         cache_dir="ComfyUI/models/caches",
     )
+    print("flux2-vae.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/vae/flux2-vae.safetensors",
+        local_dir="ComfyUI/models/vae",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("Style setup completed successfully.")
 
+
+def setup_person_models() -> None:
+    """ComfyUI + shared models + flux1-kontext + LLaVA + flux2 for person avatar synthesis."""
+    ensure_comfyui()
+    _download_shared_models()
+    print("flux1-kontext-dev.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux1-kontext-dev_ComfyUI",
+        filename="split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
+        local_dir="ComfyUI/models/diffusion_models/flux1-kontext-dev.safetensors",
+        cache_dir="ComfyUI/models/caches",
+    )
     print("Downloading full repo liuhaotian/llava-v1.5-7b...")
     snapshot_repo(
         repo_id="liuhaotian/llava-v1.5-7b",
         local_dir="/app/validator/tasks/image_synth/cache/llava-v1.5-7b",
     )
-
     print("Downloading mistral_3_small_flux2_fp8.safetensors")
     download_file(
         repo_id="Comfy-Org/flux2-dev",
@@ -122,7 +155,6 @@ def main():
         local_dir="ComfyUI/models/text_encoders",
         cache_dir="ComfyUI/models/caches",
     )
-
     print("Downloading flux2_dev_fp8mixed.safetensors")
     download_file(
         repo_id="Comfy-Org/flux2-dev",
@@ -130,7 +162,6 @@ def main():
         local_dir="ComfyUI/models/diffusion_models",
         cache_dir="ComfyUI/models/caches",
     )
-
     print("Downloading flux2-vae.safetensors")
     download_file(
         repo_id="Comfy-Org/flux2-dev",
@@ -138,7 +169,88 @@ def main():
         local_dir="ComfyUI/models/vae",
         cache_dir="ComfyUI/models/caches",
     )
+    print("Person setup completed successfully.")
 
+
+def setup_all_models() -> None:
+    """ComfyUI + all models for both style and person synthesis."""
+    ensure_comfyui()
+    _download_shared_models()
+    print("flux1-kontext-dev.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux1-kontext-dev_ComfyUI",
+        filename="split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
+        local_dir="ComfyUI/models/diffusion_models/flux1-kontext-dev.safetensors",
+        cache_dir="ComfyUI/models/caches",
+    )
+    # flux2 (style + person)
+    print("mistral_3_small_flux2_fp8.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+        local_dir="ComfyUI/models/text_encoders",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("flux2_dev_fp8mixed.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+        local_dir="ComfyUI/models/diffusion_models",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("flux2-vae.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/vae/flux2-vae.safetensors",
+        local_dir="ComfyUI/models/vae",
+        cache_dir="ComfyUI/models/caches",
+    )
+    # LLaVA (person)
+    print("Downloading full repo liuhaotian/llava-v1.5-7b...")
+    snapshot_repo(
+        repo_id="liuhaotian/llava-v1.5-7b",
+        local_dir="/app/validator/tasks/image_synth/cache/llava-v1.5-7b",
+    )
+    print("All models setup completed successfully.")
+
+
+def main() -> None:
+    """Full setup (style + person). Use setup_style_models or setup_person_models for split."""
+    ensure_comfyui()
+    _download_shared_models()
+    print("flux1-kontext-dev.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux1-kontext-dev_ComfyUI",
+        filename="split_files/diffusion_models/flux1-dev-kontext_fp8_scaled.safetensors",
+        local_dir="ComfyUI/models/diffusion_models/flux1-kontext-dev.safetensors",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("Downloading full repo liuhaotian/llava-v1.5-7b...")
+    snapshot_repo(
+        repo_id="liuhaotian/llava-v1.5-7b",
+        local_dir="/app/validator/tasks/image_synth/cache/llava-v1.5-7b",
+    )
+    print("Downloading mistral_3_small_flux2_fp8.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors",
+        local_dir="ComfyUI/models/text_encoders",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("Downloading flux2_dev_fp8mixed.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/diffusion_models/flux2_dev_fp8mixed.safetensors",
+        local_dir="ComfyUI/models/diffusion_models",
+        cache_dir="ComfyUI/models/caches",
+    )
+    print("Downloading flux2-vae.safetensors")
+    download_file(
+        repo_id="Comfy-Org/flux2-dev",
+        filename="split_files/vae/flux2-vae.safetensors",
+        local_dir="ComfyUI/models/vae",
+        cache_dir="ComfyUI/models/caches",
+    )
     print("Setup completed successfully.")
 
 

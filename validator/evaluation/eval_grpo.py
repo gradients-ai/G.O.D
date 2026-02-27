@@ -1,6 +1,8 @@
 import os
 import subprocess
 import time
+import tempfile
+import urllib.request
 
 
 # Allow torch.load for transformers 4.46+ security check
@@ -70,8 +72,8 @@ def evaluate_grpo_model(
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
-    dataset_path = evaluation_config.datasets[0]["path"]
-    eval_dataset = load_dataset("json", data_files=dataset_path, split="train")
+    data_files = evaluation_config.datasets[0].get("data_files", [evaluation_config.datasets[0]["path"]])
+    eval_dataset = load_dataset("json", data_files=data_files, split="train")
 
     eval_dataset = _adapt_grpo_columns_to_trl(eval_dataset, evaluation_args.dataset_type)
 
@@ -134,6 +136,14 @@ def evaluate_grpo_model(
         def create_wrapper(original_func, func_name, weight):
             supports_extra = supports_extra_data(original_func)
 
+            def call_reward_func(completions, kwargs):
+                # Some reward functions accept **kwargs (and derive extra data from it),
+                # while others only accept completions. Try kwargs first, then fallback.
+                try:
+                    return original_func(completions, **kwargs)
+                except TypeError:
+                    return original_func(completions)
+
             if supports_extra and has_extra_column:
 
                 def wrapper(completions, **kwargs):
@@ -146,7 +156,7 @@ def evaluate_grpo_model(
                     if extra_data_from_trl:
                         logger.info(f"🔍 {func_name}: extra_data from TRL = {str(extra_data_from_trl[0])[:100]}...")
 
-                    raw_results = original_func(completions, **kwargs)
+                    raw_results = call_reward_func(completions, kwargs)
 
                     logger.info(f"🔍 {func_name}: returned scores = {raw_results[:3]}... (showing first 3)")
                     raw_rewards[func_name].extend(raw_results)
@@ -166,7 +176,7 @@ def evaluate_grpo_model(
 
                 def wrapper(completions, **kwargs):
                     logger.debug(f"🔧 Calling {func_name} with {len(completions)} completions (no extra_data)")
-                    raw_results = original_func(completions)
+                    raw_results = call_reward_func(completions, kwargs)
                     raw_rewards[func_name].extend(raw_results)
                     weighted_results = [r * weight for r in raw_results]
                     captured_rewards[func_name].extend(weighted_results)
@@ -270,7 +280,7 @@ def evaluate_grpo_repo(evaluation_args: EvaluationArgs) -> None:
         return
 
     try:
-        tokenizer = load_tokenizer(evaluation_args.original_model, local_files_only=True)
+        tokenizer = load_tokenizer(evaluation_args.original_model)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
             tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -279,15 +289,15 @@ def evaluate_grpo_repo(evaluation_args: EvaluationArgs) -> None:
         raise
 
     try:
-        has_lora = check_for_lora(repo, local_files_only=True)
+        has_lora = check_for_lora(repo)
 
         if has_lora:
-            finetuned_model = load_finetuned_model(repo, local_files_only=True)
+            finetuned_model = load_finetuned_model(repo)
             is_finetune = True
         else:
-            finetuned_model = load_model(repo, is_base_model=False, local_files_only=True)
+            finetuned_model = load_model(repo, is_base_model=False)
             try:
-                is_finetune = model_is_a_finetune(evaluation_args.original_model, finetuned_model, local_files_only=True)
+                is_finetune = model_is_a_finetune(evaluation_args.original_model, finetuned_model)
             except Exception as e:
                 logger.info(f"Problem with detection of finetune for {repo}: {e}")
                 logger.info("Assuming False")
@@ -312,10 +322,17 @@ def evaluate_grpo_repo(evaluation_args: EvaluationArgs) -> None:
 
 def main():
     dataset = os.environ.get("DATASET")
+    dataset_url = os.environ.get("DATASET_URL")
     original_model = os.environ.get("ORIGINAL_MODEL")
     dataset_type_str = os.environ.get("DATASET_TYPE", "")
     file_format_str = os.environ.get("FILE_FORMAT")
     models_str = os.environ.get("MODELS", "")
+    if not dataset and dataset_url:
+        parsed_name = os.path.basename(dataset_url.split("?")[0]) or "dataset.json"
+        dataset = os.path.join(tempfile.gettempdir(), parsed_name)
+        urllib.request.urlretrieve(dataset_url, dataset)
+        logger.info(f"Downloaded dataset from DATASET_URL to {dataset}")
+
     if not all([dataset, original_model, file_format_str, models_str]):
         logger.error("Missing required environment variables.")
         exit(1)

@@ -1,4 +1,5 @@
 import base64
+import json
 import os
 import shutil
 import subprocess
@@ -23,6 +24,74 @@ from validator.utils.retry_utils import retry_on_5xx
 
 logger = get_logger(__name__)
 hf_api = HfApi()
+
+EVAL_RESULT_STATUS_PATH = "/result"
+
+
+def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:
+    """Create a generic eval runner source with health and result endpoints.
+
+    The runner executes a single eval command, then serves the parsed
+    `evaluation_results.json` payload on `/result`.
+    """
+    command_json = json.dumps(command)
+    result_path_json = json.dumps(result_path)
+    return f"""import json
+import subprocess
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+COMMAND = {command_json}
+RESULT_PATH = {result_path_json}
+RESULT_STATUS_PATH = "{EVAL_RESULT_STATUS_PATH}"
+
+_state = {{
+    "status": "running",
+    "result": None,
+    "error": None,
+}}
+
+class _Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{{"status":"ok"}}')
+            return
+        if self.path == RESULT_STATUS_PATH:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(_state).encode("utf-8"))
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+def _run_eval():
+    try:
+        proc = subprocess.run(COMMAND, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"Eval command failed with exit code {{proc.returncode}}")
+        with open(RESULT_PATH, "r", encoding="utf-8") as f:
+            _state["result"] = json.load(f)
+        _state["status"] = "completed"
+    except Exception as e:
+        _state["status"] = "failed"
+        _state["error"] = str(e)
+
+def main():
+    server = HTTPServer(("0.0.0.0", 8000), _Handler)
+    worker = threading.Thread(target=_run_eval, daemon=True)
+    worker.start()
+    server.serve_forever()
+
+if __name__ == "__main__":
+    main()
+"""
 
 
 def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalLM, local_files_only: bool = False) -> bool:
@@ -445,7 +514,7 @@ def deploy_sglang_basilica(
         port=8000,
         health_check=health_check,
         gpu_count=cst.BASILICA_SGLANG_GPU_COUNT,
-        gpu_models=cst.BASILICA_SGLANG_GPU_MODELS,
+        gpu_models=cst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=cst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
         memory=cst.BASILICA_SGLANG_MEMORY,
         cpu=cst.BASILICA_ENV_CPU,

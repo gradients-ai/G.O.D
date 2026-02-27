@@ -2,6 +2,10 @@ import json
 import os
 import re
 import random
+import shutil
+import tempfile
+import urllib.request
+import zipfile
 
 import numpy as np
 import safetensors.torch
@@ -277,9 +281,21 @@ def _count_model_parameters(model_path: str, is_safetensors: bool) -> int:
 
 def main():
     test_dataset_path = os.environ.get("DATASET")
+    test_split_url = os.environ.get("TEST_SPLIT_URL")
     base_model_repo = os.environ.get("ORIGINAL_MODEL_REPO")
     trained_lora_model_repos = os.environ.get("MODELS", "")
     model_type = os.environ.get("MODEL_TYPE")
+    if not test_dataset_path and test_split_url:
+        tmp_dir = tempfile.mkdtemp(prefix="eval_diffusion_")
+        zip_path = os.path.join(tmp_dir, "test_split.zip")
+        extract_dir = os.path.join(tmp_dir, "extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        urllib.request.urlretrieve(test_split_url, zip_path)
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            zip_ref.extractall(extract_dir)
+        test_dataset_path = extract_dir
+        logger.info(f"Downloaded and extracted TEST_SPLIT_URL to {extract_dir}")
+
     if not all([test_dataset_path, base_model_repo, trained_lora_model_repos, model_type]):
         logger.error("Missing required environment variables.")
         exit(1)
@@ -292,14 +308,14 @@ def main():
     )
     logger.info("Base model downloaded")
 
-    logger.info("test_dataset_path: ", test_dataset_path)
-    logger.info("base_model_repo: ", base_model_repo)
-    logger.info("trained_lora_model_repos: ", trained_lora_model_repos)
-    logger.info("model_type: ", model_type)
-    logger.info("is_safetensors: ", is_safetensors)
-    logger.info("safetensors_filename: ", safetensors_filename)
-    logger.info("model_name_or_path: ", model_name_or_path)
-    logger.info("model_path: ", model_path)
+    logger.info(f"test_dataset_path: {test_dataset_path}")
+    logger.info(f"base_model_repo: {base_model_repo}")
+    logger.info(f"trained_lora_model_repos: {trained_lora_model_repos}")
+    logger.info(f"model_type: {model_type}")
+    logger.info(f"is_safetensors: {is_safetensors}")
+    logger.info(f"safetensors_filename: {safetensors_filename}")
+    logger.info(f"model_name_or_path: {model_name_or_path}")
+    logger.info(f"model_path: {model_path}")
 
     lora_repos = [m.strip() for m in trained_lora_model_repos.split(",") if m.strip()]
 

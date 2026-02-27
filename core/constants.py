@@ -16,8 +16,8 @@ except (TypeError, ValueError):
 
 IS_PROD_ENV = NETUID == DEFAULT_NETUID
 
-VALIDATOR_DOCKER_IMAGE = "weightswandering/tuning_vali:latest"
-VALIDATOR_DOCKER_IMAGE_DIFFUSION = "diagonalge/tuning_validator_diffusion:latest"
+VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
+VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
 

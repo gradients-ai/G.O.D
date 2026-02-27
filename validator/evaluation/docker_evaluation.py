@@ -8,11 +8,7 @@ import re
 import shutil
 import tarfile
 import uuid
-from datetime import datetime
-from typing import Optional
-
 import docker
-from docker.models.containers import Container
 from docker.types import Mount
 from huggingface_hub import snapshot_download
 import aiohttp
@@ -40,6 +36,8 @@ from validator.utils.logging import get_logger
 from validator.utils.logging import get_environment_logger
 from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
+    EVAL_RESULT_STATUS_PATH,
+    create_basilica_eval_runner_source,
     deploy_sglang_basilica,
     deploy_env_basilica,
     wait_for_basilica_health,
@@ -217,6 +215,133 @@ def process_evaluation_results(results: dict, is_image: bool = False) -> DockerE
     )
 
 
+async def _poll_basilica_result(
+    deployment,
+    repo: str,
+    poll_interval_seconds: int = vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+    max_poll_seconds: int = vcst.EVAL_BASILICA_MAX_POLL_SECONDS,
+) -> dict | str:
+    started = time.time()
+    while time.time() - started < max_poll_seconds:
+        try:
+            response = await asyncio.to_thread(
+                requests.get,
+                f"{deployment.url}{EVAL_RESULT_STATUS_PATH}",
+                timeout=30,
+            )
+            if response.status_code == 200:
+                payload = response.json()
+                status = payload.get("status")
+                if status == "completed":
+                    result = payload.get("result")
+                    if isinstance(result, dict):
+                        return result
+                    return f"Completed but result payload invalid: {result}"
+                if status == "failed":
+                    return payload.get("error", "Basilica eval reported failure")
+        except Exception:
+            pass
+
+        logger.info(
+            f"[{repo}] result not ready yet, polling again in {poll_interval_seconds // 60} minutes..."
+        )
+        await asyncio.sleep(poll_interval_seconds)
+    return f"Timed out waiting for result after {max_poll_seconds}s"
+
+
+async def _run_single_basilica_eval_repo(
+    *,
+    repo: str,
+    image: str,
+    source: str,
+    env: dict[str, str],
+    gpu_count: int,
+    gpu_models: list[str],
+    min_gpu_memory_gb: int,
+) -> dict | str:
+    """Run one repo eval with retries (3 attempts, 15-minute backoff)."""
+    for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
+        deployment = None
+        deployment_name = str(uuid.uuid4())
+        try:
+            client = basilica.BasilicaClient()
+            deployment = await asyncio.to_thread(
+                client.deploy,
+                name=deployment_name,
+                source=source,
+                image=image,
+                port=8000,
+                cpu=vcst.EVAL_BASILICA_CPU,
+                memory=vcst.EVAL_BASILICA_MEMORY,
+                ttl_seconds=vcst.EVAL_BASILICA_TTL_SECONDS,
+                timeout=vcst.EVAL_BASILICA_TIMEOUT,
+                env=env,
+                gpu_count=gpu_count,
+                gpu_models=gpu_models,
+                min_gpu_memory_gb=min_gpu_memory_gb,
+            )
+
+            logger.info(f"[{repo}] deployment started: {deployment_name}")
+            result = await _poll_basilica_result(deployment, repo)
+            if isinstance(result, dict):
+                return result
+            raise RuntimeError(str(result))
+        except Exception as e:
+            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            logger.error(
+                f"[{repo}] attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES} failed: {e}",
+                exc_info=True,
+            )
+            if remaining > 0:
+                logger.info(
+                    f"[{repo}] retrying in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
+                    f"({remaining} attempts remaining)"
+                )
+                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+            else:
+                return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
+        finally:
+            if deployment is not None:
+                try:
+                    await asyncio.to_thread(deployment.delete)
+                except Exception as e:
+                    logger.warning(f"[{repo}] failed to cleanup deployment {deployment_name}: {e}")
+
+    return "Evaluation failed"
+
+
+async def _run_basilica_eval_repos(
+    *,
+    repos: list[str],
+    image: str,
+    source: str,
+    build_env_for_repo,
+    gpu_count: int,
+    gpu_models: list[str],
+    min_gpu_memory_gb: int,
+) -> dict[str, dict | str]:
+    tasks = [
+        _run_single_basilica_eval_repo(
+            repo=repo,
+            image=image,
+            source=source,
+            env=build_env_for_repo(repo),
+            gpu_count=gpu_count,
+            gpu_models=gpu_models,
+            min_gpu_memory_gb=min_gpu_memory_gb,
+        )
+        for repo in repos
+    ]
+    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: dict[str, dict | str] = {}
+    for repo, result in zip(repos, task_results):
+        if isinstance(result, Exception):
+            out[repo] = f"Evaluation failed: {result}"
+        else:
+            out[repo] = result
+    return out
+
+
 async def run_evaluation_docker_text(
     dataset: str,
     models: list[str],
@@ -267,11 +392,11 @@ async def run_evaluation_docker_text(
 
     container = None
     retry_delay = 5.0
-    
+
     try:
         while True:
             try:
-                container: Container = await asyncio.to_thread(
+                container = await asyncio.to_thread(
                     client.containers.run,
                     cst.VALIDATOR_DOCKER_IMAGE,
                     command=command,
@@ -297,10 +422,9 @@ async def run_evaluation_docker_text(
                     try:
                         await asyncio.to_thread(container.remove, force=True)
                         container = None
-                    except:
+                    except Exception:
                         pass
                 await asyncio.sleep(retry_delay)
-                continue
 
     finally:
         try:
@@ -320,17 +444,13 @@ async def run_evaluation_docker_grpo(
     file_format: FileFormat,
     gpu_ids: list[int],
 ) -> DockerEvaluationResults:
-    """
-    Run GRPO evaluation with separate containers for each model repo.
-    This approach launches one container per repo and merges results.
-    """
     logger.info(f"Downloading original GRPO model: {original_model}")
     cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
-    original_model_path = await asyncio.to_thread(
+    await asyncio.to_thread(
         snapshot_download,
         repo_id=original_model,
         cache_dir=cache_dir,
-        ignore_patterns=None
+        ignore_patterns=None,
     )
 
     command = ["python", "-m", "validator.evaluation.eval_grpo"]
@@ -338,7 +458,6 @@ async def run_evaluation_docker_grpo(
     dataset_filename = os.path.basename(dataset)
     dataset_dir = os.path.dirname(os.path.abspath(dataset))
 
-    # Shared environment settings
     base_environment = {
         "DATASET": f"/workspace/input_data/{dataset_filename}",
         "ORIGINAL_MODEL": original_model,
@@ -351,26 +470,18 @@ async def run_evaluation_docker_grpo(
     }
 
     volume_bindings = {
-        dataset_dir: {
-            "bind": "/workspace/input_data",
-            "mode": "ro",
-        },
-        os.path.expanduser(cst.CACHE_DIR_HUB): {
-            "bind": "/root/.cache/huggingface/hub",
-            "mode": "rw",
-        }
+        dataset_dir: {"bind": "/workspace/input_data", "mode": "ro"},
+        os.path.expanduser(cst.CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
     }
 
     logger.info(f"Starting sequential GRPO evaluation for {len(models)} repos: {models}")
-
     evaluation_results = {}
     for repo in models:
         client = docker.from_env()
         environment = base_environment.copy()
         environment["MODELS"] = repo
         retry_delay = 5.0
-        
-        # Infinite retry for model download
+
         model_path = None
         while model_path is None:
             try:
@@ -378,18 +489,16 @@ async def run_evaluation_docker_grpo(
                     snapshot_download,
                     repo_id=repo,
                     cache_dir=cache_dir,
-                    ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"]
+                    ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"],
                 )
             except Exception as e:
                 logger.error(f"Failed to download {repo}: {str(e)}, retrying in {retry_delay}s...")
                 await asyncio.sleep(retry_delay)
 
-        container = None  # Initialize container variable
-        
-        # Infinite retry for container execution
+        container = None
         while True:
             try:
-                container: Container = await asyncio.to_thread(
+                container = await asyncio.to_thread(
                     client.containers.run,
                     cst.VALIDATOR_DOCKER_IMAGE,
                     command=command,
@@ -412,18 +521,16 @@ async def run_evaluation_docker_grpo(
                 evaluation_results[repo] = eval_results[repo]
                 if "model_params_count" in eval_results and "model_params_count" not in evaluation_results:
                     evaluation_results["model_params_count"] = eval_results["model_params_count"]
-                break  # Success, exit retry loop
+                break
 
             except Exception as e:
                 logger.error(f"Failed to evaluate repo {repo}: {str(e)}, retrying in {retry_delay}s...", exc_info=True)
                 if container is not None:
                     try:
                         await asyncio.to_thread(container.remove, force=True)
-                    except:
+                    except Exception:
                         pass
                 await asyncio.sleep(retry_delay)
-                continue
-
             finally:
                 if container is not None:
                     try:
@@ -432,6 +539,166 @@ async def run_evaluation_docker_grpo(
                     except Exception as e:
                         logger.info(f"Problem with cleaning up container for {repo}: {e}")
         client.close()
+
+    evaluation_results = normalize_rewards_and_compute_loss(evaluation_results)
+    logger.info(f"Grpo evaluation results post normalization: {evaluation_results}")
+    return process_evaluation_results(evaluation_results, is_image=False)
+
+
+async def run_evaluation_basilica_text(
+    dataset: str,
+    models: list[str],
+    original_model: str,
+    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
+    file_format: FileFormat,
+    gpu_ids: list[int],
+    eval_seed: int | None = None,
+) -> DockerEvaluationResults:
+
+    if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
+        command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
+    elif isinstance(dataset_type, DpoDatasetType):
+        command = ["python", "-m", "validator.evaluation.eval_dpo"]
+    elif isinstance(dataset_type, GrpoDatasetType):
+        return await run_evaluation_basilica_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
+    elif isinstance(dataset_type, EnvironmentDatasetType):
+        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
+    else:
+        raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
+    task_type = type(dataset_type).__name__
+    if not dataset.startswith("http://") and not dataset.startswith("https://"):
+        raise ValueError(
+            "Basilica text eval expects dataset to be an S3/HTTP URL. "
+            "Use run_evaluation_docker_text for local file paths."
+        )
+    dataset_type_str = dataset_type.model_dump_json()
+    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+
+    base_env = {
+        "ORIGINAL_MODEL": original_model,
+        "DATASET_TYPE": dataset_type_str,
+        "FILE_FORMAT": file_format.value,
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "HF_HOME": "/root/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+    }
+
+    logger.info(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
+
+    def build_env_for_repo(repo: str) -> dict[str, str]:
+        repo_env = dict(base_env)
+        repo_env["MODELS"] = repo
+        repo_env["DATASET_URL"] = dataset
+        return repo_env
+
+    repo_results = await _run_basilica_eval_repos(
+        repos=models,
+        image=cst.VALIDATOR_DOCKER_IMAGE,
+        source=source,
+        build_env_for_repo=build_env_for_repo,
+        gpu_count=max(1, len(gpu_ids)),
+        gpu_models=vcst.BASILICA_GPU_MODELS,
+        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+    )
+
+    evaluation_results: dict[str, dict | str] = {}
+    model_params_count = 0
+    for repo in models:
+        raw_result = repo_results.get(repo)
+        if not isinstance(raw_result, dict):
+            evaluation_results[repo] = str(raw_result)
+            continue
+
+        if raw_result.get("model_params_count") and model_params_count == 0:
+            model_params_count = raw_result["model_params_count"]
+
+        if repo in raw_result:
+            evaluation_results[repo] = raw_result[repo]
+        else:
+            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
+            if len(candidate_keys) == 1:
+                evaluation_results[repo] = raw_result[candidate_keys[0]]
+            else:
+                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
+
+    if model_params_count:
+        evaluation_results["model_params_count"] = model_params_count
+
+    return process_evaluation_results(evaluation_results, is_image=False)
+
+
+async def run_evaluation_basilica_grpo(
+    dataset: str,
+    models: list[str],
+    original_model: str,
+    dataset_type: GrpoDatasetType,
+    file_format: FileFormat,
+    gpu_ids: list[int],
+) -> DockerEvaluationResults:
+    """
+    Run GRPO evaluation on Basilica with separate deployments per repo.
+    """
+    command = ["python", "-m", "validator.evaluation.eval_grpo"]
+    if not dataset.startswith("http://") and not dataset.startswith("https://"):
+        raise ValueError(
+            "Basilica GRPO eval expects dataset to be an S3/HTTP URL. "
+            "Use run_evaluation_docker_grpo for local file paths."
+        )
+    dataset_type_str = dataset_type.model_dump_json()
+    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+
+    base_environment = {
+        "ORIGINAL_MODEL": original_model,
+        "DATASET_TYPE": dataset_type_str,
+        "FILE_FORMAT": file_format.value,
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "HF_HOME": "/root/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+    }
+
+    logger.info(f"Starting Basilica GRPO evaluation for {len(models)} repos: {models}")
+
+    def build_env_for_repo(repo: str) -> dict[str, str]:
+        repo_env = dict(base_environment)
+        repo_env["MODELS"] = repo
+        repo_env["DATASET_URL"] = dataset
+        return repo_env
+
+    repo_results = await _run_basilica_eval_repos(
+        repos=models,
+        image=cst.VALIDATOR_DOCKER_IMAGE,
+        source=source,
+        build_env_for_repo=build_env_for_repo,
+        gpu_count=max(1, len(gpu_ids)),
+        gpu_models=vcst.BASILICA_GPU_MODELS,
+        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+    )
+
+    evaluation_results: dict[str, dict | str | int] = {}
+    model_params_count = 0
+    for repo in models:
+        raw_result = repo_results.get(repo)
+        if not isinstance(raw_result, dict):
+            evaluation_results[repo] = str(raw_result)
+            continue
+
+        if raw_result.get("model_params_count") and model_params_count == 0:
+            model_params_count = raw_result["model_params_count"]
+
+        if repo in raw_result:
+            evaluation_results[repo] = raw_result[repo]
+        else:
+            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
+            if len(candidate_keys) == 1:
+                evaluation_results[repo] = raw_result[candidate_keys[0]]
+            else:
+                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
+
+    if model_params_count:
+        evaluation_results["model_params_count"] = model_params_count
 
     evaluation_results = normalize_rewards_and_compute_loss(evaluation_results)
     logger.info(f"Grpo evaluation results post normalization: {evaluation_results}")
@@ -853,15 +1120,28 @@ async def _run_environment_evaluation(
                     timeout=timeout,
                     headers={"Connection": "close"},
                 ) as response:
+                    raw_text = await response.text()
                     if response.status != 200:
-                        try:
-                            error_text = await response.text()
-                            error_detail = f": {error_text[:200]}" if error_text else ""
-                        except Exception:
-                            error_detail = ""
+                        error_detail = f": {raw_text[:500]}" if raw_text else ""
+                        env_logger.error(
+                            "Env evaluate failed: status=%s, task_id=%s, payload=%s, response_body=%s",
+                            response.status,
+                            task_id,
+                            payload,
+                            raw_text[:1000] if raw_text else "(empty)",
+                        )
                         raise Exception(f"HTTP {response.status}{error_detail}")
 
-                    response_data = await response.json()
+                    try:
+                        response_data = json.loads(raw_text)
+                    except json.JSONDecodeError:
+                        env_logger.error(
+                            "Env evaluate invalid JSON: task_id=%s, raw_body=%s",
+                            task_id,
+                            raw_text[:1000] if raw_text else "(empty)",
+                            exc_info=True,
+                        )
+                        raise
                     result = response_data.get("result", response_data)
                     latency = result.get("time_taken", time.time() - start_ts)
                     score = result.get("score", 0.0)
@@ -874,8 +1154,14 @@ async def _run_environment_evaluation(
                     return {"task_id": task_id, "score": score, "time": latency}
 
             except Exception as e:
+                err_msg = f"{type(e).__name__}: {e}" if str(e) else repr(e)
                 env_logger.warning(
-                    f"Task ID {task_id}: Error (retry {attempt} in {vcst.ENV_EVAL_TASK_RETRY_DELAY:.0f}s): {e}"
+                    "Task ID %s: Error (retry %s in %.0fs): %s",
+                    task_id,
+                    attempt,
+                    vcst.ENV_EVAL_TASK_RETRY_DELAY,
+                    err_msg,
+                    exc_info=isinstance(e, (TimeoutError, ConnectionError)),
                 )
                 await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
 
@@ -965,7 +1251,7 @@ async def run_evaluation_docker_image(
 
     container = None
     retry_delay = 5.0
-    
+
     try:
         while True:
             try:
@@ -994,10 +1280,9 @@ async def run_evaluation_docker_image(
                     try:
                         await asyncio.to_thread(container.remove, force=True)
                         container = None
-                    except:
+                    except Exception:
                         pass
                 await asyncio.sleep(retry_delay)
-                continue
 
     finally:
         try:
@@ -1009,3 +1294,69 @@ async def run_evaluation_docker_image(
         except Exception as e:
             logger.info(f"A problem with cleaning up {e}")
         client.close()
+
+
+async def run_evaluation_basilica_image(
+    test_split_url: str,
+    original_model_repo: str,
+    models: list[str],
+    model_type: ImageModelType,
+    gpu_ids: list[int]
+) -> DockerEvaluationResults:
+    if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
+        raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
+    command = ["/app/start.sh"]
+    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+
+    base_env = {
+        "ORIGINAL_MODEL_REPO": original_model_repo,
+        "MODEL_TYPE": model_type.value,
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "HF_HOME": "/root/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+    }
+
+    logger.info(f"Starting Basilica image evaluation for {len(models)} repos: {models}")
+
+    def build_env_for_repo(repo: str) -> dict[str, str]:
+        repo_env = dict(base_env)
+        repo_env["MODELS"] = repo
+        repo_env["TEST_SPLIT_URL"] = test_split_url
+        return repo_env
+
+    repo_results = await _run_basilica_eval_repos(
+        repos=models,
+        image="diagonalge/tuning_validator_diffusion:basilica",
+        source=source,
+        build_env_for_repo=build_env_for_repo,
+        gpu_count=max(1, len(gpu_ids)),
+        gpu_models=vcst.BASILICA_GPU_MODELS,
+        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+    )
+
+    evaluation_results: dict[str, dict | str] = {}
+    model_params_count = 0
+    for repo in models:
+        raw_result = repo_results.get(repo)
+        if not isinstance(raw_result, dict):
+            evaluation_results[repo] = str(raw_result)
+            continue
+
+        if raw_result.get("model_params_count") and model_params_count == 0:
+            model_params_count = raw_result["model_params_count"]
+
+        if repo in raw_result:
+            evaluation_results[repo] = raw_result[repo]
+        else:
+            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
+            if len(candidate_keys) == 1:
+                evaluation_results[repo] = raw_result[candidate_keys[0]]
+            else:
+                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
+
+    if model_params_count:
+        evaluation_results["model_params_count"] = model_params_count
+
+    return process_evaluation_results(evaluation_results, is_image=True)

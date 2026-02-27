@@ -1,6 +1,8 @@
 import os
 import subprocess
 import traceback
+import tempfile
+import urllib.request
 
 
 # Allow torch.load for transformers 4.46+ security check
@@ -139,8 +141,8 @@ def evaluate_dpo_model(
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
-    dataset_path = evaluation_config.datasets[0]["path"]
-    eval_dataset = load_dataset("json", data_files=dataset_path, split="train")
+    data_files = evaluation_config.datasets[0].get("data_files", [evaluation_config.datasets[0]["path"]])
+    eval_dataset = load_dataset("json", data_files=data_files, split="train")
     eval_dataset = _adapt_dpo_columns_to_trl(eval_dataset, evaluation_args.dataset_type)
 
     _log_dataset_and_model_info(eval_dataset, finetuned_model, tokenizer)
@@ -259,10 +261,17 @@ def evaluate_dpo_repo(evaluation_args: EvaluationArgs) -> None:
 def main():
     logger.info("=== DPO EVALUATION SCRIPT STARTING ===")
     dataset = os.environ.get("DATASET")
+    dataset_url = os.environ.get("DATASET_URL")
     original_model = os.environ.get("ORIGINAL_MODEL")
     dataset_type_str = os.environ.get("DATASET_TYPE", "")
     file_format_str = os.environ.get("FILE_FORMAT")
     models_str = os.environ.get("MODELS", "")  # Comma-separated list of LoRA repos
+    if not dataset and dataset_url:
+        parsed_name = os.path.basename(dataset_url.split("?")[0]) or "dataset.json"
+        dataset = os.path.join(tempfile.gettempdir(), parsed_name)
+        urllib.request.urlretrieve(dataset_url, dataset)
+        logger.info(f"Downloaded dataset from DATASET_URL to {dataset}")
+
     if not all([dataset, original_model, file_format_str, models_str]):
         logger.error("Missing required environment variables.")
         exit(1)
