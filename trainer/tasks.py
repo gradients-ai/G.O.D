@@ -27,30 +27,36 @@ _TASK_HISTORY_RETRY_DELAY_SECONDS = 0.5
 
 async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
     async with _task_lock:
-        load_task_history()
-        
-        task_id = task.training_data.task_id
-        hotkey = task.hotkey
+        return await _start_task_unlocked(task)
 
-        existing_task = get_task(task_id, hotkey)
-        if existing_task:
-            existing_task.logs.clear()
-            existing_task.status = TaskStatus.TRAINING
-            existing_task.started_at = datetime.utcnow()
-            existing_task.finished_at = None
-            existing_task.gpu_ids = task.gpu_ids
-            await save_task_history()
-            return task_id, hotkey
 
-        log_entry = TrainerTaskLog(
-            **task.dict(),
-            status=TaskStatus.TRAINING,
-            started_at=datetime.utcnow(),
-            finished_at=None,
-        )
-        task_history.append(log_entry)
+async def _start_task_unlocked(task: TrainerProxyRequest) -> tuple[str, str]:
+    load_task_history()
+
+    task_id = task.training_data.task_id
+    hotkey = task.hotkey
+
+    existing_task = get_task(task_id, hotkey)
+    if existing_task:
+        if existing_task.status == TaskStatus.TRAINING:
+            raise ValueError(f"Task {task_id} for hotkey {hotkey} is already training")
+        existing_task.logs.clear()
+        existing_task.status = TaskStatus.TRAINING
+        existing_task.started_at = datetime.utcnow()
+        existing_task.finished_at = None
+        existing_task.gpu_ids = task.gpu_ids
         await save_task_history()
-        return log_entry.training_data.task_id, log_entry.hotkey
+        return task_id, hotkey
+
+    log_entry = TrainerTaskLog(
+        **task.dict(),
+        status=TaskStatus.TRAINING,
+        started_at=datetime.utcnow(),
+        finished_at=None,
+    )
+    task_history.append(log_entry)
+    await save_task_history()
+    return log_entry.training_data.task_id, log_entry.hotkey
 
 
 async def complete_task(task_id: str, hotkey: str, success: bool = True):

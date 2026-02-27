@@ -24,6 +24,7 @@ from core.models.utility_models import TaskType
 from trainer import constants as cst
 from trainer.tasks import complete_task
 from trainer.tasks import log_task
+from trainer.tasks import update_container_name
 from trainer.tasks import update_wandb_url
 from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import build_wandb_env
@@ -659,6 +660,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 timeout=60,
             )
 
+        await update_container_name(training_data.task_id, task.hotkey, container.name)
         await log_task(training_data.task_id, task.hotkey, f"Container started: {container.name}")
         await log_task(training_data.task_id, task.hotkey, f"Waiting for container to finish (timeout={timeout_seconds})...")
         wait_task = asyncio.create_task(asyncio.to_thread(container.wait))

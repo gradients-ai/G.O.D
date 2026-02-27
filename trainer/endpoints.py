@@ -17,7 +17,8 @@ from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
-from trainer.tasks import start_task
+from trainer.tasks import _start_task_unlocked
+from trainer.tasks import _task_lock
 from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
@@ -29,6 +30,13 @@ from validator.core.constants import TASK_DETAILS_ENDPOINT
 
 
 load_task_history()
+_active_tasks: dict[tuple[str, str], asyncio.Task] = {}
+
+
+async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) -> None:
+    async with _task_lock:
+        if _active_tasks.get(task_key) is bg_task:
+            _active_tasks.pop(task_key, None)
 
 
 async def verify_orchestrator_ip(request: Request):
@@ -43,13 +51,23 @@ async def verify_orchestrator_ip(request: Request):
     return client_ip
 
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
-    if not are_gpus_available(req.gpu_ids):
-        raise HTTPException(
-            status_code=409,
-            detail=f"GPU conflict detected. Requested GPUs are already in use by running training tasks."
-        )
-    
-    await start_task(req)
+    task_key = (req.training_data.task_id, req.hotkey)
+    async with _task_lock:
+        existing_bg_task = _active_tasks.get(task_key)
+        if existing_bg_task and not existing_bg_task.done():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Task {req.training_data.task_id} for hotkey {req.hotkey} is already running.",
+            )
+        if not are_gpus_available(req.gpu_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="GPU conflict detected. Requested GPUs are already in use by running training tasks.",
+            )
+        try:
+            await _start_task_unlocked(req)
+        except ValueError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
     try:
         local_repo_path = await asyncio.to_thread(
@@ -75,7 +93,10 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
         extra={"task_id": req.training_data.task_id, "hotkey": req.hotkey, "model": req.training_data.model},
     )
 
-    asyncio.create_task(start_training_task(req, local_repo_path))
+    bg_task = asyncio.create_task(start_training_task(req, local_repo_path))
+    async with _task_lock:
+        _active_tasks[task_key] = bg_task
+    bg_task.add_done_callback(lambda finished_task: asyncio.create_task(_remove_active_task(task_key, finished_task)))
 
     return {"message": "Started Training!", "task_id": req.training_data.task_id}
 

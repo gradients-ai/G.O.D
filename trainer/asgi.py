@@ -35,7 +35,7 @@ def _remove_container(container) -> None:
 
 async def cleanup_orphaned_trainer_state():
     running_tasks = get_running_tasks()
-    tracked_container_names = {t.container_name for t in running_tasks if t.container_name}
+    tracked_container_names = {getattr(t, "container_name", None) for t in running_tasks if getattr(t, "container_name", None)}
 
     running_containers = await asyncio.to_thread(_list_running_trainer_containers)
     running_container_names = {c.name for c in running_containers}
@@ -49,7 +49,11 @@ async def cleanup_orphaned_trainer_state():
             logger.warning(f"Failed to remove orphaned trainer container {container.name}: {e}")
 
     active_container_names = running_container_names - {c.name for c in orphan_containers}
-    stale_tasks = [t for t in running_tasks if not t.container_name or t.container_name not in active_container_names]
+    stale_tasks = [
+        t
+        for t in running_tasks
+        if not getattr(t, "container_name", None) or getattr(t, "container_name", None) not in active_container_names
+    ]
     now = datetime.utcnow().isoformat()
     for task in stale_tasks:
         await log_task(
