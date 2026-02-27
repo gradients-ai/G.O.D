@@ -1090,10 +1090,12 @@ async def _run_environment_evaluation(
     num_eval_samples = len(eval_list)
     all_results = []
 
+    BASILICA_RETRY_STATUSES = {404, 500, 501}
+
     async def evaluate_single_task(
         session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int,
     ) -> dict | None:
-        """Evaluate a single task with infinite retry."""
+        """Evaluate a single task"""
         payload = {
             "model": inference_model_name,
             "base_url": f"{sglang_url}/v1",
@@ -1103,8 +1105,6 @@ async def _run_environment_evaluation(
         }
         if env_payload_extra:
             payload.update(env_payload_extra)
-
-        last_error = None
 
         attempt = 0
         while True:
@@ -1155,15 +1155,31 @@ async def _run_environment_evaluation(
 
             except Exception as e:
                 err_msg = f"{type(e).__name__}: {e}" if str(e) else repr(e)
-                env_logger.warning(
-                    "Task ID %s: Error (retry %s in %.0fs): %s",
-                    task_id,
-                    attempt,
-                    vcst.ENV_EVAL_TASK_RETRY_DELAY,
-                    err_msg,
-                    exc_info=isinstance(e, (TimeoutError, ConnectionError)),
-                )
-                await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
+                if any(f"HTTP {c}" in str(e) for c in BASILICA_RETRY_STATUSES):
+                    if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
+                        env_logger.warning(
+                            "Task ID %s: Basilica failure after %d attempts, excluding from average",
+                            task_id,
+                            attempt,
+                        )
+                        return None 
+                    env_logger.warning(
+                        "Task ID %s: Basilica error (retry %d/%d in %.0fs): %s",
+                        task_id,
+                        attempt,
+                        vcst.ENV_EVAL_TASK_MAX_RETRIES,
+                        vcst.ENV_EVAL_TASK_RETRY_DELAY,
+                        err_msg,
+                    )
+                    await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
+                else:
+                    env_logger.error(
+                        "Task ID %s: Non-retryable error, scoring 0: %s",
+                        task_id,
+                        err_msg,
+                        exc_info=isinstance(e, (TimeoutError, ConnectionError)),
+                    )
+                    return {"task_id": task_id, "score": 0.0, "time": 0.0}
 
     semaphore = asyncio.Semaphore(vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS)
 

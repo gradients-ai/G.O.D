@@ -351,7 +351,7 @@ ENVIRONMENTS = {
     "gin_rummy": {
         "task_id_range": (300000000, 399999999),
         "num_seeds": 1000,
-        "env_image": "phoenixbeaudry/game:mcts-api",
+        "env_image": "diagonage/mcts-api:latest",
         "eval_payload_extra": {
             "opponent": "mcts",
             "mcts_max_simulations": 25,
@@ -381,8 +381,9 @@ ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_MAX_CONCURRENT_REQUESTS = 4
 ENV_EVAL_MAX_RETRIES = 5
 ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 600
-ENV_EVAL_TASK_RETRY_DELAY = 10.0
-ENV_EVAL_TASK_TIMEOUT = 900
+ENV_EVAL_TASK_RETRY_DELAY = 60
+ENV_EVAL_TASK_MAX_RETRIES = 3
+ENV_EVAL_TASK_TIMEOUT = 60
 ENV_EVAL_SESSION_TIMEOUT = 7200
 
 # Basilica offloaded evaluation (text/image/grpo)
