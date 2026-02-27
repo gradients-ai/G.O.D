@@ -283,7 +283,7 @@ def _get_runpod_synth_url() -> str:
         raise ValueError("RUNPOD_IMAGE_SYNTH_ENDPOINT is not set")
     if endpoint.startswith("http://") or endpoint.startswith("https://"):
         return endpoint.rstrip("/")
-    return f"https://api.runpod.ai/v2/{endpoint}/runsync"
+    return f"https://api.runpod.ai/v2/{endpoint}/runsync?wait=300000"
 
 
 @retry_with_backoff
