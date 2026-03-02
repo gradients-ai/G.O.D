@@ -45,6 +45,8 @@ from validator.evaluation.utils import (
 )
 
 
+from validator.tournament.utils import send_to_discord
+
 logger = get_logger(__name__)
 
 
@@ -284,6 +286,15 @@ async def _run_single_basilica_eval_repo(
             logger.info(f"[{repo}] deployment started: {deployment_name}")
             result = await _poll_basilica_result(deployment, repo)
             if isinstance(result, dict):
+                return result
+            if "Timed out" in str(result):
+                logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
+                webhook_url = os.environ.get("DISCORD_WEBHOOK")
+                if webhook_url:
+                    try:
+                        await send_to_discord(webhook=webhook_url, message=f"Basilica evaluation timed out for repo: {repo}")
+                    except Exception:
+                        logger.warning(f"[{repo}] failed to send Discord timeout notification")
                 return result
             raise RuntimeError(str(result))
         except Exception as e:
@@ -551,7 +562,7 @@ async def run_evaluation_basilica_text(
     original_model: str,
     dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
     file_format: FileFormat,
-    gpu_ids: list[int],
+    num_gpus: int,
     eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
 
@@ -560,9 +571,9 @@ async def run_evaluation_basilica_text(
     elif isinstance(dataset_type, DpoDatasetType):
         command = ["python", "-m", "validator.evaluation.eval_dpo"]
     elif isinstance(dataset_type, GrpoDatasetType):
-        return await run_evaluation_basilica_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
+        return await run_evaluation_basilica_grpo(dataset, models, original_model, dataset_type, file_format, num_gpus)
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
+        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, num_gpus, eval_seed)
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
@@ -583,6 +594,7 @@ async def run_evaluation_basilica_text(
         "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
         "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
 
     logger.info(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
@@ -598,7 +610,7 @@ async def run_evaluation_basilica_text(
         image=cst.VALIDATOR_DOCKER_IMAGE,
         source=source,
         build_env_for_repo=build_env_for_repo,
-        gpu_count=max(1, len(gpu_ids)),
+        gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )
@@ -635,7 +647,7 @@ async def run_evaluation_basilica_grpo(
     original_model: str,
     dataset_type: GrpoDatasetType,
     file_format: FileFormat,
-    gpu_ids: list[int],
+    num_gpus: int,
 ) -> DockerEvaluationResults:
     """
     Run GRPO evaluation on Basilica with separate deployments per repo.
@@ -657,6 +669,8 @@ async def run_evaluation_basilica_grpo(
         "HF_HOME": "/root/.cache/huggingface",
         "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
 
     logger.info(f"Starting Basilica GRPO evaluation for {len(models)} repos: {models}")
@@ -672,7 +686,7 @@ async def run_evaluation_basilica_grpo(
         image=cst.VALIDATOR_DOCKER_IMAGE,
         source=source,
         build_env_for_repo=build_env_for_repo,
-        gpu_count=max(1, len(gpu_ids)),
+        gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )
@@ -711,7 +725,7 @@ async def run_evaluation_docker_environment(
     original_model: str,
     dataset_type: EnvironmentDatasetType,
     file_format: FileFormat,
-    gpu_ids: list[int],
+    num_gpus: int,
     eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
     """Run environment evaluation using Basilica deployments for SGLang and environment server.
@@ -799,6 +813,7 @@ async def run_evaluation_docker_environment(
 
                 sglang_deployment = await asyncio.to_thread(
                     deploy_sglang_basilica, base_model, lora_model, f"{eval_id}-sglang", base_seed,
+                    gpu_count=max(1, num_gpus),
                 )
                 deployments["sglang"] = sglang_deployment
                 await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
@@ -1317,7 +1332,7 @@ async def run_evaluation_basilica_image(
     original_model_repo: str,
     models: list[str],
     model_type: ImageModelType,
-    gpu_ids: list[int]
+    num_gpus: int,
 ) -> DockerEvaluationResults:
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
@@ -1332,6 +1347,7 @@ async def run_evaluation_basilica_image(
         "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
         "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
 
     logger.info(f"Starting Basilica image evaluation for {len(models)} repos: {models}")
@@ -1347,7 +1363,7 @@ async def run_evaluation_basilica_image(
         image="diagonalge/tuning_validator_diffusion:basilica",
         source=source,
         build_env_for_repo=build_env_for_repo,
-        gpu_count=max(1, len(gpu_ids)),
+        gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
     )

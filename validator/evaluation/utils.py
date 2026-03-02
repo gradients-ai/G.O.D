@@ -366,6 +366,7 @@ def create_sglang_deployment_source(base_model: str, lora_model: str | None = No
     sglang_args.extend([
         "--host", "0.0.0.0",
         "--port", "8000",
+        "--max-new-tokens", "500",
         "--tensor-parallel-size", "1",
         "--dtype", "float16",
         "--attention-backend", "triton",

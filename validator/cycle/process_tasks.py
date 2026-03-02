@@ -125,14 +125,13 @@ async def _processing_pending_tasks(config: Config):
     clean_all_hf_datasets_cache()
 
 
-async def _evaluate_task(task: AnyTypeRawTask, gpu_ids: list[int], config: Config):
-    gpu_ids_str = "," + ",".join(str(gpu_id) for gpu_id in gpu_ids) + ","
-    with LogContext(task_id=str(task.task_id), gpu_ids=gpu_ids_str):
+async def _evaluate_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
+    with LogContext(task_id=str(task.task_id)):
         try:
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
-            task = await evaluate_and_score(task, gpu_ids, config)
+            task = await evaluate_and_score(task, num_gpus, config)
             await tasks_sql.update_task(task, config.psql_db)
         except Exception as e:
             logger.error(f"Error evaluating task {task.task_id}: {e}", exc_info=True)
@@ -234,61 +233,31 @@ async def cleanup_model_cache_loop(psql_db: PSQLDB):
 
 
 async def evaluate_tasks_loop(config: Config):
-    task_queue = asyncio.Queue()
-    gpu_queue = asyncio.Queue()
-    processing_task_ids = set()
-    # Lock to prevent race conditions (thus potential deadlocks) during GPU acquisition
-    gpu_acquisition_lock = asyncio.Lock()
-
-    for gpu_id in cst.GPU_IDS:
-        await gpu_queue.put(gpu_id)
-
-    async def evaluation_worker():
-        while True:
-            try:
-                task = await asyncio.wait_for(task_queue.get(), timeout=1)
-                required_gpus = compute_required_gpus(task)
-                gpu_ids = []
-
-                # Acquire lock to prevent other tasks from taking GPUs until we get all we need
-                async with gpu_acquisition_lock:
-                    for _ in range(required_gpus):
-                        gpu_ids.append(await gpu_queue.get())
-
-                try:
-                    await _evaluate_task(task, gpu_ids, config)
-                finally:
-                    for gpu_id in gpu_ids:
-                        await gpu_queue.put(gpu_id)
-                    processing_task_ids.remove(task.task_id)
-                    task_queue.task_done()
-            except asyncio.TimeoutError:
-                await asyncio.sleep(5)
-                continue
-            except Exception as e:
-                logger.error(f"Error in evaluation worker: {str(e)}", exc_info=True)
-                continue
-
-    for _ in cst.GPU_IDS:
-        asyncio.create_task(evaluation_worker())
+    processing_task_ids: set[str] = set()
 
     while True:
-        if len(processing_task_ids) < 2 * len(cst.GPU_IDS):
-            tasks_to_evaluate = await tasks_sql.get_tasks_with_status(
-                TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
-            )
-            if tasks_to_evaluate:
-                logger.info(f"Found {len(tasks_to_evaluate)} new tasks awaiting evaluation, adding to queue")
-                for task in tasks_to_evaluate:
-                    # Only add to queue if not already added, some tasks in the queue might still have TaskStatus.PREEVALUATION
-                    if task.task_id not in processing_task_ids:
-                        processing_task_ids.add(task.task_id)
-                        await task_queue.put(task)
-            else:
-                logger.info("No new tasks awaiting evaluation - waiting 30 seconds")
+        tasks_to_evaluate = await tasks_sql.get_tasks_with_status(
+            TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
+        )
+        if tasks_to_evaluate:
+            logger.info(f"Found {len(tasks_to_evaluate)} new tasks awaiting evaluation")
+            for task in tasks_to_evaluate:
+                if task.task_id not in processing_task_ids:
+                    processing_task_ids.add(task.task_id)
+                    asyncio.create_task(_run_and_cleanup(task, processing_task_ids, config))
         else:
-            logger.info("Evaluation queue is full - waiting for 30 seconds")
+            logger.info("No new tasks awaiting evaluation - waiting 30 seconds")
         await asyncio.sleep(30)
+
+
+async def _run_and_cleanup(task: RawTask, processing_task_ids: set[str], config: Config):
+    try:
+        num_gpus = compute_required_gpus(task)
+        await _evaluate_task(task, num_gpus, config)
+    except Exception as e:
+        logger.error(f"Error evaluating task {task.task_id}: {e}", exc_info=True)
+    finally:
+        processing_task_ids.discard(task.task_id)
 
 
 def compute_required_gpus(task: RawTask) -> int:

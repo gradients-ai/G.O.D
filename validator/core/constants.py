@@ -57,9 +57,6 @@ EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
 
-_gpu_ids = os.getenv("GPU_IDS", "").strip()
-GPU_IDS = [int(id) for id in _gpu_ids.split(",")] if _gpu_ids else [0]
-
 # we sample datasets with these num_rows ranges equally
 DATASET_BINS_TO_SAMPLE = [
     (20_000, 50_000),
@@ -124,7 +121,6 @@ MAX_DELAY_TIMES = 6
 # Maximum number of evaluation attempts when all scores are zero (including the first one)
 MAX_EVAL_ATTEMPTS = 4
 MODEL_SIZE_REQUIRING_2_GPUS = 30 * 10**9  # 30B params
-
 # Tournament GPU requirement thresholds (in billions of parameters)
 TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100 = 4.0
 TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100 = 12.0
@@ -379,8 +375,8 @@ ENV_EVAL_NUM_SEEDS = 2000
 ENV_EVAL_DEFAULT_SEED = 42
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_MAX_CONCURRENT_REQUESTS = 4
-ENV_EVAL_MAX_RETRIES = 5
-ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 600
+ENV_EVAL_MAX_RETRIES = 3
+ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 1200
 ENV_EVAL_TASK_RETRY_DELAY = 60
 ENV_EVAL_TASK_MAX_RETRIES = 3
 ENV_EVAL_TASK_TIMEOUT = 60
@@ -394,7 +390,7 @@ EVAL_BASILICA_TIMEOUT = 3600
 EVAL_BASILICA_MAX_RETRIES = 3
 EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
-EVAL_BASILICA_MAX_POLL_SECONDS = 3600
+EVAL_BASILICA_MAX_POLL_SECONDS = 7200
 
 LOCAL_ENV_DOCKER_NETWORK = "agent_eval_net"
 LOCAL_ENV_SGLANG_PORT = 30000
