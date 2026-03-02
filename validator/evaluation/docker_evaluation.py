@@ -241,7 +241,8 @@ async def _poll_basilica_result(
                     return f"Completed but result payload invalid: {result}"
                 if status == "failed":
                     return payload.get("error", "Basilica eval reported failure")
-        except Exception:
+        except Exception as e:
+            logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
             pass
 
         logger.info(
