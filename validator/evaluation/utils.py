@@ -73,15 +73,44 @@ class _Handler(BaseHTTPRequestHandler):
 
 def _run_eval():
     try:
-        proc = subprocess.run(COMMAND, text=True)
+        import os, time as _time
+        proc = subprocess.Popen(COMMAND)
+        result_first_seen = None
+        KL_GRACE_SECONDS = 1800
+        while proc.poll() is None:
+            if os.path.exists(RESULT_PATH):
+                try:
+                    with open(RESULT_PATH, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict) and data:
+                        has_kl = any(
+                            isinstance(v, dict) and "kl_divergence" in v
+                            for v in data.values()
+                        )
+                        if has_kl:
+                            _state["result"] = data
+                            _state["status"] = "completed"
+                            return
+                        if result_first_seen is None:
+                            result_first_seen = _time.time()
+                        elif _time.time() - result_first_seen > KL_GRACE_SECONDS:
+                            _state["result"] = data
+                            _state["status"] = "completed"
+                            return
+                except (json.JSONDecodeError, IOError, OSError):
+                    pass
+            _time.sleep(30)
+        if _state["status"] == "completed":
+            return
         if proc.returncode != 0:
             raise RuntimeError(f"Eval command failed with exit code {{proc.returncode}}")
         with open(RESULT_PATH, "r", encoding="utf-8") as f:
             _state["result"] = json.load(f)
         _state["status"] = "completed"
     except Exception as e:
-        _state["status"] = "failed"
-        _state["error"] = str(e)
+        if _state["status"] != "completed":
+            _state["status"] = "failed"
+            _state["error"] = str(e)
 
 def main():
     server = HTTPServer(("0.0.0.0", 8000), _Handler)
@@ -366,7 +395,6 @@ def create_sglang_deployment_source(base_model: str, lora_model: str | None = No
     sglang_args.extend([
         "--host", "0.0.0.0",
         "--port", "8000",
-        "--max-new-tokens", "500",
         "--tensor-parallel-size", "1",
         "--dtype", "float16",
         "--attention-backend", "triton",
