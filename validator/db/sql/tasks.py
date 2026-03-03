@@ -1421,6 +1421,19 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
         )
 
 
+async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> None:
+    """Reset in-progress evaluation rows for a task back to pending."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.EVALUATION_STATUS} = 'pending', {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.EVALUATION_STATUS} = 'evaluating'
+            """,
+            task_id,
+        )
+
+
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE} ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL})

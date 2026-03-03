@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 
+import basilica
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -223,10 +224,32 @@ async def _handle_delayed_tasks(config: Config):
 
 
 async def _move_to_preevaluation_status(task, config):
+    await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
     task.status = TaskStatus.PREEVALUATION
     add_context_tag("status", task.status.value)
     logger.info(f"Changing status to {task.status}")
     await tasks_sql.update_task(task, config.psql_db)
+
+
+async def _cleanup_all_running_basilica_deployments() -> None:
+    """Cleanup of Basilica deployments on startup."""
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list_deployments)
+    except Exception as e:
+        logger.warning(f"Failed to list Basilica deployments for cleanup: {e}")
+        return
+
+    deleted_count = 0
+    for deployment in deployments:
+        try:
+            await asyncio.to_thread(deployment.delete)
+            deleted_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to delete Basilica deployment during startup cleanup: {e}")
+
+    if deleted_count:
+        logger.info(f"Deleted {deleted_count} Basilica deployments during startup cleanup")
 
 
 async def _move_any_evaluating_tasks_to_pending_evaluation(config: Config):
@@ -354,6 +377,7 @@ def compute_required_gpus(task: RawTask) -> int:
 
 
 async def process_completed_tasks(config: Config) -> None:
+    await _cleanup_all_running_basilica_deployments()
     await _move_any_evaluating_tasks_to_pending_evaluation(config)
 
     await asyncio.gather(evaluate_tasks_loop(config), cleanup_model_cache_loop(config.psql_db))
