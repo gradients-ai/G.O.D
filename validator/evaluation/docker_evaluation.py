@@ -259,6 +259,7 @@ async def _run_single_basilica_eval_repo(
     gpu_count: int,
     gpu_models: list[str],
     min_gpu_memory_gb: int,
+    cleanup_names: set[str],
 ) -> dict | str:
     """Run one repo eval with retries (3 attempts, 15-minute backoff)."""
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
@@ -281,6 +282,7 @@ async def _run_single_basilica_eval_repo(
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
+            cleanup_names.add(deployment_name)
 
             logger.info(f"[{repo}] deployment started: {deployment_name}")
             result = await _poll_basilica_result(deployment, repo)
@@ -314,6 +316,33 @@ async def _run_single_basilica_eval_repo(
     return "Evaluation failed"
 
 
+async def _cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> None:
+    """Cleanup for deployments created by one eval batch."""
+    if not deployment_names:
+        return
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for final cleanup: {e}")
+        return
+
+    by_name = {getattr(dep, "name", None): dep for dep in deployments}
+    cleaned = 0
+    for name in deployment_names:
+        dep = by_name.get(name)
+        if dep is None:
+            continue
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+        except Exception as e:
+            logger.warning(f"Failed final cleanup for deployment {name}: {e}")
+
+    if cleaned:
+        logger.info(f"Final cleanup removed {cleaned} lingering deployments for this evaluation batch")
+
+
 async def _run_basilica_eval_repos(
     *,
     repos: list[str],
@@ -324,6 +353,7 @@ async def _run_basilica_eval_repos(
     gpu_models: list[str],
     min_gpu_memory_gb: int,
 ) -> dict[str, dict | str]:
+    cleanup_names: set[str] = set()
     tasks = [
         _run_single_basilica_eval_repo(
             repo=repo,
@@ -333,10 +363,12 @@ async def _run_basilica_eval_repos(
             gpu_count=gpu_count,
             gpu_models=gpu_models,
             min_gpu_memory_gb=min_gpu_memory_gb,
+            cleanup_names=cleanup_names,
         )
         for repo in repos
     ]
     task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    await _cleanup_basilica_deployments_by_name(cleanup_names)
     out: dict[str, dict | str] = {}
     for repo, result in zip(repos, task_results):
         if isinstance(result, Exception):
