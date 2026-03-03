@@ -524,6 +524,33 @@ async def process_miners_pool(
     return results
 
 
+async def evaluate_and_score_hotkeys(
+    task: AnyTypeRawTask,
+    hotkeys: list[str],
+    num_gpus: int,
+    config: Config,
+) -> tuple[list[str], list[str]]:
+    """
+    Evaluate a subset of task hotkeys, persist scores, and return:
+    (evaluated_hotkeys, failed_hotkeys).
+    """
+    assert task.task_id is not None, "Task ID must be present"
+
+    miner_pool = await get_nodes_assigned_to_task(str(task.task_id), config.psql_db)
+    miner_pool = [miner for miner in miner_pool if miner.hotkey in set(hotkeys)]
+
+    dataset_type = _get_dataset_type(task)
+    logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
+    task_results = await process_miners_pool(miner_pool, task, config, num_gpus, dataset_type)
+
+    failed_hotkeys = [result.hotkey for result in task_results if (not result.is_finetune) or np.isnan(result.test_loss)]
+    evaluated_hotkeys = [result.hotkey for result in task_results]
+
+    task_results = calculate_miner_ranking_and_scores(task_results)
+    await _update_scores(task, task_results, config.psql_db)
+    return evaluated_hotkeys, failed_hotkeys
+
+
 def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage]) -> bool:
     try:
         for result in task_results:

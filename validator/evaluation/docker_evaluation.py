@@ -288,13 +288,6 @@ async def _run_single_basilica_eval_repo(
                 return result
             if "Timed out" in str(result):
                 logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
-                webhook_url = os.environ.get("DISCORD_WEBHOOK")
-                if webhook_url:
-                    try:
-                        from validator.tournament.utils import send_to_discord
-                        await send_to_discord(webhook=webhook_url, message=f"Basilica evaluation timed out for repo: {repo}")
-                    except Exception:
-                        logger.warning(f"[{repo}] failed to send Discord timeout notification")
                 return result
             raise RuntimeError(str(result))
         except Exception as e:
