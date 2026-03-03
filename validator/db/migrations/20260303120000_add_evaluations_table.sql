@@ -1,19 +1,16 @@
 -- migrate:up
 
 CREATE TABLE IF NOT EXISTS evaluations (
-    task_id UUID NOT NULL,
+    task_id UUID NOT NULL REFERENCES tasks(task_id) ON DELETE CASCADE,
     hotkey TEXT NOT NULL,
-
+    netuid INTEGER NOT NULL,
     evaluation_status TEXT NOT NULL DEFAULT 'pending',
-
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (task_id, hotkey),
-
+    PRIMARY KEY (task_id, hotkey, netuid),
     CONSTRAINT fk_evaluations_task_node
-        FOREIGN KEY (task_id, hotkey)
-        REFERENCES task_nodes(task_id, hotkey)
+        FOREIGN KEY (task_id, hotkey, netuid)
+        REFERENCES task_nodes(task_id, hotkey, netuid)
         ON DELETE CASCADE
 );
 

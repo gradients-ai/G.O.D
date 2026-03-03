@@ -1370,12 +1370,12 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
             await connection.execute(f"DELETE FROM {cst.EVALUATIONS_TABLE} WHERE {cst.TASK_ID} = $1", task_id)
             query = f"""
                 INSERT INTO {cst.EVALUATIONS_TABLE}
-                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
-                SELECT {cst.TASK_ID}, {cst.HOTKEY}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
+                SELECT {cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 FROM {cst.TASK_NODES_TABLE}
-                WHERE {cst.TASK_ID} = $1
+                WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
             """
-            await connection.execute(query, task_id)
+            await connection.execute(query, task_id, NETUID)
 
 
 async def get_task_evaluation_rows(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
@@ -1385,15 +1385,18 @@ async def get_task_evaluation_rows(task_id: UUID, psql_db: PSQLDB) -> list[dict]
             SELECT
                 e.{cst.TASK_ID},
                 e.{cst.HOTKEY},
+                e.{cst.NETUID},
                 tn.{cst.EXPECTED_REPO_NAME},
                 e.{cst.EVALUATION_STATUS}
             FROM {cst.EVALUATIONS_TABLE} e
             LEFT JOIN {cst.TASK_NODES_TABLE} tn
                 ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
                 AND e.{cst.HOTKEY} = tn.{cst.HOTKEY}
-            WHERE e.{cst.TASK_ID} = $1
+                AND e.{cst.NETUID} = tn.{cst.NETUID}
+            WHERE e.{cst.TASK_ID} = $1 AND e.{cst.NETUID} = $2
             """,
             task_id,
+            NETUID,
         )
         return [dict(row) for row in rows]
 
@@ -1405,16 +1408,19 @@ async def get_task_evaluations_by_status(task_id: UUID, status: str, psql_db: PS
             SELECT
                 e.{cst.TASK_ID},
                 e.{cst.HOTKEY},
+                e.{cst.NETUID},
                 tn.{cst.EXPECTED_REPO_NAME},
                 e.{cst.EVALUATION_STATUS}
             FROM {cst.EVALUATIONS_TABLE} e
             LEFT JOIN {cst.TASK_NODES_TABLE} tn
                 ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
                 AND e.{cst.HOTKEY} = tn.{cst.HOTKEY}
-            WHERE e.{cst.TASK_ID} = $1 AND e.{cst.EVALUATION_STATUS} = $2
+                AND e.{cst.NETUID} = tn.{cst.NETUID}
+            WHERE e.{cst.TASK_ID} = $1 AND e.{cst.EVALUATION_STATUS} = $2 AND e.{cst.NETUID} = $3
             """,
             task_id,
             status,
+            NETUID,
         )
         return [dict(row) for row in rows]
 
@@ -1426,11 +1432,12 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
         await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
-            SET {cst.EVALUATION_STATUS} = $3, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2)
+            SET {cst.EVALUATION_STATUS} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2) AND {cst.NETUID} = $3
             """,
             task_id,
             hotkeys,
+            NETUID,
             status,
         )
 
@@ -1442,9 +1449,10 @@ async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> N
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = 'pending', {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.EVALUATION_STATUS} = 'evaluating'
+            WHERE {cst.TASK_ID} = $1 AND {cst.EVALUATION_STATUS} = 'evaluating' AND {cst.NETUID} = $2
             """,
             task_id,
+            NETUID,
         )
 
 
