@@ -235,7 +235,7 @@ async def _cleanup_all_running_basilica_deployments() -> None:
     """Cleanup of Basilica deployments on startup."""
     try:
         client = basilica.BasilicaClient()
-        deployments = await asyncio.to_thread(client.list_deployments)
+        deployments = await asyncio.to_thread(client.list)
     except Exception as e:
         logger.warning(f"Failed to list Basilica deployments for cleanup: {e}")
         return
