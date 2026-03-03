@@ -1,7 +1,9 @@
 import asyncio
+import logging
 
 import httpx
 from dotenv import load_dotenv
+from tenacity import before_sleep_log
 from tenacity import retry
 from tenacity import stop_after_attempt
 from tenacity import wait_exponential
@@ -47,6 +49,7 @@ simple_retry = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=4, max=10),
     reraise=True,
+    before_sleep=before_sleep_log(logger, logging.WARNING),
 )
 
 
