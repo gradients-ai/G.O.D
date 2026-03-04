@@ -223,6 +223,8 @@ def get_environment_logger(
     repo_id: str = None,
     eval_id: str = None,
     model: str = None,
+    task_type: str = "environment",
+    enable_console_output: bool = False,
 ) -> Logger:
     """Get a logger configured to send environment evaluation logs to Vector/Loki.
     
@@ -246,12 +248,14 @@ def get_environment_logger(
         "repo_id": repo_id or "unknown",
         "eval_id": eval_id or "unknown", 
         "model": model or "unknown",
-        "task_type": "environment",
+        "task_type": task_type,
     }
     logger.addHandler(VectorHandler(default_labels=labels))
-    
-    # Also keep console output for local debugging
-    if not any(isinstance(h, logging.StreamHandler) and not isinstance(h, VectorHandler) for h in logger.handlers):
+    logger.propagate = False
+
+    if enable_console_output and not any(
+        isinstance(h, logging.StreamHandler) and not isinstance(h, VectorHandler) for h in logger.handlers
+    ):
         console = logging.StreamHandler()
         console.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s'))
         logger.addHandler(console)
