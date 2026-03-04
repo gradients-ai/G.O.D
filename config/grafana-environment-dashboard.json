@@ -189,7 +189,7 @@
           "refId": "A"
         }
       ],
-      "title": "Active Environment Evaluations",
+      "title": "Active Evaluations",
       "type": "table"
     },
     {
@@ -233,7 +233,7 @@
           "refId": "A"
         }
       ],
-      "title": "Environment Evaluation Logs",
+      "title": "Evaluation Logs",
       "type": "logs"
     },
     {
@@ -364,7 +364,7 @@
         "current": {
           "selected": true,
           "text": "Off",
-          "value": "\\\\[(SGLang|Env)\\\\]"
+          "value": "\\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\]"
         },
         "hide": 0,
         "includeAll": false,
@@ -374,7 +374,7 @@
           {
             "selected": true,
             "text": "Off",
-            "value": "\\\\[(SGLang|Env)\\\\]"
+            "value": "\\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\]"
           },
           {
             "selected": false,
@@ -382,7 +382,7 @@
             "value": "a^"
           }
         ],
-        "query": "Off : \\\\[(SGLang|Env)\\\\],On : a^",
+        "query": "Off : \\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\],On : a^",
         "type": "custom"
       },
       {
@@ -450,7 +450,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "Environment Evaluation Dashboard",
+  "title": "Evaluations Dashboard",
   "uid": "environment-eval",
   "version": 1
 }
