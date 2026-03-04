@@ -219,16 +219,38 @@ def _clean_basilica_log_line(raw_line: str) -> str:
     line = raw_line.strip()
     if not line:
         return ""
-    try:
-        parsed = json.loads(line)
-        if isinstance(parsed, dict):
-            line = str(parsed.get("message") or parsed.get("log") or parsed.get("data") or line)
-    except Exception:
-        pass
-
-    line = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*", "", line)
     line = re.sub(r"^data:\s*", "", line).rstrip(", ")
-    return line.strip()
+    for _ in range(2):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            break
+
+        if isinstance(parsed, dict):
+            extracted = parsed.get("message") or parsed.get("log") or parsed.get("data")
+            if isinstance(extracted, str) and extracted.strip():
+                line = extracted.strip()
+                continue
+            line = str(parsed)
+            break
+
+        if isinstance(parsed, str):
+            line = parsed.strip()
+            continue
+
+        line = str(parsed)
+        break
+    if "\\u001b" in line or "\\x1b" in line:
+        try:
+            line = bytes(line, "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+
+    line = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", line)
+
+    line = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s*", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line
 
 
 def _log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_name: str, deployment) -> None:
