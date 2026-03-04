@@ -288,7 +288,7 @@ async def _poll_basilica_result(
                 if status == "failed":
                     return payload.get("error", "Basilica eval reported failure")
         except Exception as e:
-            logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
+            eval_logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
             pass
 
         eval_logger.info(
@@ -314,7 +314,7 @@ async def _run_single_basilica_eval_repo(
     """Run one repo eval with retries (3 attempts, 15-minute backoff)."""
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
-        name=f"basilica-{repo.split('/')[-1]}",
+        name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
         repo_id=repo,
         eval_id=eval_id,
         model=model_name,
@@ -325,6 +325,7 @@ async def _run_single_basilica_eval_repo(
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
+            eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
             client = basilica.BasilicaClient()
             deployment = await asyncio.to_thread(
                 client.deploy,
@@ -848,7 +849,10 @@ async def run_evaluation_docker_environment(
         eval_id = str(uuid.uuid4())
         repo_name = repo.split("/")[-1]
         env_logger = get_environment_logger(
-            name=repo_name, repo_id=repo, eval_id=eval_id, model=original_model,
+            name=f"{repo_name}-{eval_id[:8]}",
+            repo_id=repo,
+            eval_id=eval_id,
+            model=original_model,
         )
         deployments = {}
         repo_result = None
@@ -1020,7 +1024,10 @@ async def run_evaluation_local_environment(
         eval_id = str(uuid.uuid4())
         repo_name = repo.split("/")[-1]
         env_logger = get_environment_logger(
-            name=repo_name, repo_id=repo, eval_id=eval_id, model=original_model,
+            name=f"{repo_name}-{eval_id[:8]}",
+            repo_id=repo,
+            eval_id=eval_id,
+            model=original_model,
         )
 
         containers = {}
