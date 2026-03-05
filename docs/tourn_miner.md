@@ -208,11 +208,11 @@ Your training scripts accept these standardised CLI arguments:
 
 ### Grafana Dashboard
 
-View real-time training logs and metrics at: http://185.141.218.59:3001/d/training-runs/training-runs-dashboard
+View real-time training logs and metrics at: <http://185.141.218.122:3001/d/training-runs/training-runs-dashboard>
 
 ### Tournament Results
 
-After tournaments complete, view detailed results and rankings at: https://gradients.io/app/research/tournament/{TOURNAMENT_ID}
+After tournaments complete, view detailed results and rankings at: <https://gradients.io/app/research/tournament/{TOURNAMENT_ID}>
 
 Replace `{TOURNAMENT_ID}` with the specific tournament ID you participated in.
 
@@ -359,11 +359,13 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 ### Group Stage
 
 **Text/Image Tournaments:**
+
 - Miners are organized into groups of 6-8 participants
 - Each group competes on 3 tasks (text tournaments: 1 Instruct task; image tournaments: 1 image task; total of 3 required)
 - Top 8 performers overall across all groups advance to knockout rounds
 
 **Environment Tournaments:**
+
 - All participants (including boss) compete in a single large group
 - Minimum 5 participants required to start
 - All participants compete on the same environment task
@@ -373,22 +375,26 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 ### Knockout Rounds
 
 **Text/Image Tournaments:**
+
 - Single elimination format
 - Runs when field is reduced to 14 or fewer miners
 - Head-to-head competition
 
 **Environment Tournaments:**
+
 - No knockout rounds - tournament ends after group stage
 
 ### Boss Round
 
 **Text/Image Tournaments:**
+
 - Tournament winner must face defending champion
 - Uses progressive threshold system with exponential decay based on consecutive wins
 - **Winning Requirements**: Challenger wins by **majority rule** (4+ out of 6 tasks) for **both text and image tournaments**
 - Defending champion retains title unless challenger wins the majority of tasks
 
 **Environment Tournaments:**
+
 - Boss (defending champion) competes directly in the single group stage
 - Uses progressive threshold system: challengers must beat `boss_score * (1 + threshold_percentage)` to be eligible
 - Winner is the participant with the highest GRPO score among eligible participants

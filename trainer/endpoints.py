@@ -42,7 +42,7 @@ async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) 
 async def verify_orchestrator_ip(request: Request):
     """Verify request comes from orchestrator IP"""
     client_ip = request.client.host
-    allowed_ips_str = os.getenv("ORCHESTRATOR_IPS", os.getenv("ORCHESTRATOR_IP", "185.141.218.59"))
+    allowed_ips_str = os.getenv("ORCHESTRATOR_IPS", os.getenv("ORCHESTRATOR_IP", "185.141.218.122"))
     allowed_ips = [ip.strip() for ip in allowed_ips_str.split(",")]
     allowed_ips.append("127.0.0.1")  # Always allow localhost
 
