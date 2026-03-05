@@ -27,7 +27,6 @@ class ValidatorConfig(BaseConfig):
     validator_port: str
     set_metagraph_weights: bool
     validator_port: str
-    gpu_ids: str
     postgres_user: str | None = None
     postgres_password: str | None = None
     postgres_db: str | None = None
