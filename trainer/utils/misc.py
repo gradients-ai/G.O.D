@@ -1,5 +1,6 @@
 import os
 import shutil
+import asyncio
 from urllib.parse import urlparse
 
 import docker
@@ -57,7 +58,7 @@ def clone_repo(repo_url: str, parent_dir: str, branch: str = None, commit_hash: 
         raise RuntimeError(f"Unexpected error while cloning: {str(e)}")
 
 
-async def get_gpu_info() -> list[GPUInfo]:
+def _get_gpu_info_sync() -> list[GPUInfo]:
     pynvml.nvmlInit()
     device_count = pynvml.nvmlDeviceGetCount()
 
@@ -99,6 +100,10 @@ async def get_gpu_info() -> list[GPUInfo]:
 
     pynvml.nvmlShutdown()
     return gpu_infos
+
+
+async def get_gpu_info() -> list[GPUInfo]:
+    return await asyncio.to_thread(_get_gpu_info_sync)
 
 
 def build_wandb_env(task_id: str, hotkey: str) -> dict:

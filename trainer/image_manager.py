@@ -156,7 +156,7 @@ async def run_trainer_container_image(
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
-    ensure_internal_network()
+    await asyncio.to_thread(ensure_internal_network)
 
     command: list[str] = [
         "--task-id",
@@ -189,7 +189,8 @@ async def run_trainer_container_image(
 
     for attempt in range(max_retries):
         try:
-            container: Container = client.containers.run(
+            container: Container = await asyncio.to_thread(
+                client.containers.run,
                 image=tag,
                 command=command,
                 volumes={
@@ -242,7 +243,7 @@ async def run_trainer_container_text(
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
-    ensure_internal_network()
+    await asyncio.to_thread(ensure_internal_network)
 
     environment = build_wandb_env(task_id, hotkey)
     if env_server_urls:
@@ -280,7 +281,8 @@ async def run_trainer_container_text(
 
     for attempt in range(max_retries):
         try:
-            container: Container = client.containers.run(
+            container: Container = await asyncio.to_thread(
+                client.containers.run,
                 image=tag,
                 command=command,
                 volumes={
@@ -316,15 +318,19 @@ async def run_trainer_container_text(
                 raise
 
 
-async def create_volumes_if_dont_exist():
+def _create_volumes_sync():
     client: docker.DockerClient = docker.from_env()
     volume_names = cst.VOLUME_NAMES
     for volume_name in volume_names:
         try:
-            volume = client.volumes.get(volume_name)
+            client.volumes.get(volume_name)
         except docker.errors.NotFound:
-            volume = client.volumes.create(name=volume_name)
+            client.volumes.create(name=volume_name)
             logger.info(f"Volume '{volume_name}' created.")
+
+
+async def create_volumes_if_dont_exist():
+    await asyncio.to_thread(_create_volumes_sync)
 
 
 def run_downloader_container(
@@ -458,7 +464,8 @@ async def upload_repo_to_hf(
 
         logger.info(f"Starting upload container {container_name} for task {task_id}...", extra=docker_labels)
 
-        container = client.containers.run(
+        container = await asyncio.to_thread(
+            client.containers.run,
             image=cst.HF_UPLOAD_DOCKER_IMAGE,
             environment=environment,
             volumes=volumes,
@@ -470,8 +477,8 @@ async def upload_repo_to_hf(
 
         log_streaming_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
 
-        result = container.wait()
-        logs = container.logs().decode("utf-8", errors="ignore")
+        result = await asyncio.to_thread(container.wait)
+        logs = (await asyncio.to_thread(container.logs)).decode("utf-8", errors="ignore")
         exit_code = result.get("StatusCode", -1)
         wandb_url = None
         if wandb_token:
@@ -493,10 +500,10 @@ async def upload_repo_to_hf(
     finally:
         if container and isinstance(container, Container):
             try:
-                container.reload()
+                await asyncio.to_thread(container.reload)
                 if container.status == "running":
-                    container.kill()
-                container.remove(force=True)
+                    await asyncio.to_thread(container.kill)
+                await asyncio.to_thread(container.remove, force=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove upload container {container.name}: {cleanup_err}")
 
@@ -709,17 +716,17 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             # Clean up all environment servers
             for srv in env_server_containers:
                 try:
-                    srv.stop()
-                    srv.remove(force=True)
+                    await asyncio.to_thread(srv.stop)
+                    await asyncio.to_thread(srv.remove, force=True)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup server {srv.name}: {e}")
 
             if container and isinstance(container, Container):
                 try:
-                    container.reload()
+                    await asyncio.to_thread(container.reload)
                     if container.status == "running":
-                        container.kill()
-                    container.remove(force=True)
+                        await asyncio.to_thread(container.kill)
+                    await asyncio.to_thread(container.remove, force=True)
                     await log_task(training_data.task_id, task.hotkey, f"Container {container.name} cleaned up.")
 
                 except Exception as cleanup_err:
@@ -727,7 +734,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
             logger.info("Cleaning up", extra=log_labels)
             if tag:
-                delete_image_and_cleanup(tag)
+                await asyncio.to_thread(delete_image_and_cleanup, tag)
                 logger.info("Cleaned up Docker resources.", extra=log_labels)
             else:
                 logger.info("No Docker image to clean up.", extra=log_labels)

@@ -59,7 +59,7 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
                 status_code=409,
                 detail=f"Task {req.training_data.task_id} for hotkey {req.hotkey} is already running.",
             )
-        if not are_gpus_available(req.gpu_ids):
+        if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
             raise HTTPException(
                 status_code=409,
                 detail="GPU conflict detected. Requested GPUs are already in use by running training tasks.",
