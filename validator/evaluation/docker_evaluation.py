@@ -482,7 +482,7 @@ async def run_evaluation_docker_text(
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
+        return await run_evaluation_local_environment(models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
