@@ -1371,9 +1371,18 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
             query = f"""
                 INSERT INTO {cst.EVALUATIONS_TABLE}
                 ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
-                SELECT {cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                FROM {cst.TASK_NODES_TABLE}
-                WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
+                SELECT tn.{cst.TASK_ID}, tn.{cst.HOTKEY}, tn.{cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM {cst.TASK_NODES_TABLE} tn
+                WHERE tn.{cst.TASK_ID} = $1 AND tn.{cst.NETUID} = $2
+                AND (
+                    tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
+                    OR EXISTS (
+                        SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
+                        WHERE ttht.{cst.TASK_ID} = tn.{cst.TASK_ID}
+                          AND ttht.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                          AND ttht.{cst.TRAINING_STATUS} = 'success'
+                    )
+                )
             """
             await connection.execute(query, task_id, NETUID)
 
