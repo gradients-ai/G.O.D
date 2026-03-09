@@ -300,6 +300,7 @@ async def _poll_basilica_result(
                 timeout=30,
             )
             if response.status_code == 200:
+                eval_logger.info(f"[{repo}] Evaluation Completed: {response.json()}")
                 payload = response.json()
                 status = payload.get("status")
                 if status == "completed":
