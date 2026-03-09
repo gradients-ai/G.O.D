@@ -39,6 +39,30 @@ async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) 
             _active_tasks.pop(task_key, None)
 
 
+async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
+    task_id = req.training_data.task_id
+    hotkey = req.hotkey
+    try:
+        local_repo_path = await asyncio.to_thread(
+            clone_repo,
+            repo_url=req.github_repo,
+            parent_dir=cst.TEMP_REPO_PATH,
+            branch=req.github_branch,
+            commit_hash=req.github_commit_hash,
+        )
+    except Exception as e:
+        await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")
+        await complete_task(task_id, hotkey, success=False)
+        logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
+        return
+
+    logger.info(
+        f"Repo {req.github_repo} cloned to {local_repo_path}",
+        extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
+    )
+    await start_training_task(req, local_repo_path)
+
+
 async def verify_orchestrator_ip(request: Request):
     """Verify request comes from orchestrator IP"""
     client_ip = request.client.host
@@ -49,9 +73,11 @@ async def verify_orchestrator_ip(request: Request):
     if client_ip not in allowed_ips:
         raise HTTPException(status_code=403, detail="Access forbidden")
     return client_ip
+    
 
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     task_key = (req.training_data.task_id, req.hotkey)
+    bg_task = None
     async with _task_lock:
         existing_bg_task = _active_tasks.get(task_key)
         if existing_bg_task and not existing_bg_task.done():
@@ -68,34 +94,9 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
             await _start_task_unlocked(req)
         except ValueError as e:
             raise HTTPException(status_code=409, detail=str(e))
-
-    try:
-        local_repo_path = await asyncio.to_thread(
-            clone_repo,
-            repo_url=req.github_repo,
-            parent_dir=cst.TEMP_REPO_PATH,
-            branch=req.github_branch,
-            commit_hash=req.github_commit_hash,
-        )
-    except Exception as e:
-        await log_task(req.training_data.task_id, req.hotkey, f"Failed to clone repo: {str(e)}")
-        await complete_task(req.training_data.task_id, req.hotkey, success=False)
-        return {
-            "message": "Error cloning github repository",
-            "task_id": req.training_data.task_id,
-            "error": str(e),
-            "success": False,
-            "no_retry": True,
-        }
-
-    logger.info(
-        f"Repo {req.github_repo} cloned to {local_repo_path}",
-        extra={"task_id": req.training_data.task_id, "hotkey": req.hotkey, "model": req.training_data.model},
-    )
-
-    bg_task = asyncio.create_task(start_training_task(req, local_repo_path))
-    async with _task_lock:
+        bg_task = asyncio.create_task(_run_training_with_clone(req))
         _active_tasks[task_key] = bg_task
+
     bg_task.add_done_callback(lambda finished_task: asyncio.create_task(_remove_active_task(task_key, finished_task)))
 
     return {"message": "Started Training!", "task_id": req.training_data.task_id}
