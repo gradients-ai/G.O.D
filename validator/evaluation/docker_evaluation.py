@@ -931,8 +931,7 @@ async def run_evaluation_docker_environment(
                     env_logger.info(f"Deploying SGLang: {repo}")
 
                 sglang_deployment = await asyncio.to_thread(
-                    deploy_sglang_basilica, base_model, lora_model, f"{eval_id}-sglang", base_seed,
-                    gpu_count=max(1, num_gpus),
+                    deploy_sglang_basilica, base_model, lora_model, f"{eval_id}-sglang", base_seed
                 )
                 deployments["sglang"] = sglang_deployment
                 await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
