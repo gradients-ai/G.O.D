@@ -155,8 +155,7 @@ async def _create_first_round(
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
 
-        # Environment tournaments only have group stage, so mark it as final
-        is_final_round = tournament_type == TournamentType.ENVIRONMENT
+        is_final_round = False
 
         round_data = TournamentRoundData(
             round_id=round_id,
@@ -203,14 +202,14 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         # For environment tournaments, collect all participants from all groups
         if is_environment_tournament:
-            logger.info("Processing ENVIRONMENT tournament - assigning all participants + boss to single task")
+            logger.info("Processing ENVIRONMENT tournament - assigning all participants to single task")
             all_participants = []
             for group in round_structure.groups:
                 all_participants.extend(group.member_ids)
 
-            if EMISSION_BURN_HOTKEY not in all_participants:
+            if is_final_round and EMISSION_BURN_HOTKEY not in all_participants:
                 all_participants.append(EMISSION_BURN_HOTKEY)
-                logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament task")
+                logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament final round task")
         else:
             all_participants = None
 
@@ -298,30 +297,31 @@ async def create_next_round(
     tournament: TournamentData, completed_round: TournamentRoundData, winners: list[str], config, psql_db: PSQLDB
 ):
     """Create the next round of the tournament."""
-    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-        logger.info(f"Environment tournament {tournament.tournament_id} only has group stage, no next round to create")
-        return
-
     next_round_number = completed_round.round_number + 1
     next_round_id = generate_round_id(tournament.tournament_id, next_round_number)
 
     with LogContext(tournament_id=tournament.tournament_id, round_id=next_round_id):
         logger.info(f"Creating next round with {len(winners)} winners: {winners}")
-        next_round_is_final = len(winners) == 1
 
-        if len(winners) == 2:
-            if cst.EMISSION_BURN_HOTKEY in winners:
-                next_round_is_final = True
-        elif len(winners) % 2 == 1:
-            if cst.EMISSION_BURN_HOTKEY not in winners:
-                winners.append(cst.EMISSION_BURN_HOTKEY)
-                logger.info("Added burn hotkey to make even number of participants")
-            else:
-                if len(winners) == 1:
+        if tournament.tournament_type == TournamentType.ENVIRONMENT:
+            # Group round -> final round: all group winners compete together with the boss
+            next_round_is_final = True
+        else:
+            next_round_is_final = len(winners) == 1
+
+            if len(winners) == 2:
+                if cst.EMISSION_BURN_HOTKEY in winners:
                     next_round_is_final = True
+            elif len(winners) % 2 == 1:
+                if cst.EMISSION_BURN_HOTKEY not in winners:
+                    winners.append(cst.EMISSION_BURN_HOTKEY)
+                    logger.info("Added burn hotkey to make even number of participants")
                 else:
-                    winners = [w for w in winners if w != cst.EMISSION_BURN_HOTKEY]
-                    logger.info("Removed burn hotkey to make even number of participants")
+                    if len(winners) == 1:
+                        next_round_is_final = True
+                    else:
+                        winners = [w for w in winners if w != cst.EMISSION_BURN_HOTKEY]
+                        logger.info("Removed burn hotkey to make even number of participants")
 
         winner_nodes = []
         for hotkey in winners:
@@ -340,7 +340,9 @@ async def create_next_round(
 
         logger.info(f"Successfully found {len(winner_nodes)} nodes out of {len(winners)} winners")
 
-        round_structure = organise_tournament_round(winner_nodes, config)
+        round_structure = organise_tournament_round(
+            winner_nodes, config, tournament.tournament_type if tournament.tournament_type == TournamentType.ENVIRONMENT else None
+        )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
 
@@ -419,7 +421,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
         
-        if (len(winners) == 1 and completed_round.is_final_round) or tournament.tournament_type == TournamentType.ENVIRONMENT:
+        if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
             winner = winners[0]
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes

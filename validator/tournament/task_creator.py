@@ -21,6 +21,7 @@ from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
 from validator.tasks.synthetic_scheduler import _get_text_models
 from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_env_task
+from validator.tasks.synthetic_scheduler import create_synthetic_env_boss_task
 from validator.tasks.synthetic_scheduler import create_synthetic_grpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
@@ -80,12 +81,12 @@ async def create_environment_tournament_tasks(
     if not isinstance(round_data, GroupRound):
         raise ValueError("Environment tournaments only support group rounds")
     
-    tasks = await _create_environment_group_tasks(round_data, tournament_id, round_id, config)
+    tasks = await _create_environment_group_tasks(round_data, tournament_id, round_id, config, is_final_round)
     return [str(task.task_id) for task in tasks]
 
 
 async def _create_environment_group_tasks(
-    round_data: GroupRound, tournament_id: str, round_id: str, config: Config
+    round_data: GroupRound, tournament_id: str, round_id: str, config: Config, is_final_round: bool = False
 ) -> list[RawTask]:
     """
     Create a single environment task that all groups (and all participants + boss) compete on.
@@ -102,7 +103,12 @@ async def _create_environment_group_tasks(
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     
     logger.info("Creating single environment task for all participants")
-    task = await create_synthetic_env_task(config, models, instruct_datasets)
+
+    # If it is the final round we do a boss task of liars_dice
+    if is_final_round:
+        task = await create_synthetic_env_boss_task(config, models, instruct_datasets)
+    else:
+        task = await create_synthetic_env_task(config, models, instruct_datasets)
 
     group_id = f"{round_id}_group_001"
     await _create_and_register_tournament_task(
@@ -111,6 +117,7 @@ async def _create_environment_group_tasks(
     
     logger.info(f"Created environment tournament task {task.task_id} for all participants")
     return [task]
+
 
 
 async def _create_group_image_tasks(
