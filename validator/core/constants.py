@@ -57,9 +57,6 @@ EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
 
-_gpu_ids = os.getenv("GPU_IDS", "").strip()
-GPU_IDS = [int(id) for id in _gpu_ids.split(",")] if _gpu_ids else [0]
-
 # we sample datasets with these num_rows ranges equally
 DATASET_BINS_TO_SAMPLE = [
     (20_000, 50_000),
@@ -124,7 +121,6 @@ MAX_DELAY_TIMES = 6
 # Maximum number of evaluation attempts when all scores are zero (including the first one)
 MAX_EVAL_ATTEMPTS = 4
 MODEL_SIZE_REQUIRING_2_GPUS = 30 * 10**9  # 30B params
-
 # Tournament GPU requirement thresholds (in billions of parameters)
 TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100 = 4.0
 TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100 = 12.0
@@ -159,8 +155,10 @@ PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
-IMAGE_SYNTH_DOCKER_IMAGE = "diagonalge/image_synth:latest"
 SYNTH_CONTAINER_SAVE_PATH = "/app/images/"
+RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS = 1800
+RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
+RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
 MIN_NUM_REWARD_FUNCTIONS = 1
@@ -215,17 +213,13 @@ MAX_IMAGE_HEIGHT = 1024
 IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 
 # scoring stuff
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.55
-MAX_IMAGE_TOURNAMENT_WEIGHT = 0.35
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.10
-TOURNAMENT_TEXT_WEIGHT = 0.18
-TOURNAMENT_IMAGE_WEIGHT = 0.12
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.05
+MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
+MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.20
+TOURNAMENT_TEXT_WEIGHT = 0.15
+TOURNAMENT_IMAGE_WEIGHT = 0.10
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.10
 TOURNAMENT_INTERVAL_HOURS = 72
-TOURNAMENT_TEXT_WEIGHT = 0.20
-TOURNAMENT_IMAGE_WEIGHT = 0.15
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.6
-MAX_IMAGE_TOURNAMENT_WEIGHT = 0.4
 
 # Tournament scheduling settings
 # Tournaments start every week on these days and hours (UTC)
@@ -321,9 +315,9 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Environment evaluation constants
 BASILICA_SGLANG_IMAGE = "lmsysorg/sglang:latest"
-BASILICA_ENV_IMAGE = "affinefoundation/agentgym:alfworld"
+BASILICA_ENV_IMAGE = "phoenixbeaudry/game:mcts-api"
 BASILICA_SGLANG_GPU_COUNT = 1
-BASILICA_SGLANG_GPU_MODELS = ["A100"]
+BASILICA_GPU_MODELS = ["H100", "A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
 BASILICA_SGLANG_MEMORY = "16Gi"
 BASILICA_SGLANG_TTL_SECONDS = 10800
@@ -336,28 +330,63 @@ BASILICA_ENV_TIMEOUT = 600
 ENVIRONMENTS = {
     "alfworld": {
         "task_id_range": (1, 2500),
+        "num_seeds": 100,
         "env_image": "affinefoundation/agentgym:alfworld",
         "eval_payload_extra": {"max_round": 30},
     },
     "goofspiel": {
         "task_id_range": (0, 99999999),
+        "num_seeds": 2000,
         "env_image": "diagonalge/openspiel:latest",
         "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
     },
+    "gin_rummy": {
+        "task_id_range": (300000000, 399999999),
+        "num_seeds": 1000,
+        "env_image": "diagonalge/mcts-api:latest",
+        "eval_payload_extra": {
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    },
+    "liars_dice": {
+        "task_id_range": (100000000, 199999999),
+        "num_seeds": 2000,
+        "env_image": "phoenixbeaudry/game:mcts-api",
+        "eval_payload_extra": {
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    },
 }
 
-DEFAULT_ENV = "goofspiel"
+DEFAULT_ENV = "gin_rummy"
 NUM_EVAL_SAMPLES = 250
 
 ENV_EVAL_NUM_SEEDS = 2000
 ENV_EVAL_DEFAULT_SEED = 42
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_MAX_CONCURRENT_REQUESTS = 4
-ENV_EVAL_MAX_RETRIES = 5
-ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 600
-ENV_EVAL_TASK_RETRY_DELAY = 10.0
-ENV_EVAL_TASK_TIMEOUT = 120
+ENV_EVAL_MAX_RETRIES = 3
+ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 1200
+ENV_EVAL_TASK_RETRY_DELAY = 10
+ENV_EVAL_TASK_MAX_RETRIES = 3
+ENV_EVAL_TASK_TIMEOUT = 180
 ENV_EVAL_SESSION_TIMEOUT = 7200
+
+# Basilica offloaded evaluation (text/image/grpo)
+EVAL_BASILICA_CPU = "4"
+EVAL_BASILICA_MEMORY = "64Gi"
+EVAL_BASILICA_TTL_SECONDS = 10800
+EVAL_BASILICA_TIMEOUT = 1800
+EVAL_BASILICA_MAX_RETRIES = 3
+EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
+EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
+EVAL_BASILICA_MAX_POLL_SECONDS = 10800
 
 LOCAL_ENV_DOCKER_NETWORK = "agent_eval_net"
 LOCAL_ENV_SGLANG_PORT = 30000

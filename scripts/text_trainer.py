@@ -113,13 +113,17 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
         config["trl"]["reward_weights"] = [reward_function.reward_weight for reward_function in dataset_type.reward_functions]
     elif isinstance(dataset_type, EnvironmentDatasetType):
         # Switch based on the environment
-        if dataset_type.environment_name == "alfworld":
-            config["trl"]["rollout_func"] = "alfworld.alfworld_rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["alfworld.alfworld_rollout_reward_func"]
+        if dataset_type.environment_name == "goofspiel":
+            config["trl"]["rollout_func"] = "goofspiel.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = ["goofspiel.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]
-        elif dataset_type.environment_name == "goofspiel":
-            config["trl"]["rollout_func"] = "affine_game.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["affine_game.rollout_reward_func"]
+        elif dataset_type.environment_name == "gin_rummy":
+            config["trl"]["rollout_func"] = "gin_rummy.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = ["gin_rummy.rollout_reward_func"]
+            config["trl"]["reward_weights"] = [1.0]
+        elif dataset_type.environment_name == "liars_dice":
+            config["trl"]["rollout_func"] = "liars_dice.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = ["liars_dice.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]
 
     if file_format != FileFormat.HF.value:

@@ -34,8 +34,8 @@ from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
-from validator.evaluation.docker_evaluation import run_evaluation_docker_image
-from validator.evaluation.docker_evaluation import run_evaluation_docker_text
+from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
+from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
@@ -262,7 +262,7 @@ def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) 
 async def _evaluate_submissions(
     task: AnyTypeRawTask,
     submission_repos: list[str],
-    gpu_ids: list[int],
+    num_gpus: int,
     dataset_type: TextDatasetType | None = None,
     config: "Config | None" = None,
 ) -> dict[str, EvaluationResultText | EvaluationResultImage | Exception]:
@@ -297,20 +297,15 @@ async def _evaluate_submissions(
             "original_model": task.model_id,
             "models": repos_to_evaluate,
             "dataset_type": dataset_type,
-            "gpu_ids": gpu_ids,
+            "num_gpus": num_gpus,
             "eval_seed": eval_seed,
         }
 
         logger.info("Starting test evaluation")
         if task.task_type != TaskType.ENVIRONMENTTASK:
-            test_data_filepath = await download_s3_file(task.test_data)
-            test_results = await run_evaluation_docker_text(dataset=test_data_filepath, **evaluation_params)
-            try:
-                os.remove(test_data_filepath)
-            except Exception as e:
-                logger.warning(f"Failed to remove test data file {test_data_filepath}: {e}")
+            test_results = await run_evaluation_basilica_text(dataset=task.test_data, **evaluation_params)
         else:
-            test_results = await run_evaluation_docker_text(dataset="proxy", **evaluation_params)
+            test_results = await run_evaluation_basilica_text(dataset="proxy", **evaluation_params)
             test_eval_results = test_results.results
 
         test_eval_results = test_results.results
@@ -343,12 +338,12 @@ async def _evaluate_submissions(
             "original_model_repo": task.model_id,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
-            "gpu_ids": gpu_ids,
+            "num_gpus": num_gpus,
         }
 
         assert task.test_data is not None, "Test data shouldn't be none for image tasks"
         logger.info("Starting image model evaluation")
-        image_results = await run_evaluation_docker_image(**evaluation_params)
+        image_results = await run_evaluation_basilica_image(**evaluation_params)
         image_eval_results = image_results.results
         task.model_params_count = image_results.base_model_params_count
         for repo in repos_to_evaluate:
@@ -425,7 +420,7 @@ async def process_miners_pool(
     miners: list[Node],
     task: AnyTypeRawTask,
     config: Config,
-    gpu_ids: list[int],
+    num_gpus: int,
     dataset_type: TextDatasetType | None = None,
 ) -> list[MinerResultsText | MinerResultsImage]:
     assert task.task_id is not None, "We should have a task id when processing miners"
@@ -453,7 +448,7 @@ async def process_miners_pool(
     if miner_repos:
         try:
             eval_results = await _evaluate_submissions(
-                task=task, submission_repos=list(miner_repos.values()), gpu_ids=gpu_ids, dataset_type=dataset_type or None, config=config
+                task=task, submission_repos=list(miner_repos.values()), num_gpus=num_gpus, dataset_type=dataset_type or None, config=config
             )
 
             for miner in miners:
@@ -529,6 +524,33 @@ async def process_miners_pool(
     return results
 
 
+async def evaluate_and_score_hotkeys(
+    task: AnyTypeRawTask,
+    hotkeys: list[str],
+    num_gpus: int,
+    config: Config,
+) -> tuple[list[str], list[str]]:
+    """
+    Evaluate a subset of task hotkeys, persist scores, and return:
+    (evaluated_hotkeys, failed_hotkeys).
+    """
+    assert task.task_id is not None, "Task ID must be present"
+
+    miner_pool = await get_nodes_assigned_to_task(str(task.task_id), config.psql_db)
+    miner_pool = [miner for miner in miner_pool if miner.hotkey in set(hotkeys)]
+
+    dataset_type = _get_dataset_type(task)
+    logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
+    task_results = await process_miners_pool(miner_pool, task, config, num_gpus, dataset_type)
+
+    failed_hotkeys = [result.hotkey for result in task_results if (not result.is_finetune) or np.isnan(result.test_loss)]
+    evaluated_hotkeys = [result.hotkey for result in task_results]
+
+    task_results = calculate_miner_ranking_and_scores(task_results)
+    await _update_scores(task, task_results, config.psql_db)
+    return evaluated_hotkeys, failed_hotkeys
+
+
 def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage]) -> bool:
     try:
         for result in task_results:
@@ -540,7 +562,7 @@ def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage
     return False
 
 
-async def evaluate_and_score(task: AnyTypeRawTask, gpu_ids: list[int], config: Config) -> AnyTypeRawTask:
+async def evaluate_and_score(task: AnyTypeRawTask, num_gpus: int, config: Config) -> AnyTypeRawTask:
     assert task.task_id is not None, "Task ID must be present"
     assert task.test_data is not None, "Test data must be present"
 
@@ -575,7 +597,7 @@ async def evaluate_and_score(task: AnyTypeRawTask, gpu_ids: list[int], config: C
     dataset_type = _get_dataset_type(task)
 
     logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
-    task_results = await process_miners_pool(miner_pool, task, config, gpu_ids, dataset_type)
+    task_results = await process_miners_pool(miner_pool, task, config, num_gpus, dataset_type)
 
     if has_disk_cache_error(task_results):
         if task.n_eval_attempts < cts.MAX_EVAL_ATTEMPTS - 1:

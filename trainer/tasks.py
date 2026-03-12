@@ -1,10 +1,12 @@
 import asyncio
 import json
+import os
+import tempfile
+import threading
+import time
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
-
-import aiofiles
 
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
@@ -18,34 +20,43 @@ logger = get_logger(__name__)
 task_history: list[TrainerTaskLog] = []
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
 _task_lock = asyncio.Lock()
+_task_file_lock = threading.Lock()
+_TASK_HISTORY_READ_RETRIES = 3
+_TASK_HISTORY_RETRY_DELAY_SECONDS = 0.5
 
 
 async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
     async with _task_lock:
-        load_task_history()
-        
-        task_id = task.training_data.task_id
-        hotkey = task.hotkey
+        return await _start_task_unlocked(task)
 
-        existing_task = get_task(task_id, hotkey)
-        if existing_task:
-            existing_task.logs.clear()
-            existing_task.status = TaskStatus.TRAINING
-            existing_task.started_at = datetime.utcnow()
-            existing_task.finished_at = None
-            existing_task.gpu_ids = task.gpu_ids
-            await save_task_history()
-            return task_id, hotkey
 
-        log_entry = TrainerTaskLog(
-            **task.dict(),
-            status=TaskStatus.TRAINING,
-            started_at=datetime.utcnow(),
-            finished_at=None,
-        )
-        task_history.append(log_entry)
+async def _start_task_unlocked(task: TrainerProxyRequest) -> tuple[str, str]:
+    load_task_history()
+
+    task_id = task.training_data.task_id
+    hotkey = task.hotkey
+
+    existing_task = get_task(task_id, hotkey)
+    if existing_task:
+        if existing_task.status == TaskStatus.TRAINING:
+            raise ValueError(f"Task {task_id} for hotkey {hotkey} is already training")
+        existing_task.logs.clear()
+        existing_task.status = TaskStatus.TRAINING
+        existing_task.started_at = datetime.utcnow()
+        existing_task.finished_at = None
+        existing_task.gpu_ids = task.gpu_ids
         await save_task_history()
-        return log_entry.training_data.task_id, log_entry.hotkey
+        return task_id, hotkey
+
+    log_entry = TrainerTaskLog(
+        **task.dict(),
+        status=TaskStatus.TRAINING,
+        started_at=datetime.utcnow(),
+        finished_at=None,
+    )
+    task_history.append(log_entry)
+    await save_task_history()
+    return log_entry.training_data.task_id, log_entry.hotkey
 
 
 async def complete_task(task_id: str, hotkey: str, success: bool = True):
@@ -91,6 +102,19 @@ async def update_wandb_url(task_id: str, hotkey: str, wandb_url: str):
             logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
 
 
+async def update_container_name(task_id: str, hotkey: str, container_name: str):
+    async with _task_lock:
+        load_task_history()
+
+        task = get_task(task_id, hotkey)
+        if task:
+            task.container_name = container_name
+            await save_task_history()
+            logger.info(f"Updated container_name for task {task_id}: {container_name}")
+        else:
+            logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
+
+
 def get_running_tasks() -> list[TrainerTaskLog]:
     load_task_history()
     return [t for t in task_history if t.status == TaskStatus.TRAINING]
@@ -112,20 +136,55 @@ def get_recent_tasks(hours: float = 1.0) -> list[TrainerTaskLog]:
 
 
 async def save_task_history():
-    async with aiofiles.open(TASK_HISTORY_FILE, "w") as f:
-        data = json.dumps([t.model_dump() for t in task_history], indent=2, default=str)
-        await f.write(data)
+    data = json.dumps([t.model_dump() for t in task_history], indent=2, default=str)
+    await asyncio.to_thread(_atomic_write_task_history, data)
 
 
 def load_task_history():
     global task_history
     if TASK_HISTORY_FILE.exists():
-        try:
-            with open(TASK_HISTORY_FILE, "r") as f:
-                data = json.load(f)
+        for attempt in range(_TASK_HISTORY_READ_RETRIES):
+            try:
+                data = _read_task_history()
                 task_history.clear()
                 task_history.extend(TrainerTaskLog(**item) for item in data)
-        except (json.JSONDecodeError, ValueError) as e:
-            logger.error(f"Failed to load task history from {TASK_HISTORY_FILE}: {e}")
-        except Exception as e:
-            logger.error(f"Unexpected error loading task history: {e}")
+                return
+            except (json.JSONDecodeError, ValueError) as e:
+                if attempt < _TASK_HISTORY_READ_RETRIES - 1:
+                    time.sleep(_TASK_HISTORY_RETRY_DELAY_SECONDS)
+                    continue
+                logger.error(f"Failed to load task history from {TASK_HISTORY_FILE}: {e}")
+            except Exception as e:
+                logger.error(f"Unexpected error loading task history: {e}")
+                return
+
+
+def _read_task_history() -> list[dict]:
+    with _task_file_lock:
+        with open(TASK_HISTORY_FILE, "r", encoding="utf-8") as f:
+            content = f.read()
+
+    if not content.strip():
+        raise json.JSONDecodeError("Empty task history file", content, 0)
+
+    return json.loads(content)
+
+
+def _atomic_write_task_history(data: str) -> None:
+    TASK_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: str | None = None
+    with _task_file_lock:
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f"{TASK_HISTORY_FILE.name}.",
+            suffix=".tmp",
+            dir=str(TASK_HISTORY_FILE.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                tmp_file.write(data)
+                tmp_file.flush()
+                os.fsync(tmp_file.fileno())
+            os.replace(temp_path, TASK_HISTORY_FILE)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)

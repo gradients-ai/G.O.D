@@ -442,7 +442,7 @@ async def create_synthetic_env_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    selected_environment = "goofspiel"
+    selected_environment = "gin_rummy"
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)

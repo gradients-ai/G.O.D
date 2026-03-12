@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 
+import basilica
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -13,7 +14,8 @@ from validator.core.models import RawTask
 from validator.core.task_config_models import get_task_config
 from validator.cycle.util_functions import get_model_num_params
 from validator.db.database import PSQLDB
-from validator.evaluation.scoring import evaluate_and_score
+from validator.evaluation.scoring import evaluate_and_score_hotkeys
+from validator.tournament.utils import send_to_discord
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
 from validator.utils.logging import LogContext
@@ -125,20 +127,85 @@ async def _processing_pending_tasks(config: Config):
     clean_all_hf_datasets_cache()
 
 
-async def _evaluate_task(task: AnyTypeRawTask, gpu_ids: list[int], config: Config):
-    gpu_ids_str = "," + ",".join(str(gpu_id) for gpu_id in gpu_ids) + ","
-    with LogContext(task_id=str(task.task_id), gpu_ids=gpu_ids_str):
+async def _seed_task_evaluations_for_preevaluation(config: Config) -> None:
+    tasks_to_seed = await tasks_sql.get_tasks_with_status(
+        TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
+    )
+    for task in tasks_to_seed:
         try:
+            assert task.task_id is not None
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
-            task = await evaluate_and_score(task, gpu_ids, config)
-            await tasks_sql.update_task(task, config.psql_db)
+            logger.info(f"Task {task.task_id} moved to EVALUATING and evaluation rows seeded")
         except Exception as e:
-            logger.error(f"Error evaluating task {task.task_id}: {e}", exc_info=True)
-            task.status = TaskStatus.FAILURE
-            add_context_tag("status", task.status.value)
-            await tasks_sql.update_task(task, config.psql_db)
+            logger.error(f"Failed to seed evaluations for task {task.task_id}: {e}", exc_info=True)
+
+
+async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: Config) -> bool:
+    assert task.task_id is not None
+    rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
+    if not rows:
+        logger.warning(f"No evaluation rows found for task {task.task_id}")
+        return False
+
+    statuses = [row["evaluation_status"] for row in rows]
+    if any(status in ("pending", "evaluating") for status in statuses):
+        return False
+
+    if any(status == "failure" for status in statuses):
+        task.status = TaskStatus.FAILURE
+        add_context_tag("status", task.status.value)
+        failed_hotkeys = [row["hotkey"] for row in rows if row["evaluation_status"] == "failure"]
+        if config.discord_url:
+            try:
+                await send_to_discord(
+                    config.discord_url,
+                    f"Evaluation failed for task {task.task_id}. Failed hotkeys: {failed_hotkeys}",
+                )
+            except Exception as e:
+                logger.warning(f"Failed to send evaluation webhook: {e}")
+    else:
+        task.status = TaskStatus.SUCCESS
+        add_context_tag("status", task.status.value)
+
+    task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
+    await tasks_sql.update_task(task, config.psql_db)
+    logger.info(f"Task {task.task_id} finalized as {task.status.value}")
+    return True
+
+
+async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
+    assert task.task_id is not None
+
+    pending_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "pending", config.psql_db)
+    if not pending_rows:
+        await _finalize_task_status_from_evaluations(task, config)
+        return
+
+    pending_hotkeys = [row["hotkey"] for row in pending_rows]
+    await tasks_sql.update_task_evaluations_status(task.task_id, pending_hotkeys, "evaluating", config.psql_db)
+
+    try:
+        evaluated_hotkeys, failed_hotkeys = await evaluate_and_score_hotkeys(task, pending_hotkeys, num_gpus, config)
+        not_evaluated_hotkeys = [h for h in pending_hotkeys if h not in set(evaluated_hotkeys)]
+        failed_set = set(failed_hotkeys)
+        failed_set.update(not_evaluated_hotkeys)
+        success_hotkeys = [hotkey for hotkey in evaluated_hotkeys if hotkey not in failed_set]
+
+        await tasks_sql.update_task_evaluations_status(task.task_id, success_hotkeys, "success", config.psql_db)
+        await tasks_sql.update_task_evaluations_status(
+            task.task_id,
+            list(failed_set),
+            "failure",
+            config.psql_db,
+        )
+    except Exception as e:
+        logger.error(f"Error evaluating pending pairs for task {task.task_id}: {e}", exc_info=True)
+        await tasks_sql.update_task_evaluations_status(task.task_id, pending_hotkeys, "failure", config.psql_db)
+
+    await _finalize_task_status_from_evaluations(task, config)
 
 
 async def _move_back_to_looking_for_nodes(task: AnyTypeRawTask, config: Config):
@@ -157,10 +224,32 @@ async def _handle_delayed_tasks(config: Config):
 
 
 async def _move_to_preevaluation_status(task, config):
+    await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
     task.status = TaskStatus.PREEVALUATION
     add_context_tag("status", task.status.value)
     logger.info(f"Changing status to {task.status}")
     await tasks_sql.update_task(task, config.psql_db)
+
+
+async def _cleanup_all_running_basilica_deployments() -> None:
+    """Cleanup of Basilica deployments on startup."""
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list Basilica deployments for cleanup: {e}")
+        return
+
+    deleted_count = 0
+    for deployment in deployments:
+        try:
+            await asyncio.to_thread(deployment.delete)
+            deleted_count += 1
+        except Exception as e:
+            logger.warning(f"Failed to delete Basilica deployment during startup cleanup: {e}")
+
+    if deleted_count:
+        logger.info(f"Deleted {deleted_count} Basilica deployments during startup cleanup")
 
 
 async def _move_any_evaluating_tasks_to_pending_evaluation(config: Config):
@@ -234,61 +323,33 @@ async def cleanup_model_cache_loop(psql_db: PSQLDB):
 
 
 async def evaluate_tasks_loop(config: Config):
-    task_queue = asyncio.Queue()
-    gpu_queue = asyncio.Queue()
-    processing_task_ids = set()
-    # Lock to prevent race conditions (thus potential deadlocks) during GPU acquisition
-    gpu_acquisition_lock = asyncio.Lock()
-
-    for gpu_id in cst.GPU_IDS:
-        await gpu_queue.put(gpu_id)
-
-    async def evaluation_worker():
-        while True:
-            try:
-                task = await asyncio.wait_for(task_queue.get(), timeout=1)
-                required_gpus = compute_required_gpus(task)
-                gpu_ids = []
-
-                # Acquire lock to prevent other tasks from taking GPUs until we get all we need
-                async with gpu_acquisition_lock:
-                    for _ in range(required_gpus):
-                        gpu_ids.append(await gpu_queue.get())
-
-                try:
-                    await _evaluate_task(task, gpu_ids, config)
-                finally:
-                    for gpu_id in gpu_ids:
-                        await gpu_queue.put(gpu_id)
-                    processing_task_ids.remove(task.task_id)
-                    task_queue.task_done()
-            except asyncio.TimeoutError:
-                await asyncio.sleep(5)
-                continue
-            except Exception as e:
-                logger.error(f"Error in evaluation worker: {str(e)}", exc_info=True)
-                continue
-
-    for _ in cst.GPU_IDS:
-        asyncio.create_task(evaluation_worker())
+    processing_task_ids: set[str] = set()
 
     while True:
-        if len(processing_task_ids) < 2 * len(cst.GPU_IDS):
-            tasks_to_evaluate = await tasks_sql.get_tasks_with_status(
-                TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
-            )
-            if tasks_to_evaluate:
-                logger.info(f"Found {len(tasks_to_evaluate)} new tasks awaiting evaluation, adding to queue")
-                for task in tasks_to_evaluate:
-                    # Only add to queue if not already added, some tasks in the queue might still have TaskStatus.PREEVALUATION
-                    if task.task_id not in processing_task_ids:
-                        processing_task_ids.add(task.task_id)
-                        await task_queue.put(task)
-            else:
-                logger.info("No new tasks awaiting evaluation - waiting 30 seconds")
+        await _seed_task_evaluations_for_preevaluation(config)
+
+        evaluating_tasks = await tasks_sql.get_tasks_with_status(
+            TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
+        )
+        if evaluating_tasks:
+            logger.info(f"Found {len(evaluating_tasks)} tasks in EVALUATING")
+            for task in evaluating_tasks:
+                if task.task_id not in processing_task_ids:
+                    processing_task_ids.add(task.task_id)
+                    asyncio.create_task(_run_and_cleanup(task, processing_task_ids, config))
         else:
-            logger.info("Evaluation queue is full - waiting for 30 seconds")
+            logger.info("No tasks in EVALUATING - waiting 30 seconds")
         await asyncio.sleep(30)
+
+
+async def _run_and_cleanup(task: RawTask, processing_task_ids: set[str], config: Config):
+    try:
+        num_gpus = compute_required_gpus(task)
+        await _evaluate_pending_pairs_for_task(task, num_gpus, config)
+    except Exception as e:
+        logger.error(f"Error evaluating task {task.task_id}: {e}", exc_info=True)
+    finally:
+        processing_task_ids.discard(task.task_id)
 
 
 def compute_required_gpus(task: RawTask) -> int:
@@ -316,6 +377,7 @@ def compute_required_gpus(task: RawTask) -> int:
 
 
 async def process_completed_tasks(config: Config) -> None:
+    await _cleanup_all_running_basilica_deployments()
     await _move_any_evaluating_tasks_to_pending_evaluation(config)
 
     await asyncio.gather(evaluate_tasks_loop(config), cleanup_model_cache_loop(config.psql_db))

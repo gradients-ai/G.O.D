@@ -28,10 +28,10 @@ def create_dataset_entry(
     logger.info(dataset_type)
 
     if file_format == FileFormat.JSON:
-        if not is_eval:
-            dataset_entry = {"path": "/workspace/input_data/"}
+        if is_eval:
+            dataset_entry = {"path": os.path.dirname(dataset)}
         else:
-            dataset_entry = {"path": f"/workspace/input_data/{os.path.basename(dataset)}"}
+            dataset_entry = {"path": "/workspace/input_data/"}
 
     if isinstance(dataset_type, EnvironmentDatasetType):
         dataset_entry.update(_process_environment_dataset_fields(dataset_type))
@@ -49,7 +49,10 @@ def create_dataset_entry(
 
     if file_format != FileFormat.HF:
         dataset_entry["ds_type"] = file_format.value
-        dataset_entry["data_files"] = [os.path.basename(dataset)]
+        if is_eval:
+            dataset_entry["data_files"] = [os.path.abspath(dataset)]
+        else:
+            dataset_entry["data_files"] = [os.path.basename(dataset)]
 
     return dataset_entry
 

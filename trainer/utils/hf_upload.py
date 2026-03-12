@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 
 import wandb
 from huggingface_hub import HfApi, login
@@ -168,14 +169,28 @@ def main():
     if repo_subfolder:
         print(f"Uploading into subfolder: {repo_subfolder}", flush=True)
 
-    api.upload_folder(
-        repo_id=repo_id,
-        folder_path=local_folder,
-        path_in_repo=repo_subfolder if repo_subfolder else None,
-        commit_message=f"Upload task output {task_id}",
-        token=hf_token,
-        delete_patterns=["*"],
-    )
+    max_retries = 3
+    retry_delay_seconds = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            api.upload_folder(
+                repo_id=repo_id,
+                folder_path=local_folder,
+                path_in_repo=repo_subfolder if repo_subfolder else None,
+                commit_message=f"Upload task output {task_id}",
+                token=hf_token,
+                delete_patterns=["*"],
+            )
+            break
+        except Exception as e:
+            if attempt == max_retries:
+                raise
+            print(
+                f"Upload failed (attempt {attempt}/{max_retries}): {e}. "
+                f"Retrying in {retry_delay_seconds}s...",
+                flush=True,
+            )
+            time.sleep(retry_delay_seconds)
 
     print(f"Uploaded successfully to https://huggingface.co/{repo_id}", flush=True)
 

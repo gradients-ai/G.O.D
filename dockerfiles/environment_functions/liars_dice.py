@@ -1,16 +1,10 @@
-"""
-Notes:
-With the Affine GAME environment when you reset to start a new game you have to choose an 'opponent' type to train against.
-Your two options are 'random' and 'mcts'.
-Miners are free to choose which opponent type they train against. 
-"""
-
 def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: int = 30) -> dict[str, list]:
     from trl.experimental.openenv import generate_rollout_completions
     import os
     import random
     import requests
     import json
+    DEBUG = False
 
     games_to_task_id_range = {
         "goofspiel": (0, 99999999),
@@ -23,7 +17,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         "clobber": (700000000, 799999999),
     }
 
-    selected_game = "goofspiel"
+    selected_game = "liars_dice"
     
     # --- 1. Static Initialization (Once per Rank) ---
     # We check if the function has already established a connection for this worker
@@ -49,7 +43,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         # Create environment (POST /create) - ONLY ONCE
         try:
             print(f"Initializing environment on rank {rank} at {base_url}...")
-            payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts"}
+            payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
             create_res = requests.post(f"{base_url}/reset", json=payload, timeout=300)
             create_res.raise_for_status()
             rollout_first_prompt_and_completion.initialized = True
@@ -84,7 +78,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         turn_number = 0
         
         # --- Reset Environment (POST /reset) ---
-        payload = {"task_id": game_id, "seed": 42, "opponent": "mcts"}
+        # Reuse existing env_id, just change the game
+        payload = {"task_id": game_id, "seed": game_id, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
         
         try:
             reset_res = requests.post(f"{env_endpoint}/reset", json=payload, timeout=TIMEOUT)
@@ -100,6 +95,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
             format_instructions = 'Your output must strictly follow this format: "Thought:\nyour thoughts ONLY in text.\n\nAction:\nONLY your action ID (a single number)."'
             current_observation += format_instructions
 
+            if DEBUG:
+                print(f"Env Reset. Observation: {current_observation}", flush=True)
 
         except Exception as e:
             print(f"Failed to reset environment (Game {game_id}): {e}")
@@ -136,6 +133,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 action_to_send = action_to_send.split("Action:")[-1].strip()
             
             # --- Step Environment (POST /step) ---
+            if DEBUG:
+                print(f"Sending Action to Env: {action_to_send}", flush=True)
 
             try:
                 formatted_observation = ""
@@ -144,6 +143,9 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 step_res.raise_for_status()
                 step_data = step_res.json()
                 step_block = step_data["result"]
+
+                if DEBUG:
+                    print(f"Env Step Response: {step_data}", flush=True)
 
                 # Extract response data
                 step_state = step_block.get("observation", "")
@@ -154,7 +156,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 formatted_observation = step_state
                 
             except Exception as e:
-                print(f"Step failed: {e}")
+                if DEBUG: 
+                    print(f"Step failed: {e}")
                 formatted_observation = "Invalid Action.\n\n" + formatted_observation 
                 step_reward = -0.01
                 done = False

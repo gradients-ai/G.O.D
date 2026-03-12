@@ -4,7 +4,7 @@
 
 The Gradient subnet is **100% tournament-based**. Emissions are distributed between:
 
-1. **Tournament champions** (text and image, calculated separately)
+1. **Tournament champions** (text, image, and environment, calculated separately)
 2. **Tournament participants** (0.01% per active participant)
 3. **Burn address** (all remaining weight)
 
@@ -14,10 +14,12 @@ From [`validator/core/constants.py`](../validator/core/constants.py):
 
 ```python
 # Base allocations
-TOURNAMENT_TEXT_WEIGHT = 0.20          # 20% base
-TOURNAMENT_IMAGE_WEIGHT = 0.15         # 15% base
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.6       # 60% maximum
-MAX_IMAGE_TOURNAMENT_WEIGHT = 0.4      # 40% maximum
+TOURNAMENT_TEXT_WEIGHT = 0.15          # 15% base
+TOURNAMENT_IMAGE_WEIGHT = 0.10         # 10% base
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.10   # 10% base
+MAX_TEXT_TOURNAMENT_WEIGHT = 0.48      # 48% maximum
+MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32     # 32% maximum
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.20  # 20% maximum
 
 # Performance boosts
 EMISSION_MULTIPLIER_THRESHOLD = 0.05   # Must exceed 5% to get boost
@@ -39,8 +41,9 @@ TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001  # 0.01% per participant
 ### 1. Base Allocation
 
 ```python
-text_weight = 0.20
-image_weight = 0.15
+text_weight = 0.15
+image_weight = 0.10
+environment_weight = 0.10
 burn_weight = 0.65
 ```
 
@@ -56,7 +59,7 @@ if performance_diff > 0.05:
     emission_increase = emission_increase - decay
 
     # Apply MAX cap
-    text_weight = min(0.20 + emission_increase, 0.6)
+    text_weight = min(0.15 + emission_increase, 0.48)
 ```
 
 **Result:** Strong performance = higher allocation, weak performance = more burn
@@ -66,7 +69,7 @@ if performance_diff > 0.05:
 **Critical:** Champions and non-champions use different weight pools.
 
 - **Champion:** Uses the boosted tournament weight pool (e.g., 0.35 if earned 20% boost)
-- **Non-champions:** Share the base weight pool (0.20 for text, 0.15 for image)
+- **Non-champions:** Share the base weight pool (0.15 for text, 0.10 for image, 0.10 for environment)
 - Both are then distributed by rank using exponential decay (see below)
 - **Undistributed:** Goes to burn address
 
@@ -83,11 +86,11 @@ weight[rank] = 0.3^(rank - 1)
 
 - Champion weight = 1.0 \* 0.35 = 0.35
 
-If 3 non-champions share 0.20 base pool at ranks 2nd, 3rd, 4th:
+If 3 non-champions share 0.15 base pool at ranks 2nd, 3rd, 4th:
 
-- 2nd place = 0.3 \* (0.20 / sum_of_decay_weights)
-- 3rd place = 0.09 \* (0.20 / sum_of_decay_weights)
-- 4th place = 0.027 \* (0.20 / sum_of_decay_weights)
+- 2nd place = 0.3 \* (0.15 / sum_of_decay_weights)
+- 3rd place = 0.09 \* (0.15 / sum_of_decay_weights)
+- 4th place = 0.027 \* (0.15 / sum_of_decay_weights)
 
 Where sum_of_decay_weights = 0.3 + 0.09 + 0.027 = 0.417
 
@@ -98,9 +101,9 @@ Where sum_of_decay_weights = 0.3 + 0.09 + 0.027 = 0.417
 Text champion outperformed runner-up by 15% (performance_diff = 0.15):
 
 ```
-Base: 0.20
+Base: 0.15
 Boost: (0.15 - 0.05) * 2.0 = 0.20
-Text champion weight: 0.40
+Text champion weight: 0.35
 ```
 
 ### Long-Reigning Champion (30 days)
@@ -108,11 +111,11 @@ Text champion weight: 0.40
 Text champion outperformed runner-up by 20% (performance_diff = 0.20):
 
 ```
-Base: 0.20
+Base: 0.15
 Raw boost: (0.20 - 0.05) * 2.0 = 0.30
 Decay: 30 days * 0.0033 = 0.099
 Final boost: 0.30 - 0.099 = 0.201
-Text champion weight: 0.401
+Text champion weight: 0.351
 ```
 
 Despite 20% performance, time-based decay reduces boost from 0.30 to 0.201.
@@ -122,7 +125,7 @@ Despite 20% performance, time-based decay reduces boost from 0.30 to 0.201.
 Champion outperformed runner-up by only 3% (performance_diff = 0.03):
 
 ```
-Text champion weight: 0.20 (no boost - below 5% threshold)
+Text champion weight: 0.15 (no boost - below 5% threshold)
 ```
 
 ## Key Mechanisms
@@ -131,13 +134,13 @@ Text champion weight: 0.20 (no boost - below 5% threshold)
 
 **Balance Controls:**
 
-- MAX caps prevent domination (60% text, 40% image)
+- MAX caps prevent domination (48% text, 32% image, 20% environment)
 - Time-based decay (-0.33% per day) prevents indefinite reign
 - Dual weights ensure only champions benefit from boosts
 
 **Burn as Quality Signal:** Weak performance = high burn rate
 
-**Text/Image Independence:** Tournaments calculated separately - a miner can win both
+**Tournament Independence:** Text, image, and environment tournaments are calculated separately
 
 ## Implementation
 

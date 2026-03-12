@@ -15,7 +15,7 @@ output_dir: miner_id_24
 rl: grpo
 vllm:
   tensor_parallel_size: 1
-  gpu_memory_utilization: 0.15
+  gpu_memory_utilization: 0.25
   max_model_len: 24000
   enable_prefix_caching: False
 trl:

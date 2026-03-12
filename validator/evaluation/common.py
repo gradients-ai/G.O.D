@@ -172,7 +172,7 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
                         if has_model_files and has_config:
                             try:
                                 model = AutoModelForCausalLM.from_pretrained(
-                                    snapshot_path, device_map="auto", torch_dtype=torch.bfloat16, local_files_only=True
+                                    snapshot_path, device_map="balanced", torch_dtype=torch.bfloat16, local_files_only=local_files_only
                                 )
                                 return model
                             except Exception as e:
@@ -189,7 +189,7 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
             cache_dir = None
 
         kwargs = {
-            "device_map": "auto",
+            "device_map": "balanced",
             "cache_dir": cache_dir,
             "torch_dtype": torch.bfloat16,
             "local_files_only": local_files_only,
@@ -289,7 +289,7 @@ def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftM
                                 model = AutoPeftModelForCausalLM.from_pretrained(
                                     snapshot_path,
                                     is_trainable=False,
-                                    device_map="auto",
+                                    device_map="balanced",
                                     torch_dtype=torch.bfloat16,
                                     local_files_only=True,
                                 )
@@ -307,7 +307,7 @@ def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftM
 
         kwargs = {
             "is_trainable": False,
-            "device_map": "auto",
+            "device_map": "balanced",
             "cache_dir": cache_dir,
             "torch_dtype": torch.bfloat16,
             "local_files_only": local_files_only,

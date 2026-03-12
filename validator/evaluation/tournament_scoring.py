@@ -52,12 +52,14 @@ def calculate_tournament_type_scores_from_data(
                 ranked_participants = []
                 for participant in task.participant_scores:
                     hotkey = participant.get("hotkey")
-                    quality_score = participant.get("quality_score")
+                    test_loss = participant.get("test_loss")
                     if hotkey == actual_winner_hotkey:
                         continue
                     if hotkey == cts.EMISSION_BURN_HOTKEY and tournament_data.base_winner_hotkey:
                         continue
-                    ranked_participants.append((hotkey, quality_score))
+                    if test_loss is None or test_loss == 0:
+                        continue
+                    ranked_participants.append((hotkey, test_loss))
 
                 ranked_participants.sort(key=lambda x: x[1], reverse=True)
 

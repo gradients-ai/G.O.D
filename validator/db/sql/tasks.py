@@ -1363,6 +1363,108 @@ async def get_expected_repo_name(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
         return await connection.fetchval(query, task_id, hotkey, NETUID)
 
 
+async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
+    """Add evaluation rows for a task from current assigned task_nodes."""
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute(f"DELETE FROM {cst.EVALUATIONS_TABLE} WHERE {cst.TASK_ID} = $1", task_id)
+            query = f"""
+                INSERT INTO {cst.EVALUATIONS_TABLE}
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
+                SELECT tn.{cst.TASK_ID}, tn.{cst.HOTKEY}, tn.{cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM {cst.TASK_NODES_TABLE} tn
+                WHERE tn.{cst.TASK_ID} = $1 AND tn.{cst.NETUID} = $2
+                AND (
+                    tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
+                    OR EXISTS (
+                        SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
+                        WHERE ttht.{cst.TASK_ID} = tn.{cst.TASK_ID}
+                          AND ttht.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                          AND ttht.{cst.TRAINING_STATUS} = 'success'
+                    )
+                )
+            """
+            await connection.execute(query, task_id, NETUID)
+
+
+async def get_task_evaluation_rows(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT
+                e.{cst.TASK_ID},
+                e.{cst.HOTKEY},
+                e.{cst.NETUID},
+                tn.{cst.EXPECTED_REPO_NAME},
+                e.{cst.EVALUATION_STATUS}
+            FROM {cst.EVALUATIONS_TABLE} e
+            LEFT JOIN {cst.TASK_NODES_TABLE} tn
+                ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
+                AND e.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                AND e.{cst.NETUID} = tn.{cst.NETUID}
+            WHERE e.{cst.TASK_ID} = $1 AND e.{cst.NETUID} = $2
+            """,
+            task_id,
+            NETUID,
+        )
+        return [dict(row) for row in rows]
+
+
+async def get_task_evaluations_by_status(task_id: UUID, status: str, psql_db: PSQLDB) -> list[dict]:
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT
+                e.{cst.TASK_ID},
+                e.{cst.HOTKEY},
+                e.{cst.NETUID},
+                tn.{cst.EXPECTED_REPO_NAME},
+                e.{cst.EVALUATION_STATUS}
+            FROM {cst.EVALUATIONS_TABLE} e
+            LEFT JOIN {cst.TASK_NODES_TABLE} tn
+                ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
+                AND e.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                AND e.{cst.NETUID} = tn.{cst.NETUID}
+            WHERE e.{cst.TASK_ID} = $1 AND e.{cst.EVALUATION_STATUS} = $2 AND e.{cst.NETUID} = $3
+            """,
+            task_id,
+            status,
+            NETUID,
+        )
+        return [dict(row) for row in rows]
+
+
+async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], status: str, psql_db: PSQLDB) -> None:
+    if not hotkeys:
+        return
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.EVALUATION_STATUS} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2) AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkeys,
+            NETUID,
+            status,
+        )
+
+
+async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> None:
+    """Reset in-progress evaluation rows for a task back to pending."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.EVALUATION_STATUS} = 'pending', {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.EVALUATION_STATUS} = 'evaluating' AND {cst.NETUID} = $2
+            """,
+            task_id,
+            NETUID,
+        )
+
+
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE} ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL})
