@@ -1031,6 +1031,9 @@ async def run_evaluation_docker_environment(
                 await _cleanup_deployments(deployments)
                 break
 
+            except asyncio.CancelledError:
+                env_logger.info("Environment evaluation cancelled; preserving deployments for resume")
+                raise
             except Exception as e:
                 remaining = vcst.ENV_EVAL_MAX_RETRIES - attempt
                 if remaining > 0:
