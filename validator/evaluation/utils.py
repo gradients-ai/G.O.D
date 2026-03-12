@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import glob
 import json
 import logging
 import os
@@ -393,27 +392,32 @@ def check_for_lora(model_id: str, local_files_only: bool = False) -> bool:
         return False
 
 
-def sanitize_downloaded_lora_dir(lora_dir: str, log_fn=None) -> None:
-    """Remove files that are known to break SGLang LoRA loading."""
-    if log_fn is None:
-        log_fn = logger.info
+@retry_on_5xx()
+def check_lora_has_added_tokens(model_id: str, local_files_only: bool = False) -> bool:
+    """
+    Check if a LoRA repo includes added_tokens.json.
 
-    for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
-        try:
-            os.remove(model_file)
-            log_fn(f"Removed incompatible LoRA file: {os.path.basename(model_file)}")
-        except Exception as e:
-            log_fn(f"Failed to remove {model_file}: {e}")
-
-    for filename in ("model.safetensors.index.json", "added_tokens.json"):
-        file_path = os.path.join(lora_dir, filename)
-        if not os.path.exists(file_path):
-            continue
-        try:
-            os.remove(file_path)
-            log_fn(f"Removed incompatible LoRA file: {filename}")
-        except Exception as e:
-            log_fn(f"Failed to remove {file_path}: {e}")
+    This is used to decide whether we need to merge LoRA into base model
+    before launching SGLang.
+    """
+    ADDED_TOKENS_FILE = "added_tokens.json"
+    try:
+        if local_files_only:
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            repo_path = os.path.join(cache_dir, "models--" + model_id.replace("/", "--"))
+            if os.path.exists(repo_path):
+                for root, dirs, files in os.walk(repo_path):
+                    if ".no_exist" in root:
+                        continue
+                    if ADDED_TOKENS_FILE in files:
+                        token_file = os.path.join(root, ADDED_TOKENS_FILE)
+                        if os.path.getsize(token_file) > 0:
+                            return True
+            return False
+        return ADDED_TOKENS_FILE in hf_api.list_repo_files(model_id)
+    except Exception as e:
+        logger.error(f"Error checking for added_tokens.json in LoRA repo: {e}")
+        return False
 
 
 def get_default_dataset_config(dataset_name: str) -> str | None:
@@ -541,7 +545,13 @@ def build_sglang_health_check(startup_minutes: int = 30) -> HealthCheckConfig:
     )
 
 
-def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42, max_retries: int = 3) -> str:
+def create_sglang_deployment_source(
+    base_model: str,
+    lora_model: str | None = None,
+    seed: int = 42,
+    max_retries: int = 3,
+    merge_lora_first: bool = False,
+) -> str:
     """Create the source code for SGLang deployment with robust model download and retry logic.
     
     Args:
@@ -582,8 +592,6 @@ def download_lora_with_retry():
     """Download LoRA with retry logic for reliability."""
     from huggingface_hub import snapshot_download
     import time
-    import os
-    import glob
     
     lora_dir = "/tmp/lora/trained_lora"
     
@@ -653,7 +661,7 @@ def merge_model_with_lora(base_model_path, lora_dir, output_dir="/tmp/merged_mod
     print(f"Merged model saved to {output_dir} in {time.time() - t3:.1f}s", flush=True)
     return output_dir
 '''
-    
+
     server_type = "with LoRA" if lora_model else ""
     
     return f'''import subprocess
@@ -706,9 +714,10 @@ def ensure_merge_dependencies():
         print("Runtime import validation passed", flush=True)
 model_path_for_sglang = download_model_with_retry()
 if {repr(bool(lora_model))}:
-    ensure_merge_dependencies()
     lora_path = download_lora_with_retry()
-    model_path_for_sglang = merge_model_with_lora(model_path_for_sglang, lora_path)
+    if {repr(merge_lora_first)}:
+        ensure_merge_dependencies()
+        model_path_for_sglang = merge_model_with_lora(model_path_for_sglang, lora_path)
 
 sglang_args = [
     "python3 -m sglang.launch_server",
@@ -725,6 +734,12 @@ sglang_args = [
     "--enable-deterministic-inference",
     "--random-seed", "{seed}",
 ]
+if {repr(bool(lora_model) and not merge_lora_first)}:
+    sglang_args.extend([
+        "--enable-lora",
+        "--lora-paths", "trained_lora=/tmp/lora/trained_lora",
+        "--lora-backend", "triton",
+    ])
 sglang_cmd = " ".join(sglang_args)
 
 # Start SGLang server {server_type}
@@ -739,6 +754,7 @@ def deploy_sglang_basilica(
     deployment_name: str,
     seed: int = 42,
     startup_minutes: int = 30,
+    merge_lora_first: bool = False,
 ) -> basilica.Deployment:
     """Deploy SGLang server to Basilica with health checks and retry logic.
     
@@ -748,9 +764,16 @@ def deploy_sglang_basilica(
         deployment_name: Name for the deployment
         seed: Random seed for determinism (default: 42)
         startup_minutes: Maximum minutes to wait for model loading (default: 30)
+        merge_lora_first: If True, merge base + LoRA before launching SGLang
     """
     health_check = build_sglang_health_check(startup_minutes=startup_minutes)
-    func_source = create_sglang_deployment_source(base_model, lora_model, seed, max_retries=3)
+    func_source = create_sglang_deployment_source(
+        base_model,
+        lora_model,
+        seed,
+        max_retries=3,
+        merge_lora_first=merge_lora_first,
+    )
     
     startup_max = (
         health_check.startup.initial_delay_seconds

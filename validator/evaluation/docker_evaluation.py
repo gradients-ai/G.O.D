@@ -50,6 +50,7 @@ from validator.evaluation.utils import (
     persist_deployment_ids_for_repo,
     wait_for_basilica_health,
     check_for_lora,
+    check_lora_has_added_tokens,
 )
 
 
@@ -312,16 +313,9 @@ async def _run_single_basilica_eval_repo(
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
+        cleanup_deployment = True
         try:
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
-            await persist_deployment_ids_for_repo(
-                task_id,
-                psql_db,
-                repo_to_hotkey,
-                repo,
-                deployment_name,
-                None,
-            )
             client = basilica.BasilicaClient()
             deployment = await asyncio.to_thread(
                 client.deploy,
@@ -338,8 +332,17 @@ async def _run_single_basilica_eval_repo(
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
-            cleanup_names.add(deployment_name)
-            eval_logger.info(f"[{repo}] deployment started: {deployment_name}")
+            resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+            await persist_deployment_ids_for_repo(
+                task_id,
+                psql_db,
+                repo_to_hotkey,
+                repo,
+                resolved_deployment_name,
+                None,
+            )
+            cleanup_names.add(resolved_deployment_name)
+            eval_logger.info(f"[{repo}] deployment started: {resolved_deployment_name}")
             result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
             if isinstance(result, dict):
                 return result
@@ -347,6 +350,9 @@ async def _run_single_basilica_eval_repo(
                 logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
                 return result
             raise RuntimeError(str(result))
+        except asyncio.CancelledError:
+            cleanup_deployment = False 
+            raise
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
             eval_logger.error(
@@ -364,10 +370,12 @@ async def _run_single_basilica_eval_repo(
         finally:
             if deployment is not None:
                 try:
-                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
-                    await asyncio.to_thread(deployment.delete)
+                    dep_name = getattr(deployment, "name", None) or deployment_name
+                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, dep_name, deployment)
+                    if cleanup_deployment:
+                        await asyncio.to_thread(deployment.delete)
                 except Exception as e:
-                    eval_logger.warning(f"[{repo}] failed to cleanup deployment {deployment_name}: {e}")
+                    eval_logger.warning(f"[{repo}] failed to cleanup deployment {dep_name}: {e}")
 
     return "Evaluation failed"
 
@@ -902,7 +910,7 @@ async def run_evaluation_docker_environment(
                 if healthy_resume:
                     env_logger.info(f"Resuming: reconnecting to sglang={sglang_id} env={env_id}")
                     is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
-                    inference_model_name = original_model if is_lora else repo
+                    inference_model_name = f"{original_model}:trained_lora" if is_lora else repo
                     avg_score = await _run_environment_evaluation(
                         sglang_dep.url,
                         env_dep.url,
@@ -957,11 +965,15 @@ async def run_evaluation_docker_environment(
         for attempt in range(1, vcst.ENV_EVAL_MAX_RETRIES + 1):
             try:
                 is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+                should_merge_lora = False
 
                 if is_lora:
                     base_model = original_model
                     lora_model = repo
-                    inference_model_name = original_model
+                    should_merge_lora = await asyncio.to_thread(
+                        check_lora_has_added_tokens, repo, local_files_only=False
+                    )
+                    inference_model_name = original_model if should_merge_lora else f"{original_model}:trained_lora"
                     env_logger.info(f"Deploying SGLang: {original_model} w/ LoRA {repo}")
                 else:
                     base_model = repo
@@ -970,7 +982,13 @@ async def run_evaluation_docker_environment(
                     env_logger.info(f"Deploying SGLang: {repo}")
 
                 sglang_deployment = await asyncio.to_thread(
-                    deploy_sglang_basilica, base_model, lora_model, f"{eval_id}-sglang", base_seed
+                    deploy_sglang_basilica,
+                    base_model,
+                    lora_model,
+                    f"{eval_id}-sglang",
+                    base_seed,
+                    30,
+                    should_merge_lora,
                 )
                 deployments["sglang"] = sglang_deployment
                 await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
@@ -1109,7 +1127,7 @@ async def run_evaluation_local_environment(
 
             if is_lora:
                 base_model = original_model
-                inference_model_name = original_model
+                inference_model_name = f"{original_model}:trained_lora"
                 env_logger.info(f"LoRA detected: {original_model} + LoRA {repo}")
                 safe_lora_name = repo.replace("/", "_")
                 lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
