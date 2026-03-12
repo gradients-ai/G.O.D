@@ -1,4 +1,5 @@
 import base64
+import glob
 import json
 import os
 import shutil
@@ -223,6 +224,29 @@ def check_for_lora(model_id: str, local_files_only: bool = False) -> bool:
         return False
 
 
+def sanitize_downloaded_lora_dir(lora_dir: str, log_fn=None) -> None:
+    """Remove files that are known to break SGLang LoRA loading."""
+    if log_fn is None:
+        log_fn = logger.info
+
+    for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
+        try:
+            os.remove(model_file)
+            log_fn(f"Removed incompatible LoRA file: {os.path.basename(model_file)}")
+        except Exception as e:
+            log_fn(f"Failed to remove {model_file}: {e}")
+
+    for filename in ("model.safetensors.index.json", "added_tokens.json"):
+        file_path = os.path.join(lora_dir, filename)
+        if not os.path.exists(file_path):
+            continue
+        try:
+            os.remove(file_path)
+            log_fn(f"Removed incompatible LoRA file: {filename}")
+        except Exception as e:
+            log_fn(f"Failed to remove {file_path}: {e}")
+
+
 def get_default_dataset_config(dataset_name: str) -> str | None:
     try:
         logger.info(dataset_name)
@@ -315,9 +339,9 @@ def build_sglang_health_check(startup_minutes: int = 30) -> HealthCheckConfig:
     Returns:
         HealthCheckConfig with tested probe settings.
     """
-    initial_delay = 900 
-    period = 120  
-    timeout = 120 
+    initial_delay = 900
+    period = 120
+    timeout = 120
     failure_threshold = max(1, (startup_minutes * 60 - initial_delay) // period)
     
     return HealthCheckConfig(
@@ -357,27 +381,6 @@ def create_sglang_deployment_source(base_model: str, lora_model: str | None = No
         seed: Random seed for determinism
         max_retries: Number of download retry attempts (default: 3)
     """
-    # Build SGLang command
-    sglang_args = [
-        "python3 -m sglang.launch_server",
-        f"--model-path {base_model}",
-    ]
-    if lora_model:
-        sglang_args.append("--enable-lora --lora-paths trained_lora=/tmp/lora/trained_lora --lora-backend triton")
-    sglang_args.extend([
-        "--host", "0.0.0.0",
-        "--port", "8000",
-        "--tensor-parallel-size", "1",
-        "--dtype", "float16",
-        "--attention-backend", "triton",
-        "--prefill-attention-backend", "triton",
-        "--decode-attention-backend", "triton",
-        "--sampling-backend", "pytorch",
-        "--enable-deterministic-inference",
-        "--random-seed", str(seed),
-    ])
-    sglang_cmd = " ".join(sglang_args)
-    
     # Download with retry logic
     download_base_model_code = f'''
 def download_model_with_retry():
@@ -403,7 +406,6 @@ def download_model_with_retry():
                 print("All download attempts failed", flush=True)
                 raise
 
-download_model_with_retry()
 '''
     
     download_lora_code = f'''
@@ -423,26 +425,7 @@ def download_lora_with_retry():
             snapshot_download("{lora_model}", local_dir=lora_dir, local_dir_use_symlinks=False)
             elapsed = time.time() - start
             print(f"LoRA downloaded in {{elapsed:.1f}}s", flush=True)
-            
-            # Remove incompatible model safetensors files (full model files, not adapter files)
-            model_files = glob.glob(os.path.join(lora_dir, "model-*.safetensors"))
-            for model_file in model_files:
-                try:
-                    os.remove(model_file)
-                    print(f"Removed incompatible LoRA file: {{os.path.basename(model_file)}}", flush=True)
-                except Exception as e:
-                    print(f"Failed to remove {{model_file}}: {{e}}", flush=True)
-            
-            # Remove model index file if it exists
-            index_file = os.path.join(lora_dir, "model.safetensors.index.json")
-            if os.path.exists(index_file):
-                try:
-                    os.remove(index_file)
-                    print("Removed model.safetensors.index.json", flush=True)
-                except Exception as e:
-                    print(f"Failed to remove index file: {{e}}", flush=True)
-            
-            return
+            return lora_dir
         except Exception as e:
             print(f"Download attempt {{attempt}} failed: {{e}}", flush=True)
             if attempt < {max_retries}:
@@ -453,8 +436,54 @@ def download_lora_with_retry():
                 print("All download attempts failed", flush=True)
                 raise
 
-download_lora_with_retry()
 ''' if lora_model else ''
+
+    merge_code = '''
+def merge_model_with_lora(base_model_path, lora_dir, output_dir="/tmp/merged_model"):
+    import os
+    import time
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+    print("Merging base model and LoRA adapter...", flush=True)
+    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=True)
+
+    t0 = time.time()
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map="cuda:0" if torch.cuda.is_available() else "auto",
+        trust_remote_code=True,
+    )
+    print(f"Base model loaded in {time.time() - t0:.1f}s", flush=True)
+
+    base_vocab_size = base.get_input_embeddings().weight.shape[0]
+    target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= base_vocab_size else base_tokenizer
+    target_vocab_size = len(target_tokenizer)
+    if target_vocab_size > base_vocab_size:
+        print(f"Resizing token embeddings from {base_vocab_size} to {target_vocab_size}", flush=True)
+        base.resize_token_embeddings(target_vocab_size)
+    elif target_vocab_size < base_vocab_size:
+        print(f"LoRA tokenizer smaller than base ({target_vocab_size} < {base_vocab_size}); keeping base vocab size.", flush=True)
+
+    t1 = time.time()
+    model = PeftModel.from_pretrained(base, lora_dir)
+    print(f"LoRA adapter loaded in {time.time() - t1:.1f}s", flush=True)
+
+    t2 = time.time()
+    merged = model.merge_and_unload(safe_merge=False)
+    print(f"Merge completed in {time.time() - t2:.1f}s", flush=True)
+
+    os.makedirs(output_dir, exist_ok=True)
+    t3 = time.time()
+    merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
+    target_tokenizer.save_pretrained(output_dir)
+    print(f"Merged model saved to {output_dir} in {time.time() - t3:.1f}s", flush=True)
+    return output_dir
+'''
     
     server_type = "with LoRA" if lora_model else ""
     
@@ -476,9 +505,62 @@ os.environ['NVIDIA_TF32_OVERRIDE'] = '0'
 
 {download_base_model_code}
 {download_lora_code}
+{merge_code}
+
+def ensure_merge_dependencies():
+    import importlib.util
+    import subprocess
+    import sys
+
+    needs_install = (
+        importlib.util.find_spec("peft") is None
+        or importlib.util.find_spec("accelerate") is None
+    )
+    if needs_install:
+        print("Installing merge dependencies at runtime...", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps", "peft", "accelerate"],
+            check=True,
+        )
+        print("merge dependencies installed successfully", flush=True)
+    try:
+        from accelerate.utils.memory import clear_device_cache  # noqa: F401
+        import peft  # noqa: F401
+    except Exception:
+        print("Refreshing accelerate/peft to satisfy runtime imports...", flush=True)
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps", "--upgrade", "accelerate", "peft"],
+            check=True,
+        )
+        from accelerate.utils.memory import clear_device_cache  # noqa: F401
+        import peft  # noqa: F401
+        print("Runtime import validation passed", flush=True)
+model_path_for_sglang = download_model_with_retry()
+if {repr(bool(lora_model))}:
+    ensure_merge_dependencies()
+    lora_path = download_lora_with_retry()
+    model_path_for_sglang = merge_model_with_lora(model_path_for_sglang, lora_path)
+
+sglang_args = [
+    "python3 -m sglang.launch_server",
+    f"--model-path {{model_path_for_sglang}}",
+    "--served-model-name {base_model}",
+    "--host", "0.0.0.0",
+    "--port", "8000",
+    "--tensor-parallel-size", "1",
+    "--dtype", "float16",
+    "--attention-backend", "triton",
+    "--prefill-attention-backend", "triton",
+    "--decode-attention-backend", "triton",
+    "--sampling-backend", "pytorch",
+    "--enable-deterministic-inference",
+    "--random-seed", "{seed}",
+]
+sglang_cmd = " ".join(sglang_args)
+
 # Start SGLang server {server_type}
 print("Starting SGLang server {server_type}...", flush=True)
-subprocess.run({repr(sglang_cmd)}, shell=True, check=True)
+subprocess.run(sglang_cmd, shell=True, check=True)
 '''
 
 
