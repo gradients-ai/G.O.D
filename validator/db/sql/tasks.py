@@ -1497,8 +1497,8 @@ async def set_evaluation_deployment_ids(
 
 async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
     """
-    Get all deployment IDs from evaluation rows with status 'evaluating'.
-    Used on validator restart to preserve deployments for in-progress evaluations.
+    Get all deployment IDs from evaluation rows with status 'pending' or 'evaluating'.
+    Used on validator restart to preserve deployments that may be resumed.
     Returns deployment_id and deployment_env_id values.
     """
     async with await psql_db.connection() as connection:
@@ -1506,8 +1506,9 @@ async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
             f"""
             SELECT {cst.DEPLOYMENT_ID}, {cst.DEPLOYMENT_ENV_ID}
             FROM {cst.EVALUATIONS_TABLE}
-            WHERE {cst.EVALUATION_STATUS} = 'evaluating' AND {cst.NETUID} = $1
+            WHERE {cst.EVALUATION_STATUS} = ANY($1) AND {cst.NETUID} = $2
             """,
+            ["pending", "evaluating"],
             NETUID,
         )
     ids: set[str] = set()
