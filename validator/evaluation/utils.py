@@ -1,12 +1,16 @@
+import asyncio
 import base64
 import glob
 import json
+import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 from io import BytesIO
+from uuid import UUID
 
 import basilica
 from basilica import HealthCheckConfig, ProbeConfig
@@ -19,6 +23,8 @@ from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
 from validator.core import constants as cst
+from validator.db.database import PSQLDB
+from validator.db.sql import tasks as tasks_sql
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
 
@@ -27,6 +33,169 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 EVAL_RESULT_STATUS_PATH = "/result"
+
+
+def clean_basilica_log_line(raw_line: str) -> str:
+    line = raw_line.strip()
+    if not line:
+        return ""
+    line = re.sub(r"^data:\s*", "", line).rstrip(", ")
+    for _ in range(2):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            break
+
+        if isinstance(parsed, dict):
+            extracted = parsed.get("message") or parsed.get("log") or parsed.get("data")
+            if isinstance(extracted, str) and extracted.strip():
+                line = extracted.strip()
+                continue
+            line = str(parsed)
+            break
+
+        if isinstance(parsed, str):
+            line = parsed.strip()
+            continue
+
+        line = str(parsed)
+        break
+    if "\\u001b" in line or "\\x1b" in line:
+        try:
+            line = bytes(line, "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+
+    line = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", line)
+    line = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s*", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line
+
+
+def log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_name: str, deployment) -> None:
+    try:
+        raw_logs = deployment.logs()
+    except Exception as e:
+        eval_logger.warning(f"[BASILICA] unable to fetch logs for deployment={deployment_name}: {e}")
+        return
+
+    if not raw_logs:
+        eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
+        eval_logger.info("[BASILICA] no logs returned")
+        eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+        return
+
+    if isinstance(raw_logs, bytes):
+        raw_logs = raw_logs.decode("utf-8", errors="replace")
+
+    lines = []
+    for raw_line in str(raw_logs).splitlines():
+        cleaned = clean_basilica_log_line(raw_line)
+        if cleaned:
+            lines.append(cleaned)
+
+    eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
+    if not lines:
+        eval_logger.info("[BASILICA] log payload present but no parsable lines")
+    else:
+        for i, line in enumerate(lines, start=1):
+            eval_logger.info(f"[BASILICA] {i:04d} | {line}")
+    eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+
+
+def deployment_is_healthy(deployment, health_path: str = "/health", timeout: int = 8) -> bool:
+    try:
+        response = requests.get(f"{deployment.url}{health_path}", timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+async def delete_deployment_if_exists(deployment_name: str) -> None:
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+        for dep in deployments:
+            if getattr(dep, "name", None) == deployment_name:
+                await asyncio.to_thread(dep.delete)
+                return
+    except Exception:
+        return
+
+
+async def cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> None:
+    """Cleanup specific Basilica deployments by name."""
+    if not deployment_names:
+        return
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for final cleanup: {e}")
+        return
+
+    by_name = {getattr(dep, "name", None): dep for dep in deployments}
+    cleaned = 0
+    for name in deployment_names:
+        dep = by_name.get(name)
+        if dep is None:
+            continue
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+        except Exception as e:
+            logger.warning(f"Failed final cleanup for deployment {name}: {e}")
+
+    if cleaned:
+        logger.info(f"Final cleanup removed {cleaned} lingering deployments for this evaluation batch")
+
+
+async def load_eval_pair_state_for_models(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    models: list[str],
+) -> tuple[dict[str, str | dict[str, str]], dict[str, str]]:
+    if task_id is None or psql_db is None:
+        return {}, {}
+
+    rows = await tasks_sql.get_task_evaluation_rows(task_id, psql_db)
+    model_set = set(models)
+    deployment_ids_by_repo: dict[str, str | dict[str, str]] = {}
+    repo_to_hotkey: dict[str, str] = {}
+
+    for row in rows:
+        expected_repo_name = row.get("expected_repo_name")
+        hotkey = row.get("hotkey")
+        if not expected_repo_name or not hotkey:
+            continue
+        repo = f"{cst.RAYONLABS_HF_USERNAME}/{expected_repo_name}"
+        if repo not in model_set:
+            continue
+        repo_to_hotkey[repo] = hotkey
+        deployment_id = row.get("deployment_id")
+        deployment_env_id = row.get("deployment_env_id")
+        if deployment_id and deployment_env_id:
+            deployment_ids_by_repo[repo] = {"sglang": deployment_id, "env": deployment_env_id}
+        elif deployment_id:
+            deployment_ids_by_repo[repo] = deployment_id
+
+    return deployment_ids_by_repo, repo_to_hotkey
+
+
+async def persist_deployment_ids_for_repo(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    repo_to_hotkey: dict[str, str],
+    repo: str,
+    deployment_id: str | None,
+    deployment_env_id: str | None,
+) -> None:
+    if task_id is None or psql_db is None:
+        return
+    hotkey = repo_to_hotkey.get(repo)
+    if not hotkey:
+        return
+    await tasks_sql.set_evaluation_deployment_ids(task_id, hotkey, deployment_id, deployment_env_id, psql_db)
 
 
 def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:

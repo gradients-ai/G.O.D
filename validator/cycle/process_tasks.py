@@ -180,16 +180,21 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     assert task.task_id is not None
 
     pending_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "pending", config.psql_db)
-    if not pending_rows:
+    evaluating_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "evaluating", config.psql_db)
+    if not pending_rows and not evaluating_rows:
         await _finalize_task_status_from_evaluations(task, config)
         return
 
     pending_hotkeys = [row["hotkey"] for row in pending_rows]
-    await tasks_sql.update_task_evaluations_status(task.task_id, pending_hotkeys, "evaluating", config.psql_db)
+    evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
+    all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))
+
+    if pending_hotkeys:
+        await tasks_sql.update_task_evaluations_status(task.task_id, pending_hotkeys, "evaluating", config.psql_db)
 
     try:
-        evaluated_hotkeys, failed_hotkeys = await evaluate_and_score_hotkeys(task, pending_hotkeys, num_gpus, config)
-        not_evaluated_hotkeys = [h for h in pending_hotkeys if h not in set(evaluated_hotkeys)]
+        evaluated_hotkeys, failed_hotkeys = await evaluate_and_score_hotkeys(task, all_hotkeys, num_gpus, config)
+        not_evaluated_hotkeys = [h for h in all_hotkeys if h not in set(evaluated_hotkeys)]
         failed_set = set(failed_hotkeys)
         failed_set.update(not_evaluated_hotkeys)
         success_hotkeys = [hotkey for hotkey in evaluated_hotkeys if hotkey not in failed_set]
@@ -203,7 +208,7 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
         )
     except Exception as e:
         logger.error(f"Error evaluating pending pairs for task {task.task_id}: {e}", exc_info=True)
-        await tasks_sql.update_task_evaluations_status(task.task_id, pending_hotkeys, "failure", config.psql_db)
+        await tasks_sql.update_task_evaluations_status(task.task_id, all_hotkeys, "failure", config.psql_db)
 
     await _finalize_task_status_from_evaluations(task, config)
 
@@ -224,7 +229,6 @@ async def _handle_delayed_tasks(config: Config):
 
 
 async def _move_to_preevaluation_status(task, config):
-    await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
     task.status = TaskStatus.PREEVALUATION
     add_context_tag("status", task.status.value)
     logger.info(f"Changing status to {task.status}")
@@ -252,7 +256,7 @@ async def _cleanup_all_running_basilica_deployments() -> None:
         logger.info(f"Deleted {deleted_count} Basilica deployments during startup cleanup")
 
 
-async def _move_any_evaluating_tasks_to_pending_evaluation(config: Config):
+async def _move_any_evaluating_tasks_to_preevaluation(config: Config):
     stopped_mid_evaluation = await tasks_sql.get_tasks_with_status(
         TaskStatus.EVALUATING, psql_db=config.psql_db, benchmark_filter="include"
     )
@@ -378,6 +382,6 @@ def compute_required_gpus(task: RawTask) -> int:
 
 async def process_completed_tasks(config: Config) -> None:
     await _cleanup_all_running_basilica_deployments()
-    await _move_any_evaluating_tasks_to_pending_evaluation(config)
+    await _move_any_evaluating_tasks_to_preevaluation(config)
 
     await asyncio.gather(evaluate_tasks_loop(config), cleanup_model_cache_loop(config.psql_db))
