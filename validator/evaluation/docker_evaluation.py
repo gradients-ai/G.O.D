@@ -641,9 +641,8 @@ async def run_evaluation_basilica_text(
     eval_seed: int | None = None,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
-    deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
-    deployment_ids_by_repo = deployment_ids_by_repo or {}
+    deployment_ids_by_repo = {}
     db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
@@ -1527,9 +1526,8 @@ async def run_evaluation_basilica_image(
     num_gpus: int,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
-    deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
-    deployment_ids_by_repo = deployment_ids_by_repo or {}
+    deployment_ids_by_repo = {}
     db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
