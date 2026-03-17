@@ -154,13 +154,7 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     )
 ```
 
-Where `task_type` can be:
-
-- `"text"` - For text-based tournaments (Instruct, DPO, GRPO, Chat)
-- `"image"` - For image-based tournaments (SDXL, Flux)
-- `"environment"` - For environment-based tournaments (e.g., AlfWorld)
-
-**Important**: The repository and commit hash you configure will be used by validators to build and run your training code during tournaments.
+**Important**: The repository and commit hash you configure will be used by validators to build and run your training code during tournaments. Make sure they are valid until the tournament completes
 
 ## Docker-Based Architecture
 
