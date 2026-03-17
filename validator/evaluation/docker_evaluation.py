@@ -8,6 +8,7 @@ import re
 import shutil
 import tarfile
 import uuid
+from uuid import UUID
 import docker
 from docker.types import Mount
 from huggingface_hub import snapshot_download
@@ -30,6 +31,7 @@ from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
 from core.utils import download_s3_file
 from validator.core import constants as vcst
+from validator.db.database import PSQLDB
 from validator.tasks.task_prep import unzip_to_temp_path
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
@@ -37,11 +39,18 @@ from validator.utils.logging import get_environment_logger
 from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
     EVAL_RESULT_STATUS_PATH,
+    cleanup_basilica_deployments_by_name,
+    delete_deployment_if_exists,
+    deployment_is_healthy,
     create_basilica_eval_runner_source,
     deploy_sglang_basilica,
     deploy_env_basilica,
+    load_eval_pair_state_for_models,
+    log_basilica_logs_block,
+    persist_deployment_ids_for_repo,
     wait_for_basilica_health,
     check_for_lora,
+    check_lora_has_added_tokens,
 )
 
 
@@ -215,75 +224,6 @@ def process_evaluation_results(results: dict, is_image: bool = False) -> DockerE
     )
 
 
-def _clean_basilica_log_line(raw_line: str) -> str:
-    line = raw_line.strip()
-    if not line:
-        return ""
-    line = re.sub(r"^data:\s*", "", line).rstrip(", ")
-    for _ in range(2):
-        try:
-            parsed = json.loads(line)
-        except Exception:
-            break
-
-        if isinstance(parsed, dict):
-            extracted = parsed.get("message") or parsed.get("log") or parsed.get("data")
-            if isinstance(extracted, str) and extracted.strip():
-                line = extracted.strip()
-                continue
-            line = str(parsed)
-            break
-
-        if isinstance(parsed, str):
-            line = parsed.strip()
-            continue
-
-        line = str(parsed)
-        break
-    if "\\u001b" in line or "\\x1b" in line:
-        try:
-            line = bytes(line, "utf-8").decode("unicode_escape")
-        except Exception:
-            pass
-
-    line = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", line)
-
-    line = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s*", "", line)
-    line = re.sub(r"\s+", " ", line).strip()
-    return line
-
-
-def _log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_name: str, deployment) -> None:
-    try:
-        raw_logs = deployment.logs()
-    except Exception as e:
-        eval_logger.warning(f"[BASILICA] unable to fetch logs for deployment={deployment_name}: {e}")
-        return
-
-    if not raw_logs:
-        eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
-        eval_logger.info("[BASILICA] no logs returned")
-        eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
-        return
-
-    if isinstance(raw_logs, bytes):
-        raw_logs = raw_logs.decode("utf-8", errors="replace")
-
-    lines = []
-    for raw_line in str(raw_logs).splitlines():
-        cleaned = _clean_basilica_log_line(raw_line)
-        if cleaned:
-            lines.append(cleaned)
-
-    eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
-    if not lines:
-        eval_logger.info("[BASILICA] log payload present but no parsable lines")
-    else:
-        for i, line in enumerate(lines, start=1):
-            eval_logger.info(f"[BASILICA] {i:04d} | {line}")
-    eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
-
-
 async def _poll_basilica_result(
     deployment,
     repo: str,
@@ -291,6 +231,7 @@ async def _poll_basilica_result(
     poll_interval_seconds: int = vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
     max_poll_seconds: int = vcst.EVAL_BASILICA_MAX_POLL_SECONDS,
 ) -> dict | str:
+    """Poll Basilica /result endpoint. Handles status: completed, failed, running, in_progress."""
     started = time.time()
     while time.time() - started < max_poll_seconds:
         try:
@@ -315,7 +256,8 @@ async def _poll_basilica_result(
             pass
 
         eval_logger.info(
-            f"[{repo}] result not ready yet, polling again in {poll_interval_seconds // 60} minutes..."
+            f"[{repo}] result not ready yet (status may be running/in_progress), "
+            f"polling again in {poll_interval_seconds // 60} minutes..."
         )
         await asyncio.sleep(poll_interval_seconds)
     return f"Timed out waiting for result after {max_poll_seconds}s"
@@ -333,8 +275,12 @@ async def _run_single_basilica_eval_repo(
     gpu_models: list[str],
     min_gpu_memory_gb: int,
     cleanup_names: set[str],
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    repo_to_hotkey: dict[str, str],
+    existing_deployment_name: str | None = None,
 ) -> dict | str:
-    """Run one repo eval with retries (3 attempts, 15-minute backoff)."""
+    """Run one repo eval with retries. Supports resume via existing_deployment_name."""
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
         name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
@@ -344,9 +290,31 @@ async def _run_single_basilica_eval_repo(
         task_type=task_type,
     )
 
+    if existing_deployment_name:
+        try:
+            client = basilica.BasilicaClient()
+            deployments = await asyncio.to_thread(client.list)
+            by_name = {getattr(dep, "name", None): dep for dep in deployments}
+            deployment = by_name.get(existing_deployment_name)
+            if deployment is None:
+                eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} not found, redeploying")
+            elif not deployment_is_healthy(deployment):
+                eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} unhealthy, redeploying")
+                await asyncio.to_thread(deployment.delete)
+            else:
+                cleanup_names.add(existing_deployment_name)
+                eval_logger.info(f"[{repo}] resuming polling deployment {existing_deployment_name}")
+                result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
+                if isinstance(result, dict):
+                    return result
+                return str(result) if result else "Resume poll returned empty"
+        except Exception as e:
+            eval_logger.error(f"[{repo}] resume failed, redeploying: {e}", exc_info=True)
+
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
+        cleanup_deployment = True
         try:
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
             client = basilica.BasilicaClient()
@@ -365,9 +333,17 @@ async def _run_single_basilica_eval_repo(
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
-            cleanup_names.add(deployment_name)
-
-            eval_logger.info(f"[{repo}] deployment started: {deployment_name}")
+            resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+            await persist_deployment_ids_for_repo(
+                task_id,
+                psql_db,
+                repo_to_hotkey,
+                repo,
+                resolved_deployment_name,
+                None,
+            )
+            cleanup_names.add(resolved_deployment_name)
+            eval_logger.info(f"[{repo}] deployment started: {resolved_deployment_name}")
             result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
             if isinstance(result, dict):
                 return result
@@ -375,6 +351,9 @@ async def _run_single_basilica_eval_repo(
                 logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
                 return result
             raise RuntimeError(str(result))
+        except asyncio.CancelledError:
+            cleanup_deployment = False 
+            raise
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
             eval_logger.error(
@@ -392,39 +371,14 @@ async def _run_single_basilica_eval_repo(
         finally:
             if deployment is not None:
                 try:
-                    await asyncio.to_thread(_log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
-                    await asyncio.to_thread(deployment.delete)
+                    dep_name = getattr(deployment, "name", None) or deployment_name
+                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, dep_name, deployment)
+                    if cleanup_deployment:
+                        await asyncio.to_thread(deployment.delete)
                 except Exception as e:
-                    eval_logger.warning(f"[{repo}] failed to cleanup deployment {deployment_name}: {e}")
+                    eval_logger.warning(f"[{repo}] failed to cleanup deployment {dep_name}: {e}")
 
     return "Evaluation failed"
-
-
-async def _cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> None:
-    """Cleanup for deployments created by one eval batch."""
-    if not deployment_names:
-        return
-    try:
-        client = basilica.BasilicaClient()
-        deployments = await asyncio.to_thread(client.list)
-    except Exception as e:
-        logger.warning(f"Failed to list deployments for final cleanup: {e}")
-        return
-
-    by_name = {getattr(dep, "name", None): dep for dep in deployments}
-    cleaned = 0
-    for name in deployment_names:
-        dep = by_name.get(name)
-        if dep is None:
-            continue
-        try:
-            await asyncio.to_thread(dep.delete)
-            cleaned += 1
-        except Exception as e:
-            logger.warning(f"Failed final cleanup for deployment {name}: {e}")
-
-    if cleaned:
-        logger.info(f"Final cleanup removed {cleaned} lingering deployments for this evaluation batch")
 
 
 async def _run_basilica_eval_repos(
@@ -438,7 +392,12 @@ async def _run_basilica_eval_repos(
     gpu_count: int,
     gpu_models: list[str],
     min_gpu_memory_gb: int,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    repo_to_hotkey: dict[str, str],
+    deployment_ids_by_repo: dict[str, str] | None = None,
 ) -> dict[str, dict | str]:
+    deployment_ids_by_repo = deployment_ids_by_repo or {}
     cleanup_names: set[str] = set()
     tasks = [
         _run_single_basilica_eval_repo(
@@ -452,11 +411,15 @@ async def _run_basilica_eval_repos(
             gpu_models=gpu_models,
             min_gpu_memory_gb=min_gpu_memory_gb,
             cleanup_names=cleanup_names,
+            task_id=task_id,
+            psql_db=psql_db,
+            repo_to_hotkey=repo_to_hotkey,
+            existing_deployment_name=deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None,
         )
         for repo in repos
     ]
     task_results = await asyncio.gather(*tasks, return_exceptions=True)
-    await _cleanup_basilica_deployments_by_name(cleanup_names)
+    await cleanup_basilica_deployments_by_name(cleanup_names)
     out: dict[str, dict | str] = {}
     for repo, result in zip(repos, task_results):
         if isinstance(result, Exception):
@@ -677,16 +640,31 @@ async def run_evaluation_basilica_text(
     file_format: FileFormat,
     num_gpus: int,
     eval_seed: int | None = None,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> DockerEvaluationResults:
-
+    deployment_ids_by_repo = {}
+    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    for repo, dep_info in db_deployment_ids_by_repo.items():
+        deployment_ids_by_repo.setdefault(repo, dep_info)
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
         command = ["python", "-m", "validator.evaluation.eval_dpo"]
     elif isinstance(dataset_type, GrpoDatasetType):
-        return await run_evaluation_basilica_grpo(dataset, models, original_model, dataset_type, file_format, num_gpus)
+        return await run_evaluation_basilica_grpo(
+            dataset, models, original_model, dataset_type, file_format, num_gpus,
+            task_id=task_id,
+            psql_db=psql_db,
+            deployment_ids_by_repo=deployment_ids_by_repo,
+        )
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(dataset, models, original_model, dataset_type, file_format, num_gpus, eval_seed)
+        return await run_evaluation_docker_environment(
+            dataset, models, original_model, dataset_type, file_format, num_gpus, eval_seed,
+            task_id=task_id,
+            psql_db=psql_db,
+            deployment_ids_by_repo=deployment_ids_by_repo,
+        )
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     task_type = type(dataset_type).__name__
@@ -718,6 +696,8 @@ async def run_evaluation_basilica_text(
         repo_env["DATASET_URL"] = dataset
         return repo_env
 
+    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
+
     repo_results = await _run_basilica_eval_repos(
         repos=models,
         model_name=original_model,
@@ -728,6 +708,10 @@ async def run_evaluation_basilica_text(
         gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        task_id=task_id,
+        psql_db=psql_db,
+        repo_to_hotkey=repo_to_hotkey,
+        deployment_ids_by_repo=deployment_ids_str,
     )
 
     evaluation_results: dict[str, dict | str] = {}
@@ -763,7 +747,14 @@ async def run_evaluation_basilica_grpo(
     dataset_type: GrpoDatasetType,
     file_format: FileFormat,
     num_gpus: int,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+    deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
+    deployment_ids_by_repo = deployment_ids_by_repo or {}
+    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    for repo, dep_info in db_deployment_ids_by_repo.items():
+        deployment_ids_by_repo.setdefault(repo, dep_info)
     """
     Run GRPO evaluation on Basilica with separate deployments per repo.
     """
@@ -796,6 +787,8 @@ async def run_evaluation_basilica_grpo(
         repo_env["DATASET_URL"] = dataset
         return repo_env
 
+    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
+
     repo_results = await _run_basilica_eval_repos(
         repos=models,
         model_name=original_model,
@@ -806,6 +799,10 @@ async def run_evaluation_basilica_grpo(
         gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        task_id=task_id,
+        psql_db=psql_db,
+        repo_to_hotkey=repo_to_hotkey,
+        deployment_ids_by_repo=deployment_ids_str,
     )
 
     evaluation_results: dict[str, dict | str | int] = {}
@@ -844,12 +841,21 @@ async def run_evaluation_docker_environment(
     file_format: FileFormat,
     num_gpus: int,
     eval_seed: int | None = None,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+    deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
     """Run environment evaluation using Basilica deployments for SGLang and environment server.
 
     Each model repo gets its own Basilica deployments with retry logic.
-    Repos are evaluated in parallel.
+    Repos are evaluated in parallel. Supports resume via deployment_ids_by_repo.
+    For env tasks on restart: reconnect to existing deployments and re-run _run_environment_evaluation
+    (deterministic, so full re-run yields correct result).
     """
+    deployment_ids_by_repo = deployment_ids_by_repo or {}
+    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    for repo, dep_info in db_deployment_ids_by_repo.items():
+        deployment_ids_by_repo.setdefault(repo, dep_info)
     logger.debug(f"Starting Basilica environment evaluation for {len(models)} repos: {models}")
 
     env_name = dataset_type.environment_name
@@ -868,7 +874,7 @@ async def run_evaluation_docker_environment(
     logger.info(f"Generated {num_seeds} seeds from base_seed={base_seed}")
 
     async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
-        """Deploy, evaluate, and cleanup a single repo on Basilica."""
+        """Deploy, evaluate, and cleanup a single repo on Basilica. Supports resume."""
         eval_id = str(uuid.uuid4())
         repo_name = repo.split("/")[-1]
         env_logger = get_environment_logger(
@@ -879,6 +885,46 @@ async def run_evaluation_docker_environment(
         )
         deployments = {}
         repo_result = None
+        existing_ids = deployment_ids_by_repo.get(repo)
+        if isinstance(existing_ids, dict) and existing_ids.get("sglang") and existing_ids.get("env"):
+            sglang_id = existing_ids["sglang"]
+            env_id = existing_ids["env"]
+            try:
+                client = basilica.BasilicaClient()
+                all_deps = await asyncio.to_thread(client.list)
+                by_name = {getattr(d, "name", None): d for d in all_deps}
+                sglang_dep = by_name.get(sglang_id)
+                env_dep = by_name.get(env_id)
+                healthy_resume = True
+                if sglang_dep is None or env_dep is None:
+                    env_logger.warning(f"Resume: deployment(s) not found sglang={sglang_id!r} env={env_id!r}")
+                    await delete_deployment_if_exists(sglang_id)
+                    await delete_deployment_if_exists(env_id)
+                    healthy_resume = False
+                elif not deployment_is_healthy(sglang_dep) or not deployment_is_healthy(env_dep):
+                    env_logger.warning(f"Resume: unhealthy deployment(s), sglang={sglang_id!r} env={env_id!r}")
+                    await delete_deployment_if_exists(sglang_id)
+                    await delete_deployment_if_exists(env_id)
+                    healthy_resume = False
+
+                if healthy_resume:
+                    env_logger.info(f"Resuming: reconnecting to sglang={sglang_id} env={env_id}")
+                    is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+                    inference_model_name = f"{original_model}:trained_lora" if is_lora else repo
+                    avg_score = await _run_environment_evaluation(
+                        sglang_dep.url,
+                        env_dep.url,
+                        eval_seeds,
+                        task_id_max,
+                        vcst.ENV_EVAL_TEMPERATURE,
+                        env_logger,
+                        inference_model_name,
+                        task_id_min,
+                        env_payload_extra=env_payload_extra,
+                    )
+                    return (repo, {"is_finetune": True, "eval_loss": avg_score})
+            except Exception as e:
+                env_logger.error(f"Resume failed for {repo}, redeploying: {e}", exc_info=True)
 
         def _log_deployment_logs(deployment, deployment_type: str):
             """Fetch and log Basilica deployment logs."""
@@ -919,11 +965,15 @@ async def run_evaluation_docker_environment(
         for attempt in range(1, vcst.ENV_EVAL_MAX_RETRIES + 1):
             try:
                 is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+                should_merge_lora = False
 
                 if is_lora:
                     base_model = original_model
                     lora_model = repo
-                    inference_model_name = original_model
+                    should_merge_lora = await asyncio.to_thread(
+                        check_lora_has_added_tokens, repo, local_files_only=False
+                    )
+                    inference_model_name = original_model if should_merge_lora else f"{original_model}:trained_lora"
                     env_logger.info(f"Deploying SGLang: {original_model} w/ LoRA {repo}")
                 else:
                     base_model = repo
@@ -932,7 +982,13 @@ async def run_evaluation_docker_environment(
                     env_logger.info(f"Deploying SGLang: {repo}")
 
                 sglang_deployment = await asyncio.to_thread(
-                    deploy_sglang_basilica, base_model, lora_model, f"{eval_id}-sglang", base_seed
+                    deploy_sglang_basilica,
+                    base_model,
+                    lora_model,
+                    f"{eval_id}-sglang",
+                    base_seed,
+                    30,
+                    should_merge_lora,
                 )
                 deployments["sglang"] = sglang_deployment
                 await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
@@ -944,6 +1000,17 @@ async def run_evaluation_docker_environment(
                 deployments["env"] = env_deployment
                 await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, 1800, "/health")
                 env_logger.info(f"Environment server ready at: {env_deployment.url}")
+
+                sglang_name = getattr(sglang_deployment, "name", f"{eval_id}-sglang")
+                env_name = getattr(env_deployment, "name", f"{eval_id}-env")
+                await persist_deployment_ids_for_repo(
+                    task_id,
+                    psql_db,
+                    repo_to_hotkey,
+                    repo,
+                    sglang_name,
+                    env_name,
+                )
 
                 avg_score = await _run_environment_evaluation(
                     sglang_deployment.url,
@@ -964,6 +1031,9 @@ async def run_evaluation_docker_environment(
                 await _cleanup_deployments(deployments)
                 break
 
+            except asyncio.CancelledError:
+                env_logger.info("Environment evaluation cancelled; preserving deployments for resume")
+                raise
             except Exception as e:
                 remaining = vcst.ENV_EVAL_MAX_RETRIES - attempt
                 if remaining > 0:
@@ -1060,7 +1130,7 @@ async def run_evaluation_local_environment(
 
             if is_lora:
                 base_model = original_model
-                inference_model_name = original_model
+                inference_model_name = f"{original_model}:trained_lora"
                 env_logger.info(f"LoRA detected: {original_model} + LoRA {repo}")
                 safe_lora_name = repo.replace("/", "_")
                 lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
@@ -1455,7 +1525,13 @@ async def run_evaluation_basilica_image(
     models: list[str],
     model_type: ImageModelType,
     num_gpus: int,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> DockerEvaluationResults:
+    deployment_ids_by_repo = {}
+    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    for repo, dep_info in db_deployment_ids_by_repo.items():
+        deployment_ids_by_repo.setdefault(repo, dep_info)
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
     command = ["/app/start.sh"]
@@ -1479,6 +1555,8 @@ async def run_evaluation_basilica_image(
         repo_env["TEST_SPLIT_URL"] = test_split_url
         return repo_env
 
+    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
+
     repo_results = await _run_basilica_eval_repos(
         repos=models,
         model_name=original_model_repo,
@@ -1489,6 +1567,10 @@ async def run_evaluation_basilica_image(
         gpu_count=max(1, num_gpus),
         gpu_models=vcst.BASILICA_GPU_MODELS,
         min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        task_id=task_id,
+        psql_db=psql_db,
+        repo_to_hotkey=repo_to_hotkey,
+        deployment_ids_by_repo=deployment_ids_str,
     )
 
     evaluation_results: dict[str, dict | str] = {}

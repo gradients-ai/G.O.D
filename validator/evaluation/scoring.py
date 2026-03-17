@@ -299,6 +299,8 @@ async def _evaluate_submissions(
             "dataset_type": dataset_type,
             "num_gpus": num_gpus,
             "eval_seed": eval_seed,
+            "task_id": task.task_id,
+            "psql_db": config.psql_db if config is not None else None,
         }
 
         logger.info("Starting test evaluation")
@@ -339,6 +341,8 @@ async def _evaluate_submissions(
             "models": repos_to_evaluate,
             "model_type": task.model_type,
             "num_gpus": num_gpus,
+            "task_id": task.task_id,
+            "psql_db": config.psql_db if config is not None else None,
         }
 
         assert task.test_data is not None, "Test data shouldn't be none for image tasks"
@@ -448,7 +452,11 @@ async def process_miners_pool(
     if miner_repos:
         try:
             eval_results = await _evaluate_submissions(
-                task=task, submission_repos=list(miner_repos.values()), num_gpus=num_gpus, dataset_type=dataset_type or None, config=config
+                task=task,
+                submission_repos=list(miner_repos.values()),
+                num_gpus=num_gpus,
+                dataset_type=dataset_type or None,
+                config=config,
             )
 
             for miner in miners:

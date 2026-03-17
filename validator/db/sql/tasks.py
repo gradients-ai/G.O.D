@@ -1364,10 +1364,12 @@ async def get_expected_repo_name(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
 
 
 async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
-    """Add evaluation rows for a task from current assigned task_nodes."""
+    """Seed missing evaluation rows for a task from current assigned task_nodes.
+
+    Existing rows are preserved (including deployment ids and terminal statuses).
+    """
     async with await psql_db.connection() as connection:
         async with connection.transaction():
-            await connection.execute(f"DELETE FROM {cst.EVALUATIONS_TABLE} WHERE {cst.TASK_ID} = $1", task_id)
             query = f"""
                 INSERT INTO {cst.EVALUATIONS_TABLE}
                 ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
@@ -1383,6 +1385,7 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
                           AND ttht.{cst.TRAINING_STATUS} = 'success'
                     )
                 )
+                ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO NOTHING
             """
             await connection.execute(query, task_id, NETUID)
 
@@ -1396,7 +1399,9 @@ async def get_task_evaluation_rows(task_id: UUID, psql_db: PSQLDB) -> list[dict]
                 e.{cst.HOTKEY},
                 e.{cst.NETUID},
                 tn.{cst.EXPECTED_REPO_NAME},
-                e.{cst.EVALUATION_STATUS}
+                e.{cst.EVALUATION_STATUS},
+                e.{cst.DEPLOYMENT_ID},
+                e.{cst.DEPLOYMENT_ENV_ID}
             FROM {cst.EVALUATIONS_TABLE} e
             LEFT JOIN {cst.TASK_NODES_TABLE} tn
                 ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
@@ -1419,7 +1424,9 @@ async def get_task_evaluations_by_status(task_id: UUID, status: str, psql_db: PS
                 e.{cst.HOTKEY},
                 e.{cst.NETUID},
                 tn.{cst.EXPECTED_REPO_NAME},
-                e.{cst.EVALUATION_STATUS}
+                e.{cst.EVALUATION_STATUS},
+                e.{cst.DEPLOYMENT_ID},
+                e.{cst.DEPLOYMENT_ENV_ID}
             FROM {cst.EVALUATIONS_TABLE} e
             LEFT JOIN {cst.TASK_NODES_TABLE} tn
                 ON e.{cst.TASK_ID} = tn.{cst.TASK_ID}
@@ -1463,6 +1470,54 @@ async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> N
             task_id,
             NETUID,
         )
+
+
+async def set_evaluation_deployment_ids(
+    task_id: UUID,
+    hotkey: str,
+    deployment_id: str | None,
+    deployment_env_id: str | None,
+    psql_db: PSQLDB,
+) -> None:
+    """Store deployment IDs for an evaluation row. Overwrites on retry."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.DEPLOYMENT_ID} = $4, {cst.DEPLOYMENT_ENV_ID} = $5, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+            deployment_id,
+            deployment_env_id,
+        )
+
+
+async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
+    """
+    Get all deployment IDs from evaluation rows with status 'pending' or 'evaluating'.
+    Used on validator restart to preserve deployments that may be resumed.
+    Returns deployment_id and deployment_env_id values.
+    """
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.DEPLOYMENT_ID}, {cst.DEPLOYMENT_ENV_ID}
+            FROM {cst.EVALUATIONS_TABLE}
+            WHERE {cst.EVALUATION_STATUS} = ANY($1) AND {cst.NETUID} = $2
+            """,
+            ["pending", "evaluating"],
+            NETUID,
+        )
+    ids: set[str] = set()
+    for row in rows:
+        for col in (cst.DEPLOYMENT_ID, cst.DEPLOYMENT_ENV_ID):
+            val = row.get(col)
+            if val and isinstance(val, str):
+                ids.add(val)
+    return ids
 
 
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:

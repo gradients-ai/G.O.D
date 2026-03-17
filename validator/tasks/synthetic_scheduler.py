@@ -423,7 +423,6 @@ async def create_synthetic_grpo_task(
     return task
 
 
-# NOTE: only alfworld env for now
 @retry_with_backoff
 async def create_synthetic_env_task(
     config: Config,
@@ -443,6 +442,49 @@ async def create_synthetic_env_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     selected_environment = "gin_rummy"
+
+    # Generate a random seed for evaluation reproducibility
+    eval_seed = random.randint(0, 2**31 - 1)
+
+    task = EnvRawTask(
+        model_id=model_id,
+        ds=dummy_dataset,
+        status=TaskStatus.PENDING,
+        environment_name=selected_environment,
+        eval_seed=eval_seed,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=number_of_hours,
+        account_id=vcst.NULL_ACCOUNT_ID,
+        yarn_factor=None,
+    )
+    logger.info(f"New Environment task created with eval_seed={eval_seed}")
+
+    task = await add_task(task, config.psql_db)
+
+    return task
+
+
+@retry_with_backoff
+async def create_synthetic_env_boss_task(
+    config: Config,
+    models: AsyncGenerator[str, None],
+    datasets: AsyncGenerator[Dataset, None],
+) -> RawTask:
+    # hardoced model for now. the model and ds generators kept for signature compatibility
+    model_id = random.choice(SUPPORTED_ENV_MODELS)
+
+    # Environment tasks don't use the actual dataset - trainer generates a dummy one
+    # Use a placeholder to satisfy DB constraint
+    dummy_dataset = "env_task_dummy_dataset"
+
+    number_of_hours = _get_training_hours_for_environment_task()
+
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=number_of_hours)
+
+    selected_environment = "liars_dice"
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)

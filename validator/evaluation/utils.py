@@ -1,12 +1,15 @@
+import asyncio
 import base64
-import glob
 import json
+import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 from io import BytesIO
+from uuid import UUID
 
 import basilica
 from basilica import HealthCheckConfig, ProbeConfig
@@ -19,6 +22,8 @@ from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
 from validator.core import constants as cst
+from validator.db.database import PSQLDB
+from validator.db.sql import tasks as tasks_sql
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
 
@@ -27,6 +32,169 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 EVAL_RESULT_STATUS_PATH = "/result"
+
+
+def clean_basilica_log_line(raw_line: str) -> str:
+    line = raw_line.strip()
+    if not line:
+        return ""
+    line = re.sub(r"^data:\s*", "", line).rstrip(", ")
+    for _ in range(2):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            break
+
+        if isinstance(parsed, dict):
+            extracted = parsed.get("message") or parsed.get("log") or parsed.get("data")
+            if isinstance(extracted, str) and extracted.strip():
+                line = extracted.strip()
+                continue
+            line = str(parsed)
+            break
+
+        if isinstance(parsed, str):
+            line = parsed.strip()
+            continue
+
+        line = str(parsed)
+        break
+    if "\\u001b" in line or "\\x1b" in line:
+        try:
+            line = bytes(line, "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+
+    line = re.sub(r"\x1B\[[0-?]*[ -/]*[@-~]", "", line)
+    line = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\]\s*", "", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line
+
+
+def log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_name: str, deployment) -> None:
+    try:
+        raw_logs = deployment.logs()
+    except Exception as e:
+        eval_logger.warning(f"[BASILICA] unable to fetch logs for deployment={deployment_name}: {e}")
+        return
+
+    if not raw_logs:
+        eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
+        eval_logger.info("[BASILICA] no logs returned")
+        eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+        return
+
+    if isinstance(raw_logs, bytes):
+        raw_logs = raw_logs.decode("utf-8", errors="replace")
+
+    lines = []
+    for raw_line in str(raw_logs).splitlines():
+        cleaned = clean_basilica_log_line(raw_line)
+        if cleaned:
+            lines.append(cleaned)
+
+    eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
+    if not lines:
+        eval_logger.info("[BASILICA] log payload present but no parsable lines")
+    else:
+        for i, line in enumerate(lines, start=1):
+            eval_logger.info(f"[BASILICA] {i:04d} | {line}")
+    eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+
+
+def deployment_is_healthy(deployment, health_path: str = "/health", timeout: int = 8) -> bool:
+    try:
+        response = requests.get(f"{deployment.url}{health_path}", timeout=timeout)
+        return response.status_code == 200
+    except Exception:
+        return False
+
+
+async def delete_deployment_if_exists(deployment_name: str) -> None:
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+        for dep in deployments:
+            if getattr(dep, "name", None) == deployment_name:
+                await asyncio.to_thread(dep.delete)
+                return
+    except Exception:
+        return
+
+
+async def cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> None:
+    """Cleanup specific Basilica deployments by name."""
+    if not deployment_names:
+        return
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for final cleanup: {e}")
+        return
+
+    by_name = {getattr(dep, "name", None): dep for dep in deployments}
+    cleaned = 0
+    for name in deployment_names:
+        dep = by_name.get(name)
+        if dep is None:
+            continue
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+        except Exception as e:
+            logger.warning(f"Failed final cleanup for deployment {name}: {e}")
+
+    if cleaned:
+        logger.info(f"Final cleanup removed {cleaned} lingering deployments for this evaluation batch")
+
+
+async def load_eval_pair_state_for_models(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    models: list[str],
+) -> tuple[dict[str, str | dict[str, str]], dict[str, str]]:
+    if task_id is None or psql_db is None:
+        return {}, {}
+
+    rows = await tasks_sql.get_task_evaluation_rows(task_id, psql_db)
+    model_set = set(models)
+    deployment_ids_by_repo: dict[str, str | dict[str, str]] = {}
+    repo_to_hotkey: dict[str, str] = {}
+
+    for row in rows:
+        expected_repo_name = row.get("expected_repo_name")
+        hotkey = row.get("hotkey")
+        if not expected_repo_name or not hotkey:
+            continue
+        repo = f"{cst.RAYONLABS_HF_USERNAME}/{expected_repo_name}"
+        if repo not in model_set:
+            continue
+        repo_to_hotkey[repo] = hotkey
+        deployment_id = row.get("deployment_id")
+        deployment_env_id = row.get("deployment_env_id")
+        if deployment_id and deployment_env_id:
+            deployment_ids_by_repo[repo] = {"sglang": deployment_id, "env": deployment_env_id}
+        elif deployment_id:
+            deployment_ids_by_repo[repo] = deployment_id
+
+    return deployment_ids_by_repo, repo_to_hotkey
+
+
+async def persist_deployment_ids_for_repo(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    repo_to_hotkey: dict[str, str],
+    repo: str,
+    deployment_id: str | None,
+    deployment_env_id: str | None,
+) -> None:
+    if task_id is None or psql_db is None:
+        return
+    hotkey = repo_to_hotkey.get(repo)
+    if not hotkey:
+        return
+    await tasks_sql.set_evaluation_deployment_ids(task_id, hotkey, deployment_id, deployment_env_id, psql_db)
 
 
 def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:
@@ -224,27 +392,32 @@ def check_for_lora(model_id: str, local_files_only: bool = False) -> bool:
         return False
 
 
-def sanitize_downloaded_lora_dir(lora_dir: str, log_fn=None) -> None:
-    """Remove files that are known to break SGLang LoRA loading."""
-    if log_fn is None:
-        log_fn = logger.info
+@retry_on_5xx()
+def check_lora_has_added_tokens(model_id: str, local_files_only: bool = False) -> bool:
+    """
+    Check if a LoRA repo includes added_tokens.json.
 
-    for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
-        try:
-            os.remove(model_file)
-            log_fn(f"Removed incompatible LoRA file: {os.path.basename(model_file)}")
-        except Exception as e:
-            log_fn(f"Failed to remove {model_file}: {e}")
-
-    for filename in ("model.safetensors.index.json", "added_tokens.json"):
-        file_path = os.path.join(lora_dir, filename)
-        if not os.path.exists(file_path):
-            continue
-        try:
-            os.remove(file_path)
-            log_fn(f"Removed incompatible LoRA file: {filename}")
-        except Exception as e:
-            log_fn(f"Failed to remove {file_path}: {e}")
+    This is used to decide whether we need to merge LoRA into base model
+    before launching SGLang.
+    """
+    ADDED_TOKENS_FILE = "added_tokens.json"
+    try:
+        if local_files_only:
+            cache_dir = os.path.expanduser("~/.cache/huggingface/hub")
+            repo_path = os.path.join(cache_dir, "models--" + model_id.replace("/", "--"))
+            if os.path.exists(repo_path):
+                for root, dirs, files in os.walk(repo_path):
+                    if ".no_exist" in root:
+                        continue
+                    if ADDED_TOKENS_FILE in files:
+                        token_file = os.path.join(root, ADDED_TOKENS_FILE)
+                        if os.path.getsize(token_file) > 0:
+                            return True
+            return False
+        return ADDED_TOKENS_FILE in hf_api.list_repo_files(model_id)
+    except Exception as e:
+        logger.error(f"Error checking for added_tokens.json in LoRA repo: {e}")
+        return False
 
 
 def get_default_dataset_config(dataset_name: str) -> str | None:
@@ -372,7 +545,13 @@ def build_sglang_health_check(startup_minutes: int = 30) -> HealthCheckConfig:
     )
 
 
-def create_sglang_deployment_source(base_model: str, lora_model: str | None = None, seed: int = 42, max_retries: int = 3) -> str:
+def create_sglang_deployment_source(
+    base_model: str,
+    lora_model: str | None = None,
+    seed: int = 42,
+    max_retries: int = 3,
+    merge_lora_first: bool = False,
+) -> str:
     """Create the source code for SGLang deployment with robust model download and retry logic.
     
     Args:
@@ -413,8 +592,6 @@ def download_lora_with_retry():
     """Download LoRA with retry logic for reliability."""
     from huggingface_hub import snapshot_download
     import time
-    import os
-    import glob
     
     lora_dir = "/tmp/lora/trained_lora"
     
@@ -484,7 +661,7 @@ def merge_model_with_lora(base_model_path, lora_dir, output_dir="/tmp/merged_mod
     print(f"Merged model saved to {output_dir} in {time.time() - t3:.1f}s", flush=True)
     return output_dir
 '''
-    
+
     server_type = "with LoRA" if lora_model else ""
     
     return f'''import subprocess
@@ -537,9 +714,10 @@ def ensure_merge_dependencies():
         print("Runtime import validation passed", flush=True)
 model_path_for_sglang = download_model_with_retry()
 if {repr(bool(lora_model))}:
-    ensure_merge_dependencies()
     lora_path = download_lora_with_retry()
-    model_path_for_sglang = merge_model_with_lora(model_path_for_sglang, lora_path)
+    if {repr(merge_lora_first)}:
+        ensure_merge_dependencies()
+        model_path_for_sglang = merge_model_with_lora(model_path_for_sglang, lora_path)
 
 sglang_args = [
     "python3 -m sglang.launch_server",
@@ -556,6 +734,12 @@ sglang_args = [
     "--enable-deterministic-inference",
     "--random-seed", "{seed}",
 ]
+if {repr(bool(lora_model) and not merge_lora_first)}:
+    sglang_args.extend([
+        "--enable-lora",
+        "--lora-paths", "trained_lora=/tmp/lora/trained_lora",
+        "--lora-backend", "triton",
+    ])
 sglang_cmd = " ".join(sglang_args)
 
 # Start SGLang server {server_type}
@@ -570,6 +754,7 @@ def deploy_sglang_basilica(
     deployment_name: str,
     seed: int = 42,
     startup_minutes: int = 30,
+    merge_lora_first: bool = False,
 ) -> basilica.Deployment:
     """Deploy SGLang server to Basilica with health checks and retry logic.
     
@@ -579,9 +764,16 @@ def deploy_sglang_basilica(
         deployment_name: Name for the deployment
         seed: Random seed for determinism (default: 42)
         startup_minutes: Maximum minutes to wait for model loading (default: 30)
+        merge_lora_first: If True, merge base + LoRA before launching SGLang
     """
     health_check = build_sglang_health_check(startup_minutes=startup_minutes)
-    func_source = create_sglang_deployment_source(base_model, lora_model, seed, max_retries=3)
+    func_source = create_sglang_deployment_source(
+        base_model,
+        lora_model,
+        seed,
+        max_retries=3,
+        merge_lora_first=merge_lora_first,
+    )
     
     startup_max = (
         health_check.startup.initial_delay_seconds

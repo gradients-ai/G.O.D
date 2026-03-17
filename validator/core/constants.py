@@ -353,11 +353,11 @@ ENVIRONMENTS = {
     },
     "liars_dice": {
         "task_id_range": (100000000, 199999999),
-        "num_seeds": 2000,
-        "env_image": "phoenixbeaudry/game:mcts-api",
+        "num_seeds": 10000,
+        "env_image": "diagonalge/mcts-api:latest",
         "eval_payload_extra": {
             "opponent": "mcts",
-            "mcts_max_simulations": 25,
+            "mcts_max_simulations": 50,
             "mcts_num_rollouts": 1,
             "api_key": "dummy-key",
         },

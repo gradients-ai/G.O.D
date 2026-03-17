@@ -145,6 +145,8 @@ TASK_NODE_QUALITY_SCORE = "quality_score"
 
 EXPECTED_REPO_NAME = "expected_repo_name"
 EVALUATION_STATUS = "evaluation_status"
+DEPLOYMENT_ID = "deployment_id"
+DEPLOYMENT_ENV_ID = "deployment_env_id"
 
 TEST_LOSS = "test_loss"
 SYNTH_LOSS = "synth_loss"
