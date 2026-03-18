@@ -25,7 +25,9 @@ from validator.evaluation.utils import (
 
 
 logger = logging.getLogger(__name__)
-_DEFAULT_AFFINETES_SERVER_CMD = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1"
+_DEFAULT_AFFINETES_SERVER_CMD = (
+    "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
+)
 
 
 def _configure_logging() -> None:

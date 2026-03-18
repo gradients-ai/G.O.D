@@ -339,7 +339,7 @@ ENVIRONMENTS = {
         "num_seeds": 2000,
         "env_image": "diagonalge/openspiel:latest",
         "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
-        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio",
         "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
     },
     "gin_rummy": {
@@ -347,7 +347,7 @@ ENVIRONMENTS = {
         "num_seeds": 1000,
         "env_image": "diagonalge/mcts-api:latest",
         "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
-        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio",
         "eval_payload_extra": {
             "opponent": "mcts",
             "mcts_max_simulations": 25,
@@ -357,10 +357,10 @@ ENVIRONMENTS = {
     },
     "liars_dice": {
         "task_id_range": (100000000, 199999999),
-        "num_seeds": 10000,
+        "num_seeds": 100,
         "env_image": "diagonalge/mcts-api:latest",
         "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
-        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio",
         "eval_payload_extra": {
             "opponent": "mcts",
             "mcts_max_simulations": 50,
