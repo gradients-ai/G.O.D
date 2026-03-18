@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from io import BytesIO
@@ -17,6 +18,7 @@ import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
+from huggingface_hub import snapshot_download
 from PIL import Image
 from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
@@ -418,6 +420,116 @@ def check_lora_has_added_tokens(model_id: str, local_files_only: bool = False) -
     except Exception as e:
         logger.error(f"Error checking for added_tokens.json in LoRA repo: {e}")
         return False
+
+
+def download_model_with_retry(repo_id: str, max_retries: int = 3) -> str:
+    """Download base model from HuggingFace with retry logic. Returns local path."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("Downloading base model (attempt %s/%s): %s", attempt, max_retries, repo_id)
+            start = time.time()
+            path = snapshot_download(repo_id, local_files_only=False)
+            elapsed = time.time() - start
+            logger.info("Base model downloaded in %.1fs: %s", elapsed, path)
+            return path
+        except Exception as e:
+            logger.warning("Download attempt %s failed: %s", attempt, e)
+            if attempt < max_retries:
+                wait = 30 * attempt
+                logger.info("Retrying in %ss...", wait)
+                time.sleep(wait)
+            else:
+                logger.error("All download attempts failed")
+                raise
+
+
+def download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3) -> str:
+    """Download LoRA adapter from HuggingFace with retry logic. Returns local dir path."""
+    os.makedirs(local_dir, exist_ok=True)
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("Downloading LoRA (attempt %s/%s): %s", attempt, max_retries, repo_id)
+            start = time.time()
+            snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False)
+            elapsed = time.time() - start
+            logger.info("LoRA downloaded in %.1fs", elapsed)
+            return local_dir
+        except Exception as e:
+            logger.warning("Download attempt %s failed: %s", attempt, e)
+            if attempt < max_retries:
+                wait = 30 * attempt
+                logger.info("Retrying in %ss...", wait)
+                time.sleep(wait)
+            else:
+                logger.error("All download attempts failed")
+                raise
+
+
+def merge_base_and_lora(
+    base_model_path: str,
+    lora_dir: str,
+    output_dir: str = "/tmp/merged_model",
+) -> str:
+    """Merge base model and LoRA adapter. Returns path to merged model directory."""
+    import importlib.util
+
+    needs_install = (
+        importlib.util.find_spec("peft") is None
+        or importlib.util.find_spec("accelerate") is None
+    )
+    if needs_install:
+        logger.info("Installing merge dependencies at runtime...")
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--no-deps", "peft", "accelerate"],
+            check=True,
+        )
+        logger.info("Merge dependencies installed")
+    import torch
+    from peft import PeftModel
+    from transformers import AutoModelForCausalLM
+    from transformers import AutoTokenizer
+
+    logger.info("Merging base model and LoRA adapter...")
+    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=True)
+
+    t0 = time.time()
+    base = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True,
+        device_map="cuda:0" if torch.cuda.is_available() else "auto",
+        trust_remote_code=True,
+    )
+    logger.info("Base model loaded in %.1fs", time.time() - t0)
+
+    base_vocab_size = base.get_input_embeddings().weight.shape[0]
+    target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= base_vocab_size else base_tokenizer
+    target_vocab_size = len(target_tokenizer)
+    if target_vocab_size > base_vocab_size:
+        logger.info("Resizing token embeddings from %s to %s", base_vocab_size, target_vocab_size)
+        base.resize_token_embeddings(target_vocab_size)
+    elif target_vocab_size < base_vocab_size:
+        logger.info(
+            "LoRA tokenizer smaller than base (%s < %s); keeping base vocab size.",
+            target_vocab_size,
+            base_vocab_size,
+        )
+
+    t1 = time.time()
+    model = PeftModel.from_pretrained(base, lora_dir)
+    logger.info("LoRA adapter loaded in %.1fs", time.time() - t1)
+
+    t2 = time.time()
+    merged = model.merge_and_unload(safe_merge=False)
+    logger.info("Merge completed in %.1fs", time.time() - t2)
+
+    os.makedirs(output_dir, exist_ok=True)
+    t3 = time.time()
+    merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
+    target_tokenizer.save_pretrained(output_dir)
+    logger.info("Merged model saved to %s in %.1fs", output_dir, time.time() - t3)
+    return output_dir
 
 
 def get_default_dataset_config(dataset_name: str) -> str | None:

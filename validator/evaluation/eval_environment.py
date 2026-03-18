@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import logging
 import os
@@ -14,7 +15,13 @@ import aiohttp
 from core import constants as cst
 from core.models.utility_models import EnvironmentDatasetType
 from validator.core import constants as vcst
-from validator.evaluation.utils import check_for_lora, check_lora_has_added_tokens
+from validator.evaluation.utils import (
+    check_for_lora,
+    check_lora_has_added_tokens,
+    download_lora_with_retry,
+    download_model_with_retry,
+    merge_base_and_lora,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -248,17 +255,53 @@ async def _run() -> None:
         model_path_for_sglang = model_repo
         sglang_command = os.getenv("SGLANG_START_CMD")
         if not sglang_command:
+            # Download model and LoRA (when applicable) before starting SGLang, matching legacy workflow.
             if is_lora and not should_merge_lora:
-                # Preserve current convention used by existing environment eval flow.
-                model_path_for_sglang = original_model
+                # Base model + LoRA: download both, LoRA to /lora/trained_lora
+                model_path_for_sglang = await asyncio.to_thread(
+                    download_model_with_retry, original_model
+                )
+                lora_dir = "/lora/trained_lora"
+                await asyncio.to_thread(
+                    download_lora_with_retry, model_repo, lora_dir
+                )
+                for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
+                    try:
+                        os.remove(model_file)
+                        logger.info("Removed incompatible LoRA file: %s", os.path.basename(model_file))
+                    except Exception as exc:
+                        logger.warning("Failed to remove %s: %s", model_file, exc)
+                index_file = os.path.join(lora_dir, "model.safetensors.index.json")
+                if os.path.exists(index_file):
+                    try:
+                        os.remove(index_file)
+                    except Exception as exc:
+                        logger.warning("Failed to remove index file: %s", exc)
                 inference_model_name = f"{original_model}:trained_lora"
                 sglang_command = (
                     _build_sglang_command(model_path_for_sglang, base_seed)
                     + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
                 )
+            elif is_lora and should_merge_lora:
+                # LoRA with added tokens: download both, merge, then use merged path
+                base_path = await asyncio.to_thread(
+                    download_model_with_retry, original_model
+                )
+                lora_temp_dir = "/tmp/lora/trained_lora"
+                await asyncio.to_thread(
+                    download_lora_with_retry, model_repo, lora_temp_dir
+                )
+                model_path_for_sglang = await asyncio.to_thread(
+                    merge_base_and_lora, base_path, lora_temp_dir
+                )
+                inference_model_name = model_repo
+                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
             else:
-                model_path_for_sglang = model_repo if not is_lora else original_model
-                inference_model_name = model_repo if not is_lora else original_model
+                # Base model only
+                model_path_for_sglang = await asyncio.to_thread(
+                    download_model_with_retry, model_repo
+                )
+                inference_model_name = model_repo
                 sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
 
         sglang_proc = _start_process(sglang_command, "sglang")

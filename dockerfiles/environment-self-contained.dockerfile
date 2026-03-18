@@ -1,13 +1,33 @@
-FROM diagonalge/mcts-api:latest
+FROM diagonalge/mcts-api:latest AS mcts_runtime
+
+FROM lmsysorg/sglang:latest
 
 WORKDIR /app
 
-# Install SGLang runtime into the env-server image so both services
-# can run inside the same Basilica deployment container.
-RUN pip install --no-cache-dir "sglang[all]"
+# Bring in MCTS environment server runtime from the original image.
+COPY --from=mcts_runtime /app /opt/mcts
+ENV PYTHONPATH="/opt/mcts:/app"
 
-# Add validator code so `python -m validator.evaluation.eval_environment` is available.
+# Copy package metadata files so dependency install layer is cached when only code changes.
+COPY pyproject.toml README.md ./
+RUN mkdir -p src && touch src/__init__.py
+
+# SGLang is provided by the base image.
+# Then install base pyproject dependencies (no optional extras).
+RUN pip install --no-cache-dir --upgrade-strategy only-if-needed .
+
+# Install MCTS env-server dependencies expected by /opt/mcts/env.py (e.g. open-spiel).
+RUN pip install --no-cache-dir --upgrade-strategy only-if-needed -r /opt/mcts/requirements.txt
+# MCTS image also includes affinetes package used by llm_bot.py imports.
+RUN pip install --no-cache-dir --upgrade-strategy only-if-needed affinetes==0.1.0
+
+# libnuma1 required by SGLang
+RUN apt-get update && apt-get install -y --no-install-recommends libnuma1 && rm -rf /var/lib/apt/lists/*
+
+# Add validator code
 COPY . /app
+# mcts env-server expects user env at /app/env.py
+COPY --from=mcts_runtime /app/env.py /app/env.py
 
 # Shared runtime defaults used by validator.evaluation.eval_environment.
 ENV SGLANG_PORT=30000
