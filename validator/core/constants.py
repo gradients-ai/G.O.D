@@ -315,7 +315,7 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Environment evaluation constants
 BASILICA_SGLANG_IMAGE = "lmsysorg/sglang:latest"
-BASILICA_ENV_IMAGE = "phoenixbeaudry/game:mcts-api"
+BASILICA_ENV_SELF_CONTAINED_IMAGE = "diagonalge/mcts-api-sglang:latest"
 BASILICA_SGLANG_GPU_COUNT = 1
 BASILICA_GPU_MODELS = ["H100", "A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
@@ -338,12 +338,16 @@ ENVIRONMENTS = {
         "task_id_range": (0, 99999999),
         "num_seeds": 2000,
         "env_image": "diagonalge/openspiel:latest",
+        "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
         "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
     },
     "gin_rummy": {
         "task_id_range": (300000000, 399999999),
         "num_seeds": 1000,
         "env_image": "diagonalge/mcts-api:latest",
+        "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
         "eval_payload_extra": {
             "opponent": "mcts",
             "mcts_max_simulations": 25,
@@ -355,6 +359,8 @@ ENVIRONMENTS = {
         "task_id_range": (100000000, 199999999),
         "num_seeds": 10000,
         "env_image": "diagonalge/mcts-api:latest",
+        "eval_image": BASILICA_ENV_SELF_CONTAINED_IMAGE,
+        "env_server_cmd": "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1",
         "eval_payload_extra": {
             "opponent": "mcts",
             "mcts_max_simulations": 50,

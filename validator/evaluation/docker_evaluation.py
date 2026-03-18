@@ -40,11 +40,8 @@ from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
     EVAL_RESULT_STATUS_PATH,
     cleanup_basilica_deployments_by_name,
-    delete_deployment_if_exists,
     deployment_is_healthy,
     create_basilica_eval_runner_source,
-    deploy_sglang_basilica,
-    deploy_env_basilica,
     load_eval_pair_state_for_models,
     log_basilica_logs_block,
     persist_deployment_ids_for_repo,
@@ -845,229 +842,90 @@ async def run_evaluation_docker_environment(
     psql_db: PSQLDB | None = None,
     deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
-    """Run environment evaluation using Basilica deployments for SGLang and environment server.
+    """Run environment evaluation via a self-contained Basilica eval image.
 
-    Each model repo gets its own Basilica deployments with retry logic.
-    Repos are evaluated in parallel. Supports resume via deployment_ids_by_repo.
-    For env tasks on restart: reconnect to existing deployments and re-run _run_environment_evaluation
-    (deterministic, so full re-run yields correct result).
+    Unlike the legacy flow (separate validator-managed SGLang + env deployments),
+    this follows the same pattern as text/image/grpo evals:
+    - deploy a single eval container per repo
+    - run the env evaluation script inside that container
+    - poll `/result` and parse `evaluation_results.json`
     """
     deployment_ids_by_repo = deployment_ids_by_repo or {}
     db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
-    logger.debug(f"Starting Basilica environment evaluation for {len(models)} repos: {models}")
+    logger.debug(f"Starting self-contained Basilica environment evaluation for {len(models)} repos: {models}")
 
     env_name = dataset_type.environment_name
     if env_name not in vcst.ENVIRONMENTS:
         raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
 
     env_config = vcst.ENVIRONMENTS[env_name]
-    task_id_min, task_id_max = env_config["task_id_range"]
-    num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
-    env_image = env_config["env_image"]
-    env_payload_extra = env_config.get("eval_payload_extra", {})
+    eval_image = env_config.get("eval_image", env_config["env_image"])
+    dataset_type_str = dataset_type.model_dump_json()
+    command = env_config.get("eval_command", ["python", "-m", "validator.evaluation.eval_environment"])
+    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
 
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-    seed_generator = random.Random(base_seed)
-    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(num_seeds)]
-    logger.info(f"Generated {num_seeds} seeds from base_seed={base_seed}")
 
-    async def evaluate_single_repo(repo: str, repo_idx: int) -> tuple[str, dict | str]:
-        """Deploy, evaluate, and cleanup a single repo on Basilica. Supports resume."""
-        eval_id = str(uuid.uuid4())
-        repo_name = repo.split("/")[-1]
-        env_logger = get_environment_logger(
-            name=f"{repo_name}-{eval_id[:8]}",
-            repo_id=repo,
-            eval_id=eval_id,
-            model=original_model,
-        )
-        deployments = {}
-        repo_result = None
-        existing_ids = deployment_ids_by_repo.get(repo)
-        if isinstance(existing_ids, dict) and existing_ids.get("sglang") and existing_ids.get("env"):
-            sglang_id = existing_ids["sglang"]
-            env_id = existing_ids["env"]
-            try:
-                client = basilica.BasilicaClient()
-                all_deps = await asyncio.to_thread(client.list)
-                by_name = {getattr(d, "name", None): d for d in all_deps}
-                sglang_dep = by_name.get(sglang_id)
-                env_dep = by_name.get(env_id)
-                healthy_resume = True
-                if sglang_dep is None or env_dep is None:
-                    env_logger.warning(f"Resume: deployment(s) not found sglang={sglang_id!r} env={env_id!r}")
-                    await delete_deployment_if_exists(sglang_id)
-                    await delete_deployment_if_exists(env_id)
-                    healthy_resume = False
-                elif not deployment_is_healthy(sglang_dep) or not deployment_is_healthy(env_dep):
-                    env_logger.warning(f"Resume: unhealthy deployment(s), sglang={sglang_id!r} env={env_id!r}")
-                    await delete_deployment_if_exists(sglang_id)
-                    await delete_deployment_if_exists(env_id)
-                    healthy_resume = False
+    base_env = {
+        "ORIGINAL_MODEL": original_model,
+        "DATASET_TYPE": dataset_type_str,
+        "ENVIRONMENT_NAME": env_name,
+        "EVAL_SEED": str(base_seed),
+        "ENV_EVAL_TEMPERATURE": str(vcst.ENV_EVAL_TEMPERATURE),
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "HF_HOME": "/root/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+    }
+    if isinstance(env_config.get("env_server_cmd"), str) and env_config["env_server_cmd"].strip():
+        base_env["ENV_SERVER_CMD"] = env_config["env_server_cmd"]
+    if isinstance(env_config.get("env_server_base_url"), str) and env_config["env_server_base_url"].strip():
+        base_env["ENV_SERVER_BASE_URL"] = env_config["env_server_base_url"]
 
-                if healthy_resume:
-                    env_logger.info(f"Resuming: reconnecting to sglang={sglang_id} env={env_id}")
-                    is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
-                    inference_model_name = f"{original_model}:trained_lora" if is_lora else repo
-                    avg_score = await _run_environment_evaluation(
-                        sglang_dep.url,
-                        env_dep.url,
-                        eval_seeds,
-                        task_id_max,
-                        vcst.ENV_EVAL_TEMPERATURE,
-                        env_logger,
-                        inference_model_name,
-                        task_id_min,
-                        env_payload_extra=env_payload_extra,
-                    )
-                    return (repo, {"is_finetune": True, "eval_loss": avg_score})
-            except Exception as e:
-                env_logger.error(f"Resume failed for {repo}, redeploying: {e}", exc_info=True)
+    def build_env_for_repo(repo: str) -> dict[str, str]:
+        repo_env = dict(base_env)
+        repo_env["MODELS"] = repo
+        return repo_env
 
-        def _log_deployment_logs(deployment, deployment_type: str):
-            """Fetch and log Basilica deployment logs."""
-            try:
-                logs = deployment.logs()
-                if not logs:
-                    return
-                for line in logs.strip().split("\n"):
-                    if not line.strip():
-                        continue
-                    try:
-                        log_data = json.loads(line)
-                        message = log_data.get("message", "")
-                        if message:
-                            message = re.sub(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]\s*", "", message)
-                            message = re.sub(r"^data:\s*", "", message).rstrip(", ")
-                            if message.strip():
-                                env_logger.info(f"[{deployment_type}] {message}")
-                    except (json.JSONDecodeError, AttributeError):
-                        cleaned = line.strip()
-                        if cleaned:
-                            env_logger.info(f"[{deployment_type}] {cleaned}")
-            except Exception as e:
-                env_logger.warning(f"Failed to fetch {deployment_type} logs: {e}")
+    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-        async def _cleanup_deployments(deployments_dict: dict, fetch_logs: bool = False):
-            """Clean up Basilica deployments."""
-            for name, deployment in deployments_dict.items():
-                try:
-                    if fetch_logs:
-                        await asyncio.to_thread(_log_deployment_logs, deployment, name)
-                    deployment.delete()
-                    env_logger.info(f"Cleaned up {name} deployment")
-                except Exception as e:
-                    env_logger.warning(f"Failed to cleanup {name}: {e}", exc_info=True)
-            deployments_dict.clear()
+    repo_results = await _run_basilica_eval_repos(
+        repos=models,
+        model_name=original_model,
+        task_type="environment",
+        image=eval_image,
+        source=source,
+        build_env_for_repo=build_env_for_repo,
+        gpu_count=max(1, num_gpus),
+        gpu_models=vcst.BASILICA_GPU_MODELS,
+        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        task_id=task_id,
+        psql_db=psql_db,
+        repo_to_hotkey=repo_to_hotkey,
+        deployment_ids_by_repo=deployment_ids_str,
+    )
 
-        for attempt in range(1, vcst.ENV_EVAL_MAX_RETRIES + 1):
-            try:
-                is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
-                should_merge_lora = False
+    evaluation_results: dict[str, dict | str] = {}
+    for repo in models:
+        raw_result = repo_results.get(repo)
+        if not isinstance(raw_result, dict):
+            evaluation_results[repo] = str(raw_result)
+            continue
 
-                if is_lora:
-                    base_model = original_model
-                    lora_model = repo
-                    should_merge_lora = await asyncio.to_thread(
-                        check_lora_has_added_tokens, repo, local_files_only=False
-                    )
-                    inference_model_name = original_model if should_merge_lora else f"{original_model}:trained_lora"
-                    env_logger.info(f"Deploying SGLang: {original_model} w/ LoRA {repo}")
-                else:
-                    base_model = repo
-                    lora_model = None
-                    inference_model_name = repo
-                    env_logger.info(f"Deploying SGLang: {repo}")
-
-                sglang_deployment = await asyncio.to_thread(
-                    deploy_sglang_basilica,
-                    base_model,
-                    lora_model,
-                    f"{eval_id}-sglang",
-                    base_seed,
-                    30,
-                    should_merge_lora,
-                )
-                deployments["sglang"] = sglang_deployment
-                await asyncio.to_thread(wait_for_basilica_health, sglang_deployment.url)
-                env_logger.info(f"SGLang ready at: {sglang_deployment.url}")
-
-                env_deployment = await asyncio.to_thread(
-                    deploy_env_basilica, f"{eval_id}-env", env_image,
-                )
-                deployments["env"] = env_deployment
-                await asyncio.to_thread(wait_for_basilica_health, env_deployment.url, 1800, "/health")
-                env_logger.info(f"Environment server ready at: {env_deployment.url}")
-
-                sglang_name = getattr(sglang_deployment, "name", f"{eval_id}-sglang")
-                env_name = getattr(env_deployment, "name", f"{eval_id}-env")
-                await persist_deployment_ids_for_repo(
-                    task_id,
-                    psql_db,
-                    repo_to_hotkey,
-                    repo,
-                    sglang_name,
-                    env_name,
-                )
-
-                avg_score = await _run_environment_evaluation(
-                    sglang_deployment.url,
-                    env_deployment.url,
-                    eval_seeds,
-                    task_id_max,
-                    vcst.ENV_EVAL_TEMPERATURE,
-                    env_logger,
-                    inference_model_name,
-                    task_id_min,
-                    env_payload_extra=env_payload_extra,
-                )
-
-                repo_result = {"is_finetune": True, "eval_loss": avg_score}
-
-                await asyncio.to_thread(_log_deployment_logs, sglang_deployment, "SGLang")
-                await asyncio.to_thread(_log_deployment_logs, env_deployment, "Env")
-                await _cleanup_deployments(deployments)
-                break
-
-            except asyncio.CancelledError:
-                env_logger.info("Environment evaluation cancelled; preserving deployments for resume")
-                raise
-            except Exception as e:
-                remaining = vcst.ENV_EVAL_MAX_RETRIES - attempt
-                if remaining > 0:
-                    env_logger.error(
-                        f"Attempt {attempt}/{vcst.ENV_EVAL_MAX_RETRIES} failed: {e}, "
-                        f"retrying in {vcst.ENV_EVAL_DEPLOYMENT_RETRY_DELAY / 60:.0f} min...",
-                        exc_info=True,
-                    )
-                else:
-                    env_logger.error(
-                        f"Attempt {attempt}/{vcst.ENV_EVAL_MAX_RETRIES} failed: {e}, max retries reached.",
-                        exc_info=True,
-                    )
-                await _cleanup_deployments(deployments, fetch_logs=True)
-                if remaining > 0:
-                    await asyncio.sleep(vcst.ENV_EVAL_DEPLOYMENT_RETRY_DELAY)
-
-        return (repo, repo_result if repo_result is not None else "Evaluation failed")
-
-    logger.debug(f"Starting {len(models)} parallel Basilica evaluations...")
-    tasks = [evaluate_single_repo(repo, idx) for idx, repo in enumerate(models)]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    evaluation_results = {}
-    for idx, result in enumerate(results):
-        repo = models[idx]
-        if isinstance(result, Exception):
-            logger.error(f"Evaluation for {repo} failed: {result}", exc_info=True)
-            evaluation_results[repo] = f"Evaluation failed: {str(result)}"
+        if repo in raw_result:
+            evaluation_results[repo] = raw_result[repo]
         else:
-            _, result_data = result
-            evaluation_results[repo] = result_data
+            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
+            if len(candidate_keys) == 1:
+                evaluation_results[repo] = raw_result[candidate_keys[0]]
+            else:
+                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
 
-    logger.debug(f"Environment evaluation results: {evaluation_results}")
+    logger.debug(f"Self-contained environment evaluation results: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
 
 

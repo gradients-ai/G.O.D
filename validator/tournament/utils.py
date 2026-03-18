@@ -777,15 +777,10 @@ async def get_group_winners(
 
     TOP_WINNERS_TO_ADVANCE = 1 if completed_round.is_final_round else 8
 
-    # Determine task type once to handle environment-specific scoring (higher is better)
-    is_environment_task = False
-    if round_tasks:
-        task_object = await get_task(round_tasks[0].task_id, psql_db)
+    if completed_round.is_final_round:
+        task_object = await get_task(round_tasks[0].task_id, psql_db) if round_tasks else None
         if task_object and task_object.task_type == TaskType.ENVIRONMENTTASK:
-            is_environment_task = True
-
-    if completed_round.is_final_round and is_environment_task:
-        return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
+            return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
 
     all_winners = []
 
@@ -824,14 +819,9 @@ async def get_group_winners(
             logger.warning(f"Group {group_id} has no valid scores - proceeding with no winners")
             continue
 
-        # Environment tasks: higher score is better; all others: lower loss is better
-        if is_environment_task:
-            sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=True)
-            ranking_direction = "descending (higher is better)"
-        else:
-            sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
-            ranking_direction = "ascending (lower is better)"
-
+        sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
+        ranking_direction = "ascending (lower is better)"
+        
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss ({ranking_direction}): "
             f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"
