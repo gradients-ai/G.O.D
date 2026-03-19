@@ -50,6 +50,8 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             branch=req.github_branch,
             commit_hash=req.github_commit_hash,
             github_token=req.github_token,
+            task_id=req.training_data.task_id,
+            hotkey=req.hotkey,
         )
     except Exception as e:
         await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")

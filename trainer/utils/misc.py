@@ -22,12 +22,18 @@ def clone_repo(
     branch: str = None,
     commit_hash: str = None,
     github_token: str | None = None,
+    task_id: str | None = None,
+    hotkey: str | None = None,
 ) -> str:
-    repo_name = os.path.basename(urlparse(repo_url).path)
+    path = urlparse(repo_url).path.rstrip("/")
+    repo_name = os.path.basename(path) or "repo"
     if repo_name.endswith(".git"):
         repo_name = repo_name[:-4]
 
-    repo_dir = os.path.join(parent_dir, repo_name)
+    unique_suffix = f"{task_id}_{hotkey[:8]}" if task_id and hotkey else None
+    dir_name = f"{repo_name}_{unique_suffix}" if unique_suffix else repo_name
+    repo_dir = os.path.join(parent_dir, dir_name)
+    os.makedirs(parent_dir, exist_ok=True)
 
     if os.path.exists(repo_dir):
         try:
