@@ -1,18 +1,12 @@
 import asyncio
-import glob
 import io
 import json
 import logging
 import os
 import re
-import shutil
 import tarfile
 import uuid
 from uuid import UUID
-import docker
-from docker.types import Mount
-from huggingface_hub import snapshot_download
-import aiohttp
 import requests
 import time
 import random
@@ -29,14 +23,10 @@ from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
-from core.utils import download_s3_file
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
-from validator.tasks.task_prep import unzip_to_temp_path
-from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import get_logger
 from validator.utils.logging import get_environment_logger
-from validator.utils.logging import stream_container_logs
 from validator.evaluation.utils import (
     EVAL_RESULT_STATUS_PATH,
     cleanup_basilica_deployments_by_name,
@@ -45,13 +35,31 @@ from validator.evaluation.utils import (
     load_eval_pair_state_for_models,
     log_basilica_logs_block,
     persist_deployment_ids_for_repo,
-    wait_for_basilica_health,
-    check_for_lora,
-    check_lora_has_added_tokens,
 )
 
 
 logger = get_logger(__name__)
+_EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
+
+
+async def _db_read_with_retry(coro_factory, op_name: str):
+    last_exc = None
+    for attempt in range(1, vcst.EVAL_DB_RETRY_ATTEMPTS + 1):
+        try:
+            return await coro_factory()
+        except Exception as exc:
+            last_exc = exc
+            delay = vcst.EVAL_DB_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+            jitter = random.uniform(0.0, 0.3)
+            if attempt < vcst.EVAL_DB_RETRY_ATTEMPTS:
+                logger.warning(
+                    f"DB read op '{op_name}' failed attempt {attempt}/{vcst.EVAL_DB_RETRY_ATTEMPTS}: {exc}; "
+                    f"retrying in {delay + jitter:.2f}s"
+                )
+                await asyncio.sleep(delay + jitter)
+            else:
+                logger.error(f"DB read op '{op_name}' failed after {vcst.EVAL_DB_RETRY_ATTEMPTS} attempts: {exc}")
+    raise last_exc
 
 
 async def cleanup_resources(client):
@@ -230,24 +238,27 @@ async def _poll_basilica_result(
 ) -> dict | str:
     """Poll Basilica /result endpoint. Handles status: completed, failed, running, in_progress."""
     started = time.time()
+    deployment_name = getattr(deployment, "name", "unknown")
     while time.time() - started < max_poll_seconds:
         try:
+            await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
             response = await asyncio.to_thread(
                 requests.get,
                 f"{deployment.url}{EVAL_RESULT_STATUS_PATH}",
                 timeout=30,
             )
             if response.status_code == 200:
-                eval_logger.info(f"[{repo}] Evaluation Completed: {response.json()}")
                 payload = response.json()
                 status = payload.get("status")
                 if status == "completed":
                     result = payload.get("result")
                     if isinstance(result, dict):
+                        eval_logger.info(f"[{repo}] Poll successful. Evaluation completed and result payload received.")
                         return result
                     return f"Completed but result payload invalid: {result}"
                 if status == "failed":
                     return payload.get("error", "Basilica eval reported failure")
+                eval_logger.info(f"[{repo}] Poll ping: status={status}.")
         except Exception as e:
             eval_logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
             pass
@@ -287,6 +298,27 @@ async def _run_single_basilica_eval_repo(
         task_type=task_type,
     )
 
+    async def _db_call_with_retry(coro_factory, op_name: str):
+        last_exc = None
+        for attempt in range(1, vcst.EVAL_DB_RETRY_ATTEMPTS + 1):
+            try:
+                return await coro_factory()
+            except Exception as exc:
+                last_exc = exc
+                delay = vcst.EVAL_DB_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
+                jitter = random.uniform(0.0, 0.3)
+                if attempt < vcst.EVAL_DB_RETRY_ATTEMPTS:
+                    eval_logger.warning(
+                        f"[{repo}] DB op '{op_name}' failed attempt {attempt}/{vcst.EVAL_DB_RETRY_ATTEMPTS}: {exc}; "
+                        f"retrying in {delay + jitter:.2f}s"
+                    )
+                    await asyncio.sleep(delay + jitter)
+                else:
+                    eval_logger.error(
+                        f"[{repo}] DB op '{op_name}' failed after {vcst.EVAL_DB_RETRY_ATTEMPTS} attempts: {exc}"
+                    )
+        raise last_exc
+
     if existing_deployment_name:
         try:
             client = basilica.BasilicaClient()
@@ -315,6 +347,19 @@ async def _run_single_basilica_eval_repo(
         try:
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
             client = basilica.BasilicaClient()
+            await asyncio.sleep(random.uniform(0.0, 0.25))
+            async with _EVAL_DB_WRITE_SEMAPHORE:
+                await _db_call_with_retry(
+                    lambda: persist_deployment_ids_for_repo(
+                        task_id,
+                        psql_db,
+                        repo_to_hotkey,
+                        repo,
+                        deployment_name,
+                        None,
+                    ),
+                    "persist_deployment_ids_for_repo(pre-deploy)",
+                )
             deployment = await asyncio.to_thread(
                 client.deploy,
                 name=deployment_name,
@@ -331,14 +376,21 @@ async def _run_single_basilica_eval_repo(
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
             resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
-            await persist_deployment_ids_for_repo(
-                task_id,
-                psql_db,
-                repo_to_hotkey,
-                repo,
-                resolved_deployment_name,
-                None,
-            )
+            if resolved_deployment_name != deployment_name:
+                # Reconcile in case service-side deployment name differs from the requested name.
+                await asyncio.sleep(random.uniform(0.0, 0.25))
+                async with _EVAL_DB_WRITE_SEMAPHORE:
+                    await _db_call_with_retry(
+                        lambda: persist_deployment_ids_for_repo(
+                            task_id,
+                            psql_db,
+                            repo_to_hotkey,
+                            repo,
+                            resolved_deployment_name,
+                            None,
+                        ),
+                        "persist_deployment_ids_for_repo(post-deploy)",
+                    )
             cleanup_names.add(resolved_deployment_name)
             eval_logger.info(f"[{repo}] deployment started: {resolved_deployment_name}")
             result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
@@ -396,26 +448,28 @@ async def _run_basilica_eval_repos(
 ) -> dict[str, dict | str]:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
     cleanup_names: set[str] = set()
-    tasks = [
-        _run_single_basilica_eval_repo(
-            repo=repo,
-            model_name=model_name,
-            task_type=task_type,
-            image=image,
-            source=source,
-            env=build_env_for_repo(repo),
-            gpu_count=gpu_count,
-            gpu_models=gpu_models,
-            min_gpu_memory_gb=min_gpu_memory_gb,
-            cleanup_names=cleanup_names,
-            task_id=task_id,
-            psql_db=psql_db,
-            repo_to_hotkey=repo_to_hotkey,
-            existing_deployment_name=deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None,
-        )
-        for repo in repos
-    ]
-    task_results = await asyncio.gather(*tasks, return_exceptions=True)
+    task_results = await asyncio.gather(
+        *[
+            _run_single_basilica_eval_repo(
+                repo=repo,
+                model_name=model_name,
+                task_type=task_type,
+                image=image,
+                source=source,
+                env=build_env_for_repo(repo),
+                gpu_count=gpu_count,
+                gpu_models=gpu_models,
+                min_gpu_memory_gb=min_gpu_memory_gb,
+                cleanup_names=cleanup_names,
+                task_id=task_id,
+                psql_db=psql_db,
+                repo_to_hotkey=repo_to_hotkey,
+                existing_deployment_name=deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None,
+            )
+            for repo in repos
+        ],
+        return_exceptions=True,
+    )
     await cleanup_basilica_deployments_by_name(cleanup_names)
     out: dict[str, dict | str] = {}
     for repo, result in zip(repos, task_results):
@@ -424,209 +478,6 @@ async def _run_basilica_eval_repos(
         else:
             out[repo] = result
     return out
-
-
-async def run_evaluation_docker_text(
-    dataset: str,
-    models: list[str],
-    original_model: str,
-    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
-    file_format: FileFormat,
-    gpu_ids: list[int],
-    eval_seed: int | None = None,
-) -> DockerEvaluationResults:
-
-    if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
-        command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
-    elif isinstance(dataset_type, DpoDatasetType):
-        command = ["python", "-m", "validator.evaluation.eval_dpo"]
-    elif isinstance(dataset_type, GrpoDatasetType):
-        return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
-    elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_local_environment(models, original_model, dataset_type, file_format, gpu_ids, eval_seed)
-    else:
-        raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
-    task_type = type(dataset_type).__name__
-
-    client = docker.from_env()
-    dataset_type_str = dataset_type.model_dump_json()
-    dataset_filename = os.path.basename(dataset)
-    dataset_dir = os.path.dirname(os.path.abspath(dataset))
-
-    environment = {
-        "DATASET": f"/workspace/input_data/{dataset_filename}",
-        "MODELS": ",".join(models),
-        "ORIGINAL_MODEL": original_model,
-        "DATASET_TYPE": dataset_type_str,
-        "FILE_FORMAT": file_format.value,
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-    }
-    logger.info(f"Running {task_type} evaluation for models: {models}")
-
-    volume_bindings = {
-        dataset_dir: {
-            "bind": "/workspace/input_data",
-            "mode": "ro",
-        },
-        os.path.expanduser(cst.CACHE_DIR_HUB): {
-            "bind": "/root/.cache/huggingface/hub",
-            "mode": "rw",
-        }
-    }
-
-    container = None
-    retry_delay = 5.0
-
-    try:
-        while True:
-            try:
-                container = await asyncio.to_thread(
-                    client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE,
-                    command=command,
-                    environment=environment,
-                    volumes=volume_bindings,
-                    runtime="nvidia",
-                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-                    detach=True,
-                )
-                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-                result = await asyncio.to_thread(container.wait)
-                log_task.cancel()
-
-                if result["StatusCode"] != 0:
-                    raise Exception(f"Container exited with status {result['StatusCode']}")
-
-                eval_results = await get_evaluation_results(container)
-                return process_evaluation_results(eval_results, is_image=False)
-
-            except Exception as e:
-                logger.error(f"Failed to retrieve {task_type} evaluation results: {str(e)}, retrying in {retry_delay}s...", exc_info=True)
-                if container is not None:
-                    try:
-                        await asyncio.to_thread(container.remove, force=True)
-                        container = None
-                    except Exception:
-                        pass
-                await asyncio.sleep(retry_delay)
-
-    finally:
-        try:
-            if container is not None:
-                await asyncio.to_thread(container.remove, force=True)
-            await cleanup_resources(client)
-        except Exception as e:
-            logger.info(f"A problem with cleaning up {e}")
-        client.close()
-
-
-async def run_evaluation_docker_grpo(
-    dataset: str,
-    models: list[str],
-    original_model: str,
-    dataset_type: GrpoDatasetType,
-    file_format: FileFormat,
-    gpu_ids: list[int],
-) -> DockerEvaluationResults:
-    logger.info(f"Downloading original GRPO model: {original_model}")
-    cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
-    await asyncio.to_thread(
-        snapshot_download,
-        repo_id=original_model,
-        cache_dir=cache_dir,
-        ignore_patterns=None,
-    )
-
-    command = ["python", "-m", "validator.evaluation.eval_grpo"]
-    dataset_type_str = dataset_type.model_dump_json()
-    dataset_filename = os.path.basename(dataset)
-    dataset_dir = os.path.dirname(os.path.abspath(dataset))
-
-    base_environment = {
-        "DATASET": f"/workspace/input_data/{dataset_filename}",
-        "ORIGINAL_MODEL": original_model,
-        "DATASET_TYPE": dataset_type_str,
-        "FILE_FORMAT": file_format.value,
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-    }
-
-    volume_bindings = {
-        dataset_dir: {"bind": "/workspace/input_data", "mode": "ro"},
-        os.path.expanduser(cst.CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
-    }
-
-    logger.info(f"Starting sequential GRPO evaluation for {len(models)} repos: {models}")
-    evaluation_results = {}
-    for repo in models:
-        client = docker.from_env()
-        environment = base_environment.copy()
-        environment["MODELS"] = repo
-        retry_delay = 5.0
-
-        model_path = None
-        while model_path is None:
-            try:
-                model_path = await asyncio.to_thread(
-                    snapshot_download,
-                    repo_id=repo,
-                    cache_dir=cache_dir,
-                    ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.pkl", "*.pth"],
-                )
-            except Exception as e:
-                logger.error(f"Failed to download {repo}: {str(e)}, retrying in {retry_delay}s...")
-                await asyncio.sleep(retry_delay)
-
-        container = None
-        while True:
-            try:
-                container = await asyncio.to_thread(
-                    client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE,
-                    command=command,
-                    environment=environment,
-                    volumes=volume_bindings,
-                    runtime="nvidia",
-                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-                    detach=True,
-                    network_mode="none",
-                )
-
-                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-                result = await asyncio.to_thread(container.wait)
-                log_task.cancel()
-
-                if result["StatusCode"] != 0:
-                    raise Exception(f"Container for {repo} exited with non-zero status: {result['StatusCode']}")
-
-                eval_results = await get_evaluation_results(container)
-                evaluation_results[repo] = eval_results[repo]
-                if "model_params_count" in eval_results and "model_params_count" not in evaluation_results:
-                    evaluation_results["model_params_count"] = eval_results["model_params_count"]
-                break
-
-            except Exception as e:
-                logger.error(f"Failed to evaluate repo {repo}: {str(e)}, retrying in {retry_delay}s...", exc_info=True)
-                if container is not None:
-                    try:
-                        await asyncio.to_thread(container.remove, force=True)
-                    except Exception:
-                        pass
-                await asyncio.sleep(retry_delay)
-            finally:
-                if container is not None:
-                    try:
-                        await asyncio.to_thread(container.remove, force=True)
-                        await cleanup_resources(client)
-                    except Exception as e:
-                        logger.info(f"Problem with cleaning up container for {repo}: {e}")
-        client.close()
-
-    evaluation_results = normalize_rewards_and_compute_loss(evaluation_results)
-    logger.debug(f"Grpo evaluation results post normalization: {evaluation_results}")
-    return process_evaluation_results(evaluation_results, is_image=False)
 
 
 async def run_evaluation_basilica_text(
@@ -641,9 +492,15 @@ async def run_evaluation_basilica_text(
     psql_db: PSQLDB | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = {}
-    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
+        lambda: load_eval_pair_state_for_models(task_id, psql_db, models),
+        "load_eval_pair_state_for_models",
+    )
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
+    task_type = type(dataset_type).__name__
+    is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
+    basilica_image = vcst.ENV_EVAL_IMAGE if is_environment_eval else cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
@@ -656,19 +513,13 @@ async def run_evaluation_basilica_text(
             deployment_ids_by_repo=deployment_ids_by_repo,
         )
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        return await run_evaluation_docker_environment(
-            dataset, models, original_model, dataset_type, file_format, num_gpus, eval_seed,
-            task_id=task_id,
-            psql_db=psql_db,
-            deployment_ids_by_repo=deployment_ids_by_repo,
-        )
+        command = ["python", "-m", "validator.evaluation.eval_environment"]
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
-    task_type = type(dataset_type).__name__
-    if not dataset.startswith("http://") and not dataset.startswith("https://"):
+    if not is_environment_eval and not dataset.startswith("http://") and not dataset.startswith("https://"):
         raise ValueError(
             "Basilica text eval expects dataset to be an S3/HTTP URL. "
-            "Use run_evaluation_docker_text for local file paths."
+            "Use validator.evaluation.local_evaluation.run_evaluation_docker_text for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
     source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
@@ -684,13 +535,23 @@ async def run_evaluation_basilica_text(
         "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
     }
+    if is_environment_eval:
+        env_name = dataset_type.environment_name
+        if env_name not in vcst.ENVIRONMENTS:
+            raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
+        base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
+        base_env["ENVIRONMENT_NAME"] = env_name
+        base_env["EVAL_SEED"] = str(base_seed)
+        base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
+        base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
 
     logger.debug(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
 
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
-        repo_env["DATASET_URL"] = dataset
+        if not is_environment_eval:
+            repo_env["DATASET_URL"] = dataset
         return repo_env
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
@@ -698,8 +559,8 @@ async def run_evaluation_basilica_text(
     repo_results = await _run_basilica_eval_repos(
         repos=models,
         model_name=original_model,
-        task_type="text",
-        image=cst.VALIDATOR_DOCKER_IMAGE,
+        task_type=task_type,
+        image=basilica_image,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, num_gpus),
@@ -749,7 +610,10 @@ async def run_evaluation_basilica_grpo(
     deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
-    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
+        lambda: load_eval_pair_state_for_models(task_id, psql_db, models),
+        "load_eval_pair_state_for_models",
+    )
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
     """
@@ -759,7 +623,7 @@ async def run_evaluation_basilica_grpo(
     if not dataset.startswith("http://") and not dataset.startswith("https://"):
         raise ValueError(
             "Basilica GRPO eval expects dataset to be an S3/HTTP URL. "
-            "Use run_evaluation_docker_grpo for local file paths."
+            "Use validator.evaluation.local_evaluation.run_evaluation_docker_grpo for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
     source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
@@ -830,553 +694,6 @@ async def run_evaluation_basilica_grpo(
     return process_evaluation_results(evaluation_results, is_image=False)
 
 
-async def run_evaluation_docker_environment(
-    dataset: str,
-    models: list[str],
-    original_model: str,
-    dataset_type: EnvironmentDatasetType,
-    file_format: FileFormat,
-    num_gpus: int,
-    eval_seed: int | None = None,
-    task_id: UUID | None = None,
-    psql_db: PSQLDB | None = None,
-    deployment_ids_by_repo: dict[str, str | dict[str, str]] | None = None,
-) -> DockerEvaluationResults:
-    """Run environment evaluation via a self-contained Basilica eval image.
-
-    Unlike the legacy flow (separate validator-managed SGLang + env deployments),
-    this follows the same pattern as text/image/grpo evals:
-    - deploy a single eval container per repo
-    - run the env evaluation script inside that container
-    - poll `/result` and parse `evaluation_results.json`
-    """
-    deployment_ids_by_repo = deployment_ids_by_repo or {}
-    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
-    for repo, dep_info in db_deployment_ids_by_repo.items():
-        deployment_ids_by_repo.setdefault(repo, dep_info)
-    logger.debug(f"Starting self-contained Basilica environment evaluation for {len(models)} repos: {models}")
-
-    env_name = dataset_type.environment_name
-    if env_name not in vcst.ENVIRONMENTS:
-        raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
-
-    env_config = vcst.ENVIRONMENTS[env_name]
-    eval_image = env_config.get("eval_image", env_config["env_image"])
-    dataset_type_str = dataset_type.model_dump_json()
-    command = env_config.get("eval_command", ["python", "-m", "validator.evaluation.eval_environment"])
-    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
-
-    base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-
-    base_env = {
-        "ORIGINAL_MODEL": original_model,
-        "DATASET_TYPE": dataset_type_str,
-        "ENVIRONMENT_NAME": env_name,
-        "EVAL_SEED": str(base_seed),
-        "ENV_EVAL_TEMPERATURE": str(vcst.ENV_EVAL_TEMPERATURE),
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
-    }
-    if isinstance(env_config.get("env_server_cmd"), str) and env_config["env_server_cmd"].strip():
-        base_env["ENV_SERVER_CMD"] = env_config["env_server_cmd"]
-    if isinstance(env_config.get("env_server_base_url"), str) and env_config["env_server_base_url"].strip():
-        base_env["ENV_SERVER_BASE_URL"] = env_config["env_server_base_url"]
-
-    def build_env_for_repo(repo: str) -> dict[str, str]:
-        repo_env = dict(base_env)
-        repo_env["MODELS"] = repo
-        return repo_env
-
-    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
-
-    repo_results = await _run_basilica_eval_repos(
-        repos=models,
-        model_name=original_model,
-        task_type="environment",
-        image=eval_image,
-        source=source,
-        build_env_for_repo=build_env_for_repo,
-        gpu_count=max(1, num_gpus),
-        gpu_models=vcst.BASILICA_GPU_MODELS,
-        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
-        task_id=task_id,
-        psql_db=psql_db,
-        repo_to_hotkey=repo_to_hotkey,
-        deployment_ids_by_repo=deployment_ids_str,
-    )
-
-    evaluation_results: dict[str, dict | str] = {}
-    for repo in models:
-        raw_result = repo_results.get(repo)
-        if not isinstance(raw_result, dict):
-            evaluation_results[repo] = str(raw_result)
-            continue
-
-        if repo in raw_result:
-            evaluation_results[repo] = raw_result[repo]
-        else:
-            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
-            if len(candidate_keys) == 1:
-                evaluation_results[repo] = raw_result[candidate_keys[0]]
-            else:
-                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
-
-    logger.debug(f"Self-contained environment evaluation results: {evaluation_results}")
-    return process_evaluation_results(evaluation_results, is_image=False)
-
-
-async def run_evaluation_local_environment(
-    models: list[str],
-    original_model: str,
-    dataset_type: EnvironmentDatasetType,
-    gpu_id: int = 0,
-    eval_seed: int | None = None,
-) -> DockerEvaluationResults:
-    """Run environment evaluation using local Docker containers.
-
-    Simple single-GPU sequential setup for local testing and development.
-    Starts a local SGLang and environment container per repo, evaluates, then cleans up.
-    """
-    logger.info(f"Starting local Docker environment evaluation for {len(models)} repos: {models}")
-
-    env_name = dataset_type.environment_name
-    if env_name not in vcst.ENVIRONMENTS:
-        raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
-
-    env_config = vcst.ENVIRONMENTS[env_name]
-    task_id_min, task_id_max = env_config["task_id_range"]
-    num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
-    env_image = env_config["env_image"]
-    env_payload_extra = env_config.get("eval_payload_extra", {})
-
-    base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-    seed_generator = random.Random(base_seed)
-    eval_seeds = [seed_generator.randint(1, 1000000) for _ in range(num_seeds)]
-    logger.info(f"Generated {num_seeds} seeds from base_seed={base_seed}")
-
-    docker_client = docker.from_env()
-
-    try:
-        networks = docker_client.networks.list(names=[vcst.LOCAL_ENV_DOCKER_NETWORK])
-        if not networks:
-            docker_client.networks.create(vcst.LOCAL_ENV_DOCKER_NETWORK, driver="bridge")
-            logger.info(f"Created Docker network: {vcst.LOCAL_ENV_DOCKER_NETWORK}")
-    except Exception as e:
-        logger.warning(f"Docker network setup issue: {e}")
-
-    evaluation_results = {}
-
-    for repo in models:
-        eval_id = str(uuid.uuid4())
-        repo_name = repo.split("/")[-1]
-        env_logger = get_environment_logger(
-            name=f"{repo_name}-{eval_id[:8]}",
-            repo_id=repo,
-            eval_id=eval_id,
-            model=original_model,
-        )
-
-        containers = {}
-        lora_dir = None
-
-        try:
-            is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
-
-            if is_lora:
-                base_model = original_model
-                inference_model_name = f"{original_model}:trained_lora"
-                env_logger.info(f"LoRA detected: {original_model} + LoRA {repo}")
-                safe_lora_name = repo.replace("/", "_")
-                lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
-                await asyncio.to_thread(
-                    snapshot_download, repo_id=repo, local_dir=lora_dir,
-                    local_dir_use_symlinks=False, tqdm_class=None,
-                )
-                # Remove incompatible full model safetensors (keep adapter files only)
-                for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
-                    try:
-                        os.remove(model_file)
-                        env_logger.info(f"Removed incompatible file: {os.path.basename(model_file)}")
-                    except Exception as e:
-                        env_logger.warning(f"Failed to remove {model_file}: {e}")
-                index_file = os.path.join(lora_dir, "model.safetensors.index.json")
-                if os.path.exists(index_file):
-                    try:
-                        os.remove(index_file)
-                    except Exception as e:
-                        env_logger.warning(f"Failed to remove index file: {e}")
-            else:
-                base_model = repo
-                inference_model_name = repo
-                env_logger.info(f"Base model: {repo}")
-
-            # Build SGLang launch command
-            sglang_args = (
-                f"python3 -m sglang.launch_server --model-path {base_model} "
-                f"--host 0.0.0.0 --port {vcst.LOCAL_ENV_SGLANG_PORT} "
-                f"--tensor-parallel-size 1 --dtype float16 "
-                f"--enable-deterministic-inference --random-seed {base_seed}"
-            )
-            if is_lora:
-                sglang_args = (
-                    f"python3 -m sglang.launch_server --model-path {base_model} "
-                    f"--enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton "
-                    f"--host 0.0.0.0 --port {vcst.LOCAL_ENV_SGLANG_PORT} "
-                    f"--tensor-parallel-size 1 --dtype float16 "
-                    f"--enable-deterministic-inference --random-seed {base_seed}"
-                )
-
-            sglang_container_name = f"{eval_id}-sglang"
-            env_container_name = f"{eval_id}-env"
-
-            # Prepare SGLang volumes
-            sglang_volumes = {vcst.LOCAL_ENV_HF_CACHE_PATH: {"bind": "/hf", "mode": "rw"}}
-            if is_lora and lora_dir:
-                sglang_volumes[lora_dir] = {"bind": "/lora/trained_lora", "mode": "ro"}
-
-            # Start SGLang container
-            env_logger.info(f"Starting SGLang container: {sglang_container_name} (GPU {gpu_id})")
-            sglang_container = await asyncio.to_thread(
-                docker_client.containers.run,
-                vcst.BASILICA_SGLANG_IMAGE,
-                command=sglang_args,
-                name=sglang_container_name,
-                detach=True,
-                network=vcst.LOCAL_ENV_DOCKER_NETWORK,
-                ports={f"{vcst.LOCAL_ENV_SGLANG_PORT}/tcp": vcst.LOCAL_ENV_SGLANG_PORT},
-                device_requests=[docker.types.DeviceRequest(device_ids=[str(gpu_id)], capabilities=[["gpu"]])],
-                environment={
-                    "HF_HOME": "/hf",
-                    "TRANSFORMERS_CACHE": "/hf",
-                    "HUGGINGFACE_HUB_CACHE": "/hf",
-                    "HF_HUB_ENABLE_HF_TRANSFER": "1",
-                    "PYTHONHASHSEED": str(base_seed),
-                    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
-                    "NVIDIA_TF32_OVERRIDE": "0",
-                },
-                volumes=sglang_volumes,
-                ipc_mode="host",
-                remove=False,
-            )
-            containers["sglang"] = sglang_container
-
-            sglang_host_url = f"http://localhost:{vcst.LOCAL_ENV_SGLANG_PORT}"
-            await asyncio.to_thread(
-                wait_for_basilica_health, sglang_host_url, vcst.LOCAL_ENV_SGLANG_HEALTH_TIMEOUT,
-            )
-            env_logger.info(f"SGLang ready at {sglang_host_url}")
-
-            # Start environment container
-            env_logger.info(f"Starting environment container: {env_container_name}")
-            env_container = await asyncio.to_thread(
-                docker_client.containers.run,
-                env_image,
-                name=env_container_name,
-                detach=True,
-                network=vcst.LOCAL_ENV_DOCKER_NETWORK,
-                ports={"8000/tcp": vcst.LOCAL_ENV_SERVER_PORT},
-                remove=False,
-            )
-            containers["env"] = env_container
-
-            env_host_url = f"http://localhost:{vcst.LOCAL_ENV_SERVER_PORT}"
-            await asyncio.to_thread(
-                wait_for_basilica_health, env_host_url, vcst.LOCAL_ENV_SERVER_HEALTH_TIMEOUT, "/health",
-            )
-            env_logger.info(f"Environment server ready at {env_host_url}")
-
-            sglang_internal_url = f"http://{sglang_container_name}:{vcst.LOCAL_ENV_SGLANG_PORT}"
-
-            avg_score = await _run_environment_evaluation(
-                sglang_internal_url,
-                env_host_url,
-                eval_seeds,
-                task_id_max,
-                vcst.ENV_EVAL_TEMPERATURE,
-                env_logger,
-                inference_model_name,
-                task_id_min,
-                env_payload_extra=env_payload_extra,
-            )
-
-            evaluation_results[repo] = {"is_finetune": True, "eval_loss": avg_score}
-
-        except Exception as e:
-            env_logger.error(f"Evaluation failed for {repo}: {e}", exc_info=True)
-            evaluation_results[repo] = f"Evaluation failed: {str(e)}"
-
-        finally:
-            for name, container in containers.items():
-                try:
-                    container.remove(force=True)
-                    env_logger.info(f"Cleaned up {name} container")
-                except Exception as e:
-                    env_logger.warning(f"Failed to cleanup {name}: {e}")
-            if lora_dir and os.path.exists(lora_dir):
-                try:
-                    shutil.rmtree(lora_dir)
-                except Exception as e:
-                    env_logger.warning(f"Failed to cleanup LoRA dir: {e}")
-
-    docker_client.close()
-    logger.info(f"Local environment evaluation results: {evaluation_results}")
-    return process_evaluation_results(evaluation_results, is_image=False)
-
-
-async def _run_environment_evaluation(
-    sglang_url: str,
-    env_url: str,
-    eval_seeds: list[int],
-    data_len_range: int,
-    temperature: float,
-    env_logger: logging.Logger,
-    inference_model_name: str,
-    task_id_min: int = 0,
-    env_payload_extra: dict | None = None,
-) -> float:
-    """Shared evaluation loop for environment tasks.
-
-    Used by both Basilica and local Docker evaluation functions.
-    For each seed, picks one random task_id and evaluates it concurrently.
-
-    Returns:
-        Average score across all successful evaluations.
-    """
-    eval_list = []
-    for seed in eval_seeds:
-        rng = random.Random(seed)
-        task_id = rng.randint(task_id_min + 1, data_len_range)
-        eval_list.append((seed, task_id))
-
-    num_eval_samples = len(eval_list)
-    all_results = []
-
-    BASILICA_RETRY_STATUSES = {404, 500, 501}
-
-    async def evaluate_single_task(
-        session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int,
-    ) -> dict | None:
-        """Evaluate a single task"""
-        payload = {
-            "model": inference_model_name,
-            "base_url": f"{sglang_url}/v1",
-            "task_id": task_id,
-            "temperature": temperature,
-            "seed": seed,
-        }
-        if env_payload_extra:
-            payload.update(env_payload_extra)
-
-        attempt = 0
-        while True:
-            attempt += 1
-            start_ts = time.time()
-            try:
-                env_logger.info(f"[{task_idx + 1}/{num_eval_samples}] Seed: {seed}, Task ID: {task_id}...")
-
-                timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_TASK_TIMEOUT)
-                async with session.post(
-                    f"{env_url}/evaluate",
-                    json=payload,
-                    timeout=timeout,
-                    headers={"Connection": "close"},
-                ) as response:
-                    raw_text = await response.text()
-                    if response.status != 200:
-                        error_detail = f": {raw_text[:500]}" if raw_text else ""
-                        env_logger.error(
-                            "Env evaluate failed: status=%s, task_id=%s, payload=%s, response_body=%s",
-                            response.status,
-                            task_id,
-                            payload,
-                            raw_text[:1000] if raw_text else "(empty)",
-                        )
-                        raise Exception(f"HTTP {response.status}{error_detail}")
-
-                    try:
-                        response_data = json.loads(raw_text)
-                    except json.JSONDecodeError:
-                        env_logger.error(
-                            "Env evaluate invalid JSON: task_id=%s, raw_body=%s",
-                            task_id,
-                            raw_text[:1000] if raw_text else "(empty)",
-                            exc_info=True,
-                        )
-                        raise
-                    result = response_data.get("result", response_data)
-                    latency = result.get("time_taken", time.time() - start_ts)
-                    score = result.get("score", 0.0)
-
-                    if attempt > 1:
-                        env_logger.info(f"Task ID {task_id}: Done (Score: {score}) - after {attempt - 1} retries")
-                    else:
-                        env_logger.info(f"Task ID {task_id}: Done (Score: {score})")
-
-                    return {"task_id": task_id, "score": score, "time": latency}
-
-            except Exception as e:
-                err_msg = f"{type(e).__name__}: {e}" if str(e) else repr(e)
-                if any(f"HTTP {c}" in str(e) for c in BASILICA_RETRY_STATUSES):
-                    if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
-                        env_logger.warning(
-                            "Task ID %s: Basilica failure after %d attempts, excluding from average",
-                            task_id,
-                            attempt,
-                        )
-                        return None 
-                    env_logger.warning(
-                        "Task ID %s: Basilica error (retry %d/%d in %.0fs): %s",
-                        task_id,
-                        attempt,
-                        vcst.ENV_EVAL_TASK_MAX_RETRIES,
-                        vcst.ENV_EVAL_TASK_RETRY_DELAY,
-                        err_msg,
-                    )
-                    await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
-                else:
-                    env_logger.error(
-                        "Task ID %s: Non-retryable error, scoring 0: %s",
-                        task_id,
-                        err_msg,
-                        exc_info=isinstance(e, (TimeoutError, ConnectionError)),
-                    )
-                    return {"task_id": task_id, "score": 0.0, "time": 0.0}
-
-    semaphore = asyncio.Semaphore(vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS)
-
-    async def evaluate_with_semaphore(
-        session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int,
-    ) -> dict | None:
-        async with semaphore:
-            return await evaluate_single_task(session, seed, task_id, task_idx)
-
-    session_timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_SESSION_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        env_logger.info(
-            f"Starting {num_eval_samples} evaluations with concurrency={vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS}..."
-        )
-
-        tasks = [
-            evaluate_with_semaphore(session, seed, task_id, idx)
-            for idx, (seed, task_id) in enumerate(eval_list)
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for idx, result in enumerate(results):
-            if isinstance(result, Exception):
-                seed, task_id = eval_list[idx]
-                env_logger.error(f"Seed {seed}, Task {task_id}: Failed with exception: {result}")
-            elif result is not None:
-                all_results.append(result)
-
-    total_score = sum(r.get("score", 0.0) for r in all_results)
-    total_time = sum(r.get("time", 0.0) for r in all_results)
-    avg_score = total_score / len(all_results) if all_results else 0.0
-    avg_time = total_time / len(all_results) if all_results else 0.0
-
-    env_logger.info(
-        f"Summary: {len(all_results)}/{len(eval_list)} successful, "
-        f"Avg Score: {avg_score:.4f}, Avg Time: {avg_time:.2f}s"
-    )
-
-    return avg_score
-
-
-async def run_evaluation_docker_image(
-    test_split_url: str,
-    original_model_repo: str,
-    models: list[str],
-    model_type: ImageModelType,
-    gpu_ids: list[int]
-) -> DockerEvaluationResults:
-    raw_data = await download_s3_file(test_split_url)
-    test_split_path = unzip_to_temp_path(raw_data)
-    dataset_dir = os.path.abspath(test_split_path)
-    container_dataset_path = "/workspace/input_data"
-
-    client = docker.from_env()
-
-    base_path = "/app/validator/evaluation/ComfyUI/models"
-    mounts = [
-        Mount(
-            target=container_dataset_path,
-            source=dataset_dir,
-            type='bind',
-            read_only=True
-        ),
-        Mount(
-            target=f"{base_path}/checkpoints",
-            source=cst.CACHE_DIR_HUB,
-            type='bind',
-            read_only=False
-        ),
-        Mount(
-            target=f"{base_path}/diffusers",
-            source=cst.CACHE_DIR_HUB,
-            type='bind',
-            read_only=False
-        )
-    ]
-
-    environment = {
-        "DATASET": container_dataset_path,
-        "MODELS": ",".join(models),
-        "ORIGINAL_MODEL_REPO": original_model_repo,
-        "MODEL_TYPE": model_type.value,
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-    }
-
-    container = None
-    retry_delay = 5.0
-
-    try:
-        while True:
-            try:
-                container = await asyncio.to_thread(
-                    client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
-                    mounts=mounts,
-                    environment=environment,
-                    runtime="nvidia",
-                    device_requests=[docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gid) for gid in gpu_ids])],
-                    detach=True,
-                )
-                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
-                result = await asyncio.to_thread(container.wait)
-                log_task.cancel()
-
-                if result["StatusCode"] != 0:
-                    raise Exception(f"Container exited with status {result['StatusCode']}")
-
-                eval_results_dict = await get_evaluation_results(container)
-                return process_evaluation_results(eval_results_dict, is_image=True)
-
-            except Exception as e:
-                logger.error(f"Failed to retrieve evaluation results: {str(e)}, retrying in {retry_delay}s...")
-                if container is not None:
-                    try:
-                        await asyncio.to_thread(container.remove, force=True)
-                        container = None
-                    except Exception:
-                        pass
-                await asyncio.sleep(retry_delay)
-
-    finally:
-        try:
-            if container is not None:
-                await asyncio.to_thread(container.remove, force=True)
-            await cleanup_resources(client)
-            if os.path.exists(dataset_dir):
-                shutil.rmtree(dataset_dir)
-        except Exception as e:
-            logger.info(f"A problem with cleaning up {e}")
-        client.close()
-
-
 async def run_evaluation_basilica_image(
     test_split_url: str,
     original_model_repo: str,
@@ -1387,7 +704,10 @@ async def run_evaluation_basilica_image(
     psql_db: PSQLDB | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = {}
-    db_deployment_ids_by_repo, repo_to_hotkey = await load_eval_pair_state_for_models(task_id, psql_db, models)
+    db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
+        lambda: load_eval_pair_state_for_models(task_id, psql_db, models),
+        "load_eval_pair_state_for_models",
+    )
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):

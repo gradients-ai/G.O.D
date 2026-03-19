@@ -360,7 +360,11 @@ async def evaluate_tasks_loop(config: Config):
         await asyncio.sleep(30)
 
 
-async def _run_and_cleanup(task: RawTask, processing_task_ids: set[str], config: Config):
+async def _run_and_cleanup(
+    task: RawTask,
+    processing_task_ids: set[str],
+    config: Config,
+):
     try:
         num_gpus = compute_required_gpus(task)
         await _evaluate_pending_pairs_for_task(task, num_gpus, config)

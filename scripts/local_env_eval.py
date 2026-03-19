@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.models.utility_models import EnvironmentDatasetType
-from validator.evaluation.docker_evaluation import run_evaluation_local_environment
+from validator.evaluation.local_evaluation import run_evaluation_local_environment
 
 
 # --- Model Configuration ---
