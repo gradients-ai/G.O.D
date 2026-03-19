@@ -377,7 +377,6 @@ async def _run_single_basilica_eval_repo(
             )
             resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
             if resolved_deployment_name != deployment_name:
-                # Reconcile in case service-side deployment name differs from the requested name.
                 await asyncio.sleep(random.uniform(0.0, 0.25))
                 async with _EVAL_DB_WRITE_SEMAPHORE:
                     await _db_call_with_retry(
