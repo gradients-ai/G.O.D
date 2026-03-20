@@ -180,6 +180,7 @@ TRAINING_STATUS = "training_status"
 N_TRAINING_ATTEMPTS = "n_training_attempts"
 TRAINING_REPO = "training_repo"
 TRAINING_COMMIT_HASH = "training_commit_hash"
+GITHUB_TOKEN = "github_token"
 BACKUP_REPO = "backup_repo"
 DSTACK_RUNNAME = "dstack_runname"
 

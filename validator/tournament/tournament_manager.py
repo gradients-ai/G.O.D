@@ -243,6 +243,8 @@ async def assign_nodes_to_tournament_tasks(
                         logger.info(
                             f"Assigned {hotkey} to group task {task.task_id} with expected_repo_name: {expected_repo_name}"
                         )
+                    else:
+                        logger.warning(f"Could not find node for hotkey {hotkey} during group task assignment")
 
             if is_environment_tournament:
                 logger.info(f"Finished assigning {len(all_participants)} participants to environment tournament task(s)")
@@ -392,11 +394,11 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
         # Eliminate losers (those who didn't win)
         losers = [
-            p for p in active_participants
+            p
+            for p in active_participants
             if p not in winners and not (p == cst.EMISSION_BURN_HOTKEY and not completed_round.is_final_round)
         ]
         logger.info(f"Losers to be eliminated: {len(losers)} - {losers}")
-        
 
         all_eliminated = losers
         if all_eliminated:
@@ -420,7 +422,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
-        
+
         if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
             winner = winners[0]
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
@@ -463,7 +465,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 await upload_participant_repository(
                     tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
                 )
-                
+
                 if len(winners) >= 2:
                     second_place = winners[1]
                     logger.info(f"Uploading position 2 repository for hotkey: {second_place}")
@@ -618,9 +620,10 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         for responding_node in responding_nodes:
             with LogContext(node_hotkey=responding_node.node.hotkey):
                 repo_url = responding_node.training_repo_response.github_repo
+                github_token = responding_node.training_repo_response.github_token
                 logger.info(f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}")
 
-                is_not_obfuscated = await validate_repo_obfuscation(repo_url)
+                is_not_obfuscated = await validate_repo_obfuscation(repo_url, github_token)
 
                 if not is_not_obfuscated:
                     logger.warning(
@@ -631,7 +634,7 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
                 logger.info(f"Checking license for {responding_node.node.hotkey}'s repo: {repo_url}")
 
-                has_valid_license = await validate_repo_license(repo_url)
+                has_valid_license = await validate_repo_license(repo_url, github_token)
 
                 if not has_valid_license:
                     logger.warning(
@@ -683,6 +686,7 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                     responding_node.node.hotkey,
                     responding_node.training_repo_response.github_repo,
                     responding_node.training_repo_response.commit_hash,
+                    responding_node.training_repo_response.github_token,
                     psql_db,
                 )
 
@@ -1271,6 +1275,7 @@ async def upload_participant_repository(
         commit_hash=participant.training_commit_hash or "",
         config=config,
         position=position,
+        participant_github_token=participant.github_token,
     )
 
     if backup_repo_url:

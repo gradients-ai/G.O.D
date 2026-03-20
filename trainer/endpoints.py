@@ -12,17 +12,17 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import GPUInfo
 from trainer import constants as cst
 from trainer.image_manager import start_training_task
+from trainer.tasks import _start_task_unlocked
+from trainer.tasks import _task_lock
 from trainer.tasks import complete_task
 from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
-from trainer.tasks import _start_task_unlocked
-from trainer.tasks import _task_lock
-from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
 from trainer.utils.misc import get_gpu_info
+from trainer.utils.trainer_logging import logger
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import GET_RECENT_TASKS_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
@@ -49,6 +49,9 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             parent_dir=cst.TEMP_REPO_PATH,
             branch=req.github_branch,
             commit_hash=req.github_commit_hash,
+            github_token=req.github_token,
+            task_id=req.training_data.task_id,
+            hotkey=req.hotkey,
         )
     except Exception as e:
         await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")
@@ -73,7 +76,7 @@ async def verify_orchestrator_ip(request: Request):
     if client_ip not in allowed_ips:
         raise HTTPException(status_code=403, detail="Access forbidden")
     return client_ip
-    
+
 
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     task_key = (req.training_data.task_id, req.hotkey)

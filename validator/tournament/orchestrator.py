@@ -18,7 +18,6 @@ from core.models.tournament_models import TaskTrainingAssignment
 from core.models.tournament_models import TournamentTaskTraining
 from core.models.tournament_models import TournamentType
 from core.models.utility_models import Backend
-from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GPUInfo
 from core.models.utility_models import GPUType
@@ -276,10 +275,15 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_id = await tournament_sql.get_tournament_id_by_task_id(task.task_id, config.psql_db)
 
                 for hotkey in hotkeys:
+                    training_repo = None
+                    training_commit_hash = None
+                    github_token = None
                     if tournament_id:
-                        training_repo, training_commit_hash = await tournament_sql.get_tournament_training_repo_and_commit(
-                            hotkey, tournament_id, config.psql_db
-                        )
+                        (
+                            training_repo,
+                            training_commit_hash,
+                            github_token,
+                        ) = await tournament_sql.get_tournament_training_repo_and_commit(hotkey, tournament_id, config.psql_db)
 
                     assignments.append(
                         TaskTrainingAssignment(
@@ -289,6 +293,7 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                             priority=priority,
                             training_repo=training_repo,
                             training_commit_hash=training_commit_hash,
+                            github_token=github_token,
                         )
                     )
                 tasks_to_update.append(task)
@@ -307,9 +312,16 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_type = None
 
             # Get the last completed tournament winner's repo
+            training_repo = None
+            training_commit_hash = None
+            github_token = None
             last_tournament = await tournament_sql.get_latest_completed_tournament(config.psql_db, tournament_type)
             if last_tournament and last_tournament.winner_hotkey:
-                training_repo, training_commit_hash = await tournament_sql.get_tournament_training_repo_and_commit(
+                (
+                    training_repo,
+                    training_commit_hash,
+                    github_token,
+                ) = await tournament_sql.get_tournament_training_repo_and_commit(
                     last_tournament.winner_hotkey, last_tournament.tournament_id, config.psql_db
                 )
 
@@ -321,6 +333,7 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                     priority=priority,
                     training_repo=training_repo,
                     training_commit_hash=training_commit_hash,
+                    github_token=github_token,
                 )
             )
             tasks_to_update.append(task)
@@ -438,7 +451,8 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     gpu_ids,
                     training_task.training_repo,
                     training_task.training_commit_hash,
-                    config
+                    training_task.github_token,
+                    config,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
 
@@ -583,7 +597,13 @@ def _get_gpu_count_from_requirement(requirement: GpuRequirement) -> int:
 
 
 async def _create_training_request(
-    task: AnyTypeRawTask, hotkey: str, available_gpu_ids: list[int], training_repo: str, training_commit_hash: str, config: Config
+    task: AnyTypeRawTask,
+    hotkey: str,
+    available_gpu_ids: list[int],
+    training_repo: str,
+    training_commit_hash: str,
+    github_token: str | None,
+    config: Config,
 ) -> TrainerProxyRequest:
     """
     Create a TrainerProxyRequest based on the task type.
@@ -630,7 +650,7 @@ async def _create_training_request(
         )
     else:
         dataset_type = _get_dataset_type(task)
-        
+
         training_data = TrainRequestText(
             model=task.model_id,
             task_id=str(task.task_id),
@@ -647,6 +667,7 @@ async def _create_training_request(
         gpu_ids=available_gpu_ids,
         hotkey=hotkey,
         github_commit_hash=training_commit_hash,
+        github_token=github_token,
     )
 
 

@@ -26,6 +26,7 @@ from core.models.tournament_models import NextTournamentInfo
 from core.models.tournament_models import TournamentDetailsResponse
 from core.models.tournament_models import TournamentHistoryEntry
 from core.models.tournament_models import TournamentHistoryResponse
+from core.models.tournament_models import TournamentParticipant
 from core.models.tournament_models import TournamentResultsWithWinners
 from core.models.tournament_models import TournamentStatus
 from core.models.tournament_models import TournamentType
@@ -51,6 +52,12 @@ from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def _participants_without_github_tokens(participants: list[TournamentParticipant]) -> list[TournamentParticipant]:
+    """Strip PATs before HTTP/Redis; internal DB/orchestration still uses full TournamentParticipant."""
+    return [p.model_copy(update={"github_token": None}) for p in participants]
+
 
 GET_TOURNAMENT_DETAILS_ENDPOINT = "/v1/tournaments/{tournament_id}/details"
 GET_LATEST_TOURNAMENTS_DETAILS_ENDPOINT = "/v1/tournaments/latest/details"
@@ -170,7 +177,7 @@ async def get_tournament_details(
             status=tournament.status,
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
-            participants=participants,
+            participants=_participants_without_github_tokens(participants),
             rounds=detailed_rounds,
             final_scores=tournament_type_result.scores,
             text_tournament_weight=cts.TOURNAMENT_TEXT_WEIGHT,
