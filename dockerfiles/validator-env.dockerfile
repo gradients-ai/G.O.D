@@ -14,7 +14,8 @@ RUN pip install --no-cache-dir --upgrade-strategy only-if-needed .
 
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed -r /opt/mcts/requirements.txt
 
-RUN pip install --no-cache-dir --upgrade-strategy only-if-needed affinetes==0.1.0
+RUN pip install --no-cache-dir --upgrade-strategy only-if-needed affinetes==0.1.0 peft==0.18.1 accelerate=1.6.0
+
 COPY --from=mcts_runtime /usr/local/lib/python3.12/site-packages/affinetes /usr/local/lib/python3.12/dist-packages/affinetes
 COPY --from=mcts_runtime /usr/local/lib/python3.12/site-packages/affinetes-0.1.0.dist-info /usr/local/lib/python3.12/dist-packages/affinetes-0.1.0.dist-info
 
