@@ -314,7 +314,7 @@ YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
 
 # Environment evaluation constants
-ENV_EVAL_IMAGE = "diagonalge/mcts-api-sglang:latest"
+ENV_EVAL_IMAGE = "diagonalge/env-eval:latest"
 ENV_SERVER_CMD_DEFAULT = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
 BASILICA_GPU_MODELS = ["H100", "A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
@@ -358,6 +358,7 @@ ENVIRONMENTS = {
 
 DEFAULT_ENV = "gin_rummy"
 ENV_EVAL_DEFAULT_SEED = 42
+ENV_EVAL_NUM_SEEDS = 2000
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_MAX_CONCURRENT_REQUESTS = 4
 ENV_EVAL_MAX_RETRIES = 3
