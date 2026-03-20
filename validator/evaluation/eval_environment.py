@@ -30,11 +30,16 @@ _DEFAULT_AFFINETES_SERVER_CMD = vcst.ENV_SERVER_CMD_DEFAULT
 def _download_model_with_retry(repo_id: str, max_retries: int = 3) -> str:
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info("Downloading base model (attempt %s/%s): %s", attempt, max_retries, repo_id)
+            logger.info(
+                "eval_setup download base model (attempt %s/%s): %s",
+                attempt,
+                max_retries,
+                repo_id,
+            )
             start = time.time()
             path = snapshot_download(repo_id, local_files_only=False)
             elapsed = time.time() - start
-            logger.info("Base model downloaded in %.1fs: %s", elapsed, path)
+            logger.info("eval_setup base model snapshot_download done in %.1fs -> %s", elapsed, path)
             return path
         except Exception as exc:
             logger.warning("Download attempt %s failed: %s", attempt, exc)
@@ -51,11 +56,17 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3
     os.makedirs(local_dir, exist_ok=True)
     for attempt in range(1, max_retries + 1):
         try:
-            logger.info("Downloading LoRA (attempt %s/%s): %s", attempt, max_retries, repo_id)
+            logger.info(
+                "eval_setup download LoRA (attempt %s/%s): %s -> %s",
+                attempt,
+                max_retries,
+                repo_id,
+                local_dir,
+            )
             start = time.time()
             snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False)
             elapsed = time.time() - start
-            logger.info("LoRA downloaded in %.1fs", elapsed)
+            logger.info("eval_setup LoRA snapshot_download done in %.1fs", elapsed)
             return local_dir
         except Exception as exc:
             logger.warning("Download attempt %s failed: %s", attempt, exc)
@@ -86,11 +97,19 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
     from transformers import AutoModelForCausalLM
     from transformers import AutoTokenizer
 
-    logger.info("Merging base model and LoRA adapter...")
+    merge_t0 = time.time()
+    logger.info(
+        "eval_setup merge: start base=%s lora=%s out=%s",
+        base_model_path,
+        lora_dir,
+        output_dir,
+    )
+    logger.info("eval_setup merge: loading tokenizers...")
     base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
     lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=True)
 
     t0 = time.time()
+    logger.info("eval_setup merge: loading base weights (AutoModelForCausalLM.from_pretrained)...")
     base = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch.float16,
@@ -98,7 +117,7 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         device_map="cuda:0" if torch.cuda.is_available() else "auto",
         trust_remote_code=True,
     )
-    logger.info("Base model loaded in %.1fs", time.time() - t0)
+    logger.info("eval_setup merge: base weights in memory in %.1fs", time.time() - t0)
 
     base_vocab_size = base.get_input_embeddings().weight.shape[0]
     target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= base_vocab_size else base_tokenizer
@@ -114,26 +133,50 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         )
 
     t1 = time.time()
+    logger.info("eval_setup merge: attaching LoRA (PeftModel.from_pretrained)...")
     model = PeftModel.from_pretrained(base, lora_dir)
-    logger.info("LoRA adapter loaded in %.1fs", time.time() - t1)
+    logger.info("eval_setup merge: LoRA attached in %.1fs", time.time() - t1)
 
     t2 = time.time()
+    logger.info("eval_setup merge: merge_and_unload...")
     merged = model.merge_and_unload(safe_merge=False)
-    logger.info("Merge completed in %.1fs", time.time() - t2)
+    logger.info("eval_setup merge: merge_and_unload done in %.1fs", time.time() - t2)
 
     os.makedirs(output_dir, exist_ok=True)
     t3 = time.time()
+    logger.info("eval_setup merge: saving merged model to disk...")
     merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
     target_tokenizer.save_pretrained(output_dir)
-    logger.info("Merged model saved to %s in %.1fs", output_dir, time.time() - t3)
+    logger.info(
+        "eval_setup merge: saved to %s in %.1fs (total merge wall %.1fs)",
+        output_dir,
+        time.time() - t3,
+        time.time() - merge_t0,
+    )
     return output_dir
 
 
 def _configure_logging() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s - %(message)s",
-    )
+    """
+    Ensure INFO logs reach stderr (Basilica/Docker). If root was configured earlier,
+    basicConfig alone is a no-op; attach a stderr handler explicitly.
+    """
+    level_name = os.getenv("EVAL_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    fmt = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setLevel(level)
+    handler.setFormatter(logging.Formatter(fmt))
+    root = logging.getLogger()
+    root.setLevel(level)
+    for h in root.handlers[:]:
+        root.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
+    root.addHandler(handler)
+    logger.setLevel(level)
 
 
 def _parse_environment_name() -> str:
@@ -198,18 +241,48 @@ def _stop_process(proc: subprocess.Popen | None, name: str) -> None:
         logger.warning("Failed to stop %s cleanly: %s", name, exc)
 
 
-async def _wait_for_health(url: str, path: str, timeout_seconds: int) -> None:
+async def _wait_for_health(
+    url: str,
+    path: str,
+    timeout_seconds: int,
+    *,
+    service_name: str = "service",
+    log_interval_s: float = 30.0,
+) -> None:
     deadline = time.time() + timeout_seconds
+    started = time.time()
+    last_log = started
     async with aiohttp.ClientSession() as session:
         while time.time() < deadline:
             try:
                 async with session.get(f"{url}{path}", timeout=aiohttp.ClientTimeout(total=8)) as response:
                     if response.status == 200:
+                        logger.info(
+                            "eval_setup %s healthy after %.1fs (GET %s%s -> %s)",
+                            service_name,
+                            time.time() - started,
+                            url,
+                            path,
+                            response.status,
+                        )
                         return
             except Exception:
                 pass
+            now = time.time()
+            if now - last_log >= log_interval_s:
+                logger.info(
+                    "eval_setup still waiting for %s: GET %s%s (elapsed=%.0fs / timeout=%ss)",
+                    service_name,
+                    url,
+                    path,
+                    now - started,
+                    timeout_seconds,
+                )
+                last_log = now
             await asyncio.sleep(2)
-    raise TimeoutError(f"Service at {url}{path} did not become healthy within {timeout_seconds}s")
+    raise TimeoutError(
+        f"{service_name} at {url}{path} did not become healthy within {timeout_seconds}s"
+    )
 
 
 async def _stream_logs(proc: subprocess.Popen | None, name: str) -> None:
@@ -344,13 +417,27 @@ async def _run_environment_evaluation(
             for idx, (seed, task_id) in enumerate(eval_list)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        n_exc = sum(1 for r in results if isinstance(r, BaseException))
         for result in results:
             if isinstance(result, dict):
                 all_results.append(result)
+        if n_exc:
+            logger.warning(
+                "eval_progress batch: %s task(s) raised exceptions (not counted in average)",
+                n_exc,
+            )
 
     if not all_results:
+        logger.warning("eval_progress batch: no successful task results; returning 0.0")
         return 0.0
-    return sum(r["score"] for r in all_results) / len(all_results)
+    avg = sum(r["score"] for r in all_results) / len(all_results)
+    logger.info(
+        "eval_progress batch: finished %s/%s tasks with scores, avg_score=%.6f",
+        len(all_results),
+        total_tasks,
+        avg,
+    )
+    return avg
 
 
 async def _run() -> None:
@@ -360,6 +447,12 @@ async def _run() -> None:
     env_log_task = None
 
     try:
+        logger.info(
+            "eval_environment: start pid=%s EVAL_LOG_LEVEL=%s",
+            os.getpid(),
+            os.getenv("EVAL_LOG_LEVEL", "INFO"),
+        )
+
         models_raw = os.getenv("MODELS", "")
         model_repo = models_raw.split(",")[0].strip()
         if not model_repo:
@@ -378,16 +471,43 @@ async def _run() -> None:
         seed_generator = random.Random(base_seed)
         eval_seeds = [seed_generator.randint(1, 1_000_000) for _ in range(num_seeds)]
 
+        logger.info(
+            "eval_setup config: env=%s num_seeds=%s task_id_range=(%s,%s) model_repo=%s original_model=%s "
+            "eval_seed=%s temperature=%s",
+            env_name,
+            num_seeds,
+            task_id_min,
+            task_id_max,
+            model_repo,
+            original_model,
+            base_seed,
+            temperature,
+        )
+
+        t_det = time.time()
         is_lora = await asyncio.to_thread(check_for_lora, model_repo, False)
         should_merge_lora = False
         if is_lora:
             should_merge_lora = await asyncio.to_thread(check_lora_has_added_tokens, model_repo, False)
+        logger.info(
+            "eval_setup LoRA detection in %.2fs: is_lora=%s merge_lora_to_base=%s",
+            time.time() - t_det,
+            is_lora,
+            should_merge_lora,
+        )
 
         inference_model_name = model_repo
         model_path_for_sglang = model_repo
         sglang_command = os.getenv("SGLANG_START_CMD")
+        if sglang_command:
+            logger.info("eval_setup SGLang: using SGLANG_START_CMD from environment (override)")
         if not sglang_command:
             if is_lora and not should_merge_lora:
+                logger.info(
+                    "eval_setup model path: LoRA + SGLang native (base=%s lora_repo=%s)",
+                    original_model,
+                    model_repo,
+                )
                 model_path_for_sglang = await asyncio.to_thread(
                     _download_model_with_retry, original_model
                 )
@@ -413,6 +533,11 @@ async def _run() -> None:
                     + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
                 )
             elif is_lora and should_merge_lora:
+                logger.info(
+                    "eval_setup model path: merge LoRA into base then SGLang (base=%s lora=%s)",
+                    original_model,
+                    model_repo,
+                )
                 base_path = await asyncio.to_thread(
                     _download_model_with_retry, original_model
                 )
@@ -426,11 +551,30 @@ async def _run() -> None:
                 inference_model_name = model_repo
                 sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
             else:
+                logger.info("eval_setup model path: single HF repo (full weights) repo=%s", model_repo)
                 model_path_for_sglang = await asyncio.to_thread(
                     _download_model_with_retry, model_repo
                 )
                 inference_model_name = model_repo
                 sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
+
+        sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800"))
+        env_health_timeout = int(os.getenv("ENV_SERVER_HEALTH_TIMEOUT", "600"))
+        logger.info(
+            "eval_setup launching SGLang: model_path_for_sglang=%s inference_model_name=%s",
+            model_path_for_sglang,
+            inference_model_name,
+        )
+        logger.info("eval_setup SGLang command: %s", sglang_command)
+        logger.info(
+            "eval_setup health: SGLang timeout=%ss GET %s%s | env timeout=%ss GET %s%s",
+            sglang_health_timeout,
+            os.getenv("SGLANG_BASE_URL", "http://127.0.0.1:30000"),
+            os.getenv("SGLANG_HEALTH_PATH", "/v1/models"),
+            env_health_timeout,
+            os.getenv("ENV_SERVER_BASE_URL", "http://127.0.0.1:8001"),
+            os.getenv("ENV_SERVER_HEALTH_PATH", "/health"),
+        )
 
         sglang_proc = _start_process(sglang_command, "sglang")
         sglang_log_task = asyncio.create_task(_stream_logs(sglang_proc, "sglang"))
@@ -439,7 +583,8 @@ async def _run() -> None:
         await _wait_for_health(
             sglang_base_url,
             os.getenv("SGLANG_HEALTH_PATH", "/v1/models"),
-            int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800")),
+            sglang_health_timeout,
+            service_name="SGLang",
         )
 
         env_command = os.getenv("ENV_SERVER_CMD")
@@ -447,13 +592,27 @@ async def _run() -> None:
             env_command = _DEFAULT_AFFINETES_SERVER_CMD
         env_base_url = os.getenv("ENV_SERVER_BASE_URL", "http://127.0.0.1:8001")
         if env_command:
+            logger.info("eval_setup starting env-server subprocess")
             env_proc = _start_process(env_command, "env-server")
             env_log_task = asyncio.create_task(_stream_logs(env_proc, "env-server"))
+        else:
+            logger.info(
+                "eval_setup no ENV_SERVER_CMD; expecting env already up at %s",
+                env_base_url,
+            )
 
         await _wait_for_health(
             env_base_url,
             os.getenv("ENV_SERVER_HEALTH_PATH", "/health"),
-            int(os.getenv("ENV_SERVER_HEALTH_TIMEOUT", "600")),
+            env_health_timeout,
+            service_name="env-server",
+        )
+
+        logger.info(
+            "eval_setup starting rollouts: inference_model_name=%s env_url=%s sglang_url=%s",
+            inference_model_name,
+            env_base_url,
+            sglang_base_url,
         )
 
         avg_score = await _run_environment_evaluation(
@@ -471,6 +630,11 @@ async def _run() -> None:
         result_path = Path(cst.CONTAINER_EVAL_RESULTS_PATH)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(output), encoding="utf-8")
+        logger.info(
+            "eval_environment: wrote results to %s avg_score=%.6f",
+            result_path,
+            avg_score,
+        )
         logger.info("Environment evaluation complete. avg_score=%.6f", avg_score)
     finally:
         _stop_process(env_proc, "env-server")
