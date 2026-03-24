@@ -824,8 +824,11 @@ async def get_group_winners(
             logger.warning(f"Group {group_id} has no valid scores - proceeding with no winners")
             continue
 
-        sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1])
-        ranking_direction = "ascending (lower is better)"
+        task_object = await get_task(task_id, psql_db)
+        higher_is_better = task_object and task_object.task_type in (TaskType.ENVIRONMENTTASK, TaskType.GRPOTASK)
+
+        sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=higher_is_better)
+        ranking_direction = "descending (higher is better)" if higher_is_better else "ascending (lower is better)"
 
         logger.info(
             f"Group {group_id} participants sorted by adjusted loss ({ranking_direction}): "
