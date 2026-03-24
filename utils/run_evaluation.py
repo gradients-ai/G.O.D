@@ -26,8 +26,8 @@ from validator.core.models import GrpoTaskWithHotkeyDetails
 from validator.core.models import ImageTaskWithHotkeyDetails
 from validator.core.models import EnvTaskWithHotkeyDetails
 from validator.core.models import InstructTextTaskWithHotkeyDetails
-from validator.evaluation.docker_evaluation import run_evaluation_docker_image
-from validator.evaluation.docker_evaluation import run_evaluation_docker_text
+from validator.evaluation.local_evaluation import run_evaluation_docker_image
+from validator.evaluation.local_evaluation import run_evaluation_docker_text
 from validator.utils.logging import get_logger
 
 
