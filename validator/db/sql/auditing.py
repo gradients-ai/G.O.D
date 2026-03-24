@@ -266,7 +266,13 @@ async def _process_task_batch(
                 tn.{cst.TEST_LOSS} AS test_loss,
                 tn.{cst.SYNTH_LOSS} AS synth_loss,
                 tn.{cst.SCORE_REASON} AS score_reason,
-                RANK() OVER (PARTITION BY t.{cst.TASK_ID} ORDER BY tn.{cst.QUALITY_SCORE} DESC) AS rank,
+                RANK() OVER (
+                    PARTITION BY t.{cst.TASK_ID}
+                    ORDER BY CASE
+                        WHEN t.{cst.TASK_TYPE} IN ('EnvTask', 'GrpoTask') THEN -tn.{cst.TEST_LOSS}
+                        ELSE tn.{cst.TEST_LOSS}
+                    END ASC NULLS LAST
+                ) AS rank,
                 s.{cst.REPO} AS repo,
                 o.{cst.OFFER_RESPONSE} AS offer_response,
                 t.{cst.TASK_TYPE} AS task_type
@@ -551,6 +557,9 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
 
     task = hide_sensitive_data_till_finished(task_raw)
 
+    higher_is_better = task_raw.task_type in (TaskType.ENVIRONMENTTASK, TaskType.GRPOTASK)
+    rank_order = f"tn.{cst.TEST_LOSS} DESC NULLS LAST" if higher_is_better else f"tn.{cst.TEST_LOSS} ASC NULLS LAST"
+
     query = f"""
         SELECT
             tn.{cst.HOTKEY},
@@ -559,7 +568,7 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
             tn.{cst.TEST_LOSS},
             tn.{cst.SYNTH_LOSS},
             tn.{cst.SCORE_REASON},
-            RANK() OVER (ORDER BY tn.{cst.QUALITY_SCORE} DESC) as rank,
+            RANK() OVER (ORDER BY {rank_order}) as rank,
             s.{cst.REPO},
             o.{cst.OFFER_RESPONSE}
         FROM {cst.TASK_NODES_TABLE} tn
