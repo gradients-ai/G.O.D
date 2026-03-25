@@ -374,6 +374,143 @@ Suggested reusable agent instructions
 - "Poll task status until terminal state."
 - "Return task IDs, statuses, and any trained model repositories."
 
+Operational rules for agents
+
+1. Decision logic (state -> action)
+- If status is pending, preparing_data, ready, looking_for_nodes, training, preevaluation, evaluating, or delayed: continue polling and do not create a replacement task unless explicitly asked.
+- If status is success: stop polling, extract outputs, and optionally fetch breakdown details.
+- If status is failure: inspect the available task details, classify the failure, and only retry if the cause appears transient.
+
+2. Task lifecycle rules (strict ordering)
+- Check price before task creation for any non-trivial run.
+- Create the task first, persist task_id immediately, then monitor with GET /v1/tasks/{task_id}.
+- Do not treat a task as complete until it reaches success or failure.
+- Do not run post-training actions such as Chutes deployment until training reaches success.
+
+3. Idempotency and duplicate prevention
+- Do not create multiple tasks for the same objective, dataset, model, and hour budget unless the user explicitly asks for a sweep or comparison run.
+- If a relevant task_id already exists and is still active, reuse it and continue monitoring instead of creating a new task.
+- Before retrying a failed run, confirm that the retry is not duplicating a task that is already pending or training.
+
+4. Task ownership and tracking
+- Persist task_id immediately after creation.
+- Track, at minimum, task_id, task_type, model_repo, dataset source, hours_to_complete, created_at, status, result_model_name, and trained_model_repository.
+- Reuse the same persisted task_id for all follow-up status, breakdown, delete, and deployment operations.
+
+5. System capabilities
+- Can launch paid fine-tuning jobs for text, chat, DPO, GRPO, image, and environment tasks.
+- Can launch multiple tasks for comparison across datasets, models, or reward configurations.
+- Can check pricing, poll task states, inspect breakdowns, and deploy a base-model-plus-LoRA pair to Chutes.
+- Can read public network, auditing, tournament, and performance endpoints without an API key where documented.
+
+6. System limitations
+- This is a job-based training API, not a real-time inference or chat-completions system.
+- External users should assume X-Scheduler-Auth is unavailable.
+- No public endpoint is documented for editing task parameters after creation; if the configuration is wrong, create a new task.
+- Internal validator, miner, and trainer subsystems are not fully exposed through the public API.
+
+7. Non-goals and misuse prevention
+- Do not use Gradients for real-time chat or inference serving.
+- Do not treat /tournament/* or /auditing/* as training submission endpoints.
+- Do not assume direct shell access to training containers or internal validator services.
+
+8. Failure types
+- Account or auth failures: missing API key, expired token, insufficient balance, or rate limiting.
+- Validation failures: invalid model_repo, invalid dataset reference, malformed payload, or wrong endpoint for the task type.
+- Data-preparation failures: dataset schema mismatch, inaccessible dataset files, or unsupported file_format.
+- Runtime failures: trainer allocation issues, delayed scheduling, training failure, or evaluation failure.
+
+9. Failure detection
+- If task creation fails immediately, assume auth, billing, schema, or endpoint misuse before assuming infrastructure failure.
+- If status becomes failure before started_at is set, treat it as likely validation or data-preparation failure.
+- If status remains delayed or looking_for_nodes for an extended period, treat it as a scheduling or capacity issue.
+- If status reaches failure after training or evaluating began, treat it as a runtime or evaluation failure.
+
+10. Retry policy
+- Retry at most once for likely transient failures such as temporary scheduling or network issues.
+- Do not retry until the prior task is confirmed to be in a terminal failure state.
+- For retries, keep the original parameters unless there is evidence they caused the failure.
+
+11. Abort conditions
+- Do not retry if the model repo, dataset source, file_format, or payload schema is invalid.
+- Do not retry if the user has insufficient balance or lacks valid auth.
+- Stop and ask the user before launching more paid runs if repeated failures indicate a systematic configuration problem.
+
+12. Parallelization strategy
+- Prefer parallel runs when the user explicitly wants comparison across multiple models, datasets, or reward setups.
+- Monitor all active task_ids concurrently and report each task separately.
+- Keep each run independently tracked so one failure does not overwrite the state of another.
+
+13. Experimentation strategy
+- When the user wants exploration, vary one major factor at a time such as base model, dataset, or training hours.
+- Prefer small initial runs to validate dataset and payload assumptions before scaling out.
+- Use repeated runs only when the goal is comparison, ablation, or robustness testing.
+
+14. Resource awareness
+- Always check price before launching expensive runs or batches.
+- Be especially cautious with larger text models and long-duration jobs.
+- Prefer low-hour validation runs before committing to long or many-job experiments.
+
+15. Result extraction rules
+- On success, extract task_id, status, result_model_name, trained_model_repository, started_at, and finished_at.
+- If available and relevant, also fetch GET /v1/tasks/breakdown/{task_id}.
+
+16. Evaluation interpretation
+- Use /v1/tasks/breakdown/{task_id} for score details and miner-level information when the user wants analysis beyond top-level task status.
+- Treat trained_model_repository and result_model_name as the primary outputs of a successful paid run.
+
+17. Persistence rules
+- Save task_id, current status, timestamps, task type, base model, dataset source, hour budget, and final model outputs for every run.
+- Preserve this state across follow-up operations so the agent does not lose task ownership.
+
+18. API usage rules
+- Use the task-specific endpoint that matches the workload instead of forcing every task through /v1/tasks/create.
+- Use read endpoints for monitoring and analysis, and submission endpoints only for creating paid work.
+- Prefer Bearer API key auth for end-user automation.
+
+19. Schema validation behavior
+- Always consult https://api.gradients.io/docs before constructing or changing payloads.
+- Match dataset field names to the task schema instead of guessing column names.
+- Do not hallucinate undocumented fields or endpoints.
+
+20. Auth constraints
+- Use Authorization: Bearer <token> for session tokens and API keys unless the docs explicitly require otherwise.
+- Do not assume access to X-Scheduler-Auth or other internal credentials.
+- If auth fails, stop and refresh or recreate credentials before attempting paid operations again.
+
+21. Polling strategy
+- Poll every 10 to 30 minutes for active tasks.
+- Continue polling until the task reaches success or failure.
+- Slow the polling rate for long-running jobs and when monitoring many tasks at once.
+
+22. Patience and waiting rules
+- Do not interrupt or replace tasks simply because they remain in training, preevaluation, or evaluating.
+- Treat delayed and looking_for_nodes as waiting states first, not immediate failures.
+
+23. No-assumption rule
+- Never assume task creation succeeded without capturing the returned task_id.
+- Never assume training succeeded without confirming status == success.
+- Never assume outputs exist until trained_model_repository or equivalent result fields are present.
+
+24. Decision priority rules
+- Prioritize completing or monitoring existing tasks before creating new paid work.
+- Prioritize validation, pricing, and task reuse before expansion to parallel experiments.
+
+25. Multi-task coordination
+- Track every active task_id separately.
+- Report each task's state, cost context, and outputs independently.
+- If one task succeeds and others fail, do not collapse them into a single summary state.
+
+26. Cost optimization strategy
+- Start with low-hour runs before scaling up expensive models or large experiment grids.
+- Use price checks to compare candidate models before launching many tasks.
+- Avoid duplicate runs unless they serve a deliberate comparison objective.
+
+27. Debugging guidance
+- If failures repeat, verify endpoint choice, auth, dataset accessibility, dataset schema, and model repo before retrying.
+- If the same configuration fails more than once, change the dataset, model, or payload instead of repeating the same request.
+- When possible, use the task state timeline and breakdown endpoints to determine whether the issue happened during validation, scheduling, training, or evaluation.
+
 Example user intents this system supports
 - "Create a dataset and use this API to train a model."
 - "Launch 10 DPO runs against different base models."
