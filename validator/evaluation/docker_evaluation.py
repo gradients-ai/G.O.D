@@ -237,9 +237,14 @@ async def _poll_basilica_result(
     max_poll_seconds: int = vcst.EVAL_BASILICA_MAX_POLL_SECONDS,
 ) -> dict | str:
     """Poll Basilica /result endpoint. Handles status: completed, failed, running, in_progress."""
-    started = time.time()
+    started_monotonic = time.monotonic()
+    deadline = started_monotonic + max_poll_seconds
+    next_poll_at = started_monotonic
     deployment_name = getattr(deployment, "name", "unknown")
-    while time.time() - started < max_poll_seconds:
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now < next_poll_at:
+            await asyncio.sleep(next_poll_at - now)
         try:
             await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
             response = await asyncio.to_thread(
@@ -265,9 +270,9 @@ async def _poll_basilica_result(
 
         eval_logger.info(
             f"[{repo}] result not ready yet (status may be running/in_progress), "
-            f"polling again in {poll_interval_seconds // 60} minutes..."
+            f"polling again in {poll_interval_seconds}s..."
         )
-        await asyncio.sleep(poll_interval_seconds)
+        next_poll_at += poll_interval_seconds
     return f"Timed out waiting for result after {max_poll_seconds}s"
 
 

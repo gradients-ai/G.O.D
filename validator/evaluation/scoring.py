@@ -28,6 +28,7 @@ from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
 from validator.core.models import Submission
 from validator.db.sql.submissions_and_scoring import add_submission
+from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
@@ -554,8 +555,50 @@ async def evaluate_and_score_hotkeys(
     failed_hotkeys = [result.hotkey for result in task_results if (not result.is_finetune) or np.isnan(result.test_loss)]
     evaluated_hotkeys = [result.hotkey for result in task_results]
 
-    task_results = calculate_miner_ranking_and_scores(task_results)
-    await _update_scores(task, task_results, config.psql_db)
+    current_by_hotkey = {result.hotkey: result for result in task_results}
+    existing_results: list[MinerResultsText | MinerResultsImage] = []
+    existing_rows = await get_all_scores_and_losses_for_task(task.task_id, config.psql_db)
+    for row in existing_rows:
+        hotkey = row.get("hotkey")
+        if hotkey in current_by_hotkey:
+            continue
+        test_loss = row.get("test_loss")
+        synth_loss = row.get("synth_loss")
+        if test_loss is None or synth_loss is None:
+            continue
+        test_loss = float(test_loss)
+        synth_loss = float(synth_loss)
+        if np.isnan(test_loss) or test_loss == 0.0:
+            continue
+
+        if task.task_type == TaskType.IMAGETASK:
+            existing_results.append(
+                MinerResultsImage(
+                    hotkey=hotkey,
+                    test_loss=test_loss,
+                    synth_loss=synth_loss,
+                    is_finetune=True,
+                    score_reason=row.get("score_reason"),
+                )
+            )
+        else:
+            existing_results.append(
+                MinerResultsText(
+                    hotkey=hotkey,
+                    test_loss=test_loss,
+                    synth_loss=synth_loss,
+                    is_finetune=True,
+                    score_reason=row.get("score_reason"),
+                    task_type=task.task_type,
+                )
+            )
+
+    combined_by_hotkey = {result.hotkey: result for result in existing_results}
+    combined_by_hotkey.update(current_by_hotkey)
+    combined_results = list(combined_by_hotkey.values())
+
+    combined_results = calculate_miner_ranking_and_scores(combined_results)
+    await _update_scores(task, combined_results, config.psql_db)
     return evaluated_hotkeys, failed_hotkeys
 
 
