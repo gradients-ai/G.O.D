@@ -1,4 +1,4 @@
-GRADIENTS.IO / G.O.D / RAYON API SKILL FILE
+G.O.D SKILL FILE
 
 Purpose
 This file is for an LLM or agent that needs to understand Gradients.io's training product, its public API, and the G.O.D. subnet that powers training jobs and tournaments.
