@@ -368,7 +368,12 @@ ENV_EVAL_TASK_MAX_RETRIES = 3
 ENV_EVAL_TASK_TIMEOUT = 180
 ENV_EVAL_SESSION_TIMEOUT = 7200
 
-# Basilica offloaded evaluation (text/image/grpo)
+SGLANG_ENV_EVAL_EXTRA_CLI = (
+    "--attention-backend triton --prefill-attention-backend triton "
+    "--decode-attention-backend triton --sampling-backend pytorch"
+)
+SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
+
 EVAL_BASILICA_CPU = "4"
 EVAL_BASILICA_MEMORY = "64Gi"
 EVAL_BASILICA_TTL_SECONDS = 10800

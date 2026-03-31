@@ -202,7 +202,7 @@ def _build_sglang_command(model_path: str, seed: int) -> str:
     tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
     dtype = os.getenv("SGLANG_DTYPE", "float16")
     port = os.getenv("SGLANG_PORT", "30000")
-    return (
+    base = (
         "python3 -m sglang.launch_server "
         f"--model-path {model_path} "
         f"--host 0.0.0.0 --port {port} "
@@ -210,6 +210,8 @@ def _build_sglang_command(model_path: str, seed: int) -> str:
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed}"
     )
+    extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or vcst.SGLANG_ENV_EVAL_EXTRA_CLI).strip()
+    return f"{base} {extra}" if extra else base
 
 
 def _start_process(command: str, name: str) -> subprocess.Popen:
@@ -566,6 +568,13 @@ async def _run() -> None:
             inference_model_name,
         )
         logger.info("eval_setup SGLang command: %s", sglang_command)
+        _min_ws = vcst.SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES
+        try:
+            _cur_ws = int(os.environ.get("SGLANG_FLASHINFER_WORKSPACE_SIZE", "0") or "0")
+        except ValueError:
+            _cur_ws = 0
+        if _cur_ws < _min_ws:
+            os.environ["SGLANG_FLASHINFER_WORKSPACE_SIZE"] = str(_min_ws)
         logger.info(
             "eval_setup health: SGLang timeout=%ss GET %s%s | env timeout=%ss GET %s%s",
             sglang_health_timeout,
