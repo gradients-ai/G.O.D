@@ -64,6 +64,30 @@ Useful account endpoints
 - POST /account-get-info
 - POST /account-get-public-key
 
+
+Adding balance (funding an account)
+Users fund their Gradients account by sending TAO (Bittensor native token) to their account's deposit address.
+
+Step-by-step flow for agents:
+1. Get the user's deposit address:
+   - Call POST /account-get-info (requires session token in Authorization header).
+   - The response includes bittensor_public_key — this is the SS58 deposit address.
+   - If bittensor_public_key is null, call POST /account-get-public-key to generate one on demand. This returns { "public_key": "<ss58_address>", "keypair_created_at": "...", "network": "finney" }.
+
+2. Send TAO to the deposit address:
+   - The user transfers TAO from their Bittensor wallet to the bittensor_public_key address.
+   - This is a standard Bittensor transfer, e.g.: btcli wallet transfer --dest <bittensor_public_key> --amount <amount>
+   - The system automatically detects incoming transfers and credits the account balance.
+
+3. Verify the balance was credited:
+   - Wait a few minutes for the transfer to be processed.
+   - Login to gradients.io with your fingerprint and confirm.
+
+Important notes on balance:
+- Balance is denominated in USD internally. TAO transfers are converted at the current rate.
+- Always check pricing (POST /v1/tasks/text/check_price or POST /v1/tasks/image/check_price) before creating tasks so the user knows the cost.
+- If a task creation fails due to insufficient balance, advise the user to send more TAO to their deposit address.
+
 Billing model
 - Text jobs are priced by model size bucket and hours requested.
 - Image jobs use a flat hourly rate.
@@ -517,3 +541,139 @@ Example user intents this system supports
 - "Fine-tune 30 models on the same dataset and compare outputs."
 - "Show me the current tournament fees and the latest tournament weights."
 - "Deploy the winning LoRA to Chutes."
+- "Continuously train a model on a large dataset over multiple iterations."
+- "Run a long-running training job with 500k samples across 10 iterations."
+
+---
+
+Gradients Scheduler (Long-Running / Multi-Iteration Training)
+
+When to use the scheduler
+The single-shot Gradients API (POST /v1/tasks/create) is ideal for one-off training jobs. The scheduler is for scenarios that require:
+- Large datasets that must be split into multiple training chunks across iterations.
+- Multiple sequential training iterations where each iteration merges the LoRA adapter back into the base model and feeds the result into the next round.
+- Continuous training loops that run unattended over hours or days.
+- Multiple datasets combined and stratified across training chunks.
+
+The scheduler is a hosted service. Users access it through the public Gradients API — no self-hosting, cloning, or infrastructure setup is required. The Gradients API proxies all scheduler requests to the backend service automatically.
+
+How the scheduler works (lifecycle)
+1. User creates a job via POST /v1/scheduler/jobs/create with model, datasets, samples_per_training, hours_to_complete, etc.
+2. Job is stored as "pending".
+3. The scheduler picks up the job, downloads and merges all datasets, standardizes column names, shuffles, and saves to disk.
+4. Datasets are split into chunks of samples_per_training size.
+5. For each training iteration:
+   a. The current chunk is uploaded to storage and a presigned URL is generated.
+   b. A training task is created on the Gradients API with the dataset URL.
+   c. The scheduler polls the task until it reaches success or failure.
+   d. On success: the best miner's trained LoRA model is merged with the base model, producing a new merged model.
+   e. The merged model becomes the base model for the next iteration.
+   f. The next chunk is selected (cycling through chunks via training_number % num_chunks).
+6. This continues until all iterations complete, the job is suspended, or consecutive failures (3) cause the job to be marked as failed.
+
+Scheduler API endpoints
+
+All scheduler endpoints are on the public Gradients API (https://api.gradients.io). Authenticate with your Gradients API key using Authorization: Bearer <API_KEY>. The API automatically associates jobs with your account — no X-Account-ID header is needed.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | /v1/scheduler/health | Health check |
+| POST | /v1/scheduler/jobs/create | Create a new training job |
+| GET | /v1/scheduler/jobs | List your jobs |
+| GET | /v1/scheduler/jobs/{job_id} | Get job status and config |
+| GET | /v1/scheduler/jobs/{job_id}/results | Get job details with all training results |
+| DELETE | /v1/scheduler/jobs/{job_id} | Delete job and all associated data |
+
+Creating a training job
+
+Required information to ask the user:
+1. task_type: "InstructText", "Chat", or "CustomDatasetChat"
+2. model_repo: HuggingFace model ID (e.g. "Qwen/Qwen2.5-1.5B-Instruct")
+3. hours_to_complete: Hours allocated per training iteration (integer, e.g. 1)
+4. samples_per_training: Number of samples per training chunk (e.g. 80000)
+5. final_test_size: Proportion held out for final test set (float between 0 and 1, e.g. 0.1)
+6. datasets: At least one dataset with:
+   - For InstructText: name (HF dataset ID), field_instruction (required), field_input (optional), field_output (optional), max_rows (optional)
+   - For Chat: name, chat_column (optional), chat_role_field (optional), chat_content_field (optional), chat_user_reference (optional), chat_assistant_reference (optional), chat_template (optional), max_rows (optional)
+
+Optional fields:
+- name: Human-readable job name
+- random_seed: Default 42
+- min_days, max_days, min_hours, max_hours: Scheduling interval between iterations (all default 0 = immediate)
+- per_chunk_test_proportion: Test proportion per chunk for CustomDatasetChat (default 0.001)
+
+Example curl for creating an InstructText job:
+```
+curl -X POST "https://api.gradients.io/v1/scheduler/jobs/create" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <API_KEY>" \
+  -d '{
+    "name": "my-training-job",
+    "task_type": "InstructText",
+    "model_repo": "Qwen/Qwen2.5-1.5B-Instruct",
+    "hours_to_complete": 1,
+    "samples_per_training": 80000,
+    "final_test_size": 0.1,
+    "datasets": [
+      {
+        "name": "yahma/alpaca-cleaned",
+        "field_instruction": "instruction",
+        "field_input": "input",
+        "field_output": "output"
+      }
+    ]
+  }'
+```
+
+The response returns job_id, status, and a message.
+
+Monitoring a training job
+
+Monitoring workflow:
+1. After creating the job, poll GET /v1/scheduler/jobs/{job_id} to check job status.
+2. Job statuses: pending -> running -> completed/suspended/failed.
+3. Poll GET /v1/scheduler/jobs/{job_id}/results for detailed training results per iteration.
+4. Each result in the results array contains: task_id, training_number, status (pending/running/success/failure), base_model_repo, trained_model_repo, merged_model_repo, test_loss, quality_score, winner_hotkey, error_message.
+5. The final trained model is the merged_model_repo from the last successful task result.
+6. If the job completes or is suspended, the latest merged_model_repo is the final output model.
+
+Example monitoring curl:
+```
+curl "https://api.gradients.io/v1/scheduler/jobs/{job_id}/results" \
+  -H "Authorization: Bearer <API_KEY>"
+```
+
+Providing the final model to the user:
+- Extract merged_model_repo from the last successful task result in the results response.
+- This is a HuggingFace model repository ID (e.g. "username/merged-model-name").
+- The user can use this model directly from HuggingFace for inference.
+
+Scheduler job states
+- pending: Job created, waiting for scheduler to pick it up.
+- running: Scheduler is actively processing (preparing data, training, or between iterations).
+- waiting_to_suspend: User requested suspension; scheduler will suspend after current task completes.
+- suspended: Job paused.
+- completed: All training iterations finished successfully.
+- failed: Job failed after 3 consecutive task failures.
+
+Scheduler-specific operational rules for agents
+
+1. Always ask the user for model_repo, dataset details, hours_to_complete, and samples_per_training before creating a job.
+2. Recommend final_test_size of 0.05-0.15 unless the user specifies otherwise.
+3. For large datasets (>100k rows), suggest samples_per_training of 50000-100000 to create multiple training chunks.
+4. The number of training iterations equals ceil(total_train_samples / samples_per_training).
+5. Each iteration costs one Gradients API training task (billed at the model's hourly rate * hours_to_complete).
+6. Total cost = num_iterations * price_per_iteration. Warn the user about total cost for large jobs.
+7. Monitor jobs by polling /v1/scheduler/jobs/{job_id}/results periodically.
+8. The final deliverable is the merged_model_repo from the last successful task result.
+9. If the user wants to stop early, use DELETE /v1/scheduler/jobs/{job_id}.
+10. If the user needs the intermediate model at any point, the merged_model_repo from any successful result can be used.
+
+When an agent should use the scheduler vs single-shot API
+- Use single-shot API (POST /v1/tasks/create): One-off training, small datasets, quick experiments, no iteration needed.
+- Use the scheduler: Large datasets requiring chunking, continuous iterative training, multi-dataset jobs, unattended long-running training, or when each iteration should build on the previous merged model.
+
+Troubleshooting
+- If tasks fail: Verify the API key has sufficient balance and the model_repo / dataset are valid.
+- If dataset preparation fails: Check that the dataset name is a valid HuggingFace dataset ID and the field names match actual columns in the dataset.
+- Job stuck in running: Check the task_id in the results and poll the Gradients API directly (GET https://api.gradients.io/v1/tasks/{task_id}).
