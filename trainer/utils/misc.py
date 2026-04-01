@@ -54,6 +54,7 @@ def clone_repo(
 
         if commit_hash:
             repo.git.fetch("--all")
+            repo.git.fetch("origin")
             try:
                 repo.git.checkout(commit_hash)
             except GitCommandError as checkout_error:
