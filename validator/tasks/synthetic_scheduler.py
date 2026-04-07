@@ -441,7 +441,8 @@ async def create_synthetic_env_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    selected_environment = "gin_rummy"
+    round_one_game_candidates = ["gin_rummy", "liars_dice"]
+    selected_environment = random.choice(round_one_game_candidates)
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)
@@ -484,7 +485,7 @@ async def create_synthetic_env_boss_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    selected_environment = "liars_dice"
+    selected_environment = "leduc_poker"
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)

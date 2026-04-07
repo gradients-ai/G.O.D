@@ -125,6 +125,10 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
             config["trl"]["rollout_func"] = "liars_dice.rollout_first_prompt_and_completion"
             config["trl"]["reward_funcs"] = ["liars_dice.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]
+        elif dataset_type.environment_name == "leduc_poker":
+            config["trl"]["rollout_func"] = "leduc_poker.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = ["leduc_poker.rollout_reward_func"]
+            config["trl"]["reward_weights"] = [1.0]
 
     if file_format != FileFormat.HF.value:
         for ds in config["datasets"]:
