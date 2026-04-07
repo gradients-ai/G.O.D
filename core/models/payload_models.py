@@ -179,7 +179,7 @@ class NewTaskRequest(BaseModel):
     hours_to_complete: float = Field(..., description="The number of hours to complete the task", examples=[1])
     result_model_name: str | None = Field(None, description="The name to give to a model that is created by this task")
     backend: str = Field(
-        default="oblivus", description="The backend to use for training: 'oblivus' or 'runpod'", examples=["runpod", "oblivus"]
+        default="runpod", description="The backend to use for training: 'runpod' or 'oblivus'", examples=["runpod", "oblivus"]
     )
     yarn_factor: int | None = Field(
         None,
