@@ -319,7 +319,6 @@ async def _run_environment_evaluation(
     all_results = []
     total_tasks = len(eval_list)
     logger.info("eval_progress batch: %s tasks (concurrency=%s)", total_tasks, vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS)
-    retry_statuses = {404, 500, 501, 503, 504}
     semaphore = asyncio.Semaphore(vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS)
 
     async def evaluate_single_task(
@@ -377,32 +376,29 @@ async def _run_environment_evaluation(
                     )
                     return {"task_id": task_id, "score": score, "time": latency}
             except Exception as exc:
-                if any(f"HTTP {code}" in str(exc) for code in retry_statuses):
-                    if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
-                        logger.warning(
-                            "eval_progress %s/%s failed_excluded task_id=%s attempts=%s (retryable HTTP); excluding from average",
-                            task_idx + 1,
-                            total_tasks,
-                            task_id,
-                            attempt,
-                        )
-                        return None
-                    await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
-                else:
+                err_text = str(exc)
+                logger.warning(
+                    "eval_progress %s/%s error task_id=%s attempt=%s/%s: %s",
+                    task_idx + 1,
+                    total_tasks,
+                    task_id,
+                    attempt,
+                    vcst.ENV_EVAL_TASK_MAX_RETRIES,
+                    err_text,
+                    exc_info=True,
+                )
+
+                if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
                     logger.error(
-                        "eval_progress %s/%s error task_id=%s: %s",
+                        "eval_progress %s/%s exhausted retries task_id=%s attempts=%s; returning score=0.0",
                         task_idx + 1,
                         total_tasks,
                         task_id,
-                        exc,
-                    )
-                    logger.info(
-                        "eval_progress %s/%s done task_id=%s score=0.000000 (non-retryable error)",
-                        task_idx + 1,
-                        total_tasks,
-                        task_id,
+                        attempt,
                     )
                     return {"task_id": task_id, "score": 0.0, "time": 0.0}
+
+                await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
 
     async def evaluate_with_semaphore(
         session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int
@@ -465,7 +461,11 @@ async def _run() -> None:
         env_name = _parse_environment_name()
         env_config = vcst.ENVIRONMENTS[env_name]
         task_id_min, task_id_max = env_config["task_id_range"]
-        num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
+        _num_seeds_env = os.getenv("ENV_EVAL_NUM_SEEDS")
+        if _num_seeds_env is not None and _num_seeds_env.strip() != "":
+            num_seeds = int(_num_seeds_env)
+        else:
+            num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
         env_payload_extra = env_config.get("eval_payload_extra", {})
 
         seed_generator = random.Random(base_seed)

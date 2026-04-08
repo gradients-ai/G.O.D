@@ -40,6 +40,18 @@ from validator.utils.logging import stream_container_logs
 logger = get_logger(__name__)
 
 
+def _build_local_sglang_command(base_model: str, base_seed: int) -> str:
+    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
+    dtype = os.getenv("SGLANG_DTYPE", "float16")
+    port = os.getenv("SGLANG_PORT", str(vcst.LOCAL_ENV_SGLANG_PORT))
+    return (
+        f"python3 -m sglang.launch_server --model-path {base_model} "
+        f"--host 0.0.0.0 --port {port} "
+        f"--tensor-parallel-size {tensor_parallel} --dtype {dtype} "
+        f"--enable-deterministic-inference --random-seed {base_seed}"
+    )
+
+
 def stream_container_logs_to_file(
     container,
     output_path: str,
@@ -288,6 +300,7 @@ async def run_evaluation_local_environment(
         eval_id = str(uuid.uuid4())
         repo_name = repo.split("/")[-1]
         env_logger = get_environment_logger(name=f"{repo_name}-{eval_id[:8]}", repo_id=repo, eval_id=eval_id, model=original_model)
+        local_env_server_port = int(os.getenv("LOCAL_ENV_SERVER_PORT", str(vcst.LOCAL_ENV_SERVER_PORT)))
 
         containers = {}
         lora_dir = None
@@ -318,19 +331,13 @@ async def run_evaluation_local_environment(
                 inference_model_name = repo
                 env_logger.info(f"Base model: {repo}")
 
-            sglang_args = (
-                f"python3 -m sglang.launch_server --model-path {base_model} "
-                f"--host 0.0.0.0 --port {vcst.LOCAL_ENV_SGLANG_PORT} "
-                f"--tensor-parallel-size 1 --dtype float16 "
-                f"--enable-deterministic-inference --random-seed {base_seed}"
-            )
+            local_sglang_port = int(os.getenv("SGLANG_PORT", str(vcst.LOCAL_ENV_SGLANG_PORT)))
+            sglang_args = _build_local_sglang_command(base_model, base_seed)
             if is_lora:
                 sglang_args = (
-                    f"python3 -m sglang.launch_server --model-path {base_model} "
+                    _build_local_sglang_command(base_model, base_seed)
+                    + " "
                     f"--enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton "
-                    f"--host 0.0.0.0 --port {vcst.LOCAL_ENV_SGLANG_PORT} "
-                    f"--tensor-parallel-size 1 --dtype float16 "
-                    f"--enable-deterministic-inference --random-seed {base_seed}"
                 )
             if sglang_log_requests:
                 sglang_args += (
@@ -354,7 +361,7 @@ async def run_evaluation_local_environment(
                 name=sglang_container_name,
                 detach=True,
                 network=vcst.LOCAL_ENV_DOCKER_NETWORK,
-                ports={f"{vcst.LOCAL_ENV_SGLANG_PORT}/tcp": vcst.LOCAL_ENV_SGLANG_PORT},
+                ports={f"{local_sglang_port}/tcp": local_sglang_port},
                 device_requests=[docker.types.DeviceRequest(device_ids=[str(gpu_id)], capabilities=[["gpu"]])],
                 environment={
                     "HF_HOME": "/hf",
@@ -380,7 +387,7 @@ async def run_evaluation_local_environment(
                         asyncio.to_thread(stream_container_logs, sglang_container, env_logger, {"log_source": "sglang"})
                     )
 
-            sglang_host_url = f"http://localhost:{vcst.LOCAL_ENV_SGLANG_PORT}"
+            sglang_host_url = f"http://localhost:{local_sglang_port}"
             await asyncio.to_thread(wait_for_basilica_health, sglang_host_url, vcst.LOCAL_ENV_SGLANG_HEALTH_TIMEOUT)
             env_logger.info(f"SGLang ready at {sglang_host_url}")
 
@@ -391,16 +398,16 @@ async def run_evaluation_local_environment(
                 name=env_container_name,
                 detach=True,
                 network=vcst.LOCAL_ENV_DOCKER_NETWORK,
-                ports={"8000/tcp": vcst.LOCAL_ENV_SERVER_PORT},
+                ports={"8000/tcp": local_env_server_port},
                 remove=False,
             )
             containers["env"] = env_container
 
-            env_host_url = f"http://localhost:{vcst.LOCAL_ENV_SERVER_PORT}"
+            env_host_url = f"http://localhost:{local_env_server_port}"
             await asyncio.to_thread(wait_for_basilica_health, env_host_url, vcst.LOCAL_ENV_SERVER_HEALTH_TIMEOUT, "/health")
             env_logger.info(f"Environment server ready at {env_host_url}")
 
-            sglang_internal_url = f"http://{sglang_container_name}:{vcst.LOCAL_ENV_SGLANG_PORT}"
+            sglang_internal_url = f"http://{sglang_container_name}:{local_sglang_port}"
             avg_score = await _run_environment_evaluation(
                 sglang_internal_url,
                 env_host_url,
