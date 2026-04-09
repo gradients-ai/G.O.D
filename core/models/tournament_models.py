@@ -398,7 +398,7 @@ class BenchmarkTaskCopy(BaseModel):
     task_type: TaskType
     model_id: str
     dataset: str
-    hours_to_complete: int
+    hours_to_complete: float
     model_params_count: int
     is_organic: bool
     task_created_at: datetime | None = None
@@ -421,7 +421,7 @@ class BenchmarkTimeline(BaseModel):
     task_type: TaskType
     model_id: str
     dataset: str
-    hours_to_complete: int
+    hours_to_complete: float
     model_params_count: int
     is_organic: bool
     task_created_at: datetime | None = None

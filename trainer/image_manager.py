@@ -554,9 +554,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         container = None
         env_server_containers = []
         tag = None
-        timeout_seconds = int(training_data.hours_to_complete * 3600)
+        timeout_seconds = max(1, int(training_data.hours_to_complete * 3600))
         task_type = get_task_type(task)
-        training_data.hours_to_complete = int(training_data.hours_to_complete)
         await create_volumes_if_dont_exist()
 
         log_labels = {

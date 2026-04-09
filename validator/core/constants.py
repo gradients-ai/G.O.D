@@ -113,8 +113,8 @@ TOURNAMENT_SIMPLE_DECAY_BASE = 0.3  # Base for simple exponential decay (1st=1.0
 # General miner pool sizes
 MIN_IDEAL_NUM_MINERS_IN_POOL = 8
 
-MIN_IMAGE_COMPETITION_HOURS = 1
-MAX_IMAGE_COMPETITION_HOURS = 2
+MIN_IMAGE_COMPETITION_HOURS = 0.5
+MAX_IMAGE_COMPETITION_HOURS = 1.0
 TASK_TIME_DELAY = 15  # number of minutes we wait to retry an organic request
 # how many times in total do we attempt to delay an organic request looking for miners
 MAX_DELAY_TIMES = 6

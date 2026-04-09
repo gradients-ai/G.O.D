@@ -176,7 +176,12 @@ class InstructTextDatasetColumnsResponse(BaseModel):
 
 class NewTaskRequest(BaseModel):
     account_id: UUID
-    hours_to_complete: float = Field(..., description="The number of hours to complete the task", examples=[1])
+    hours_to_complete: float = Field(
+        ...,
+        gt=0,
+        description="The number of hours to complete the task (fractional hours allowed, e.g. 0.5)",
+        examples=[1, 0.5],
+    )
     result_model_name: str | None = Field(None, description="The name to give to a model that is created by this task")
     backend: str = Field(
         default="runpod", description="The backend to use for training: 'runpod' or 'oblivus'", examples=["runpod", "oblivus"]

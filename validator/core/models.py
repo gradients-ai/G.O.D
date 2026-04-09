@@ -89,7 +89,7 @@ class RawTask(BaseModel):
     ds: str
     account_id: UUID
     times_delayed: int = 0
-    hours_to_complete: int
+    hours_to_complete: float
     test_data: str | None = None
     training_data: str | None = None
     assigned_miners: list[int] | None = None
@@ -275,7 +275,7 @@ class MiniTaskWithScoringOnly(BaseModel):
     status: str
     account_id: UUID
     times_delayed: int = 0
-    hours_to_complete: int
+    hours_to_complete: float
     assigned_miners: list[int] | None = None
     miner_scores: list[float] | None = None
     task_type: TaskType

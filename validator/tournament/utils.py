@@ -56,7 +56,7 @@ logger = get_logger(__name__)
 
 def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int, model_id: str = None) -> GpuRequirement:
     if task_type == TaskType.IMAGETASK:
-        return GpuRequirement.A100
+        return GpuRequirement.H100_1X
     if not model_params_count and model_id:
         logger.info(f"model_params_count is {model_params_count}, fetching from HuggingFace for model {model_id}")
         try:

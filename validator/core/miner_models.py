@@ -73,7 +73,7 @@ class TaskSubmissionResult(BaseModel):
     percentile: float
     work_score: float = 0.0
     adjusted_score: float = 0.0
-    hours_to_complete: int = 0
+    hours_to_complete: float = 0
     model_size_billions: float = 0.0
 
 

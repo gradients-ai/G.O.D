@@ -300,7 +300,7 @@ async def _create_dstack_request(
     required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
     
     if task.task_type == TaskType.IMAGETASK:
-        gpu_name = "A100"
+        gpu_name = "H100"
         gpu_count = _get_gpu_count_from_requirement(required_gpus)
         logger.info(f"Task {task.task_id} is IMAGETASK, using {gpu_count}x{gpu_name}")
     else:
@@ -382,7 +382,7 @@ async def _create_dstack_request(
 
 
 def _get_gpu_count_from_requirement(requirement: GpuRequirement) -> int:
-    """Get the number of GPUs required for a given GPU requirement (for A100)."""
+    """Get the number of GPUs required for a given tournament GPU requirement (e.g. image on H100)."""
     if requirement == GpuRequirement.A100:
         return 1
     elif requirement == GpuRequirement.H100_1X:

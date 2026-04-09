@@ -878,7 +878,7 @@ async def get_tournament_training_stats(psql_db: PSQLDB) -> dict:
         return stats
 
 
-async def update_gpu_availability(trainer_ip: str, gpu_ids: list[int], hours_to_complete: int, psql_db: PSQLDB):
+async def update_gpu_availability(trainer_ip: str, gpu_ids: list[int], hours_to_complete: float, psql_db: PSQLDB):
     """Update GPU availability by setting used_until based on hours_to_complete"""
     async with await psql_db.connection() as connection:
         if hours_to_complete == 0:
@@ -888,16 +888,16 @@ async def update_gpu_availability(trainer_ip: str, gpu_ids: list[int], hours_to_
                 SET {cst.USED_UNTIL} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
                 WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
             """
+            await connection.execute(query, trainer_ip, gpu_ids)
         else:
-            # Set GPU as used for specified hours
-            used_until = f"CURRENT_TIMESTAMP + INTERVAL '{hours_to_complete} hours'"
+            # Set GPU as used for specified hours (fractional hours supported)
             query = f"""
                 UPDATE {cst.TRAINERS_GPUS_TABLE}
-                SET {cst.USED_UNTIL} = {used_until}, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+                SET {cst.USED_UNTIL} = CURRENT_TIMESTAMP + ($3::double precision * INTERVAL '1 hour'),
+                    {cst.UPDATED_AT} = CURRENT_TIMESTAMP
                 WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
             """
-
-        await connection.execute(query, trainer_ip, gpu_ids)
+            await connection.execute(query, trainer_ip, gpu_ids, float(hours_to_complete))
         action = "reset" if hours_to_complete == 0 else f"used for {hours_to_complete} hours"
         logger.info(f"Updated GPU availability for trainer {trainer_ip}, GPUs {gpu_ids} - {action}")
 
