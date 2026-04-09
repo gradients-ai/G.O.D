@@ -408,20 +408,43 @@ async def _run_environment_evaluation(
         async with semaphore:
             return await evaluate_single_task(session, seed, task_id, task_idx)
 
-    session_timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_SESSION_TIMEOUT)
+    eval_timeout_seconds = vcst.ENV_EVAL_SESSION_TIMEOUT
+    session_timeout = aiohttp.ClientTimeout(total=eval_timeout_seconds)
     async with aiohttp.ClientSession(timeout=session_timeout) as session:
         tasks = [
-            evaluate_with_semaphore(session, seed, task_id, idx)
+            asyncio.create_task(evaluate_with_semaphore(session, seed, task_id, idx))
             for idx, (seed, task_id) in enumerate(eval_list)
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        n_exc = sum(1 for r in results if isinstance(r, BaseException))
-        for result in results:
-            if isinstance(result, dict):
-                all_results.append(result)
+        done, pending = await asyncio.wait(tasks, timeout=eval_timeout_seconds)
+        timed_out = len(pending) > 0
+        n_exc = 0
+
+        for task in done:
+            try:
+                result = task.result()
+                if isinstance(result, dict):
+                    all_results.append(result)
+            except Exception as exc:
+                n_exc += 1
+                all_results.append({"task_id": None, "score": 0.0, "time": 0.0})
+                logger.warning("eval_progress task raised exception: %s", exc, exc_info=True)
+
+        if timed_out:
+            logger.warning(
+                "eval_progress batch: reached session timeout (%ss); "
+                "using %s/%s completed task result(s)",
+                eval_timeout_seconds,
+                len(all_results),
+                total_tasks,
+            )
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await session.close()
+
         if n_exc:
             logger.warning(
-                "eval_progress batch: %s task(s) raised exceptions (not counted in average)",
+                "eval_progress batch: %s task(s) raised exceptions (counted as score=0.0)",
                 n_exc,
             )
 
