@@ -65,6 +65,7 @@ from validator.tournament.task_creator import create_environment_tournament_task
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
 from validator.tournament.task_creator import replace_tournament_task
+from validator.tournament.utils import determine_env_tournament_winner
 from validator.tournament.utils import get_base_contestant
 from validator.tournament.utils import get_latest_tournament_winner_participant
 from validator.tournament.utils import get_round_winners
@@ -207,9 +208,9 @@ async def assign_nodes_to_tournament_tasks(
             for group in round_structure.groups:
                 all_participants.extend(group.member_ids)
 
-            if is_final_round and EMISSION_BURN_HOTKEY not in all_participants:
+            if EMISSION_BURN_HOTKEY not in all_participants:
                 all_participants.append(EMISSION_BURN_HOTKEY)
-                logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament final round task")
+                logger.info(f"Adding boss contestant {EMISSION_BURN_HOTKEY} to environment tournament round task")
         else:
             all_participants = None
 
@@ -306,8 +307,7 @@ async def create_next_round(
         logger.info(f"Creating next round with {len(winners)} winners: {winners}")
 
         if tournament.tournament_type == TournamentType.ENVIRONMENT:
-            # Group round -> final round: all group winners compete together with the boss
-            next_round_is_final = True
+            next_round_is_final = (completed_round.round_number + 1) >= t_cst.ENV_TOTAL_ROUNDS
         else:
             next_round_is_final = len(winners) == 1
 
@@ -387,6 +387,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Round winners: {winners}")
         logger.info(f"Number of winners: {len(winners)}")
 
+        # For environment tournaments, boss auto-advances through non-final rounds
+        if tournament.tournament_type == TournamentType.ENVIRONMENT and not completed_round.is_final_round:
+            if cst.EMISSION_BURN_HOTKEY not in winners:
+                winners.append(cst.EMISSION_BURN_HOTKEY)
+                logger.info(f"Boss {cst.EMISSION_BURN_HOTKEY} auto-advances to next environment round")
+
         # Get all active participants and handle eliminations
         all_participants = await get_tournament_participants(tournament.tournament_id, psql_db)
         active_participants = [p.hotkey for p in all_participants if p.eliminated_in_round_id is None]
@@ -424,7 +430,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             return
 
         if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
-            winner = winners[0]
+            # For environment tournaments, determine winner using cross-round 2/3 boss-beating rule
+            if tournament.tournament_type == TournamentType.ENVIRONMENT:
+                logger.info("Environment tournament final round — applying cross-round 2/3 boss-beating rule")
+                env_results = await determine_env_tournament_winner(tournament, winners, config, psql_db)
+                winner = env_results[0]
+                # Replace winners list with the cross-round results for downstream use
+                winners = env_results
+            else:
+                winner = winners[0]
+
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes
             logger.info(f"Processing final round completion for tournament {tournament.tournament_id}")
@@ -449,7 +464,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
             )
 
-            if completed_round.is_final_round and tournament.tournament_type == TournamentType.ENVIRONMENT:
+            if tournament.tournament_type == TournamentType.ENVIRONMENT:
                 logger.info("Uploading winner and 2nd place repositories")
                 if winner != cst.EMISSION_BURN_HOTKEY:
                     try:

@@ -13,6 +13,7 @@ from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks
+from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.tasks.diffusion_synth import create_synthetic_image_task
 from validator.tasks.synthetic_scheduler import _get_dpo_datasets
@@ -104,11 +105,12 @@ async def _create_environment_group_tasks(
     
     logger.info("Creating single environment task for all participants")
 
-    # If it is the final round we do a boss task of liars_dice
     if is_final_round:
         task = await create_synthetic_env_boss_task(config, models, instruct_datasets)
     else:
-        task = await create_synthetic_env_task(config, models, instruct_datasets)
+        # For R2+, exclude the game used in the previous round so we don't repeat
+        exclude_env = await _get_previous_round_environment_name(tournament_id, config)
+        task = await create_synthetic_env_task(config, models, instruct_datasets, exclude_environment=exclude_env)
 
     group_id = f"{round_id}_group_001"
     await _create_and_register_tournament_task(
@@ -118,6 +120,19 @@ async def _create_environment_group_tasks(
     logger.info(f"Created environment tournament task {task.task_id} for all participants")
     return [task]
 
+
+async def _get_previous_round_environment_name(tournament_id: str, config: Config) -> str | None:
+    """Look up the environment_name used in the most recent prior round, so we don't repeat games."""
+    rounds = await get_tournament_rounds(tournament_id, config.psql_db)
+    # Find the latest completed round before this one
+    for round_data in reversed(rounds):
+        tasks = await get_tournament_tasks(round_data.round_id, config.psql_db)
+        if tasks:
+            task_obj = await task_sql.get_task(tasks[0].task_id, config.psql_db)
+            if task_obj and hasattr(task_obj, "environment_name") and task_obj.environment_name:
+                logger.info(f"Previous round {round_data.round_id} used environment: {task_obj.environment_name}")
+                return task_obj.environment_name
+    return None
 
 
 async def _create_group_image_tasks(

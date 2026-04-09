@@ -428,6 +428,7 @@ async def create_synthetic_env_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    exclude_environment: str | None = None,
 ) -> RawTask:
     # hardoced model for now. the model and ds generators kept for signature compatibility
     model_id = random.choice(SUPPORTED_ENV_MODELS)
@@ -441,8 +442,10 @@ async def create_synthetic_env_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    round_one_game_candidates = ["gin_rummy", "liars_dice"]
-    selected_environment = random.choice(round_one_game_candidates)
+    game_candidates = ["gin_rummy", "liars_dice"]
+    if exclude_environment and exclude_environment in game_candidates:
+        game_candidates = [g for g in game_candidates if g != exclude_environment]
+    selected_environment = random.choice(game_candidates)
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)
