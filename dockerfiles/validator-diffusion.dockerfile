@@ -61,7 +61,6 @@ RUN pip install --no-cache-dir \
 
 COPY . .
 
-# Path must match validator.core.constants.DIFFUSION_EVAL_CONTAINER_START (dstack uses the same command).
 RUN echo '#!/bin/bash\n\
 python /app/validator/evaluation/ComfyUI/main.py &\n\
 python -m validator.evaluation.eval_diffusion' > /app/start.sh && chmod +x /app/start.sh

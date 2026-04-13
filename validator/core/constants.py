@@ -185,10 +185,8 @@ UNET_SAVE_PATH = "validator/evaluation/ComfyUI/models/unet"
 DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusers"
 DIFFUSION_MODELS_PATH = "validator/evaluation/ComfyUI/models/diffusion_models"
 LORAS_SAVE_PATH = "validator/evaluation/ComfyUI/models/loras"
-# ComfyUI HTTP/WS (default Comfy port; eval /health + /result use EVAL_SERVICE_PORT).
 COMFYUI_LISTEN_HOST = "127.0.0.1"
 COMFYUI_LISTEN_PORT = 8188
-# Diffusion eval image CMD (``validator-diffusion.dockerfile``): ComfyUI then ``eval_diffusion``.
 DIFFUSION_EVAL_CONTAINER_START = "/app/start.sh"
 DIFFUSION_HF_DEFAULT_FOLDER = "checkpoint"
 DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
@@ -322,7 +320,6 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 # Environment evaluation constants
 ENV_EVAL_IMAGE = "diagonalge/env-eval:latest"
 ENV_SERVER_CMD_DEFAULT = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
-# Remote evals via dstack (runs/apply service): exactly one H100, no A100 / multi-GPU.
 DSTACK_EVAL_GPU_MODELS = ["H100"]
 EVAL_REMOTE_GPU_COUNT = 1
 DSTACK_EVAL_MIN_GPU_MEMORY_GB = 80
@@ -382,16 +379,13 @@ SGLANG_ENV_EVAL_EXTRA_CLI = (
 )
 SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
 
-# HTTP /health + /result when EVAL_SERVICE_MODE=1 (dstack ``port`` must match).
 EVAL_SERVICE_PORT = 8000
-
 EVAL_DSTACK_CPU = "4"
 EVAL_DSTACK_MEMORY = "64Gi"
 EVAL_DSTACK_TTL_SECONDS = 10800
 EVAL_DSTACK_TIMEOUT = 1800
 EVAL_DSTACK_MAX_RETRIES = 3
 EVAL_DSTACK_RETRY_DELAY_SECONDS = 900
-# After apply/get/poll failures (not no-offers), retry sooner so misconfig shows up quickly.
 EVAL_DSTACK_ERROR_RETRY_SECONDS = 60
 EVAL_DSTACK_POLL_INTERVAL_SECONDS = 300
 EVAL_DSTACK_MAX_POLL_SECONDS = 10800
