@@ -398,7 +398,7 @@ async def run_evaluation_local_environment(
                 name=env_container_name,
                 detach=True,
                 network=vcst.LOCAL_ENV_DOCKER_NETWORK,
-                ports={"8000/tcp": local_env_server_port},
+                ports={f"{vcst.EVAL_SERVICE_PORT}/tcp": local_env_server_port},
                 remove=False,
             )
             containers["env"] = env_container

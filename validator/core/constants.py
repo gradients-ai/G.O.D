@@ -185,6 +185,11 @@ UNET_SAVE_PATH = "validator/evaluation/ComfyUI/models/unet"
 DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusers"
 DIFFUSION_MODELS_PATH = "validator/evaluation/ComfyUI/models/diffusion_models"
 LORAS_SAVE_PATH = "validator/evaluation/ComfyUI/models/loras"
+# ComfyUI HTTP/WS (default Comfy port; eval /health + /result use EVAL_SERVICE_PORT).
+COMFYUI_LISTEN_HOST = "127.0.0.1"
+COMFYUI_LISTEN_PORT = 8188
+# Diffusion eval image CMD (``validator-diffusion.dockerfile``): ComfyUI then ``eval_diffusion``.
+DIFFUSION_EVAL_CONTAINER_START = "/app/start.sh"
 DIFFUSION_HF_DEFAULT_FOLDER = "checkpoint"
 DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.25
@@ -303,6 +308,7 @@ GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
 # Dstack API endpoints
 DSTACK_RUNS_APPLY_ENDPOINT = "/api/project/{project}/runs/apply"
 DSTACK_RUNS_GET_ENDPOINT = "/api/project/{project}/runs/get"
+DSTACK_RUNS_STOP_ENDPOINT = "/api/project/{project}/runs/stop"
 
 # Tournament constants
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
@@ -316,8 +322,10 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 # Environment evaluation constants
 ENV_EVAL_IMAGE = "diagonalge/env-eval:latest"
 ENV_SERVER_CMD_DEFAULT = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
-BASILICA_GPU_MODELS = ["H100", "A100"]
-BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
+# Remote evals via dstack (runs/apply service): exactly one H100, no A100 / multi-GPU.
+DSTACK_EVAL_GPU_MODELS = ["H100"]
+EVAL_REMOTE_GPU_COUNT = 1
+DSTACK_EVAL_MIN_GPU_MEMORY_GB = 80
 
 ENVIRONMENTS = {
     "alfworld": {
@@ -374,14 +382,19 @@ SGLANG_ENV_EVAL_EXTRA_CLI = (
 )
 SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
 
-EVAL_BASILICA_CPU = "4"
-EVAL_BASILICA_MEMORY = "64Gi"
-EVAL_BASILICA_TTL_SECONDS = 10800
-EVAL_BASILICA_TIMEOUT = 1800
-EVAL_BASILICA_MAX_RETRIES = 3
-EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
-EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
-EVAL_BASILICA_MAX_POLL_SECONDS = 10800
+# HTTP /health + /result when EVAL_SERVICE_MODE=1 (dstack ``port`` must match).
+EVAL_SERVICE_PORT = 8000
+
+EVAL_DSTACK_CPU = "4"
+EVAL_DSTACK_MEMORY = "64Gi"
+EVAL_DSTACK_TTL_SECONDS = 10800
+EVAL_DSTACK_TIMEOUT = 1800
+EVAL_DSTACK_MAX_RETRIES = 3
+EVAL_DSTACK_RETRY_DELAY_SECONDS = 900
+# After apply/get/poll failures (not no-offers), retry sooner so misconfig shows up quickly.
+EVAL_DSTACK_ERROR_RETRY_SECONDS = 60
+EVAL_DSTACK_POLL_INTERVAL_SECONDS = 300
+EVAL_DSTACK_MAX_POLL_SECONDS = 10800
 EVAL_DB_MAX_CONCURRENT_WRITES = 2
 EVAL_DB_RETRY_ATTEMPTS = 4
 EVAL_DB_RETRY_BASE_DELAY_SECONDS = 1.0

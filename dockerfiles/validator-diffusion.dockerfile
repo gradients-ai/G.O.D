@@ -53,8 +53,15 @@ WORKDIR /app
 COPY validator/requirements.txt validator/requirements.txt
 RUN pip install -r validator/requirements.txt
 
+RUN pip install --no-cache-dir \
+    torch==2.6.0 \
+    torchvision==0.21.0 \
+    torchaudio==2.6.0 \
+    --extra-index-url https://download.pytorch.org/whl/cu121
+
 COPY . .
 
+# Path must match validator.core.constants.DIFFUSION_EVAL_CONTAINER_START (dstack uses the same command).
 RUN echo '#!/bin/bash\n\
 python /app/validator/evaluation/ComfyUI/main.py &\n\
 python -m validator.evaluation.eval_diffusion' > /app/start.sh && chmod +x /app/start.sh

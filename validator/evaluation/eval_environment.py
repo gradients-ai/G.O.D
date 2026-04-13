@@ -21,6 +21,7 @@ from validator.evaluation.utils import (
     check_for_lora,
     check_lora_has_added_tokens,
 )
+from validator.evaluation.service_mode import run_eval_with_result_server
 
 
 logger = logging.getLogger(__name__)
@@ -654,7 +655,7 @@ async def _run() -> None:
             sglang_log_task.cancel()
 
 
-def main() -> int:
+def _run_main_logic() -> int:
     _configure_logging()
     try:
         asyncio.run(_run())
@@ -662,6 +663,13 @@ def main() -> int:
     except Exception as exc:
         logger.exception("Environment evaluation failed: %s", exc)
         return 1
+
+
+def main() -> int:
+    if os.getenv("EVAL_SERVICE_MODE", "0") == "1":
+        run_eval_with_result_server(lambda: _run_main_logic())
+        return 0
+    return _run_main_logic()
 
 
 if __name__ == "__main__":

@@ -35,6 +35,7 @@ from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import save_results_dict
 from validator.evaluation.utils import model_is_a_finetune
 from validator.utils.logging import get_logger
+from validator.evaluation.service_mode import run_eval_with_result_server
 
 
 logger = get_logger(__name__)
@@ -258,7 +259,7 @@ def evaluate_dpo_repo(evaluation_args: EvaluationArgs) -> None:
         log_memory_stats()
 
 
-def main():
+def _run_main_logic():
     logger.info("=== DPO EVALUATION SCRIPT STARTING ===")
     dataset = os.environ.get("DATASET")
     dataset_url = os.environ.get("DATASET_URL")
@@ -299,6 +300,13 @@ def main():
         logger.error(f"Error checking and logging base model size: {e}")
 
     logger.info("=== DPO EVALUATION SCRIPT COMPLETED ===")
+
+
+def main():
+    if os.getenv("EVAL_SERVICE_MODE", "0") == "1":
+        run_eval_with_result_server(_run_main_logic)
+        return
+    _run_main_logic()
 
 
 if __name__ == "__main__":

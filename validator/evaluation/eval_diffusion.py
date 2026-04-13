@@ -3,14 +3,19 @@ import os
 import re
 import random
 import shutil
+import socket
+import subprocess
 import tempfile
+import time
 import urllib.request
 import zipfile
+from pathlib import Path
 
 import numpy as np
 import safetensors.torch
 from diffusers import StableDiffusionPipeline
 from fiber.logging_utils import get_logger
+from validator.evaluation.service_mode import run_eval_with_result_server
 from huggingface_hub import HfApi
 from huggingface_hub import snapshot_download
 from PIL import Image
@@ -30,6 +35,61 @@ from validator.utils.retry_utils import retry_on_5xx
 
 logger = get_logger(__name__)
 hf_api = HfApi()
+
+_COMFYUI_PROC: subprocess.Popen | None = None
+
+
+def _comfy_listen_host_port() -> tuple[str, int]:
+    host, _, port_s = api_gate.server_address.partition(":")
+    return host, int(port_s)
+
+
+def _ensure_comfyui_for_eval() -> None:
+    global _COMFYUI_PROC
+    host, port = _comfy_listen_host_port()
+
+    # Give entrypoint/start.sh time to start ComfyUI before spawning a second copy.
+    wait_until = time.monotonic() + 120
+    while time.monotonic() < wait_until:
+        try:
+            with socket.create_connection((host, port), timeout=1.0):
+                logger.info("ComfyUI reachable at %s:%s", host, port)
+                return
+        except OSError:
+            time.sleep(2)
+
+    comfy_dir = Path(__file__).resolve().parent / "ComfyUI"
+    comfy_main = comfy_dir / "main.py"
+    if not comfy_main.is_file():
+        raise FileNotFoundError(
+            f"ComfyUI not found at {comfy_main}. Clone/build the diffusion eval image or run ComfyUI before eval."
+        )
+
+    if _COMFYUI_PROC is not None and _COMFYUI_PROC.poll() is None:
+        logger.info("ComfyUI subprocess already running (pid=%s)", _COMFYUI_PROC.pid)
+    else:
+        logger.info("Starting ComfyUI for diffusion eval: python %s", comfy_main)
+        _COMFYUI_PROC = subprocess.Popen(
+            ["python", str(comfy_main)],
+            cwd=str(comfy_dir),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+
+    deadline = time.monotonic() + 600
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                logger.info("ComfyUI is ready at %s:%s", host, port)
+                return
+        except OSError:
+            if _COMFYUI_PROC is not None and _COMFYUI_PROC.poll() is not None:
+                raise RuntimeError(
+                    f"ComfyUI process exited with code {_COMFYUI_PROC.returncode} before binding {host}:{port}"
+                ) from None
+            time.sleep(2)
+
+    raise TimeoutError(f"ComfyUI did not become ready at {host}:{port} within 600s")
 
 
 def generate_reproducible_seeds(master_seed: int, n: int = 10) -> list[int]:
@@ -279,7 +339,7 @@ def _count_model_parameters(model_path: str, is_safetensors: bool) -> int:
         return 0
 
 
-def main():
+def _run_main_logic():
     test_dataset_path = os.environ.get("DATASET")
     test_split_url = os.environ.get("TEST_SPLIT_URL")
     base_model_repo = os.environ.get("ORIGINAL_MODEL_REPO")
@@ -322,6 +382,7 @@ def main():
     test_dataset_path = validate_dataset_path(test_dataset_path)
 
     lora_comfy_template, diffusers_comfy_template = load_comfy_workflows(model_type)
+    _ensure_comfyui_for_eval()
     api_gate.connect()
 
     results = {"model_params_count": _count_model_parameters(model_path, is_safetensors)}
@@ -363,6 +424,13 @@ def main():
     logger.info(f"Evaluation results saved to {output_file}")
 
     logger.info(json.dumps(results))
+
+
+def main():
+    if os.getenv("EVAL_SERVICE_MODE", "0") == "1":
+        run_eval_with_result_server(_run_main_logic)
+        return
+    _run_main_logic()
 
 
 if __name__ == "__main__":

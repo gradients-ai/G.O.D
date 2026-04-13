@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import json
@@ -9,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from io import BytesIO
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 import basilica
@@ -21,16 +24,19 @@ from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 
 from validator.core import constants as cst
-from validator.db.database import PSQLDB
-from validator.db.sql import tasks as tasks_sql
+from validator.evaluation.eval_service_http import EVAL_RESULT_STATUS_PATH
+from validator.evaluation.eval_service_http import eval_service_normalize_http_path
+from validator.evaluation.eval_service_http import eval_service_path_is_health
+from validator.evaluation.eval_service_http import eval_service_path_is_result
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
+
+if TYPE_CHECKING:
+    from validator.db.database import PSQLDB
 
 
 logger = get_logger(__name__)
 hf_api = HfApi()
-
-EVAL_RESULT_STATUS_PATH = "/result"
 
 
 def clean_basilica_log_line(raw_line: str) -> str:
@@ -156,6 +162,8 @@ async def load_eval_pair_state_for_models(
     if task_id is None or psql_db is None:
         return {}, {}
 
+    from validator.db.sql import tasks as tasks_sql
+
     rows = await tasks_sql.get_task_evaluation_rows(task_id, psql_db)
     model_set = set(models)
     deployment_ids_by_repo: dict[str, str | dict[str, str]] = {}
@@ -193,6 +201,8 @@ async def persist_deployment_ids_for_repo(
     hotkey = repo_to_hotkey.get(repo)
     if not hotkey:
         return
+    from validator.db.sql import tasks as tasks_sql
+
     await tasks_sql.set_evaluation_deployment_ids(task_id, hotkey, deployment_id, deployment_env_id, psql_db)
 
 
@@ -205,9 +215,11 @@ def create_basilica_eval_runner_source(command: list[str], result_path: str) -> 
     command_json = json.dumps(command)
     result_path_json = json.dumps(result_path)
     return f"""import json
+import re
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, unquote
 
 COMMAND = {command_json}
 RESULT_PATH = {result_path_json}
@@ -219,19 +231,50 @@ _state = {{
     "error": None,
 }}
 
+def _norm_path(raw):
+    p = urlparse(raw).path
+    p = unquote(p)
+    p = re.sub(r"/+", "/", p)
+    if not p.startswith("/"):
+        p = "/" + p
+    return p.rstrip("/") or "/"
+
+def _last_seg(norm):
+    parts = [s for s in norm.lower().split("/") if s]
+    return parts[-1] if parts else ""
+
+def _is_health(norm):
+    lp = norm.lower()
+    return lp == "/health" or lp.endswith("/health") or _last_seg(norm) == "health"
+
+def _is_result(norm):
+    lp = norm.lower()
+    return lp == "/result" or lp.endswith("/result") or _last_seg(norm) == "result"
+
 class _Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/health":
+        p = _norm_path(self.path)
+        if _is_health(p):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{{"status":"ok"}}')
             return
-        if self.path == RESULT_STATUS_PATH:
+        if _is_result(p):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps(_state).encode("utf-8"))
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_HEAD(self):
+        p = _norm_path(self.path)
+        if _is_health(p) or _is_result(p):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
             return
         self.send_response(404)
         self.end_headers()
@@ -253,7 +296,7 @@ def _run_eval():
             _state["error"] = str(e)
 
 def main():
-    server = HTTPServer(("0.0.0.0", 8000), _Handler)
+    server = HTTPServer(("0.0.0.0", {cst.EVAL_SERVICE_PORT}), _Handler)
     worker = threading.Thread(target=_run_eval, daemon=True)
     worker.start()
     server.serve_forever()

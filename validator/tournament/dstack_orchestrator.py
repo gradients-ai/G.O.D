@@ -382,7 +382,7 @@ async def _create_dstack_request(
 
 
 def _get_gpu_count_from_requirement(requirement: GpuRequirement) -> int:
-    """Get the number of GPUs required for a given GPU requirement (for A100)."""
+    """Get the number of GPUs required for a given tournament GPU requirement."""
     if requirement == GpuRequirement.A100:
         return 1
     elif requirement == GpuRequirement.H100_1X:
