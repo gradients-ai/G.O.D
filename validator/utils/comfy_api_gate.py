@@ -8,9 +8,10 @@ import uuid
 import websocket
 from PIL import Image
 
+from validator.core import constants as vcst
 
-# Configuration variables
-server_address = "127.0.0.1:8188"
+# HTTP/WS target for ComfyUI (must match ``main.py --port``).
+server_address = f"{vcst.COMFYUI_LISTEN_HOST}:{vcst.COMFYUI_LISTEN_PORT}"
 client_id = str(uuid.uuid4())
 ws = None  # WebSocket connection object
 

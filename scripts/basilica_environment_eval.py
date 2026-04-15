@@ -10,8 +10,8 @@ import asyncio
 import subprocess
 import time
 
-from core.models.utility_models import EnvironmentDatasetType
-from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
+from core.models.utility_models import EnvironmentDatasetType, FileFormat
+from validator.evaluation.docker_evaluation import run_evaluation_dstack_text
 
 
 # --- Model Configuration ---
@@ -32,11 +32,12 @@ async def run_evaluation() -> None:
     print(f"🎯 NUM GPUS: {NUM_GPUS}")
     print(f"🌱 Eval seed: {RANDOM_SEED}")
 
-    results = await run_evaluation_basilica_text(
-        dataset="dummy_dataset",
+    results = await run_evaluation_dstack_text(
+        dataset="proxy",
         models=[model_to_eval],
         original_model=BASE_MODEL_NAME,
         dataset_type=dataset_type,
+        file_format=FileFormat.JSON,
         num_gpus=NUM_GPUS,
         eval_seed=RANDOM_SEED,
     )

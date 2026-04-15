@@ -33,6 +33,7 @@ from validator.evaluation.common import save_results_dict
 from validator.evaluation.utils import check_for_lora
 from validator.evaluation.utils import model_is_a_finetune
 from validator.utils.logging import get_logger
+from validator.evaluation.service_mode import run_eval_with_result_server
 from validator.utils.reward_functions import supports_extra_data
 from validator.utils.reward_functions import validate_reward_function
 
@@ -320,7 +321,7 @@ def evaluate_grpo_repo(evaluation_args: EvaluationArgs) -> None:
         log_memory_stats()
 
 
-def main():
+def _run_main_logic():
     dataset = os.environ.get("DATASET")
     dataset_url = os.environ.get("DATASET_URL")
     original_model = os.environ.get("ORIGINAL_MODEL")
@@ -389,6 +390,13 @@ def main():
         logger.error(f"Error checking and logging base model size: {e}")
 
     logger.info("=== GRPO EVALUATION SCRIPT COMPLETED ===")
+
+
+def main():
+    if os.getenv("EVAL_SERVICE_MODE", "0") == "1":
+        run_eval_with_result_server(_run_main_logic)
+        return
+    _run_main_logic()
 
 
 if __name__ == "__main__":
