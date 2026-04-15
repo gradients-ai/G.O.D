@@ -8,12 +8,14 @@ from core.models.utility_models import TaskType
 from validator.core import constants as cts
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.db.sql.tasks import get_task
+from core.models.tournament_models import TournamentType
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
 from validator.db.sql.tournament_performance import update_tournament_winning_performance
 from validator.db.sql.tournaments import count_champion_consecutive_wins_at_tournament
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
+from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
 from validator.tournament.utils import get_progressive_threshold
@@ -43,12 +45,21 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         f"with {consecutive_wins} consecutive wins, threshold: {threshold * 100:.1f}%"
     )
 
-    round_id = await get_final_round_id(tournament_id, psql_db)
+    # For environment tournaments, evaluate winner vs boss across all rounds
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        all_rounds = await get_tournament_rounds(tournament_id, psql_db)
+        all_round_tasks = []
+        for round_data in all_rounds:
+            round_tasks = await get_tournament_tasks(round_data.round_id, psql_db)
+            all_round_tasks.extend(round_tasks)
+        logger.info(f"Environment tournament: evaluating performance across {len(all_rounds)} rounds ({len(all_round_tasks)} tasks)")
+    else:
+        round_id = await get_final_round_id(tournament_id, psql_db)
+        all_round_tasks = await get_tournament_tasks(round_id, psql_db)
 
-    round_tasks = await get_tournament_tasks(round_id, psql_db)
     performance_differences = []
 
-    for task in round_tasks:
+    for task in all_round_tasks:
         task_obj = await get_task(task.task_id, psql_db)
         if not task_obj:
             continue
@@ -72,29 +83,33 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 for result in ranked_results
                 if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
             ]
-            
-            valid_participants.sort(key=lambda x: x[1], reverse=True) 
 
-            for hotkey, score in valid_participants:
-                if hotkey == EMISSION_BURN_HOTKEY:
-                    boss_score = score
-                    break
-            
+            valid_participants.sort(key=lambda x: x[1], reverse=True)
+
+            scores_by_hotkey = {hotkey: score for hotkey, score in valid_participants}
+            boss_score = scores_by_hotkey.get(EMISSION_BURN_HOTKEY)
+
             if boss_score is None:
                 logger.warning(f"Boss {current_champion} not found in scores for task {task.task_id}")
                 continue
 
             boss_won = tournament.winner_hotkey == EMISSION_BURN_HOTKEY
-            
+
             if boss_won:
+                # Boss won tournament — pick the best non-boss challenger in this round
                 for hotkey, score in valid_participants:
                     if hotkey != EMISSION_BURN_HOTKEY:
                         challenger_score = score
                         challenger_hotkey = hotkey
                         break
             else:
-                challenger_hotkey = valid_participants[0][0]
-                challenger_score = valid_participants[0][1]
+                # Challenger won tournament — look up the actual winner's score in this round
+                challenger_hotkey = tournament.winner_hotkey
+                challenger_score = scores_by_hotkey.get(challenger_hotkey)
+                if challenger_score is None:
+                    # Winner didn't participate in this round (e.g. wasn't in R1 yet) — skip
+                    logger.info(f"Tournament winner {challenger_hotkey} has no score in task {task.task_id}, skipping")
+                    continue
         else:
             for result in ranked_results:
                 if result.hotkey == EMISSION_BURN_HOTKEY:
