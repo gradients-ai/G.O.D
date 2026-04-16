@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import urllib.request
@@ -57,6 +58,74 @@ def _load_evaluation_dataset(evaluation_config: DictDefault, tokenizer: AutoToke
     return eval_dataset
 
 
+def _max_eval_sequence_cap(tokenizer: AutoTokenizer, language_model: AutoModelForCausalLM) -> int:
+    """Upper bound for eval sequence_len from model and tokenizer."""
+    max_pos = getattr(language_model.config, "max_position_embeddings", None)
+    if not isinstance(max_pos, int) or max_pos <= 0:
+        max_pos = 131_072
+    tok_max = getattr(tokenizer, "model_max_length", None)
+    if isinstance(tok_max, int) and 0 < tok_max < 1_000_000:
+        return min(max_pos, tok_max)
+    return max_pos
+
+
+def _sequence_len_candidates(start: int, cap: int) -> list[int]:
+    start, cap = int(start), int(cap)
+    if start <= 0:
+        start = 2048
+    if cap <= 0:
+        cap = 8192
+    if start > cap:
+        return [cap]
+    out: list[int] = []
+    s = start
+    while True:
+        if s not in out:
+            out.append(s)
+        if s >= cap:
+            break
+        nxt = min(s * 2, cap)
+        if nxt <= s:
+            break
+        s = nxt
+    return out
+
+
+def _load_evaluation_dataset_with_sequence_retries(
+    evaluation_config: DictDefault,
+    tokenizer: AutoTokenizer,
+    language_model: AutoModelForCausalLM,
+) -> list:
+    """
+    Axolotl drops samples longer than sequence_len. If nothing survives, retry
+    with larger sequence_len (cleared prepared cache) up to model limits.
+    """
+    prepared_path = Path(evaluation_config.output_dir) / "prepared"
+    start_seq = int(evaluation_config.sequence_len)
+    cap = _max_eval_sequence_cap(tokenizer, language_model)
+    candidates = _sequence_len_candidates(start_seq, cap)
+    logger.info(f"Eval sequence_len candidates (start={start_seq}, cap={cap}): {candidates}")
+
+    last_dataset: list = []
+    for seq_len in candidates:
+        evaluation_config.sequence_len = seq_len
+        if prepared_path.exists():
+            shutil.rmtree(prepared_path, ignore_errors=True)
+        last_dataset = _load_evaluation_dataset(evaluation_config, tokenizer)
+        if len(last_dataset) > 0:
+            logger.info(f"Using sequence_len={seq_len} with {len(last_dataset)} evaluation samples")
+            return last_dataset
+        logger.warning(
+            f"No eval samples after tokenization at sequence_len={seq_len}; "
+            f"retrying with a larger sequence_len if available"
+        )
+
+    raise ValueError(
+        f"No evaluation samples after trying sequence_len values {candidates} "
+        f"(all rows likely exceed cap {cap} or have empty trainable labels)"
+    )
+
+
 def _collate_evaluation_batch(batch: list[dict[str, list[int]]], tokenizer: AutoTokenizer) -> dict[str, torch.Tensor]:
     input_ids = [torch.tensor(item["input_ids"]) for item in batch]
     attention_mask = [torch.tensor(item["attention_mask"]) for item in batch]
@@ -77,7 +146,9 @@ def evaluate_instruct_text_model(
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
-    eval_dataset = _load_evaluation_dataset(evaluation_config, tokenizer)
+    eval_dataset = _load_evaluation_dataset_with_sequence_retries(
+        evaluation_config, tokenizer, language_model
+    )
 
     _log_dataset_and_model_info(eval_dataset, language_model, tokenizer)
 
@@ -96,7 +167,7 @@ def evaluate_instruct_text_model(
         trainer = Trainer(
             model=language_model,
             args=training_args,
-            tokenizer=tokenizer,
+            processing_class=tokenizer,
             eval_dataset=eval_dataset,
             data_collator=custom_data_collator,
             callbacks=[ProgressLoggerCallback(log_interval_seconds=evaluation_config.log_interval_seconds)],

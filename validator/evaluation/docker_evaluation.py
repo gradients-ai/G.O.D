@@ -27,14 +27,14 @@ from validator.core import constants as vcst
 from validator.db.database import PSQLDB
 from validator.utils.logging import get_logger
 from validator.utils.logging import get_environment_logger
+from validator.evaluation.db_utils import load_eval_pair_state_for_models
+from validator.evaluation.db_utils import persist_deployment_ids_for_repo
 from validator.evaluation.utils import (
     EVAL_RESULT_STATUS_PATH,
     cleanup_basilica_deployments_by_name,
     deployment_is_healthy,
     create_basilica_eval_runner_source,
-    load_eval_pair_state_for_models,
     log_basilica_logs_block,
-    persist_deployment_ids_for_repo,
 )
 
 
