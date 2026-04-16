@@ -339,68 +339,56 @@ async def _run_environment_evaluation(
         if env_payload_extra:
             payload.update(env_payload_extra)
 
-        attempt = 0
-        while True:
-            attempt += 1
-            start_ts = time.time()
-            try:
-                if attempt == 1:
-                    logger.info(
-                        "eval_progress %s/%s start task_id=%s seed=%s",
-                        task_idx + 1,
-                        total_tasks,
-                        task_id,
-                        seed,
-                    )
-                timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_TASK_TIMEOUT)
-                async with session.post(
-                    f"{env_url}/evaluate",
-                    json=payload,
-                    timeout=timeout,
-                    headers={"Connection": "close"},
-                ) as response:
-                    raw_text = await response.text()
-                    if response.status != 200:
-                        error_detail = f": {raw_text[:500]}" if raw_text else ""
-                        raise RuntimeError(f"HTTP {response.status}{error_detail}")
+        start_ts = time.time()
+        try:
+            logger.info(
+                "eval_progress %s/%s start task_id=%s seed=%s",
+                task_idx + 1,
+                total_tasks,
+                task_id,
+                seed,
+            )
+            timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_TASK_TIMEOUT)
+            async with session.post(
+                f"{env_url}/evaluate",
+                json=payload,
+                timeout=timeout,
+                headers={"Connection": "close"},
+            ) as response:
+                raw_text = await response.text()
+                if response.status != 200:
+                    error_detail = f": {raw_text[:500]}" if raw_text else ""
+                    raise RuntimeError(f"HTTP {response.status}{error_detail}")
 
-                    response_data = json.loads(raw_text)
-                    result = response_data.get("result", response_data)
-                    latency = result.get("time_taken", time.time() - start_ts)
-                    score = result.get("score", 0.0)
-                    logger.info(
-                        "eval_progress %s/%s done task_id=%s score=%.6f latency_s=%.3f",
-                        task_idx + 1,
-                        total_tasks,
-                        task_id,
-                        score,
-                        latency,
-                    )
-                    return {"task_id": task_id, "score": score, "time": latency}
-            except Exception as exc:
-                err_text = str(exc)
-                logger.warning(
-                    "eval_progress %s/%s error task_id=%s attempt=%s/%s: %s",
+                response_data = json.loads(raw_text)
+                result = response_data.get("result", response_data)
+                latency = result.get("time_taken", time.time() - start_ts)
+                score = result.get("score", 0.0)
+                logger.info(
+                    "eval_progress %s/%s done task_id=%s score=%.6f latency_s=%.3f",
                     task_idx + 1,
                     total_tasks,
                     task_id,
-                    attempt,
-                    vcst.ENV_EVAL_TASK_MAX_RETRIES,
-                    err_text,
-                    exc_info=True,
+                    score,
+                    latency,
                 )
-
-                if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
-                    logger.error(
-                        "eval_progress %s/%s exhausted retries task_id=%s attempts=%s; returning score=0.0",
-                        task_idx + 1,
-                        total_tasks,
-                        task_id,
-                        attempt,
-                    )
-                    return {"task_id": task_id, "score": 0.0, "time": 0.0}
-
-                await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
+                return {"task_id": task_id, "score": score, "time": latency}
+        except Exception as exc:
+            logger.warning(
+                "eval_progress %s/%s error task_id=%s: %s",
+                task_idx + 1,
+                total_tasks,
+                task_id,
+                exc,
+                exc_info=True,
+            )
+            logger.error(
+                "eval_progress %s/%s failed task_id=%s without retry; returning score=0.0",
+                task_idx + 1,
+                total_tasks,
+                task_id,
+            )
+            return {"task_id": task_id, "score": 0.0, "time": 0.0}
 
     async def evaluate_with_semaphore(
         session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int
