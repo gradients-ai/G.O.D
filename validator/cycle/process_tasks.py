@@ -5,6 +5,7 @@ import basilica
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
+import validator.db.sql.tournaments as tournament_sql
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
@@ -15,6 +16,7 @@ from validator.core.task_config_models import get_task_config
 from validator.cycle.util_functions import get_model_num_params
 from validator.db.database import PSQLDB
 from validator.evaluation.scoring import evaluate_and_score_hotkeys
+from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
 from validator.tournament.utils import send_to_discord
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
@@ -145,14 +147,36 @@ async def _seed_task_evaluations_for_preevaluation(config: Config) -> None:
 
 async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: Config) -> bool:
     assert task.task_id is not None
+    training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+    is_tournament_task = bool(training_statuses)
+
+    if is_tournament_task and any(status not in ("success", "failure") for status in training_statuses.values()):
+        logger.info(f"Task {task.task_id} still has non-terminal training rows; deferring final scoring")
+        return False
+
     rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
     if not rows:
-        logger.warning(f"No evaluation rows found for task {task.task_id}")
-        return False
+        if is_tournament_task:
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
+            rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
+
+        if not rows:
+            if is_tournament_task:
+                task.status = TaskStatus.FAILURE
+                add_context_tag("status", task.status.value)
+                task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
+                await tasks_sql.update_task(task, config.psql_db)
+                logger.info(f"Task {task.task_id} finalized as failure because no tournament evaluations were produced")
+                return True
+
+            logger.warning(f"No evaluation rows found for task {task.task_id}")
+            return False
 
     statuses = [row["evaluation_status"] for row in rows]
     if any(status in ("pending", "evaluating") for status in statuses):
         return False
+
+    await finalize_task_scores_from_raw_losses(task, [row["hotkey"] for row in rows], config)
 
     if any(status == "failure" for status in statuses):
         task.status = TaskStatus.FAILURE
@@ -272,7 +296,7 @@ async def _cleanup_all_running_basilica_deployments(config: Config) -> None:
 
 async def _move_any_evaluating_tasks_to_preevaluation(config: Config):
     stopped_mid_evaluation = await tasks_sql.get_tasks_with_status(
-        TaskStatus.EVALUATING, psql_db=config.psql_db, benchmark_filter="include"
+        TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="exclude", benchmark_filter="include"
     )
     logger.info(f"WE ARE MOVING {len(stopped_mid_evaluation)} TASKS TO PREEVALUATION")
     await asyncio.gather(*[_move_to_preevaluation_status(task, config) for task in stopped_mid_evaluation])
@@ -340,23 +364,44 @@ async def cleanup_model_cache_loop(psql_db: PSQLDB):
             await asyncio.sleep(cst.CACHE_CLEANUP_INTERVAL)
 
 
+async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
+    tasks_by_id: dict[str, RawTask] = {}
+
+    evaluating_tasks = await tasks_sql.get_tasks_with_status(
+        TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
+    )
+    for task in evaluating_tasks:
+        tasks_by_id[str(task.task_id)] = task
+
+    tournament_task_ids = await tasks_sql.get_task_ids_with_evaluation_statuses(
+        ["pending", "evaluating"],
+        config.psql_db,
+        task_statuses=[TaskStatus.TRAINING.value, TaskStatus.EVALUATING.value],
+        tournament_only=True,
+    )
+    for task_id in tournament_task_ids:
+        task = await tasks_sql.get_task(task_id, config.psql_db)
+        if task:
+            tasks_by_id[str(task.task_id)] = task
+
+    return list(tasks_by_id.values())
+
+
 async def evaluate_tasks_loop(config: Config):
     processing_task_ids: set[str] = set()
 
     while True:
         await _seed_task_evaluations_for_preevaluation(config)
 
-        evaluating_tasks = await tasks_sql.get_tasks_with_status(
-            TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
-        )
+        evaluating_tasks = await _get_tasks_ready_for_evaluation(config)
         if evaluating_tasks:
-            logger.info(f"Found {len(evaluating_tasks)} tasks in EVALUATING")
+            logger.info(f"Found {len(evaluating_tasks)} tasks ready for evaluation work")
             for task in evaluating_tasks:
                 if task.task_id not in processing_task_ids:
                     processing_task_ids.add(task.task_id)
                     asyncio.create_task(_run_and_cleanup(task, processing_task_ids, config))
         else:
-            logger.info("No tasks in EVALUATING - waiting 30 seconds")
+            logger.info("No tasks ready for evaluation - waiting 30 seconds")
         await asyncio.sleep(30)
 
 

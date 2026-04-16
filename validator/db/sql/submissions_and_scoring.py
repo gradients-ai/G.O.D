@@ -94,6 +94,81 @@ async def set_task_node_quality_score(
         )
 
 
+async def set_task_node_losses(
+    task_id: UUID,
+    hotkey: str,
+    test_loss: float | None,
+    synth_loss: float | None,
+    psql_db: PSQLDB,
+    score_reason: str | None = None,
+) -> None:
+    """Persist raw evaluation outputs without final ranking."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            INSERT INTO {cst.TASK_NODES_TABLE} (
+                {cst.TASK_ID},
+                {cst.HOTKEY},
+                {cst.NETUID},
+                {cst.TEST_LOSS},
+                {cst.SYNTH_LOSS},
+                {cst.SCORE_REASON}
+            )
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO UPDATE
+            SET
+                {cst.TEST_LOSS} = $4,
+                {cst.SYNTH_LOSS} = $5,
+                {cst.SCORE_REASON} = $6
+        """
+        await connection.execute(
+            query,
+            task_id,
+            hotkey,
+            NETUID,
+            test_loss,
+            synth_loss,
+            score_reason,
+        )
+
+
+async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
+    """Get raw per-hotkey evaluation outputs regardless of final score state."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            SELECT
+                {cst.HOTKEY},
+                {cst.TASK_NODE_QUALITY_SCORE},
+                {cst.TEST_LOSS},
+                {cst.SYNTH_LOSS},
+                {cst.SCORE_REASON}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.NETUID} = $2
+        """
+        rows = await connection.fetch(query, task_id, NETUID)
+
+        def clean_float(value):
+            if value is None:
+                return None
+            if isinstance(value, float):
+                if value in (float("inf"), float("-inf")) or value != value:
+                    return None
+            return value
+
+        return [
+            {
+                cst.HOTKEY: row[cst.HOTKEY],
+                cst.TASK_NODE_QUALITY_SCORE: clean_float(row[cst.TASK_NODE_QUALITY_SCORE]),
+                cst.TEST_LOSS: clean_float(row[cst.TEST_LOSS]),
+                cst.SYNTH_LOSS: clean_float(row[cst.SYNTH_LOSS]),
+                cst.SCORE_REASON: row[cst.SCORE_REASON],
+            }
+            for row in rows
+        ]
+
+
 async def get_all_scores_and_losses_for_task(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
     """Get all quality scores and losses for a task"""
     async with await psql_db.connection() as connection:

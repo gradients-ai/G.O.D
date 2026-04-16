@@ -28,7 +28,8 @@ from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
 from validator.core.models import Submission
 from validator.db.sql.submissions_and_scoring import add_submission
-from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
+from validator.db.sql.submissions_and_scoring import get_task_node_losses
+from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
@@ -394,6 +395,56 @@ async def _update_scores(task: AnyTypeRawTask, task_results: list[MinerResultsTe
                 await add_submission(result.submission, psql_db)
 
 
+async def _persist_raw_task_results(task: AnyTypeRawTask, task_results: list[MinerResultsText | MinerResultsImage], psql_db) -> None:
+    assert task.task_id is not None, "task id needs to be set to persist losses"
+    for result in task_results:
+        with LogContext(miner_hotkey=result.hotkey):
+            test_loss = None if np.isnan(result.test_loss) else float(result.test_loss)
+            synth_loss = None if np.isnan(result.synth_loss) else float(result.synth_loss)
+            await set_task_node_losses(
+                task_id=task.task_id,
+                hotkey=result.hotkey,
+                test_loss=test_loss,
+                synth_loss=synth_loss,
+                score_reason=result.score_reason,
+                psql_db=psql_db,
+            )
+
+            if result.submission:
+                await add_submission(result.submission, psql_db)
+
+
+def _result_from_persisted_row(task: AnyTypeRawTask, hotkey: str, row: dict | None) -> MinerResultsText | MinerResultsImage:
+    score_reason = row.get("score_reason") if row else None
+    test_loss = row.get("test_loss") if row else None
+    synth_loss = row.get("synth_loss") if row else None
+
+    if test_loss is None or synth_loss is None:
+        return _create_failed_miner_result(
+            hotkey,
+            score_reason=score_reason or "Evaluation failed",
+            task_type=task.task_type,
+        )
+
+    if task.task_type == TaskType.IMAGETASK:
+        return MinerResultsImage(
+            hotkey=hotkey,
+            test_loss=float(test_loss),
+            synth_loss=float(synth_loss),
+            is_finetune=True,
+            score_reason=score_reason,
+        )
+
+    return MinerResultsText(
+        hotkey=hotkey,
+        test_loss=float(test_loss),
+        synth_loss=float(synth_loss),
+        is_finetune=True,
+        score_reason=score_reason,
+        task_type=task.task_type,
+    )
+
+
 def group_by_losses(task_results: list[MinerResults]) -> dict[float, list[tuple[str, str]]]:
     loss_groups: dict[float, list[tuple[str, str]]] = {}
 
@@ -540,7 +591,7 @@ async def evaluate_and_score_hotkeys(
     config: Config,
 ) -> tuple[list[str], list[str]]:
     """
-    Evaluate a subset of task hotkeys, persist scores, and return:
+    Evaluate a subset of task hotkeys, persist raw losses, and return:
     (evaluated_hotkeys, failed_hotkeys).
     """
     assert task.task_id is not None, "Task ID must be present"
@@ -554,52 +605,25 @@ async def evaluate_and_score_hotkeys(
 
     failed_hotkeys = [result.hotkey for result in task_results if (not result.is_finetune) or np.isnan(result.test_loss)]
     evaluated_hotkeys = [result.hotkey for result in task_results]
-
-    current_by_hotkey = {result.hotkey: result for result in task_results}
-    existing_results: list[MinerResultsText | MinerResultsImage] = []
-    existing_rows = await get_all_scores_and_losses_for_task(task.task_id, config.psql_db)
-    for row in existing_rows:
-        hotkey = row.get("hotkey")
-        if hotkey in current_by_hotkey:
-            continue
-        test_loss = row.get("test_loss")
-        synth_loss = row.get("synth_loss")
-        if test_loss is None or synth_loss is None:
-            continue
-        test_loss = float(test_loss)
-        synth_loss = float(synth_loss)
-        if np.isnan(test_loss) or test_loss == 0.0:
-            continue
-
-        if task.task_type == TaskType.IMAGETASK:
-            existing_results.append(
-                MinerResultsImage(
-                    hotkey=hotkey,
-                    test_loss=test_loss,
-                    synth_loss=synth_loss,
-                    is_finetune=True,
-                    score_reason=row.get("score_reason"),
-                )
-            )
-        else:
-            existing_results.append(
-                MinerResultsText(
-                    hotkey=hotkey,
-                    test_loss=test_loss,
-                    synth_loss=synth_loss,
-                    is_finetune=True,
-                    score_reason=row.get("score_reason"),
-                    task_type=task.task_type,
-                )
-            )
-
-    combined_by_hotkey = {result.hotkey: result for result in existing_results}
-    combined_by_hotkey.update(current_by_hotkey)
-    combined_results = list(combined_by_hotkey.values())
-
-    combined_results = calculate_miner_ranking_and_scores(combined_results)
-    await _update_scores(task, combined_results, config.psql_db)
+    await _persist_raw_task_results(task, task_results, config.psql_db)
     return evaluated_hotkeys, failed_hotkeys
+
+
+async def finalize_task_scores_from_raw_losses(
+    task: AnyTypeRawTask,
+    hotkeys: list[str],
+    config: Config,
+) -> list[MinerResultsText | MinerResultsImage]:
+    """Compute final rankings once all per-hotkey evaluations are terminal."""
+    assert task.task_id is not None, "Task ID must be present"
+
+    raw_rows = await get_task_node_losses(task.task_id, config.psql_db)
+    raw_by_hotkey = {row.get("hotkey"): row for row in raw_rows}
+    final_results = [_result_from_persisted_row(task, hotkey, raw_by_hotkey.get(hotkey)) for hotkey in hotkeys]
+
+    final_results = calculate_miner_ranking_and_scores(final_results)
+    await _update_scores(task, final_results, config.psql_db)
+    return final_results
 
 
 def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage]) -> bool:

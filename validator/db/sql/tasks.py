@@ -1441,6 +1441,44 @@ async def get_task_evaluations_by_status(task_id: UUID, status: str, psql_db: PS
         return [dict(row) for row in rows]
 
 
+async def get_task_ids_with_evaluation_statuses(
+    statuses: list[str],
+    psql_db: PSQLDB,
+    task_statuses: list[str] | None = None,
+    tournament_only: bool = False,
+) -> list[UUID]:
+    """Get task ids that currently have evaluation rows in the given statuses."""
+    if not statuses:
+        return []
+
+    task_status_clause = ""
+    query_params: list[object] = [statuses, NETUID]
+
+    if task_statuses:
+        task_status_clause = f"AND t.{cst.STATUS} = ANY($3)"
+        query_params.append(task_statuses)
+
+    tournament_clause = ""
+    if tournament_only:
+        tournament_clause = f"AND e.{cst.TASK_ID} IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})"
+
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT DISTINCT e.{cst.TASK_ID}
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t
+                ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = ANY($1)
+              AND e.{cst.NETUID} = $2
+              {task_status_clause}
+              {tournament_clause}
+            """,
+            *query_params,
+        )
+    return [row[cst.TASK_ID] for row in rows]
+
+
 async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], status: str, psql_db: PSQLDB) -> None:
     if not hotkeys:
         return

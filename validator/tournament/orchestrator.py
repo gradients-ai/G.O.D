@@ -904,6 +904,31 @@ async def move_completed_tasks_to_preevaluation(config: Config):
             await asyncio.sleep(cst.MOVE_COMPLETED_TASKS_CYCLE_INTERVAL)
 
 
+async def seed_tournament_evaluations_from_training(config: Config):
+    """
+    Seed evaluation rows for tournament task-hotkey pairs as soon as training succeeds.
+    """
+    while True:
+        try:
+            training_tasks = await task_sql.get_tasks_with_status(
+                TaskStatus.TRAINING,
+                config.psql_db,
+                tournament_filter="only",
+                benchmark_filter="exclude",
+            )
+            logger.info(f"Seeding evaluation rows for {len(training_tasks)} in-flight tournament tasks")
+
+            for task in training_tasks:
+                try:
+                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
+                except Exception as e:
+                    logger.error(f"Error seeding evaluation rows for task {task.task_id}: {str(e)}", exc_info=True)
+        except Exception as e:
+            logger.error(f"Error in seed_tournament_evaluations_from_training cycle: {str(e)}", exc_info=True)
+        finally:
+            await asyncio.sleep(cst.MOVE_COMPLETED_TASKS_CYCLE_INTERVAL)
+
+
 async def _move_completed_tasks_to_preevaluation(config: Config):
     """
     Find tasks where all training tasks (task_id, hotkey) pairs have completed
@@ -963,7 +988,7 @@ async def run_tournament_orchestrator_cycles():
         fetch_tournament_tasks_ready_to_train(config),
         process_pending_tournament_tasks(config),
         monitor_training_tasks(config),
-        move_completed_tasks_to_preevaluation(config),
+        seed_tournament_evaluations_from_training(config),
         update_all_trainers_gpu_availability_cycle(config),
     )
 
