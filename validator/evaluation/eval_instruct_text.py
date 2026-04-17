@@ -13,7 +13,6 @@ os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 
 import torch
 from accelerate.utils import find_executable_batch_size
-from axolotl.utils.data import load_tokenized_prepared_datasets
 from axolotl.utils.dict import DictDefault
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset
@@ -42,10 +41,23 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+try:
+    from axolotl.utils.data import load_tokenized_prepared_datasets
+
+    _USES_LEGACY_AXOLOTL_DATA_API = True
+except ImportError:
+    from axolotl.utils.data.sft import _load_tokenized_prepared_datasets as load_tokenized_prepared_datasets
+
+    _USES_LEGACY_AXOLOTL_DATA_API = False
+
 
 def _load_evaluation_dataset(evaluation_config: DictDefault, tokenizer: AutoTokenizer) -> Dataset:
     prepared_path = Path(evaluation_config.output_dir) / "prepared"
-    eval_dataset, _ = load_tokenized_prepared_datasets(tokenizer, evaluation_config, prepared_path)
+    if _USES_LEGACY_AXOLOTL_DATA_API:
+        eval_dataset, _ = load_tokenized_prepared_datasets(tokenizer, evaluation_config, prepared_path)
+    else:
+        evaluation_config["dataset_prepared_path"] = str(prepared_path)
+        eval_dataset, _ = load_tokenized_prepared_datasets(tokenizer, evaluation_config, split="train")
 
     original_length = len(eval_dataset)
     eval_dataset = [sample for sample in eval_dataset if any(label != -100 for label in sample["labels"])]
