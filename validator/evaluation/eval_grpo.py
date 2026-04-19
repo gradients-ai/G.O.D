@@ -30,6 +30,7 @@ from validator.evaluation.common import load_results_dict
 from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import save_results_dict
+from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.utils import check_for_lora
 from validator.evaluation.utils import model_is_a_finetune
 from validator.utils.logging import get_logger
@@ -304,6 +305,7 @@ def evaluate_grpo_repo(evaluation_args: EvaluationArgs) -> None:
                 is_finetune = False
         log_memory_stats()
         finetuned_model.eval()
+        tokenizer = sanitize_tokenizer_for_models(tokenizer, finetuned_model)
 
         results = evaluate_finetuned_grpo_model(
             evaluation_args=evaluation_args,

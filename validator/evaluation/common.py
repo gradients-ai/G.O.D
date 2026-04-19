@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import re
@@ -24,6 +25,61 @@ from validator.utils.retry_utils import retry_on_5xx
 
 
 logger = get_logger(__name__)
+
+
+def _iter_wrapped_models(model, seen: set[int] | None = None):
+    if seen is None:
+        seen = set()
+
+    model_id = id(model)
+    if model_id in seen:
+        return
+
+    seen.add(model_id)
+    yield model
+    for attr_name in ("base_model", "model"):
+        wrapped_model = getattr(model, attr_name, None)
+        if wrapped_model is not None and wrapped_model is not model:
+            yield from _iter_wrapped_models(wrapped_model, seen)
+
+
+def _model_explicitly_accepts_kwarg(model, kwarg_name: str) -> bool:
+    for candidate_model in _iter_wrapped_models(model):
+        for attr_name in ("forward", "prepare_inputs_for_generation"):
+            method = getattr(candidate_model, attr_name, None)
+            if method is None:
+                continue
+            try:
+                parameters = inspect.signature(method).parameters
+            except (TypeError, ValueError):
+                continue
+            if kwarg_name in parameters:
+                return True
+    return False
+
+
+def sanitize_tokenizer_for_models(tokenizer: AutoTokenizer, *models: AutoModelForCausalLM) -> AutoTokenizer:
+    """
+    Remove token_type_ids only when one of the loaded models does not advertise support.
+    This keeps segment ids available for the rare models that actually use them.
+    """
+    model_input_names = getattr(tokenizer, "model_input_names", None)
+    if not model_input_names or "token_type_ids" not in model_input_names:
+        return tokenizer
+
+    if not models:
+        return tokenizer
+
+    unsupported_models = [type(model).__name__ for model in models if not _model_explicitly_accepts_kwarg(model, "token_type_ids")]
+    if not unsupported_models:
+        return tokenizer
+
+    tokenizer.model_input_names = [name for name in model_input_names if name != "token_type_ids"]
+    logger.info(
+        "Removed token_type_ids from tokenizer inputs because these models do not support them: "
+        + ", ".join(unsupported_models)
+    )
+    return tokenizer
 
 
 def log_memory_stats():

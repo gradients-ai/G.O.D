@@ -9,6 +9,7 @@ from validator.evaluation.common import load_model
 from validator.evaluation.common import load_results_dict
 from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
+from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
 from validator.evaluation.eval_grpo import _adapt_grpo_columns_to_trl
 from validator.evaluation.utils import check_for_lora
@@ -51,6 +52,7 @@ def evaluate_kl_divergence_repo(evaluation_args: EvaluationArgs) -> None:
         else:
             finetuned_model = load_model(repo, is_base_model=False)
         finetuned_model.eval()
+        tokenizer = sanitize_tokenizer_for_models(tokenizer, original_model, finetuned_model)
 
         # Load evaluation dataset
         logger.info(f"Loading dataset: {evaluation_args.dataset}")
