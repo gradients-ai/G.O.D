@@ -47,11 +47,26 @@ from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.nodes import get_all_nodes
 from validator.tournament.utils import notify_organic_task_created
 from validator.utils.logging import get_logger
+from validator.utils.dataset_columns_api import collect_columns_chat
+from validator.utils.dataset_columns_api import collect_columns_instruct
+from validator.utils.dataset_columns_api import validate_chat_task_columns
+from validator.utils.dataset_columns_api import validate_dataset_columns
+from validator.utils.dataset_columns_api import validate_dpo_task_columns
+from validator.utils.dataset_columns_api import validate_grpo_task_columns
+from validator.utils.dataset_columns_api import validate_instruct_task_columns
 from validator.utils.util import convert_task_to_task_details
 from validator.utils.util import hide_sensitive_data_till_finished
 
 
 logger = get_logger(__name__)
+
+
+async def validate_dataset(coro) -> None:
+    """Run dataset column validation; map ValueError to HTTP 400."""
+    try:
+        await coro
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
 
 
 TASKS_CREATE_ENDPOINT_INSTRUCT_TEXT = "/v1/tasks/create"  # TODO: change to create_text after FE changes
@@ -95,6 +110,8 @@ async def create_task_dpo(
     request: NewTaskRequestDPO,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
+    await validate_dataset(validate_dpo_task_columns(request, request.ds_repo, request.file_format))
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
@@ -166,6 +183,8 @@ async def create_task_grpo(
     request: NewTaskRequestGrpo,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
+    await validate_dataset(validate_grpo_task_columns(request, request.ds_repo, request.file_format))
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
@@ -211,6 +230,8 @@ async def create_task_chat(
     request: NewTaskRequestChat,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
+    await validate_dataset(validate_chat_task_columns(request, request.ds_repo, request.file_format))
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
@@ -307,6 +328,8 @@ async def create_task_instruct_text(
             success=True, task_id=new_task.task_id, created_at=new_task.created_at, account_id=new_task.account_id
         )
 
+    await validate_dataset(validate_instruct_task_columns(request, request.ds_repo, request.file_format))
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
@@ -391,6 +414,15 @@ async def create_text_task_with_custom_dataset(
     request: NewTaskWithCustomDatasetRequest,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
+    instruct_cols = collect_columns_instruct(request)
+    await validate_dataset(
+        validate_dataset_columns(request.training_data, request.file_format, instruct_cols)
+    )
+    if request.test_data:
+        await validate_dataset(
+            validate_dataset_columns(request.test_data, request.file_format, instruct_cols)
+        )
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
@@ -427,6 +459,15 @@ async def create_chat_task_with_custom_dataset(
     request: NewTaskWithCustomDatasetRequestChat,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
+    chat_cols = collect_columns_chat(request)
+    await validate_dataset(
+        validate_dataset_columns(request.training_data, request.file_format, chat_cols)
+    )
+    if request.test_data:
+        await validate_dataset(
+            validate_dataset_columns(request.test_data, request.file_format, chat_cols)
+        )
+
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
