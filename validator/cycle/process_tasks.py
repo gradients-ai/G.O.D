@@ -129,11 +129,18 @@ async def _processing_pending_tasks(config: Config):
     clean_all_hf_datasets_cache()
 
 
-async def _seed_task_evaluations_for_preevaluation(config: Config) -> None:
-    tasks_to_seed = await tasks_sql.get_tasks_with_status(
+async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
+    preevaluation_tasks = await tasks_sql.get_tasks_with_status(
         TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
     )
-    for task in tasks_to_seed:
+    organic_training_tasks = await tasks_sql.get_tasks_with_status(
+        TaskStatus.TRAINING,
+        psql_db=config.psql_db,
+        tournament_filter="exclude",
+        benchmark_filter="exclude",
+    )
+
+    for task in preevaluation_tasks:
         try:
             assert task.task_id is not None
             await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
@@ -143,6 +150,21 @@ async def _seed_task_evaluations_for_preevaluation(config: Config) -> None:
             logger.info(f"Task {task.task_id} moved to EVALUATING and evaluation rows seeded")
         except Exception as e:
             logger.error(f"Failed to seed evaluations for task {task.task_id}: {e}", exc_info=True)
+
+    for task in organic_training_tasks:
+        try:
+            assert task.task_id is not None
+            training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+            if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
+                continue
+
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
+            task.status = TaskStatus.EVALUATING
+            add_context_tag("status", task.status.value)
+            await tasks_sql.update_task(task, config.psql_db)
+            logger.info(f"Organic task {task.task_id} moved from TRAINING to EVALUATING and evaluation rows seeded")
+        except Exception as e:
+            logger.error(f"Failed to seed evaluations for organic task {task.task_id}: {e}", exc_info=True)
 
 
 async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: Config) -> bool:
@@ -175,6 +197,15 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
     statuses = [row["evaluation_status"] for row in rows]
     if any(status in ("pending", "evaluating") for status in statuses):
         return False
+
+    successful_hotkeys = [row["hotkey"] for row in rows if row["evaluation_status"] == "success"]
+    if not successful_hotkeys:
+        task.status = TaskStatus.FAILURE
+        add_context_tag("status", task.status.value)
+        task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
+        await tasks_sql.update_task(task, config.psql_db)
+        logger.info(f"Task {task.task_id} finalized as failure because no evaluation succeeded")
+        return True
 
     await finalize_task_scores_from_raw_losses(task, [row["hotkey"] for row in rows], config)
 
@@ -252,13 +283,6 @@ async def _handle_delayed_tasks(config: Config):
     await asyncio.gather(*[_move_back_to_looking_for_nodes(task, config) for task in finished_delay_tasks])
 
 
-async def _move_to_preevaluation_status(task, config):
-    task.status = TaskStatus.PREEVALUATION
-    add_context_tag("status", task.status.value)
-    logger.info(f"Changing status to {task.status}")
-    await tasks_sql.update_task(task, config.psql_db)
-
-
 async def _cleanup_all_running_basilica_deployments(config: Config) -> None:
     """Cleanup of Basilica deployments on startup, preserving active eval deployments."""
     protected_deployment_ids: set[str] = set()
@@ -294,12 +318,15 @@ async def _cleanup_all_running_basilica_deployments(config: Config) -> None:
         )
 
 
-async def _move_any_evaluating_tasks_to_preevaluation(config: Config):
+async def _recover_evaluating_tasks(config: Config):
     stopped_mid_evaluation = await tasks_sql.get_tasks_with_status(
         TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="exclude", benchmark_filter="include"
     )
-    logger.info(f"WE ARE MOVING {len(stopped_mid_evaluation)} TASKS TO PREEVALUATION")
-    await asyncio.gather(*[_move_to_preevaluation_status(task, config) for task in stopped_mid_evaluation])
+    logger.info(f"Recovering {len(stopped_mid_evaluation)} evaluating tasks by resetting in-progress rows to pending")
+    for task in stopped_mid_evaluation:
+        if task.task_id is None:
+            continue
+        await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
 
 
 async def _move_back_to_pending_status(task, config):
@@ -391,7 +418,7 @@ async def evaluate_tasks_loop(config: Config):
     processing_task_ids: set[str] = set()
 
     while True:
-        await _seed_task_evaluations_for_preevaluation(config)
+        await _seed_task_evaluations_for_evaluation(config)
 
         evaluating_tasks = await _get_tasks_ready_for_evaluation(config)
         if evaluating_tasks:
@@ -445,6 +472,6 @@ def compute_required_gpus(task: RawTask) -> int:
 
 async def process_completed_tasks(config: Config) -> None:
     await _cleanup_all_running_basilica_deployments(config)
-    await _move_any_evaluating_tasks_to_preevaluation(config)
+    await _recover_evaluating_tasks(config)
 
     await asyncio.gather(evaluate_tasks_loop(config), cleanup_model_cache_loop(config.psql_db))
