@@ -177,22 +177,34 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
         return False
 
     rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
+    if is_tournament_task:
+        successful_training_hotkeys = {
+            hotkey for hotkey, status in training_statuses.items() if status == "success"
+        }
+        evaluation_hotkeys = {row["hotkey"] for row in rows}
+
+        if evaluation_hotkeys != successful_training_hotkeys:
+            missing_hotkeys = sorted(successful_training_hotkeys - evaluation_hotkeys)
+            extra_hotkeys = sorted(evaluation_hotkeys - successful_training_hotkeys)
+            logger.info(
+                "Task %s evaluation coverage mismatch; deferring final scoring. missing=%s extra=%s",
+                task.task_id,
+                missing_hotkeys,
+                extra_hotkeys,
+            )
+            return False
+
     if not rows:
         if is_tournament_task:
-            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
-            rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
+            task.status = TaskStatus.FAILURE
+            add_context_tag("status", task.status.value)
+            task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
+            await tasks_sql.update_task(task, config.psql_db)
+            logger.info(f"Task {task.task_id} finalized as failure because no tournament evaluations were produced")
+            return True
 
-        if not rows:
-            if is_tournament_task:
-                task.status = TaskStatus.FAILURE
-                add_context_tag("status", task.status.value)
-                task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
-                await tasks_sql.update_task(task, config.psql_db)
-                logger.info(f"Task {task.task_id} finalized as failure because no tournament evaluations were produced")
-                return True
-
-            logger.warning(f"No evaluation rows found for task {task.task_id}")
-            return False
+        logger.warning(f"No evaluation rows found for task {task.task_id}")
+        return False
 
     statuses = [row["evaluation_status"] for row in rows]
     if any(status in ("pending", "evaluating") for status in statuses):
