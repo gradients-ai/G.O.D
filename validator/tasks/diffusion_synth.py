@@ -319,17 +319,22 @@ async def _runpod_image_synth(payload: dict) -> dict:
     raise RuntimeError(f"Invalid RunPod synth response payload: {data}")
 
 
+def _random_image_competition_hours() -> float:
+    """Pick competition length in 15-minute (0.25h) steps between min and max."""
+    min_q = int(round(cst.MIN_IMAGE_COMPETITION_HOURS * 4))
+    max_q = int(round(cst.MAX_IMAGE_COMPETITION_HOURS * 4))
+    return random.randint(min_q, max_q) / 4.0
+
+
 async def create_synthetic_image_task(config: Config, models: AsyncGenerator[ImageModelInfo, None]) -> RawTask:
     """Create a synthetic image task with random model and style."""
     logger.info("Creating synthetic image task")
-    number_of_hours = round(
-        random.uniform(cst.MIN_IMAGE_COMPETITION_HOURS, cst.MAX_IMAGE_COMPETITION_HOURS), 2
-    )
+    number_of_hours = _random_image_competition_hours()
     num_prompts = random.randint(cst.MIN_IMAGE_SYNTH_PAIRS, cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
     is_qwen_model = model_info.model_type == ImageModelType.QWEN_IMAGE
     if is_qwen_model:
-        number_of_hours = round(number_of_hours + 0.5, 2)
+        number_of_hours = round(number_of_hours + cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     if random.random() < cst.PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE:
         image_text_pairs, ds_prefix = await generate_style_synthetic(config, num_prompts)

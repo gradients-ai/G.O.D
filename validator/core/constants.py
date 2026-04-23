@@ -115,6 +115,7 @@ MIN_IDEAL_NUM_MINERS_IN_POOL = 8
 
 MIN_IMAGE_COMPETITION_HOURS = 0.5
 MAX_IMAGE_COMPETITION_HOURS = 1.0
+QWEN_IMAGE_EXTRA_COMPETITION_HOURS = 0.5
 TASK_TIME_DELAY = 15  # number of minutes we wait to retry an organic request
 # how many times in total do we attempt to delay an organic request looking for miners
 MAX_DELAY_TIMES = 6
