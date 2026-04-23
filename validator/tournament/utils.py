@@ -1050,24 +1050,33 @@ async def notify_organic_task_created(task_id: str, task_type: str, discord_url:
         logger.error(f"Failed to send Discord notification for task creation: {e}")
 
 
-async def validate_repo_obfuscation(repo_url: str, github_token: str | None = None) -> bool:
+async def validate_repo_obfuscation(
+    repo_url: str, commit_hash: str | None = None, github_token: str | None = None
+) -> bool:
     """
     Validate that a repository is not obfuscated using the obfuscation detection.
 
     Args:
         repo_url: The repository URL to validate
+        commit_hash: Optional commit hash to validate instead of the default branch
 
     Returns:
         bool: True if repo is not obfuscated, False if obfuscated
     """
     try:
         clone_url = build_authenticated_git_url(repo_url, github_token)
-        proc = subprocess.run(
-            [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", clone_url],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            subprocess.run(["git", "clone", clone_url, temp_dir], check=True, capture_output=True, text=True, timeout=60)
+            if commit_hash:
+                subprocess.run(["git", "-C", temp_dir, "checkout", commit_hash], check=True, capture_output=True, text=True, timeout=30)
+
+            proc = subprocess.run(
+                [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", temp_dir],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
 
         logger.info(f"Obfuscation detection output: {proc.stdout}")
 
