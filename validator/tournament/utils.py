@@ -1065,18 +1065,11 @@ async def validate_repo_obfuscation(
     """
     try:
         clone_url = build_authenticated_git_url(repo_url, github_token)
+        cmd = [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", clone_url]
+        if commit_hash:
+            cmd += ["--commit", commit_hash]
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            subprocess.run(["git", "clone", clone_url, temp_dir], check=True, capture_output=True, text=True, timeout=60)
-            if commit_hash:
-                subprocess.run(["git", "-C", temp_dir, "checkout", commit_hash], check=True, capture_output=True, text=True, timeout=30)
-
-            proc = subprocess.run(
-                [t_cst.OBFUSCATION_DETECTION_PATH, "--repo", temp_dir],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
         logger.info(f"Obfuscation detection output: {proc.stdout}")
 

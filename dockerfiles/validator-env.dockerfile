@@ -1,4 +1,4 @@
-FROM diagonalge/mcts-api:latest AS mcts_runtime
+FROM phoenixbeaudry/game:mcts-api AS mcts_runtime
 
 FROM lmsysorg/sglang:latest
 

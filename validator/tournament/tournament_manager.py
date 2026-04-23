@@ -637,9 +637,7 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                 repo_url = responding_node.training_repo_response.github_repo
                 commit_hash = responding_node.training_repo_response.commit_hash
                 github_token = responding_node.training_repo_response.github_token
-                logger.info(
-                    f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}@{commit_hash or 'HEAD'}"
-                )
+                logger.info(f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}")
 
                 is_not_obfuscated = await validate_repo_obfuscation(repo_url, commit_hash, github_token)
 
