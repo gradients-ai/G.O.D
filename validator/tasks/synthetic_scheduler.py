@@ -428,7 +428,8 @@ async def create_synthetic_env_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
-    exclude_environment: str | None = None,
+    exclude_environments: list[str] | None = None,
+    force_environment: str | None = None,
 ) -> RawTask:
     # hardoced model for now. the model and ds generators kept for signature compatibility
     model_id = random.choice(SUPPORTED_ENV_MODELS)
@@ -442,53 +443,13 @@ async def create_synthetic_env_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    game_candidates = ["gin_rummy", "liars_dice"]
-    if exclude_environment and exclude_environment in game_candidates:
-        game_candidates = [g for g in game_candidates if g != exclude_environment]
-    selected_environment = random.choice(game_candidates)
-
-    # Generate a random seed for evaluation reproducibility
-    eval_seed = random.randint(0, 2**31 - 1)
-
-    task = EnvRawTask(
-        model_id=model_id,
-        ds=dummy_dataset,
-        status=TaskStatus.PENDING,
-        environment_name=selected_environment,
-        eval_seed=eval_seed,
-        is_organic=False,
-        created_at=current_time,
-        termination_at=end_timestamp,
-        hours_to_complete=number_of_hours,
-        account_id=vcst.NULL_ACCOUNT_ID,
-        yarn_factor=None,
-    )
-    logger.info(f"New Environment task created with eval_seed={eval_seed}")
-
-    task = await add_task(task, config.psql_db)
-
-    return task
-
-
-@retry_with_backoff
-async def create_synthetic_env_boss_task(
-    config: Config,
-    models: AsyncGenerator[str, None],
-    datasets: AsyncGenerator[Dataset, None],
-) -> RawTask:
-    # hardoced model for now. the model and ds generators kept for signature compatibility
-    model_id = random.choice(SUPPORTED_ENV_MODELS)
-
-    # Environment tasks don't use the actual dataset - trainer generates a dummy one
-    # Use a placeholder to satisfy DB constraint
-    dummy_dataset = "env_task_dummy_dataset"
-
-    number_of_hours = _get_training_hours_for_environment_task()
-
-    current_time = datetime.utcnow()
-    end_timestamp = current_time + timedelta(hours=number_of_hours)
-
-    selected_environment = "leduc_poker"
+    if force_environment:
+        selected_environment = force_environment
+    else:
+        game_candidates = ["gin_rummy", "liars_dice", "leduc_poker"]
+        if exclude_environments:
+            game_candidates = [g for g in game_candidates if g not in exclude_environments]
+        selected_environment = random.choice(game_candidates)
 
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)

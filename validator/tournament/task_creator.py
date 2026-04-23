@@ -22,7 +22,6 @@ from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
 from validator.tasks.synthetic_scheduler import _get_text_models
 from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_env_task
-from validator.tasks.synthetic_scheduler import create_synthetic_env_boss_task
 from validator.tasks.synthetic_scheduler import create_synthetic_grpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
@@ -93,24 +92,34 @@ async def _create_environment_group_tasks(
     Create a single environment task that all groups (and all participants + boss) compete on.
     """
     logger.info(f"Creating environment tournament with {len(round_data.groups)} groups - single task for all participants")
-    
+
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config)
-    
+
     if existing_tasks:
         logger.info(f"Environment tournament round {round_id} already has {len(existing_tasks)} task(s), skipping task creation")
         return await _get_existing_tasks(existing_tasks, config)
-    
+
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    
+
     logger.info("Creating single environment task for all participants")
 
-    if is_final_round:
-        task = await create_synthetic_env_boss_task(config, models, instruct_datasets)
-    else:
-        # For R2+, exclude the game used in the previous round so we don't repeat
-        exclude_env = await _get_previous_round_environment_name(tournament_id, config)
-        task = await create_synthetic_env_task(config, models, instruct_datasets, exclude_environment=exclude_env)
+    force_env: str | None = None
+    if is_final_round and t_cst.FORCED_BOSS_ENVIRONMENT:
+        force_env = t_cst.FORCED_BOSS_ENVIRONMENT
+        logger.info(f"Final round: forcing boss environment to {force_env}")
+
+    # Exclude games used in previous rounds so each round plays a different game.
+    # Also exclude the forced boss game from non-final rounds so it's reserved for the boss round.
+    exclude_envs = await _get_previous_round_environment_names(tournament_id, config)
+    if not is_final_round and t_cst.FORCED_BOSS_ENVIRONMENT:
+        if t_cst.FORCED_BOSS_ENVIRONMENT not in exclude_envs:
+            exclude_envs.append(t_cst.FORCED_BOSS_ENVIRONMENT)
+            logger.info(f"Non-final round: excluding reserved boss environment {t_cst.FORCED_BOSS_ENVIRONMENT}")
+
+    task = await create_synthetic_env_task(
+        config, models, instruct_datasets, exclude_environments=exclude_envs, force_environment=force_env
+    )
 
     group_id = f"{round_id}_group_001"
     await _create_and_register_tournament_task(
@@ -121,18 +130,19 @@ async def _create_environment_group_tasks(
     return [task]
 
 
-async def _get_previous_round_environment_name(tournament_id: str, config: Config) -> str | None:
-    """Look up the environment_name used in the most recent prior round, so we don't repeat games."""
+async def _get_previous_round_environment_names(tournament_id: str, config: Config) -> list[str]:
+    """Look up the environment_names used in all prior rounds, so we don't repeat games."""
     rounds = await get_tournament_rounds(tournament_id, config.psql_db)
-    # Find the latest completed round before this one
-    for round_data in reversed(rounds):
+    env_names: list[str] = []
+    for round_data in rounds:
         tasks = await get_tournament_tasks(round_data.round_id, config.psql_db)
         if tasks:
             task_obj = await task_sql.get_task(tasks[0].task_id, config.psql_db)
             if task_obj and hasattr(task_obj, "environment_name") and task_obj.environment_name:
-                logger.info(f"Previous round {round_data.round_id} used environment: {task_obj.environment_name}")
-                return task_obj.environment_name
-    return None
+                env_names.append(task_obj.environment_name)
+    if env_names:
+        logger.info(f"Previous rounds used environments: {env_names}")
+    return env_names
 
 
 async def _create_group_image_tasks(

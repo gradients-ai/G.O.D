@@ -45,6 +45,9 @@ ENV_ROUND_1_ADVANCE_COUNT = 8
 ENV_ROUND_2_ADVANCE_COUNT = 2
 ENV_TOTAL_ROUNDS = 3
 ENV_BOSS_BEAT_REQUIRED = 2
+# If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
+# Set to None to let any game randomly be the boss round.
+FORCED_BOSS_ENVIRONMENT: str | None = None
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 
