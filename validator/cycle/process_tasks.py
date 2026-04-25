@@ -26,6 +26,7 @@ from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
+_EVALUATING_ROWS_LOCK = asyncio.Lock()
 
 
 async def _select_miner_pool_and_add_to_task(task: AnyTypeRawTask, config: Config) -> AnyTypeRawTask:
@@ -258,7 +259,16 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
 
     for hotkey in all_hotkeys:
         if hotkey in pending_hotkeys:
-            await tasks_sql.update_task_evaluations_status(task.task_id, [hotkey], "evaluating", config.psql_db)
+            async with _EVALUATING_ROWS_LOCK:
+                total_evaluating_rows = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
+                if total_evaluating_rows >= cst.MAX_EVALUATING_ROWS:
+                    logger.info(
+                        f"Skipping pending evaluation row for task {task.task_id} hotkey {hotkey}; "
+                        f"global evaluating rows at cap ({total_evaluating_rows}/{cst.MAX_EVALUATING_ROWS})"
+                    )
+                    continue
+
+                await tasks_sql.update_task_evaluations_status(task.task_id, [hotkey], "evaluating", config.psql_db)
 
         try:
             evaluated_hotkeys, failed_hotkeys = await evaluate_and_score_hotkeys(task, [hotkey], num_gpus, config)

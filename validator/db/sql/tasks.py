@@ -1441,6 +1441,19 @@ async def get_task_evaluations_by_status(task_id: UUID, status: str, psql_db: PS
         return [dict(row) for row in rows]
 
 
+async def count_task_evaluations_by_status(status: str, psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM {cst.EVALUATIONS_TABLE}
+            WHERE {cst.EVALUATION_STATUS} = $1 AND {cst.NETUID} = $2
+            """,
+            status,
+            NETUID,
+        )
+
+
 async def get_task_ids_with_evaluation_statuses(
     statuses: list[str],
     psql_db: PSQLDB,
