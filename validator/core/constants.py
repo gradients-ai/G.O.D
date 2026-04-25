@@ -315,7 +315,7 @@ YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
 
 # Environment evaluation constants
-ENV_EVAL_IMAGE = "diagonalge/env-eval:latest"
+ENV_EVAL_IMAGE = "diagonalge/env-evaluator:basilica"
 ENV_SERVER_CMD_DEFAULT = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
 BASILICA_GPU_MODELS = ["A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
@@ -378,7 +378,7 @@ ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 1200
 ENV_EVAL_TASK_RETRY_DELAY = 10
 ENV_EVAL_TASK_MAX_RETRIES = 2
 ENV_EVAL_TASK_TIMEOUT = 150
-ENV_EVAL_SESSION_TIMEOUT = 4 * 60 * 60 # 3 hours
+ENV_EVAL_SESSION_TIMEOUT = 4 * 60 * 60 # 4 hours
 
 SGLANG_ENV_EVAL_EXTRA_CLI = (
     "--attention-backend triton --prefill-attention-backend triton "

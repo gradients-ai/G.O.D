@@ -28,6 +28,12 @@ from validator.evaluation.docker_evaluation import cleanup_resources
 from validator.evaluation.docker_evaluation import get_evaluation_results
 from validator.evaluation.docker_evaluation import normalize_rewards_and_compute_loss
 from validator.evaluation.docker_evaluation import process_evaluation_results
+from validator.evaluation.eval_environment import _build_sglang_command
+from validator.evaluation.eval_environment import _download_lora_with_retry
+from validator.evaluation.eval_environment import _download_model_with_retry
+from validator.evaluation.eval_environment import _merge_base_and_lora
+from validator.evaluation.eval_environment import _run_environment_evaluation as _run_eval_environment_rollouts
+from validator.evaluation.utils import check_lora_has_added_tokens
 from validator.evaluation.utils import check_for_lora
 from validator.evaluation.utils import wait_for_basilica_health
 from validator.tasks.task_prep import unzip_to_temp_path
@@ -41,15 +47,7 @@ logger = get_logger(__name__)
 
 
 def _build_local_sglang_command(base_model: str, base_seed: int) -> str:
-    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
-    dtype = os.getenv("SGLANG_DTYPE", "float16")
-    port = os.getenv("SGLANG_PORT", str(vcst.LOCAL_ENV_SGLANG_PORT))
-    return (
-        f"python3 -m sglang.launch_server --model-path {base_model} "
-        f"--host 0.0.0.0 --port {port} "
-        f"--tensor-parallel-size {tensor_parallel} --dtype {dtype} "
-        f"--enable-deterministic-inference --random-seed {base_seed}"
-    )
+    return _build_sglang_command(base_model, base_seed)
 
 
 def stream_container_logs_to_file(
@@ -266,10 +264,6 @@ async def run_evaluation_local_environment(
     logger.info(f"Starting local Docker environment evaluation for {len(models)} repos: {models}")
     stream_sglang_logs = os.getenv("LOCAL_ENV_STREAM_SGLANG_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
     raw_sglang_log_file = os.getenv("LOCAL_ENV_SGLANG_RAW_LOG_FILE", "").strip()
-    sglang_log_requests = os.getenv("LOCAL_ENV_SGLANG_LOG_REQUESTS", "0").strip().lower() in {"1", "true", "yes", "on"}
-    sglang_log_requests_level = os.getenv("LOCAL_ENV_SGLANG_LOG_REQUESTS_LEVEL", "3")
-    sglang_log_requests_format = os.getenv("LOCAL_ENV_SGLANG_LOG_REQUESTS_FORMAT", "json")
-    sglang_log_requests_target = os.getenv("LOCAL_ENV_SGLANG_LOG_REQUESTS_TARGET", "stdout")
 
     env_name = dataset_type.environment_name
     if env_name not in vcst.ENVIRONMENTS:
@@ -277,9 +271,14 @@ async def run_evaluation_local_environment(
 
     env_config = vcst.ENVIRONMENTS[env_name]
     task_id_min, task_id_max = env_config["task_id_range"]
-    num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
+    num_seeds_override = os.getenv("ENV_EVAL_NUM_SEEDS", "").strip()
+    if num_seeds_override:
+        num_seeds = int(num_seeds_override)
+    else:
+        num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
     env_image = env_config["env_image"]
     env_payload_extra = env_config.get("eval_payload_extra", {})
+    temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
 
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
     seed_generator = random.Random(base_seed)
@@ -301,19 +300,36 @@ async def run_evaluation_local_environment(
         repo_name = repo.split("/")[-1]
         env_logger = get_environment_logger(name=f"{repo_name}-{eval_id[:8]}", repo_id=repo, eval_id=eval_id, model=original_model)
         local_env_server_port = int(os.getenv("LOCAL_ENV_SERVER_PORT", str(vcst.LOCAL_ENV_SERVER_PORT)))
+        sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800"))
+        env_health_timeout = int(os.getenv("ENV_SERVER_HEALTH_TIMEOUT", "600"))
 
         containers = {}
         lora_dir = None
+        merged_model_dir = None
         sglang_log_task = None
         try:
             is_lora = await asyncio.to_thread(check_for_lora, repo, local_files_only=False)
+            should_merge_lora = False
             if is_lora:
-                base_model = original_model
-                inference_model_name = f"{original_model}:trained_lora"
-                env_logger.info(f"LoRA detected: {original_model} + LoRA {repo}")
+                should_merge_lora = await asyncio.to_thread(check_lora_has_added_tokens, repo, False)
+            env_logger.info(
+                "LoRA detection: is_lora=%s merge_lora_to_base=%s",
+                is_lora,
+                should_merge_lora,
+            )
+
+            inference_model_name = repo
+            model_path_for_sglang = repo
+            sglang_args = os.getenv("SGLANG_START_CMD")
+            if sglang_args:
+                env_logger.info("Using SGLANG_START_CMD override from environment")
+
+            if not sglang_args and is_lora and not should_merge_lora:
+                env_logger.info("LoRA detected: using base snapshot + native SGLang LoRA loading")
+                model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, original_model)
                 safe_lora_name = repo.replace("/", "_")
                 lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
-                await asyncio.to_thread(snapshot_download, repo_id=repo, local_dir=lora_dir, local_dir_use_symlinks=False, tqdm_class=None)
+                await asyncio.to_thread(_download_lora_with_retry, repo, lora_dir)
                 for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
                     try:
                         os.remove(model_file)
@@ -326,32 +342,44 @@ async def run_evaluation_local_environment(
                         os.remove(index_file)
                     except Exception as e:
                         env_logger.warning(f"Failed to remove index file: {e}")
-            else:
-                base_model = repo
+                inference_model_name = f"{original_model}:trained_lora"
+                sglang_args = (
+                    _build_local_sglang_command(model_path_for_sglang, base_seed)
+                    + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
+                )
+            elif not sglang_args and is_lora and should_merge_lora:
+                env_logger.info("LoRA detected: merging into base before SGLang launch")
+                base_path = await asyncio.to_thread(_download_model_with_retry, original_model)
+                safe_lora_name = repo.replace("/", "_")
+                lora_dir = f"/tmp/sglang_lora/{safe_lora_name}"
+                await asyncio.to_thread(_download_lora_with_retry, repo, lora_dir)
+                merged_model_dir = f"/tmp/sglang_merged/{safe_lora_name}"
+                model_path_for_sglang = await asyncio.to_thread(
+                    _merge_base_and_lora, base_path, lora_dir, merged_model_dir
+                )
                 inference_model_name = repo
+                sglang_args = _build_local_sglang_command(model_path_for_sglang, base_seed)
+            elif not sglang_args:
                 env_logger.info(f"Base model: {repo}")
+                model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, repo)
+                inference_model_name = repo
+                sglang_args = _build_local_sglang_command(model_path_for_sglang, base_seed)
 
             local_sglang_port = int(os.getenv("SGLANG_PORT", str(vcst.LOCAL_ENV_SGLANG_PORT)))
-            sglang_args = _build_local_sglang_command(base_model, base_seed)
-            if is_lora:
-                sglang_args = (
-                    _build_local_sglang_command(base_model, base_seed)
-                    + " "
-                    f"--enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton "
-                )
-            if sglang_log_requests:
-                sglang_args += (
-                    f" --log-requests --log-requests-level {sglang_log_requests_level}"
-                    f" --log-requests-format {sglang_log_requests_format}"
-                    f" --log-requests-target {sglang_log_requests_target}"
-                )
-
             sglang_container_name = f"{eval_id}-sglang"
             env_container_name = f"{eval_id}-env"
 
             sglang_volumes = {vcst.LOCAL_ENV_HF_CACHE_PATH: {"bind": "/hf", "mode": "rw"}}
             if is_lora and lora_dir:
                 sglang_volumes[lora_dir] = {"bind": "/lora/trained_lora", "mode": "ro"}
+            if os.path.isabs(model_path_for_sglang) and os.path.exists(model_path_for_sglang):
+                sglang_volumes[model_path_for_sglang] = {"bind": model_path_for_sglang, "mode": "ro"}
+
+            try:
+                current_ws = int(os.environ.get("SGLANG_FLASHINFER_WORKSPACE_SIZE", "0") or "0")
+            except ValueError:
+                current_ws = 0
+            flashinfer_workspace_size = str(max(current_ws, vcst.SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES))
 
             env_logger.info(f"Starting SGLang container: {sglang_container_name} (GPU {gpu_id})")
             sglang_container = await asyncio.to_thread(
@@ -371,6 +399,7 @@ async def run_evaluation_local_environment(
                     "PYTHONHASHSEED": str(base_seed),
                     "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
                     "NVIDIA_TF32_OVERRIDE": "0",
+                    "SGLANG_FLASHINFER_WORKSPACE_SIZE": flashinfer_workspace_size,
                 },
                 volumes=sglang_volumes,
                 ipc_mode="host",
@@ -388,7 +417,7 @@ async def run_evaluation_local_environment(
                     )
 
             sglang_host_url = f"http://localhost:{local_sglang_port}"
-            await asyncio.to_thread(wait_for_basilica_health, sglang_host_url, vcst.LOCAL_ENV_SGLANG_HEALTH_TIMEOUT)
+            await asyncio.to_thread(wait_for_basilica_health, sglang_host_url, sglang_health_timeout)
             env_logger.info(f"SGLang ready at {sglang_host_url}")
 
             env_logger.info(f"Starting environment container: {env_container_name}")
@@ -404,7 +433,7 @@ async def run_evaluation_local_environment(
             containers["env"] = env_container
 
             env_host_url = f"http://localhost:{local_env_server_port}"
-            await asyncio.to_thread(wait_for_basilica_health, env_host_url, vcst.LOCAL_ENV_SERVER_HEALTH_TIMEOUT, "/health")
+            await asyncio.to_thread(wait_for_basilica_health, env_host_url, env_health_timeout, "/health")
             env_logger.info(f"Environment server ready at {env_host_url}")
 
             sglang_internal_url = f"http://{sglang_container_name}:{local_sglang_port}"
@@ -413,7 +442,7 @@ async def run_evaluation_local_environment(
                 env_host_url,
                 eval_seeds,
                 task_id_max,
-                vcst.ENV_EVAL_TEMPERATURE,
+                temperature,
                 env_logger,
                 inference_model_name,
                 task_id_min,
@@ -437,6 +466,11 @@ async def run_evaluation_local_environment(
                     shutil.rmtree(lora_dir)
                 except Exception as e:
                     env_logger.warning(f"Failed to cleanup LoRA dir: {e}")
+            if merged_model_dir and os.path.exists(merged_model_dir):
+                try:
+                    shutil.rmtree(merged_model_dir)
+                except Exception as e:
+                    env_logger.warning(f"Failed to cleanup merged model dir: {e}")
 
     docker_client.close()
     logger.info(f"Local environment evaluation results: {evaluation_results}")
@@ -454,84 +488,16 @@ async def _run_environment_evaluation(
     task_id_min: int = 0,
     env_payload_extra: dict | None = None,
 ) -> float:
-    eval_list = []
-    for seed in eval_seeds:
-        rng = random.Random(seed)
-        task_id = rng.randint(task_id_min + 1, data_len_range)
-        eval_list.append((seed, task_id))
-
-    num_eval_samples = len(eval_list)
-    all_results = []
-    retry_statuses = {404, 500, 501}
-
-    async def evaluate_single_task(session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int) -> dict | None:
-        payload = {
-            "model": inference_model_name,
-            "base_url": f"{sglang_url}/v1",
-            "task_id": task_id,
-            "temperature": temperature,
-            "seed": seed,
-        }
-        if env_payload_extra:
-            payload.update(env_payload_extra)
-
-        attempt = 0
-        while True:
-            attempt += 1
-            start_ts = time.time()
-            try:
-                env_logger.info(f"[{task_idx + 1}/{num_eval_samples}] Seed: {seed}, Task ID: {task_id}...")
-                timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_TASK_TIMEOUT)
-                async with session.post(
-                    f"{env_url}/evaluate",
-                    json=payload,
-                    timeout=timeout,
-                    headers={"Connection": "close"},
-                ) as response:
-                    raw_text = await response.text()
-                    if response.status != 200:
-                        error_detail = f": {raw_text[:500]}" if raw_text else ""
-                        raise Exception(f"HTTP {response.status}{error_detail}")
-                    response_data = json.loads(raw_text)
-                    result = response_data.get("result", response_data)
-                    latency = result.get("time_taken", time.time() - start_ts)
-                    score = result.get("score", 0.0)
-                    env_logger.info(f"Task ID {task_id}: Done (Score: {score})")
-                    return {"task_id": task_id, "score": score, "time": latency}
-            except Exception as e:
-                if any(f"HTTP {c}" in str(e) for c in retry_statuses):
-                    if attempt >= vcst.ENV_EVAL_TASK_MAX_RETRIES:
-                        env_logger.warning("Task ID %s: Basilica failure after %d attempts, excluding from average", task_id, attempt)
-                        return None
-                    await asyncio.sleep(vcst.ENV_EVAL_TASK_RETRY_DELAY)
-                else:
-                    env_logger.error("Task ID %s: Non-retryable error, scoring 0: %s", task_id, e)
-                    return {"task_id": task_id, "score": 0.0, "time": 0.0}
-
-    semaphore = asyncio.Semaphore(vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS)
-
-    async def evaluate_with_semaphore(session: aiohttp.ClientSession, seed: int, task_id: int, task_idx: int) -> dict | None:
-        async with semaphore:
-            return await evaluate_single_task(session, seed, task_id, task_idx)
-
-    session_timeout = aiohttp.ClientTimeout(total=vcst.ENV_EVAL_SESSION_TIMEOUT)
-    async with aiohttp.ClientSession(timeout=session_timeout) as session:
-        env_logger.info(f"Starting {num_eval_samples} evaluations with concurrency={vcst.ENV_EVAL_MAX_CONCURRENT_REQUESTS}...")
-        tasks = [evaluate_with_semaphore(session, seed, task_id, idx) for idx, (seed, task_id) in enumerate(eval_list)]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        for idx, result in enumerate(results):
-            if isinstance(result, Exception):
-                seed, task_id = eval_list[idx]
-                env_logger.error(f"Seed {seed}, Task {task_id}: Failed with exception: {result}")
-            elif result is not None:
-                all_results.append(result)
-
-    total_score = sum(r.get("score", 0.0) for r in all_results)
-    total_time = sum(r.get("time", 0.0) for r in all_results)
-    avg_score = total_score / len(all_results) if all_results else 0.0
-    avg_time = total_time / len(all_results) if all_results else 0.0
-    env_logger.info(f"Summary: {len(all_results)}/{len(eval_list)} successful, Avg Score: {avg_score:.4f}, Avg Time: {avg_time:.2f}s")
-    return avg_score
+    return await _run_eval_environment_rollouts(
+        sglang_url=sglang_url,
+        env_url=env_url,
+        eval_seeds=eval_seeds,
+        task_id_max=data_len_range,
+        task_id_min=task_id_min,
+        inference_model_name=inference_model_name,
+        temperature=temperature,
+        env_payload_extra=env_payload_extra or {},
+    )
 
 
 async def run_evaluation_docker_image(
