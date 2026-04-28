@@ -3,6 +3,8 @@ from datetime import date
 
 from core.constants import GRPO_DEFAULT_FIELD_PROMPT
 from core.constants import NETUID
+from core.models.utility_models import AugmentationScope
+from core.models.utility_models import AugmentationType
 
 
 RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"
@@ -314,6 +316,30 @@ DEFAULT_PARTICIPANT_COMMIT = "8631451156e2915070f77e5547ca0d5ed3d0eb8a"
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
+
+# Model augmentation constants
+AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
+AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
+AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
+AUGMENTATION_PROBABILITY = 0.5  # Probability that a task gets any augmentation at all
+
+# Weighted distribution over augmentation types (normalised at runtime)
+# When an augmentation is applied, one type is chosen according to these weights
+AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
+    AugmentationType.GAUSSIAN_NOISE: 0.35,
+    AugmentationType.WEIGHT_SCALING: 0.30,
+    AugmentationType.MAGNITUDE_PRUNING: 0.25,
+    AugmentationType.LAYER_REINIT: 0.10,
+}
+
+# Weighted distribution over layer scope (normalised at runtime)
+# Determines how many layers the augmentation targets
+AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
+    AugmentationScope.SINGLE_LAYER: 0.40,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.30,
+    AugmentationScope.MULTI_LAYER: 0.20,
+    AugmentationScope.ALL_LAYERS: 0.10,
+}
 
 # Environment evaluation constants
 ENV_EVAL_IMAGE = "diagonalge/env-eval:latest"

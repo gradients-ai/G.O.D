@@ -408,6 +408,68 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
+def run_augmentation_container(
+    task_id: str,
+    src_model: str,
+    augmentation_config,
+    log_labels: dict[str, str] | None = None,
+) -> tuple[int, Exception | None]:
+    client = docker.from_env()
+
+    command = [
+        "--task-id", task_id,
+        "--src-model", src_model,
+        "--aug-type", augmentation_config.aug_type.value,
+        "--scope", augmentation_config.scope.value,
+        "--seed", str(augmentation_config.seed),
+        "--intensity", str(augmentation_config.intensity),
+    ]
+
+    container_name = f"augmentor-{task_id}-{str(uuid.uuid4())[:8]}"
+    container = None
+
+    try:
+        logger.info(f"Starting augmentation container: {container_name}", extra=log_labels)
+        container = client.containers.run(
+            image=cst.MODEL_AUGMENTATION_DOCKER_IMAGE,
+            name=container_name,
+            command=command,
+            labels=log_labels,
+            volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+            remove=False,
+            detach=True,
+        )
+
+        stream_container_logs(container, get_all_context_tags())
+
+        result = container.wait()
+        exit_code = result.get("StatusCode", -1)
+
+        if exit_code == 0:
+            logger.info(f"Augmentation completed successfully for task {task_id}", extra=log_labels)
+        else:
+            logs = container.logs().decode("utf-8", errors="ignore")
+            error_message = extract_container_error(logs)
+            return exit_code, error_message
+
+        return exit_code, None
+
+    except docker.errors.ContainerError as e:
+        logger.error(f"Augmentation container failed for task {task_id}: {e}", extra=log_labels)
+        return 1, e
+
+    except Exception as ex:
+        logger.error(f"Unexpected error in augmentation for task {task_id}: {ex}", extra=log_labels)
+        return 1, ex
+
+    finally:
+        if container:
+            try:
+                container.remove(force=True)
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
+
+
 async def run_environment_server_container(environment_name: str, log_labels: dict) -> Container:
     client = docker.from_env()
 
@@ -633,12 +695,34 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
         anonymous_model = get_anonymous_model_dir(training_data.model)
 
+        if training_data.augmentation_config is not None:
+            augmented_model_name = training_data.task_id
+            await log_task(
+                training_data.task_id, task.hotkey,
+                f"Applying augmentation: {training_data.augmentation_config.aug_type.value}",
+            )
+            exit_code, exc = await asyncio.to_thread(
+                run_augmentation_container,
+                task_id=training_data.task_id,
+                src_model=anonymous_model,
+                augmentation_config=training_data.augmentation_config,
+                log_labels=log_labels,
+            )
+            if exit_code != 0:
+                message = f"[ERROR] Augmentation failed | ExitCode: {exit_code} | LastError: {exc}"
+                await log_task(training_data.task_id, task.hotkey, message)
+                await complete_task(training_data.task_id, task.hotkey, success=False)
+                raise RuntimeError(f"Augmentation container failed: {exc}")
+            model_for_training = augmented_model_name
+        else:
+            model_for_training = anonymous_model
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
                     task_id=training_data.task_id,
                     tag=tag,
-                    model=anonymous_model,
+                    model=model_for_training,
                     dataset_zip=training_data.dataset_zip,
                     model_type=training_data.model_type,
                     expected_repo_name=training_data.expected_repo_name,
@@ -656,7 +740,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     task_id=training_data.task_id,
                     hotkey=task.hotkey,
                     tag=tag,
-                    model=anonymous_model,
+                    model=model_for_training,
                     dataset=training_data.dataset,
                     dataset_type=training_data.dataset_type,
                     task_type=task_type,
@@ -734,6 +818,21 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
                 except Exception as cleanup_err:
                     await log_task(training_data.task_id, task.hotkey, f"Error during container cleanup: {cleanup_err}")
+
+            # Clean up augmented model copy from cache volume
+            if training_data.augmentation_config is not None:
+                try:
+                    augmented_dir = f"/cache/models/{training_data.task_id}"
+                    client = docker.from_env()
+                    cleanup = client.containers.run(
+                        image="alpine:latest",
+                        command=["rm", "-rf", augmented_dir],
+                        volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+                        remove=True,
+                    )
+                    logger.info(f"Cleaned up augmented model dir: {augmented_dir}", extra=log_labels)
+                except Exception as aug_cleanup_err:
+                    logger.warning(f"Failed to clean up augmented model: {aug_cleanup_err}", extra=log_labels)
 
             logger.info("Cleaning up", extra=log_labels)
             if tag:

@@ -215,6 +215,27 @@ class Backend(str, Enum):
     RUNPOD = "runpod"
 
 
+class AugmentationType(str, Enum):
+    GAUSSIAN_NOISE = "gaussian_noise"
+    WEIGHT_SCALING = "weight_scaling"
+    MAGNITUDE_PRUNING = "magnitude_pruning"
+    LAYER_REINIT = "layer_reinit"
+
+
+class AugmentationScope(str, Enum):
+    SINGLE_LAYER = "single_layer"
+    LAYER_TYPE_GROUP = "layer_type_group"
+    MULTI_LAYER = "multi_layer"
+    ALL_LAYERS = "all_layers"
+
+
+class AugmentationConfig(BaseModel):
+    aug_type: AugmentationType
+    scope: AugmentationScope
+    seed: int
+    intensity: float
+
+
 class GPUInfo(BaseModel):
     gpu_id: int = Field(..., description="GPU ID")
     gpu_type: GPUType = Field(..., description="GPU Type")

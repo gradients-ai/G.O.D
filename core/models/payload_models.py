@@ -10,6 +10,7 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from core import constants as cst
+from core.models.utility_models import AugmentationConfig
 from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
@@ -44,6 +45,7 @@ class TrainRequest(BaseModel):
     task_id: str
     hours_to_complete: float
     expected_repo_name: str | None = None
+    augmentation_config: AugmentationConfig | None = None
 
 
 class TrainRequestText(TrainRequest):

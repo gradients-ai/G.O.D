@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -64,8 +65,9 @@ async def _insert_base_task(connection: Connection, task: AnyTypeRawTask) -> dic
         {cst.TRAINING_REPO_BACKUP},
         {cst.STARTED_AT},
         {cst.TERMINATION_AT},
-        {cst.YARN_FACTOR})
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        {cst.YARN_FACTOR},
+        {cst.AUGMENTATION_CONFIG})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
         RETURNING *
     """
     return await connection.fetchrow(
@@ -86,6 +88,7 @@ async def _insert_base_task(connection: Connection, task: AnyTypeRawTask) -> dic
         task.started_at,
         task.termination_at,
         task.yarn_factor,
+        json.dumps(task.augmentation_config.model_dump()) if task.augmentation_config else None,
     )
 
 
@@ -457,6 +460,8 @@ async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeR
         async with connection.transaction():
             base_task_fields = await get_table_fields(cst.TASKS_TABLE, connection)
             base_updates = {k: v for k, v in updates.items() if k in base_task_fields}
+            if cst.AUGMENTATION_CONFIG in base_updates and base_updates[cst.AUGMENTATION_CONFIG] is not None:
+                base_updates[cst.AUGMENTATION_CONFIG] = json.dumps(base_updates[cst.AUGMENTATION_CONFIG])
             if base_updates:
                 set_clause = ", ".join([f"{column} = ${i + 2}" for i, column in enumerate(base_updates.keys())])
                 values = list(base_updates.values())

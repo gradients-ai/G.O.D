@@ -13,6 +13,7 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from core.constants import YARN_VALID_FACTORS
+from core.models.utility_models import AugmentationConfig
 from core.models.utility_models import Backend
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
@@ -108,6 +109,7 @@ class RawTask(BaseModel):
     model_params_count: int = 0
     backend: Backend | None = None
     yarn_factor: int | None = None
+    augmentation_config: AugmentationConfig | None = None
 
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
