@@ -18,6 +18,7 @@ IS_PROD_ENV = NETUID == DEFAULT_NETUID
 
 VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
+VALIDATOR_DOCKER_IMAGE_ENV = "gradientsio/env-evaluator:basilica"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
 

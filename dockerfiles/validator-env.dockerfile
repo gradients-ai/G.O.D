@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir --upgrade-strategy only-if-needed .
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed -r /opt/mcts/requirements.txt
 
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
-    git+https://github.com/PhoenixBeaudry/affinetes-gradients.git \
+    git+https://github.com/PhoenixBeaudry/affinetes-gradients.git@feat/mcts-api \
     peft==0.18.1 accelerate==1.6.0
 
 RUN apt-get update && apt-get install -y --no-install-recommends libnuma1 && rm -rf /var/lib/apt/lists/*

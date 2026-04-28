@@ -504,7 +504,7 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo.setdefault(repo, dep_info)
     task_type = type(dataset_type).__name__
     is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
-    basilica_image = vcst.ENV_EVAL_IMAGE if is_environment_eval else cst.VALIDATOR_DOCKER_IMAGE
+    basilica_image = cst.VALIDATOR_DOCKER_IMAGE_ENV if is_environment_eval else cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
