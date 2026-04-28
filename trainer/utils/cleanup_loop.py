@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 from datetime import datetime
 from datetime import timedelta
@@ -58,6 +59,7 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                         cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"},
                         str(abs_task_path): {"bind": "/app/trainer/task_history.json", "mode": "ro"},
                     },
+                    environment={"MODEL_HASH_SALT": os.environ.get("MODEL_HASH_SALT", "")},
                     remove=True,
                     detach=True,
                 )

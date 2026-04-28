@@ -29,6 +29,7 @@ from trainer.tasks import update_wandb_url
 from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import build_wandb_env
 from trainer.utils.misc import extract_container_error
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import stream_container_logs
 from validator.utils.logging import stream_image_build_logs
@@ -372,6 +373,7 @@ def run_downloader_container(
             command=command,
             labels=log_labels,
             volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+            environment={"MODEL_HASH_SALT": os.environ.get("MODEL_HASH_SALT", "")},
             remove=False,
             detach=True,
         )
@@ -629,12 +631,14 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             env_server_url_str = ",".join(env_urls)
             await log_task(training_data.task_id, task.hotkey, f"Environment servers ready.")
 
+        anonymous_model = get_anonymous_model_dir(training_data.model)
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
                     task_id=training_data.task_id,
                     tag=tag,
-                    model=training_data.model,
+                    model=anonymous_model,
                     dataset_zip=training_data.dataset_zip,
                     model_type=training_data.model_type,
                     expected_repo_name=training_data.expected_repo_name,
@@ -652,7 +656,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     task_id=training_data.task_id,
                     hotkey=task.hotkey,
                     tag=tag,
-                    model=training_data.model,
+                    model=anonymous_model,
                     dataset=training_data.dataset,
                     dataset_type=training_data.dataset_type,
                     task_type=task_type,

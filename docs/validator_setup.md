@@ -72,6 +72,12 @@ task validator
 The validator communicates with 'api.gradients.io' for tournament infrastructure (fees, balances, task coordination).
 Ensure your firewall allows outbound HTTPS connections to this domain.
 
+7. Set the model hash salt
+
+```bash
+echo "MODEL_HASH_SALT=$(openssl rand -hex 32)" >> .vali.env
+```
+
 IF YOU ARE DEVVING AND ONLY IF YOU ARE A DEVELOPER, ADD THIS (key needs to be upgraded)
 
 ```bash

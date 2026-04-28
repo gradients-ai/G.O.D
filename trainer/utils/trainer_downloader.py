@@ -16,6 +16,8 @@ from core.models.utility_models import TaskType
 from core.models.utility_models import ImageModelType
 from core.utils import download_s3_file
 from trainer import constants as cst
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
+from trainer.utils.model_anonymizer import scrub_model_identity
 
 
 hf_api = HfApi()
@@ -103,26 +105,29 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
 
 
 async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType) -> str:
-    model_name = repo_id.replace("/", "--")
+    model_name = get_anonymous_model_dir(repo_id)
     save_path = os.path.join(save_root, model_name)
     if os.path.exists(save_path):
-        print(f"Model {repo_id} already exists at {save_path}. Skipping download.")
+        print(f"Model already cached at {save_path}. Skipping download.")
         return save_path
     else:
         has_safetensors, safetensors_path = is_safetensors_available(repo_id)
         if has_safetensors and safetensors_path and model_type in [ImageModelType.FLUX, ImageModelType.SDXL]:
-            return download_from_huggingface(repo_id, safetensors_path, save_path)
+            result = download_from_huggingface(repo_id, safetensors_path, save_path)
         else:
             snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
-            return save_path
+            result = save_path
+        scrub_model_identity(save_path)
+        return result
 
 
 async def download_axolotl_base_model(repo_id: str, save_dir: str) -> str:
-    model_dir = os.path.join(save_dir, repo_id.replace("/", "--"))
+    model_dir = os.path.join(save_dir, get_anonymous_model_dir(repo_id))
     if os.path.exists(model_dir):
-        print(f"Model {repo_id} already exists at {model_dir}. Skipping download.")
+        print(f"Model already cached at {model_dir}. Skipping download.")
         return model_dir
     snapshot_download(repo_id=repo_id, repo_type="model", local_dir=model_dir, local_dir_use_symlinks=False)
+    scrub_model_identity(model_dir)
     return model_dir
 
 

@@ -5,6 +5,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from trainer import constants as cst
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
 
 
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
@@ -31,7 +32,7 @@ def is_older_than(dt_str: str | None, hours: int) -> bool:
 
 
 def get_model_folder(model_name: str) -> str:
-    return model_name.replace("/", "--")
+    return get_anonymous_model_dir(model_name)
 
 
 def load_task_history() -> list[dict]:
