@@ -233,7 +233,7 @@ async def main():
 
 
 def download_miner_dataset(repo_id: str, cache_dir: str) -> str:
-    """Download a single HF dataset to the miner datasets cache. Skips if already downloaded."""
+    """Download a single HF dataset to the miner datasets cache."""
     cache_name = repo_id.replace("/", "--")
     cache_path = os.path.join(cache_dir, cache_name)
 

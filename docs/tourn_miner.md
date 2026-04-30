@@ -295,9 +295,7 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 **Accessing datasets in your training code:** When requested datasets are downloaded, two environment variables are set on your training container:
 
 - `MINER_DATASETS_DIR` — Parent directory path (e.g. `/cache/miner_datasets`)
-- `MINER_DATASETS` — Comma-separated list of dataset repo IDs that were downloaded
-
-Each dataset is stored at `{MINER_DATASETS_DIR}/{org}--{name}/`, where `/` in the repo ID is replaced with `--`.
+- `MINER_DATASETS` — Comma-separated list of directory names that were successfully downloaded (e.g. `SoelMgd--Poker_Dataset,RZ412--PokerBench`)
 
 ```python
 import os
@@ -306,8 +304,8 @@ datasets_dir = os.environ.get("MINER_DATASETS_DIR")
 dataset_list = os.environ.get("MINER_DATASETS", "").split(",")
 
 if datasets_dir and dataset_list[0]:
-    for repo_id in dataset_list:
-        dataset_path = os.path.join(datasets_dir, repo_id.replace("/", "--"))
+    for name in dataset_list:
+        dataset_path = os.path.join(datasets_dir, name)
         # dataset_path is e.g. /cache/miner_datasets/SoelMgd--Poker_Dataset
 ```
 

@@ -2,42 +2,27 @@ import uuid
 
 import docker
 
-from core.whitelisted_sft_datasets import validate_requested_datasets
 from trainer import constants as cst
 from trainer.utils.trainer_logging import logger
 
 
 def download_whitelisted_datasets(
-    requested_datasets: list[str] | None,
+    requested_datasets: list[str],
     hotkey: str,
     task_id: str,
 ) -> list[str]:
-    """Validate and download requested datasets into the shared cache volume.
+    """Download pre-validated datasets into the shared cache volume.
 
-    Runs the trainer-downloader container with the cache volume mounted rw.
-    Downloaded datasets persist at /cache/miner_datasets/{org--name}/ and are
-    readable by training containers which mount the same volume at /cache (ro).
-
-    Returns the list of dataset directory names successfully downloaded.
-    Individual failures are logged and skipped.
+    Returns directory names (org--name) for datasets that were successfully downloaded.
     """
-    if not requested_datasets:
-        return []
-
-    validated = validate_requested_datasets(requested_datasets)
-    if not validated:
-        logger.warning(
-            f"Miner {hotkey} requested datasets {requested_datasets} but none matched whitelist (task {task_id})"
-        )
-        return []
-
-    logger.info(f"Validated datasets for hotkey {hotkey}, task {task_id}: {validated}")
+    logger.info(f"Downloading datasets for hotkey {hotkey}, task {task_id}: {requested_datasets}")
 
     downloaded = []
-    for dataset_repo_id in validated:
+    for dataset_repo_id in requested_datasets:
+        dir_name = dataset_repo_id.replace("/", "--")
         try:
             _download_dataset_via_container(dataset_repo_id, task_id)
-            downloaded.append(dataset_repo_id.replace("/", "--"))
+            downloaded.append(dir_name)
         except Exception as e:
             logger.error(f"Failed to download dataset {dataset_repo_id} for task {task_id}: {e}")
 
@@ -45,7 +30,7 @@ def download_whitelisted_datasets(
 
 
 def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
-    """Download a single HF dataset into the shared cache volume using the trainer-downloader container."""
+    """Download a single HF dataset into the shared cache volume."""
     client = docker.from_env()
     container_name = f"miner-ds-{task_id[:8]}-{uuid.uuid4().hex[:8]}"
 

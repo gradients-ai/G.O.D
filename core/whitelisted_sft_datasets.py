@@ -9,11 +9,6 @@ MAX_REQUESTED_DATASETS = 2
 
 
 def validate_requested_datasets(requested_datasets: list[str] | None) -> list[str]:
-    """Validate requested datasets against the whitelist.
-
-    Filters to only whitelisted datasets and truncates to MAX_REQUESTED_DATASETS.
-    Returns the validated list (empty if None/empty input or no matches).
-    """
     if not requested_datasets:
         return []
 

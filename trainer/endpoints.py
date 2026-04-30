@@ -67,15 +67,17 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
 
     if req.requested_datasets:
         try:
-            await asyncio.to_thread(
+            downloaded = await asyncio.to_thread(
                 download_whitelisted_datasets,
                 requested_datasets=req.requested_datasets,
                 hotkey=hotkey,
                 task_id=task_id,
             )
+            req.requested_datasets = downloaded or None
         except Exception as e:
             await log_task(task_id, hotkey, f"Failed to download whitelisted datasets: {str(e)}")
             logger.warning(f"Dataset download failed, continuing without: {e}", extra={"task_id": task_id, "hotkey": hotkey})
+            req.requested_datasets = None
 
     await start_training_task(req, local_repo_path)
 

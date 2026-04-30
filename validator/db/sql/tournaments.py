@@ -505,7 +505,7 @@ async def update_tournament_participant_training_repo(
     requested_datasets: list[str] | None,
     psql_db: PSQLDB,
 ):
-    """Update the training repo information for a tournament participant."""
+    """Update training repo info for a tournament participant."""
     async with await psql_db.connection() as connection:
         datasets_json = json.dumps(requested_datasets) if requested_datasets else None
         query = f"""
@@ -843,10 +843,7 @@ async def get_training_status_for_task(task_id: str, psql_db: PSQLDB) -> dict[st
 async def get_tournament_training_repo_and_commit(
     hotkey: str, tournament_id: str, psql_db: PSQLDB
 ) -> TrainingRepoInfo:
-    """
-    Get training_repo, training_commit_hash, github_token, and requested_datasets for a hotkey in a tournament.
-    If backup_repo is present, it is used instead of training_repo.
-    """
+    """Get training repo info for a hotkey in a tournament. Uses backup_repo if present."""
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
