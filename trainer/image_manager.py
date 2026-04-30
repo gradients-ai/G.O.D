@@ -194,8 +194,8 @@ async def run_trainer_container_image(
                 image=tag,
                 command=command,
                 volumes={
-                    cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
+                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
                 },
                 remove=False,
                 shm_size=shm_size,
@@ -240,6 +240,7 @@ async def run_trainer_container_text(
     log_labels: dict[str, str] | None = None,
     gpu_ids: list[int] = [0],
     env_server_urls: str | None = None,
+    miner_datasets: list[str] | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
@@ -248,6 +249,9 @@ async def run_trainer_container_text(
     environment = build_wandb_env(task_id, hotkey)
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
+    if miner_datasets:
+        environment[cst.MINER_DATASETS_DIR_ENV] = cst.MINER_DATASETS_CACHE_DIR
+        environment[cst.MINER_DATASETS_ENV] = ",".join(miner_datasets)
 
     command: list[str] = [
         "--task-id",
@@ -286,8 +290,8 @@ async def run_trainer_container_text(
                 image=tag,
                 command=command,
                 volumes={
-                    cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},  # NOTE: may require rw fixing
+                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
                 },
                 remove=False,
                 shm_size=shm_size,
@@ -371,7 +375,7 @@ def run_downloader_container(
             name=container_name,
             command=command,
             labels=log_labels,
-            volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+            volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
             remove=False,
             detach=True,
         )
@@ -456,8 +460,8 @@ async def upload_repo_to_hf(
         }
 
         volumes = {
-            cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-            cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
+            cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+            cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
         }
 
         container_name = f"hf-upload-{uuid.uuid4().hex}"
@@ -662,6 +666,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
                     env_server_urls=env_server_url_str,
+                    miner_datasets=task.requested_datasets,
                 ),
                 timeout=60,
             )

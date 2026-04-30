@@ -275,6 +275,44 @@ patch_wandb_symlinks(train_cst.WANDB_LOGS_DIR)
 - Should contain images and metadata (captions)
 - Your script must handle extraction and preparation
 
+### Miner-Requested Datasets (Environment Tasks)
+
+Miners can request HuggingFace datasets from a curated whitelist to be pre-downloaded and available during training. This is useful for environment tasks where supplementary data (e.g. game traces, strategy datasets) can improve training.
+
+**Requesting datasets:** Set `requested_datasets` in your `get_training_repo()` response:
+
+```python
+async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
+    return TrainingRepoResponse(
+        github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
+        commit_hash="YOUR_COMMIT_HASH",
+        requested_datasets=["SoelMgd/Poker_Dataset", "RZ412/PokerBench"],
+    )
+```
+
+**Whitelist:** Only datasets listed in [`core/whitelisted_sft_datasets.json`](../core/whitelisted_sft_datasets.json) are accepted. Non-whitelisted entries are silently filtered out. The maximum number of datasets is defined by `MAX_REQUESTED_DATASETS` in [`core/whitelisted_sft_datasets.py`](../core/whitelisted_sft_datasets.py).
+
+**Accessing datasets in your training code:** When requested datasets are downloaded, two environment variables are set on your training container:
+
+- `MINER_DATASETS_DIR` — Parent directory path (e.g. `/cache/miner_datasets`)
+- `MINER_DATASETS` — Comma-separated list of dataset repo IDs that were downloaded
+
+Each dataset is stored at `{MINER_DATASETS_DIR}/{org}--{name}/`, where `/` in the repo ID is replaced with `--`.
+
+```python
+import os
+
+datasets_dir = os.environ.get("MINER_DATASETS_DIR")
+dataset_list = os.environ.get("MINER_DATASETS", "").split(",")
+
+if datasets_dir and dataset_list[0]:
+    for repo_id in dataset_list:
+        dataset_path = os.path.join(datasets_dir, repo_id.replace("/", "--"))
+        # dataset_path is e.g. /cache/miner_datasets/SoelMgd--Poker_Dataset
+```
+
+Datasets are mounted **read-only** in the training container.
+
 ## Output Structure Requirements
 
 **Critical:** The output paths are standardised and MUST NOT be changed. The uploader expects models at these exact locations.
