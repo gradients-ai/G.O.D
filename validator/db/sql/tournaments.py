@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -495,16 +496,24 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
 
 
 async def update_tournament_participant_training_repo(
-    tournament_id: str, hotkey: str, training_repo: str, training_commit_hash: str, github_token: str | None, psql_db: PSQLDB
+    tournament_id: str,
+    hotkey: str,
+    training_repo: str,
+    training_commit_hash: str,
+    github_token: str | None,
+    requested_datasets: list[str] | None,
+    psql_db: PSQLDB,
 ):
     """Update the training repo information for a tournament participant."""
     async with await psql_db.connection() as connection:
+        datasets_json = json.dumps(requested_datasets) if requested_datasets else None
         query = f"""
             UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
-            SET {cst.TRAINING_REPO} = $1, {cst.TRAINING_COMMIT_HASH} = $2, {cst.GITHUB_TOKEN} = $3
-            WHERE {cst.TOURNAMENT_ID} = $4 AND {cst.HOTKEY} = $5
+            SET {cst.TRAINING_REPO} = $1, {cst.TRAINING_COMMIT_HASH} = $2,
+                {cst.GITHUB_TOKEN} = $3, {cst.REQUESTED_DATASETS} = $4
+            WHERE {cst.TOURNAMENT_ID} = $5 AND {cst.HOTKEY} = $6
         """
-        await connection.execute(query, training_repo, training_commit_hash, github_token, tournament_id, hotkey)
+        await connection.execute(query, training_repo, training_commit_hash, github_token, datasets_json, tournament_id, hotkey)
         logger.info(f"Updated training repo for participant {hotkey} in tournament {tournament_id}")
 
 
@@ -523,7 +532,8 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
-                   {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}
+                   {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2
         """
@@ -538,6 +548,7 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
                 training_commit_hash=result[cst.TRAINING_COMMIT_HASH],
                 github_token=result[cst.GITHUB_TOKEN],
                 backup_repo=result[cst.BACKUP_REPO],
+                requested_datasets=json.loads(result[cst.REQUESTED_DATASETS]) if result[cst.REQUESTED_DATASETS] else None,
             )
         return None
 
@@ -547,7 +558,8 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
-                   {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}
+                   {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
         """
@@ -562,6 +574,7 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
                 training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
                 github_token=row[cst.GITHUB_TOKEN],
                 backup_repo=row[cst.BACKUP_REPO],
+                requested_datasets=json.loads(row[cst.REQUESTED_DATASETS]) if row[cst.REQUESTED_DATASETS] else None,
             )
             for row in results
         ]
@@ -660,8 +673,9 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
             query = f"""
                 INSERT INTO {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
                 ({cst.TASK_ID}, {cst.HOTKEY}, {cst.CREATED_AT}, {cst.PRIORITY},
-                 {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN})
-                SELECT * FROM unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::integer[], $5::text[], $6::text[], $7::text[])
+                 {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
+                 {cst.REQUESTED_DATASETS})
+                SELECT * FROM unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::integer[], $5::text[], $6::text[], $7::text[], $8::text[])
                 ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO NOTHING
             """
 
@@ -672,9 +686,14 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
             training_repos = [assignment.training_repo for assignment in assignments]
             training_commit_hashes = [assignment.training_commit_hash for assignment in assignments]
             github_tokens = [assignment.github_token for assignment in assignments]
+            requested_datasets = [
+                json.dumps(assignment.requested_datasets) if assignment.requested_datasets else None
+                for assignment in assignments
+            ]
 
             await connection.execute(
-                query, task_ids, hotkeys, timestamps, priorities, training_repos, training_commit_hashes, github_tokens
+                query, task_ids, hotkeys, timestamps, priorities, training_repos, training_commit_hashes, github_tokens,
+                requested_datasets
             )
 
             priority_counts = {}
@@ -701,7 +720,7 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
             SELECT {cst.TASK_ID}, {cst.HOTKEY}, {cst.TRAINING_STATUS}, {cst.N_TRAINING_ATTEMPTS},
                    {cst.CREATED_AT}, {cst.UPDATED_AT}, {cst.PRIORITY},
                    {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
-                   {cst.TRAINER_IP}
+                   {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
             WHERE {cst.TRAINING_STATUS} = $1
             ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC
@@ -734,6 +753,7 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
                         training_repo=row[cst.TRAINING_REPO],
                         training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
                         github_token=row[cst.GITHUB_TOKEN],
+                        requested_datasets=json.loads(row[cst.REQUESTED_DATASETS]) if row[cst.REQUESTED_DATASETS] else None,
                         priority=row[cst.PRIORITY],
                         trainer_ip=row[cst.TRAINER_IP],
                     )
@@ -821,14 +841,15 @@ async def get_training_status_for_task(task_id: str, psql_db: PSQLDB) -> dict[st
 
 async def get_tournament_training_repo_and_commit(
     hotkey: str, tournament_id: str, psql_db: PSQLDB
-) -> tuple[str | None, str | None, str | None]:
+) -> tuple[str | None, str | None, str | None, list[str] | None]:
     """
-    Get training_repo, training_commit_hash, and github_token for a hotkey in a tournament.
+    Get training_repo, training_commit_hash, github_token, and requested_datasets for a hotkey in a tournament.
     If backup_repo is present, it is used instead of training_repo.
     """
     async with await psql_db.connection() as connection:
         query = f"""
-            SELECT {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}
+            SELECT {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
+                   {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.HOTKEY} = $1 AND {cst.TOURNAMENT_ID} = $2
             ORDER BY {cst.CREATED_AT} DESC
@@ -836,16 +857,17 @@ async def get_tournament_training_repo_and_commit(
         """
         result = await connection.fetchrow(query, hotkey, tournament_id)
         if result:
+            datasets = json.loads(result[cst.REQUESTED_DATASETS]) if result[cst.REQUESTED_DATASETS] else None
             if result[cst.BACKUP_REPO]:
                 logger.info(f"Using backup repo for hotkey {hotkey} in tournament {tournament_id}: {result[cst.BACKUP_REPO]}")
                 repo = result[cst.BACKUP_REPO]
-                return repo, None, None
+                return repo, None, None, datasets
             else:
                 repo = result[cst.TRAINING_REPO]
                 logger.info(f"Using training repo for hotkey {hotkey} in tournament {tournament_id}: {repo}")
-                return repo, result[cst.TRAINING_COMMIT_HASH], result[cst.GITHUB_TOKEN]
+                return repo, result[cst.TRAINING_COMMIT_HASH], result[cst.GITHUB_TOKEN], datasets
         logger.warning(f"No training repository found for hotkey {hotkey} in tournament {tournament_id}")
-        return None, None, None
+        return None, None, None, None
 
 
 async def get_tournament_training_stats(psql_db: PSQLDB) -> dict:

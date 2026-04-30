@@ -182,6 +182,7 @@ TRAINING_REPO = "training_repo"
 TRAINING_COMMIT_HASH = "training_commit_hash"
 GITHUB_TOKEN = "github_token"
 BACKUP_REPO = "backup_repo"
+REQUESTED_DATASETS = "requested_datasets"
 DSTACK_RUNNAME = "dstack_runname"
 
 # Trainer GPUs Table

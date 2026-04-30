@@ -278,11 +278,13 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                     training_repo = None
                     training_commit_hash = None
                     github_token = None
+                    requested_datasets = None
                     if tournament_id:
                         (
                             training_repo,
                             training_commit_hash,
                             github_token,
+                            requested_datasets,
                         ) = await tournament_sql.get_tournament_training_repo_and_commit(hotkey, tournament_id, config.psql_db)
 
                     assignments.append(
@@ -294,6 +296,7 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                             training_repo=training_repo,
                             training_commit_hash=training_commit_hash,
                             github_token=github_token,
+                            requested_datasets=requested_datasets,
                         )
                     )
                 tasks_to_update.append(task)
@@ -315,12 +318,14 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
             training_repo = None
             training_commit_hash = None
             github_token = None
+            requested_datasets = None
             last_tournament = await tournament_sql.get_latest_completed_tournament(config.psql_db, tournament_type)
             if last_tournament and last_tournament.winner_hotkey:
                 (
                     training_repo,
                     training_commit_hash,
                     github_token,
+                    requested_datasets,
                 ) = await tournament_sql.get_tournament_training_repo_and_commit(
                     last_tournament.winner_hotkey, last_tournament.tournament_id, config.psql_db
                 )
@@ -334,6 +339,7 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                     training_repo=training_repo,
                     training_commit_hash=training_commit_hash,
                     github_token=github_token,
+                    requested_datasets=requested_datasets,
                 )
             )
             tasks_to_update.append(task)
@@ -452,6 +458,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     training_task.training_repo,
                     training_task.training_commit_hash,
                     training_task.github_token,
+                    training_task.requested_datasets,
                     config,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
@@ -603,6 +610,7 @@ async def _create_training_request(
     training_repo: str,
     training_commit_hash: str,
     github_token: str | None,
+    requested_datasets: list[str] | None,
     config: Config,
 ) -> TrainerProxyRequest:
     """
@@ -668,6 +676,7 @@ async def _create_training_request(
         hotkey=hotkey,
         github_commit_hash=training_commit_hash,
         github_token=github_token,
+        requested_datasets=requested_datasets,
     )
 
 

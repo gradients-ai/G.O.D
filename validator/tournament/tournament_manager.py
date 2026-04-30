@@ -697,12 +697,19 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                 )
                 await add_tournament_participants([participant], psql_db)
 
+                miner_datasets = responding_node.training_repo_response.requested_datasets
+                if miner_datasets:
+                    logger.info(
+                        f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"
+                    )
+
                 await update_tournament_participant_training_repo(
                     tournament_id,
                     responding_node.node.hotkey,
                     responding_node.training_repo_response.github_repo,
                     responding_node.training_repo_response.commit_hash,
                     responding_node.training_repo_response.github_token,
+                    miner_datasets,
                     psql_db,
                 )
 
