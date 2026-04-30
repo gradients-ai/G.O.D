@@ -9,6 +9,7 @@ from fiber.chain.models import Node
 
 import validator.core.constants as cst
 from core.models.payload_models import TrainingRepoResponse
+from core.whitelisted_sft_datasets import validate_requested_datasets
 from core.models.tournament_models import Group
 from core.models.tournament_models import GroupRound
 from core.models.tournament_models import KnockoutRound
@@ -697,7 +698,9 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                 )
                 await add_tournament_participants([participant], psql_db)
 
-                miner_datasets = responding_node.training_repo_response.requested_datasets
+                miner_datasets = validate_requested_datasets(
+                    responding_node.training_repo_response.requested_datasets
+                ) or None
                 if miner_datasets:
                     logger.info(
                         f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"

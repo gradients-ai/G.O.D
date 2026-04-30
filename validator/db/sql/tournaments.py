@@ -18,6 +18,7 @@ from core.models.tournament_models import TournamentStatus
 from core.models.tournament_models import TournamentTask
 from core.models.tournament_models import TournamentTaskScore
 from core.models.tournament_models import TournamentTaskTraining
+from core.models.tournament_models import TrainingRepoInfo
 from core.models.tournament_models import TournamentType
 from core.models.utility_models import GPUInfo
 from core.models.utility_models import TaskType
@@ -675,7 +676,7 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
                 ({cst.TASK_ID}, {cst.HOTKEY}, {cst.CREATED_AT}, {cst.PRIORITY},
                  {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
                  {cst.REQUESTED_DATASETS})
-                SELECT * FROM unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::integer[], $5::text[], $6::text[], $7::text[], $8::text[])
+                SELECT * FROM unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::integer[], $5::text[], $6::text[], $7::text[], $8::jsonb[])
                 ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO NOTHING
             """
 
@@ -841,7 +842,7 @@ async def get_training_status_for_task(task_id: str, psql_db: PSQLDB) -> dict[st
 
 async def get_tournament_training_repo_and_commit(
     hotkey: str, tournament_id: str, psql_db: PSQLDB
-) -> tuple[str | None, str | None, str | None, list[str] | None]:
+) -> TrainingRepoInfo:
     """
     Get training_repo, training_commit_hash, github_token, and requested_datasets for a hotkey in a tournament.
     If backup_repo is present, it is used instead of training_repo.
@@ -860,14 +861,23 @@ async def get_tournament_training_repo_and_commit(
             datasets = json.loads(result[cst.REQUESTED_DATASETS]) if result[cst.REQUESTED_DATASETS] else None
             if result[cst.BACKUP_REPO]:
                 logger.info(f"Using backup repo for hotkey {hotkey} in tournament {tournament_id}: {result[cst.BACKUP_REPO]}")
-                repo = result[cst.BACKUP_REPO]
-                return repo, None, None, datasets
+                return TrainingRepoInfo(
+                    training_repo=result[cst.BACKUP_REPO],
+                    training_commit_hash=None,
+                    github_token=None,
+                    requested_datasets=datasets,
+                )
             else:
                 repo = result[cst.TRAINING_REPO]
                 logger.info(f"Using training repo for hotkey {hotkey} in tournament {tournament_id}: {repo}")
-                return repo, result[cst.TRAINING_COMMIT_HASH], result[cst.GITHUB_TOKEN], datasets
+                return TrainingRepoInfo(
+                    training_repo=repo,
+                    training_commit_hash=result[cst.TRAINING_COMMIT_HASH],
+                    github_token=result[cst.GITHUB_TOKEN],
+                    requested_datasets=datasets,
+                )
         logger.warning(f"No training repository found for hotkey {hotkey} in tournament {tournament_id}")
-        return None, None, None, None
+        return TrainingRepoInfo.empty()
 
 
 async def get_tournament_training_stats(psql_db: PSQLDB) -> dict:

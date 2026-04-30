@@ -60,12 +60,12 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
                 "--cache-dir", cst.MINER_DATASETS_CACHE_DIR,
             ],
             name=container_name,
-            volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+            volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
             remove=False,
             detach=True,
         )
 
-        result = container.wait()
+        result = container.wait(timeout=300)
         exit_code = result.get("StatusCode", -1)
 
         if exit_code == 0:

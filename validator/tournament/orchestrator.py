@@ -17,6 +17,7 @@ from core.models.tournament_models import GpuRequirement
 from core.models.tournament_models import TaskTrainingAssignment
 from core.models.tournament_models import TournamentTaskTraining
 from core.models.tournament_models import TournamentType
+from core.models.tournament_models import TrainingRepoInfo
 from core.models.utility_models import Backend
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GPUInfo
@@ -275,17 +276,9 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_id = await tournament_sql.get_tournament_id_by_task_id(task.task_id, config.psql_db)
 
                 for hotkey in hotkeys:
-                    training_repo = None
-                    training_commit_hash = None
-                    github_token = None
-                    requested_datasets = None
-                    if tournament_id:
-                        (
-                            training_repo,
-                            training_commit_hash,
-                            github_token,
-                            requested_datasets,
-                        ) = await tournament_sql.get_tournament_training_repo_and_commit(hotkey, tournament_id, config.psql_db)
+                    repo_info = await tournament_sql.get_tournament_training_repo_and_commit(
+                        hotkey, tournament_id, config.psql_db
+                    ) if tournament_id else TrainingRepoInfo.empty()
 
                     assignments.append(
                         TaskTrainingAssignment(
@@ -293,10 +286,10 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                             hotkey=hotkey,
                             created_at=task.created_at,
                             priority=priority,
-                            training_repo=training_repo,
-                            training_commit_hash=training_commit_hash,
-                            github_token=github_token,
-                            requested_datasets=requested_datasets,
+                            training_repo=repo_info.training_repo,
+                            training_commit_hash=repo_info.training_commit_hash,
+                            github_token=repo_info.github_token,
+                            requested_datasets=repo_info.requested_datasets,
                         )
                     )
                 tasks_to_update.append(task)
@@ -315,20 +308,13 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_type = None
 
             # Get the last completed tournament winner's repo
-            training_repo = None
-            training_commit_hash = None
-            github_token = None
-            requested_datasets = None
             last_tournament = await tournament_sql.get_latest_completed_tournament(config.psql_db, tournament_type)
             if last_tournament and last_tournament.winner_hotkey:
-                (
-                    training_repo,
-                    training_commit_hash,
-                    github_token,
-                    requested_datasets,
-                ) = await tournament_sql.get_tournament_training_repo_and_commit(
+                repo_info = await tournament_sql.get_tournament_training_repo_and_commit(
                     last_tournament.winner_hotkey, last_tournament.tournament_id, config.psql_db
                 )
+            else:
+                repo_info = TrainingRepoInfo.empty()
 
             assignments.append(
                 TaskTrainingAssignment(
@@ -336,10 +322,10 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                     hotkey=EMISSION_BURN_HOTKEY,
                     created_at=task.created_at,
                     priority=priority,
-                    training_repo=training_repo,
-                    training_commit_hash=training_commit_hash,
-                    github_token=github_token,
-                    requested_datasets=requested_datasets,
+                    training_repo=repo_info.training_repo,
+                    training_commit_hash=repo_info.training_commit_hash,
+                    github_token=repo_info.github_token,
+                    requested_datasets=repo_info.requested_datasets,
                 )
             )
             tasks_to_update.append(task)
