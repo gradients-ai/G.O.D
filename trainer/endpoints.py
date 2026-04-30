@@ -19,7 +19,7 @@ from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
-from trainer.utils.dataset_whitelist import download_and_place_whitelisted_datasets
+from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
 from trainer.utils.misc import get_gpu_info
@@ -68,9 +68,8 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
     if req.requested_datasets:
         try:
             await asyncio.to_thread(
-                download_and_place_whitelisted_datasets,
+                download_whitelisted_datasets,
                 requested_datasets=req.requested_datasets,
-                local_repo_path=local_repo_path,
                 hotkey=hotkey,
                 task_id=task_id,
             )
