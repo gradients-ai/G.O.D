@@ -80,4 +80,4 @@ Failed evaluation attempts retry up to `3` times, with `900` seconds between ret
 
 On startup, the validator protects deployments already stored on `pending` or `evaluating` rows and deletes other lingering Basilica deployments.
 
-It resets recovered non-tournament `EVALUATING` rows back to `pending`. Rows that remain `evaluating` are also picked up by the loop. If the stored deployment is healthy, polling resumes. If it is missing or unhealthy, the validator redeploys and saves the new deployment id.
+Rows that remain `evaluating` (usually happens if they were interrupted in event of a validator restart) are picked up by the loop and if the stored deployment is healthy, polling resumes. If it is missing or unhealthy, the validator redeploys and saves the new deployment id.
