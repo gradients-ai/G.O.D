@@ -227,13 +227,18 @@ async def _generate_diff_report_and_notify_tournament_completed(
     discord_url: str,
     psql_db: PSQLDB,
 ) -> None:
+    diff_report = None
     try:
         diff_report = await _generate_diff_report_for_result(tournament, challenger_repo, result_summary, psql_db)
+    except Exception as exc:
+        logger.error(f"Failed to generate tournament diff report: {exc}", exc_info=True)
+
+    try:
         await notify_tournament_completed(
             tournament.tournament_id, tournament.tournament_type.value, winner, discord_url, diff_report
         )
     except Exception as exc:
-        logger.error(f"Failed to generate diff report and notify tournament completion: {exc}", exc_info=True)
+        logger.error(f"Failed to notify tournament completion: {exc}", exc_info=True)
 
 
 async def assign_nodes_to_tournament_tasks(
