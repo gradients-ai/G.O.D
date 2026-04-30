@@ -97,14 +97,18 @@ def organise_tournament_round(nodes: list[Node], config: Config, tournament_type
     random.shuffle(nodes_copy)
 
     # Environment tournaments always use a single group round with all participants
-    # Minimum group size of 5 required for environment tournaments
+    # Minimum group size required for environment tournaments
     if tournament_type == TournamentType.ENVIRONMENT:
         if len(nodes_copy) < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             logger.warning(
-                f"Environment tournament requires minimum 5 participants, but only {len(nodes_copy)} provided. "
+                f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
+                f"but only {len(nodes_copy)} provided. "
                 f"Cannot create tournament round."
             )
-            raise ValueError(f"Environment tournament requires minimum 5 participants, got {len(nodes_copy)}")
+            raise ValueError(
+                f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
+                f"got {len(nodes_copy)}"
+            )
         all_hotkeys = [node.hotkey for node in nodes_copy]
         single_group = Group(member_ids=all_hotkeys, task_ids=[])
         return GroupRound(groups=[single_group])
@@ -388,8 +392,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Number of winners: {len(winners)}")
 
         # For environment tournaments, boss auto-advances through non-final rounds
+        # only when there are winners. Empty winners use generic boss fallback below.
         if tournament.tournament_type == TournamentType.ENVIRONMENT and not completed_round.is_final_round:
-            if cst.EMISSION_BURN_HOTKEY not in winners:
+            if winners and cst.EMISSION_BURN_HOTKEY not in winners:
                 winners.append(cst.EMISSION_BURN_HOTKEY)
                 logger.info(f"Boss {cst.EMISSION_BURN_HOTKEY} auto-advances to next environment round")
 
@@ -430,9 +435,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             return
 
         if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
-            # For environment tournaments, determine winner using cross-round 2/3 boss-beating rule
+            # For environment tournaments, determine winner using 6-task majority over R1-R3 + R4x3
             if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                logger.info("Environment tournament final round — applying cross-round 2/3 boss-beating rule")
+                logger.info("Environment tournament final round — applying 6-task majority boss-beating rule")
                 env_results = await determine_env_tournament_winner(tournament, winners, config, psql_db)
                 winner = env_results[0]
                 # Replace winners list with the cross-round results for downstream use

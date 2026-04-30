@@ -102,133 +102,185 @@ def get_progressive_threshold(consecutive_wins: int, tournament_type: Tournament
     return max(t_cst.EXPONENTIAL_MIN_THRESHOLD, current_threshold)
 
 
-async def check_boss_beaten_in_round(
-    round_data: TournamentRoundData, contender_hotkey: str, threshold_percentage: float, psql_db: PSQLDB
-) -> bool:
-    """Check if a contender beat the boss's score (by threshold) in a given round.
-
-    For environment tasks, higher scores are better. A contender beats the boss if:
-        contender_score >= boss_score * (1 + threshold_percentage)
-
-    Returns True if boss has no score in the round (contender wins by default).
-    Returns False if contender has no score in the round.
-    """
-    round_tasks = await get_tournament_tasks(round_data.round_id, psql_db)
-    if not round_tasks:
-        return False
-
-    task_id = round_tasks[0].task_id
+async def _get_scores_for_task(task_id: str, psql_db: PSQLDB) -> dict[str, float]:
     miner_results = await get_task_results_for_ranking(task_id, psql_db)
     if not miner_results:
-        return False
+        return {}
 
     ranked_results = calculate_miner_ranking_and_scores(miner_results)
-
-    boss_score = None
-    contender_score = None
+    scores: dict[str, float] = {}
     for result in ranked_results:
         if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
             continue
-        if result.hotkey == EMISSION_BURN_HOTKEY:
-            boss_score = result.adjusted_loss
-        elif result.hotkey == contender_hotkey:
-            contender_score = result.adjusted_loss
+        scores[result.hotkey] = result.adjusted_loss
+    return scores
+
+
+async def did_contender_beat_boss_on_task(
+    task_id: str, contender_hotkey: str, threshold_percentage: float, psql_db: PSQLDB
+) -> bool:
+    """Return True if contender beats boss on this task by threshold (environment: higher is better)."""
+    scores = await _get_scores_for_task(task_id, psql_db)
+    contender_score = scores.get(contender_hotkey)
+    boss_score = scores.get(EMISSION_BURN_HOTKEY)
 
     if contender_score is None:
         return False
     if boss_score is None:
-        # Boss didn't produce a score — contender wins this round by default
         return True
 
-    boss_threshold_score = boss_score * (1 + threshold_percentage)
-    return contender_score >= boss_threshold_score
+    return contender_score >= boss_score * (1 + threshold_percentage)
+
+
+async def select_best_contender_by_cumulative_boss_wins(
+    tournament: TournamentData,
+    candidate_hotkeys: list[str],
+    psql_db: PSQLDB,
+) -> str | None:
+    """Select one contender using cumulative threshold-qualified wins vs boss.
+
+    Uses all completed non-final rounds as the comparison horizon.
+    Returns None when no contender has at least one threshold-qualified win.
+    """
+    if not candidate_hotkeys:
+        return None
+
+    boss_hotkey = EMISSION_BURN_HOTKEY
+    non_boss_contenders = [h for h in candidate_hotkeys if h != boss_hotkey]
+    if not non_boss_contenders:
+        return None
+
+    current_champion = tournament.base_winner_hotkey or boss_hotkey
+    consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
+    threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
+
+    all_rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
+    qualifying_rounds = [r for r in all_rounds if not r.is_final_round]
+    qualifying_rounds.sort(key=lambda r: r.round_number)
+    if not qualifying_rounds:
+        logger.info("No completed non-final rounds found for contender selection.")
+        return None
+
+    up_to_round_number = qualifying_rounds[-1].round_number
+
+    contender_wins: dict[str, int] = {contender: 0 for contender in non_boss_contenders}
+    for contender in non_boss_contenders:
+        for round_data in qualifying_rounds:
+            round_tasks = await get_tournament_tasks(round_data.round_id, psql_db)
+            for task in round_tasks:
+                if await did_contender_beat_boss_on_task(task.task_id, contender, threshold_percentage, psql_db):
+                    contender_wins[contender] += 1
+
+    best_wins = max(contender_wins.values(), default=0)
+    if best_wins <= 0:
+        logger.info(
+            f"No contender beat boss on any task in non-final rounds up to R{up_to_round_number} by threshold; "
+            "returning no contender."
+        )
+        return None
+
+    best_contenders = [h for h, wins in contender_wins.items() if wins == best_wins]
+    if len(best_contenders) == 1:
+        logger.info(
+            f"Selected contender {best_contenders[0]} with {best_wins} wins "
+            f"over boss in R1-R{up_to_round_number}"
+        )
+        return best_contenders[0]
+
+    tie_break_round = next((r for r in qualifying_rounds if r.round_number == up_to_round_number), None)
+    tie_break_scores: dict[str, float] = {}
+    if tie_break_round:
+        tie_break_tasks = await get_tournament_tasks(tie_break_round.round_id, psql_db)
+        for contender in best_contenders:
+            best_score = float("-inf")
+            found = False
+            for task in tie_break_tasks:
+                scores = await _get_scores_for_task(task.task_id, psql_db)
+                score = scores.get(contender)
+                if score is None:
+                    continue
+                found = True
+                best_score = max(best_score, score)
+            tie_break_scores[contender] = best_score if found else float("-inf")
+
+    selected = sorted(
+        best_contenders,
+        key=lambda contender: (tie_break_scores.get(contender, float("-inf")), contender),
+        reverse=True,
+    )[0]
+    logger.info(
+        f"Tie on R1-R{up_to_round_number} wins ({best_wins}) between {best_contenders}; "
+        f"selected {selected} by round-{up_to_round_number} score / deterministic hotkey tiebreak."
+    )
+    return selected
 
 
 async def determine_env_tournament_winner(
-    tournament: TournamentData, finalists: list[str], config: Config, psql_db: PSQLDB
+    tournament: TournamentData, _finalists: list[str], _config: Config, psql_db: PSQLDB
 ) -> list[str]:
-    """Determine the environment tournament winner using the 2/3 boss-beating rule.
+    """Determine environment winner using 6-task majority across R1-R3 and R4x3.
 
-    A finalist must have beaten the boss by the progressive threshold in at least
-    ENV_BOSS_BEAT_REQUIRED of ENV_TOTAL_ROUNDS rounds to win the tournament.
-
-    Returns [winner, second_place] or [boss_hotkey] if no one qualifies.
+    Contender must beat boss by threshold in at least 4 of 6 tasks.
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
-
-    # Get progressive threshold
     current_champion = tournament.base_winner_hotkey or boss_hotkey
     consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
     threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
     logger.info(
-        f"Environment tournament 2/{t_cst.ENV_TOTAL_ROUNDS} check: Champion {current_champion} has {consecutive_wins} "
-        f"consecutive wins, using {threshold_percentage * 100:.1f}% threshold"
+        f"Environment final 6-task majority check: Champion {current_champion} has {consecutive_wins} "
+        f"consecutive wins, threshold={threshold_percentage * 100:.1f}%"
     )
 
-    # Get all rounds for this tournament
     all_rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
-    logger.info(f"Found {len(all_rounds)} rounds for tournament {tournament.tournament_id}")
-
-    # For each finalist, check how many rounds they beat the boss
-    finalist_boss_beats: dict[str, int] = {}
-    for finalist in finalists:
-        if finalist == boss_hotkey:
-            continue
-        beats = 0
-        for round_data in all_rounds:
-            beaten = await check_boss_beaten_in_round(round_data, finalist, threshold_percentage, psql_db)
-            if beaten:
-                beats += 1
-                logger.info(f"Finalist {finalist} beat boss in round {round_data.round_number}")
-            else:
-                logger.info(f"Finalist {finalist} did NOT beat boss in round {round_data.round_number}")
-        finalist_boss_beats[finalist] = beats
-        logger.info(f"Finalist {finalist}: beat boss in {beats}/{len(all_rounds)} rounds")
-
-    # Find finalists who beat boss in >= required rounds
-    qualified = {h: beats for h, beats in finalist_boss_beats.items() if beats >= t_cst.ENV_BOSS_BEAT_REQUIRED}
-
-    if not qualified:
-        logger.info(f"No finalist beat boss in >= {t_cst.ENV_BOSS_BEAT_REQUIRED} rounds. Boss wins.")
-        # Return boss + best finalist as second place
-        if finalist_boss_beats:
-            best_finalist = max(finalist_boss_beats, key=finalist_boss_beats.get)
-            return [boss_hotkey, best_finalist]
+    if not all_rounds:
         return [boss_hotkey]
 
-    # Among qualified, pick the one with the most boss-beats; tiebreak by R3 score
-    # Get R3 scores for tiebreaking
-    final_round = [r for r in all_rounds if r.is_final_round]
-    r3_scores: dict[str, float] = {}
-    if final_round:
-        r3_tasks = await get_tournament_tasks(final_round[0].round_id, psql_db)
-        if r3_tasks:
-            r3_results = await get_task_results_for_ranking(r3_tasks[0].task_id, psql_db)
-            if r3_results:
-                ranked = calculate_miner_ranking_and_scores(r3_results)
-                for result in ranked:
-                    if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss):
-                        r3_scores[result.hotkey] = result.adjusted_loss
+    final_round = next((round_data for round_data in all_rounds if round_data.is_final_round), None)
+    if not final_round:
+        logger.warning("No final round found for environment tournament; defaulting winner to boss")
+        return [boss_hotkey]
 
-    # Sort qualified finalists: most boss-beats first, then highest R3 score
-    sorted_qualified = sorted(
-        qualified.keys(),
-        key=lambda h: (qualified[h], r3_scores.get(h, 0)),
-        reverse=True,
+    final_round_tasks = await get_tournament_tasks(final_round.round_id, psql_db)
+    if not final_round_tasks:
+        logger.warning("No final round tasks found for environment tournament; defaulting winner to boss")
+        return [boss_hotkey]
+
+    group_id = final_round_tasks[0].group_id
+    if not group_id:
+        logger.warning("Final round has no group_id; defaulting winner to boss")
+        return [boss_hotkey]
+
+    group_members = await get_tournament_group_members(group_id, psql_db)
+    contenders = [member.hotkey for member in group_members if member.hotkey != boss_hotkey]
+    if not contenders:
+        logger.info("Final round has no contender; boss wins by default")
+        return [boss_hotkey]
+
+    contender = contenders[0]
+
+    task_wins = 0
+    total_tasks = 0
+    for round_data in sorted(all_rounds, key=lambda r: r.round_number):
+        round_tasks = await get_tournament_tasks(round_data.round_id, psql_db)
+        for task in round_tasks:
+            total_tasks += 1
+            contender_won = await did_contender_beat_boss_on_task(task.task_id, contender, threshold_percentage, psql_db)
+            if contender_won:
+                task_wins += 1
+
+    required_wins = (total_tasks // 2) + 1
+    if task_wins >= required_wins:
+        logger.info(
+            f"Contender {contender} wins environment tournament: {task_wins}/{total_tasks} tasks "
+            f"(required {required_wins})"
+        )
+        return [contender, boss_hotkey]
+
+    logger.info(
+        f"Boss retains environment tournament: contender {contender} won {task_wins}/{total_tasks} tasks "
+        f"(required {required_wins})"
     )
-
-    winner = sorted_qualified[0]
-    logger.info(f"Environment tournament winner: {winner} (beat boss in {qualified[winner]}/{len(all_rounds)} rounds)")
-
-    # Determine second place
-    if len(sorted_qualified) >= 2:
-        second_place = sorted_qualified[1]
-    else:
-        # Only one qualified — second place is the boss
-        second_place = boss_hotkey
-
-    logger.info(f"Environment tournament 2nd place: {second_place}")
-    return [winner, second_place]
+    return [boss_hotkey, contender]
 
 
 def get_real_winner_hotkey(winner_hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
@@ -781,128 +833,86 @@ async def get_knockout_winners(
 async def get_environment_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
 ) -> list[str]:
-    """Get winners from environment tournament group round with progressive threshold for boss.
-    Returns [winner, second_place] where second_place is the runner-up.
-    - If boss wins: 2nd place is highest scoring non-boss (eligible or not)
-    - If challenger wins: 2nd place is second highest scoring participant
+    """Get winners from environment tournament group rounds.
+
+    For the final round, return all finalists (boss + contender) and defer
+    champion decision to determine_env_tournament_winner().
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
 
-    for task in round_tasks:
-        group_id = task.group_id
-        task_id = task.task_id
-
-        logger.info(f"Processing environment tournament group {group_id} in round {completed_round.round_id}")
-
+    if completed_round.is_final_round:
+        if not round_tasks:
+            return [boss_hotkey]
+        group_id = round_tasks[0].group_id
+        if not group_id:
+            return [boss_hotkey]
         participants = await get_tournament_group_members(group_id, psql_db)
         participant_hotkeys = [p.hotkey for p in participants]
-        logger.info(f"Group {group_id} and task {task_id} have {len(participant_hotkeys)} participants")
+        if boss_hotkey not in participant_hotkeys:
+            participant_hotkeys.append(boss_hotkey)
+        return participant_hotkeys
 
-        if not participant_hotkeys:
-            logger.warning(f"Group {group_id} has no participants, defaulting to boss as winner")
-            return [boss_hotkey]
+    if not round_tasks:
+        logger.warning(f"No tasks found for environment round {completed_round.round_id}")
+        return []
 
-        miner_results = await get_task_results_for_ranking(task_id, psql_db)
+    # Environment rounds should have a single shared group in the current flow.
+    first_task = round_tasks[0]
+    group_id = first_task.group_id
+    if not group_id:
+        logger.warning(f"No group_id found for environment round {completed_round.round_id}")
+        return []
+
+    participants = await get_tournament_group_members(group_id, psql_db)
+    participant_hotkeys = [p.hotkey for p in participants]
+    if not participant_hotkeys:
+        logger.warning(f"Environment group {group_id} has no participants")
+        return []
+
+    participant_scores: dict[str, float] = {}
+    for task in round_tasks:
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
         if not miner_results:
-            logger.warning(f"No valid results for task {task_id}, defaulting to boss as winner")
-            return [boss_hotkey]
-
+            logger.warning(f"No valid results for task {task.task_id}")
+            continue
         ranked_results = calculate_miner_ranking_and_scores(miner_results)
-
-        participant_scores = {}
-        boss_score = None
-
         for result in ranked_results:
-            hotkey = result.hotkey
-            adjusted_loss = result.adjusted_loss
-
-            if adjusted_loss is None or np.isnan(adjusted_loss):
+            if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
                 continue
+            participant_scores[result.hotkey] = result.adjusted_loss
 
-            participant_scores[hotkey] = adjusted_loss
-            if hotkey == boss_hotkey:
-                boss_score = adjusted_loss
+    if not participant_scores:
+        logger.warning(f"Environment round {completed_round.round_id} has no valid participant scores")
+        return []
 
-        if not participant_scores:
-            logger.warning(f"Group {group_id} has no valid scores, defaulting to boss as winner")
-            return [boss_hotkey]
+    sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=True)
+    non_boss_sorted = [hotkey for hotkey, _ in sorted_participants if hotkey != boss_hotkey]
 
-        all_sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=True)
-
-        # Get tournament info and calculate progressive threshold
+    if completed_round.round_number == (t_cst.ENV_TOTAL_ROUNDS - 1):
+        # Pre-final gate (current R3): select one best contender by cumulative boss-wins.
+        candidate_hotkeys = non_boss_sorted[: t_cst.ENV_ROUND_3_CANDIDATE_COUNT]
         tournament = await get_tournament(completed_round.tournament_id, psql_db)
         if not tournament:
-            logger.error(f"Could not find tournament {completed_round.tournament_id}, defaulting to boss as winner")
-            return [boss_hotkey]
+            logger.warning(f"Could not load tournament {completed_round.tournament_id} for contender selection")
+            return []
+        selected_contender = await select_best_contender_by_cumulative_boss_wins(tournament, candidate_hotkeys, psql_db)
+        if not selected_contender:
+            logger.info("No contender selected at pre-final gate; returning empty winners for boss fallback handling.")
+            return []
+        return [selected_contender]
 
-        current_champion = tournament.base_winner_hotkey or boss_hotkey
-        consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
-        threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
-        logger.info(
-            f"Environment tournament final round: Champion {current_champion} has {consecutive_wins} consecutive wins, "
-            f"using {threshold_percentage * 100:.1f}% threshold"
-        )
+    if completed_round.round_number == 1:
+        top_to_advance = t_cst.ENV_ROUND_1_ADVANCE_COUNT
+    elif completed_round.round_number == 2:
+        top_to_advance = t_cst.ENV_ROUND_2_ADVANCE_COUNT
+    else:
+        # Round 3 is handled above via explicit contender-selection logic.
+        # Any unexpected non-final env round defaults to advancing one contender.
+        top_to_advance = 1
 
-        eligible_participants = {}
-        if boss_score is not None:
-            boss_multiplier = 1 + threshold_percentage
-            boss_threshold_score = boss_score * boss_multiplier
-
-            logger.info(
-                f"Boss score: {boss_score:.6f}, Threshold: {threshold_percentage * 100:.1f}%, "
-                f"Boss threshold score: {boss_threshold_score:.6f}"
-            )
-
-            for hotkey, score in participant_scores.items():
-                if hotkey == boss_hotkey:
-                    eligible_participants[hotkey] = score
-                elif score >= boss_threshold_score:
-                    eligible_participants[hotkey] = score
-                    logger.info(f"Challenger {hotkey} beats boss threshold: {score:.6f} >= {boss_threshold_score:.6f}")
-                else:
-                    logger.info(f"Challenger {hotkey} does not beat boss threshold: {score:.6f} < {boss_threshold_score:.6f}")
-
-            if len(eligible_participants) == 1 and boss_hotkey in eligible_participants:
-                logger.info(f"No challengers beat boss threshold. Boss {boss_hotkey} wins.")
-                # Boss wins - 2nd place is highest scoring non-boss participant
-                second_place = None
-                for hotkey, score in all_sorted_participants:
-                    if hotkey != boss_hotkey:
-                        second_place = hotkey
-                        break
-                if second_place:
-                    logger.info(f"2nd place (highest non-boss): {second_place}")
-                    return [boss_hotkey, second_place]
-                return [boss_hotkey]
-        else:
-            logger.warning(f"Boss score not found for task {task_id}, proceeding without threshold")
-            eligible_participants = participant_scores
-
-        # Sort eligible participants descending for environment tasks (higher is better)
-        sorted_participants = sorted(eligible_participants.items(), key=lambda x: x[1], reverse=True)
-
-        logger.info(
-            f"Group {group_id} participants sorted by adjusted loss (descending, higher is better): "
-            f"{[(hotkey, f'{loss:.6f}') for hotkey, loss in sorted_participants]}"
-        )
-
-        if sorted_participants:
-            winner = sorted_participants[0][0]
-            logger.info(f"Group {group_id}: Environment tournament winner: {winner}")
-
-            # Determine 2nd place
-            second_place = None
-            if len(sorted_participants) >= 2:
-                # Challenger won - 2nd place is second in eligible list
-                second_place = sorted_participants[1][0]
-
-            if second_place:
-                logger.info(f"Group {group_id}: 2nd place: {second_place}")
-                return [winner, second_place]
-            return [winner]
-
-    logger.warning(f"No winner found for environment tournament round {completed_round.round_id}, defaulting to boss")
-    return [boss_hotkey]
+    winners = non_boss_sorted[: min(top_to_advance, len(non_boss_sorted))]
+    logger.info(f"Environment round {completed_round.round_number}: advancing {len(winners)} non-boss winners: {winners}")
+    return winners
 
 
 async def get_group_winners(
@@ -916,17 +926,12 @@ async def get_group_winners(
         first_task_object = await get_task(round_tasks[0].task_id, psql_db)
         is_environment = first_task_object and first_task_object.task_type == TaskType.ENVIRONMENTTASK
 
-    if completed_round.is_final_round and is_environment:
+    if is_environment:
         return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
 
     # Determine how many winners to advance
     if completed_round.is_final_round:
         TOP_WINNERS_TO_ADVANCE = 1
-    elif is_environment:
-        if completed_round.round_number == 1:
-            TOP_WINNERS_TO_ADVANCE = t_cst.ENV_ROUND_1_ADVANCE_COUNT
-        else:
-            TOP_WINNERS_TO_ADVANCE = t_cst.ENV_ROUND_2_ADVANCE_COUNT
     else:
         TOP_WINNERS_TO_ADVANCE = 8
 

@@ -80,7 +80,7 @@ async def create_environment_tournament_tasks(
     """
     if not isinstance(round_data, GroupRound):
         raise ValueError("Environment tournaments only support group rounds")
-    
+
     tasks = await _create_environment_group_tasks(round_data, tournament_id, round_id, config, is_final_round)
     return [str(task.task_id) for task in tasks]
 
@@ -91,21 +91,28 @@ async def _create_environment_group_tasks(
     """
     Create a single environment task that all groups (and all participants + boss) compete on.
     """
-    logger.info(f"Creating environment tournament with {len(round_data.groups)} groups - single task for all participants")
+    expected_task_count = t_cst.ENV_FINAL_ROUND_TASK_COUNT if is_final_round else 1
+    logger.info(
+        f"Creating environment tournament with {len(round_data.groups)} groups - "
+        f"{expected_task_count} task(s) for all participants"
+    )
 
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config)
 
-    if existing_tasks:
-        logger.info(f"Environment tournament round {round_id} already has {len(existing_tasks)} task(s), skipping task creation")
+    if len(existing_tasks) >= expected_task_count:
+        logger.info(
+            f"Environment tournament round {round_id} already has {len(existing_tasks)} task(s), "
+            "skipping task creation"
+        )
         return await _get_existing_tasks(existing_tasks, config)
 
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
 
-    logger.info("Creating single environment task for all participants")
+    logger.info(f"Creating {expected_task_count - len(existing_tasks)} environment task(s) for all participants")
 
     force_env: str | None = None
-    if is_final_round and t_cst.FORCED_BOSS_ENVIRONMENT:
+    if is_final_round and expected_task_count == 1 and t_cst.FORCED_BOSS_ENVIRONMENT:
         force_env = t_cst.FORCED_BOSS_ENVIRONMENT
         logger.info(f"Final round: forcing boss environment to {force_env}")
 
@@ -117,17 +124,27 @@ async def _create_environment_group_tasks(
             exclude_envs.append(t_cst.FORCED_BOSS_ENVIRONMENT)
             logger.info(f"Non-final round: excluding reserved boss environment {t_cst.FORCED_BOSS_ENVIRONMENT}")
 
-    task = await create_synthetic_env_task(
-        config, models, instruct_datasets, exclude_environments=exclude_envs, force_environment=force_env
-    )
-
     group_id = f"{round_id}_group_001"
-    await _create_and_register_tournament_task(
-        task, tournament_id, round_id, config, group_id=group_id
-    )
-    
-    logger.info(f"Created environment tournament task {task.task_id} for all participants")
-    return [task]
+    tasks: list[RawTask] = await _get_existing_tasks(existing_tasks, config) if existing_tasks else []
+    selected_envs = {
+        task.environment_name
+        for task in tasks
+        if hasattr(task, "environment_name") and task.environment_name
+    }
+    exclude_envs.extend(list(selected_envs))
+
+    while len(tasks) < expected_task_count:
+        task = await create_synthetic_env_task(
+            config, models, instruct_datasets, exclude_environments=exclude_envs, force_environment=force_env
+        )
+        await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+        tasks.append(task)
+        if hasattr(task, "environment_name") and task.environment_name:
+            exclude_envs.append(task.environment_name)
+
+    created_ids = [str(task.task_id) for task in tasks]
+    logger.info(f"Created environment tournament task(s) for all participants: {created_ids}")
+    return tasks
 
 
 async def _get_previous_round_environment_names(tournament_id: str, config: Config) -> list[str]:
@@ -293,13 +310,17 @@ async def _create_and_register_tournament_task(
     )
     await add_tournament_tasks([tournament_task], config.psql_db)
     gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
-    
+
     # Format log message based on task type
     if task.task_type == TaskType.IMAGETASK:
         logger.info(f"Image: {task.task_id} - Model: {task.model_id} - GPU: {gpu_req}")
     else:
         dataset_info = f" - Dataset: {task.ds}" if hasattr(task, 'ds') and task.ds else ""
-        duration_info = f" - Duration: {task.hours_to_complete} hours" if hasattr(task, 'hours_to_complete') and task.hours_to_complete else ""
+        duration_info = (
+            f" - Duration: {task.hours_to_complete} hours"
+            if hasattr(task, "hours_to_complete") and task.hours_to_complete
+            else ""
+        )
         task_type_info = f"{task.task_type.value}: " if hasattr(task.task_type, 'value') else ""
         logger.info(f"{task_type_info}{task.task_id} - Model: {task.model_id}{dataset_info} - GPU: {gpu_req}{duration_info}")
 
@@ -416,13 +437,15 @@ async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask
     if task.task_type == TaskType.IMAGETASK:
         models = _get_image_models(config.keypair)
         return await _create_task_by_type(task.task_type, config, models, [], [])
-    
+
     model_params_b = int(task.model_params_count / t_cst.MODEL_PARAMS_TO_BILLIONS)
 
     # Handle case where model params is 0 or very small
     if model_params_b < t_cst.DEFAULT_MODEL_MIN_SIZE_B:
         logger.warning(
-            f"Original task has very small model params ({task.model_params_count}), using default range {t_cst.DEFAULT_MODEL_MIN_SIZE_B}-{t_cst.DEFAULT_MODEL_MAX_SIZE_B}B"
+            f"Original task has very small model params ({task.model_params_count}), "
+            f"using default range {t_cst.DEFAULT_MODEL_MIN_SIZE_B}-"
+            f"{t_cst.DEFAULT_MODEL_MAX_SIZE_B}B"
         )
         models = _get_text_models(
             config.keypair, smallest_size_b=t_cst.DEFAULT_MODEL_MIN_SIZE_B, largest_size_b=t_cst.DEFAULT_MODEL_MAX_SIZE_B
@@ -478,7 +501,16 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
                 models = big_models
             else:
                 models = standard_models
-            task = await _create_single_new_text_task(task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets)
+            task = await _create_single_new_text_task(
+                task_type,
+                tournament_id,
+                round_id,
+                pair_id,
+                config,
+                models,
+                instruct_datasets,
+                dpo_datasets,
+            )
             if task:
                 tasks.append(task)
 
@@ -486,14 +518,21 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
 
 
 async def _create_single_new_text_task(
-    task_type: TaskType, tournament_id: str, round_id: str, pair_id: str, config: Config, models: list, instruct_datasets: list, dpo_datasets: list
+    task_type: TaskType,
+    tournament_id: str,
+    round_id: str,
+    pair_id: str,
+    config: Config,
+    models: list,
+    instruct_datasets: list,
+    dpo_datasets: list,
 ) -> RawTask | None:
     """Create a single new synthetic text task of a specific type."""
     try:
         if task_type not in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
             logger.error(f"Unknown task type {task_type} for boss round text task")
             return None
-        
+
         task = await _create_task_by_type(task_type, config, models, instruct_datasets, dpo_datasets)
         await _create_and_register_tournament_task(
             task, tournament_id, round_id, config, pair_id=pair_id
@@ -519,10 +558,10 @@ async def _create_new_image_boss_round_tasks(tournament_id: str, round_id: str, 
 
     existing_task_objects = await _get_existing_tasks(existing_tasks, config)
     existing_qwen_zimage = sum(
-        1 for task in existing_task_objects 
+        1 for task in existing_task_objects
         if hasattr(task, 'model_type') and task.model_type in [ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
     )
-    
+
     tasks = existing_task_objects
     num_needed = t_cst.FINAL_ROUND_IMAGE_TASKS - existing_count
     num_qwen_zimage = min(t_cst.FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS - existing_qwen_zimage, num_needed)
@@ -593,7 +632,8 @@ async def replace_tournament_task(
         if original_expected_repo_name:
             await task_sql.set_expected_repo_name(new_task.task_id, node, config.psql_db, original_expected_repo_name)
             logger.info(
-                f"Copied node {node.hotkey} with expected_repo_name {original_expected_repo_name} to replacement task {new_task.task_id}"
+                f"Copied node {node.hotkey} with expected_repo_name "
+                f"{original_expected_repo_name} to replacement task {new_task.task_id}"
             )
         else:
             logger.warning(f"No expected repo name found for node {node.hotkey} in original task {original_task_id}")

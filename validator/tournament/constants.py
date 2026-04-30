@@ -37,14 +37,15 @@ NO_RETRY_RESULT = "No Retry"
 MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 14
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
-MIN_ENVIRONMENT_GROUP_SIZE = 3
+MIN_ENVIRONMENT_GROUP_SIZE = 5
 
 
 # Environment tournament round structure
 ENV_ROUND_1_ADVANCE_COUNT = 8
 ENV_ROUND_2_ADVANCE_COUNT = 2
-ENV_TOTAL_ROUNDS = 3
-ENV_BOSS_BEAT_REQUIRED = 2
+ENV_ROUND_3_CANDIDATE_COUNT = 2
+ENV_TOTAL_ROUNDS = 4
+ENV_FINAL_ROUND_TASK_COUNT = 3
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
 FORCED_BOSS_ENVIRONMENT: str | None = None
