@@ -52,6 +52,7 @@ from validator.db.sql.tournaments import insert_tournament_groups_with_members
 from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
 from validator.db.sql.tournaments import update_round_status
+from validator.db.sql.tournaments import update_tournament_diff_report
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_participant_training_repo
 from validator.db.sql.tournaments import update_tournament_status
@@ -77,6 +78,7 @@ from validator.tournament.utils import validate_repo_obfuscation
 from validator.utils.call_endpoint import process_non_stream_fiber_get
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
+from validator.utils.repo_diff_report import generate_and_upload_repo_diff_report
 
 
 logger = get_logger(__name__)
@@ -190,6 +192,48 @@ async def _create_tournament_tasks(
         raise ValueError(f"Unknown tournament type: {tournament_type}")
 
     return tasks
+
+
+async def _generate_diff_report_for_result(
+    tournament: TournamentData, challenger_repo: str | None, result_summary: str, psql_db: PSQLDB
+) -> str | None:
+    if not challenger_repo:
+        logger.warning("Challenger repository is missing; skipping repo diff report")
+        return None
+
+    previous_boss = await get_tournament_participant(tournament.tournament_id, cst.EMISSION_BURN_HOTKEY, psql_db)
+    previous_boss_repo = previous_boss.backup_repo or previous_boss.training_repo if previous_boss else None
+    if not previous_boss_repo:
+        logger.warning("Previous boss repository is missing; skipping repo diff report")
+        return None
+
+    report_url = await generate_and_upload_repo_diff_report(
+        tournament_id=tournament.tournament_id,
+        tournament_type=tournament.tournament_type.value,
+        challenger_repo_url=challenger_repo,
+        previous_boss_repo_url=previous_boss_repo,
+        result_summary=result_summary,
+    )
+    if report_url:
+        await update_tournament_diff_report(tournament.tournament_id, report_url, psql_db)
+    return report_url
+
+
+async def _generate_diff_report_and_notify_tournament_completed(
+    tournament: TournamentData,
+    challenger_repo: str | None,
+    result_summary: str,
+    winner: str,
+    discord_url: str,
+    psql_db: PSQLDB,
+) -> None:
+    try:
+        diff_report = await _generate_diff_report_for_result(tournament, challenger_repo, result_summary, psql_db)
+        await notify_tournament_completed(
+            tournament.tournament_id, tournament.tournament_type.value, winner, discord_url, diff_report
+        )
+    except Exception as exc:
+        logger.error(f"Failed to generate diff report and notify tournament completion: {exc}", exc_info=True)
 
 
 async def assign_nodes_to_tournament_tasks(
@@ -422,8 +466,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
-            await notify_tournament_completed(
-                tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
+            asyncio.create_task(
+                notify_tournament_completed(tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url)
             )
 
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
@@ -460,10 +504,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
-            await notify_tournament_completed(
-                tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
-            )
-
             if tournament.tournament_type == TournamentType.ENVIRONMENT:
                 logger.info("Uploading winner and 2nd place repositories")
                 if winner != cst.EMISSION_BURN_HOTKEY:
@@ -477,16 +517,28 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                         logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
 
                 logger.info(f"Uploading position 1 repository for hotkey: {winner}")
-                await upload_participant_repository(
+                position_1_repo = await upload_participant_repository(
                     tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
                 )
 
+                position_2_repo = None
                 if len(winners) >= 2:
                     second_place = winners[1]
                     logger.info(f"Uploading position 2 repository for hotkey: {second_place}")
-                    await upload_participant_repository(
+                    position_2_repo = await upload_participant_repository(
                         tournament.tournament_id, tournament.tournament_type, second_place, 2, config, psql_db
                     )
+
+                comparison_repo = position_2_repo if winner == cst.EMISSION_BURN_HOTKEY else position_1_repo
+                if winner == cst.EMISSION_BURN_HOTKEY:
+                    result_summary = f"Boss retained; challenger was {winners[1] if len(winners) >= 2 else 'unknown'}."
+                else:
+                    result_summary = f"Winner changed; new winner hotkey: {winner}."
+                asyncio.create_task(
+                    _generate_diff_report_and_notify_tournament_completed(
+                        tournament, comparison_repo, result_summary, winner, config.discord_url, psql_db
+                    )
+                )
             else:
                 try:
                     participant1, participant2 = await get_final_round_participants(completed_round, psql_db)
@@ -511,18 +563,37 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                             logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
 
                     logger.info(f"Uploading position 1 repository for hotkey: {position_1_upload}")
-                    await upload_participant_repository(
+                    position_1_repo = await upload_participant_repository(
                         tournament.tournament_id, tournament.tournament_type, position_1_upload, 1, config, psql_db
                     )
 
                     logger.info(f"Uploading position 2 repository for hotkey: {position_2_upload}")
-                    await upload_participant_repository(
+                    position_2_repo = await upload_participant_repository(
                         tournament.tournament_id, tournament.tournament_type, position_2_upload, 2, config, psql_db
+                    )
+                    comparison_repo = position_2_repo if winner == cst.EMISSION_BURN_HOTKEY else position_1_repo
+                    if winner == cst.EMISSION_BURN_HOTKEY:
+                        result_summary = f"Boss retained; challenger was {position_2_upload}."
+                    else:
+                        result_summary = f"Winner changed; new winner hotkey: {winner}."
+                    asyncio.create_task(
+                        _generate_diff_report_and_notify_tournament_completed(
+                            tournament, comparison_repo, result_summary, winner, config.discord_url, psql_db
+                        )
                     )
                 except Exception as e:
                     logger.error(f"Error determining final round participants: {e}")
-                    await upload_participant_repository(
+                    position_1_repo = await upload_participant_repository(
                         tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
+                    )
+                    if winner == cst.EMISSION_BURN_HOTKEY:
+                        result_summary = "Boss retained; challenger was unknown."
+                    else:
+                        result_summary = f"Winner changed; new winner hotkey: {winner}."
+                    asyncio.create_task(
+                        _generate_diff_report_and_notify_tournament_completed(
+                            tournament, position_1_repo, result_summary, winner, config.discord_url, psql_db
+                        )
                     )
             return
         else:

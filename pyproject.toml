@@ -37,6 +37,7 @@ dependencies = [
     "minio==7.2.10",
     "pandas==2.2.3",
     "basilica-sdk==0.17.0",
+    "claude-agent-sdk>=0.2.111",
     "gitpython",
     "astor",
 ]

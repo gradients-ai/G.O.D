@@ -1029,11 +1029,15 @@ async def notify_tournament_started(tournament_id: str, tournament_type: str, pa
         logger.error(f"Failed to send Discord notification for tournament start: {e}")
 
 
-async def notify_tournament_completed(tournament_id: str, tournament_type: str, winner: str, discord_url: str):
+async def notify_tournament_completed(
+    tournament_id: str, tournament_type: str, winner: str, discord_url: str, diff_report: str | None = None
+):
     try:
         message = (
             f"Tournament Completed!\nTournament ID: {tournament_id}\nType: {tournament_type}\nWinner: {winner}\nStatus: COMPLETED"
         )
+        if diff_report:
+            message += f"\nDiff Report: {diff_report}"
         await send_to_discord(discord_url, message)
     except Exception as e:
         logger.error(f"Failed to send Discord notification for tournament completion: {e}")

@@ -310,6 +310,12 @@ DSTACK_RUNS_GET_ENDPOINT = "/api/project/{project}/runs/get"
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
 DEFAULT_PARTICIPANT_COMMIT = "8631451156e2915070f77e5547ca0d5ed3d0eb8a"
 
+# Claude Agent SDK repo diff reports
+CLAUDE_REPO_DIFF_MODEL = "claude-sonnet-4-5"
+CLAUDE_REPO_DIFF_MAX_TURNS = 30
+CLAUDE_REPO_DIFF_MAX_BUDGET_USD = 2
+CLAUDE_REPO_DIFF_MAX_FOCUS_FILES = 180
+
 # YaRN extension constants
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]

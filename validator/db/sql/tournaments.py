@@ -184,7 +184,8 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
+                   {cst.DIFF_REPORT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
         """
@@ -197,6 +198,7 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
+                diff_report=result[cst.DIFF_REPORT],
             )
         return None
 
@@ -212,7 +214,7 @@ async def get_tournament_where_champion_first_won(
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
                    {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY},
-                   {cst.WINNING_PERFORMANCE_DIFFERENCE}, {cst.UPDATED_AT}
+                   {cst.WINNING_PERFORMANCE_DIFFERENCE}, {cst.DIFF_REPORT}, {cst.UPDATED_AT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1
               AND {cst.TOURNAMENT_STATUS} = 'completed'
@@ -229,6 +231,7 @@ async def get_tournament_where_champion_first_won(
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
+                diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
             )
         return None
@@ -255,7 +258,7 @@ async def get_last_tournament_before_current_champion(
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
                    {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
-                   {cst.UPDATED_AT}
+                   {cst.DIFF_REPORT}, {cst.UPDATED_AT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1
               AND {cst.TOURNAMENT_STATUS} = 'completed'
@@ -273,6 +276,7 @@ async def get_last_tournament_before_current_champion(
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
+                diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
             )
         else:
@@ -287,7 +291,7 @@ async def get_latest_completed_tournament(
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
                    {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
-                   {cst.UPDATED_AT}
+                   {cst.DIFF_REPORT}, {cst.UPDATED_AT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'completed'
             {exclude_clause}
@@ -307,6 +311,7 @@ async def get_latest_completed_tournament(
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
+                diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
             )
         return None
@@ -472,11 +477,22 @@ async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str
         logger.info(f"Updated tournament {tournament_id} winner hotkey to {winner_hotkey}")
 
 
+async def update_tournament_diff_report(tournament_id: str, diff_report: str, psql_db: PSQLDB):
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TOURNAMENTS_TABLE}
+            SET {cst.DIFF_REPORT} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TOURNAMENT_ID} = $1
+        """
+        await connection.execute(query, tournament_id, diff_report)
+        logger.info(f"Updated tournament {tournament_id} diff report")
+
+
 async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB) -> list[TournamentData]:
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.DIFF_REPORT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_STATUS} = $1
             ORDER BY {cst.CREATED_AT} DESC
@@ -489,6 +505,7 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
                 status=row[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=row[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=row[cst.WINNER_HOTKEY],
+                diff_report=row[cst.DIFF_REPORT],
             )
             for row in results
         ]

@@ -75,6 +75,7 @@ class TournamentData(BaseModel):
         "Calculated as: (defending_champion_score - new_winner_score) / defending_champion_score. "
         "score = loss, so lower is better. Higher diff = better perf = less burn.",
     )
+    diff_report: str | None = Field(default=None, description="Optional S3 URL for the winner-vs-previous-boss diff report.")
     updated_at: datetime | None = Field(
         default=None,
         description="Timestamp when the tournament was last updated (typically when it completed). "
@@ -261,6 +262,7 @@ class TournamentDetailsResponse(BaseModel):
     status: TournamentStatus
     base_winner_hotkey: str | None
     winner_hotkey: str | None
+    diff_report: str | None = None
     participants: list[TournamentParticipant]
     rounds: list[DetailedTournamentRoundResult]
     final_scores: list[TournamentScore]
