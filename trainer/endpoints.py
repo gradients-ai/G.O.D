@@ -54,7 +54,7 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             hotkey=req.hotkey,
         )
     except Exception as e:
-        await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")
+        await log_task(task_id, hotkey, "Failed to clone repository")
         await complete_task(task_id, hotkey, success=False)
         logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
         return

@@ -72,7 +72,7 @@ def build_docker_image(
     if tag is None:
         tag = f"standalone-image-trainer:{uuid.uuid4()}" if is_image_task else f"standalone-text-trainer:{uuid.uuid4()}"
 
-    logger.info(f"Building Docker image '{tag}', Dockerfile path: {dockerfile_path}, Context Path: {context_path}...")
+    logger.info(f"Building Docker image '{tag}'...", extra=log_labels)
 
     try:
         build_output = client.api.build(
