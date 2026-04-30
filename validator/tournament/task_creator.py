@@ -439,6 +439,30 @@ async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask
     return await _create_task_by_type(task.task_type, config, models, instruct_datasets, dpo_datasets)
 
 
+def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | None, pair_id: str | None) -> bool:
+    """Return True when task should follow round-1 group text constraints."""
+    return (
+        task.task_type == TaskType.INSTRUCTTEXTTASK
+        and group_id is not None
+        and pair_id is None
+        and round_id.endswith("_round_001")
+    )
+
+
+async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
+    """
+    Create a replacement task that matches round-1 group text constraints:
+    - small text model pool (0.1B-4.0B)
+    - 2 training hours
+    """
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    new_task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+    new_task.hours_to_complete = 2
+    await task_sql.update_task(new_task, config.psql_db)
+    return new_task
+
+
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:
     """Create boss round text tasks using new synthetic tasks."""
     pair_id = f"{round_id}_pair_001"
@@ -570,7 +594,11 @@ async def replace_tournament_task(
     logger.info(f"Original task model params: {original_task_obj.model_params_count}")
 
     try:
-        new_task = await create_new_task_of_same_type(original_task_obj, config)
+        if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
+            logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
+            new_task = await _create_round_one_group_text_replacement_task(config)
+        else:
+            new_task = await create_new_task_of_same_type(original_task_obj, config)
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")
     except Exception as e:
         logger.error(f"Failed to create new task of type {original_task_obj.task_type}: {str(e)}", exc_info=True)
