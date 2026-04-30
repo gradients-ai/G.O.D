@@ -60,7 +60,7 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
         return
 
     logger.info(
-        f"Repo {req.github_repo} cloned to {local_repo_path}",
+        f"Repository cloned successfully",
         extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
     )
     await start_training_task(req, local_repo_path)
