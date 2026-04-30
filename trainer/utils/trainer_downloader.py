@@ -242,9 +242,15 @@ def download_miner_dataset(repo_id: str, cache_dir: str) -> str:
         return cache_path
 
     os.makedirs(cache_dir, exist_ok=True)
-    print(f"Downloading dataset {repo_id} to {cache_path}", flush=True)
-    snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=cache_path, local_dir_use_symlinks=False)
-    print(f"Download complete: {repo_id}", flush=True)
+    tmp_path = cache_path + f".tmp.{os.getpid()}"
+    try:
+        print(f"Downloading dataset {repo_id} to {tmp_path}", flush=True)
+        snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=tmp_path, local_dir_use_symlinks=False)
+        os.rename(tmp_path, cache_path)
+        print(f"Download complete: {repo_id}", flush=True)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
     return cache_path
 
 
