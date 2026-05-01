@@ -275,9 +275,9 @@ patch_wandb_symlinks(train_cst.WANDB_LOGS_DIR)
 - Should contain images and metadata (captions)
 - Your script must handle extraction and preparation
 
-### Miner-Requested Datasets (Environment Tasks)
+### Miner-Requested Datasets
 
-Miners can request HuggingFace datasets from a curated whitelist to be pre-downloaded and available during training. This is useful for environment tasks where supplementary data (e.g. game traces, strategy datasets) can improve training.
+Miners can request HuggingFace datasets from a curated whitelist to be pre-downloaded and available during training. These datasets can be used for SFT (supervised fine-tuning) or as supplementary data to improve training. **Only whitelisted datasets are permitted — downloading or embedding your own datasets is grounds for disqualification.**
 
 **Requesting datasets:** Set `requested_datasets` in your `get_training_repo()` response:
 
