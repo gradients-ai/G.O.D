@@ -57,7 +57,7 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
             detach=True,
         )
 
-        result = container.wait(timeout=300)
+        result = container.wait(timeout=1800)
         exit_code = result.get("StatusCode", -1)
 
         if exit_code == 0:
