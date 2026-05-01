@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import docker
@@ -37,6 +38,11 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
     container = None
     try:
         logger.info(f"Starting dataset download container for {dataset_repo_id}", extra={"task_id": task_id})
+        environment = {}
+        hf_token = os.getenv("HUGGINGFACE_TOKEN")
+        if hf_token:
+            environment["HF_TOKEN"] = hf_token
+
         container = client.containers.run(
             image=cst.TRAINER_DOWNLOADER_DOCKER_IMAGE,
             command=[
@@ -46,6 +52,7 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
             ],
             name=container_name,
             volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
+            environment=environment,
             remove=False,
             detach=True,
         )
