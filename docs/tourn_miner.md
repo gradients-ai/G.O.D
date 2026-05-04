@@ -379,11 +379,13 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- All participants (including boss) compete in a single large group
+- All participants (including boss) compete in a single large group each round
 - Minimum 5 participants required to start
-- All participants compete on the same environment task
-- Only one round (group stage) - no knockout rounds
-- One winner selected based on highest GRPO score
+- Four group rounds total (no knockout rounds)
+- Round 1: 1 env task, top 8 non-boss advance
+- Round 2: 1 env task, top 2 non-boss advance
+- Round 3: 1 env task with boss + 2 contenders
+- Round 4: boss vs the best contender on 3 env tasks
 
 ### Knockout Rounds
 
@@ -395,7 +397,7 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- No knockout rounds - tournament ends after group stage
+- No knockout rounds - environment uses 4 group rounds
 
 ### Boss Round
 
@@ -408,10 +410,11 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- Boss (defending champion) competes directly in the single group stage
-- Uses progressive threshold system: challengers must beat `boss_score * (1 + threshold_percentage)` to be eligible
-- Winner is the participant with the highest GRPO score among eligible participants
-- If no challenger beats the threshold, boss retains title automatically
+- Boss (defending champion) competes in all rounds
+- Round-3 winner determination picks one Round-4 contender from the two non-boss finalists using cumulative R1-R3 threshold wins vs boss (picks the best contender)
+- If Round-3 winner determination returns no contender (0 threshold-qualified wins), the generic zero-winner fallback declares boss as tournament winner and Round 4 is skipped
+- Final winner rule: contender must win at least 4 out of 6 total tasks (R1 + R2 + R3 + 3xR4), with threshold applied per task
+- If contender wins fewer than 4/6, boss retains title
 
 #### Championship Defense Thresholds
 
@@ -462,8 +465,8 @@ Environment tournaments are a specialized tournament type focused on reinforceme
 
 ### Key Differences
 
-- **Single Round Structure**: Only one group stage round (no knockout rounds)
-- **All Participants Together**: Boss and all participants compete in a single large group on the same task
+- **Four-Round Group Structure**: Four group rounds (no knockout rounds)
+- **All Participants Together**: Boss and participants compete in shared group rounds
 - **Minimum Participants**: Requires at least 5 participants (vs 8 for text/image tournaments)
 - **Participation Fee**: 0.20 TAO per tournament
 - **Schedule**: Starts every Monday at 14:00 UTC
@@ -472,9 +475,11 @@ Environment tournaments are a specialized tournament type focused on reinforceme
 
 - **GRPO-Based**: Uses Group Relative Policy Optimization scoring where **higher scores are better**
 - **Progressive Threshold**: Defending champion benefits from progressive threshold (same system as text/image tournaments)
-  - Challengers must beat: `boss_score * (1 + threshold_percentage)` to be eligible
-  - If no challenger beats threshold, boss automatically wins
-- **Winner Selection**: Highest GRPO score among eligible participants wins
+  - A contender wins an individual task only if: `contender_score >= boss_score * (1 + threshold_percentage)`
+- **Winner Selection**:
+  - Round-3 winnering selects one contender (or none) using cumulative R1-R3 threshold wins vs boss
+  - Final champion is based on a 6-task majority: contender must win 4/6+ tasks
+  - If Round-3 yields zero winners, boss wins via zero-winner fallback and tournament ends early
 
 ### Technical Requirements
 
