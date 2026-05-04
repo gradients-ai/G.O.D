@@ -95,6 +95,7 @@ class TrainerProxyRequest(BaseModel):
     github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
+    requested_datasets: list[str] | None = None
 
 
 class TrainerTaskLog(TrainerProxyRequest):
@@ -115,6 +116,9 @@ class TrainingRepoResponse(BaseModel):
     github_repo: str = Field(..., description="The GitHub repository URL")
     commit_hash: str = Field(..., description="The commit hash of the repository")
     github_token: str | None = Field(default=None, description="Optional GitHub token for private repositories")
+    requested_datasets: list[str] | None = Field(
+        default=None, description="Optional list of HuggingFace dataset repo IDs from the whitelist"
+    )
 
 
 class JobStatusPayload(BaseModel):

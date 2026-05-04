@@ -19,6 +19,7 @@ from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
+from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
 from trainer.utils.misc import get_gpu_info
@@ -54,15 +55,30 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             hotkey=req.hotkey,
         )
     except Exception as e:
-        await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")
+        await log_task(task_id, hotkey, "Failed to clone repository")
         await complete_task(task_id, hotkey, success=False)
         logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
         return
 
     logger.info(
-        f"Repo {req.github_repo} cloned to {local_repo_path}",
+        f"Repository cloned successfully",
         extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
     )
+
+    if req.requested_datasets:
+        try:
+            downloaded = await asyncio.to_thread(
+                download_whitelisted_datasets,
+                requested_datasets=req.requested_datasets,
+                hotkey=hotkey,
+                task_id=task_id,
+            )
+            req.requested_datasets = downloaded or None
+        except Exception as e:
+            await log_task(task_id, hotkey, f"Failed to download whitelisted datasets: {str(e)}")
+            logger.warning(f"Dataset download failed, continuing without: {e}", extra={"task_id": task_id, "hotkey": hotkey})
+            req.requested_datasets = None
+
     await start_training_task(req, local_repo_path)
 
 

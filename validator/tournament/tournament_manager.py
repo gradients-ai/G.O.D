@@ -25,6 +25,7 @@ from core.models.tournament_models import TournamentType
 from core.models.tournament_models import generate_round_id
 from core.models.tournament_models import generate_tournament_id
 from core.models.utility_models import TaskStatus
+from core.whitelisted_sft_datasets import validate_requested_datasets
 from validator.core.config import Config
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.core.models import AnyTypeTask
@@ -66,7 +67,9 @@ from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
 from validator.tournament.task_creator import replace_tournament_task
 from validator.tournament.utils import determine_env_tournament_winner
+from validator.tournament.utils import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.utils import get_base_contestant
+from validator.tournament.utils import get_challenger_participant_for_retained_boss
 from validator.tournament.utils import get_latest_tournament_winner_participant
 from validator.tournament.utils import get_round_winners
 from validator.tournament.utils import notify_tournament_completed
@@ -427,8 +430,13 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
-            await notify_tournament_completed(
-                tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
+            asyncio.create_task(
+                notify_tournament_completed(
+                    tournament.tournament_id,
+                    tournament.tournament_type.value,
+                    winner,
+                    config.discord_url,
+                )
             )
 
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
@@ -465,70 +473,47 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
-            await notify_tournament_completed(
-                tournament.tournament_id, tournament.tournament_type.value, winner, config.discord_url
+            if winner != cst.EMISSION_BURN_HOTKEY:
+                try:
+                    logger.info(f"Creating benchmark tasks for tournament winner {winner}")
+                    benchmark_task_ids = await create_benchmark_tasks_for_tournament_winner(
+                        tournament.tournament_id, winner, config
+                    )
+                    logger.info(f"Created {len(benchmark_task_ids)} benchmark tasks for tournament winner {winner}")
+                except Exception as e:
+                    logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
+
+            logger.info(f"Uploading winner repository for hotkey: {winner}")
+            position_1_repo = await upload_participant_repository(
+                tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
             )
 
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                logger.info("Uploading winner and 2nd place repositories")
-                if winner != cst.EMISSION_BURN_HOTKEY:
-                    try:
-                        logger.info(f"Creating benchmark tasks for tournament winner {winner}")
-                        benchmark_task_ids = await create_benchmark_tasks_for_tournament_winner(
-                            tournament.tournament_id, winner, config
-                        )
-                        logger.info(f"Created {len(benchmark_task_ids)} benchmark tasks for tournament winner {winner}")
-                    except Exception as e:
-                        logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
-
-                logger.info(f"Uploading position 1 repository for hotkey: {winner}")
-                await upload_participant_repository(
-                    tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
+            challenger_repo = position_1_repo
+            challenger_commit_hash = None
+            challenger_github_token = None
+            if winner == cst.EMISSION_BURN_HOTKEY:
+                challenger = await get_challenger_participant_for_retained_boss(
+                    tournament, completed_round, winners, psql_db
                 )
-
-                if len(winners) >= 2:
-                    second_place = winners[1]
-                    logger.info(f"Uploading position 2 repository for hotkey: {second_place}")
-                    await upload_participant_repository(
-                        tournament.tournament_id, tournament.tournament_type, second_place, 2, config, psql_db
-                    )
+                challenger_repo = challenger.training_repo if challenger else None
+                challenger_commit_hash = challenger.training_commit_hash if challenger else None
+                challenger_github_token = challenger.github_token if challenger else None
+                result_summary = f"Boss retained; challenger was {challenger.hotkey if challenger else 'unknown'}."
             else:
-                try:
-                    participant1, participant2 = await get_final_round_participants(completed_round, psql_db)
-                    logger.info(f"Final round participants from DB: {participant1}, {participant2}")
-                    logger.info(f"Winner determined by get_round_winners: {winner}")
-                    logger.info(f"Tournament base_winner_hotkey (previous champion): {tournament.base_winner_hotkey}")
+                result_summary = f"Winner changed; new winner hotkey: {winner}."
 
-                    loser = participant2 if participant1 == winner else participant1
-                    logger.info(f"Loser determined: {loser}")
-
-                    position_1_upload = winner
-                    position_2_upload = loser
-
-                    if winner != cst.EMISSION_BURN_HOTKEY:
-                        try:
-                            logger.info(f"Creating benchmark tasks for tournament winner {winner}")
-                            benchmark_task_ids = await create_benchmark_tasks_for_tournament_winner(
-                                tournament.tournament_id, winner, config
-                            )
-                            logger.info(f"Created {len(benchmark_task_ids)} benchmark tasks for tournament winner {winner}")
-                        except Exception as e:
-                            logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
-
-                    logger.info(f"Uploading position 1 repository for hotkey: {position_1_upload}")
-                    await upload_participant_repository(
-                        tournament.tournament_id, tournament.tournament_type, position_1_upload, 1, config, psql_db
-                    )
-
-                    logger.info(f"Uploading position 2 repository for hotkey: {position_2_upload}")
-                    await upload_participant_repository(
-                        tournament.tournament_id, tournament.tournament_type, position_2_upload, 2, config, psql_db
-                    )
-                except Exception as e:
-                    logger.error(f"Error determining final round participants: {e}")
-                    await upload_participant_repository(
-                        tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
-                    )
+            asyncio.create_task(
+                generate_diff_report_and_notify_tournament_completed(
+                    tournament,
+                    challenger_repo,
+                    result_summary,
+                    winner,
+                    config.discord_url,
+                    psql_db,
+                    challenger_commit_hash=challenger_commit_hash,
+                    challenger_github_token=challenger_github_token,
+                )
+            )
             return
         else:
             await create_next_round(tournament, completed_round, winners, config, psql_db)
@@ -702,12 +687,21 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                 )
                 await add_tournament_participants([participant], psql_db)
 
+                miner_datasets = validate_requested_datasets(
+                    responding_node.training_repo_response.requested_datasets
+                ) or None
+                if miner_datasets:
+                    logger.info(
+                        f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"
+                    )
+
                 await update_tournament_participant_training_repo(
                     tournament_id,
                     responding_node.node.hotkey,
                     responding_node.training_repo_response.github_repo,
                     responding_node.training_repo_response.commit_hash,
                     responding_node.training_repo_response.github_token,
+                    miner_datasets,
                     psql_db,
                 )
 

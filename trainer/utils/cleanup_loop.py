@@ -54,8 +54,8 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                 container = client.containers.run(
                     image=cst.CACHE_CLEANER_DOCKER_IMAGE,
                     volumes={
-                        cst.VOLUME_NAMES[0]: {"bind": "/checkpoints", "mode": "rw"},
-                        cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"},
+                        cst.CHECKPOINTS_VOLUME_NAME: {"bind": "/checkpoints", "mode": "rw"},
+                        cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"},
                         str(abs_task_path): {"bind": "/app/trainer/task_history.json", "mode": "ro"},
                     },
                     remove=True,

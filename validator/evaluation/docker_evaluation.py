@@ -726,7 +726,8 @@ async def run_evaluation_basilica_image(
         "HF_HOME": "/root/.cache/huggingface",
         "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub"
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "0",
     }
 
     logger.debug(f"Starting Basilica image evaluation for {len(models)} repos: {models}")
