@@ -149,17 +149,29 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
 
 async def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task-id", required=True)
-    parser.add_argument("--model", required=True)
+    subparsers = parser.add_subparsers(dest="command")
+
+    miner_ds_parser = subparsers.add_parser("download-miner-dataset")
+    miner_ds_parser.add_argument("--repo-id", required=True)
+    miner_ds_parser.add_argument("--cache-dir", required=True)
+
+    parser.add_argument("--task-id")
+    parser.add_argument("--model")
     parser.add_argument(
         "--task-type",
-        required=True,
         choices=[TaskType.IMAGETASK.value, TaskType.INSTRUCTTEXTTASK.value, TaskType.DPOTASK.value, TaskType.GRPOTASK.value, TaskType.CHATTASK.value, TaskType.ENVIRONMENTTASK.value],
     )
-    parser.add_argument("--dataset", required=True)
+    parser.add_argument("--dataset")
     parser.add_argument("--file-format")
     parser.add_argument("--model-type", choices=[ImageModelType.FLUX.value, ImageModelType.SDXL.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value])
     args = parser.parse_args()
+
+    if args.command == "download-miner-dataset":
+        download_miner_dataset(args.repo_id, args.cache_dir)
+        return
+
+    if not args.task_id or not args.model or not args.task_type or not args.dataset:
+        parser.error("--task-id, --model, --task-type, and --dataset are required for training downloads")
 
     dataset_dir = cst.CACHE_DATASETS_DIR
     model_dir = cst.CACHE_MODELS_DIR
@@ -218,6 +230,28 @@ async def main():
 
     print(f"Model path: {model_path}", flush=True)
     print(f"Dataset path: {dataset_dir}", flush=True)
+
+
+def download_miner_dataset(repo_id: str, cache_dir: str) -> str:
+    """Download a single HF dataset to the miner datasets cache."""
+    cache_name = repo_id.replace("/", "--")
+    cache_path = os.path.join(cache_dir, cache_name)
+
+    if os.path.exists(cache_path):
+        print(f"Dataset {repo_id} already cached at {cache_path}", flush=True)
+        return cache_path
+
+    os.makedirs(cache_dir, exist_ok=True)
+    tmp_path = cache_path + f".tmp.{os.getpid()}"
+    try:
+        print(f"Downloading dataset {repo_id} to {tmp_path}", flush=True)
+        snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=tmp_path, local_dir_use_symlinks=False)
+        os.rename(tmp_path, cache_path)
+        print(f"Download complete: {repo_id}", flush=True)
+    except BaseException:
+        shutil.rmtree(tmp_path, ignore_errors=True)
+        raise
+    return cache_path
 
 
 if __name__ == "__main__":

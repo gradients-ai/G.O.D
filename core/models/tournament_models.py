@@ -1,6 +1,7 @@
 import secrets
 from datetime import datetime
 from enum import Enum
+from typing import NamedTuple
 from uuid import UUID
 
 from fiber.chain.models import Node
@@ -13,6 +14,17 @@ from core.models.payload_models import TrainingRepoResponse
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
 from validator.core.models import AnyTypeRawTask
+
+
+class TrainingRepoInfo(NamedTuple):
+    training_repo: str | None
+    training_commit_hash: str | None
+    github_token: str | None
+    requested_datasets: list[str] | None
+
+    @classmethod
+    def empty(cls) -> "TrainingRepoInfo":
+        return cls(None, None, None, None)
 
 
 class TournamentStatus(str, Enum):
@@ -114,6 +126,7 @@ class TournamentParticipant(BaseModel):
     training_commit_hash: str | None = None
     github_token: str | None = None
     backup_repo: str | None = None
+    requested_datasets: list[str] | None = None
 
 
 class TournamentTask(BaseModel):
@@ -168,6 +181,7 @@ class TaskTrainingAssignment(BaseModel):
     training_repo: str | None = None
     training_commit_hash: str | None = None
     github_token: str | None = None
+    requested_datasets: list[str] | None = None
 
 
 class TournamentTaskTraining(BaseModel):
@@ -180,6 +194,7 @@ class TournamentTaskTraining(BaseModel):
     training_repo: str | None = None
     training_commit_hash: str | None = None
     github_token: str | None = None
+    requested_datasets: list[str] | None = None
     priority: int = 1  # Training priority: 1=organic, 2=tournament, 3=benchmark
     trainer_ip: str | None = None
 

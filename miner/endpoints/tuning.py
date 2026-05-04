@@ -12,6 +12,7 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
         github_repo="https://github.com/rayonlabs/G.O.D",
         commit_hash="5f161f642cd578b829e72dedd8444a491b9bbca3",
         github_token=None,  # Optional, only if the repository is private. Leave as None if not using a private repository.
+        requested_datasets=None,
     )
 
 

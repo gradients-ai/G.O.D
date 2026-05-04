@@ -43,13 +43,16 @@ from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_group_members
 from validator.db.sql.tournaments import get_tournament_groups
+from validator.db.sql.tournaments import get_tournament_pairs
 from validator.db.sql.tournaments import get_tournament_participant
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
+from validator.db.sql.tournaments import update_tournament_diff_report
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
 from validator.utils.logging import get_logger
+from validator.utils.repo_diff_report import generate_and_upload_repo_diff_report
 
 
 logger = get_logger(__name__)
@@ -87,6 +90,110 @@ def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int,
         return GpuRequirement.H100_4X
     else:
         return GpuRequirement.H100_8X
+
+
+async def generate_diff_report_for_result(
+    tournament: TournamentData,
+    challenger_repo: str | None,
+    result_summary: str,
+    psql_db: PSQLDB,
+    challenger_commit_hash: str | None = None,
+    challenger_github_token: str | None = None,
+) -> str | None:
+    if not challenger_repo:
+        logger.warning("Challenger repository is missing; skipping repo diff report")
+        return None
+
+    previous_boss = await get_tournament_participant(tournament.tournament_id, EMISSION_BURN_HOTKEY, psql_db)
+    previous_boss_repo = previous_boss.backup_repo or previous_boss.training_repo if previous_boss else None
+    if not previous_boss_repo:
+        logger.warning("Previous boss repository is missing; skipping repo diff report")
+        return None
+    previous_boss_commit_hash = None if previous_boss.backup_repo else previous_boss.training_commit_hash
+    previous_boss_github_token = None if previous_boss.backup_repo else previous_boss.github_token
+
+    report_url = await generate_and_upload_repo_diff_report(
+        tournament_id=tournament.tournament_id,
+        tournament_type=tournament.tournament_type.value,
+        challenger_repo_url=challenger_repo,
+        previous_boss_repo_url=previous_boss_repo,
+        result_summary=result_summary,
+        challenger_commit_hash=challenger_commit_hash,
+        challenger_github_token=challenger_github_token,
+        previous_boss_commit_hash=previous_boss_commit_hash,
+        previous_boss_github_token=previous_boss_github_token,
+    )
+    if report_url:
+        await update_tournament_diff_report(tournament.tournament_id, report_url, psql_db)
+    return report_url
+
+
+async def generate_diff_report_and_notify_tournament_completed(
+    tournament: TournamentData,
+    challenger_repo: str | None,
+    result_summary: str,
+    winner: str,
+    discord_url: str,
+    psql_db: PSQLDB,
+    challenger_commit_hash: str | None = None,
+    challenger_github_token: str | None = None,
+) -> None:
+    diff_report = None
+    try:
+        diff_report = await generate_diff_report_for_result(
+            tournament,
+            challenger_repo,
+            result_summary,
+            psql_db,
+            challenger_commit_hash=challenger_commit_hash,
+            challenger_github_token=challenger_github_token,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to generate tournament diff report: {exc}", exc_info=True)
+
+    try:
+        await notify_tournament_completed(
+            tournament.tournament_id, tournament.tournament_type.value, winner, discord_url, diff_report
+        )
+    except Exception as exc:
+        logger.error(f"Failed to notify tournament completion: {exc}", exc_info=True)
+
+
+async def _get_final_round_participants(completed_round: TournamentRoundData, psql_db: PSQLDB) -> tuple[str, str]:
+    if completed_round.round_type != RoundType.KNOCKOUT:
+        raise ValueError(f"Expected a knockout round, got {completed_round.round_type}")
+
+    pairs = await get_tournament_pairs(completed_round.round_id, psql_db)
+    if not pairs:
+        raise ValueError(f"No pairs found for final round {completed_round.round_id}")
+
+    pair = pairs[0]
+    return pair.hotkey1, pair.hotkey2
+
+
+async def get_challenger_participant_for_retained_boss(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    winners: list[str],
+    psql_db: PSQLDB,
+) -> TournamentParticipant | None:
+    challenger_hotkey = next((hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY), None)
+    if not challenger_hotkey and completed_round.round_type == RoundType.KNOCKOUT:
+        try:
+            participant1, participant2 = await _get_final_round_participants(completed_round, psql_db)
+            challenger_hotkey = participant2 if participant1 == EMISSION_BURN_HOTKEY else participant1
+        except Exception as exc:
+            logger.warning(f"Could not determine retained-boss challenger from final round participants: {exc}")
+
+    if not challenger_hotkey:
+        logger.warning("Could not determine retained-boss challenger; diff report will not include challenger repo")
+        return None
+
+    challenger = await get_tournament_participant(tournament.tournament_id, challenger_hotkey, psql_db)
+    if not challenger or not challenger.training_repo:
+        logger.warning(f"Challenger {challenger_hotkey} has no training repository in DB")
+        return None
+    return challenger
 
 
 def get_progressive_threshold(consecutive_wins: int, tournament_type: TournamentType | None = None) -> float:

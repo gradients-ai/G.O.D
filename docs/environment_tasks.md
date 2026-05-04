@@ -80,13 +80,13 @@ The default miner implementation leaves plenty of room for optimizations and is 
 
 Code submissions to the environment tournaments must adhere to the following rules. Submissions will be checked for compliance. Any winner of the tournament that breaks one of the following rules may have their win revoked. These rules may be changed in the future.
 
-1. You may not bring your own dataset in the docker image.
+1. You may not bring your own dataset in the docker image. You may only use datasets from the approved whitelist via the `requested_datasets` mechanism (see [Miner-Requested Datasets](tourn_miner.md#miner-requested-datasets)). Using any dataset outside the whitelist is grounds for disqualification.
 
 2. You may not bring a pretrained model in the docker image.
 
-3. You may not do any SFT for environment tasks.
+3. SFT is allowed for environment tasks, but **only** using whitelisted datasets. See [`core/whitelisted_sft_datasets.json`](../core/whitelisted_sft_datasets.json) for the current list of approved datasets.
 
-We have these rules to ensure that the winner is competing in the intended spirit of the tournament: to create training scripts that use live interactions with an environment to train a model.
+We have these rules to ensure that the winner is competing in the intended spirit of the tournament: to create training scripts that use live interactions with an environment to train a model. Whitelisted datasets are provided to give all miners equal access to supplementary training data.
 
 As always we are open to a continual conversation with our community about these rules and how to ensure the tournaments are fair. We will make a public announcement any time we have to enact these rules and strip a winner of their title.
 

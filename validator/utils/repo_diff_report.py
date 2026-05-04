@@ -10,6 +10,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from core.utils import build_authenticated_git_url
+from core.utils import sanitize_git_text
 from validator.core import constants as cst
 from validator.utils.logging import get_logger
 from validator.utils.util import upload_file_to_minio
@@ -48,9 +50,19 @@ def _git_head(repo: Path) -> str:
     return _run(["git", "rev-parse", "HEAD"], cwd=repo).stdout.strip()
 
 
-def _clone_repo(repo_url: str, dest: Path) -> str:
+def _clone_repo(repo_url: str, dest: Path, commit_hash: str | None = None, github_token: str | None = None) -> str:
     logger.info(f"Cloning repository for diff report: {repo_url}")
-    _run(["git", "clone", "--depth", "1", repo_url, str(dest)])
+    clone_url = build_authenticated_git_url(repo_url, github_token)
+    try:
+        clone_cmd = ["git", "clone", clone_url, str(dest)]
+        if not commit_hash:
+            clone_cmd[2:2] = ["--depth", "1"]
+        _run(clone_cmd)
+        if commit_hash:
+            _run(["git", "checkout", commit_hash], cwd=dest)
+    except Exception as exc:
+        sanitized_error = sanitize_git_text(str(exc), github_token)
+        raise RuntimeError(f"Failed to clone repository for diff report: {sanitized_error}") from exc
     head = _git_head(dest)
     logger.info(f"Cloned {repo_url} at {head}")
     return head
@@ -203,6 +215,10 @@ async def generate_and_upload_repo_diff_report(
     challenger_repo_url: str,
     previous_boss_repo_url: str,
     result_summary: str,
+    challenger_commit_hash: str | None = None,
+    challenger_github_token: str | None = None,
+    previous_boss_commit_hash: str | None = None,
+    previous_boss_github_token: str | None = None,
 ) -> str | None:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         logger.warning("ANTHROPIC_API_KEY is not set; skipping repo diff report")
@@ -215,8 +231,12 @@ async def generate_and_upload_repo_diff_report(
     try:
         current_repo = temp_root / "challenger"
         previous_repo = temp_root / "previous_boss"
-        current_head = await asyncio.to_thread(_clone_repo, challenger_repo_url, current_repo)
-        previous_head = await asyncio.to_thread(_clone_repo, previous_boss_repo_url, previous_repo)
+        current_head = await asyncio.to_thread(
+            _clone_repo, challenger_repo_url, current_repo, challenger_commit_hash, challenger_github_token
+        )
+        previous_head = await asyncio.to_thread(
+            _clone_repo, previous_boss_repo_url, previous_repo, previous_boss_commit_hash, previous_boss_github_token
+        )
 
         rows = await asyncio.to_thread(_changed_text_files, current_repo, previous_repo)
         _write_name_status_diff(temp_root / "changed_files.diff", rows)
