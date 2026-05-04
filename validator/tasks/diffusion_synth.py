@@ -24,11 +24,11 @@ from validator.core.config import Config
 from validator.core.models import ImageRawTask
 from validator.core.models import RawTask
 from validator.db.sql.tasks import add_task
+from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.call_endpoint import post_to_nineteen_image
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
 from validator.utils.logging import get_logger
-from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.util import retry_with_backoff
 
 
@@ -359,7 +359,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
         logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
     if len(image_text_pairs) >= 10:
-        augmentation_config = maybe_get_augmentation_config(TaskType.IMAGETASK)
+        augmentation_config = await maybe_get_augmentation_config(TaskType.IMAGETASK, config.psql_db)
         task = ImageRawTask(
             model_id=model_info.model_id,
             ds=ds_prefix.replace(" ", "_").lower() + "_" + str(uuid.uuid4()),

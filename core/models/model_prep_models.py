@@ -22,6 +22,7 @@ class AugmentationType(str, Enum):
     WEIGHT_SCALING = "weight_scaling"
     MAGNITUDE_PRUNING = "magnitude_pruning"
     LAYER_REINIT = "layer_reinit"
+    BOSS_BASE_MODEL = "boss_base_model"
 
 
 class AugmentationScope(str, Enum):
@@ -33,9 +34,12 @@ class AugmentationScope(str, Enum):
 
 class AugmentationConfig(BaseModel):
     aug_type: AugmentationType
-    scope: AugmentationScope
+    scope: AugmentationScope | None = None
     seed: int
-    intensity: float
+    intensity: float | None = None
+    source_model_repo: str | None = None
+    source_task_id: str | None = None
+    source_base_model_id: str | None = None
 
 
 # --- Shared stats building blocks ---

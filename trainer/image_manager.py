@@ -531,15 +531,24 @@ def run_model_prep_container(
     ]
 
     if augmentation_config is not None:
-        command += [
-            "--aug-type", augmentation_config.aug_type.value,
-            "--scope", augmentation_config.scope.value,
-            "--seed", str(augmentation_config.seed),
-            "--intensity", str(augmentation_config.intensity),
-        ]
+        command += ["--aug-type", augmentation_config.aug_type.value, "--seed", str(augmentation_config.seed)]
+        if augmentation_config.scope is not None:
+            command += ["--scope", augmentation_config.scope.value]
+        if augmentation_config.intensity is not None:
+            command += ["--intensity", str(augmentation_config.intensity)]
+        if augmentation_config.source_model_repo:
+            command += ["--source-model-repo", augmentation_config.source_model_repo]
+        if augmentation_config.source_task_id:
+            command += ["--source-task-id", augmentation_config.source_task_id]
+        if augmentation_config.source_base_model_id:
+            command += ["--source-base-model-id", augmentation_config.source_base_model_id]
 
     if reward_functions:
-        command += ["--reward-functions", json.dumps([rf.model_dump() if hasattr(rf, "model_dump") else rf for rf in reward_functions])]
+        reward_functions_payload = [
+            rf.model_dump() if hasattr(rf, "model_dump") else rf
+            for rf in reward_functions
+        ]
+        command += ["--reward-functions", json.dumps(reward_functions_payload)]
 
     if env_configs_with_urls:
         command += ["--env-configs", json.dumps(env_configs_with_urls)]

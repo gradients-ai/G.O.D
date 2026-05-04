@@ -3,12 +3,12 @@ Model augmentation operations: layer selection and weight modification.
 All operations are deterministic given the same seed.
 """
 
-import re
 import random
+import re
 from collections import defaultdict
 
-import torch
 import numpy as np
+import torch
 
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
@@ -94,6 +94,9 @@ def apply_augmentation(
 
 def augment_model(model, config: AugmentationConfig) -> None:
     """Apply augmentation to a loaded model in-place."""
+    if config.scope is None or config.intensity is None:
+        raise ValueError(f"{config.aug_type.value} requires scope and intensity")
+
     rng = np.random.default_rng(config.seed)
 
     all_param_names = [name for name, _ in model.named_parameters()]

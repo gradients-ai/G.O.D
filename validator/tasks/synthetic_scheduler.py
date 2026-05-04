@@ -272,7 +272,7 @@ async def create_synthetic_dpo_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.DPOTASK)
+    augmentation_config = await maybe_get_augmentation_config(TaskType.DPOTASK, config.psql_db)
     task = DpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -407,7 +407,7 @@ async def create_synthetic_grpo_task(
     reward_functions = await _get_generic_reward_functions(config)
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
+    augmentation_config = await maybe_get_augmentation_config(TaskType.GRPOTASK, config.psql_db)
     task = GrpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -460,7 +460,7 @@ async def create_synthetic_env_task(
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)
 
-    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
+    augmentation_config = await maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK, config.psql_db)
     task = EnvRawTask(
         model_id=model_id,
         ds=dummy_dataset,
@@ -536,7 +536,7 @@ async def create_synthetic_affine_grpo_task(
         end_timestamp = current_time + timedelta(hours=number_of_hours)
 
         yarn_factor = maybe_get_yarn_factor()
-        augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
+        augmentation_config = await maybe_get_augmentation_config(TaskType.GRPOTASK, config.psql_db)
         task = GrpoRawTask(
             model_id=model_id,
             ds=s3_url,
@@ -583,7 +583,7 @@ async def create_synthetic_instruct_text_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
+    augmentation_config = await maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK, config.psql_db)
     task = InstructTextRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -600,7 +600,10 @@ async def create_synthetic_instruct_text_task(
         yarn_factor=yarn_factor,
         augmentation_config=augmentation_config,
     )
-    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
+    logger.info(
+        f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, "
+        f"augmented={augmentation_config is not None}"
+    )
 
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")
