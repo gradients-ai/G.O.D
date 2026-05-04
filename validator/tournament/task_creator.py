@@ -116,9 +116,12 @@ async def _create_environment_group_tasks(
         force_env = t_cst.FORCED_BOSS_ENVIRONMENT
         logger.info(f"Final round: forcing boss environment to {force_env}")
 
-    # Exclude games used in previous rounds so each round plays a different game.
-    # Also exclude the forced boss game from non-final rounds so it's reserved for the boss round.
-    exclude_envs = await _get_previous_round_environment_names(tournament_id, config)
+    # Exclude games used in previous rounds so each non-final round plays a different game.
+    # We only have three games total; R1–R3 each consume one, so the final round must be
+    # allowed to reuse those names while still picking distinct games within the round (below).
+    exclude_envs = (
+        [] if is_final_round else await _get_previous_round_environment_names(tournament_id, config)
+    )
     if not is_final_round and t_cst.FORCED_BOSS_ENVIRONMENT:
         if t_cst.FORCED_BOSS_ENVIRONMENT not in exclude_envs:
             exclude_envs.append(t_cst.FORCED_BOSS_ENVIRONMENT)
