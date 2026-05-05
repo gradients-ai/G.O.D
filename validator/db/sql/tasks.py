@@ -1523,6 +1523,20 @@ async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> N
         )
 
 
+async def reset_all_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> None:
+    """Reset every evaluation row for a task back to pending."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.EVALUATION_STATUS} = 'pending', {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
+            """,
+            task_id,
+            NETUID,
+        )
+
+
 async def set_evaluation_deployment_ids(
     task_id: UUID,
     hotkey: str,

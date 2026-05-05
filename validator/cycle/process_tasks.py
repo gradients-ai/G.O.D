@@ -363,7 +363,11 @@ async def _recover_evaluating_tasks(config: Config):
     for task in stopped_mid_evaluation:
         if task.task_id is None:
             continue
-        await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
+        if task.task_type == TaskType.GRPOTASK:
+            logger.info(f"Resetting all GRPO evaluation rows to pending for task {task.task_id}")
+            await tasks_sql.reset_all_task_evaluations_to_pending(task.task_id, config.psql_db)
+        else:
+            await tasks_sql.reset_task_evaluations_to_pending(task.task_id, config.psql_db)
 
 
 async def _move_back_to_pending_status(task, config):
