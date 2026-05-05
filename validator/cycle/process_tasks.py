@@ -269,6 +269,12 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
 async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
     assert task.task_id is not None
 
+    if task.task_type == TaskType.GRPOTASK:
+        training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+        if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
+            logger.info(f"GRPO task {task.task_id} still has non-terminal training rows; deferring batch evaluation")
+            return
+
     pending_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "pending", config.psql_db)
     evaluating_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "evaluating", config.psql_db)
     if not pending_rows and not evaluating_rows:
