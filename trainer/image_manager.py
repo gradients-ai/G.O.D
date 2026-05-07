@@ -182,8 +182,10 @@ async def run_trainer_container_image(
 
     if trigger_word:
         command += ["--trigger-word", trigger_word]
+
+    environment: dict[str, str] = {"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH}
     if baseline_stats:
-        command += ["--baseline-stats", json.dumps(baseline_stats.model_dump())]
+        environment["BASELINE_STATS"] = json.dumps(baseline_stats.model_dump())
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
@@ -216,7 +218,7 @@ async def run_trainer_container_image(
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
                 network=cst.INTERNAL_BRIDGE_NAME,
-                environment={"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH},
+                environment=environment,
                 detach=True,
             )
 
@@ -257,6 +259,8 @@ async def run_trainer_container_text(
     await asyncio.to_thread(ensure_internal_network)
 
     environment = build_wandb_env(task_id, hotkey)
+    if baseline_stats:
+        environment["BASELINE_STATS"] = json.dumps(baseline_stats.model_dump())
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
     if miner_datasets:
@@ -281,9 +285,6 @@ async def run_trainer_container_text(
         "--hours-to-complete",
         str(hours_to_complete),
     ]
-
-    if baseline_stats:
-        command += ["--baseline-stats", json.dumps(baseline_stats.model_dump())]
 
     container_name = f"text-trainer-{uuid.uuid4().hex}"
 
