@@ -217,6 +217,17 @@ Your training scripts accept these standardised CLI arguments:
 --hours-to-complete   # Time limit in hours for the job to finish
 ```
 
+## Environment Variables
+
+Your training container receives these environment variables in addition to CLI arguments:
+
+| Variable | Description |
+|----------|-------------|
+| `BASELINE_STATS` | JSON-encoded pre-training baseline statistics (model weights, dataset stats, initial loss, gradient norms). Structure varies by task type — see [`core/models/model_prep_models.py`](../core/models/model_prep_models.py) for the full schema. Optional — safe to ignore. |
+| `MINER_DATASETS_DIR` | Parent directory for requested datasets (see [Miner-Requested Datasets](#miner-requested-datasets)) |
+| `MINER_DATASETS` | Comma-separated list of downloaded dataset directory names |
+| `ENVIRONMENT_SERVER_URLS` | Comma-separated env server URLs (environment tasks only) |
+
 ## Training Logs and Monitoring
 
 ### Grafana Dashboard
