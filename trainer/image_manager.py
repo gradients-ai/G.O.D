@@ -194,8 +194,8 @@ async def run_trainer_container_image(
                 image=tag,
                 command=command,
                 volumes={
-                    cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
+                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
                 },
                 remove=False,
                 shm_size=shm_size,
@@ -290,8 +290,8 @@ async def run_trainer_container_text(
                 image=tag,
                 command=command,
                 volumes={
-                    cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},  # NOTE: may require rw fixing
+                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
                 },
                 remove=False,
                 shm_size=shm_size,
@@ -375,7 +375,7 @@ def run_downloader_container(
             name=container_name,
             command=command,
             labels=log_labels,
-            volumes={cst.VOLUME_NAMES[1]: {"bind": "/cache", "mode": "rw"}},
+            volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
             remove=False,
             detach=True,
         )
@@ -460,8 +460,8 @@ async def upload_repo_to_hf(
         }
 
         volumes = {
-            cst.VOLUME_NAMES[0]: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-            cst.VOLUME_NAMES[1]: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
+            cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+            cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
         }
 
         container_name = f"hf-upload-{uuid.uuid4().hex}"
