@@ -1,8 +1,9 @@
-FROM axolotlai/axolotl:main-py3.11-cu124-2.5.1
+FROM winglian/axolotl:main-20251113
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir --no-deps sglang && pip install --no-cache-dir datasketch aiohttp python-dotenv
+RUN TORCH_VER=$(python -c "import torch; print(torch.__version__)") && \
+    pip install --no-cache-dir "sglang[srt]" "torch==${TORCH_VER}" datasketch aiohttp python-dotenv
 
 COPY trainer/model_prep/ trainer/model_prep/
 COPY core/ core/
