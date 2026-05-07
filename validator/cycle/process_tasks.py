@@ -23,9 +23,6 @@ from validator.utils.cache_clear import manage_models_cache
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
-from validator.utils.model_prep import dispatch_augmentation_and_stats
-
-
 logger = get_logger(__name__)
 _EVALUATING_ROWS_LOCK = asyncio.Lock()
 
@@ -115,29 +112,17 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task = await get_task_config(task).task_prep_function(task, config.keypair, config.psql_db)
             logger.info(f"THE TASK HAS BEEN PREPPED {task}")
 
-            # Model prep: augmentation + baseline stats (runs on trainer GPU)
-            # Skip for organic tasks when stats are disabled (no augmentation either)
-            prep_result = None
-            if not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC):
-                reward_fns = getattr(task, "reward_functions", None)
-                is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
-                prep_result = await dispatch_augmentation_and_stats(
-                    task_id=str(task.task_id),
-                    model_id=task.model_id,
-                    training_data_url=task.training_data,
-                    augmentation_config=task.augmentation_config,
-                    model_params_count=task.model_params_count,
-                    task_type=task.task_type,
-                    config=config,
-                    reward_functions=reward_fns,
-                    is_env_task=is_env_task,
-                )
-            if prep_result is not None:
-                if prep_result.augmented_model_id:
-                    task.augmented_model_id = prep_result.augmented_model_id
-                if prep_result.baseline_stats:
-                    task.baseline_stats = prep_result.baseline_stats
+            # Determine whether this task needs model prep (augmentation + baseline stats).
+            # Organic tasks with stats disabled skip model prep entirely and go straight
+            # to looking_for_nodes.  Everything else queues for GPU-based model prep.
+            needs_model_prep = not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC)
 
+            if needs_model_prep:
+                task.status = TaskStatus.AWAITING_MODEL_PREP
+            else:
+                task.status = TaskStatus.LOOKING_FOR_NODES
+
+            add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
         except Exception as e:
             logger.error(f"Error during task prep: {e}", exc_info=True)

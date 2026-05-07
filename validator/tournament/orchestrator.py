@@ -978,6 +978,86 @@ async def update_all_trainers_gpu_availability_cycle(config: Config):
             await asyncio.sleep(cst.PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL)
 
 
+async def process_awaiting_model_prep_tasks(config: Config):
+    """Poll for tasks awaiting model prep and dispatch to a trainer with GPU.
+
+    Processes tasks FIFO (oldest first).  When no GPU is available the task
+    stays in ``awaiting_model_prep`` and is retried on the next cycle — model
+    prep is never silently dropped.
+    """
+    # Deferred imports to avoid circular dependency
+    # (model_prep imports _check_suitable_gpus from this module)
+    from validator.utils.model_prep import _gpu_requirement_for_model_prep
+    from validator.utils.model_prep import dispatch_augmentation_and_stats
+
+    while True:
+        try:
+            tasks = await task_sql.get_tasks_with_status(
+                TaskStatus.AWAITING_MODEL_PREP, config.psql_db
+            )
+            if not tasks:
+                logger.debug("No tasks awaiting model prep")
+                await asyncio.sleep(cst.MODEL_PREP_CYCLE_INTERVAL)
+                continue
+
+            tasks.sort(key=lambda t: t.created_at)
+            logger.info(f"Found {len(tasks)} tasks awaiting model prep")
+
+            for task in tasks:
+                with LogContext(task_id=str(task.task_id)):
+                    gpu_req = _gpu_requirement_for_model_prep(task.model_params_count or 0)
+                    suitable = await _check_suitable_gpus(config, gpu_req)
+                    if suitable is None:
+                        logger.info(
+                            f"No GPUs available for model prep of task {task.task_id} "
+                            f"(model={task.model_id}, req={gpu_req.value}), will retry next cycle"
+                        )
+                        continue
+
+                    try:
+                        reward_fns = getattr(task, "reward_functions", None)
+                        is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+
+                        prep_result = await dispatch_augmentation_and_stats(
+                            task_id=str(task.task_id),
+                            model_id=task.model_id,
+                            training_data_url=task.training_data,
+                            augmentation_config=task.augmentation_config,
+                            model_params_count=task.model_params_count,
+                            task_type=task.task_type,
+                            config=config,
+                            reward_functions=reward_fns,
+                            is_env_task=is_env_task,
+                        )
+
+                        if prep_result is not None:
+                            if prep_result.augmented_model_id:
+                                task.augmented_model_id = prep_result.augmented_model_id
+                            if prep_result.baseline_stats:
+                                task.baseline_stats = prep_result.baseline_stats
+
+                            task.status = TaskStatus.LOOKING_FOR_NODES
+                            await task_sql.update_task(task, config.psql_db)
+                            logger.info(
+                                f"Model prep complete for task {task.task_id}, "
+                                f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Model prep dispatch returned None for task {task.task_id}, "
+                                f"will retry next cycle"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Model prep failed for task {task.task_id}: {e}",
+                            exc_info=True,
+                        )
+        except Exception as e:
+            logger.error(f"Error in process_awaiting_model_prep_tasks cycle: {e}", exc_info=True)
+
+        await asyncio.sleep(cst.MODEL_PREP_CYCLE_INTERVAL)
+
+
 async def run_tournament_orchestrator_cycles():
     config = load_config()
     await try_db_connections(config)
@@ -989,6 +1069,7 @@ async def run_tournament_orchestrator_cycles():
         monitor_training_tasks(config),
         seed_tournament_evaluations_from_training(config),
         update_all_trainers_gpu_availability_cycle(config),
+        process_awaiting_model_prep_tasks(config),
     )
 
 
