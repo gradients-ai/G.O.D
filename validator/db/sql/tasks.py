@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -90,9 +89,9 @@ async def _insert_base_task(connection: Connection, task: AnyTypeRawTask) -> dic
         task.started_at,
         task.termination_at,
         task.yarn_factor,
-        json.dumps(task.augmentation_config.model_dump()) if task.augmentation_config else None,
+        task.augmentation_config.model_dump() if task.augmentation_config else None,
         task.augmented_model_id,
-        json.dumps(task.baseline_stats.model_dump()) if task.baseline_stats else None,
+        task.baseline_stats.model_dump() if task.baseline_stats else None,
     )
 
 
@@ -465,9 +464,11 @@ async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeR
             base_task_fields = await get_table_fields(cst.TASKS_TABLE, connection)
             base_updates = {k: v for k, v in updates.items() if k in base_task_fields}
             if cst.AUGMENTATION_CONFIG in base_updates and base_updates[cst.AUGMENTATION_CONFIG] is not None:
-                base_updates[cst.AUGMENTATION_CONFIG] = json.dumps(base_updates[cst.AUGMENTATION_CONFIG])
+                val = base_updates[cst.AUGMENTATION_CONFIG]
+                base_updates[cst.AUGMENTATION_CONFIG] = val if isinstance(val, dict) else val.model_dump()
             if cst.BASELINE_STATS in base_updates and base_updates[cst.BASELINE_STATS] is not None:
-                base_updates[cst.BASELINE_STATS] = json.dumps(base_updates[cst.BASELINE_STATS])
+                val = base_updates[cst.BASELINE_STATS]
+                base_updates[cst.BASELINE_STATS] = val if isinstance(val, dict) else val.model_dump()
             if base_updates:
                 set_clause = ", ".join([f"{column} = ${i + 2}" for i, column in enumerate(base_updates.keys())])
                 values = list(base_updates.values())
@@ -833,9 +834,6 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             return None
 
         full_task_data = dict(full_row)
-        for jsonb_field in (cst.AUGMENTATION_CONFIG, cst.BASELINE_STATS):
-            if jsonb_field in full_task_data and isinstance(full_task_data[jsonb_field], str):
-                full_task_data[jsonb_field] = json.loads(full_task_data[jsonb_field])
         if task_type == TaskType.INSTRUCTTEXTTASK.value:
             return InstructTextRawTask(**full_task_data)
         elif task_type == TaskType.IMAGETASK.value:
@@ -977,9 +975,6 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
             return None
 
         full_task_data = dict(row)
-        for jsonb_field in (cst.AUGMENTATION_CONFIG, cst.BASELINE_STATS):
-            if jsonb_field in full_task_data and isinstance(full_task_data[jsonb_field], str):
-                full_task_data[jsonb_field] = json.loads(full_task_data[jsonb_field])
         if task_type == TaskType.INSTRUCTTEXTTASK.value:
             return InstructTextTask(**full_task_data)
         elif task_type == TaskType.IMAGETASK.value:
@@ -1144,9 +1139,6 @@ async def _create_task_from_data(
 ) -> AnyTypeTask | None:
     """Create a task object from the given data based on task type"""
     full_task_data = dict(task_data)
-    for jsonb_field in (cst.AUGMENTATION_CONFIG, cst.BASELINE_STATS):
-        if jsonb_field in full_task_data and isinstance(full_task_data[jsonb_field], str):
-            full_task_data[jsonb_field] = json.loads(full_task_data[jsonb_field])
 
     if task_type == TaskType.INSTRUCTTEXTTASK.value:
         return InstructTextRawTask(**full_task_data)
