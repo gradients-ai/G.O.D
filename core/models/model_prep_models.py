@@ -3,6 +3,7 @@ Pydantic models for model prep: augmentation config and baseline stats.
 Per-type stats models for instruct, DPO, GRPO tasks.
 """
 
+import json
 from enum import Enum
 from typing import Annotated
 from typing import Literal
@@ -11,6 +12,7 @@ from typing import Union
 from pydantic import BaseModel
 from pydantic import Discriminator
 from pydantic import Tag
+from pydantic import model_validator
 
 from core.constants import EnvironmentName
 
@@ -36,6 +38,13 @@ class AugmentationConfig(BaseModel):
     scope: AugmentationScope
     seed: int
     intensity: float
+
+    @model_validator(mode="before")
+    @classmethod
+    def parse_json_string(cls, data):
+        if isinstance(data, str):
+            return json.loads(data)
+        return data
 
 
 # --- Shared stats building blocks ---
