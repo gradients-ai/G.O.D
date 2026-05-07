@@ -55,8 +55,8 @@ The system automatically schedules tournaments on a weekly basis with separate s
     - **Knockout Stage**: Single elimination format for the top 8
   - **Environment Tournaments**:
     - **Single Group Stage**: All participants (including boss) compete in one large group
-    - **No Knockout Rounds**: Environment tournaments only have the group stage
-    - **One Winner**: The highest-scoring participant wins the tournament
+    - **No Knockout Rounds**: Environment tournaments use 4 group rounds
+    - **Round Flow**: R1(1 task, top8) → R2(1 task, top2) → R3(1 task, boss+2) → R4(3 tasks, boss vs selected contender)
 
 ### 4. Task Creation & Assignment
 
@@ -64,7 +64,9 @@ The system automatically schedules tournaments on a weekly basis with separate s
 
 - **Text tournaments**: 1 Instruct task
 - **Image tournaments**: 1 image task
-- **Environment tournaments**: 1 environment task (all participants compete on the same task)
+- **Environment tournaments**:
+  - R1-R3: 1 environment task per round
+  - R4: 3 environment tasks (distinct environment types)
 
 #### Knockout Stage Tasks
 
@@ -159,12 +161,12 @@ When tournament reaches final round with single winner:
 
 ## Environment Tournament Mechanics
 
-Environment tournaments have a simplified structure focused on environment-based reinforcement learning:
+Environment tournaments are focused on environment-based reinforcement learning with multi-round boss comparison:
 
 ### Structure
 
-- **Single Round**: Only one group stage round (no knockout rounds)
-- **All Participants Together**: Boss and all participants compete in a single large group
+- **Four Rounds**: Four group rounds (no knockout rounds)
+- **All Participants Together**: Boss and participants compete in shared group rounds
 - **Minimum Participants**: Requires at least 5 participants to start
 - **Participation Fee**: 0.20 TAO per tournament
 
@@ -172,17 +174,21 @@ Environment tournaments have a simplified structure focused on environment-based
 
 - **GRPO-Based Scoring**: Uses GRPO (Group Relative Policy Optimization) scoring where **higher scores are better**
 - **Progressive Threshold**: Defending champion benefits from a progressive threshold system
-  - Champion starts with 10% advantage on first defense
+  - Champion starts with configured defense advantage on first defense
   - Threshold decays exponentially with consecutive wins (same formula as text/image tournaments)
   - Minimum threshold floor of 3%
-- **Winner Selection**: The participant with the highest GRPO score wins
-  - Challengers must beat the boss threshold score to be eligible: `challenger_score >= boss_score * (1 + threshold_percentage)`
-  - If no challenger beats the threshold, boss retains title
-  - Among eligible participants, highest score wins
+- **Contender Selection for R4**:
+  - Round-3 winnering selects one contender from the two non-boss finalists by cumulative R1-R3 wins vs boss at threshold
+  - If Round-3 winnering returns zero winners, generic zero-winner fallback declares boss winner and skips R4
+- **Winner Selection**:
+  - Final comparison uses all 6 tasks: R1 + R2 + R3 + three R4 tasks
+  - Contender must win at least 4/6 tasks at threshold to dethrone boss
+  - Otherwise boss retains title
 
 ### Task Assignment
 
-- All participants (including boss) are assigned to the same environment task
+- R1-R3: all participants (including boss) are assigned to a single environment task per round
+- R4: boss and selected contender are assigned to 3 environment tasks
 - Task uses environment rollout functions (e.g., `alfworld_rollout_first_prompt_and_completion`)
 - Environment servers are provisioned during training
 - Evaluation: 250 episodes post-training to determine final scores
