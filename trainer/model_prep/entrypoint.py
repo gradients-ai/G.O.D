@@ -177,7 +177,19 @@ def main():
         "augmented_model_id": augmented_model_id,
         "baseline_stats": stats.model_dump() if stats else None,
     }
-    print(json.dumps(result), flush=True)
+    def sanitize_floats(obj):
+        """Replace NaN/Inf with None for JSON compliance."""
+        if isinstance(obj, float):
+            if obj != obj or obj == float("inf") or obj == float("-inf"):
+                return None
+            return obj
+        if isinstance(obj, dict):
+            return {k: sanitize_floats(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [sanitize_floats(v) for v in obj]
+        return obj
+
+    print(json.dumps(sanitize_floats(result)), flush=True)
 
 
 if __name__ == "__main__":
