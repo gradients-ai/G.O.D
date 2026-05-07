@@ -114,6 +114,10 @@ async def dispatch_augmentation_and_stats(
                 f"baseline_stats={result.baseline_stats}"
             )
             return result
+    except httpx.HTTPStatusError as e:
+        body = e.response.text[:500] if e.response else "no response body"
+        logger.error(f"Model prep dispatch failed (HTTP {e.response.status_code}): {body}")
+        return None
     except Exception as e:
         logger.error(f"Model prep dispatch failed: {e}")
         return None
