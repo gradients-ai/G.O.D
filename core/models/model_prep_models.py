@@ -80,7 +80,7 @@ class DatasetStatsBase(BaseModel):
     total_tokens: int
     seq_length_distribution: SeqLengthDistribution
     near_duplicate_rate: float
-    bits_per_byte: float
+    bits_per_byte: float | None = None
     vocab_size: int
     unique_tokens_in_data: int = 0
     vocab_coverage_ratio: float = 0.0
