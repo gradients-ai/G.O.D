@@ -258,6 +258,7 @@ async def get_tournament_gpu_requirements(
         unfinished_statuses = [
             TaskStatus.PENDING,
             TaskStatus.PREPARING_DATA,
+            TaskStatus.AWAITING_MODEL_PREP,
             TaskStatus.LOOKING_FOR_NODES,
             TaskStatus.READY,
             TaskStatus.TRAINING,
