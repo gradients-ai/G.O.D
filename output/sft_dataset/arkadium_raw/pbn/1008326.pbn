@@ -1,0 +1,82 @@
+[FF "4"]
+[DT "2025.08.20"]
+[GM "106"]
+[SZ "2"]
+[CA "UTF-8"]
+[GN "ginrummy"]
+[PC "arkadium.com"]
+[RU "Gin Rummy - standard"]
+[GameplayId "132114766"]
+
+[Player1 "p1"]
+[Player2 "p2"]
+
+[Hand "8:8"]
+[GameScore "147:72"]
+[Dealer "1"]
+[Deal "HA CA S2 H4 C7 S7 DT CQ SQ DK, C2 C4 S5 H7 C8 S8 D9 CJ SJ DQ"]
+[Upcard "D6"]
+[Score "0:53"]
+
+[Play]
+1. 2 passes
+2. 1 passes
+3. 2 picks DA
+4. 2 discards DQ
+5. 1 picks DQx
+6. 1 discards DK
+7. 2 picks D3
+8. 2 discards D9
+9. 1 picks D9x
+10. 1 discards H4
+11. 2 picks H8
+12. 2 discards H7
+13. 1 picks H7x
+14. 1 discards S2
+15. 2 picks H5
+16. 2 discards CJ
+17. 1 picks C6
+18. 1 discards C6
+19. 2 picks C9
+20. 2 discards SJ
+21. 1 picks C5
+22. 1 discards C5
+23. 2 picks C5x
+24. 2 discards C9
+25. 1 picks C9x
+26. 1 discards CA
+27. 2 picks CAx
+28. 2 discards C4
+29. 1 picks S6
+30. 1 discards S6
+31. 2 picks H3
+32. 2 discards H3
+33. 1 picks H6
+34. 1 discards H6
+35. 2 picks D8
+36. 2 discards D3
+37. 1 picks S3
+38. 1 discards S3
+39. 2 picks HQ
+40. 2 discards HQ
+41. 1 picks HQx
+42. 1 discards HA
+43. 2 picks HAx
+44. 2 knocks
+45. 2 discards C2
+
+[Groups]
+1: H7 C7 S7, HQ CQ DQ SQ
+2: HA CA DA, H5 C5 S5, H8 C8 D8 S8
+
+[Layoffs]
+1:
+2:
+
+[DeadwoodCards]
+1: C9, D9, DT
+2:
+
+[Deadwood "28:0"]
+
+

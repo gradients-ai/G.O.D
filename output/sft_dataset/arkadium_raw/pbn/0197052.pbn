@@ -1,0 +1,59 @@
+[FF "4"]
+[DT "2025.08.01"]
+[GM "106"]
+[SZ "2"]
+[CA "UTF-8"]
+[GN "ginrummy"]
+[PC "arkadium.com"]
+[RU "Gin Rummy - standard"]
+[GameplayId "131946141"]
+
+[Player1 "p1"]
+[Player2 "p2"]
+
+[Hand "1:5"]
+[GameScore "0:0"]
+[Dealer "2"]
+[Deal "SA C4 D4 D5 D6 S7 H8 D8 H9 DQ, C3 H4 S4 S6 H7 C7 D7 S9 HT HK"]
+[Upcard "C2"]
+[Score "36:0"]
+
+[Play]
+1. 1 passes
+2. 2 picks C2x
+3. 2 discards HK
+4. 1 picks DT
+5. 1 discards DQ
+6. 2 picks D9
+7. 2 discards HT
+8. 1 picks HTx
+9. 1 discards S7
+10. 2 picks S7x
+11. 2 discards D9
+12. 1 picks D9x
+13. 1 discards C4
+14. 2 picks C4x
+15. 2 discards S9
+16. 1 picks DK
+17. 1 discards DK
+18. 2 picks HQ
+19. 2 discards HQ
+20. 1 picks D3
+21. 1 knocks
+22. 1 discards SA
+
+[Groups]
+1: D3 D4 D5 D6, H8 H9 HT, D8 D9 DT
+2: H4 C4 S4, H7 C7 D7 S7
+
+[Layoffs]
+1:
+2:
+
+[DeadwoodCards]
+1:
+2: C2, C3, S6
+
+[Deadwood "0:11"]
+
+
