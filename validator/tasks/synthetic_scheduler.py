@@ -45,8 +45,6 @@ SUPPORTED_ENV_MODELS = [
     "Qwen/Qwen2-7B-Instruct",
     "unsloth/Llama-3.2-3B-Instruct",
     "Qwen/Qwen3-4B-Instruct-2507",
-    "mistralai/Mistral-7B-Instruct-v0.3",
-    "mistralai/Mistral-7B-Instruct-v0.2",
     "Qwen/Qwen2.5-3B-Instruct",
     "Qwen/Qwen2.5-7B-Instruct",
     "codellama/CodeLlama-7b-Instruct-hf",
