@@ -37,6 +37,7 @@ from validator.db import constants as db_cst
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import get_task_winner
+from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_latest_completed_tournament
@@ -239,6 +240,53 @@ async def did_contender_beat_boss_on_task(
     return contender_score >= boss_score * (1 + threshold_percentage)
 
 
+async def update_threshold_adjusted_quality_scores_for_task(
+    task_id: str,
+    winner_hotkey: str,
+    threshold_percentage: float,
+    psql_db: PSQLDB,
+    compared_hotkeys: list[str] | None = None,
+) -> None:
+    """Persist threshold-adjusted task scores while preserving raw losses."""
+    miner_results = await get_task_results_for_ranking(task_id, psql_db)
+    if not miner_results:
+        logger.warning(f"No valid results for threshold-adjusted scoring on task {task_id}")
+        return
+
+    allowed_hotkeys = set(compared_hotkeys) if compared_hotkeys else None
+    scored_hotkeys = {result.hotkey for result in miner_results if allowed_hotkeys is None or result.hotkey in allowed_hotkeys}
+    if winner_hotkey not in scored_hotkeys:
+        logger.warning(
+            f"Threshold-adjusted winner {winner_hotkey} not found in valid results for task {task_id}; skipping score update"
+        )
+        return
+
+    threshold_pct = threshold_percentage * 100
+    for result in miner_results:
+        if allowed_hotkeys is not None and result.hotkey not in allowed_hotkeys:
+            continue
+
+        is_winner = result.hotkey == winner_hotkey
+        quality_score = 3.0 if is_winner else 0.0
+        score_reason = (
+            f"Threshold-adjusted winner at {threshold_pct:.1f}% progressive threshold"
+            if is_winner
+            else f"Lost to threshold-adjusted winner {winner_hotkey} at {threshold_pct:.1f}% progressive threshold"
+        )
+        await update_task_node_quality_score_only(
+            task_id=task_id,
+            hotkey=result.hotkey,
+            quality_score=quality_score,
+            score_reason=score_reason,
+            psql_db=psql_db,
+        )
+
+    logger.info(
+        f"Updated threshold-adjusted quality scores for task {task_id}: winner={winner_hotkey}, "
+        f"threshold={threshold_pct:.1f}%"
+    )
+
+
 async def select_best_contender_by_cumulative_boss_wins(
     tournament: TournamentData,
     candidate_hotkeys: list[str],
@@ -372,6 +420,14 @@ async def determine_env_tournament_winner(
         for task in round_tasks:
             total_tasks += 1
             contender_won = await did_contender_beat_boss_on_task(task.task_id, contender, threshold_percentage, psql_db)
+            task_winner = contender if contender_won else boss_hotkey
+            await update_threshold_adjusted_quality_scores_for_task(
+                task_id=task.task_id,
+                winner_hotkey=task_winner,
+                threshold_percentage=threshold_percentage,
+                compared_hotkeys=[boss_hotkey, contender],
+                psql_db=psql_db,
+            )
             if contender_won:
                 task_wins += 1
 
@@ -892,25 +948,29 @@ async def get_knockout_winners(
             if task_object.task_type == TaskType.GRPOTASK:
                 # For GRPO tasks, higher scores are better
                 if boss_loss * boss_multiplier > opponent_loss:
-                    task_winners.append(boss_hotkey)
+                    task_winner = boss_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         f"GRPO task: Boss wins (higher is better): {boss_loss:.6f} * "
                         f"{boss_multiplier:.3f} = {boss_loss * boss_multiplier:.6f} > {opponent_loss:.6f}"
                     )
                 else:
-                    task_winners.append(opponent_hotkey)
+                    task_winner = opponent_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         f"GRPO task: Opponent wins (higher is better): {opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
                     )
             elif task_object.task_type == TaskType.ENVIRONMENTTASK:
                 if boss_loss * boss_multiplier > opponent_loss:
-                    task_winners.append(boss_hotkey)
+                    task_winner = boss_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         f"Environment task: Boss wins (higher is better): {boss_loss:.6f} * "
                         f"{boss_multiplier:.3f} = {boss_loss * boss_multiplier:.6f} > {opponent_loss:.6f}"
                     )
                 else:
-                    task_winners.append(opponent_hotkey)
+                    task_winner = opponent_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         "Environment task: Opponent wins (higher is better): "
                         f"{opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
@@ -918,17 +978,27 @@ async def get_knockout_winners(
             else:
                 # For other tasks, lower scores are better
                 if boss_loss * boss_divisor < opponent_loss:
-                    task_winners.append(boss_hotkey)
+                    task_winner = boss_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         f"{task_object.task_type} task: Boss wins (lower is better): "
                         f"{boss_loss:.6f} * {boss_divisor:.3f} = {boss_loss * boss_divisor:.6f} < {opponent_loss:.6f}"
                     )
                 else:
-                    task_winners.append(opponent_hotkey)
+                    task_winner = opponent_hotkey
+                    task_winners.append(task_winner)
                     logger.info(
                         f"{task_object.task_type} task: Opponent wins (lower is better): "
                         f"{opponent_loss:.6f} <= {boss_loss * boss_divisor:.6f}"
                     )
+
+            await update_threshold_adjusted_quality_scores_for_task(
+                task_id=task.task_id,
+                winner_hotkey=task_winner,
+                threshold_percentage=threshold_percentage,
+                compared_hotkeys=[boss_hotkey, opponent_hotkey],
+                psql_db=psql_db,
+            )
 
         boss_round_winner = determine_boss_round_winner(task_winners, boss_hotkey, tournament.tournament_type)
 

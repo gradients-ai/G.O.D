@@ -94,6 +94,35 @@ async def set_task_node_quality_score(
         )
 
 
+async def update_task_node_quality_score_only(
+    task_id: UUID,
+    hotkey: str,
+    quality_score: float,
+    psql_db: PSQLDB,
+    score_reason: str | None = None,
+) -> None:
+    """Update final score fields without changing persisted evaluator losses."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET
+                {cst.TASK_NODE_QUALITY_SCORE} = $3,
+                {cst.SCORE_REASON} = $4
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.HOTKEY} = $2
+            AND {cst.NETUID} = $5
+        """
+        await connection.execute(
+            query,
+            task_id,
+            hotkey,
+            quality_score,
+            score_reason,
+            NETUID,
+        )
+
+
 async def set_task_node_losses(
     task_id: UUID,
     hotkey: str,
