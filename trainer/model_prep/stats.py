@@ -481,12 +481,18 @@ def _compute_instruct_stats(
     text_extractor=None,
 ) -> InstructBaselineStats:
     extractor = text_extractor or _extract_instruct_texts
-    texts = extractor(records[:max_samples])
+
+    # Compute lengths on ALL records for accurate seq_length_distribution.
+    # Model forward passes (grad norms, loss) use max_samples subset.
+    all_texts_full = extractor(records)
+    all_prompts_full, all_completions_full = zip(*all_texts_full) if all_texts_full else ([], [])
+    prompt_lengths = _token_lengths(list(all_prompts_full), tokenizer)
+    completion_lengths = _token_lengths(list(all_completions_full), tokenizer)
+
+    # Subset for model forward passes
+    texts = all_texts_full[:max_samples]
     prompts, completions = zip(*texts) if texts else ([], [])
     all_texts = [p + " " + c for p, c in texts]
-
-    prompt_lengths = _token_lengths(list(prompts), tokenizer)
-    completion_lengths = _token_lengths(list(completions), tokenizer)
 
     unique_tokens = _count_unique_tokens(all_texts, tokenizer)
     vocab_size = len(tokenizer)
@@ -518,14 +524,18 @@ def _compute_instruct_stats(
 def _compute_dpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
 ) -> DpoBaselineStats:
-    texts = _extract_dpo_texts(records[:max_samples])
-    prompts, chosens, rejecteds = zip(*texts) if texts else ([], [], [])
-
-    prompt_lengths = _token_lengths(list(prompts), tokenizer)
-    chosen_lengths = _token_lengths(list(chosens), tokenizer)
-    rejected_lengths = _token_lengths(list(rejecteds), tokenizer)
+    # Compute lengths on ALL records for accurate distributions
+    all_texts_full = _extract_dpo_texts(records)
+    all_p, all_c, all_r = zip(*all_texts_full) if all_texts_full else ([], [], [])
+    prompt_lengths = _token_lengths(list(all_p), tokenizer)
+    chosen_lengths = _token_lengths(list(all_c), tokenizer)
+    rejected_lengths = _token_lengths(list(all_r), tokenizer)
 
     ratios = [c / r if r > 0 else 1.0 for c, r in zip(chosen_lengths, rejected_lengths)]
+
+    # Subset for model forward passes
+    texts = all_texts_full[:max_samples]
+    prompts, chosens, rejecteds = zip(*texts) if texts else ([], [], [])
     all_texts = [p + " " + c for p, c in zip(prompts, chosens)]
 
     all_dpo_texts = list(prompts) + list(chosens) + list(rejecteds)
@@ -573,8 +583,12 @@ def _compute_grpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
     reward_functions=None,
 ) -> GrpoBaselineStats:
-    prompts = _extract_grpo_texts(records[:max_samples])
-    prompt_lengths = _token_lengths(prompts, tokenizer)
+    # Compute lengths on ALL records for accurate distributions
+    all_prompts_full = _extract_grpo_texts(records)
+    prompt_lengths = _token_lengths(all_prompts_full, tokenizer)
+
+    # Subset for model forward passes
+    prompts = all_prompts_full[:max_samples]
 
     unique_tokens = _count_unique_tokens(prompts, tokenizer)
     vocab_size = len(tokenizer)

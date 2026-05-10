@@ -62,8 +62,8 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
     return f"{hf_username}/augmented-{repo_hash}"
 
 
-def load_training_data(path: str, max_records: int = 100) -> list[dict]:
-    """Load training data from a JSON file."""
+def load_training_data(path: str) -> list[dict]:
+    """Load all training data from a JSON file."""
     if path.startswith("http"):
         local_path = asyncio.run(download_s3_file(path))
     else:
@@ -73,7 +73,7 @@ def load_training_data(path: str, max_records: int = 100) -> list[dict]:
         data = json.load(f)
 
     if isinstance(data, list):
-        return data[:max_records]
+        return data
     return []
 
 
