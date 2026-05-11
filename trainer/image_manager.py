@@ -29,6 +29,7 @@ from trainer.tasks import update_wandb_url
 from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import build_wandb_env
 from trainer.utils.misc import extract_container_error
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import stream_container_logs
 from validator.utils.logging import stream_image_build_logs
@@ -376,11 +377,15 @@ def run_downloader_container(
             command=command,
             labels=log_labels,
             volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
+            environment={"MODEL_HASH_SALT": os.environ.get("MODEL_HASH_SALT", "")},
             remove=False,
             detach=True,
         )
 
-        stream_container_logs(container, get_all_context_tags())
+        try:
+            stream_container_logs(container, get_all_context_tags())
+        except Exception as log_err:
+            logger.warning(f"Log streaming error (non-fatal): {log_err}", extra=log_labels)
 
         result = container.wait()
         exit_code = result.get("StatusCode", -1)
@@ -633,6 +638,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             env_server_url_str = ",".join(env_urls)
             await log_task(training_data.task_id, task.hotkey, f"Environment servers ready.")
 
+        anonymous_model = get_anonymous_model_dir(training_data.model)
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
@@ -656,7 +663,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     task_id=training_data.task_id,
                     hotkey=task.hotkey,
                     tag=tag,
-                    model=training_data.model,
+                    model=anonymous_model,
                     dataset=training_data.dataset,
                     dataset_type=training_data.dataset_type,
                     task_type=task_type,
