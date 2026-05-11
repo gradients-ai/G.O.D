@@ -223,7 +223,8 @@ Your training container receives these environment variables in addition to CLI 
 
 | Variable | Description |
 |----------|-------------|
-| `BASELINE_STATS` | JSON-encoded pre-training baseline statistics (model weights, dataset stats, initial loss, gradient norms). Structure varies by task type — see [`core/models/model_prep_models.py`](../core/models/model_prep_models.py) for the full schema. Optional — safe to ignore. |
+| `BASELINE_STATS_PATH` | Path to a JSON file containing pre-training baseline statistics (model weights, dataset stats, initial loss, gradient norms). Mounted via the cache volume. Structure varies by task type — see [`core/models/model_prep_models.py`](../core/models/model_prep_models.py) for the full schema. Optional — safe to ignore. |
+| `BASELINE_STATS` | **(Deprecated — use `BASELINE_STATS_PATH`)** Inline JSON-encoded baseline statistics. May be absent for large models due to env var size limits. |
 | `MINER_DATASETS_DIR` | Parent directory for requested datasets (see [Miner-Requested Datasets](#miner-requested-datasets)) |
 | `MINER_DATASETS` | Comma-separated list of downloaded dataset directory names |
 | `ENVIRONMENT_SERVER_URLS` | Comma-separated env server URLs (environment tasks only) |
