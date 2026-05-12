@@ -132,6 +132,7 @@ def convert_task_to_task_details(task: AnyTypeTask) -> AnyTypeTaskDetails:
             account_id=task.account_id,
             status=task.status,
             base_model_repository=task.model_id,
+            ds_repo=task.ds,
             image_text_pairs=task.image_text_pairs,
             model_type=task.model_type,
             created_at=task.created_at,

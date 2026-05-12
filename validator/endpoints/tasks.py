@@ -378,16 +378,9 @@ async def create_task_image(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
 
-    # if there are any queued jobs that are organic we can't accept any more to avoid overloading the network
-    #    queued_tasks = await task_sql.get_tasks_with_status(TaskStatus.DELAYED, config.psql_db, include_not_ready_tasks=True)
-    #    if len(queued_tasks) > 0:
-    #        logger.info("We already have some queued organic jobs, we can't a accept any more")
-    #        return NewTaskResponse(success=False, task_id=None)
-
     task = ImageRawTask(
         model_id=request.model_repo,
-        image_text_pairs=request.image_text_pairs,
-        ds=request.ds_id,
+        ds=request.ds,
         is_organic=True,
         status=TaskStatus.PENDING,
         created_at=current_time,

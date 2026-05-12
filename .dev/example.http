@@ -41,7 +41,7 @@ Authorization: Bearer {{dev_vali_api_key}}
 {
     "account_id": "e3947cb3-7c20-41c7-b215-9a5e96c29011",
     "hours_to_complete": 1,
-    "ds_url": "{{s3_image_ds}}",
+    "ds": "{{s3_image_ds}}",
     "model_repo": "SG161222/RealVisXL_V4.0",
     "model_filename": "RealVisXL_V4.0.safetensors"
 }

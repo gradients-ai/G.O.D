@@ -16,6 +16,7 @@ from datasets import load_dataset
 from fiber import Keypair
 
 import validator.core.constants as cst
+from core import constants as core_cst
 from core.models.payload_models import ImageTextPair
 from core.models.utility_models import FileFormat
 from core.utils import download_s3_file
@@ -123,6 +124,17 @@ def train_test_split_image(dataset_path: str) -> tuple[str, str]:
             txt_file = file.with_suffix(".txt")
             if txt_file.exists():
                 dataset_entries[file.stem] = (file, txt_file)
+
+    if len(dataset_entries) < core_cst.MIN_IMAGE_TEXT_PAIRS:
+        raise ValueError(
+            f"Image dataset has {len(dataset_entries)} image/text pairs, "
+            f"minimum required is {core_cst.MIN_IMAGE_TEXT_PAIRS}"
+        )
+    if len(dataset_entries) > core_cst.MAX_IMAGE_TEXT_PAIRS:
+        raise ValueError(
+            f"Image dataset has {len(dataset_entries)} image/text pairs, "
+            f"maximum allowed is {core_cst.MAX_IMAGE_TEXT_PAIRS}"
+        )
 
     keys = list(dataset_entries.keys())
     random.shuffle(keys)
@@ -531,8 +543,36 @@ async def prepare_text_task(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=
     )
 
 
-async def prepare_image_task(image_text_pairs: list[ImageTextPair]) -> tuple[str, str]:
+async def prepare_image_task(
+    image_text_pairs: list[ImageTextPair] | None = None,
+    dataset_zip_url: str | None = None,
+) -> tuple[str, str]:
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
+
+    if dataset_zip_url:
+        with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as download_dir:
+            local_zip_path = await download_s3_file(dataset_zip_url, save_path=download_dir)
+            dataset_path = unzip_to_temp_path(local_zip_path)
+            try:
+                test_zip_path, train_zip_path = train_test_split_image(dataset_path=dataset_path)
+                test_url = await upload_file_to_minio(
+                    file_path=str(test_zip_path),
+                    bucket_name=cst.BUCKET_NAME,
+                    object_name=f"{os.urandom(8).hex()}_test_data.zip",
+                )
+                train_url = await upload_file_to_minio(
+                    file_path=str(train_zip_path),
+                    bucket_name=cst.BUCKET_NAME,
+                    object_name=f"{os.urandom(8).hex()}_train_data.zip",
+                )
+            finally:
+                shutil.rmtree(dataset_path, ignore_errors=True)
+
+            return (test_url.strip('"'), train_url.strip('"'))
+
+    if not image_text_pairs:
+        raise ValueError("Image task requires either image_text_pairs or dataset_zip_url")
+
     with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as source_dir:
         for i, pair in enumerate(image_text_pairs):
             txt_path = Path(source_dir) / f"{i}.txt"
