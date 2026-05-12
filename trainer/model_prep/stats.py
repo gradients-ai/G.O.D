@@ -318,7 +318,7 @@ def _compute_base_training_dynamics(
         if param.grad is None:
             continue
         grad_norms[name] = float(param.grad.norm(2).item())
-        g = param.grad.detach().float()
+        g = param.grad.detach().float().cpu()
         if g.dim() < 2:
             g = g.unsqueeze(0)
         g_2d = g.reshape(g.shape[0], -1) if g.dim() > 2 else g
@@ -612,6 +612,9 @@ def _compute_grpo_stats(
         completions = _generate_completions(model, tokenizer, prompts[:10], device)
         for rf in reward_functions:
             func_code = rf.get("reward_func") if isinstance(rf, dict) else (rf.reward_func if hasattr(rf, "reward_func") else str(rf))
+            # Extract function name from source for clean keys
+            name_match = re.match(r"def\s+(\w+)", func_code.strip()) if func_code else None
+            fallback_name = name_match.group(1) if name_match else func_code[:30]
             try:
                 namespace: dict = {}
                 exec(func_code, namespace)  # noqa: S102
@@ -621,14 +624,14 @@ def _compute_grpo_stats(
                 ]
                 if not callables:
                     print(f"Warning: reward function code defined no callables: {func_code[:80]}", flush=True)
-                    reward_scores[func_code[:30]] = 0.0
+                    reward_scores[fallback_name] = 0.0
                     continue
                 func_name, func = callables[0]
                 scores = func(completions)
                 reward_scores[func_name] = float(np.mean(scores))
             except Exception as exc:
-                print(f"Warning: reward function failed: {exc}", flush=True)
-                reward_scores[func_code[:30]] = 0.0
+                print(f"Warning: reward function {fallback_name} failed: {exc}", flush=True)
+                reward_scores[fallback_name] = 0.0
 
     training = GrpoTrainingDynamics(**base_dynamics, baseline_reward_scores=reward_scores)
 
