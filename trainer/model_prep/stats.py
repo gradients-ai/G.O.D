@@ -611,7 +611,7 @@ def _compute_grpo_stats(
     if reward_functions:
         completions = _generate_completions(model, tokenizer, prompts[:10], device)
         for rf in reward_functions:
-            func_code = rf.reward_func if hasattr(rf, "reward_func") else str(rf)
+            func_code = rf.get("reward_func") if isinstance(rf, dict) else (rf.reward_func if hasattr(rf, "reward_func") else str(rf))
             try:
                 namespace: dict = {}
                 exec(func_code, namespace)  # noqa: S102
