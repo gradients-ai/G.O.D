@@ -1,5 +1,6 @@
 from datetime import datetime
 from uuid import UUID
+from uuid import uuid4
 
 from fiber.logging_utils import get_logger
 from pydantic import BaseModel
@@ -357,6 +358,22 @@ class NewTaskRequestGrpo(NewTaskRequest):
 
 
 class NewTaskRequestImage(NewTaskRequest):
+    model_config = ConfigDict(protected_namespaces=())
+    model_repo: str = Field(..., description="The model repository to use")
+    image_text_pairs: list[ImageTextPair] = Field(
+        ...,
+        description="List of image and text file URL pairs",
+        min_length=cst.MIN_IMAGE_TEXT_PAIRS,
+        max_length=cst.MAX_IMAGE_TEXT_PAIRS,
+    )
+    ds_id: str = Field(
+        default_factory=lambda: str(uuid4()),
+        description="A ds name. The actual dataset is provided via the image_text_pairs",
+    )
+    model_type: ImageModelType = ImageModelType.SDXL
+
+
+class NewTaskRequestImageZip(NewTaskRequest):
     model_config = ConfigDict(protected_namespaces=())
     model_repo: str = Field(..., description="The model repository to use")
     ds: str = Field(

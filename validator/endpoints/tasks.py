@@ -18,6 +18,7 @@ from core.models.payload_models import NewTaskRequestDPO
 from core.models.payload_models import NewTaskRequestGrpo
 from core.models.payload_models import NewTaskRequestEnvironment
 from core.models.payload_models import NewTaskRequestImage
+from core.models.payload_models import NewTaskRequestImageZip
 from core.models.payload_models import NewTaskRequestInstructText
 from core.models.payload_models import NewTaskResponse
 from core.models.payload_models import NewTaskWithCustomDatasetRequest
@@ -71,6 +72,7 @@ async def validate_dataset(coro) -> None:
 
 TASKS_CREATE_ENDPOINT_INSTRUCT_TEXT = "/v1/tasks/create"  # TODO: change to create_text after FE changes
 TASKS_CREATE_ENDPOINT_IMAGE = "/v1/tasks/create_image"
+TASKS_CREATE_ENDPOINT_IMAGE_ZIP = "/v1/tasks/create_image_zip"
 CREATE_TEXT_TASK_WITH_CUSTOM_DATASET_ENDPOINT = (
     "/v1/tasks/create_custom_dataset_text"  # TODO: this is just for instruct text tasks
 )
@@ -373,6 +375,39 @@ async def create_task_instruct_text(
 
 async def create_task_image(
     request: NewTaskRequestImage,
+    config: Config = Depends(get_config),
+) -> NewTaskResponse:
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=request.hours_to_complete)
+
+    task = ImageRawTask(
+        model_id=request.model_repo,
+        ds=request.ds_id,
+        image_text_pairs=request.image_text_pairs,
+        is_organic=True,
+        status=TaskStatus.PENDING,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=request.hours_to_complete,
+        account_id=request.account_id,
+        task_type=TaskType.IMAGETASK,
+        result_model_name=request.result_model_name,
+        model_type=request.model_type,
+        backend=Backend(request.backend or Backend.RUNPOD.value),
+    )
+
+    task = await task_sql.add_task(task, config.psql_db)
+
+    logger.info(f"Task of type {task.task_type} created: {task.task_id}")
+
+    if config.discord_url:
+        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
+
+    return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
+
+
+async def create_task_image_zip(
+    request: NewTaskRequestImageZip,
     config: Config = Depends(get_config),
 ) -> NewTaskResponse:
     current_time = datetime.utcnow()
@@ -742,6 +777,7 @@ def factory_router() -> APIRouter:
     router = APIRouter(tags=["Gradients On Demand"], dependencies=[Depends(get_api_key)])
     router.add_api_route(TASKS_CREATE_ENDPOINT_INSTRUCT_TEXT, create_task_instruct_text, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_IMAGE, create_task_image, methods=["POST"])
+    router.add_api_route(TASKS_CREATE_ENDPOINT_IMAGE_ZIP, create_task_image_zip, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_DPO, create_task_dpo, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_CHAT, create_task_chat, methods=["POST"])
     router.add_api_route(TASKS_CREATE_ENDPOINT_GRPO, create_task_grpo, methods=["POST"])

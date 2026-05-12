@@ -33,8 +33,8 @@ Authorization: Bearer {{dev_vali_api_key}}
     "hours_to_complete": 1
 }
 
-# Create vali image task
-POST {{my_server_vali_url}}/v1/tasks/create_image
+# Create vali image task from zip
+POST {{my_server_vali_url}}/v1/tasks/create_image_zip
 Content-Type: application/json
 Authorization: Bearer {{dev_vali_api_key}}
 
