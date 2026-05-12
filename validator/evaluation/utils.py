@@ -26,6 +26,7 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 EVAL_RESULT_STATUS_PATH = "/result"
+_BASILICA_LOG_LINE_OFFSETS: dict[str, int] = {}
 
 
 def clean_basilica_log_line(raw_line: str) -> str:
@@ -69,13 +70,11 @@ def log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_n
     try:
         raw_logs = deployment.logs()
     except Exception as e:
-        eval_logger.warning(f"[BASILICA] unable to fetch logs for deployment={deployment_name}: {e}")
+        eval_logger.warning(f"[BASILICA_LOG_FETCH_FAILED] repo={repo} deployment={deployment_name} error={e}")
         return
 
     if not raw_logs:
-        eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
-        eval_logger.info("[BASILICA] no logs returned")
-        eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+        eval_logger.info(f"[BASILICA_LOGS] repo={repo} deployment={deployment_name} lines=0 message=\"no logs returned\"")
         return
 
     if isinstance(raw_logs, bytes):
@@ -87,13 +86,31 @@ def log_basilica_logs_block(eval_logger: logging.Logger, repo: str, deployment_n
         if cleaned:
             lines.append(cleaned)
 
-    eval_logger.info(f"[BASILICA_LOGS_START] repo={repo} deployment={deployment_name}")
     if not lines:
-        eval_logger.info("[BASILICA] log payload present but no parsable lines")
-    else:
-        for i, line in enumerate(lines, start=1):
-            eval_logger.info(f"[BASILICA] {i:04d} | {line}")
-    eval_logger.info(f"[BASILICA_LOGS_END] repo={repo} deployment={deployment_name}")
+        eval_logger.info(
+            f"[BASILICA_LOGS] repo={repo} deployment={deployment_name} lines=0 "
+            "message=\"log payload present but no parsable lines\""
+        )
+        return
+
+    previous_count = _BASILICA_LOG_LINE_OFFSETS.get(deployment_name, 0)
+    if previous_count > len(lines):
+        previous_count = 0
+    new_lines = lines[previous_count:]
+    _BASILICA_LOG_LINE_OFFSETS[deployment_name] = len(lines)
+
+    if not new_lines:
+        eval_logger.info(
+            f"[BASILICA_LOGS] repo={repo} deployment={deployment_name} new_lines=0 total_lines={len(lines)}"
+        )
+        return
+
+    eval_logger.info(
+        f"[BASILICA_LOGS] repo={repo} deployment={deployment_name} "
+        f"new_lines={len(new_lines)} total_lines={len(lines)}"
+    )
+    for line_number, line in enumerate(new_lines, start=previous_count + 1):
+        eval_logger.info(f"[BASILICA_LOG] repo={repo} deployment={deployment_name} line={line_number} | {line}")
 
 
 def deployment_is_healthy(deployment, health_path: str = "/health", timeout: int = 8) -> bool:

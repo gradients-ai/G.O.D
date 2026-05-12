@@ -81,7 +81,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by(model) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
+          "expr": "sum by(model) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
           "instant": false,
           "legendFormat": "{{model}}",
           "refId": "A"
@@ -183,7 +183,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by (repo_id) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
+          "expr": "sum by (repo_id) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
           "instant": true,
           "legendFormat": "{{repo_id}}",
           "refId": "A"
@@ -228,7 +228,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"${search}\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"${search}\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -270,7 +270,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)error\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)error\"",
           "refId": "A"
         }
       ],
@@ -311,7 +311,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)(score|summary|completed|failed)\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)(score|summary|completed|failed)\"",
           "refId": "A"
         }
       ],
@@ -364,7 +364,7 @@
         "current": {
           "selected": true,
           "text": "Off",
-          "value": "\\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\]"
+          "value": "\\\\[(SGLang|Env|BASILICA|BASILICA_LOGS?)\\\\]"
         },
         "hide": 0,
         "includeAll": false,
@@ -374,7 +374,7 @@
           {
             "selected": true,
             "text": "Off",
-            "value": "\\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\]"
+            "value": "\\\\[(SGLang|Env|BASILICA|BASILICA_LOGS?)\\\\]"
           },
           {
             "selected": false,
@@ -382,7 +382,7 @@
             "value": "a^"
           }
         ],
-        "query": "Off : \\\\[(SGLang|Env|BASILICA)\\\\]|\\\\[BASILICA_LOGS_(START|END)\\\\],On : a^",
+        "query": "Off : \\\\[(SGLang|Env|BASILICA|BASILICA_LOGS?)\\\\],On : a^",
         "type": "custom"
       },
       {
@@ -409,6 +409,40 @@
         },
         "label": "Eval ID Search",
         "name": "eval_id_search",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "label": "Task ID Search",
+        "name": "task_id_search",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "type": "textbox"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "label": "Hotkey Search",
+        "name": "hotkey_search",
         "options": [
           {
             "selected": true,

@@ -224,6 +224,8 @@ def get_environment_logger(
     eval_id: str = None,
     model: str = None,
     task_type: str = "environment",
+    task_id: str = None,
+    hotkey: str = None,
     enable_console_output: bool = False,
 ) -> Logger:
     """Get a logger configured to send environment evaluation logs to Vector/Loki.
@@ -249,6 +251,8 @@ def get_environment_logger(
         "eval_id": eval_id or "unknown", 
         "model": model or "unknown",
         "task_type": task_type,
+        "task_id": task_id or "unknown",
+        "hotkey": hotkey or "unknown",
     }
     logger.addHandler(VectorHandler(default_labels=labels))
     logger.propagate = False

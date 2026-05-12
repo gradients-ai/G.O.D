@@ -1,7 +1,6 @@
 import asyncio
 import datetime
 
-import basilica
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -326,41 +325,6 @@ async def _handle_delayed_tasks(config: Config):
     await asyncio.gather(*[_move_back_to_looking_for_nodes(task, config) for task in finished_delay_tasks])
 
 
-async def _cleanup_all_running_basilica_deployments(config: Config) -> None:
-    """Cleanup of Basilica deployments on startup, preserving active eval deployments."""
-    protected_deployment_ids: set[str] = set()
-    try:
-        protected_deployment_ids = await tasks_sql.get_deployment_ids_from_evaluating_tasks(config.psql_db)
-    except Exception as e:
-        logger.warning(f"Failed to fetch protected deployment ids from evaluations: {e}")
-
-    try:
-        client = basilica.BasilicaClient()
-        deployments = await asyncio.to_thread(client.list)
-    except Exception as e:
-        logger.warning(f"Failed to list Basilica deployments for cleanup: {e}")
-        return
-
-    deleted_count = 0
-    kept_count = 0
-    for deployment in deployments:
-        deployment_name = getattr(deployment, "name", None)
-        if deployment_name and deployment_name in protected_deployment_ids:
-            kept_count += 1
-            continue
-        try:
-            await asyncio.to_thread(deployment.delete)
-            deleted_count += 1
-        except Exception as e:
-            logger.warning(f"Failed to delete Basilica deployment during startup cleanup: {e}")
-
-    if deleted_count or kept_count:
-        logger.info(
-            f"Startup Basilica cleanup deleted={deleted_count} kept={kept_count} "
-            f"(protected by pending/evaluating evaluations)"
-        )
-
-
 async def _recover_evaluating_tasks(config: Config):
     stopped_mid_evaluation = await tasks_sql.get_tasks_with_status(
         TaskStatus.EVALUATING, psql_db=config.psql_db, tournament_filter="exclude", benchmark_filter="include"
@@ -518,7 +482,6 @@ def compute_required_gpus(task: RawTask) -> int:
 
 
 async def process_completed_tasks(config: Config) -> None:
-    await _cleanup_all_running_basilica_deployments(config)
     await _recover_evaluating_tasks(config)
 
     await asyncio.gather(evaluate_tasks_loop(config), cleanup_model_cache_loop(config.psql_db))

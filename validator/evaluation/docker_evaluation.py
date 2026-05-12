@@ -31,7 +31,6 @@ from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.db_utils import persist_deployment_ids_for_repo
 from validator.evaluation.utils import (
     EVAL_RESULT_STATUS_PATH,
-    cleanup_basilica_deployments_by_name,
     deployment_is_healthy,
     create_basilica_eval_runner_source,
     log_basilica_logs_block,
@@ -287,21 +286,29 @@ async def _run_single_basilica_eval_repo(
     gpu_count: int,
     gpu_models: list[str],
     min_gpu_memory_gb: int,
-    cleanup_names: set[str],
     task_id: UUID | None,
     psql_db: PSQLDB | None,
     repo_to_hotkey: dict[str, str],
+    hotkey: str | None = None,
     existing_deployment_name: str | None = None,
 ) -> dict | str:
     """Run one repo eval with retries. Supports resume via existing_deployment_name."""
     eval_id = str(uuid.uuid4())
+    task_id_str = str(task_id) if task_id else "unknown"
+    hotkey_str = hotkey or repo_to_hotkey.get(repo) or "unknown"
     eval_logger = get_environment_logger(
         name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
         repo_id=repo,
         eval_id=eval_id,
         model=model_name,
         task_type=task_type,
+        task_id=task_id_str,
+        hotkey=hotkey_str,
     )
+
+    def log_eval_step(step: str, **fields) -> None:
+        field_text = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
+        eval_logger.info(f"[EVAL_STEP] step={step} repo={repo} task_id={task_id_str} hotkey={hotkey_str} {field_text}".rstrip())
 
     async def _db_call_with_retry(coro_factory, op_name: str):
         last_exc = None
@@ -326,33 +333,48 @@ async def _run_single_basilica_eval_repo(
 
     if existing_deployment_name:
         try:
+            log_eval_step("resume_lookup_start", deployment=existing_deployment_name)
             client = basilica.BasilicaClient()
             deployments = await asyncio.to_thread(client.list)
             by_name = {getattr(dep, "name", None): dep for dep in deployments}
             deployment = by_name.get(existing_deployment_name)
             if deployment is None:
                 eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} not found, redeploying")
+                log_eval_step("resume_lookup_missing", deployment=existing_deployment_name)
             elif not deployment_is_healthy(deployment):
                 eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} unhealthy, redeploying")
+                log_eval_step("resume_unhealthy_delete_start", deployment=existing_deployment_name)
                 await asyncio.to_thread(deployment.delete)
+                log_eval_step("resume_unhealthy_delete_complete", deployment=existing_deployment_name)
             else:
-                cleanup_names.add(existing_deployment_name)
+                log_eval_step("resume_poll_start", deployment=existing_deployment_name)
                 eval_logger.info(f"[{repo}] resuming polling deployment {existing_deployment_name}")
                 result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
                 if isinstance(result, dict):
+                    log_eval_step("resume_result_received", deployment=existing_deployment_name)
+                    try:
+                        log_eval_step("delete_completed_resumed_deployment_start", deployment=existing_deployment_name)
+                        await asyncio.to_thread(deployment.delete)
+                        log_eval_step("delete_completed_resumed_deployment_complete", deployment=existing_deployment_name)
+                    except Exception as e:
+                        eval_logger.warning(f"[{repo}] failed to delete completed resumed deployment {existing_deployment_name}: {e}")
+                        log_eval_step("delete_completed_resumed_deployment_failed", deployment=existing_deployment_name, error=e)
                     return result
+                log_eval_step("resume_result_failed", deployment=existing_deployment_name, result=result)
                 return str(result) if result else "Resume poll returned empty"
         except Exception as e:
             eval_logger.error(f"[{repo}] resume failed, redeploying: {e}", exc_info=True)
+            log_eval_step("resume_failed_redeploying", deployment=existing_deployment_name, error=e)
 
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
-        cleanup_deployment = True
         try:
+            log_eval_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
             client = basilica.BasilicaClient()
             await asyncio.sleep(random.uniform(0.0, 0.25))
+            log_eval_step("deployment_id_persist_start", deployment=deployment_name)
             async with _EVAL_DB_WRITE_SEMAPHORE:
                 await _db_call_with_retry(
                     lambda: persist_deployment_ids_for_repo(
@@ -365,6 +387,15 @@ async def _run_single_basilica_eval_repo(
                     ),
                     "persist_deployment_ids_for_repo(pre-deploy)",
                 )
+            log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
+            log_eval_step(
+                "deploy_start",
+                deployment=deployment_name,
+                image=image,
+                gpu_count=gpu_count,
+                gpu_models=",".join(gpu_models),
+                min_gpu_memory_gb=min_gpu_memory_gb,
+            )
             deployment = await asyncio.to_thread(
                 client.deploy,
                 name=deployment_name,
@@ -381,8 +412,14 @@ async def _run_single_basilica_eval_repo(
                 min_gpu_memory_gb=min_gpu_memory_gb,
             )
             resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+            log_eval_step("deploy_complete", deployment=resolved_deployment_name)
             if resolved_deployment_name != deployment_name:
                 await asyncio.sleep(random.uniform(0.0, 0.25))
+                log_eval_step(
+                    "deployment_id_repersist_start",
+                    deployment=resolved_deployment_name,
+                    previous_deployment=deployment_name,
+                )
                 async with _EVAL_DB_WRITE_SEMAPHORE:
                     await _db_call_with_retry(
                         lambda: persist_deployment_ids_for_repo(
@@ -395,20 +432,38 @@ async def _run_single_basilica_eval_repo(
                         ),
                         "persist_deployment_ids_for_repo(post-deploy)",
                     )
-            cleanup_names.add(resolved_deployment_name)
+                log_eval_step("deployment_id_repersist_complete", deployment=resolved_deployment_name)
             eval_logger.info(f"[{repo}] deployment started: {resolved_deployment_name}")
+            log_eval_step("poll_start", deployment=resolved_deployment_name)
             result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
             if isinstance(result, dict):
+                log_eval_step("result_received", deployment=resolved_deployment_name)
+                try:
+                    log_eval_step("delete_completed_deployment_start", deployment=resolved_deployment_name)
+                    await asyncio.to_thread(deployment.delete)
+                    log_eval_step("delete_completed_deployment_complete", deployment=resolved_deployment_name)
+                except Exception as e:
+                    eval_logger.warning(f"[{repo}] failed to delete completed deployment {resolved_deployment_name}: {e}")
+                    log_eval_step("delete_completed_deployment_failed", deployment=resolved_deployment_name, error=e)
                 return result
             if "Timed out" in str(result):
                 logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
+                log_eval_step("poll_timeout", deployment=resolved_deployment_name, result=result)
                 return result
+            log_eval_step("poll_failed", deployment=resolved_deployment_name, result=result)
             raise RuntimeError(str(result))
         except asyncio.CancelledError:
-            cleanup_deployment = False 
+            log_eval_step("attempt_cancelled", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             raise
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            log_eval_step(
+                "attempt_failed",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_name,
+                remaining=remaining,
+                error=e,
+            )
             eval_logger.error(
                 f"[{repo}] attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES} failed: {e}",
                 exc_info=True,
@@ -418,18 +473,25 @@ async def _run_single_basilica_eval_repo(
                     f"[{repo}] retrying in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
                     f"({remaining} attempts remaining)"
                 )
+                log_eval_step(
+                    "retry_sleep_start",
+                    delay_seconds=vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS,
+                    remaining=remaining,
+                )
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
+                log_eval_step("all_attempts_failed", deployment=deployment_name, error=e)
                 return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
         finally:
             if deployment is not None:
                 try:
                     dep_name = getattr(deployment, "name", None) or deployment_name
+                    log_eval_step("basilica_log_fetch_start", deployment=dep_name)
                     await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, dep_name, deployment)
-                    if cleanup_deployment:
-                        await asyncio.to_thread(deployment.delete)
+                    log_eval_step("basilica_log_fetch_complete", deployment=dep_name)
                 except Exception as e:
-                    eval_logger.warning(f"[{repo}] failed to cleanup deployment {dep_name}: {e}")
+                    eval_logger.warning(f"[{repo}] failed to fetch Basilica logs for deployment {dep_name}: {e}")
+                    log_eval_step("basilica_log_fetch_failed", deployment=dep_name, error=e)
 
     return "Evaluation failed"
 
@@ -451,7 +513,6 @@ async def _run_basilica_eval_repos(
     deployment_ids_by_repo: dict[str, str] | None = None,
 ) -> dict[str, dict | str]:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
-    cleanup_names: set[str] = set()
     task_results = await asyncio.gather(
         *[
             _run_single_basilica_eval_repo(
@@ -464,17 +525,16 @@ async def _run_basilica_eval_repos(
                 gpu_count=gpu_count,
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
-                cleanup_names=cleanup_names,
                 task_id=task_id,
                 psql_db=psql_db,
                 repo_to_hotkey=repo_to_hotkey,
+                hotkey=repo_to_hotkey.get(repo),
                 existing_deployment_name=deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None,
             )
             for repo in repos
         ],
         return_exceptions=True,
     )
-    await cleanup_basilica_deployments_by_name(cleanup_names)
     out: dict[str, dict | str] = {}
     for repo, result in zip(repos, task_results):
         if isinstance(result, Exception):
