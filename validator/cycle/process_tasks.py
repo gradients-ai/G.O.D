@@ -113,9 +113,9 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             logger.info(f"THE TASK HAS BEEN PREPPED {task}")
 
             # Determine whether this task needs model prep (augmentation + baseline stats).
-            # Organic tasks with stats disabled skip model prep entirely and go straight
-            # to looking_for_nodes.  Everything else queues for GPU-based model prep.
-            needs_model_prep = not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC)
+            # Per-task-type gate first, then organic override.
+            type_enabled = cst.MODEL_PREP_ENABLED_BY_TASK_TYPE.get(task.task_type, False)
+            needs_model_prep = type_enabled and not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC)
 
             if needs_model_prep:
                 task.status = TaskStatus.AWAITING_MODEL_PREP

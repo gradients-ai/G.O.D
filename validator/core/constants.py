@@ -6,6 +6,7 @@ from core.constants import GRPO_DEFAULT_FIELD_PROMPT
 from core.constants import NETUID
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
+from core.models.utility_models import TaskType
 
 
 RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"
@@ -327,6 +328,17 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Model prep constants
 BASELINE_STATS_ENABLED_ORGANIC = False  # Run model prep (stats) for organic requests
+MODEL_PREP_ENABLED_TEXT = True  # Route text tasks through model prep (augmentation + baseline stats)
+MODEL_PREP_ENABLED_IMAGE = False  # Route image tasks through model prep
+MODEL_PREP_ENABLED_ENV = False  # Route environment tasks through model prep
+MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
+    TaskType.INSTRUCTTEXTTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.DPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.GRPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.CHATTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.IMAGETASK: MODEL_PREP_ENABLED_IMAGE,
+    TaskType.ENVIRONMENTTASK: MODEL_PREP_ENABLED_ENV,
+}
 
 # Model augmentation constants
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
