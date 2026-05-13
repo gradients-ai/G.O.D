@@ -31,6 +31,7 @@ from core.models.utility_models import Backend
 from validator.db.sql import tournaments as tournament_sql
 from validator.evaluation.scoring import _get_dataset_type
 from validator.tournament.utils import get_tournament_gpu_requirement
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
 from validator.utils.util import try_db_connections
@@ -312,7 +313,7 @@ async def _create_dstack_request(
     
     task_env = {
         "TASK_ID": str(task.task_id),
-        "MODEL": task.model_id,
+        "MODEL": get_anonymous_model_dir(task.augmented_model_id or task.model_id),
         "TASK_TYPE": task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type),
         "EXPECTED_REPO_NAME": expected_repo_name,
         "HOURS_TO_COMPLETE": str(task.hours_to_complete),

@@ -27,6 +27,7 @@ from core.config.config_handler import update_flash_attention
 from core.dataset_utils import adapt_columns_for_dpo_dataset
 from core.dataset_utils import adapt_columns_for_grpo_dataset
 from core.dataset_utils import adapt_columns_for_environment_dataset
+from core.constants import EnvironmentName
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -113,21 +114,10 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
         config["trl"]["reward_weights"] = [reward_function.reward_weight for reward_function in dataset_type.reward_functions]
     elif isinstance(dataset_type, EnvironmentDatasetType):
         # Switch based on the environment
-        if dataset_type.environment_name == "goofspiel":
-            config["trl"]["rollout_func"] = "goofspiel.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["goofspiel.rollout_reward_func"]
-            config["trl"]["reward_weights"] = [1.0]
-        elif dataset_type.environment_name == "gin_rummy":
-            config["trl"]["rollout_func"] = "gin_rummy.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["gin_rummy.rollout_reward_func"]
-            config["trl"]["reward_weights"] = [1.0]
-        elif dataset_type.environment_name == "liars_dice":
-            config["trl"]["rollout_func"] = "liars_dice.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["liars_dice.rollout_reward_func"]
-            config["trl"]["reward_weights"] = [1.0]
-        elif dataset_type.environment_name == "leduc_poker":
-            config["trl"]["rollout_func"] = "leduc_poker.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = ["leduc_poker.rollout_reward_func"]
+        env = dataset_type.environment_name
+        if env in (EnvironmentName.GIN_RUMMY, EnvironmentName.LIARS_DICE, EnvironmentName.LEDUC_POKER):
+            config["trl"]["rollout_func"] = f"{env.value}.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = [f"{env.value}.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]
 
     if file_format != FileFormat.HF.value:

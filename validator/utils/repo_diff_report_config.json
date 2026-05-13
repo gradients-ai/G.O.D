@@ -1,0 +1,47 @@
+{
+  "excluded_parts": [
+    ".git",
+    ".hg",
+    ".svn",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    "node_modules",
+    "dist",
+    "build",
+    ".next",
+    ".venv",
+    "venv"
+  ],
+  "excluded_suffixes": [
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".pdf",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".xz",
+    ".7z",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".safetensors",
+    ".onnx",
+    ".npy",
+    ".npz",
+    ".lock"
+  ],
+  "excluded_names": [
+    "LICENSE",
+    "LICENSE.md",
+    "NOTICE"
+  ],
+  "diff_focus_template": "# Focused Diff Guidance\n\nClaude has full local checkouts available. Do not analyze the full repositories from scratch. Start with this diff-derived file list, then inspect only small relevant snippets from these files and direct call-path neighbors.\n\nChallenger/current contestant repo URL: {challenger_repo_url}\nChallenger/current contestant local path: {challenger_repo_path}\nChallenger/current contestant HEAD: {challenger_head}\n\nPrevious boss repo URL: {previous_repo_url}\nPrevious boss local path: {previous_repo_path}\nPrevious boss HEAD: {previous_head}\n\n## Changed Text Files To Inspect First\n\n{changed_files}{omitted_files_note}",
+  "report_prompt_template": "Compare a tournament challenger/current contestant repository against the previous boss repository and identify concrete code-level changes that likely explain the result.\n\nChallenger/current contestant repo URL: {challenger_repo_url}\nPrevious boss repo URL: {previous_repo_url}\nTournament result: {result_summary}\n\nUse the local repositories and diff guidance below as the source of truth. Inspect actual file contents before making claims. Start from changed files, then branch only to directly referenced training/config/call-path files.\n\nScope:\n- Support text, image, and environment training repositories.\n- Focus on real training behavior: training entrypoints, configs, dataset loading/preprocessing, image/text/model configs, reward/loss handling, rollout/evaluation loops, checkpointing, optimizer/scheduler/precision/batch settings, sampling/generation, curriculum, model selection, and task-specific code that is actually invoked.\n- Ignore deployment, APIs, upload/download utilities, cleanup jobs, logging-only changes, docs, and orchestration unless they directly change training behavior.\n\nExploit and cheating review:\n- Explicitly call out changes that look like attempts to cheat, exploit, or bypass real training.\n- Known suspicious patterns include Dockerfiles or scripts downloading pretrained/final models, scripts accessing the internet during training for hidden data or weights, hardcoded evaluation answers or game rules prompts designed for overfitting, pre-saved rollouts/datasets/results used instead of real training, submission/upload tricks, or environment-specific shortcuts.\n- Distinguish suspicious infrastructure from real training changes. Do not treat a change as beneficial training behavior unless the inspected code shows it is part of the training path.\n\nRuntime constraints:\n- Keep tool results small. Do not read entire large files.\n- Prefer targeted Read/Grep/Glob operations and small line ranges around symbols you cite.\n- Do not emit raw full diffs or long file lists in the final report.\n\nFinal report requirements:\n- The first character of the final answer must be \"#\"; no leading commentary.\n- Include both repository URLs near the top.\n- Include exactly one \"Result:\" line near the top using this result summary: {result_summary}\n- Provide a short thesis.\n- Provide ranked winning deltas with files inspected, exact symbol/config/snippet, what changed, why it mattered, and confidence.\n- Include a \"Potential Exploits Or Cheating Signals\" section, even if no credible issues are found.\n- Include \"Out Of Scope\" for infrastructure-only changes.\n- Include porting recommendations.\n- Do not invent files, line numbers, or behavior.\n\n{diff_focus}\n",
+  "system_prompt": "You are a senior ML training-code reviewer. Produce grounded, concise Markdown. This is a read-only repository comparison and exploit review."
+}

@@ -17,6 +17,7 @@ from core.models.tournament_models import GpuRequirement
 from core.models.tournament_models import TaskTrainingAssignment
 from core.models.tournament_models import TournamentTaskTraining
 from core.models.tournament_models import TournamentType
+from core.models.tournament_models import TrainingRepoInfo
 from core.models.utility_models import Backend
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GPUInfo
@@ -275,15 +276,9 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_id = await tournament_sql.get_tournament_id_by_task_id(task.task_id, config.psql_db)
 
                 for hotkey in hotkeys:
-                    training_repo = None
-                    training_commit_hash = None
-                    github_token = None
-                    if tournament_id:
-                        (
-                            training_repo,
-                            training_commit_hash,
-                            github_token,
-                        ) = await tournament_sql.get_tournament_training_repo_and_commit(hotkey, tournament_id, config.psql_db)
+                    repo_info = await tournament_sql.get_tournament_training_repo_and_commit(
+                        hotkey, tournament_id, config.psql_db
+                    ) if tournament_id else TrainingRepoInfo.empty()
 
                     assignments.append(
                         TaskTrainingAssignment(
@@ -291,9 +286,10 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                             hotkey=hotkey,
                             created_at=task.created_at,
                             priority=priority,
-                            training_repo=training_repo,
-                            training_commit_hash=training_commit_hash,
-                            github_token=github_token,
+                            training_repo=repo_info.training_repo,
+                            training_commit_hash=repo_info.training_commit_hash,
+                            github_token=repo_info.github_token,
+                            requested_datasets=repo_info.requested_datasets,
                         )
                     )
                 tasks_to_update.append(task)
@@ -312,18 +308,13 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_type = None
 
             # Get the last completed tournament winner's repo
-            training_repo = None
-            training_commit_hash = None
-            github_token = None
             last_tournament = await tournament_sql.get_latest_completed_tournament(config.psql_db, tournament_type)
             if last_tournament and last_tournament.winner_hotkey:
-                (
-                    training_repo,
-                    training_commit_hash,
-                    github_token,
-                ) = await tournament_sql.get_tournament_training_repo_and_commit(
+                repo_info = await tournament_sql.get_tournament_training_repo_and_commit(
                     last_tournament.winner_hotkey, last_tournament.tournament_id, config.psql_db
                 )
+            else:
+                repo_info = TrainingRepoInfo.empty()
 
             assignments.append(
                 TaskTrainingAssignment(
@@ -331,9 +322,10 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                     hotkey=EMISSION_BURN_HOTKEY,
                     created_at=task.created_at,
                     priority=priority,
-                    training_repo=training_repo,
-                    training_commit_hash=training_commit_hash,
-                    github_token=github_token,
+                    training_repo=repo_info.training_repo,
+                    training_commit_hash=repo_info.training_commit_hash,
+                    github_token=repo_info.github_token,
+                    requested_datasets=repo_info.requested_datasets,
                 )
             )
             tasks_to_update.append(task)
@@ -452,6 +444,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     training_task.training_repo,
                     training_task.training_commit_hash,
                     training_task.github_token,
+                    training_task.requested_datasets,
                     config,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
@@ -603,6 +596,7 @@ async def _create_training_request(
     training_repo: str,
     training_commit_hash: str,
     github_token: str | None,
+    requested_datasets: list[str] | None,
     config: Config,
 ) -> TrainerProxyRequest:
     """
@@ -639,26 +633,30 @@ async def _create_training_request(
             f"participant or the training repo was not properly set during tournament registration."
         )
 
+    training_model = task.augmented_model_id or task.model_id
+
     if task.task_type == TaskType.IMAGETASK:
         training_data = TrainRequestImage(
-            model=task.model_id,
+            model=training_model,
             task_id=str(task.task_id),
             hours_to_complete=task.hours_to_complete,
             expected_repo_name=expected_repo_name,
             dataset_zip=task.training_data,
             model_type=task.model_type,
+            baseline_stats=task.baseline_stats,
         )
     else:
         dataset_type = _get_dataset_type(task)
 
         training_data = TrainRequestText(
-            model=task.model_id,
+            model=training_model,
             task_id=str(task.task_id),
             hours_to_complete=task.hours_to_complete,
             expected_repo_name=expected_repo_name,
             dataset=task.training_data,
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
+            baseline_stats=task.baseline_stats,
         )
 
     return TrainerProxyRequest(
@@ -668,6 +666,7 @@ async def _create_training_request(
         hotkey=hotkey,
         github_commit_hash=training_commit_hash,
         github_token=github_token,
+        requested_datasets=requested_datasets,
     )
 
 
@@ -979,6 +978,86 @@ async def update_all_trainers_gpu_availability_cycle(config: Config):
             await asyncio.sleep(cst.PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL)
 
 
+async def process_awaiting_model_prep_tasks(config: Config):
+    """Poll for tasks awaiting model prep and dispatch to a trainer with GPU.
+
+    Processes tasks FIFO (oldest first).  When no GPU is available the task
+    stays in ``awaiting_model_prep`` and is retried on the next cycle — model
+    prep is never silently dropped.
+    """
+    # Deferred imports to avoid circular dependency
+    # (model_prep imports _check_suitable_gpus from this module)
+    from validator.utils.model_prep import _gpu_requirement_for_model_prep
+    from validator.utils.model_prep import dispatch_augmentation_and_stats
+
+    while True:
+        try:
+            tasks = await task_sql.get_tasks_with_status(
+                TaskStatus.AWAITING_MODEL_PREP, config.psql_db
+            )
+            if not tasks:
+                logger.debug("No tasks awaiting model prep")
+                await asyncio.sleep(cst.MODEL_PREP_CYCLE_INTERVAL)
+                continue
+
+            tasks.sort(key=lambda t: t.created_at)
+            logger.info(f"Found {len(tasks)} tasks awaiting model prep")
+
+            for task in tasks:
+                with LogContext(task_id=str(task.task_id)):
+                    gpu_req = _gpu_requirement_for_model_prep(task.model_params_count or 0)
+                    suitable = await _check_suitable_gpus(config, gpu_req)
+                    if suitable is None:
+                        logger.info(
+                            f"No GPUs available for model prep of task {task.task_id} "
+                            f"(model={task.model_id}, req={gpu_req.value}), will retry next cycle"
+                        )
+                        continue
+
+                    try:
+                        reward_fns = getattr(task, "reward_functions", None)
+                        is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+
+                        prep_result = await dispatch_augmentation_and_stats(
+                            task_id=str(task.task_id),
+                            model_id=task.model_id,
+                            training_data_url=task.training_data,
+                            augmentation_config=task.augmentation_config,
+                            model_params_count=task.model_params_count,
+                            task_type=task.task_type,
+                            config=config,
+                            reward_functions=reward_fns,
+                            is_env_task=is_env_task,
+                        )
+
+                        if prep_result is not None:
+                            if prep_result.augmented_model_id:
+                                task.augmented_model_id = prep_result.augmented_model_id
+                            if prep_result.baseline_stats:
+                                task.baseline_stats = prep_result.baseline_stats
+
+                            task.status = TaskStatus.LOOKING_FOR_NODES
+                            await task_sql.update_task(task, config.psql_db)
+                            logger.info(
+                                f"Model prep complete for task {task.task_id}, "
+                                f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+                            )
+                        else:
+                            logger.warning(
+                                f"Model prep dispatch returned None for task {task.task_id}, "
+                                f"will retry next cycle"
+                            )
+                    except Exception as e:
+                        logger.error(
+                            f"Model prep failed for task {task.task_id}: {e}",
+                            exc_info=True,
+                        )
+        except Exception as e:
+            logger.error(f"Error in process_awaiting_model_prep_tasks cycle: {e}", exc_info=True)
+
+        await asyncio.sleep(cst.MODEL_PREP_CYCLE_INTERVAL)
+
+
 async def run_tournament_orchestrator_cycles():
     config = load_config()
     await try_db_connections(config)
@@ -990,6 +1069,7 @@ async def run_tournament_orchestrator_cycles():
         monitor_training_tasks(config),
         seed_tournament_evaluations_from_training(config),
         update_all_trainers_gpu_availability_cycle(config),
+        process_awaiting_model_prep_tasks(config),
     )
 
 

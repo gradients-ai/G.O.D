@@ -7,10 +7,13 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from core.models.payload_models import ModelPrepRequest
+from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import GPUInfo
 from trainer import constants as cst
+from trainer.image_manager import run_model_prep_container
 from trainer.image_manager import start_training_task
 from trainer.tasks import _start_task_unlocked
 from trainer.tasks import _task_lock
@@ -19,12 +22,14 @@ from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
+from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
 from trainer.utils.misc import get_gpu_info
 from trainer.utils.trainer_logging import logger
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import GET_RECENT_TASKS_ENDPOINT
+from validator.core.constants import MODEL_PREP_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 
@@ -54,15 +59,30 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             hotkey=req.hotkey,
         )
     except Exception as e:
-        await log_task(task_id, hotkey, f"Failed to clone repo: {str(e)}")
+        await log_task(task_id, hotkey, "Failed to clone repository")
         await complete_task(task_id, hotkey, success=False)
         logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
         return
 
     logger.info(
-        f"Repo {req.github_repo} cloned to {local_repo_path}",
+        f"Repository cloned successfully",
         extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
     )
+
+    if req.requested_datasets:
+        try:
+            downloaded = await asyncio.to_thread(
+                download_whitelisted_datasets,
+                requested_datasets=req.requested_datasets,
+                hotkey=hotkey,
+                task_id=task_id,
+            )
+            req.requested_datasets = downloaded or None
+        except Exception as e:
+            await log_task(task_id, hotkey, f"Failed to download whitelisted datasets: {str(e)}")
+            logger.warning(f"Dataset download failed, continuing without: {e}", extra={"task_id": task_id, "hotkey": hotkey})
+            req.requested_datasets = None
+
     await start_training_task(req, local_repo_path)
 
 
@@ -105,6 +125,26 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     return {"message": "Started Training!", "task_id": req.training_data.task_id}
 
 
+async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
+    if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
+        raise HTTPException(
+            status_code=409,
+            detail="GPU conflict detected. Requested GPUs are already in use.",
+        )
+    result = await asyncio.to_thread(
+        run_model_prep_container,
+        task_id=req.task_id,
+        model_id=req.model_id,
+        training_data_url=req.training_data_url,
+        task_type=req.task_type,
+        augmentation_config=req.augmentation_config,
+        gpu_ids=req.gpu_ids,
+        reward_functions=req.reward_functions,
+        env_configs=req.env_configs,
+    )
+    return result
+
+
 async def get_available_gpus() -> list[GPUInfo]:
     gpu_info = await get_gpu_info()
     return gpu_info
@@ -128,6 +168,9 @@ def factory_router() -> APIRouter:
     router = APIRouter(tags=["Proxy Trainer"])
     router.add_api_route(
         PROXY_TRAINING_IMAGE_ENDPOINT, start_training, methods=["POST"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
+    router.add_api_route(
+        MODEL_PREP_ENDPOINT, model_prep, methods=["POST"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     router.add_api_route(
         GET_GPU_AVAILABILITY_ENDPOINT, get_available_gpus, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]

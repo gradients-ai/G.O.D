@@ -19,6 +19,7 @@ from core.models.utility_models import ImageModelType
 from core.models.utility_models import Message
 from core.models.utility_models import Role
 from core.models.utility_models import TaskStatus
+from core.models.utility_models import TaskType
 from validator.core.config import Config
 from validator.core.models import ImageRawTask
 from validator.core.models import RawTask
@@ -27,6 +28,7 @@ from validator.utils.call_endpoint import post_to_nineteen_image
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
 from validator.utils.logging import get_logger
+from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.util import retry_with_backoff
 
 
@@ -357,6 +359,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
         logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
     if len(image_text_pairs) >= 10:
+        augmentation_config = maybe_get_augmentation_config(TaskType.IMAGETASK)
         task = ImageRawTask(
             model_id=model_info.model_id,
             ds=ds_prefix.replace(" ", "_").lower() + "_" + str(uuid.uuid4()),
@@ -368,6 +371,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
             hours_to_complete=number_of_hours,
             account_id=cst.NULL_ACCOUNT_ID,
             model_type=model_info.model_type,
+            augmentation_config=augmentation_config,
         )
 
         logger.info(f"New task created and added to the queue {task}")

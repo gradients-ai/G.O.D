@@ -275,9 +275,10 @@ async def _evaluate_submissions(
     if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
         results: dict[str, EvaluationResultText | Exception] = {}
         repos_to_evaluate = []
+        base_model = task.augmented_model_id or task.model_id
         for repo in unique_repos:
-            if repo == task.model_id:
-                logger.warning(f"Repository {repo} matches original model ID - marking as non-finetuned")
+            if repo == base_model:
+                logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
                 results[repo] = EvaluationResultText(is_finetune=False, eval_loss=0.0)
             else:
                 repos_to_evaluate.append(repo)
@@ -296,7 +297,7 @@ async def _evaluate_submissions(
 
         evaluation_params = {
             "file_format": FileFormat.JSON,
-            "original_model": task.model_id,
+            "original_model": base_model,
             "models": repos_to_evaluate,
             "dataset_type": dataset_type,
             "num_gpus": num_gpus,
@@ -325,9 +326,10 @@ async def _evaluate_submissions(
     elif task.task_type == TaskType.IMAGETASK:
         results: dict[str, EvaluationResultImage | Exception] = {}
         repos_to_evaluate = []
+        base_model = task.augmented_model_id or task.model_id
         for repo in unique_repos:
-            if repo == task.model_id:
-                logger.warning(f"Repository {repo} matches original model ID - marking as non-finetuned")
+            if repo == base_model:
+                logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
                 results[repo] = EvaluationResultImage(
                     eval_losses=DiffusionLosses(text_guided_losses=[0], no_text_losses=[0]), is_finetune=False
                 )
@@ -339,7 +341,7 @@ async def _evaluate_submissions(
 
         evaluation_params = {
             "test_split_url": task.test_data,
-            "original_model_repo": task.model_id,
+            "original_model_repo": base_model,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
             "num_gpus": num_gpus,

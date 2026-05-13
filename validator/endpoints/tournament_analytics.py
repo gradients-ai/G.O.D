@@ -177,6 +177,7 @@ async def get_tournament_details(
             status=tournament.status,
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
+            diff_report=tournament.diff_report,
             participants=_participants_without_github_tokens(participants),
             rounds=detailed_rounds,
             final_scores=tournament_type_result.scores,
@@ -257,6 +258,7 @@ async def get_tournament_gpu_requirements(
         unfinished_statuses = [
             TaskStatus.PENDING,
             TaskStatus.PREPARING_DATA,
+            TaskStatus.AWAITING_MODEL_PREP,
             TaskStatus.LOOKING_FOR_NODES,
             TaskStatus.READY,
             TaskStatus.TRAINING,

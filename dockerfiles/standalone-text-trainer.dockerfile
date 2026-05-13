@@ -1,4 +1,4 @@
-FROM axolotlai/axolotl:main-py3.11-cu128-2.9.1
+FROM axolotlai/axolotl:main-py3.11-cu124-2.5.1
 COPY --from=ghcr.io/astral-sh/uv:0.9.14 /uv /uvx /bin/
 
 ENV UV_SYSTEM_PYTHON=1 \

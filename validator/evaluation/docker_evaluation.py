@@ -504,7 +504,7 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo.setdefault(repo, dep_info)
     task_type = type(dataset_type).__name__
     is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
-    basilica_image = vcst.ENV_EVAL_IMAGE if is_environment_eval else cst.VALIDATOR_DOCKER_IMAGE
+    basilica_image = cst.VALIDATOR_DOCKER_IMAGE_ENV if is_environment_eval else cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
@@ -541,10 +541,10 @@ async def run_evaluation_basilica_text(
     }
     if is_environment_eval:
         env_name = dataset_type.environment_name
-        if env_name not in vcst.ENVIRONMENTS:
-            raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
+        if env_name not in cst.ENVIRONMENT_CONFIGS:
+            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
         base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-        base_env["ENVIRONMENT_NAME"] = env_name
+        base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
         base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
@@ -726,7 +726,8 @@ async def run_evaluation_basilica_image(
         "HF_HOME": "/root/.cache/huggingface",
         "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub"
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "0",
     }
 
     logger.debug(f"Starting Basilica image evaluation for {len(models)} repos: {models}")

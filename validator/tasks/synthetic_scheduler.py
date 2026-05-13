@@ -14,6 +14,7 @@ import validator.core.constants as vcst
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
+from core.constants import EnvironmentName
 from core.models.utility_models import FileFormat
 from core.models.utility_models import Message
 from core.models.utility_models import Prompts
@@ -31,6 +32,7 @@ from validator.core.models import RewardFunction
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.grpo import get_generic_reward_functions_from_db
 from validator.db.sql.tasks import add_task
+from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.call_endpoint import call_content_service
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
@@ -270,6 +272,7 @@ async def create_synthetic_dpo_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.DPOTASK)
     task = DpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -284,8 +287,9 @@ async def create_synthetic_dpo_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"New DPO task created with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"New DPO task created with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
 
@@ -403,6 +407,7 @@ async def create_synthetic_grpo_task(
     reward_functions = await _get_generic_reward_functions(config)
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
     task = GrpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -415,8 +420,9 @@ async def create_synthetic_grpo_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"New GRPO task created with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"New GRPO task created with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
 
@@ -428,8 +434,8 @@ async def create_synthetic_env_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
-    exclude_environments: list[str] | None = None,
-    force_environment: str | None = None,
+    exclude_environments: list[EnvironmentName] | None = None,
+    force_environment: EnvironmentName | None = None,
 ) -> RawTask:
     # hardoced model for now. the model and ds generators kept for signature compatibility
     model_id = random.choice(SUPPORTED_ENV_MODELS)
@@ -446,7 +452,7 @@ async def create_synthetic_env_task(
     if force_environment:
         selected_environment = force_environment
     else:
-        game_candidates = ["gin_rummy", "liars_dice", "leduc_poker"]
+        game_candidates = [EnvironmentName.GIN_RUMMY, EnvironmentName.LIARS_DICE, EnvironmentName.LEDUC_POKER]
         if exclude_environments:
             game_candidates = [g for g in game_candidates if g not in exclude_environments]
         selected_environment = random.choice(game_candidates)
@@ -454,6 +460,7 @@ async def create_synthetic_env_task(
     # Generate a random seed for evaluation reproducibility
     eval_seed = random.randint(0, 2**31 - 1)
 
+    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
     task = EnvRawTask(
         model_id=model_id,
         ds=dummy_dataset,
@@ -466,8 +473,9 @@ async def create_synthetic_env_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=None,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"New Environment task created with eval_seed={eval_seed}")
+    logger.info(f"New Environment task created with eval_seed={eval_seed}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
 
@@ -528,6 +536,7 @@ async def create_synthetic_affine_grpo_task(
         end_timestamp = current_time + timedelta(hours=number_of_hours)
 
         yarn_factor = maybe_get_yarn_factor()
+        augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
         task = GrpoRawTask(
             model_id=model_id,
             ds=s3_url,
@@ -542,9 +551,10 @@ async def create_synthetic_affine_grpo_task(
             file_format=FileFormat.S3,
             extra_column="extra",
             yarn_factor=yarn_factor,
+            augmentation_config=augmentation_config,
         )
 
-        logger.info(f"New affine GRPO task created with S3 dataset: {s3_url}, yarn_factor={yarn_factor}")
+        logger.info(f"New affine GRPO task created with S3 dataset: {s3_url}, augmented={augmentation_config is not None}")
 
         task = await add_task(task, config.psql_db)
 
@@ -573,6 +583,7 @@ async def create_synthetic_instruct_text_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
     task = InstructTextRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -587,8 +598,9 @@ async def create_synthetic_instruct_text_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")

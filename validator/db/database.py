@@ -1,3 +1,4 @@
+import json
 import os
 import socket
 from typing import Any
@@ -51,6 +52,16 @@ def _get_connection_string(username: str, password: str, host: str, port: int, d
     return f"postgresql://{username}:{password}@{host}:{port}/{database}"
 
 
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Register JSON codec so asyncpg deserializes JSONB columns to Python dicts/lists."""
+    await conn.set_type_codec(
+        "jsonb", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
+    await conn.set_type_codec(
+        "json", encoder=json.dumps, decoder=json.loads, schema="pg_catalog"
+    )
+
+
 class PSQLDB:
     def __init__(self, from_env: bool = True, connection_string: str | None = None):
         self.from_env = from_env
@@ -73,6 +84,7 @@ class PSQLDB:
                     command_timeout=cst.COMMAND_TIMEOUT,
                     timeout=cst.TIMEOUT,
                     max_queries=cst.MAX_QUERIES,
+                    init=_init_connection,
                 )
                 if self.pool is None:
                     raise ConnectionError("Failed to create connection pool")

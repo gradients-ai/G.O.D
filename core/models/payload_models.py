@@ -10,7 +10,10 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from core import constants as cst
+from core.models.model_prep_models import AugmentationConfig
+from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import EnvironmentDatasetType
+from core.constants import EnvironmentName
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
@@ -44,6 +47,7 @@ class TrainRequest(BaseModel):
     task_id: str
     hours_to_complete: float
     expected_repo_name: str | None = None
+    baseline_stats: BaselineStats | None = None
 
 
 class TrainRequestText(TrainRequest):
@@ -95,6 +99,7 @@ class TrainerProxyRequest(BaseModel):
     github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
+    requested_datasets: list[str] | None = None
 
 
 class TrainerTaskLog(TrainerProxyRequest):
@@ -115,6 +120,9 @@ class TrainingRepoResponse(BaseModel):
     github_repo: str = Field(..., description="The GitHub repository URL")
     commit_hash: str = Field(..., description="The commit hash of the repository")
     github_token: str | None = Field(default=None, description="Optional GitHub token for private repositories")
+    requested_datasets: list[str] | None = Field(
+        default=None, description="Optional list of HuggingFace dataset repo IDs from the whitelist"
+    )
 
 
 class JobStatusPayload(BaseModel):
@@ -124,6 +132,33 @@ class JobStatusPayload(BaseModel):
 class JobStatusResponse(BaseModel):
     task_id: UUID
     status: JobStatus
+
+
+class EnvConfig(BaseModel):
+    """Per-environment config for model prep evaluation."""
+    env_image: str
+    task_id_min: int
+    task_id_max: int
+    num_episodes: int = 100
+    eval_payload_extra: dict | None = None
+
+
+class ModelPrepRequest(BaseModel):
+    task_id: str
+    model_id: str
+    training_data_url: str
+    task_type: str = "instruct"
+    augmentation_config: AugmentationConfig | None = None
+    gpu_ids: list[int] = [0]
+    reward_functions: list[RewardFunction] | None = None
+    env_configs: dict[EnvironmentName, EnvConfig] | None = None
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class ModelPrepResponse(BaseModel):
+    augmented_model_id: str | None = None
+    baseline_stats: BaselineStats | None = None
 
 
 class EvaluationRequest(TrainRequest):
@@ -263,8 +298,8 @@ class NewTaskRequestChat(NewTaskRequest):
 
 
 class NewTaskRequestEnvironment(NewTaskRequest):
-    environment_name: str = Field(
-        ..., description="The name of the specific environment we are training for.", examples=["alfworld"]
+    environment_name: EnvironmentName = Field(
+        ..., description="The name of the specific environment we are training for.", examples=["gin_rummy"]
     )
 
     ds_repo: str = Field(..., description="The repository for the dataset", examples=["Magpie-Align/Magpie-Pro-300K-Filtered"])
@@ -492,7 +527,7 @@ class GrpoTaskDetails(TaskDetails):
 
 class EnvironmentTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.ENVIRONMENTTASK
-    environment_name: str
+    environment_name: EnvironmentName
     base_model_repository: str
     ds_repo: str
 
