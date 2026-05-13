@@ -41,7 +41,7 @@ systemctl enable "$SERVICE_NAME"
 
 # Start the service
 echo "Starting ${SERVICE_NAME}..."
-systemctl start "$SERVICE_NAME"
+systemctl restart "$SERVICE_NAME"
 
 echo "Successfully installed, enabled, and started ${SERVICE_NAME}!"
 echo ""
