@@ -38,12 +38,16 @@ repo, _ = to_string(.repo_id)
 eid, _ = to_string(.eval_id)
 mdl, _ = to_string(.model)
 tt, _ = to_string(.task_type)
+tid, _ = to_string(.task_id)
+hk, _ = to_string(.hotkey)
 srv, _ = to_string(.server)
 
 .repo_id = if repo != null && repo != "" { repo } else { "unknown" }
 .eval_id = if eid != null && eid != "" { eid } else { "unknown" }
 .model = if mdl != null && mdl != "" { mdl } else { "unknown" }
 .task_type = if tt != null && tt != "" { tt } else { "environment" }
+.task_id = if tid != null && tid != "" { tid } else { "unknown" }
+.hotkey = if hk != null && hk != "" { hk } else { "unknown" }
 .server = if srv != null && srv != "" { srv } else { "validator" }
 
 # Timestamp handling
@@ -74,6 +78,8 @@ labels.repo_id = "{{ repo_id }}"
 labels.eval_id = "{{ eval_id }}"
 labels.model = "{{ model }}"
 labels.task_type = "{{ task_type }}"
+labels.task_id = "{{ task_id }}"
+labels.hotkey = "{{ hotkey }}"
 labels.server = "{{ server }}"
 labels.level = "{{ level }}"
 
