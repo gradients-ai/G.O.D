@@ -104,8 +104,14 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
         raise e
 
 
-async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType) -> str:
-    model_name = get_anonymous_model_dir(repo_id)
+def _model_dir_name(repo_id: str, anonymize: bool) -> str:
+    if anonymize:
+        return get_anonymous_model_dir(repo_id)
+    return repo_id.replace("/", "--")
+
+
+async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType, anonymize: bool = True) -> str:
+    model_name = _model_dir_name(repo_id, anonymize)
     save_path = os.path.join(save_root, model_name)
     if os.path.exists(save_path):
         print(f"Model already cached at {save_path}. Skipping download.")
@@ -117,17 +123,19 @@ async def download_base_model(repo_id: str, save_root: str, model_type: ImageMod
         else:
             snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
             result = save_path
-        scrub_model_identity(save_path)
+        if anonymize:
+            scrub_model_identity(save_path)
         return result
 
 
-async def download_axolotl_base_model(repo_id: str, save_dir: str) -> str:
-    model_dir = os.path.join(save_dir, get_anonymous_model_dir(repo_id))
+async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bool = True) -> str:
+    model_dir = os.path.join(save_dir, _model_dir_name(repo_id, anonymize))
     if os.path.exists(model_dir):
         print(f"Model already cached at {model_dir}. Skipping download.")
         return model_dir
     snapshot_download(repo_id=repo_id, repo_type="model", local_dir=model_dir, local_dir_use_symlinks=False)
-    scrub_model_identity(model_dir)
+    if anonymize:
+        scrub_model_identity(model_dir)
     return model_dir
 
 
@@ -169,6 +177,7 @@ async def main():
     parser.add_argument("--dataset")
     parser.add_argument("--file-format")
     parser.add_argument("--model-type", choices=[ImageModelType.FLUX.value, ImageModelType.SDXL.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value])
+    parser.add_argument("--anonymize", action="store_true", help="Anonymize model directory name and scrub identity")
     args = parser.parse_args()
 
     if args.command == "download-miner-dataset":
@@ -190,7 +199,7 @@ async def main():
 
     if args.task_type == TaskType.IMAGETASK.value:
         dataset_zip_path = await download_image_dataset(args.dataset, args.task_id, dataset_dir)
-        model_path = await download_base_model(args.model, model_dir, args.model_type)
+        model_path = await download_base_model(args.model, model_dir, args.model_type, anonymize=args.anonymize)
 
         if args.model_type == ImageModelType.Z_IMAGE.value:
             print("Downloading Z-Image adapter...", flush=True)
@@ -221,7 +230,7 @@ async def main():
             allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
         )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
-        model_path = await download_axolotl_base_model(args.model, model_dir)
+        model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)
         write_environment_task_proxy_dataset(
             out_path=input_data_path,
@@ -231,7 +240,7 @@ async def main():
         )
     else:
         dataset_path, _ = await download_text_dataset(args.task_id, args.dataset, args.file_format, dataset_dir)
-        model_path = await download_axolotl_base_model(args.model, model_dir)
+        model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
 
     print(f"Model path: {model_path}", flush=True)
     print(f"Dataset path: {dataset_dir}", flush=True)

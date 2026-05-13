@@ -368,6 +368,7 @@ def run_downloader_container(
     file_format: FileFormat | None = None,
     model_type: ImageModelType | None = None,
     log_labels: dict[str, str] | None = None,
+    anonymize: bool = True,
 ) -> tuple[int, Exception | None]:
     client = docker.from_env()
 
@@ -387,8 +388,15 @@ def run_downloader_container(
     if model_type:
         command += ["--model-type", model_type]
 
+    if anonymize:
+        command += ["--anonymize"]
+
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
+
+    environment = {}
+    if anonymize:
+        environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
 
     try:
         logger.info(f"Starting downloader container: {container_name}", extra=log_labels)
@@ -398,7 +406,7 @@ def run_downloader_container(
             command=command,
             labels=log_labels,
             volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
-            environment={"MODEL_HASH_SALT": os.environ.get("MODEL_HASH_SALT", "")},
+            environment=environment,
             remove=False,
             detach=True,
         )
@@ -804,6 +812,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         logger.info("Running Cache Download Container", extra=log_labels)
         await log_task(training_data.task_id, task.hotkey, "Downloading data")
 
+        model_prep_ran = training_data.baseline_stats is not None
+
         download_status, exc = await asyncio.to_thread(
             run_downloader_container,
             task_id=training_data.task_id,
@@ -814,6 +824,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             file_format=getattr(training_data, "file_format", None),
             model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
+            anonymize=model_prep_ran,
         )
 
         if download_status == 0:
@@ -857,14 +868,17 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             env_server_url_str = ",".join(env_urls)
             await log_task(training_data.task_id, task.hotkey, f"Environment servers ready.")
 
-        anonymous_model = get_anonymous_model_dir(training_data.model)
+        if model_prep_ran:
+            model_for_container = get_anonymous_model_dir(training_data.model)
+        else:
+            model_for_container = training_data.model
 
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
                     task_id=training_data.task_id,
                     tag=tag,
-                    model=anonymous_model,
+                    model=model_for_container,
                     dataset_zip=training_data.dataset_zip,
                     model_type=training_data.model_type,
                     expected_repo_name=training_data.expected_repo_name,
@@ -883,7 +897,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     task_id=training_data.task_id,
                     hotkey=task.hotkey,
                     tag=tag,
-                    model=anonymous_model,
+                    model=model_for_container,
                     dataset=training_data.dataset,
                     dataset_type=training_data.dataset_type,
                     task_type=task_type,
