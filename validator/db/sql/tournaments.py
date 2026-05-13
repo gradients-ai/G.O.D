@@ -35,6 +35,22 @@ from validator.utils.util import normalise_float
 logger = get_logger(__name__)
 
 
+def _parse_requested_datasets(raw_value: object) -> list[str] | None:
+    """Parse requested_datasets from JSONB columns with strict type expectations."""
+    if raw_value is None:
+        return None
+
+    if not isinstance(raw_value, list):
+        raise TypeError(
+            f"Expected {cst.REQUESTED_DATASETS} to be list or None, got {type(raw_value).__name__}"
+        )
+
+    if not all(isinstance(dataset, str) for dataset in raw_value):
+        raise TypeError(f"Expected {cst.REQUESTED_DATASETS} to contain only strings")
+
+    return raw_value
+
+
 def is_champion_winner(winner_hotkey: str | None, base_winner_hotkey: str | None, champion_hotkey: str) -> bool:
     """
     Check if champion_hotkey won the tournament.
@@ -566,7 +582,7 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
                 training_commit_hash=result[cst.TRAINING_COMMIT_HASH],
                 github_token=result[cst.GITHUB_TOKEN],
                 backup_repo=result[cst.BACKUP_REPO],
-                requested_datasets=json.loads(result[cst.REQUESTED_DATASETS]) if result[cst.REQUESTED_DATASETS] else None,
+                requested_datasets=_parse_requested_datasets(result[cst.REQUESTED_DATASETS]),
             )
         return None
 
@@ -592,7 +608,7 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
                 training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
                 github_token=row[cst.GITHUB_TOKEN],
                 backup_repo=row[cst.BACKUP_REPO],
-                requested_datasets=json.loads(row[cst.REQUESTED_DATASETS]) if row[cst.REQUESTED_DATASETS] else None,
+                requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
             )
             for row in results
         ]
@@ -771,7 +787,7 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
                         training_repo=row[cst.TRAINING_REPO],
                         training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
                         github_token=row[cst.GITHUB_TOKEN],
-                        requested_datasets=json.loads(row[cst.REQUESTED_DATASETS]) if row[cst.REQUESTED_DATASETS] else None,
+                        requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
                         priority=row[cst.PRIORITY],
                         trainer_ip=row[cst.TRAINER_IP],
                     )
@@ -872,7 +888,7 @@ async def get_tournament_training_repo_and_commit(
         """
         result = await connection.fetchrow(query, hotkey, tournament_id)
         if result:
-            datasets = json.loads(result[cst.REQUESTED_DATASETS]) if result[cst.REQUESTED_DATASETS] else None
+            datasets = _parse_requested_datasets(result[cst.REQUESTED_DATASETS])
             if result[cst.BACKUP_REPO]:
                 logger.info(f"Using backup repo for hotkey {hotkey} in tournament {tournament_id}: {result[cst.BACKUP_REPO]}")
                 return TrainingRepoInfo(
