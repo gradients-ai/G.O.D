@@ -37,6 +37,7 @@ from validator.utils.llm import post_to_nineteen_chat_with_reasoning
 from validator.utils.logging import get_logger
 from validator.utils.reward_functions import validate_reward_function
 from validator.utils.util import retry_with_backoff
+from core.reward_templates import sample_template_groups
 
 
 logger = get_logger(__name__)
@@ -346,16 +347,14 @@ async def _generate_generic_reward_functions_from_llm(keypair: Keypair, num_rewa
 
 
 async def _get_generic_reward_functions(config: Config) -> list[RewardFunction]:
-    reward_functions = []
     total_rewards = random.randint(vcst.MIN_NUM_REWARD_FUNCTIONS, vcst.MAX_NUM_REWARD_FUNCTIONS)
 
-    num_generic_rewards_from_db = max(1, int(total_rewards * vcst.PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_DB))
-    num_generic_rewards_from_llm = total_rewards - num_generic_rewards_from_db
+    code_strings = sample_template_groups(n=total_rewards, rng=random.Random())
 
-    reward_functions += await get_generic_reward_functions_from_db(config.psql_db, num_generic_rewards_from_db)
-
-    if num_generic_rewards_from_llm > 0:
-        reward_functions += await _generate_generic_reward_functions_from_llm(config.keypair, num_generic_rewards_from_llm)
+    reward_functions = [
+        RewardFunction(reward_func=code, is_generic=True, reward_weight=1.0)
+        for code in code_strings
+    ]
 
     reward_functions = _randomize_reward_weights(reward_functions)
 
