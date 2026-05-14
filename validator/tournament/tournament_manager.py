@@ -1,9 +1,11 @@
 import asyncio
 import math
 import random
+from collections import defaultdict
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
+from urllib.parse import urlparse
 
 from fiber.chain.models import Node
 
@@ -555,6 +557,51 @@ async def create_basic_tournament(tournament_type: TournamentType, psql_db: PSQL
     return tournament_id
 
 
+def extract_github_account(repo_url: str) -> str | None:
+    path = urlparse(repo_url).path.strip("/")
+    parts = path.split("/")
+    if len(parts) >= 1 and parts[0]:
+        return parts[0].lower()
+    return None
+
+
+def deduplicate_by_github_account(nodes: list[RespondingNode]) -> list[RespondingNode]:
+    by_account: dict[str, list[RespondingNode]] = defaultdict(list)
+    no_account: list[RespondingNode] = []
+
+    for node in nodes:
+        account = extract_github_account(node.training_repo_response.github_repo)
+        if account:
+            by_account[account].append(node)
+        else:
+            no_account.append(node)
+
+    kept: list[RespondingNode] = list(no_account)
+    for account, group in by_account.items():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+
+        with_token = [n for n in group if n.training_repo_response.github_token]
+        without_token = [n for n in group if not n.training_repo_response.github_token]
+
+        if with_token:
+            winner = with_token[0]
+            rejected = with_token[1:] + without_token
+        else:
+            winner = without_token[0]
+            rejected = without_token[1:]
+
+        kept.append(winner)
+        for r in rejected:
+            logger.warning(
+                f"Rejecting {r.node.hotkey} — duplicate GitHub account '{account}' "
+                f"(kept {winner.node.hotkey})"
+            )
+
+    return kept
+
+
 async def populate_tournament_participants(tournament_id: str, config: Config, psql_db: PSQLDB) -> int:
     logger.info(
         f"Populating participants for tournament {tournament_id} with minimum requirement of {cst.MIN_MINERS_FOR_TOURN} miners"
@@ -616,6 +663,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                         logger.info(f"Node responded with training repo {result.github_repo}@{result.commit_hash}")
 
         logger.info(f"Got {len(responding_nodes)} responding nodes")
+
+        pre_dedup = len(responding_nodes)
+        responding_nodes = deduplicate_by_github_account(responding_nodes)
+        if len(responding_nodes) < pre_dedup:
+            logger.info(
+                f"Deduplicated GitHub accounts: {pre_dedup} -> {len(responding_nodes)} nodes"
+            )
 
         logger.info(f"Processing {len(responding_nodes)} responding nodes")
 
