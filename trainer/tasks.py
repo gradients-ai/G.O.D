@@ -128,11 +128,6 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
 # Model prep job helpers
 # ---------------------------------------------------------------------------
 
-async def start_model_prep(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
-    async with _task_lock:
-        return await _start_model_prep_unlocked(task_id, model_id, gpu_ids)
-
-
 async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
     load_task_history()
 
