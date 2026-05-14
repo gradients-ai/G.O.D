@@ -130,18 +130,22 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
 
 async def start_model_prep(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
     async with _task_lock:
-        load_task_history()
+        return await _start_model_prep_unlocked(task_id, model_id, gpu_ids)
 
-        job = ModelPrepJob(
-            task_id=task_id,
-            model_id=model_id,
-            gpu_ids=gpu_ids,
-            status=TaskStatus.TRAINING,
-            started_at=datetime.utcnow(),
-        )
-        task_history.append(job)
-        await save_task_history()
-        return job
+
+async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
+    load_task_history()
+
+    job = ModelPrepJob(
+        task_id=task_id,
+        model_id=model_id,
+        gpu_ids=gpu_ids,
+        status=TaskStatus.TRAINING,
+        started_at=datetime.utcnow(),
+    )
+    task_history.append(job)
+    await save_task_history()
+    return job
 
 
 async def complete_model_prep(task_id: str, success: bool = True):
@@ -170,11 +174,6 @@ def get_model_prep_job(task_id: str) -> ModelPrepJob | None:
 def get_running_jobs() -> list[TrainerJob]:
     load_task_history()
     return [j for j in task_history if j.status == TaskStatus.TRAINING]
-
-
-def get_running_tasks() -> list[TrainerTaskLog]:
-    load_task_history()
-    return [j for j in task_history if isinstance(j, TrainerTaskLog) and j.status == TaskStatus.TRAINING]
 
 
 def get_recent_tasks(hours: float = 1.0) -> list[TrainerJob]:

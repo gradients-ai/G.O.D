@@ -24,7 +24,7 @@ from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
-from trainer.tasks import start_model_prep
+from trainer.tasks import _start_model_prep_unlocked
 from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
@@ -129,13 +129,13 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
 
 
 async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
-    if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
-        raise HTTPException(
-            status_code=409,
-            detail="GPU conflict detected. Requested GPUs are already in use.",
-        )
-
-    await start_model_prep(req.task_id, req.model_id, req.gpu_ids)
+    async with _task_lock:
+        if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="GPU conflict detected. Requested GPUs are already in use.",
+            )
+        await _start_model_prep_unlocked(req.task_id, req.model_id, req.gpu_ids)
     try:
         result = await asyncio.to_thread(
             run_model_prep_container,
