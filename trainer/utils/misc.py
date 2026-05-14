@@ -13,7 +13,7 @@ from core.models.utility_models import GPUInfo
 from core.models.utility_models import GPUType
 from core.utils import build_authenticated_git_url
 from core.utils import sanitize_git_text
-from trainer.tasks import get_running_tasks
+from trainer.tasks import get_running_jobs
 
 
 def clone_repo(
@@ -94,11 +94,11 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
                 break
 
     busy_gpu_ids: set[int] = set()
-    running_tasks = get_running_tasks()
+    running_jobs = get_running_jobs()
 
-    if running_tasks:
-        for task in running_tasks:
-            for gpu_id in task.gpu_ids:
+    if running_jobs:
+        for job in running_jobs:
+            for gpu_id in job.gpu_ids:
                 busy_gpu_ids.add(gpu_id)
 
     gpu_infos: list[GPUInfo] = []
@@ -143,16 +143,16 @@ def extract_container_error(logs: str) -> str | None:
 
 def are_gpus_available(requested_gpu_ids: list[int]) -> bool:
     """
-    Check if any of the requested GPU IDs are already in use by training tasks.
+    Check if any of the requested GPU IDs are already in use by running jobs.
 
     Returns:
         bool: True if all requested GPUs are available, False otherwise
     """
-    running_tasks = get_running_tasks()
+    running_jobs = get_running_jobs()
 
-    for task in running_tasks:
+    for job in running_jobs:
         for gpu_id in requested_gpu_ids:
-            if gpu_id in task.gpu_ids:
+            if gpu_id in job.gpu_ids:
                 return False
 
     busy_gpu_ids = _get_busy_gpu_ids_from_running_containers()

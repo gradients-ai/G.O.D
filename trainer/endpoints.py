@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
+from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import GPUInfo
@@ -17,11 +18,13 @@ from trainer.image_manager import run_model_prep_container
 from trainer.image_manager import start_training_task
 from trainer.tasks import _start_task_unlocked
 from trainer.tasks import _task_lock
+from trainer.tasks import complete_model_prep
 from trainer.tasks import complete_task
 from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
+from trainer.tasks import start_model_prep
 from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
@@ -131,18 +134,25 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             status_code=409,
             detail="GPU conflict detected. Requested GPUs are already in use.",
         )
-    result = await asyncio.to_thread(
-        run_model_prep_container,
-        task_id=req.task_id,
-        model_id=req.model_id,
-        training_data_url=req.training_data_url,
-        task_type=req.task_type,
-        augmentation_config=req.augmentation_config,
-        gpu_ids=req.gpu_ids,
-        reward_functions=req.reward_functions,
-        env_configs=req.env_configs,
-    )
-    return result
+
+    await start_model_prep(req.task_id, req.model_id, req.gpu_ids)
+    try:
+        result = await asyncio.to_thread(
+            run_model_prep_container,
+            task_id=req.task_id,
+            model_id=req.model_id,
+            training_data_url=req.training_data_url,
+            task_type=req.task_type,
+            augmentation_config=req.augmentation_config,
+            gpu_ids=req.gpu_ids,
+            reward_functions=req.reward_functions,
+            env_configs=req.env_configs,
+        )
+        await complete_model_prep(req.task_id, success=True)
+        return result
+    except Exception:
+        await complete_model_prep(req.task_id, success=False)
+        raise
 
 
 async def get_available_gpus() -> list[GPUInfo]:
@@ -157,7 +167,7 @@ async def get_task_details(task_id: str, hotkey: str) -> TrainerTaskLog:
     return task
 
 
-async def get_recent_tasks_list(hours: int) -> list[TrainerTaskLog]:
+async def get_recent_tasks_list(hours: int) -> list[TrainerJob]:
     tasks = get_recent_tasks(hours)
     if not tasks:
         raise HTTPException(status_code=404, detail=f"Tasks not found in the last {hours} hours.")

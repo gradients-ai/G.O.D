@@ -8,6 +8,10 @@ from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
 
+from pydantic import TypeAdapter
+
+from core.models.payload_models import ModelPrepJob
+from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import TaskStatus
@@ -17,13 +21,18 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-task_history: list[TrainerTaskLog] = []
+task_history: list[TrainerJob] = []
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
 _task_lock = asyncio.Lock()
 _task_file_lock = threading.Lock()
 _TASK_HISTORY_READ_RETRIES = 3
 _TASK_HISTORY_RETRY_DELAY_SECONDS = 0.5
+_job_adapter = TypeAdapter(TrainerTaskLog | ModelPrepJob)
 
+
+# ---------------------------------------------------------------------------
+# Training job helpers
+# ---------------------------------------------------------------------------
 
 async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
     async with _task_lock:
@@ -62,7 +71,7 @@ async def _start_task_unlocked(task: TrainerProxyRequest) -> tuple[str, str]:
 async def complete_task(task_id: str, hotkey: str, success: bool = True):
     async with _task_lock:
         load_task_history()
-        
+
         task = get_task(task_id, hotkey)
         if task is None:
             return
@@ -72,16 +81,16 @@ async def complete_task(task_id: str, hotkey: str, success: bool = True):
 
 
 def get_task(task_id: str, hotkey: str) -> TrainerTaskLog | None:
-    for task in task_history:
-        if task.training_data.task_id == task_id and task.hotkey == hotkey:
-            return task
+    for job in task_history:
+        if isinstance(job, TrainerTaskLog) and job.training_data.task_id == task_id and job.hotkey == hotkey:
+            return job
     return None
 
 
 async def log_task(task_id: str, hotkey: str, message: str):
     async with _task_lock:
         load_task_history()
-        
+
         task = get_task(task_id, hotkey)
         if task:
             timestamped_message = f"[{datetime.utcnow().isoformat()}] {message}"
@@ -92,7 +101,7 @@ async def log_task(task_id: str, hotkey: str, message: str):
 async def update_wandb_url(task_id: str, hotkey: str, wandb_url: str):
     async with _task_lock:
         load_task_history()
-        
+
         task = get_task(task_id, hotkey)
         if task:
             task.wandb_url = wandb_url
@@ -115,25 +124,76 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
             logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
 
 
+# ---------------------------------------------------------------------------
+# Model prep job helpers
+# ---------------------------------------------------------------------------
+
+async def start_model_prep(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
+    async with _task_lock:
+        load_task_history()
+
+        job = ModelPrepJob(
+            task_id=task_id,
+            model_id=model_id,
+            gpu_ids=gpu_ids,
+            status=TaskStatus.TRAINING,
+            started_at=datetime.utcnow(),
+        )
+        task_history.append(job)
+        await save_task_history()
+        return job
+
+
+async def complete_model_prep(task_id: str, success: bool = True):
+    async with _task_lock:
+        load_task_history()
+
+        job = get_model_prep_job(task_id)
+        if job is None:
+            return
+        job.status = TaskStatus.SUCCESS if success else TaskStatus.FAILURE
+        job.finished_at = datetime.utcnow()
+        await save_task_history()
+
+
+def get_model_prep_job(task_id: str) -> ModelPrepJob | None:
+    for job in task_history:
+        if isinstance(job, ModelPrepJob) and job.task_id == task_id:
+            return job
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared queries
+# ---------------------------------------------------------------------------
+
+def get_running_jobs() -> list[TrainerJob]:
+    load_task_history()
+    return [j for j in task_history if j.status == TaskStatus.TRAINING]
+
+
 def get_running_tasks() -> list[TrainerTaskLog]:
     load_task_history()
-    return [t for t in task_history if t.status == TaskStatus.TRAINING]
+    return [j for j in task_history if isinstance(j, TrainerTaskLog) and j.status == TaskStatus.TRAINING]
 
 
-def get_recent_tasks(hours: float = 1.0) -> list[TrainerTaskLog]:
+def get_recent_tasks(hours: float = 1.0) -> list[TrainerJob]:
     load_task_history()
     cutoff = datetime.utcnow() - timedelta(hours=hours)
 
-    recent_tasks = [
-        task
-        for task in task_history
-        if (task.started_at and task.started_at >= cutoff) or (task.finished_at and task.finished_at >= cutoff)
+    recent = [
+        job
+        for job in task_history
+        if (job.started_at and job.started_at >= cutoff) or (job.finished_at and job.finished_at >= cutoff)
     ]
 
-    recent_tasks.sort(key=lambda t: max(t.finished_at or datetime.min, t.started_at or datetime.min), reverse=True)
+    recent.sort(key=lambda j: max(j.finished_at or datetime.min, j.started_at or datetime.min), reverse=True)
+    return recent
 
-    return recent_tasks
 
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
 
 async def save_task_history():
     data = json.dumps([t.model_dump() for t in task_history], indent=2, default=str)
@@ -147,7 +207,7 @@ def load_task_history():
             try:
                 data = _read_task_history()
                 task_history.clear()
-                task_history.extend(TrainerTaskLog(**item) for item in data)
+                task_history.extend(_job_adapter.validate_python(item) for item in data)
                 return
             except (json.JSONDecodeError, ValueError) as e:
                 if attempt < _TASK_HISTORY_READ_RETRIES - 1:

@@ -9,6 +9,7 @@ from pathlib import Path
 import docker
 from dateutil.parser import isoparse
 
+from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import TaskStatus
 from trainer import constants as cst
 from trainer.tasks import save_task_history
@@ -33,17 +34,20 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
     while True:
         if len(task_history) > 0:
             now = datetime.utcnow()
-            for task in task_history:
-                if task.status != TaskStatus.TRAINING or not task.started_at:
+            for job in task_history:
+                if job.status != TaskStatus.TRAINING or not job.started_at:
                     continue
 
-                timeout = timedelta(hours=task.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
-                deadline = task.started_at + timeout
+                if isinstance(job, TrainerTaskLog):
+                    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
+                else:
+                    timeout = timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
 
+                deadline = job.started_at + timeout
                 if now > deadline:
-                    task.status = TaskStatus.FAILURE
-                    task.finished_at = now
-                    task.logs.append(f"[{now.isoformat()}] Task marked as FAILED due to timeout.")
+                    job.status = TaskStatus.FAILURE
+                    job.finished_at = now
+                    job.logs.append(f"[{now.isoformat()}] Job marked as FAILED due to timeout.")
                     await save_task_history()
 
             client = docker.from_env()

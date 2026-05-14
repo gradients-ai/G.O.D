@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 from uuid import uuid4
 
@@ -102,13 +103,40 @@ class TrainerProxyRequest(BaseModel):
     requested_datasets: list[str] | None = None
 
 
-class TrainerTaskLog(TrainerProxyRequest):
+class TrainerJob(BaseModel):
+    """Base for any job running on a trainer that occupies GPUs."""
+
+    job_type: str
+    gpu_ids: list[int]
     status: TaskStatus
-    started_at: datetime | None
-    finished_at: datetime | None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     container_name: str | None = None
-    wandb_url: str | None = None
     logs: list[str] = []
+
+
+class TrainerTaskLog(TrainerJob):
+    """Training job tracked in the trainer's task history."""
+
+    job_type: Literal["training"] = "training"
+    training_data: TrainRequestImage | TrainRequestText
+    github_repo: str
+    hotkey: str
+    github_branch: str | None = None
+    github_commit_hash: str | None = None
+    github_token: str | None = None
+    requested_datasets: list[str] | None = None
+    wandb_url: str | None = None
+
+
+class ModelPrepJob(TrainerJob):
+    """Model prep job tracked in the trainer's task history."""
+
+    job_type: Literal["model_prep"] = "model_prep"
+    task_id: str
+    model_id: str
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class TrainResponse(BaseModel):
