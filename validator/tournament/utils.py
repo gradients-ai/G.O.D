@@ -11,6 +11,7 @@ import aiohttp
 import httpx
 import numpy as np
 
+from core.models.tournament_models import GitHubOwnerRepo
 from core.models.tournament_models import GpuRequirement
 from core.models.tournament_models import RespondingNode
 from core.models.tournament_models import RoundType
@@ -1393,19 +1394,11 @@ async def validate_repo_license(repo_url: str, github_token: str | None = None) 
         return False
 
 
-def _parse_github_owner_repo(repo_url: str) -> tuple[str, str] | None:
+def parse_github_owner_repo(repo_url: str) -> GitHubOwnerRepo | None:
     path = urlparse(repo_url).path.strip("/")
     parts = path.split("/")
     if len(parts) >= 2 and parts[0] and parts[1]:
-        return parts[0], parts[1].removesuffix(".git")
-    return None
-
-
-def extract_github_account(repo_url: str) -> str | None:
-    path = urlparse(repo_url).path.strip("/")
-    parts = path.split("/")
-    if len(parts) >= 1 and parts[0]:
-        return parts[0].lower()
+        return GitHubOwnerRepo(owner=parts[0], repo=parts[1].removesuffix(".git"))
     return None
 
 
@@ -1416,21 +1409,20 @@ async def validate_github_tokens(nodes: list[RespondingNode]) -> None:
             if not token:
                 continue
 
-            parsed = _parse_github_owner_repo(node.training_repo_response.github_repo)
+            parsed = parse_github_owner_repo(node.training_repo_response.github_repo)
             if not parsed:
                 node.training_repo_response.github_token = None
                 continue
 
-            owner, repo = parsed
             try:
                 resp = await client.get(
-                    f"https://api.github.com/repos/{owner}/{repo}",
+                    f"https://api.github.com/repos/{parsed.owner}/{parsed.repo}",
                     headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
                 )
                 if resp.status_code != 200:
                     logger.warning(
                         f"Token for {node.node.hotkey} does not grant access to "
-                        f"{owner}/{repo} (HTTP {resp.status_code}) — ignoring token"
+                        f"{parsed.owner}/{parsed.repo} (HTTP {resp.status_code}) — ignoring token"
                     )
                     node.training_repo_response.github_token = None
             except Exception as e:
@@ -1439,13 +1431,13 @@ async def validate_github_tokens(nodes: list[RespondingNode]) -> None:
 
 
 def deduplicate_by_github_account(nodes: list[RespondingNode]) -> list[RespondingNode]:
-    by_account: dict[str, list[RespondingNode]] = defaultdict(list)
+    by_account: defaultdict[str, list[RespondingNode]] = defaultdict(list)
     no_account: list[RespondingNode] = []
 
     for node in nodes:
-        account = extract_github_account(node.training_repo_response.github_repo)
-        if account:
-            by_account[account].append(node)
+        parsed = parse_github_owner_repo(node.training_repo_response.github_repo)
+        if parsed:
+            by_account[parsed.owner.lower()].append(node)
         else:
             no_account.append(node)
 
