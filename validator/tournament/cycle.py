@@ -21,14 +21,13 @@ async def cycle():
     await asyncio.gather(
         # this monitors TAO transfers and updates coldkey balances
         transfer_monitoring_cycle(config),
-        # DISABLED: pings miners for repos — we inserted participants manually
-        # process_pending_tournaments(config),
+        process_pending_tournaments(config),
         # this processes pending rounds by creating tasks and assigning nodes
         process_pending_rounds(config),
         # this advances the tournament till completion
         process_active_tournaments(config),
-        # DISABLED: auto-creates tournaments — we're running a manual test
-        # process_tournament_scheduling(config)
+        # this auto-creates tournaments on schedule
+        process_tournament_scheduling(config),
     )
 
 
