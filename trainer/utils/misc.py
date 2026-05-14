@@ -168,7 +168,7 @@ def _get_busy_gpu_ids_from_running_containers() -> set[int]:
     try:
         client = docker.from_env()
         containers = client.containers.list()
-        trainer_containers = [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-")]
+        trainer_containers = [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-") or c.name.startswith("model-prep-")]
         for container in trainer_containers:
             device_requests = container.attrs.get("HostConfig", {}).get("DeviceRequests", []) or []
             for request in device_requests:
