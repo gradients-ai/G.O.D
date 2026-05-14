@@ -1398,7 +1398,8 @@ def parse_github_owner_repo(repo_url: str) -> GitHubOwnerRepo | None:
     path = urlparse(repo_url).path.strip("/")
     parts = path.split("/")
     if len(parts) >= 2 and parts[0] and parts[1]:
-        return GitHubOwnerRepo(owner=parts[0], repo=parts[1].removesuffix(".git"))
+        owner, repo_name = parts[0], parts[1].removesuffix(".git")
+        return GitHubOwnerRepo(owner=owner, repo=repo_name)
     return None
 
 
