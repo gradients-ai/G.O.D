@@ -64,32 +64,38 @@ def apply_augmentation(
     rng: np.random.Generator,
 ) -> torch.Tensor:
     """Apply augmentation to a parameter tensor in-place. Returns the modified tensor."""
-    device = param.device
     dtype = param.dtype
-
-    data = param.detach().float().cpu().numpy()
+    device = param.device
+    data = param.detach().float()
 
     if aug_type == AugmentationType.GAUSSIAN_NOISE:
-        std = intensity * np.std(data).item()
-        noise = rng.normal(0, std, size=data.shape).astype(np.float32)
+        std = intensity * data.std().item()
+        noise = torch.from_numpy(
+            rng.normal(0, std, size=data.shape).astype(np.float32)
+        ).to(device=device)
         data = data + noise
+        del noise
 
     elif aug_type == AugmentationType.WEIGHT_SCALING:
         data = data * intensity
 
     elif aug_type == AugmentationType.MAGNITUDE_PRUNING:
-        threshold = np.percentile(np.abs(data).flatten(), intensity * 100)
-        mask = np.abs(data) >= threshold
-        data = data * mask
+        threshold = torch.quantile(data.abs().flatten(), intensity).item()
+        data = data * (data.abs() >= threshold)
 
     elif aug_type == AugmentationType.LAYER_REINIT:
-        mean = np.mean(data).item()
-        std = np.std(data).item()
-        mask = rng.random(size=data.shape) < intensity
-        reinit_values = rng.normal(mean, std, size=data.shape).astype(np.float32)
-        data = np.where(mask, reinit_values, data)
+        mean_val = data.mean().item()
+        std_val = data.std().item()
+        mask = torch.from_numpy(
+            (rng.random(size=data.shape) < intensity)
+        ).to(device=device)
+        reinit = torch.from_numpy(
+            rng.normal(mean_val, std_val, size=data.shape).astype(np.float32)
+        ).to(device=device)
+        data = torch.where(mask, reinit, data)
+        del mask, reinit
 
-    return torch.from_numpy(data).to(dtype=dtype, device=device)
+    return data.to(dtype=dtype)
 
 
 def augment_model(model, config: AugmentationConfig) -> None:

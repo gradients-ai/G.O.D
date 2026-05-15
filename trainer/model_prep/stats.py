@@ -227,16 +227,20 @@ def compute_weight_stats(model) -> WeightStats:
         group_names[classify_layer(name)].append(name)
     by_group = {}
     for group, names in group_names.items():
-        all_w = torch.cat([
-            model.get_parameter(n).data.flatten().float().cpu()
-            for n in names
-        ])
+        sum_sq = 0.0
+        group_max_abs = 0.0
+        numel = 0
+        for n in names:
+            w = model.get_parameter(n).data.float()
+            sum_sq += (w ** 2).sum().item()
+            group_max_abs = max(group_max_abs, w.abs().max().item())
+            numel += w.numel()
+            del w
         by_group[group] = LayerGroupWeightStats(
-            weight_rms=float(torch.sqrt(torch.mean(all_w ** 2)).item()),
-            weight_norm=float(torch.norm(all_w).item()),
-            max_abs=float(torch.max(torch.abs(all_w)).item()),
+            weight_rms=float(math.sqrt(sum_sq / max(numel, 1))),
+            weight_norm=float(math.sqrt(sum_sq)),
+            max_abs=float(group_max_abs),
         )
-        del all_w
     return WeightStats(by_group=by_group)
 
 
@@ -279,11 +283,12 @@ def _compute_base_training_dynamics(
             attention_mask = batch["attention_mask"].to(device)
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
             batch_losses.append(outputs.loss.cpu().item())
-            logits_cpu = outputs.logits.float().cpu()
-            mask_cpu = attention_mask.cpu().float()
-            probs = F.softmax(logits_cpu, dim=-1)
+            logits = outputs.logits.float()
+            probs = F.softmax(logits, dim=-1)
             per_position_entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
-            entropy = (per_position_entropy * mask_cpu).sum().item() / max(mask_cpu.sum().item(), 1.0)
+            mask_f = attention_mask.to(device=logits.device).float()
+            entropy = (per_position_entropy * mask_f).sum().item() / max(mask_f.sum().item(), 1.0)
+            del logits, probs, per_position_entropy
             if not math.isnan(entropy) and not math.isinf(entropy):
                 batch_entropies.append(entropy)
 
@@ -318,7 +323,7 @@ def _compute_base_training_dynamics(
         if param.grad is None:
             continue
         grad_norms[name] = float(param.grad.norm(2).item())
-        g = param.grad.detach().float().cpu()
+        g = param.grad.detach().float()
         if g.dim() < 2:
             g = g.unsqueeze(0)
         g_2d = g.reshape(g.shape[0], -1) if g.dim() > 2 else g
@@ -334,6 +339,7 @@ def _compute_base_training_dynamics(
             max_abs=float(torch.max(torch.abs(g_2d)).item()),
             top_singular_values=top_sv,
         )
+        del g, g_2d
 
     noise_scale = _compute_gradient_noise_scale(model, loader, device, n_subbatches)
 
@@ -386,7 +392,7 @@ def _compute_gradient_noise_scale(model, loader, device, n_subbatches: int) -> f
         for name, param in model.named_parameters():
             if param.grad is None:
                 continue
-            g = param.grad.detach().float().cpu()
+            g = param.grad.detach().to(device="cpu", dtype=torch.float32)
             if name not in grad_sum:
                 grad_sum[name] = torch.zeros_like(g)
                 grad_sum_sq[name] = torch.zeros_like(g)
