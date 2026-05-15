@@ -20,7 +20,7 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
-MODEL_PREP_TIMEOUT_SECONDS = 1800
+MODEL_PREP_TIMEOUT_SECONDS = 3600
 
 
 
