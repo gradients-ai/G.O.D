@@ -439,17 +439,22 @@ async def evaluate_tasks_loop(config: Config):
     processing_task_ids: set[str] = set()
 
     while True:
-        await _seed_task_evaluations_for_evaluation(config)
+        try:
+            await _seed_task_evaluations_for_evaluation(config)
 
-        evaluating_tasks = await _get_tasks_ready_for_evaluation(config)
-        if evaluating_tasks:
-            logger.info(f"Found {len(evaluating_tasks)} tasks ready for evaluation work")
-            for task in evaluating_tasks:
-                if task.task_id not in processing_task_ids:
-                    processing_task_ids.add(task.task_id)
-                    asyncio.create_task(_run_and_cleanup(task, processing_task_ids, config))
-        else:
-            logger.info("No tasks ready for evaluation - waiting 30 seconds")
+            evaluating_tasks = await _get_tasks_ready_for_evaluation(config)
+            if evaluating_tasks:
+                logger.info(f"Found {len(evaluating_tasks)} tasks ready for evaluation work")
+                for task in evaluating_tasks:
+                    if task.task_id not in processing_task_ids:
+                        processing_task_ids.add(task.task_id)
+                        asyncio.create_task(_run_and_cleanup(task, processing_task_ids, config))
+            else:
+                logger.info("No tasks ready for evaluation - waiting 30 seconds")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"evaluate_tasks_loop iteration failed: {e!r}", exc_info=True)
         await asyncio.sleep(30)
 
 
