@@ -143,7 +143,7 @@ async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[
     return job
 
 
-async def complete_model_prep(task_id: str, success: bool = True):
+async def complete_model_prep(task_id: str, success: bool = True, result=None):
     async with _task_lock:
         load_task_history()
 
@@ -152,6 +152,8 @@ async def complete_model_prep(task_id: str, success: bool = True):
             return
         job.status = TaskStatus.SUCCESS if success else TaskStatus.FAILURE
         job.finished_at = datetime.utcnow()
+        if result is not None:
+            job.result = result
         await save_task_history()
 
 

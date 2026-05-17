@@ -5,6 +5,7 @@ Per-type stats for instruct, DPO, GRPO, and chat tasks.
 
 import math
 import re
+import time
 from collections import defaultdict
 
 import numpy as np
@@ -198,11 +199,17 @@ def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshol
         return float("nan")
 
 
-def _compute_bits_per_byte(texts: list[str], device: str = "cpu") -> float:
+def _compute_bits_per_byte(texts: list[str]) -> float:
+    """Compute bits-per-byte using GPT-2 reference model.
+
+    Always runs on CPU to avoid competing for GPU VRAM with the main model.
+    GPT-2 is small enough that CPU inference is fine here.
+    """
+    t0 = time.time()
     texts = [t for t in texts if t.strip()]
     if not texts:
         return 0.0
-    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL).to(device)
+    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL)
     ref_tokenizer = AutoTokenizer.from_pretrained(BPB_REFERENCE_MODEL)
     ref_tokenizer.pad_token = ref_tokenizer.eos_token
     ref_model.eval()
@@ -211,17 +218,18 @@ def _compute_bits_per_byte(texts: list[str], device: str = "cpu") -> float:
     with torch.no_grad():
         for text in texts:
             total_bytes += len(text.encode("utf-8"))
-            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt").to(device)
+            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt")
             outputs = ref_model(**enc, labels=enc["input_ids"])
             n_predicted_tokens = enc["input_ids"].shape[1] - 1
             total_loss_nats += outputs.loss.item() * max(n_predicted_tokens, 1)
     del ref_model
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    return (total_loss_nats / math.log(2)) / max(total_bytes, 1)
+    result = (total_loss_nats / math.log(2)) / max(total_bytes, 1)
+    print(f"[stats] BPB done in {time.time() - t0:.1f}s ({len(texts)} texts, {total_bytes} bytes, bpb={result:.4f})", flush=True)
+    return result
 
 
 def compute_weight_stats(model) -> WeightStats:
+    t0 = time.time()
     group_names: dict[str, list[str]] = defaultdict(list)
     for name, _ in model.named_parameters():
         group_names[classify_layer(name)].append(name)
@@ -231,7 +239,7 @@ def compute_weight_stats(model) -> WeightStats:
         group_max_abs = 0.0
         numel = 0
         for n in names:
-            w = model.get_parameter(n).data.float()
+            w = model.get_parameter(n).data.detach().cpu().float()
             sum_sq += (w ** 2).sum().item()
             group_max_abs = max(group_max_abs, w.abs().max().item())
             numel += w.numel()
@@ -241,6 +249,7 @@ def compute_weight_stats(model) -> WeightStats:
             weight_norm=float(math.sqrt(sum_sq)),
             max_abs=float(group_max_abs),
         )
+    print(f"[stats] Weight stats done in {time.time() - t0:.1f}s ({len(by_group)} groups)", flush=True)
     return WeightStats(by_group=by_group)
 
 
@@ -254,8 +263,10 @@ def _compute_base_training_dynamics(
     model, tokenizer, texts: list[str], device, n_subbatches: int = 10, max_length: int = 512,
 ) -> dict:
     """Compute shared training dynamics (loss, grads, activations, SVD, entropy, noise scale)."""
+    t_start = time.time()
     dataset = SimpleTextDataset(texts, tokenizer, max_length=max_length)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    print(f"[stats] Training dynamics: {len(dataset)} samples, device={device}", flush=True)
 
     # Forward hooks for activation RMS — registered before eval loop so we
     # collect across all batches in eval mode (no dropout/batchnorm noise).
@@ -303,8 +314,13 @@ def _compute_base_training_dynamics(
     for h in hooks:
         h.remove()
     activation_rms = {n: float(np.mean(v)) for n, v in activation_rms_accum.items()}
+    print(f"[stats] Eval loop done in {time.time() - t_start:.1f}s (loss={init_loss:.4f}, {len(batch_losses)} batches)", flush=True)
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
     # Forward+backward for grads (with gradient checkpointing for large models)
+    t_grad = time.time()
     model.train()
     if hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
@@ -341,13 +357,21 @@ def _compute_base_training_dynamics(
         )
         del g, g_2d
 
+    model.zero_grad()
+    print(f"[stats] Gradient pass done in {time.time() - t_grad:.1f}s ({len(grad_norms)} params with grads)", flush=True)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    t_noise = time.time()
     noise_scale = _compute_gradient_noise_scale(model, loader, device, n_subbatches)
+    print(f"[stats] Gradient noise scale done in {time.time() - t_noise:.1f}s (scale={noise_scale:.4f})", flush=True)
 
     if hasattr(model, "gradient_checkpointing_disable"):
         model.gradient_checkpointing_disable()
     model.eval()
     model.zero_grad()
 
+    print(f"[stats] Training dynamics total: {time.time() - t_start:.1f}s", flush=True)
     return {
         "init_loss": init_loss,
         "init_loss_std": init_loss_std,
@@ -486,6 +510,7 @@ def _compute_instruct_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
     text_extractor=None,
 ) -> InstructBaselineStats:
+    t_total = time.time()
     extractor = text_extractor or _extract_instruct_texts
 
     # Compute lengths on ALL records for accurate seq_length_distribution.
@@ -499,14 +524,16 @@ def _compute_instruct_stats(
     texts = all_texts_full[:max_samples]
     prompts, completions = zip(*texts) if texts else ([], [])
     all_texts = [p + " " + c for p, c in texts]
+    print(f"[stats] Instruct: {len(records)} records, {len(texts)} samples for forward passes", flush=True)
 
+    t0 = time.time()
     unique_tokens = _count_unique_tokens(all_texts, tokenizer)
     vocab_size = len(tokenizer)
     dataset_stats = InstructDatasetStats(
         total_tokens=sum(prompt_lengths) + sum(completion_lengths),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, completion_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(all_texts),
-        bits_per_byte=_compute_bits_per_byte(list(completions), device),
+        bits_per_byte=_compute_bits_per_byte(list(completions)),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -514,15 +541,23 @@ def _compute_instruct_stats(
         completion_tokens=sum(completion_lengths),
         completion_length_distribution=_make_seq_dist(completion_lengths),
     )
+    print(f"[stats] Dataset stats done in {time.time() - t0:.1f}s", flush=True)
 
     base_dynamics = _compute_base_training_dynamics(model, tokenizer, all_texts, device)
+
+    t0 = time.time()
     masked_loss = _compute_masked_loss(model, tokenizer, list(prompts), list(completions), device)
+    print(f"[stats] Masked loss done in {time.time() - t0:.1f}s (loss={masked_loss:.4f})", flush=True)
 
     training = InstructTrainingDynamics(**base_dynamics, masked_completion_loss=masked_loss)
 
+    t0 = time.time()
+    weights = compute_weight_stats(model)
+
+    print(f"[stats] Instruct stats total: {time.time() - t_total:.1f}s", flush=True)
     return InstructBaselineStats(
         dataset=dataset_stats,
-        weights=compute_weight_stats(model),
+        weights=weights,
         training=training,
     )
 
@@ -551,7 +586,7 @@ def _compute_dpo_stats(
         total_tokens=sum(prompt_lengths) + sum(chosen_lengths) + sum(rejected_lengths),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, chosen_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(list(prompts)),
-        bits_per_byte=_compute_bits_per_byte(list(prompts), device),
+        bits_per_byte=_compute_bits_per_byte(list(prompts)),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -602,7 +637,7 @@ def _compute_grpo_stats(
         total_tokens=sum(prompt_lengths),
         seq_length_distribution=_make_seq_dist(prompt_lengths),
         near_duplicate_rate=_compute_near_duplicate_rate(prompts),
-        bits_per_byte=_compute_bits_per_byte(prompts, device),
+        bits_per_byte=_compute_bits_per_byte(prompts),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),

@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 
 import torch
 from huggingface_hub import HfApi
@@ -106,14 +107,17 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
 
 
 def main():
+    t_total = time.time()
     args = parse_args()
     aug_config = build_augmentation_config(args)
     hf_token = os.environ.get("HUGGINGFACE_TOKEN", "")
 
-    print(f"Loading model: {args.model}", flush=True)
+    # --- Model loading ---
+    t0 = time.time()
     n_gpus = torch.cuda.device_count()
+    print(f"[model_prep] Loading model: {args.model} (gpus={n_gpus})", flush=True)
     if n_gpus > 1:
-        print(f"Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
+        print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
             args.model, torch_dtype=torch.float16, token=hf_token, device_map="auto",
         )
@@ -125,52 +129,72 @@ def main():
     else:
         model = AutoModelForCausalLM.from_pretrained(args.model, token=hf_token)
     tokenizer = AutoTokenizer.from_pretrained(args.model, token=hf_token)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
 
+    # --- Augmentation ---
     augmented_model_id = None
-
     if aug_config is not None:
         repo_id = generate_anonymous_repo_name(args.model, aug_config.seed)
 
         if repo_exists(repo_id, token=hf_token):
-            print(f"Augmented model already exists at {repo_id}, skipping augmentation")
+            print(f"[model_prep] Augmented model already exists at {repo_id}, skipping", flush=True)
             augmented_model_id = repo_id
         else:
-            print(f"Applying augmentation: {aug_config.aug_type.value}", flush=True)
+            t0 = time.time()
+            print(f"[model_prep] Applying augmentation: {aug_config.aug_type.value}", flush=True)
             augment_model(model, aug_config)
+            print(f"[model_prep] Augmentation done in {time.time() - t0:.1f}s, uploading...", flush=True)
+            t0 = time.time()
             upload_augmented_model(model, tokenizer, repo_id, hf_token)
+            print(f"[model_prep] Upload done in {time.time() - t0:.1f}s", flush=True)
             augmented_model_id = repo_id
 
-    # Compute baseline stats
-    print("Computing baseline stats...", flush=True)
+    # --- Baseline stats ---
+    print("[model_prep] Computing baseline stats...", flush=True)
 
-    if args.env_configs:
-        raw_configs: dict[str, dict] = json.loads(args.env_configs)
-        env_configs = {EnvironmentName(k): v for k, v in raw_configs.items()}
-        stats = asyncio.run(compute_env_stats(
-            model_path=args.model,
-            model=model,
-            env_configs=env_configs,
-        ))
-    else:
-        data_records = load_training_data(args.training_data)
-        reward_functions = json.loads(args.reward_functions) if args.reward_functions else None
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
-        if data_records:
-            task_type_enum = TaskType(args.task_type)
-            stats = compute_text_stats(
-                model, tokenizer, data_records,
-                task_type=task_type_enum,
-                reward_functions=reward_functions,
-            )
+    t0 = time.time()
+    try:
+        if args.env_configs:
+            raw_configs: dict[str, dict] = json.loads(args.env_configs)
+            env_configs = {EnvironmentName(k): v for k, v in raw_configs.items()}
+            stats = asyncio.run(compute_env_stats(
+                model_path=args.model,
+                model=model,
+                env_configs=env_configs,
+            ))
         else:
-            print("Warning: no training data available for stats", flush=True)
-            stats = None
+            data_records = load_training_data(args.training_data)
+            reward_functions = json.loads(args.reward_functions) if args.reward_functions else None
+
+            if data_records:
+                task_type_enum = TaskType(args.task_type)
+                print(f"[model_prep] {len(data_records)} data records, task_type={args.task_type}", flush=True)
+                stats = compute_text_stats(
+                    model, tokenizer, data_records,
+                    task_type=task_type_enum,
+                    reward_functions=reward_functions,
+                )
+            else:
+                print("[model_prep] Warning: no training data available for stats", flush=True)
+                stats = None
+    except torch.cuda.OutOfMemoryError:
+        print("[model_prep] CUDA OOM during stats computation, returning partial results", flush=True)
+        torch.cuda.empty_cache()
+        stats = None
+
+    print(f"[model_prep] Stats computation done in {time.time() - t0:.1f}s", flush=True)
 
     if stats and hasattr(stats, "training"):
-        print(f"Baseline stats: loss={stats.training.init_loss:.4f}, entropy={stats.training.output_entropy:.4f}", flush=True)
+        print(f"[model_prep] loss={stats.training.init_loss:.4f}, entropy={stats.training.output_entropy:.4f}", flush=True)
     elif stats and hasattr(stats, "env_stats"):
         for env_name, env_stat in stats.env_stats.items():
-            print(f"  {env_name.value}: {env_stat.num_episodes} episodes, mean={env_stat.mean_score:.3f}", flush=True)
+            print(f"[model_prep]   {env_name.value}: {env_stat.num_episodes} episodes, mean={env_stat.mean_score:.3f}", flush=True)
+
+    print(f"[model_prep] Total time: {time.time() - t_total:.1f}s", flush=True)
 
     # Output result as JSON on last line (parsed by caller)
     result = {

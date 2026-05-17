@@ -11,38 +11,13 @@ from core.models.model_prep_models import AugmentationConfig
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
-from core.models.tournament_models import GpuRequirement
-from validator.core.config import Config
 from validator.core.constants import MODEL_PREP_ENDPOINT
-from validator.tournament.orchestrator import _check_suitable_gpus
 from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
 
 MODEL_PREP_TIMEOUT_SECONDS = 3600
-
-
-
-def _gpu_requirement_for_model_prep(num_params: int) -> GpuRequirement:
-    """Select GPU tier for model prep based on parameter count.
-
-    Model prep loads the model in fp16 (~2 bytes/param) plus overhead for
-    activations, GPT-2 reference model (BPB), and gradient computation.
-    Each H100 has 80GB VRAM.
-
-    <10B  → ~20GB  → 1x H100
-    10-35B → ~70GB  → 2x H100
-    35-70B → ~140GB → 4x H100
-    70B+   → ~140GB+→ 8x H100
-    """
-    if num_params < 10_000_000_000:
-        return GpuRequirement.H100_1X
-    elif num_params < 35_000_000_000:
-        return GpuRequirement.H100_2X
-    elif num_params < 70_000_000_000:
-        return GpuRequirement.H100_4X
-    return GpuRequirement.H100_8X
 
 
 def _build_env_configs() -> dict[EnvironmentName, EnvConfig]:
@@ -64,26 +39,18 @@ async def dispatch_augmentation_and_stats(
     model_id: str,
     training_data_url: str,
     augmentation_config: AugmentationConfig | None,
-    model_params_count: int,
     task_type,
-    config: Config,
+    trainer_ip: str,
+    gpu_ids: list[int],
     reward_functions=None,
     is_env_task: bool = False,
 ) -> ModelPrepResponse | None:
     """Dispatch augmentation and stats collection to a trainer with GPU.
 
+    The caller is responsible for GPU allocation and reservation.
     Returns ModelPrepResponse with augmented_model_id and baseline_stats,
-    or None if no trainer is available.
+    or None on failure.
     """
-    gpu_req = _gpu_requirement_for_model_prep(model_params_count or 0)
-    suitable = await _check_suitable_gpus(config, gpu_req)
-
-    if suitable is None:
-        logger.warning(f"No suitable GPUs for model prep of {model_id}, skipping")
-        return None
-
-    trainer_ip, gpu_ids = suitable
-
     if ":" not in trainer_ip:
         trainer_ip_with_port = f"{trainer_ip}:8001"
     else:

@@ -135,6 +135,7 @@ class ModelPrepJob(TrainerJob):
     job_type: Literal["model_prep"] = "model_prep"
     task_id: str
     model_id: str
+    result: "ModelPrepResponse | None" = None
 
     model_config = ConfigDict(protected_namespaces=())
 

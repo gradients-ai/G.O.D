@@ -9,6 +9,7 @@ from tenacity import stop_after_attempt
 from tenacity import wait_exponential
 
 import validator.tournament.constants as cst
+from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
@@ -30,6 +31,7 @@ from validator.core.config import load_config
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
+from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 from validator.core.models import AnyTypeRawTask
 from validator.db.sql import tasks as task_sql
@@ -978,17 +980,124 @@ async def update_all_trainers_gpu_availability_cycle(config: Config):
             await asyncio.sleep(cst.PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL)
 
 
+_model_prep_in_progress: set[str] = set()
+
+
+_MODEL_PREP_STATUS_TIMEOUT = 5.0  # seconds — fast check, don't stall the cycle
+
+
+async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
+    """Check all trainers for an existing model prep job for this task.
+
+    Returns True if the task was handled (completed result recovered, or
+    still in progress on a trainer), meaning the caller should skip dispatch.
+    Returns False if no job was found on any trainer.
+    """
+    task_id_str = str(task.task_id)
+    trainers = await tournament_sql.get_trainers(config.psql_db)
+
+    for trainer in trainers:
+        trainer_ip = trainer.trainer_ip
+        if ":" not in trainer_ip:
+            trainer_ip_with_port = f"{trainer_ip}:8001"
+        else:
+            trainer_ip_with_port = trainer_ip
+
+        try:
+            url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
+            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+                response = await client.get(url)
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+                job = ModelPrepJob.model_validate(response.json())
+        except Exception:
+            continue
+
+        if job.status == TaskStatus.SUCCESS and job.result is not None:
+            if job.result.augmented_model_id:
+                task.augmented_model_id = job.result.augmented_model_id
+            if job.result.baseline_stats:
+                task.baseline_stats = job.result.baseline_stats
+
+            task.status = TaskStatus.LOOKING_FOR_NODES
+            await task_sql.update_task(task, config.psql_db)
+            logger.info(
+                f"Recovered model prep result for task {task.task_id} from trainer "
+                f"{trainer_ip}, moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+            )
+            return True
+
+        if job.status == TaskStatus.TRAINING:
+            logger.info(
+                f"Model prep for task {task.task_id} still in progress on trainer "
+                f"{trainer_ip}, skipping dispatch"
+            )
+            return True
+
+    return False
+
+
 async def process_awaiting_model_prep_tasks(config: Config):
     """Poll for tasks awaiting model prep and dispatch to a trainer with GPU.
 
-    Processes tasks FIFO (oldest first).  When no GPU is available the task
-    stays in ``awaiting_model_prep`` and is retried on the next cycle — model
-    prep is never silently dropped.
+    Dispatches concurrently so a slow large-model prep doesn't block smaller
+    models that could run on other GPUs.  Tasks FIFO (oldest first) for the
+    GPU availability check, but once dispatched they run in parallel.
     """
     # Deferred imports to avoid circular dependency
     # (model_prep imports _check_suitable_gpus from this module)
-    from validator.utils.model_prep import _gpu_requirement_for_model_prep
     from validator.utils.model_prep import dispatch_augmentation_and_stats
+    from validator.tournament.utils import get_tournament_gpu_requirement
+
+    async def _run_model_prep(task, trainer_ip, gpu_ids):
+        task_id_str = str(task.task_id)
+        try:
+            reward_fns = getattr(task, "reward_functions", None)
+            is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+
+            prep_result = await dispatch_augmentation_and_stats(
+                task_id=task_id_str,
+                model_id=task.model_id,
+                training_data_url=task.training_data,
+                augmentation_config=task.augmentation_config,
+                task_type=task.task_type,
+                trainer_ip=trainer_ip,
+                gpu_ids=gpu_ids,
+                reward_functions=reward_fns,
+                is_env_task=is_env_task,
+            )
+
+            if prep_result is not None:
+                if prep_result.augmented_model_id:
+                    task.augmented_model_id = prep_result.augmented_model_id
+                if prep_result.baseline_stats:
+                    task.baseline_stats = prep_result.baseline_stats
+
+                task.status = TaskStatus.LOOKING_FOR_NODES
+                await task_sql.update_task(task, config.psql_db)
+                logger.info(
+                    f"Model prep complete for task {task.task_id}, "
+                    f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+                )
+            else:
+                logger.warning(
+                    f"Model prep dispatch returned None for task {task.task_id}, "
+                    f"will retry next cycle"
+                )
+        except Exception as e:
+            logger.error(
+                f"Model prep failed for task {task.task_id}: {e}",
+                exc_info=True,
+            )
+        finally:
+            _model_prep_in_progress.discard(task_id_str)
+            try:
+                await tournament_sql.update_gpu_availability(
+                    trainer_ip, gpu_ids, 0, config.psql_db
+                )
+            except Exception:
+                pass  # Periodic sync will clean up
 
     while True:
         try:
@@ -1004,8 +1113,18 @@ async def process_awaiting_model_prep_tasks(config: Config):
             logger.info(f"Found {len(tasks)} tasks awaiting model prep")
 
             for task in tasks:
-                with LogContext(task_id=str(task.task_id)):
-                    gpu_req = _gpu_requirement_for_model_prep(task.model_params_count or 0)
+                task_id_str = str(task.task_id)
+                if task_id_str in _model_prep_in_progress:
+                    continue
+
+                with LogContext(task_id=task_id_str):
+                    # Check if a trainer already has a completed result
+                    # (e.g. from before a vali restart)
+                    recovered = await _recover_model_prep_from_trainer(task, config)
+                    if recovered:
+                        continue
+
+                    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
                         logger.info(
@@ -1014,44 +1133,20 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         )
                         continue
 
+                    trainer_ip, gpu_ids = suitable
+                    await tournament_sql.update_gpu_availability(
+                        trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
+                    )
+
+                    _model_prep_in_progress.add(task_id_str)
                     try:
-                        reward_fns = getattr(task, "reward_functions", None)
-                        is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
-
-                        prep_result = await dispatch_augmentation_and_stats(
-                            task_id=str(task.task_id),
-                            model_id=task.model_id,
-                            training_data_url=task.training_data,
-                            augmentation_config=task.augmentation_config,
-                            model_params_count=task.model_params_count,
-                            task_type=task.task_type,
-                            config=config,
-                            reward_functions=reward_fns,
-                            is_env_task=is_env_task,
+                        asyncio.create_task(_run_model_prep(task, trainer_ip, gpu_ids))
+                    except Exception:
+                        _model_prep_in_progress.discard(task_id_str)
+                        await tournament_sql.update_gpu_availability(
+                            trainer_ip, gpu_ids, 0, config.psql_db
                         )
-
-                        if prep_result is not None:
-                            if prep_result.augmented_model_id:
-                                task.augmented_model_id = prep_result.augmented_model_id
-                            if prep_result.baseline_stats:
-                                task.baseline_stats = prep_result.baseline_stats
-
-                            task.status = TaskStatus.LOOKING_FOR_NODES
-                            await task_sql.update_task(task, config.psql_db)
-                            logger.info(
-                                f"Model prep complete for task {task.task_id}, "
-                                f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
-                            )
-                        else:
-                            logger.warning(
-                                f"Model prep dispatch returned None for task {task.task_id}, "
-                                f"will retry next cycle"
-                            )
-                    except Exception as e:
-                        logger.error(
-                            f"Model prep failed for task {task.task_id}: {e}",
-                            exc_info=True,
-                        )
+                        raise
         except Exception as e:
             logger.error(f"Error in process_awaiting_model_prep_tasks cycle: {e}", exc_info=True)
 

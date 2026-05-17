@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerJob
@@ -22,6 +23,7 @@ from trainer.tasks import complete_model_prep
 from trainer.tasks import complete_task
 from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
+from trainer.tasks import get_model_prep_job
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
 from trainer.tasks import _start_model_prep_unlocked
@@ -33,6 +35,7 @@ from trainer.utils.trainer_logging import logger
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import GET_RECENT_TASKS_ENDPOINT
 from validator.core.constants import MODEL_PREP_ENDPOINT
+from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 
@@ -148,11 +151,18 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             reward_functions=req.reward_functions,
             env_configs=req.env_configs,
         )
-        await complete_model_prep(req.task_id, success=True)
+        await complete_model_prep(req.task_id, success=True, result=result)
         return result
     except Exception:
         await complete_model_prep(req.task_id, success=False)
         raise
+
+
+async def get_model_prep_status(task_id: str) -> ModelPrepJob:
+    job = get_model_prep_job(task_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Model prep job '{task_id}' not found.")
+    return job
 
 
 async def get_available_gpus() -> list[GPUInfo]:
@@ -189,4 +199,7 @@ def factory_router() -> APIRouter:
         GET_RECENT_TASKS_ENDPOINT, get_recent_tasks_list, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     router.add_api_route(TASK_DETAILS_ENDPOINT, get_task_details, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)])
+    router.add_api_route(
+        MODEL_PREP_STATUS_ENDPOINT, get_model_prep_status, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
     return router
