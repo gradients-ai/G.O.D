@@ -40,6 +40,12 @@ def _parse_requested_datasets(raw_value: object) -> list[str] | None:
     if raw_value is None:
         return None
 
+    # Handle double-encoded JSONB: asyncpg auto-serializes JSONB, so if the
+    # value was inserted via json.dumps() it gets stored as a JSON string
+    # rather than a JSON array. Decode it here for backwards compatibility.
+    if isinstance(raw_value, str):
+        raw_value = json.loads(raw_value)
+
     if not isinstance(raw_value, list):
         raise TypeError(
             f"Expected {cst.REQUESTED_DATASETS} to be list or None, got {type(raw_value).__name__}"
@@ -540,14 +546,13 @@ async def update_tournament_participant_training_repo(
 ):
     """Update training repo info for a tournament participant."""
     async with await psql_db.connection() as connection:
-        datasets_json = json.dumps(requested_datasets) if requested_datasets else None
         query = f"""
             UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             SET {cst.TRAINING_REPO} = $1, {cst.TRAINING_COMMIT_HASH} = $2,
                 {cst.GITHUB_TOKEN} = $3, {cst.REQUESTED_DATASETS} = $4
             WHERE {cst.TOURNAMENT_ID} = $5 AND {cst.HOTKEY} = $6
         """
-        await connection.execute(query, training_repo, training_commit_hash, github_token, datasets_json, tournament_id, hotkey)
+        await connection.execute(query, training_repo, training_commit_hash, github_token, json.dumps(requested_datasets) if requested_datasets else None, tournament_id, hotkey)
         logger.info(f"Updated training repo for participant {hotkey} in tournament {tournament_id}")
 
 
