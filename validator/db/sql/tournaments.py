@@ -40,9 +40,6 @@ def _parse_requested_datasets(raw_value: object) -> list[str] | None:
     if raw_value is None:
         return None
 
-    # Handle double-encoded JSONB: asyncpg auto-serializes JSONB, so if the
-    # value was inserted via json.dumps() it gets stored as a JSON string
-    # rather than a JSON array. Decode it here for backwards compatibility.
     if isinstance(raw_value, str):
         raw_value = json.loads(raw_value)
 
