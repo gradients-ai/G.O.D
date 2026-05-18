@@ -44,6 +44,8 @@ from validator.tasks.synthetic_scheduler import (
 )
 from validator.utils.logging import get_logger
 from validator.utils.model_prep import dispatch_augmentation_and_stats
+from validator.tournament.orchestrator import _check_suitable_gpus
+from validator.tournament.utils import get_tournament_gpu_requirement
 
 
 logger = get_logger(__name__)
@@ -98,14 +100,21 @@ async def _prep_and_verify(task, config, task_type_label: str) -> dict:
         reward_fns = getattr(task, "reward_functions", None)
         is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
 
+        gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
+        suitable = await _check_suitable_gpus(config, gpu_req)
+        if suitable is None:
+            elapsed = time.time() - start
+            return {"name": name, "status": "FAIL", "error": "No suitable GPUs available", "elapsed": elapsed}
+        trainer_ip, gpu_ids = suitable
+
         prep_result = await dispatch_augmentation_and_stats(
             task_id=str(task.task_id),
             model_id=task.model_id,
             training_data_url=task.training_data,
             augmentation_config=task.augmentation_config,
-            model_params_count=task.model_params_count,
             task_type=task.task_type,
-            config=config,
+            trainer_ip=trainer_ip,
+            gpu_ids=gpu_ids,
             reward_functions=reward_fns,
             is_env_task=is_env_task,
         )
