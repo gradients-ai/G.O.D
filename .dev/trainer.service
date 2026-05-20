@@ -10,10 +10,13 @@ User=root
 WorkingDirectory=/root/G.O.D
 Environment="PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="ENV=DEV"
+# Allow enough time for first boot image downloads.
+TimeoutStartSec=15min
 # Deploy log shipping before starting the server
 ExecStartPre=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && task deploy-trainer-logs'
-# Pull trainer images
-ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep:latest; do "$docker_cli" pull "$img"; done'
+# Ensure required images exist locally, but don't block startup
+# by forcing network pulls on every restart.
+ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep:latest; do if ! "$docker_cli" image inspect "$img" >/dev/null 2>&1; then echo "god-trainer: image missing locally, pulling $img"; "$docker_cli" pull "$img"; else echo "god-trainer: image already present, skipping pull $img"; fi; done'
 # Start uvicorn server directly
 ExecStart=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
 # Restart on failure with exponential backoff
