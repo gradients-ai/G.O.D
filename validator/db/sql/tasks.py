@@ -961,6 +961,7 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                 SELECT
                     tasks.*,
                     et.environment_name,
+                    et.eval_seed,
                     COALESCE(tasks.training_repo_backup, victorious_repo.repo) as trained_model_repository
                 FROM {cst.TASKS_TABLE} tasks
                 LEFT JOIN {cst.ENV_TASKS_TABLE} et ON tasks.{cst.TASK_ID} = et.{cst.TASK_ID}
