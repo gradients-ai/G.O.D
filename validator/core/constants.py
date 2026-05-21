@@ -1,9 +1,9 @@
 import os
 from datetime import date
 
-from core.constants import EnvironmentName
 from core.constants import GRPO_DEFAULT_FIELD_PROMPT
 from core.constants import NETUID
+from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
 from core.models.utility_models import TaskType
@@ -233,11 +233,12 @@ TOURNAMENT_INTERVAL_HOURS = 72
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
 TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
 
-# Text and Image tournaments: Thursday at 14:00 UTC
+# Text tournaments: Thursday at 14:00 UTC
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
 TOURNAMENT_SCHEDULE_TEXT_HOUR = 14  # 0-23 (UTC time)
+# Image tournaments: Thursday at 15:00 UTC
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_IMAGE_HOUR = 14  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15  # 0-23 (UTC time)
 
 TOURNAMENT_INTERVAL_HOURS = (
     120  # Display value for frontend (5 days), not used for actual scheduling. TODO: remove once frontend is updated

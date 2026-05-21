@@ -25,7 +25,7 @@ The system automatically schedules tournaments on a weekly basis with separate s
 - **Tournament Types**:
   - `TournamentType.ENVIRONMENT` - Starts every Monday at 14:00 UTC
   - `TournamentType.TEXT` - Starts every Thursday at 14:00 UTC
-  - `TournamentType.IMAGE` - Starts every Thursday at 14:00 UTC
+  - `TournamentType.IMAGE` - Starts every Thursday at 15:00 UTC
 - **Auto-Creation**: `process_tournament_scheduling()` creates new tournaments when previous ones complete and the scheduled time arrives
 - **Missed Windows**: If a scheduled start time is missed (e.g., system was down), the tournament will NOT start late - it waits until the next scheduled occurrence
 
