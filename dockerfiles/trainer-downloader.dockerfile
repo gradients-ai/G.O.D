@@ -3,9 +3,9 @@ FROM python:3.10-slim
 WORKDIR /app
 
 RUN pip install --no-cache-dir \
-    huggingface_hub aiohttp pydantic transformers python-dotenv \
-    peft==0.17.1 safetensors \
-    torch --extra-index-url https://download.pytorch.org/whl/cpu
+    huggingface_hub aiohttp pydantic python-dotenv safetensors \
+    torch --extra-index-url https://download.pytorch.org/whl/cpu && \
+    pip install --no-cache-dir transformers peft
 
 COPY trainer/ trainer/
 COPY core/ core/
