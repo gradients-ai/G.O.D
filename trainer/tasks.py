@@ -131,12 +131,23 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
 async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
     load_task_history()
 
+    now = datetime.utcnow()
+    for existing in task_history:
+        if isinstance(existing, ModelPrepJob) and existing.task_id == task_id and existing.status == TaskStatus.TRAINING:
+            logger.warning(
+                "model_prep retry: marking previous TRAINING entry for task_id=%s gpu_ids=%s as FAILURE",
+                task_id,
+                existing.gpu_ids,
+            )
+            existing.status = TaskStatus.FAILURE
+            existing.finished_at = now
+
     job = ModelPrepJob(
         task_id=task_id,
         model_id=model_id,
         gpu_ids=gpu_ids,
         status=TaskStatus.TRAINING,
-        started_at=datetime.utcnow(),
+        started_at=now,
     )
     task_history.append(job)
     await save_task_history()
@@ -158,10 +169,16 @@ async def complete_model_prep(task_id: str, success: bool = True, result=None):
 
 
 def get_model_prep_job(task_id: str) -> ModelPrepJob | None:
+    # Prefer the currently-running entry so complete_model_prep targets the
+    # active job, not an older entry with the same task_id from a prior retry.
+    fallback: ModelPrepJob | None = None
     for job in task_history:
         if isinstance(job, ModelPrepJob) and job.task_id == task_id:
-            return job
-    return None
+            if job.status == TaskStatus.TRAINING:
+                return job
+            if fallback is None:
+                fallback = job
+    return fallback
 
 
 # ---------------------------------------------------------------------------

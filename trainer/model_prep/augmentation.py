@@ -102,7 +102,15 @@ def augment_model(model, config: AugmentationConfig) -> None:
     """Apply augmentation to a loaded model in-place."""
     rng = np.random.default_rng(config.seed)
 
-    all_param_names = [name for name, _ in model.named_parameters()]
+    # torch.quantile() is hard-limited to 2^24 elements, so magnitude_pruning
+    # cannot handle large layers such as lm_head / wte (vocab_size × hidden_dim
+    # can exceed 38 M elements).  Exclude those layers from the candidate list
+    # so the RNG never selects them rather than crashing at augmentation time.
+    _QUANTILE_LIMIT = 1 << 24
+    all_param_names = [
+        name for name, param in model.named_parameters()
+        if config.aug_type != AugmentationType.MAGNITUDE_PRUNING or param.numel() <= _QUANTILE_LIMIT
+    ]
     target_layers = select_target_layers(all_param_names, config.scope, config.seed)
 
     print(f"Augmenting {len(target_layers)} layers with {config.aug_type.value} "
