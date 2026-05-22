@@ -150,7 +150,8 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
     for task in preevaluation_tasks:
         try:
             assert task.task_id is not None
-            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
+            pvp = should_use_pvp(task)
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)

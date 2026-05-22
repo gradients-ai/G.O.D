@@ -1409,20 +1409,27 @@ async def get_expected_repo_name(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
         return await connection.fetchval(query, task_id, hotkey, NETUID)
 
 
-async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
+async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB, include_failed_training: bool = False) -> None:
     """Seed missing evaluation rows for a task from current assigned task_nodes.
 
     Existing rows are preserved (including deployment ids and terminal statuses).
+    When include_failed_training is True, eval rows are seeded for all miners
+    regardless of training status (needed for PvP where failed miners auto-lose).
     """
     async with await psql_db.connection() as connection:
         async with connection.transaction():
-            query = f"""
-                INSERT INTO {cst.EVALUATIONS_TABLE}
-                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
-                SELECT tn.{cst.TASK_ID}, tn.{cst.HOTKEY}, tn.{cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-                FROM {cst.TASK_NODES_TABLE} tn
-                WHERE tn.{cst.TASK_ID} = $1 AND tn.{cst.NETUID} = $2
-                AND (
+            if include_failed_training:
+                training_filter = f"""
+                    tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
+                    OR EXISTS (
+                        SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
+                        WHERE ttht.{cst.TASK_ID} = tn.{cst.TASK_ID}
+                          AND ttht.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                          AND ttht.{cst.TRAINING_STATUS} IN ('success', 'failure')
+                    )
+                """
+            else:
+                training_filter = f"""
                     tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
                     OR EXISTS (
                         SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
@@ -1430,7 +1437,14 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB) -> None:
                           AND ttht.{cst.HOTKEY} = tn.{cst.HOTKEY}
                           AND ttht.{cst.TRAINING_STATUS} = 'success'
                     )
-                )
+                """
+            query = f"""
+                INSERT INTO {cst.EVALUATIONS_TABLE}
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}, {cst.EVALUATION_STATUS}, {cst.CREATED_AT}, {cst.UPDATED_AT})
+                SELECT tn.{cst.TASK_ID}, tn.{cst.HOTKEY}, tn.{cst.NETUID}, 'pending', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                FROM {cst.TASK_NODES_TABLE} tn
+                WHERE tn.{cst.TASK_ID} = $1 AND tn.{cst.NETUID} = $2
+                AND ({training_filter})
                 ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO NOTHING
             """
             await connection.execute(query, task_id, NETUID)
