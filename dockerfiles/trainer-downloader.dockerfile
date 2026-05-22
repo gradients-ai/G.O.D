@@ -4,7 +4,7 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     huggingface_hub aiohttp pydantic transformers python-dotenv \
-    peft safetensors \
+    peft==0.17.1 safetensors \
     torch --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY trainer/ trainer/
