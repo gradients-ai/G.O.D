@@ -171,6 +171,10 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     merged = PeftModel.from_pretrained(base_model, model_dir)
     merged = merged.merge_and_unload(safe_merge=False)
 
+    # Disable peft hooks that break save_pretrained in newer transformers
+    if hasattr(merged, "_hf_peft_config_loaded"):
+        merged._hf_peft_config_loaded = False
+
     # Save merged model to a temp dir, then swap into model_dir
     merge_tmp = model_dir + ".merged_tmp"
     os.makedirs(merge_tmp, exist_ok=True)
