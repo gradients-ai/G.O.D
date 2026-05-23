@@ -27,12 +27,20 @@ from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
+from validator.evaluation.basilica import _poll_basilica_result
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.utils import create_basilica_eval_runner_source
+from validator.evaluation.utils import log_basilica_logs_block
 from validator.evaluation.utils import normalize_rewards_and_compute_loss
 from validator.evaluation.utils import process_evaluation_results
+from validator.utils.logging import get_environment_logger
 from validator.utils.logging import get_logger
+
+try:
+    import basilica
+except ImportError:
+    basilica = None
 
 
 logger = get_logger(__name__)
