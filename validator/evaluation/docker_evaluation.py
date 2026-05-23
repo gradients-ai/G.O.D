@@ -1,5 +1,6 @@
 import asyncio
 import random
+import uuid
 from uuid import UUID
 
 from core import constants as cst
