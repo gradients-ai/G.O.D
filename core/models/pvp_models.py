@@ -17,6 +17,13 @@ class PvPIncompleteError(Exception):
     pass
 
 
+class PvPStatus(str, Enum):
+    """Status of a persisted PvP result row."""
+
+    PENDING = "pending"
+    COMPLETE = "complete"
+
+
 class PvPBaseModel(BaseModel):
     """Base for PvP models that have fields starting with 'model_'."""
 
@@ -218,7 +225,7 @@ class PvPPairDbRow(BaseModel):
     draws: int = 0
     total_games: int = 0
     n_attempts: int = 0
-    status: str = "pending"
+    status: PvPStatus = PvPStatus.PENDING
 
     @property
     def pair_key(self) -> str:
@@ -226,7 +233,7 @@ class PvPPairDbRow(BaseModel):
 
     @property
     def is_complete(self) -> bool:
-        return self.status == "complete"
+        return self.status == PvPStatus.COMPLETE
 
 
 class PvPIndividualScoreDbRow(BaseModel):
@@ -237,11 +244,11 @@ class PvPIndividualScoreDbRow(BaseModel):
     environment_name: str
     score: float = 0.0
     n_attempts: int = 0
-    status: str = "pending"
+    status: PvPStatus = PvPStatus.PENDING
 
     @property
     def is_complete(self) -> bool:
-        return self.status == "complete"
+        return self.status == PvPStatus.COMPLETE
 
 
 class FullWeightContestants(BaseModel):

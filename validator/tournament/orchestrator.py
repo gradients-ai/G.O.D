@@ -575,10 +575,6 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
 
 
 
-    # Default to 1 if unknown
-    return 1
-
-
 async def _create_training_request(
     task: AnyTypeRawTask,
     hotkey: str,

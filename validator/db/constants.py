@@ -1,3 +1,5 @@
+from core.models.pvp_models import PvPStatus
+
 # Connection Pool Constants
 MIN_POOL_SIZE = 10  # Minimum number of connections to stay open
 MAX_POOL_SIZE = 90  # Maximum number of connections to reach if needed
@@ -48,8 +50,8 @@ PVP_MODEL_B_WINS = "model_b_wins"
 PVP_DRAWS = "draws"
 PVP_TOTAL_GAMES = "total_games"
 PVP_N_ATTEMPTS = "n_attempts"
-PVP_STATUS_PENDING = "pending"
-PVP_STATUS_COMPLETE = "complete"
+PVP_STATUS_PENDING = PvPStatus.PENDING
+PVP_STATUS_COMPLETE = PvPStatus.COMPLETE
 
 # PvP Individual Scores Table Columns
 PVP_INDIVIDUAL_SCORE = "score"

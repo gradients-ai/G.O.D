@@ -2,6 +2,7 @@ import asyncio
 import math
 import os
 from datetime import datetime
+from uuid import UUID
 
 import numpy as np
 from fiber.chain.models import Node
@@ -12,13 +13,14 @@ from core import constants as core_cst
 from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupModelSpec, PvPGroupResults, PvPIncompleteError, PvPPairDbRow, PvPPairResult, _canonical_pair_key
+from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupModelSpec, PvPGroupResults, PvPIncompleteError, PvPIndividualScoreDbRow, PvPPairDbRow, PvPPairResult, _canonical_pair_key
 
 PairKey = str  # sorted "hotkey_a:hotkey_b"
 from core.models.scoring_models import EvalHotkeyResults
 from core.models.scoring_models import IndividualEvalResult
 from core.models.scoring_models import IndividualScoresByEnv
 from core.models.scoring_models import MinerRepos
+from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import PairwiseOutcome
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
@@ -680,7 +682,7 @@ async def _run_pvp_group_eval(
 
 
 def _standings_to_results(
-    standings: list,
+    standings: list[GroupStagePoints],
     miners: MinerRepos,
     task: EnvRawTask,
 ) -> list[MinerResultsText]:
@@ -818,7 +820,7 @@ async def _get_or_run_pvp_group(
 
 
 async def _eval_individual_envs(
-    task_id,
+    task_id: UUID | None,
     individual_envs: list[core_cst.EnvironmentName],
     miners: MinerRepos,
     base_model: str,
@@ -877,7 +879,7 @@ async def _eval_individual_envs(
 
 
 def _build_scores_from_db(
-    db_scores: list,
+    db_scores: list[PvPIndividualScoreDbRow],
     envs: list[core_cst.EnvironmentName],
 ) -> IndividualScoresByEnv:
     """Build IndividualScoresByEnv from complete DB rows."""
@@ -891,7 +893,7 @@ def _build_scores_from_db(
 
 async def _dispatch_missing_individual(
     env: core_cst.EnvironmentName,
-    task_id,
+    task_id: UUID | None,
     task_id_str: str,
     miners: MinerRepos,
     base_model: str,
@@ -899,7 +901,7 @@ async def _dispatch_missing_individual(
     seed: int,
     config: Config,
     scores: IndividualScoresByEnv,
-    db_scores: list,
+    db_scores: list[PvPIndividualScoreDbRow],
 ) -> IndividualScoresByEnv:
     """Deploy containers for missing individual scores on a single env."""
     env_config = core_cst.ENVIRONMENT_CONFIGS[env]
@@ -951,7 +953,7 @@ async def _dispatch_missing_individual(
 def _filter_exhausted(
     missing_hotkeys: list[str],
     env_value: str,
-    db_scores: list,
+    db_scores: list[PvPIndividualScoreDbRow],
     max_attempts: int,
 ) -> list[str]:
     """Return hotkeys that haven't exhausted retry attempts."""
