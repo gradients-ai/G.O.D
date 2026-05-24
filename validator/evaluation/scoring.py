@@ -12,7 +12,7 @@ from core import constants as core_cst
 from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupModelSpec, PvPGroupResults, PvPIncompleteError, PvPPairDbRow, PvPPairResult, _canonical_pair_key
+from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupResults, PvPIncompleteError, PvPPairDbRow, PvPPairResult, _canonical_pair_key
 
 PairKey = str  # sorted "hotkey_a:hotkey_b"
 from core.models.scoring_models import EvalHotkeyResults
@@ -45,7 +45,6 @@ from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
-from validator.evaluation.docker_evaluation import run_evaluation_pvp_group
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
 from validator.evaluation.tournament_scoring import compute_pvp_tournament_points
 from validator.utils.logging import LogContext
@@ -633,73 +632,116 @@ async def _run_pvp_group_eval(
     miner_repos: dict[str, str],
     config: Config,
 ) -> list[MinerResultsText]:
-    """Run PvP group eval and convert standings to MinerResultsText."""
+    """Run all-pairwise PvP eval and convert standings to MinerResultsText.
+
+    Generates all C(n,2) pairs and dispatches each as an independent pair
+    eval in parallel. No group/multi-LoRA mode — every pair gets its own
+    servers, which is simpler and parallelises better.
+    """
     base_model = task.augmented_model_id or task.model_id
     environment_names = getattr(task, "environment_names", None) or list(core_cst.EnvironmentName)
 
     eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
     seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
 
-    participants = [
-        PvPGroupModelSpec(repo=repo, hotkey=hotkey)
-        for hotkey, repo in miner_repos.items()
-    ]
-
-    logger.info(f"PvP group eval: task={task.task_id}, {len(participants)} participants, envs={environment_names}")
-
-    # Check if all pairs already complete in DB — skip Basilica entirely
     all_hotkeys = list(miner_repos.keys())
     env_name_strs = [e.value for e in environment_names]
-    db_rows = await tournament_sql.get_pvp_pair_results(str(task.task_id), config.psql_db)
-    rows_by_pair = _group_db_rows_by_pair(db_rows)
+    task_id = str(task.task_id)
     max_pair_attempts = 3
 
-    required_pairs = set()
+    logger.info(f"PvP pairwise eval: task={task.task_id}, {len(all_hotkeys)} participants, envs={environment_names}")
+
+    # Generate all C(n,2) pairs
+    required_pairs: set[str] = set()
     for i, hk_a in enumerate(all_hotkeys):
         for hk_b in all_hotkeys[i + 1:]:
             required_pairs.add(_canonical_pair_key(hk_a, hk_b))
 
+    # Ensure DB rows exist for all pairs
+    stub_pairs = [
+        PvPPairResult(hotkey_a=k.split(":")[0], hotkey_b=k.split(":")[1], results={})
+        for k in required_pairs
+    ]
+    await tournament_sql.ensure_pvp_pairs_exist(task_id, stub_pairs, env_name_strs, config.psql_db)
+
+    # Check which pairs are already complete in DB
+    db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
+    rows_by_pair = _group_db_rows_by_pair(db_rows)
+
+    completed_keys: set[str] = set()
     all_pair_results: list[PvPPairResult] = []
     for pair_key in required_pairs:
         if pair_key in rows_by_pair:
             pr = _try_build_pair_result(pair_key, rows_by_pair[pair_key], env_name_strs, max_pair_attempts)
             if pr:
+                completed_keys.add(pair_key)
                 all_pair_results.append(pr)
 
-    if len(all_pair_results) == len(required_pairs):
-        logger.info(f"All {len(required_pairs)} pairs already complete in DB — skipping Basilica")
-        group_results = PvPGroupResults(
-            base_model=base_model,
-            hotkeys=all_hotkeys,
-            pair_results=all_pair_results,
-            metadata=PvPEvalMetadata(seed=seed, temperature=0.0, wall_time_seconds=0),
-        )
+    remaining_keys = [k for k in required_pairs if k not in completed_keys]
+
+    if not remaining_keys:
+        logger.info(f"All {len(required_pairs)} pairs already complete in DB — skipping eval")
     else:
-        group_results = await run_evaluation_pvp_group(
-            participants=participants,
-            base_model=base_model,
-            environment_names=environment_names,
-            seed=seed,
-        )
+        # Dispatch all incomplete pairs in parallel
+        failed_pairs: list[str] = []
 
-        # Persist group eval pair results to DB
-        for pair_result in group_results.pair_results:
-            for env_name, env_result in pair_result.results.items():
-                await tournament_sql.save_pvp_pair_result(
-                    task_id=str(task.task_id),
-                    result=pair_result,
-                    environment_name=env_name.value,
-                    env_result=env_result,
-                    psql_db=config.psql_db,
+        async def _run_and_persist(pair_key: str):
+            hk_a, hk_b = pair_key.split(":")
+            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
+            try:
+                pair_group = await run_evaluation_pvp_pair(
+                    model_a_repo=miner_repos[hk_a],
+                    model_b_repo=miner_repos[hk_b],
+                    hotkey_a=hk_a,
+                    hotkey_b=hk_b,
+                    base_model=base_model,
+                    environment_names=environment_names,
+                    seed=seed,
                 )
+                for pair_result in pair_group.pair_results:
+                    for env_name, env_result in pair_result.results.items():
+                        await tournament_sql.save_pvp_pair_result(
+                            task_id=task_id,
+                            result=pair_result,
+                            environment_name=env_name.value,
+                            env_result=env_result,
+                            psql_db=config.psql_db,
+                        )
+                logger.info(f"Pair {pair_key} completed and persisted")
+            except Exception as e:
+                logger.error(f"Pair {pair_key} failed: {e}")
+                failed_pairs.append(pair_key)
 
-        if group_results.full_weight_fallbacks:
-            fallback_pair_results = await _run_full_weight_fallback(
-                group_results, miner_repos, base_model, environment_names, seed,
-                task_id=str(task.task_id), psql_db=config.psql_db,
+        logger.info(f"Dispatching {len(remaining_keys)} pairs in parallel")
+        await asyncio.gather(*[_run_and_persist(k) for k in remaining_keys])
+
+        if failed_pairs:
+            logger.warning(f"{len(failed_pairs)}/{len(remaining_keys)} pairs failed: {failed_pairs}")
+
+        # Re-read DB and collect results
+        updated_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
+        updated_by_pair = _group_db_rows_by_pair(updated_rows)
+
+        for pair_key, rows in updated_by_pair.items():
+            if pair_key in completed_keys:
+                continue
+            pr = _try_build_pair_result(pair_key, rows, env_name_strs, max_pair_attempts)
+            if pr:
+                completed_keys.add(pair_key)
+                all_pair_results.append(pr)
+
+        still_incomplete = [k for k in required_pairs if k not in completed_keys]
+        if still_incomplete:
+            raise PvPIncompleteError(
+                f"{len(still_incomplete)}/{len(required_pairs)} pairs incomplete: {still_incomplete}"
             )
-            group_results.pair_results.extend(fallback_pair_results)
-            group_results.hotkeys.extend(group_results.full_weight_fallbacks.hotkeys)
+
+    group_results = PvPGroupResults(
+        base_model=base_model,
+        hotkeys=all_hotkeys,
+        pair_results=all_pair_results,
+        metadata=PvPEvalMetadata(seed=seed, temperature=0.0),
+    )
 
     env_weights = getattr(task, "environment_weights", None) or None
     logger.info(
@@ -772,118 +814,6 @@ def _try_build_pair_result(
         return PvPPairResult(hotkey_a=hk_a, hotkey_b=hk_b, results=results)
 
     return None
-
-
-async def _run_full_weight_fallback(
-    group_results: PvPGroupResults,
-    miner_repos: dict[str, str],
-    base_model: str,
-    environment_names: list[core_cst.EnvironmentName],
-    seed: int,
-    task_id: str,
-    psql_db,
-) -> list[PvPPairResult]:
-    """Run 1v1 pair evals for full-weight contestants with persistent result tracking."""
-    fallback = group_results.full_weight_fallbacks
-    if fallback is None:
-        return []
-    lora_hotkeys = [h for h in group_results.hotkeys if h not in set(fallback.hotkeys)]
-    fw_repo_by_hotkey = dict(zip(fallback.hotkeys, fallback.repos))
-
-    pair_args: dict[PairKey, dict] = {}
-    for fw_hotkey in fallback.hotkeys:
-        fw_repo = fw_repo_by_hotkey[fw_hotkey]
-        for lora_hotkey in lora_hotkeys:
-            key = _canonical_pair_key(fw_hotkey, lora_hotkey)
-            pair_args[key] = dict(
-                model_a_repo=fw_repo, model_b_repo=miner_repos[lora_hotkey],
-                hotkey_a=fw_hotkey, hotkey_b=lora_hotkey,
-            )
-        for other_fw_hotkey in fallback.hotkeys:
-            if other_fw_hotkey <= fw_hotkey:
-                continue
-            key = _canonical_pair_key(fw_hotkey, other_fw_hotkey)
-            pair_args[key] = dict(
-                model_a_repo=fw_repo, model_b_repo=fw_repo_by_hotkey[other_fw_hotkey],
-                hotkey_a=fw_hotkey, hotkey_b=other_fw_hotkey,
-            )
-
-    # Ensure all required pair+env rows exist in DB
-    env_name_strs = [e.value for e in environment_names]
-    stub_pairs = [
-        PvPPairResult(hotkey_a=k.split(":")[0], hotkey_b=k.split(":")[1], results={})
-        for k in pair_args
-    ]
-    await tournament_sql.ensure_pvp_pairs_exist(str(task_id), stub_pairs, env_name_strs, psql_db)
-
-    # Check what's already complete or exhausted
-    db_rows = await tournament_sql.get_pvp_pair_results(str(task_id), psql_db)
-    completed_keys: set[str] = set()
-    all_pair_results: list[PvPPairResult] = []
-    max_pair_attempts = 3
-
-    rows_by_pair = _group_db_rows_by_pair(db_rows)
-    for pair_key, rows in rows_by_pair.items():
-        pair_result = _try_build_pair_result(pair_key, rows, env_name_strs, max_pair_attempts)
-        if pair_result:
-            completed_keys.add(pair_key)
-            all_pair_results.append(pair_result)
-
-    remaining_keys = [k for k in pair_args if k not in completed_keys]
-    if not remaining_keys:
-        logger.info("All pairs complete in DB")
-        return all_pair_results
-
-    # Fire off all missing pairs — each persists independently on completion
-    failed_pairs: list[str] = []
-
-    async def _run_and_persist(key: str):
-        hk_a, hk_b = key.split(":")
-        await tournament_sql.increment_pvp_pair_attempts(str(task_id), hk_a, hk_b, psql_db)
-        try:
-            pair_group = await run_evaluation_pvp_pair(
-                **pair_args[key], base_model=base_model,
-                environment_names=environment_names, seed=seed,
-            )
-            for pair_result in pair_group.pair_results:
-                for env_name, env_result in pair_result.results.items():
-                    await tournament_sql.save_pvp_pair_result(
-                        task_id=str(task_id),
-                        result=pair_result,
-                        environment_name=env_name.value,
-                        env_result=env_result,
-                        psql_db=psql_db,
-                    )
-            logger.info(f"Pair {key} completed and persisted")
-        except Exception as e:
-            logger.error(f"Pair {key} failed: {e}")
-            failed_pairs.append(key)
-
-    logger.info(f"Dispatching {len(remaining_keys)} pairs in parallel")
-    await asyncio.gather(*[_run_and_persist(k) for k in remaining_keys])
-
-    if failed_pairs:
-        logger.warning(f"{len(failed_pairs)}/{len(remaining_keys)} pairs failed: {failed_pairs}")
-
-    # Re-read DB and build final results
-    updated_rows = await tournament_sql.get_pvp_pair_results(str(task_id), psql_db)
-    updated_by_pair = _group_db_rows_by_pair(updated_rows)
-
-    for pair_key, rows in updated_by_pair.items():
-        if pair_key in completed_keys:
-            continue
-        pair_result = _try_build_pair_result(pair_key, rows, env_name_strs, max_pair_attempts)
-        if pair_result:
-            completed_keys.add(pair_key)
-            all_pair_results.append(pair_result)
-
-    still_incomplete = [k for k in pair_args if k not in completed_keys]
-    if still_incomplete:
-        raise PvPIncompleteError(
-            f"{len(still_incomplete)}/{len(pair_args)} pairs incomplete: {still_incomplete}"
-        )
-
-    return all_pair_results
 
 
 async def evaluate_and_score_hotkeys(

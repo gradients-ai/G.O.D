@@ -22,14 +22,11 @@ from core.models.pvp_models import (
     PvPEvalConfig,
     PvPEvalMetadata,
     PvPEvalResults,
-    PvPGroupResults,
-    PvPMode,
     PvPModelSpec,
 )
 from validator.core import constants as vcst
 from validator.evaluation.utils import check_for_lora, configure_eval_logging, stop_process
 from validator.evaluation.pvp.game_runner import Player, create_player, run_matchup
-from validator.evaluation.pvp.group import run_group_evaluation
 from validator.evaluation.pvp.server import start_sglang, wait_for_servers
 
 logger = logging.getLogger(__name__)
@@ -39,10 +36,7 @@ def main() -> int:
     configure_eval_logging()
     try:
         config = _load_config()
-        if config.mode == PvPMode.GROUP:
-            results = run_group_evaluation(config)
-        else:
-            results = _run_evaluation(config)
+        results = _run_evaluation(config)
         _write_results(results)
         return 0
     except Exception as exc:
@@ -166,7 +160,7 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
         stop_process(sglang_b, "sglang-b")
 
 
-def _write_results(results: PvPEvalResults | PvPGroupResults) -> None:
+def _write_results(results: PvPEvalResults) -> None:
     results_path = Path(os.getenv("PVP_RESULTS_PATH", vcst.PVP_RESULTS_PATH))
     results_path.parent.mkdir(parents=True, exist_ok=True)
     results_path.write_text(results.model_dump_json(indent=2))

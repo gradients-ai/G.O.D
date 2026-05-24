@@ -10,7 +10,6 @@ from core.models.payload_models import EvaluationResultText
 from core.models.pvp_models import (
     PvPEvalConfig,
     PvPEvalResults,
-    PvPGroupModelSpec,
     PvPGroupResults,
     PvPMatchupConfig,
     PvPMode,
@@ -391,31 +390,6 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, label: str, repos_label: s
                     eval_logger.warning("Failed to cleanup PvP %s deployment: %s", label, exc)
 
     raise RuntimeError(f"PvP {label} evaluation failed")
-
-
-async def run_evaluation_pvp_group(
-    participants: list[PvPGroupModelSpec],
-    base_model: str,
-    environment_names: list[cst.EnvironmentName],
-    seed: int,
-    temperature: float = 0.0,
-) -> PvPGroupResults:
-    """Run PvP group round-robin evaluation via Basilica."""
-    matchups = {
-        env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
-        for env in environment_names
-    }
-    pvp_config = PvPEvalConfig(
-        mode=PvPMode.GROUP,
-        models=participants,
-        base_model=base_model,
-        matchups=matchups,
-        seed=seed,
-        temperature=temperature,
-    )
-    repos_label = ",".join(p.repo.split("/")[-1] for p in participants)
-    result = await _deploy_pvp_eval(pvp_config, "group", repos_label)
-    return PvPGroupResults.model_validate(result)
 
 
 async def run_evaluation_pvp_pair(
