@@ -65,6 +65,16 @@ class GpuRequirement(str, Enum):
     H100_4X = "4xH100"
     H100_8X = "8xH100"
 
+    @property
+    def gpu_count(self) -> int:
+        return {
+            GpuRequirement.A100: 1,
+            GpuRequirement.H100_1X: 1,
+            GpuRequirement.H100_2X: 2,
+            GpuRequirement.H100_4X: 4,
+            GpuRequirement.H100_8X: 8,
+        }[self]
+
 
 def generate_tournament_id() -> str:
     hash_part = secrets.token_hex(8)

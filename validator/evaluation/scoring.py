@@ -16,6 +16,10 @@ from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGro
 
 PairKey = str  # sorted "hotkey_a:hotkey_b"
 from core.models.scoring_models import EvalHotkeyResults
+from core.models.scoring_models import IndividualEvalResult
+from core.models.scoring_models import IndividualScoresByEnv
+from core.models.scoring_models import MinerRepos
+from core.models.scoring_models import PairwiseOutcome
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -29,6 +33,7 @@ from core.models.utility_models import TrainingStatus
 from core.utils import download_s3_file
 from validator.core.config import Config
 from validator.core.models import AnyTypeRawTask
+from validator.core.models import EnvRawTask
 from validator.core.models import MinerResults
 from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
@@ -45,9 +50,13 @@ from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
+from validator.evaluation.docker_evaluation import run_evaluation_individual
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_group
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
-from validator.evaluation.tournament_scoring import compute_pvp_tournament_points
+from validator.tournament.utils import get_tournament_gpu_requirement
+from validator.evaluation.tournament_scoring import accumulate_points
+from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
+from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
@@ -525,7 +534,7 @@ async def process_miners_pool(
 
     if miner_repos and should_use_pvp(task):
         try:
-            results.extend(await _run_pvp_group_eval(task, miner_repos, config))
+            results.extend(await _run_pvp_group_eval(task, miner_repos, config, num_gpus))
         except PvPIncompleteError:
             raise
         except Exception as e:
@@ -632,87 +641,51 @@ async def _run_pvp_group_eval(
     task: AnyTypeRawTask,
     miner_repos: dict[str, str],
     config: Config,
+    num_gpus: int,
 ) -> list[MinerResultsText]:
-    """Run PvP group eval and convert standings to MinerResultsText."""
+    """Run tournament eval with env partitioning. Delegates to focused sub-functions."""
+    assert isinstance(task, EnvRawTask)
+    miners = MinerRepos(by_hotkey=miner_repos)
     base_model = task.augmented_model_id or task.model_id
-    environment_names = getattr(task, "environment_names", None) or list(core_cst.EnvironmentName)
+    model_params = task.model_params_count or 0
 
     eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
     seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
 
-    participants = [
-        PvPGroupModelSpec(repo=repo, hotkey=hotkey)
-        for hotkey, repo in miner_repos.items()
-    ]
+    pvp_envs = [e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.PVP]
+    individual_envs = [e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.INDIVIDUAL]
 
-    logger.info(f"PvP group eval: task={task.task_id}, {len(participants)} participants, envs={environment_names}")
-
-    # Check if all pairs already complete in DB — skip Basilica entirely
-    all_hotkeys = list(miner_repos.keys())
-    env_name_strs = [e.value for e in environment_names]
-    db_rows = await tournament_sql.get_pvp_pair_results(str(task.task_id), config.psql_db)
-    rows_by_pair = _group_db_rows_by_pair(db_rows)
-    max_pair_attempts = 3
-
-    required_pairs = set()
-    for i, hk_a in enumerate(all_hotkeys):
-        for hk_b in all_hotkeys[i + 1:]:
-            required_pairs.add(_canonical_pair_key(hk_a, hk_b))
-
-    all_pair_results: list[PvPPairResult] = []
-    for pair_key in required_pairs:
-        if pair_key in rows_by_pair:
-            pr = _try_build_pair_result(pair_key, rows_by_pair[pair_key], env_name_strs, max_pair_attempts)
-            if pr:
-                all_pair_results.append(pr)
-
-    if len(all_pair_results) == len(required_pairs):
-        logger.info(f"All {len(required_pairs)} pairs already complete in DB — skipping Basilica")
-        group_results = PvPGroupResults(
-            base_model=base_model,
-            hotkeys=all_hotkeys,
-            pair_results=all_pair_results,
-            metadata=PvPEvalMetadata(seed=seed, temperature=0.0, wall_time_seconds=0),
-        )
-    else:
-        group_results = await run_evaluation_pvp_group(
-            participants=participants,
-            base_model=base_model,
-            environment_names=environment_names,
-            seed=seed,
-        )
-
-        # Persist group eval pair results to DB
-        for pair_result in group_results.pair_results:
-            for env_name, env_result in pair_result.results.items():
-                await tournament_sql.save_pvp_pair_result(
-                    task_id=str(task.task_id),
-                    result=pair_result,
-                    environment_name=env_name.value,
-                    env_result=env_result,
-                    psql_db=config.psql_db,
-                )
-
-        if group_results.full_weight_fallbacks:
-            fallback_pair_results = await _run_full_weight_fallback(
-                group_results, miner_repos, base_model, environment_names, seed,
-                task_id=str(task.task_id), psql_db=config.psql_db,
-            )
-            group_results.pair_results.extend(fallback_pair_results)
-            group_results.hotkeys.extend(group_results.full_weight_fallbacks.hotkeys)
-
-    env_weights = getattr(task, "environment_weights", None) or None
     logger.info(
-        f"Scoring: {len(group_results.pair_results)} pair_results, "
-        f"{len(group_results.hotkeys)} hotkeys: {group_results.hotkeys}"
+        f"Tournament eval: task={task.task_id}, {len(miners)} miners, "
+        f"pvp_envs={[e.value for e in pvp_envs]}, individual_envs={[e.value for e in individual_envs]}"
     )
-    for pr in group_results.pair_results:
-        for env, er in pr.results.items():
-            logger.info(f"  {pr.hotkey_a[:8]} vs {pr.hotkey_b[:8]} {env.value}: a={er.model_a_wins} b={er.model_b_wins} d={er.draws}")
-    standings = compute_pvp_tournament_points(group_results, weights=env_weights)
+
+    all_outcomes: list[PairwiseOutcome] = []
+
+    if pvp_envs:
+        all_outcomes.extend(await _eval_pvp_envs(
+            task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
+            base_model=base_model, model_params=model_params, seed=seed, config=config,
+        ))
+
+    if individual_envs:
+        all_outcomes.extend(await _eval_individual_envs(
+            task_id=task.task_id, individual_envs=individual_envs, miners=miners,
+            base_model=base_model, model_params=model_params, seed=seed, config=config,
+        ))
+
+    standings = accumulate_points(all_outcomes, miners.hotkeys, weights=task.environment_weights or None)
+    return _standings_to_results(standings, miners, task)
+
+
+def _standings_to_results(
+    standings: list,
+    miners: MinerRepos,
+    task: EnvRawTask,
+) -> list[MinerResultsText]:
+    """Convert point standings into MinerResultsText."""
     points_by_hotkey = {s.hotkey: s.points for s in standings}
     logger.info(f"Standings: {[(s.hotkey[:8], s.points) for s in standings]}")
-
     return [
         MinerResultsText(
             hotkey=hotkey,
@@ -722,14 +695,249 @@ async def _run_pvp_group_eval(
             submission=Submission(
                 task_id=task.task_id,
                 hotkey=hotkey,
-                repo=repo,
+                repo=miners.by_hotkey[hotkey],
                 created_on=datetime.now(),
                 updated_on=datetime.now(),
             ),
             task_type=task.task_type,
         )
-        for hotkey, repo in miner_repos.items()
+        for hotkey in miners.hotkeys
     ]
+
+
+# --- PvP env partition ---
+
+
+def _get_shared_env_config(envs: list[core_cst.EnvironmentName]) -> core_cst.EnvironmentConfig:
+    """Get config shared by all envs in a partition. Validates they share tournament_eval_image."""
+    configs = [core_cst.ENVIRONMENT_CONFIGS[e] for e in envs]
+    image = configs[0].tournament_eval_image
+    assert all(c.tournament_eval_image == image for c in configs), (
+        f"All envs in partition must share tournament_eval_image, got: "
+        f"{[(e.value, c.tournament_eval_image) for e, c in zip(envs, configs)]}"
+    )
+    return configs[0]
+
+
+async def _eval_pvp_envs(
+    task_id: str,
+    pvp_envs: list[core_cst.EnvironmentName],
+    miners: MinerRepos,
+    base_model: str,
+    model_params: int,
+    seed: int,
+    config: Config,
+) -> list[PairwiseOutcome]:
+    """Run PvP group eval for PVP-type environments, return pairwise outcomes."""
+    env_config = _get_shared_env_config(pvp_envs)
+    gpu_req = get_tournament_gpu_requirement(
+        TaskType.ENVIRONMENTTASK, model_params, base_model,
+        gpu_multiplier=env_config.gpu_multiplier,
+    )
+
+    group_results = await _get_or_run_pvp_group(
+        task_id=task_id, pvp_envs=pvp_envs, miners=miners,
+        base_model=base_model, seed=seed,
+        image=env_config.tournament_eval_image,
+        gpu_count=gpu_req.gpu_count, config=config,
+    )
+
+    if group_results.full_weight_fallbacks:
+        fallback_pair_results = await _run_full_weight_fallback(
+            group_results, miners.by_hotkey, base_model, pvp_envs, seed,
+            task_id=task_id, psql_db=config.psql_db,
+            image=env_config.tournament_eval_image, gpu_count=gpu_req.gpu_count,
+        )
+        group_results.pair_results.extend(fallback_pair_results)
+        group_results.hotkeys.extend(group_results.full_weight_fallbacks.hotkeys)
+
+    return pvp_results_to_pairwise(group_results)
+
+
+async def _get_or_run_pvp_group(
+    task_id: str,
+    pvp_envs: list[core_cst.EnvironmentName],
+    miners: MinerRepos,
+    base_model: str,
+    seed: int,
+    image: str,
+    gpu_count: int,
+    config: Config,
+) -> PvPGroupResults:
+    """Check DB for complete pair results; if missing, deploy PvP group eval."""
+    env_name_strs = [e.value for e in pvp_envs]
+    max_pair_attempts = 3
+
+    db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
+    rows_by_pair = _group_db_rows_by_pair(db_rows)
+
+    required_pairs = set()
+    for i, hk_a in enumerate(miners.hotkeys):
+        for hk_b in miners.hotkeys[i + 1:]:
+            required_pairs.add(_canonical_pair_key(hk_a, hk_b))
+
+    complete_pairs: list[PvPPairResult] = []
+    for pair_key in required_pairs:
+        if pair_key in rows_by_pair:
+            pr = _try_build_pair_result(pair_key, rows_by_pair[pair_key], env_name_strs, max_pair_attempts)
+            if pr:
+                complete_pairs.append(pr)
+
+    if len(complete_pairs) == len(required_pairs):
+        logger.info(f"All {len(required_pairs)} PvP pairs already complete in DB")
+        return PvPGroupResults(
+            base_model=base_model,
+            hotkeys=miners.hotkeys,
+            pair_results=complete_pairs,
+            metadata=PvPEvalMetadata(seed=seed, temperature=0.0, wall_time_seconds=0),
+        )
+
+    participants = [PvPGroupModelSpec(repo=repo, hotkey=hk) for hk, repo in miners.by_hotkey.items()]
+    group_results = await run_evaluation_pvp_group(
+        participants=participants,
+        base_model=base_model,
+        environment_names=pvp_envs,
+        seed=seed,
+        image=image,
+        gpu_count=gpu_count,
+    )
+
+    for pair_result in group_results.pair_results:
+        for env_name, env_result in pair_result.results.items():
+            await tournament_sql.save_pvp_pair_result(
+                task_id=task_id, result=pair_result,
+                environment_name=env_name.value, env_result=env_result,
+                psql_db=config.psql_db,
+            )
+
+    return group_results
+
+
+# --- Individual env partition ---
+
+
+async def _eval_individual_envs(
+    task_id,
+    individual_envs: list[core_cst.EnvironmentName],
+    miners: MinerRepos,
+    base_model: str,
+    model_params: int,
+    seed: int,
+    config: Config,
+) -> list[PairwiseOutcome]:
+    """Run per-miner containers for INDIVIDUAL-type envs, return synthetic pairwise outcomes."""
+    task_id_str = str(task_id)
+    env_name_strs = [e.value for e in individual_envs]
+
+    await tournament_sql.ensure_individual_scores_exist(
+        task_id_str, miners.hotkeys, env_name_strs, config.psql_db,
+    )
+
+    db_scores = await tournament_sql.get_individual_scores(task_id_str, config.psql_db)
+    scores = _build_scores_from_db(db_scores, individual_envs)
+
+    for env in individual_envs:
+        scores = await _dispatch_missing_individual(
+            env=env, task_id=task_id, task_id_str=task_id_str,
+            miners=miners, base_model=base_model, model_params=model_params,
+            seed=seed, config=config, scores=scores, db_scores=db_scores,
+        )
+
+    incomplete = scores.missing(individual_envs, miners.hotkeys)
+    if incomplete:
+        raise PvPIncompleteError(f"Individual env scores incomplete: {incomplete}")
+
+    outcomes: list[PairwiseOutcome] = []
+    for env in individual_envs:
+        result = scores.results[env]
+        outcomes.extend(individual_scores_to_pairwise(result.scores_by_hotkey, env))
+    return outcomes
+
+
+def _build_scores_from_db(
+    db_scores: list,
+    envs: list[core_cst.EnvironmentName],
+) -> IndividualScoresByEnv:
+    """Build IndividualScoresByEnv from complete DB rows."""
+    results: dict[core_cst.EnvironmentName, IndividualEvalResult] = {}
+    for env in envs:
+        hotkey_scores = {row.hotkey: row.score for row in db_scores if row.environment_name == env.value and row.is_complete}
+        if hotkey_scores:
+            results[env] = IndividualEvalResult(environment_name=env, scores_by_hotkey=hotkey_scores)
+    return IndividualScoresByEnv(results=results)
+
+
+async def _dispatch_missing_individual(
+    env: core_cst.EnvironmentName,
+    task_id,
+    task_id_str: str,
+    miners: MinerRepos,
+    base_model: str,
+    model_params: int,
+    seed: int,
+    config: Config,
+    scores: IndividualScoresByEnv,
+    db_scores: list,
+) -> IndividualScoresByEnv:
+    """Deploy containers for missing individual scores on a single env."""
+    env_config = core_cst.ENVIRONMENT_CONFIGS[env]
+    existing_hotkeys = set(scores.results[env].scores_by_hotkey.keys()) if env in scores.results else set()
+    missing_hotkeys = [hk for hk in miners.hotkeys if hk not in existing_hotkeys]
+
+    if not missing_hotkeys:
+        return scores
+
+    max_attempts = 3
+    to_run = _filter_exhausted(missing_hotkeys, env.value, db_scores, max_attempts)
+    if not to_run:
+        return scores
+
+    for hk in to_run:
+        await tournament_sql.increment_individual_score_attempts(task_id_str, hk, env.value, config.psql_db)
+
+    gpu_req = get_tournament_gpu_requirement(
+        TaskType.ENVIRONMENTTASK, model_params, base_model,
+        gpu_multiplier=env_config.gpu_multiplier,
+    )
+
+    eval_result = await run_evaluation_individual(
+        miners=miners.subset(to_run),
+        base_model=base_model,
+        environment_name=env,
+        seed=seed,
+        image=env_config.tournament_eval_image,
+        gpu_count=gpu_req.gpu_count,
+        task_id=task_id,
+        psql_db=config.psql_db,
+    )
+
+    for hotkey, score in eval_result.scores_by_hotkey.items():
+        await tournament_sql.save_individual_score(
+            task_id=task_id_str, hotkey=hotkey,
+            environment_name=env.value, score=score, psql_db=config.psql_db,
+        )
+
+    if env not in scores.results:
+        scores.results[env] = IndividualEvalResult(environment_name=env, scores_by_hotkey={})
+    scores.results[env].scores_by_hotkey.update(eval_result.scores_by_hotkey)
+    return scores
+
+
+def _filter_exhausted(
+    missing_hotkeys: list[str],
+    env_value: str,
+    db_scores: list,
+    max_attempts: int,
+) -> list[str]:
+    """Return hotkeys that haven't exhausted retry attempts."""
+    to_run = []
+    for hk in missing_hotkeys:
+        row = next((r for r in db_scores if r.environment_name == env_value and r.hotkey == hk), None)
+        if row and row.n_attempts >= max_attempts:
+            logger.warning(f"Individual eval {env_value}: hotkey {hk[:8]} exhausted {max_attempts} attempts")
+            continue
+        to_run.append(hk)
+    return to_run
 
 
 def _group_db_rows_by_pair(rows: list[PvPPairDbRow]) -> dict[PairKey, list[PvPPairDbRow]]:
@@ -782,6 +990,8 @@ async def _run_full_weight_fallback(
     seed: int,
     task_id: str,
     psql_db,
+    image: str = core_cst.VALIDATOR_DOCKER_IMAGE_PVP,
+    gpu_count: int = 4,
 ) -> list[PvPPairResult]:
     """Run 1v1 pair evals for full-weight contestants with persistent result tracking."""
     fallback = group_results.full_weight_fallbacks
@@ -844,6 +1054,7 @@ async def _run_full_weight_fallback(
             pair_group = await run_evaluation_pvp_pair(
                 **pair_args[key], base_model=base_model,
                 environment_names=environment_names, seed=seed,
+                image=image, gpu_count=gpu_count,
             )
             for pair_result in pair_group.pair_results:
                 for env_name, env_result in pair_result.results.items():

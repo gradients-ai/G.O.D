@@ -4,7 +4,7 @@ from datetime import timedelta
 from datetime import timezone
 
 import validator.db.constants as cst
-from core.models.pvp_models import PvPEnvironmentResult, PvPPairDbRow, PvPPairResult
+from core.models.pvp_models import PvPEnvironmentResult, PvPIndividualScoreDbRow, PvPPairDbRow, PvPPairResult
 from core.models.tournament_models import GroupRound
 from core.models.tournament_models import HotkeyTaskParticipation
 from core.models.tournament_models import TaskTrainingAssignment
@@ -1498,3 +1498,71 @@ async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
         await connection.execute(
             f"DELETE FROM {cst.PVP_PAIR_RESULTS_TABLE} WHERE {cst.TASK_ID} = $1", task_id
         )
+
+
+# --- PvP Individual Scores ---
+
+
+async def ensure_individual_scores_exist(
+    task_id: str,
+    hotkeys: list[str],
+    environment_names: list[str],
+    psql_db: PSQLDB,
+) -> None:
+    """Create pending rows for all required hotkey+env combos if they don't exist."""
+    async with await psql_db.connection() as connection:
+        for hotkey in hotkeys:
+            for env in environment_names:
+                await connection.execute(f"""
+                    INSERT INTO {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+                        ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}, {cst.STATUS})
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}) DO NOTHING
+                """, task_id, hotkey, env, cst.PVP_STATUS_PENDING)
+
+
+async def save_individual_score(
+    task_id: str,
+    hotkey: str,
+    environment_name: str,
+    score: float,
+    psql_db: PSQLDB,
+) -> None:
+    """Mark a hotkey+env individual score as complete."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(f"""
+            UPDATE {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            SET {cst.PVP_INDIVIDUAL_SCORE} = $4, {cst.STATUS} = $5,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2
+                AND {cst.PVP_ENVIRONMENT_NAME} = $3
+        """, task_id, hotkey, environment_name, score, cst.PVP_STATUS_COMPLETE)
+
+
+async def increment_individual_score_attempts(
+    task_id: str,
+    hotkey: str,
+    environment_name: str,
+    psql_db: PSQLDB,
+) -> None:
+    """Increment attempt count for a hotkey+env that isn't complete."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(f"""
+            UPDATE {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            SET {cst.PVP_N_ATTEMPTS} = {cst.PVP_N_ATTEMPTS} + 1,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2
+                AND {cst.PVP_ENVIRONMENT_NAME} = $3 AND {cst.STATUS} != $4
+        """, task_id, hotkey, environment_name, cst.PVP_STATUS_COMPLETE)
+
+
+async def get_individual_scores(task_id: str, psql_db: PSQLDB) -> list[PvPIndividualScoreDbRow]:
+    """Get all individual score rows for a task."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME},
+                   {cst.PVP_INDIVIDUAL_SCORE}, {cst.STATUS}, {cst.PVP_N_ATTEMPTS}
+            FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+        """, task_id)
+        return [PvPIndividualScoreDbRow(task_id=task_id, **dict(r)) for r in rows]

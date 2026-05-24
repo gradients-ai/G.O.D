@@ -21,12 +21,13 @@ IS_PROD_ENV = NETUID == DEFAULT_NETUID
 VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_ENV = "gradientsio/env-evaluator:basilica"
+VALIDATOR_DOCKER_IMAGE_INTERCODE = "phoenixbeaudry/env-eval-intercode:basilica"
 VALIDATOR_DOCKER_IMAGE_PVP = "weightswandering/pvp-evaluator:v5"
 MCTS_API_DOCKER_IMAGE = "diagonalge/mcts-api:latest"
 
 
 class EvalType(str, Enum):
-    MCTS = "mcts"
+    INDIVIDUAL = "individual"
     PVP = "pvp"
 
 
@@ -44,6 +45,7 @@ class EnvironmentName(str, Enum):
     GIN_RUMMY = "gin_rummy"
     LIARS_DICE = "liars_dice"
     LEDUC_POKER = "leduc_poker"
+    INTERCODE = "intercode"
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,8 @@ class EnvironmentConfig:
     num_baseline_episodes: int
     eval_type: EvalType
     env_image: str = ""
+    tournament_eval_image: str = VALIDATOR_DOCKER_IMAGE_PVP
+    gpu_multiplier: int = 4
     eval_payload_extra: dict | None = None
 
 
@@ -65,6 +69,8 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_baseline_episodes=50,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
             "mcts_max_simulations": 50,
@@ -79,6 +85,8 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_baseline_episodes=50,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
             "mcts_max_simulations": 225,
@@ -93,12 +101,23 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_baseline_episodes=25,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
             "mcts_max_simulations": 50,
             "mcts_num_rollouts": 1,
             "api_key": "dummy-key",
         },
+    ),
+    EnvironmentName.INTERCODE: EnvironmentConfig(
+        task_id_min=1,
+        task_id_max=200,
+        num_seeds=4,
+        num_baseline_episodes=10,
+        eval_type=EvalType.INDIVIDUAL,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
+        gpu_multiplier=4,
     ),
 }
 

@@ -63,7 +63,12 @@ from validator.utils.repo_diff_report import generate_and_upload_repo_diff_repor
 logger = get_logger(__name__)
 
 
-def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int, model_id: str = None) -> GpuRequirement:
+def get_tournament_gpu_requirement(
+    task_type: TaskType,
+    model_params_count: int,
+    model_id: str = None,
+    gpu_multiplier: int | None = None,
+) -> GpuRequirement:
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X
     if not model_params_count and model_id:
@@ -85,7 +90,10 @@ def get_tournament_gpu_requirement(task_type: TaskType, model_params_count: int,
     elif task_type == TaskType.GRPOTASK:
         params_b *= TOURNAMENT_GRPO_GPU_MULTIPLIER
     elif task_type == TaskType.ENVIRONMENTTASK:
-        return GpuRequirement.H100_4X
+        if gpu_multiplier is not None:
+            params_b *= gpu_multiplier
+        else:
+            return GpuRequirement.H100_4X
 
     if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
         return GpuRequirement.H100_1X

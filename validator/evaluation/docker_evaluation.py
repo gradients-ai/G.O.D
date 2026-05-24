@@ -7,6 +7,8 @@ from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
+from core.models.scoring_models import IndividualEvalResult
+from core.models.scoring_models import MinerRepos
 from core.models.pvp_models import (
     PvPEvalConfig,
     PvPEvalResults,
@@ -315,11 +317,12 @@ async def run_evaluation_basilica_image(
     return process_evaluation_results(evaluation_results, is_image=True)
 
 
-async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, label: str, repos_label: str) -> dict:
+async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, repos_label: str, image: str, gpu_count: int) -> dict:
     """Deploy a PvP eval container via Basilica and return the raw result dict.
 
     Shared by both group and pair eval paths.
     """
+    mode = pvp_config.mode.value
     env = {
         vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
         **vcst.HF_CONTAINER_ENV,
@@ -329,7 +332,7 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, label: str, repos_label: s
 
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
-        name=f"pvp-{label}-{eval_id[:8]}",
+        name=f"pvp-{mode}-{eval_id[:8]}",
         repo_id=repos_label,
         eval_id=eval_id,
         model=pvp_config.base_model or "",
@@ -340,27 +343,27 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, label: str, repos_label: s
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
-            eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
+            eval_logger.info("Starting PvP %s eval attempt %d/%d", mode, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
             client = basilica.BasilicaClient()
             deployment = await asyncio.to_thread(
                 client.deploy,
                 name=deployment_name,
                 source=source,
-                image=cst.VALIDATOR_DOCKER_IMAGE_PVP,
+                image=image,
                 port=vcst.PVP_BASILICA_PORT,
                 cpu=vcst.EVAL_BASILICA_CPU,
                 memory=vcst.EVAL_BASILICA_MEMORY,
                 ttl_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
                 timeout=vcst.EVAL_BASILICA_TIMEOUT,
                 env=env,
-                gpu_count=vcst.PVP_BASILICA_GPU_COUNT,
+                gpu_count=gpu_count,
                 gpu_models=vcst.BASILICA_GPU_MODELS,
                 min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
             )
-            eval_logger.info("PvP %s deployment started: %s", label, deployment_name)
+            eval_logger.info("PvP %s deployment started: %s", mode, deployment_name)
 
             result = await _poll_basilica_result(
-                deployment, f"pvp-{label}",
+                deployment, f"pvp-{mode}",
                 eval_logger=eval_logger,
                 poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
@@ -369,28 +372,97 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, label: str, repos_label: s
                 return result
 
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            eval_logger.error("PvP %s eval returned non-dict result: %s", label, result)
+            eval_logger.error("PvP %s eval returned non-dict result: %s", mode, result)
             if remaining > 0:
                 eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
 
         except Exception as exc:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            eval_logger.error("PvP %s eval attempt %d failed: %s", label, attempt, exc, exc_info=True)
+            eval_logger.error("PvP %s eval attempt %d failed: %s", mode, attempt, exc, exc_info=True)
             if remaining > 0:
                 eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
-                raise RuntimeError(f"PvP {label} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
+                raise RuntimeError(f"PvP {mode} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
         finally:
             if deployment is not None:
                 try:
-                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, f"pvp-{label}", deployment_name, deployment)
+                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, f"pvp-{mode}", deployment_name, deployment)
                     await asyncio.to_thread(deployment.delete)
                 except Exception as exc:
-                    eval_logger.warning("Failed to cleanup PvP %s deployment: %s", label, exc)
+                    eval_logger.warning("Failed to cleanup PvP %s deployment: %s", mode, exc)
 
-    raise RuntimeError(f"PvP {label} evaluation failed")
+    raise RuntimeError(f"PvP {mode} evaluation failed")
+
+
+async def run_evaluation_individual(
+    miners: MinerRepos,
+    base_model: str,
+    environment_name: cst.EnvironmentName,
+    seed: int,
+    image: str,
+    gpu_count: int,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+) -> IndividualEvalResult:
+    """Run individual (per-miner) eval containers for a single environment.
+
+    Each miner gets its own container. The container runs one model and returns
+    a score via the standard eval_loss result format.
+    """
+    command = ["python", "-m", "validator.evaluation.eval_intercode"]
+    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+
+    base_env = {
+        "ORIGINAL_MODEL": base_model,
+        "ENVIRONMENT_NAME": environment_name.value,
+        "EVAL_SEED": str(seed),
+        "ENV_EVAL_TEMPERATURE": str(vcst.ENV_EVAL_TEMPERATURE),
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        **vcst.HF_CONTAINER_ENV,
+    }
+
+    repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
+
+    def build_env_for_repo(repo: str) -> dict[str, str]:
+        repo_env = dict(base_env)
+        repo_env["MODELS"] = repo
+        return repo_env
+
+    repo_results = await run_basilica_eval_repos(
+        repos=miners.repos,
+        model_name=base_model,
+        task_type=f"ITournEval[{environment_name.value}]",
+        image=image,
+        source=source,
+        build_env_for_repo=build_env_for_repo,
+        gpu_count=max(1, gpu_count),
+        gpu_models=vcst.BASILICA_GPU_MODELS,
+        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+        task_id=task_id,
+        psql_db=psql_db,
+        repo_to_hotkey=repo_to_hotkey,
+    )
+
+    scores: dict[str, float] = {}
+    for repo, result in repo_results.items():
+        hotkey = repo_to_hotkey.get(repo, repo)
+        if isinstance(result, dict):
+            inner = result.get(repo, result)
+            if isinstance(inner, dict):
+                scores[hotkey] = float(inner.get("eval_loss", 0.0))
+            else:
+                logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
+                scores[hotkey] = 0.0
+        else:
+            logger.warning(f"Individual eval failed for {repo}: {result}")
+            scores[hotkey] = 0.0
+
+    return IndividualEvalResult(
+        environment_name=environment_name,
+        scores_by_hotkey=scores,
+    )
 
 
 async def run_evaluation_pvp_group(
@@ -398,6 +470,8 @@ async def run_evaluation_pvp_group(
     base_model: str,
     environment_names: list[cst.EnvironmentName],
     seed: int,
+    image: str,
+    gpu_count: int,
     temperature: float = 0.0,
 ) -> PvPGroupResults:
     """Run PvP group round-robin evaluation via Basilica."""
@@ -414,7 +488,7 @@ async def run_evaluation_pvp_group(
         temperature=temperature,
     )
     repos_label = ",".join(p.repo.split("/")[-1] for p in participants)
-    result = await _deploy_pvp_eval(pvp_config, "group", repos_label)
+    result = await _deploy_pvp_eval(pvp_config, repos_label, image=image, gpu_count=gpu_count)
     return PvPGroupResults.model_validate(result)
 
 
@@ -426,6 +500,8 @@ async def run_evaluation_pvp_pair(
     base_model: str,
     environment_names: list[cst.EnvironmentName],
     seed: int,
+    image: str,
+    gpu_count: int,
     temperature: float = 0.0,
 ) -> PvPGroupResults:
     """Run PvP 1v1 pair evaluation via Basilica.
@@ -445,7 +521,7 @@ async def run_evaluation_pvp_pair(
         temperature=temperature,
     )
     repos_label = f"{model_a_repo.split('/')[-1]},{model_b_repo.split('/')[-1]}"
-    result = await _deploy_pvp_eval(pvp_config, "pair", repos_label)
+    result = await _deploy_pvp_eval(pvp_config, repos_label, image=image, gpu_count=gpu_count)
 
     pair_eval = PvPEvalResults.model_validate(result)
     return PvPGroupResults(

@@ -21,7 +21,7 @@ from core.models.tournament_models import TournamentType
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import compute_pvp_tournament_points
 from validator.evaluation.tournament_scoring import exponential_decline_mapping
-from validator.evaluation.tournament_scoring import mcts_scores_to_pairwise
+from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
 from validator.evaluation.tournament_scoring import tournament_scores_to_weights
 from validator.evaluation.tournament_scoring import calculate_tournament_type_scores_from_data
@@ -246,14 +246,14 @@ class TestComputePvpTournamentPoints:
             assert full.points == manual.points
 
 
-# --- 1e: mcts_scores_to_pairwise ---
+# --- 1e: individual_scores_to_pairwise ---
 
 
 class TestMctsScoresToPairwise:
     def test_clear_winner(self):
         """Score difference exceeds margin → winner."""
         scores = {ALICE: 100.0, BOB: 80.0}
-        outcomes = mcts_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
+        outcomes = individual_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
 
         assert len(outcomes) == 1
         # Alice: 100 > 80 + 80 * 0.015 = 81.2 → Alice wins
@@ -262,7 +262,7 @@ class TestMctsScoresToPairwise:
     def test_within_margin_is_draw(self):
         """Scores within margin → draw."""
         scores = {ALICE: 100.0, BOB: 99.0}
-        outcomes = mcts_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
+        outcomes = individual_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
 
         # Alice: 100 > 99 + 99 * 0.015 = 100.485? No. → Draw
         assert outcomes[0].winner is None
@@ -270,13 +270,13 @@ class TestMctsScoresToPairwise:
     def test_three_players_produce_three_outcomes(self):
         """C(3,2) = 3 pairwise comparisons."""
         scores = {ALICE: 100.0, BOB: 50.0, CAROL: 75.0}
-        outcomes = mcts_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
+        outcomes = individual_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
         assert len(outcomes) == 3
 
     def test_zero_score_margin_threshold(self):
         """When score_b is 0, threshold = 0. Any positive score_a wins."""
         scores = {ALICE: 1.0, BOB: 0.0}
-        outcomes = mcts_scores_to_pairwise(scores, ENV_DICE, win_margin=0.5)
+        outcomes = individual_scores_to_pairwise(scores, ENV_DICE, win_margin=0.5)
 
         # threshold = abs(0) * 0.5 = 0, so 1.0 > 0.0 + 0 → Alice wins
         assert outcomes[0].winner == ALICE
@@ -289,7 +289,7 @@ class TestMctsAccumulateCompatibility:
     def test_mcts_outcomes_feed_into_accumulate(self):
         """MCTS-generated outcomes produce valid standings."""
         scores = {ALICE: 100.0, BOB: 50.0, CAROL: 80.0}
-        outcomes = mcts_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
+        outcomes = individual_scores_to_pairwise(scores, ENV_DICE, win_margin=0.015)
         standings = accumulate_points(outcomes, [ALICE, BOB, CAROL])
 
         assert len(standings) == 3

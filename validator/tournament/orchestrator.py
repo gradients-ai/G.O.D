@@ -539,7 +539,7 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
     """
     try:
         trainers = await tournament_sql.get_trainers(config.psql_db)
-        required_gpu_count = _get_gpu_count_from_requirement(required_gpus)
+        required_gpu_count = required_gpus.gpu_count
 
         best_trainer = None
         best_gpu_ids = None
@@ -574,20 +574,6 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
         return None
 
 
-def _get_gpu_count_from_requirement(requirement: GpuRequirement) -> int:
-    """
-    Get the number of GPUs required for a given GPU requirement.
-    """
-    if requirement == GpuRequirement.A100:
-        return 1
-    elif requirement == GpuRequirement.H100_1X:
-        return 1
-    elif requirement == GpuRequirement.H100_2X:
-        return 2
-    elif requirement == GpuRequirement.H100_4X:
-        return 4
-    elif requirement == GpuRequirement.H100_8X:
-        return 8
 
     # Default to 1 if unknown
     return 1

@@ -421,7 +421,7 @@ PVP_LOG_INTERVAL_GAMES = 100
 PVP_BOT_MAX_PARSING_RETRIES = 0
 PVP_TURN_TIMEOUT_SECONDS = 5
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
-MCTS_WIN_MARGIN = 0.015
+INDIVIDUAL_WIN_MARGIN = 0.015
 
 # PvP tournament scoring
 PVP_ENV_WIN_POINTS = 3
@@ -434,7 +434,6 @@ PVP_PERF_DIFF_SLOPE = 0.125  # Linear map: 60% win rate → emission threshold, 
 
 # PvP Basilica deployment
 PVP_BASILICA_TTL_SECONDS = 28800
-PVP_BASILICA_GPU_COUNT = 2
 PVP_BASILICA_PORT = 8000
 
 # HuggingFace container env vars (shared across all eval containers)

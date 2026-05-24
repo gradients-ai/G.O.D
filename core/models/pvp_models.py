@@ -229,6 +229,21 @@ class PvPPairDbRow(BaseModel):
         return self.status == "complete"
 
 
+class PvPIndividualScoreDbRow(BaseModel):
+    """A persisted individual score row from the database."""
+
+    task_id: str
+    hotkey: str
+    environment_name: str
+    score: float = 0.0
+    n_attempts: int = 0
+    status: str = "pending"
+
+    @property
+    def is_complete(self) -> bool:
+        return self.status == "complete"
+
+
 class FullWeightContestants(BaseModel):
     """Signal that some contestants submitted full weights instead of LoRA.
 

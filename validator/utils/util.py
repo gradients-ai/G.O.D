@@ -27,6 +27,7 @@ from validator.utils.minio import async_minio_client
 
 logger = get_logger(__name__)
 
+
 retry_http_with_backoff = retry(
     stop=stop_after_attempt(5),
     wait=wait_exponential(multiplier=1, min=4, max=10),
