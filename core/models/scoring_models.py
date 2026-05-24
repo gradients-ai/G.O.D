@@ -4,8 +4,6 @@ from pydantic import BaseModel
 from pydantic import Field
 
 from core.constants import EnvironmentName
-from core.types import Hotkey
-from core.types import RepoId
 
 
 class TournamentScore(BaseModel):
@@ -50,20 +48,20 @@ class TournamentTypeResult(BaseModel):
 class MinerRepos(BaseModel):
     """Miner hotkey → HuggingFace model repo mapping for tournament evaluation."""
 
-    by_hotkey: dict[Hotkey, RepoId] = Field(description="Mapping of hotkey → repo_id")
+    by_hotkey: dict[str, str] = Field(description="Mapping of hotkey → repo_id")
 
     @property
-    def hotkeys(self) -> list[Hotkey]:
+    def hotkeys(self) -> list[str]:
         return list(self.by_hotkey.keys())
 
     @property
-    def repos(self) -> list[RepoId]:
+    def repos(self) -> list[str]:
         return list(self.by_hotkey.values())
 
     def __len__(self) -> int:
         return len(self.by_hotkey)
 
-    def subset(self, hotkeys: list[Hotkey]) -> "MinerRepos":
+    def subset(self, hotkeys: list[str]) -> "MinerRepos":
         """Return a new MinerRepos containing only the given hotkeys."""
         return MinerRepos(by_hotkey={hk: self.by_hotkey[hk] for hk in hotkeys if hk in self.by_hotkey})
 
@@ -72,7 +70,7 @@ class IndividualEvalResult(BaseModel):
     """Scores from individual eval containers for one environment."""
 
     environment_name: EnvironmentName
-    scores_by_hotkey: dict[Hotkey, float]
+    scores_by_hotkey: dict[str, float]
 
 
 class IndividualScoresByEnv(BaseModel):
@@ -80,14 +78,14 @@ class IndividualScoresByEnv(BaseModel):
 
     results: dict[EnvironmentName, IndividualEvalResult] = Field(default_factory=dict)
 
-    def is_complete(self, envs: list[EnvironmentName], hotkeys: list[Hotkey]) -> bool:
+    def is_complete(self, envs: list[EnvironmentName], hotkeys: list[str]) -> bool:
         for env in envs:
             result = self.results.get(env)
             if not result or any(hk not in result.scores_by_hotkey for hk in hotkeys):
                 return False
         return True
 
-    def missing(self, envs: list[EnvironmentName], hotkeys: list[Hotkey]) -> list[tuple[EnvironmentName, list[Hotkey]]]:
+    def missing(self, envs: list[EnvironmentName], hotkeys: list[str]) -> list[tuple[EnvironmentName, list[str]]]:
         incomplete = []
         for env in envs:
             result = self.results.get(env)
