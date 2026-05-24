@@ -40,7 +40,7 @@ from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
 from validator.evaluation.scoring import should_use_tournament_eval
-from validator.tournament.utils import get_tournament_gpu_requirement
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
 from validator.utils.util import try_db_connections
@@ -1055,7 +1055,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
     # Deferred imports to avoid circular dependency
     # (model_prep imports _check_suitable_gpus from this module)
     from validator.utils.model_prep import dispatch_augmentation_and_stats
-    from validator.tournament.utils import get_tournament_gpu_requirement
+    from validator.tournament.gpu import get_tournament_gpu_requirement
 
     async def _run_model_prep(task, trainer_ip, gpu_ids):
         task_id_str = str(task.task_id)

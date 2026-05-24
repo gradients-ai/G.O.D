@@ -47,7 +47,7 @@ from validator.tournament.performance_calculator import get_tournament_performan
 from validator.tournament.tournament_manager import _calculate_next_tournament_start_time
 from validator.tournament.tournament_manager import _get_tournament_schedule
 from validator.tournament.tournament_manager import get_tournament_completion_time
-from validator.tournament.utils import get_tournament_gpu_requirement
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import get_logger
 
 

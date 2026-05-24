@@ -30,7 +30,7 @@ from validator.db.sql import tasks as task_sql
 from core.models.utility_models import Backend
 from validator.db.sql import tournaments as tournament_sql
 from validator.evaluation.scoring import _get_dataset_type
-from validator.tournament.utils import get_tournament_gpu_requirement
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger

@@ -29,7 +29,7 @@ from validator.tasks.synthetic_scheduler import create_synthetic_env_task
 from validator.tasks.synthetic_scheduler import create_synthetic_grpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
-from validator.tournament.utils import get_tournament_gpu_requirement
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import get_logger
 
 

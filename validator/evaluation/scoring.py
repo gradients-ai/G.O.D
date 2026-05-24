@@ -54,10 +54,10 @@ from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_group
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
-from validator.tournament.utils import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
