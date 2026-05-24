@@ -411,7 +411,10 @@ async def run_evaluation_individual(
     Each miner gets its own container. The container runs one model and returns
     a score via the standard eval_loss result format.
     """
-    command = ["python", "-m", "validator.evaluation.eval_intercode"]
+    env_config = cst.ENVIRONMENT_CONFIGS[environment_name]
+    if not env_config.tournament_eval_command:
+        raise ValueError(f"No tournament_eval_command configured for {environment_name.value}")
+    command = env_config.tournament_eval_command
     source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
@@ -454,10 +457,8 @@ async def run_evaluation_individual(
                 scores[hotkey] = float(inner.get("eval_loss", 0.0))
             else:
                 logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
-                scores[hotkey] = 0.0
         else:
             logger.warning(f"Individual eval failed for {repo}: {result}")
-            scores[hotkey] = 0.0
 
     return IndividualEvalResult(
         environment_name=environment_name,

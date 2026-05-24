@@ -57,8 +57,15 @@ class EnvironmentConfig:
     eval_type: EvalType
     env_image: str = ""
     tournament_eval_image: str = VALIDATOR_DOCKER_IMAGE_PVP
+    tournament_eval_command: list[str] | None = None
     gpu_multiplier: int = 4
     eval_payload_extra: dict | None = None
+
+    def __post_init__(self):
+        if self.eval_type == EvalType.INDIVIDUAL and not self.tournament_eval_command:
+            raise ValueError(
+                f"EnvironmentConfig with eval_type=INDIVIDUAL must define tournament_eval_command"
+            )
 
 
 ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
@@ -117,6 +124,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_baseline_episodes=10,
         eval_type=EvalType.INDIVIDUAL,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
+        tournament_eval_command=["python", "-m", "validator.evaluation.eval_intercode"],
         gpu_multiplier=4,
     ),
 }

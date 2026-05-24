@@ -536,7 +536,7 @@ async def process_miners_pool(
 
     if miner_repos and should_use_tournament_eval(task):
         try:
-            results.extend(await _run_pvp_group_eval(task, miner_repos, config, num_gpus))
+            results.extend(await _run_env_tournament_eval(task, miner_repos, config))
         except PvPIncompleteError:
             raise
         except Exception as e:
@@ -640,14 +640,14 @@ def should_use_tournament_eval(task: AnyTypeRawTask) -> bool:
     return False
 
 
-async def _run_pvp_group_eval(
+async def _run_env_tournament_eval(
     task: AnyTypeRawTask,
-    miner_repos: dict[str, str],
+    miner_repos: dict[str, str],  # {hotkey: repo_id}
     config: Config,
-    num_gpus: int,
 ) -> list[MinerResultsText]:
     """Run tournament eval with env partitioning. Delegates to focused sub-functions."""
-    assert isinstance(task, EnvRawTask)
+    if not isinstance(task, EnvRawTask):
+        raise TypeError(f"Expected EnvRawTask, got {type(task).__name__}")
     miners = MinerRepos(by_hotkey=miner_repos)
     base_model = task.augmented_model_id or task.model_id
     model_params = task.model_params_count or 0
@@ -712,13 +712,20 @@ def _standings_to_results(
 
 
 def _get_shared_env_config(envs: list[core_cst.EnvironmentName]) -> core_cst.EnvironmentConfig:
-    """Get config shared by all envs in a partition. Validates they share tournament_eval_image."""
+    """Get config shared by all envs in a partition. Validates they share tournament_eval_image and gpu_multiplier."""
     configs = [core_cst.ENVIRONMENT_CONFIGS[e] for e in envs]
     image = configs[0].tournament_eval_image
-    assert all(c.tournament_eval_image == image for c in configs), (
-        f"All envs in partition must share tournament_eval_image, got: "
-        f"{[(e.value, c.tournament_eval_image) for e, c in zip(envs, configs)]}"
-    )
+    multiplier = configs[0].gpu_multiplier
+    if not all(c.tournament_eval_image == image for c in configs):
+        raise ValueError(
+            f"All envs in partition must share tournament_eval_image, got: "
+            f"{[(e.value, c.tournament_eval_image) for e, c in zip(envs, configs)]}"
+        )
+    if not all(c.gpu_multiplier == multiplier for c in configs):
+        raise ValueError(
+            f"All envs in partition must share gpu_multiplier, got: "
+            f"{[(e.value, c.gpu_multiplier) for e, c in zip(envs, configs)]}"
+        )
     return configs[0]
 
 
@@ -845,6 +852,10 @@ async def _eval_individual_envs(
             miners=miners, base_model=base_model, model_params=model_params,
             seed=seed, config=config, scores=scores, db_scores=db_scores,
         )
+
+    # Re-fetch to get accurate n_attempts after dispatches
+    db_scores = await tournament_sql.get_individual_scores(task_id_str, config.psql_db)
+    scores = _build_scores_from_db(db_scores, individual_envs)
 
     incomplete = scores.missing(individual_envs, miners.hotkeys)
     if incomplete:
