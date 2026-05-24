@@ -1510,15 +1510,16 @@ async def ensure_individual_scores_exist(
     psql_db: PSQLDB,
 ) -> None:
     """Create pending rows for all required hotkey+env combos if they don't exist."""
+    if not hotkeys or not environment_names:
+        return
+    rows = [(task_id, hk, env, cst.PVP_STATUS_PENDING) for hk in hotkeys for env in environment_names]
     async with await psql_db.connection() as connection:
-        for hotkey in hotkeys:
-            for env in environment_names:
-                await connection.execute(f"""
-                    INSERT INTO {cst.PVP_INDIVIDUAL_SCORES_TABLE}
-                        ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}, {cst.STATUS})
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}) DO NOTHING
-                """, task_id, hotkey, env, cst.PVP_STATUS_PENDING)
+        await connection.executemany(f"""
+            INSERT INTO {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}, {cst.STATUS})
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME}) DO NOTHING
+        """, rows)
 
 
 async def save_individual_score(

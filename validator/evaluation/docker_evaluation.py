@@ -454,7 +454,7 @@ async def run_evaluation_individual(
         if isinstance(result, dict):
             inner = result.get(repo, result)
             if isinstance(inner, dict):
-                scores[hotkey] = float(inner.get("eval_loss", 0.0))
+                scores[hotkey] = float(inner.get(cst.CONTAINER_EVAL_SCORE_KEY, 0.0))
             else:
                 logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
         else:

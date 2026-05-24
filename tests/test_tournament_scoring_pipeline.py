@@ -249,7 +249,7 @@ class TestComputePvpTournamentPoints:
 # --- 1e: individual_scores_to_pairwise ---
 
 
-class TestMctsScoresToPairwise:
+class TestIndividualScoresToPairwise:
     def test_clear_winner(self):
         """Score difference exceeds margin → winner."""
         scores = {ALICE: 100.0, BOB: 80.0}
@@ -285,7 +285,7 @@ class TestMctsScoresToPairwise:
 # --- 1f: MCTS outcomes are compatible with accumulate_points ---
 
 
-class TestMctsAccumulateCompatibility:
+class TestIndividualAccumulateCompatibility:
     def test_mcts_outcomes_feed_into_accumulate(self):
         """MCTS-generated outcomes produce valid standings."""
         scores = {ALICE: 100.0, BOB: 50.0, CAROL: 80.0}

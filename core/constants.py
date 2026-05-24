@@ -130,6 +130,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
 }
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
+CONTAINER_EVAL_SCORE_KEY = "eval_loss"
 LORA_ADAPTER_CONFIG_FILE = "adapter_config.json"
 
 CONFIG_DIR = "core/config/"

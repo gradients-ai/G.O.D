@@ -14,20 +14,18 @@ from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
 from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupModelSpec, PvPGroupResults, PvPIncompleteError, PvPIndividualScoreDbRow, PvPPairDbRow, PvPPairResult, _canonical_pair_key
-
-PairKey = str  # sorted "hotkey_a:hotkey_b"
 from core.models.scoring_models import EvalHotkeyResults
+from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import IndividualEvalResult
 from core.models.scoring_models import IndividualScoresByEnv
 from core.models.scoring_models import MinerRepos
-from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import PairwiseOutcome
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
-from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
@@ -40,6 +38,8 @@ from validator.core.models import MinerResults
 from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
 from validator.core.models import Submission
+from validator.db.database import PSQLDB
+from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
@@ -47,7 +47,6 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
-from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -55,10 +54,10 @@ from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_group
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
-from validator.tournament.utils import get_tournament_gpu_requirement
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
+from validator.tournament.utils import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
@@ -66,6 +65,9 @@ from validator.utils.minio import async_minio_client
 
 
 logger = get_logger(__name__)
+
+PairKey = str  # sorted "hotkey_a:hotkey_b"
+TOURNAMENT_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
 
 def calculate_miner_ranking_and_scores(
     miner_results: list[MinerResultsText | MinerResultsImage],
@@ -632,10 +634,9 @@ def should_use_tournament_eval(task: AnyTypeRawTask) -> bool:
     env_names = getattr(task, "environment_names", None)
     if not env_names:
         return False
-    tournament_eval_types = {core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL}
     for name in env_names:
         env_config = core_cst.ENVIRONMENT_CONFIGS.get(name)
-        if env_config and env_config.eval_type in tournament_eval_types:
+        if env_config and env_config.eval_type in TOURNAMENT_EVAL_TYPES:
             return True
     return False
 
@@ -776,7 +777,7 @@ async def _get_or_run_pvp_group(
 ) -> PvPGroupResults:
     """Check DB for complete pair results; if missing, deploy PvP group eval."""
     env_name_strs = [e.value for e in pvp_envs]
-    max_pair_attempts = 3
+    max_pair_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
 
     db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
     rows_by_pair = _group_db_rows_by_pair(db_rows)
@@ -862,7 +863,7 @@ async def _eval_individual_envs(
         # Check if any missing hotkeys are still retryable — if so, raise to retry next cycle
         still_retryable = False
         for env, missing_hks in incomplete:
-            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=3)
+            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=cts.MAX_TOURNAMENT_EVAL_ATTEMPTS)
             if retryable:
                 still_retryable = True
                 break
@@ -922,7 +923,7 @@ async def _dispatch_missing_individual(
     if not missing_hotkeys:
         return scores
 
-    max_attempts = 3
+    max_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
     to_run = _filter_exhausted(missing_hotkeys, env.value, db_scores, max_attempts)
     if not to_run:
         return scores
@@ -1027,7 +1028,7 @@ async def _run_full_weight_fallback(
     environment_names: list[core_cst.EnvironmentName],
     seed: int,
     task_id: str,
-    psql_db,
+    psql_db: PSQLDB,
     image: str = core_cst.VALIDATOR_DOCKER_IMAGE_PVP,
     gpu_count: int = 4,
 ) -> list[PvPPairResult]:
@@ -1068,7 +1069,7 @@ async def _run_full_weight_fallback(
     db_rows = await tournament_sql.get_pvp_pair_results(str(task_id), psql_db)
     completed_keys: set[str] = set()
     all_pair_results: list[PvPPairResult] = []
-    max_pair_attempts = 3
+    max_pair_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
 
     rows_by_pair = _group_db_rows_by_pair(db_rows)
     for pair_key, rows in rows_by_pair.items():
