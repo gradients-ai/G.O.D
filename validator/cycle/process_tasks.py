@@ -17,7 +17,7 @@ from validator.cycle.util_functions import get_model_num_params
 from validator.db.database import PSQLDB
 from validator.evaluation.scoring import evaluate_and_score_hotkeys
 from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
-from validator.evaluation.scoring import should_use_pvp
+from validator.evaluation.scoring import should_use_tournament_eval
 from validator.tournament.utils import send_to_discord
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
@@ -150,7 +150,7 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
     for task in preevaluation_tasks:
         try:
             assert task.task_id is not None
-            pvp = should_use_pvp(task)
+            pvp = should_use_tournament_eval(task)
             await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
@@ -273,7 +273,7 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
 async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
     assert task.task_id is not None
 
-    if task.task_type == TaskType.GRPOTASK or should_use_pvp(task):
+    if task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task):
         training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
         if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
             logger.info(f"Task {task.task_id} still has non-terminal training rows; deferring batch evaluation")
@@ -289,7 +289,7 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
     all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))
 
-    batch_together = task.task_type == TaskType.GRPOTASK or should_use_pvp(task)
+    batch_together = task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task)
     hotkey_batches = [all_hotkeys] if batch_together else [[hotkey] for hotkey in all_hotkeys]
     pending_evaluations = []
     for hotkeys in hotkey_batches:

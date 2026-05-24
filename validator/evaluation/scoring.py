@@ -532,7 +532,7 @@ async def process_miners_pool(
             logger.info(f"Constructed repo {repo} for miner {miner.hotkey}")
             miner_repos[miner.hotkey] = repo
 
-    if miner_repos and should_use_pvp(task):
+    if miner_repos and should_use_tournament_eval(task):
         try:
             results.extend(await _run_pvp_group_eval(task, miner_repos, config, num_gpus))
         except PvPIncompleteError:
@@ -623,16 +623,17 @@ async def process_miners_pool(
     return results
 
 
-def should_use_pvp(task: AnyTypeRawTask) -> bool:
-    """Check if this task should use PvP evaluation based on its games' eval_type."""
+def should_use_tournament_eval(task: AnyTypeRawTask) -> bool:
+    """Check if this task should use tournament evaluation (PvP or individual envs)."""
     if task.task_type != TaskType.ENVIRONMENTTASK:
         return False
     env_names = getattr(task, "environment_names", None)
     if not env_names:
         return False
+    tournament_eval_types = {core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL}
     for name in env_names:
         env_config = core_cst.ENVIRONMENT_CONFIGS.get(name)
-        if env_config and env_config.eval_type == core_cst.EvalType.PVP:
+        if env_config and env_config.eval_type in tournament_eval_types:
             return True
     return False
 
@@ -845,7 +846,28 @@ async def _eval_individual_envs(
 
     incomplete = scores.missing(individual_envs, miners.hotkeys)
     if incomplete:
-        raise PvPIncompleteError(f"Individual env scores incomplete: {incomplete}")
+        # Check if any missing hotkeys are still retryable — if so, raise to retry next cycle
+        still_retryable = False
+        for env, missing_hks in incomplete:
+            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=3)
+            if retryable:
+                still_retryable = True
+                break
+
+        if still_retryable:
+            raise PvPIncompleteError(f"Individual env scores incomplete: {incomplete}")
+
+        # All missing hotkeys exhausted attempts — assign score=0
+        for env, missing_hks in incomplete:
+            if env not in scores.results:
+                scores.results[env] = IndividualEvalResult(environment_name=env, scores_by_hotkey={})
+            for hk in missing_hks:
+                scores.results[env].scores_by_hotkey[hk] = 0.0
+                await tournament_sql.save_individual_score(
+                    task_id=task_id_str, hotkey=hk,
+                    environment_name=env.value, score=0.0, psql_db=config.psql_db,
+                )
+            logger.warning(f"Individual eval {env.value}: assigned score=0 for exhausted hotkeys: {[hk[:8] for hk in missing_hks]}")
 
     outcomes: list[PairwiseOutcome] = []
     for env in individual_envs:
@@ -892,9 +914,6 @@ async def _dispatch_missing_individual(
     if not to_run:
         return scores
 
-    for hk in to_run:
-        await tournament_sql.increment_individual_score_attempts(task_id_str, hk, env.value, config.psql_db)
-
     gpu_req = get_tournament_gpu_requirement(
         TaskType.ENVIRONMENTTASK, model_params, base_model,
         gpu_multiplier=env_config.gpu_multiplier,
@@ -911,11 +930,17 @@ async def _dispatch_missing_individual(
         psql_db=config.psql_db,
     )
 
+    # Persist scores for hotkeys that succeeded
     for hotkey, score in eval_result.scores_by_hotkey.items():
         await tournament_sql.save_individual_score(
             task_id=task_id_str, hotkey=hotkey,
             environment_name=env.value, score=score, psql_db=config.psql_db,
         )
+
+    # Increment attempts only for hotkeys that were dispatched but didn't produce a score
+    failed_hotkeys = [hk for hk in to_run if hk not in eval_result.scores_by_hotkey]
+    for hk in failed_hotkeys:
+        await tournament_sql.increment_individual_score_attempts(task_id_str, hk, env.value, config.psql_db)
 
     if env not in scores.results:
         scores.results[env] = IndividualEvalResult(environment_name=env, scores_by_hotkey={})

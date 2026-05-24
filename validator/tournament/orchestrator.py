@@ -39,7 +39,7 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
-from validator.evaluation.scoring import should_use_pvp
+from validator.evaluation.scoring import should_use_tournament_eval
 from validator.tournament.utils import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
@@ -925,7 +925,7 @@ async def seed_tournament_evaluations_from_training(config: Config):
                 try:
                     # For PvP tasks, only seed eval rows once ALL miners have terminal training.
                     # Otherwise miners get evaluated individually as they finish, producing 0 PvP pairs.
-                    if should_use_pvp(task):
+                    if should_use_tournament_eval(task):
                         statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
                         if statuses and any(s not in ("success", "failure") for s in statuses.values()):
                             continue
