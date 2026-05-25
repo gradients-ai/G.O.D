@@ -208,9 +208,10 @@ async def _deploy_basilica_eval_repo(
     image: str,
     source: str,
     env: dict[str, str],
-    gpu_count: int,
+    gpu_count: int | None,
     gpu_models: list[str],
-    min_gpu_memory_gb: int,
+    min_gpu_memory_gb: int | None,
+    storage: bool | str,
     task_id: UUID | None,
     psql_db: PSQLDB | None,
     repo_to_hotkey: dict[str, str],
@@ -243,21 +244,24 @@ async def _deploy_basilica_eval_repo(
         min_gpu_memory_gb=min_gpu_memory_gb,
     )
 
-    deployment = await asyncio.to_thread(
-        client.deploy,
-        name=deployment_name,
-        source=source,
-        image=image,
-        port=8000,
-        cpu=vcst.EVAL_BASILICA_CPU,
-        memory=vcst.EVAL_BASILICA_MEMORY,
-        ttl_seconds=vcst.EVAL_BASILICA_TTL_SECONDS,
-        timeout=vcst.EVAL_BASILICA_TIMEOUT,
-        env=env,
-        gpu_count=gpu_count,
-        gpu_models=gpu_models,
-        min_gpu_memory_gb=min_gpu_memory_gb,
-    )
+    deploy_kwargs = {
+        "name": deployment_name,
+        "source": source,
+        "image": image,
+        "port": 8000,
+        "cpu": vcst.EVAL_BASILICA_CPU,
+        "memory": vcst.EVAL_BASILICA_MEMORY,
+        "storage": storage,
+        "ttl_seconds": vcst.EVAL_BASILICA_TTL_SECONDS,
+        "timeout": vcst.EVAL_BASILICA_TIMEOUT,
+        "env": env,
+    }
+    if gpu_count and gpu_count > 0:
+        deploy_kwargs["gpu_count"] = gpu_count
+        deploy_kwargs["gpu_models"] = gpu_models
+        deploy_kwargs["min_gpu_memory_gb"] = min_gpu_memory_gb
+
+    deployment = await asyncio.to_thread(client.deploy, **deploy_kwargs)
     resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
     ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name)
 
@@ -343,28 +347,33 @@ async def _run_single_basilica_eval_repo(
     image: str,
     source: str,
     env: dict[str, str],
-    gpu_count: int,
+    gpu_count: int | None,
     gpu_models: list[str],
-    min_gpu_memory_gb: int,
+    min_gpu_memory_gb: int | None,
     task_id: UUID | None,
     psql_db: PSQLDB | None,
     repo_to_hotkey: dict[str, str],
+    storage: bool | str = False,
     hotkey: str | None = None,
     existing_deployment_name: str | None = None,
+    local_logging: bool | None = False,
 ) -> dict | str:
     """Run one repo eval with retries. Supports resume via existing_deployment_name."""
     eval_id = str(uuid.uuid4())
     task_id_str = str(task_id) if task_id else "unknown"
     hotkey_str = hotkey or repo_to_hotkey.get(repo) or "unknown"
-    eval_logger = get_environment_logger(
-        name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
-        repo_id=repo,
-        eval_id=eval_id,
-        model=model_name,
-        task_type=task_type,
-        task_id=task_id_str,
-        hotkey=hotkey_str,
-    )
+    if not local_logging:
+        eval_logger = get_environment_logger(
+            name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
+            repo_id=repo,
+            eval_id=eval_id,
+            model=model_name,
+            task_type=task_type,
+            task_id=task_id_str,
+            hotkey=hotkey_str,
+        )
+    else:
+        eval_logger = get_logger(f"{__name__}.basilica.{repo.split('/')[-1]}.{eval_id[:8]}")
 
     def log_step(step: str, **fields) -> None:
         _log_eval_step(eval_logger, step, **fields)
@@ -409,6 +418,7 @@ async def _run_single_basilica_eval_repo(
                 gpu_count=gpu_count,
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
+                storage=storage,
                 task_id=task_id,
                 psql_db=psql_db,
                 repo_to_hotkey=repo_to_hotkey,
@@ -471,13 +481,15 @@ async def run_basilica_eval_repos(
     image: str,
     source: str,
     build_env_for_repo,
-    gpu_count: int,
+    gpu_count: int | None,
     gpu_models: list[str],
-    min_gpu_memory_gb: int,
+    min_gpu_memory_gb: int | None,
     task_id: UUID | None,
     psql_db: PSQLDB | None,
     repo_to_hotkey: dict[str, str],
+    storage: bool | str = False,
     deployment_ids_by_repo: dict[str, str] | None = None,
+    local_logging: bool | None = False,
 ) -> dict[str, dict | str]:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
     task_results = await asyncio.gather(
@@ -492,6 +504,7 @@ async def run_basilica_eval_repos(
                 gpu_count=gpu_count,
                 gpu_models=gpu_models,
                 min_gpu_memory_gb=min_gpu_memory_gb,
+                storage=storage,
                 task_id=task_id,
                 psql_db=psql_db,
                 repo_to_hotkey=repo_to_hotkey,
@@ -499,6 +512,7 @@ async def run_basilica_eval_repos(
                 existing_deployment_name=(
                     deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None
                 ),
+                local_logging=local_logging,
             )
             for repo in repos
         ],

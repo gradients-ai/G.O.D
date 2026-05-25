@@ -19,7 +19,7 @@ BASE_MODEL_NAME = "Qwen/Qwen2.5-7B-Instruct"
 LORA_MODEL_NAME = None  # e.g. "your-org/your-lora-repo"
 
 # --- Evaluation Configuration ---
-GAME_TO_EVAL = "gin_rummy"
+GAME_TO_EVAL = "intercode"
 RANDOM_SEED = 42
 NUM_GPUS = 1
 
@@ -40,6 +40,7 @@ async def run_evaluation() -> None:
         file_format=FileFormat.S3,
         num_gpus=NUM_GPUS,
         eval_seed=RANDOM_SEED,
+        local_logging=True,
     )
 
     result_obj = results.results.get(model_to_eval)

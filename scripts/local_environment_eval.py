@@ -3,15 +3,15 @@
 Manual environment evaluation script that reuses validator local env evaluation flow.
 
 Edit the config constants below, then run:
-    python -m scripts.manual_environment_eval
+    python -m scripts.local_environment_eval
 """
 
 import asyncio
-import subprocess
 import time
 
 from core.models.utility_models import EnvironmentDatasetType
-from validator.evaluation.docker_evaluation import run_evaluation_local_environment
+from core.models.utility_models import FileFormat
+from validator.evaluation.local_evaluation import run_evaluation_docker_text
 
 
 # --- Model Configuration ---
@@ -32,11 +32,13 @@ async def run_evaluation() -> None:
     print(f"🎯 GPU ID: {GPU_ID}")
     print(f"🌱 Eval seed: {RANDOM_SEED}")
 
-    results = await run_evaluation_local_environment(
+    results = await run_evaluation_docker_text(
+        dataset="/tmp/dummy_environment_data.json",
         models=[model_to_eval],
         original_model=BASE_MODEL_NAME,
         dataset_type=dataset_type,
-        gpu_id=GPU_ID,
+        file_format=FileFormat.JSON,
+        gpu_ids=[GPU_ID],
         eval_seed=RANDOM_SEED,
     )
 
