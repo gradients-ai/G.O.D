@@ -2,13 +2,49 @@
 tournament eval gate, environment ranking direction, batching.
 """
 
+import importlib.util
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
+from uuid import uuid4
+
+import pytest
+
+
+def _preload_tournament_gpu_module() -> None:
+    module_name = "validator.tournament.gpu"
+    if module_name in sys.modules:
+        return
+
+    repo_root = Path(__file__).resolve().parents[1]
+    package_name = "validator.tournament"
+    package = types.ModuleType(package_name)
+    package.__path__ = [str(repo_root / "validator" / "tournament")]
+    sys.modules.setdefault(package_name, package)
+
+    module_path = repo_root / "validator" / "tournament" / "gpu.py"
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Could not load module spec for {module_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+
+
+_preload_tournament_gpu_module()
 
 from core.constants import ENVIRONMENT_CONFIGS
 from core.constants import EnvironmentName
 from core.constants import EvalType
+from core.models.scoring_models import IndividualEvalResult
+from core.models.scoring_models import IndividualScoresByEnv
+from core.models.scoring_models import MinerRepos
 from core.models.utility_models import TaskType
 from validator.core.models import MinerResultsText
+from validator.evaluation import scoring
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
 from validator.evaluation.scoring import should_use_tournament_eval
 
@@ -98,3 +134,36 @@ class TestEnvRankingDirection:
 
         first_place = next(r for r in ranked if r.score > 0 and "1st" in (r.score_reason or ""))
         assert first_place.hotkey == "high"
+
+
+@pytest.mark.asyncio
+async def test_individual_env_eval_requests_one_h100(monkeypatch):
+    captured_kwargs = {}
+
+    async def fake_run_evaluation_individual(**kwargs):
+        captured_kwargs.update(kwargs)
+        return IndividualEvalResult(
+            environment_name=kwargs["environment_name"],
+            scores_by_hotkey={"hk_a": 0.75, "hk_b": 0.25},
+        )
+
+    async def fake_save_individual_score(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(scoring, "run_evaluation_individual", fake_run_evaluation_individual)
+    monkeypatch.setattr(scoring.tournament_sql, "save_individual_score", fake_save_individual_score)
+
+    await scoring._dispatch_missing_individual(
+        env=EnvironmentName.INTERCODE,
+        task_id=uuid4(),
+        task_id_str="task-id",
+        miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a", "hk_b": "org/repo-b"}),
+        base_model="Qwen/Qwen2.5-72B-Instruct",
+        model_params=72_000_000_000,
+        seed=42,
+        config=SimpleNamespace(psql_db=object()),
+        scores=IndividualScoresByEnv(),
+        db_scores=[],
+    )
+
+    assert captured_kwargs["gpu_count"] == 1

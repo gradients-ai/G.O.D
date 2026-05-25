@@ -641,6 +641,7 @@ def should_use_tournament_eval(task: AnyTypeRawTask) -> bool:
     return False
 
 
+
 async def _run_env_tournament_eval(
     task: AnyTypeRawTask,
     miner_repos: dict[str, str],  # {hotkey: repo_id}
@@ -928,10 +929,8 @@ async def _dispatch_missing_individual(
     if not to_run:
         return scores
 
-    gpu_req = get_tournament_gpu_requirement(
-        TaskType.ENVIRONMENTTASK, model_params, base_model,
-        gpu_multiplier=env_config.gpu_multiplier,
-    )
+    # Individual env evals deploy one model per Basilica job, so keep each deployment to 1xH100.
+    individual_gpu_count = 1
 
     eval_result = await run_evaluation_individual(
         miners=miners.subset(to_run),
@@ -939,7 +938,7 @@ async def _dispatch_missing_individual(
         environment_name=env,
         seed=seed,
         image=env_config.tournament_eval_image,
-        gpu_count=gpu_req.gpu_count,
+        gpu_count=individual_gpu_count,
         task_id=task_id,
         psql_db=config.psql_db,
     )
@@ -1184,5 +1183,3 @@ def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage
         logger.error(f"Error checking for disk cache error: {e}")
         return False
     return False
-
-
