@@ -281,11 +281,15 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
+        boss_assigned = False
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
-                if EMISSION_BURN_HOTKEY not in group_participants:
+                if EMISSION_BURN_HOTKEY in group_participants:
+                    boss_assigned = True
+                elif not boss_assigned:
                     group_participants.append(EMISSION_BURN_HOTKEY)
+                    boss_assigned = True
                 participants_to_assign = group_participants
 
                 if is_final_round:
