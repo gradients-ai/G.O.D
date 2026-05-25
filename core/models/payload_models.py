@@ -97,7 +97,6 @@ class TrainerProxyRequest(BaseModel):
     github_repo: str
     gpu_ids: list[int]
     hotkey: str
-    github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
@@ -122,7 +121,6 @@ class TrainerTaskLog(TrainerJob):
     training_data: TrainRequestImage | TrainRequestText
     github_repo: str
     hotkey: str
-    github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None

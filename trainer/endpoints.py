@@ -58,7 +58,6 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             clone_repo,
             repo_url=req.github_repo,
             parent_dir=cst.TEMP_REPO_PATH,
-            branch=req.github_branch,
             commit_hash=req.github_commit_hash,
             github_token=req.github_token,
             task_id=req.training_data.task_id,
