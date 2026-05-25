@@ -120,7 +120,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
     EnvironmentName.INTERCODE: EnvironmentConfig(
         task_id_min=1,
         task_id_max=200,
-        num_seeds=4,
+        num_seeds=20,
         num_baseline_episodes=10,
         eval_type=EvalType.INDIVIDUAL,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
