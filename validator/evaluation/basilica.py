@@ -298,9 +298,17 @@ async def _poll_eval_deployment(
     failure_cleanup_reason: str,
     timeout_cleanup_reason: str,
     retry_on_failure: bool,
+    poll_interval_seconds: int = vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+    max_poll_seconds: int = vcst.EVAL_BASILICA_MAX_POLL_SECONDS,
 ) -> dict | str:
     ctx.log_eval_step("poll_start", deployment=deployment_name)
-    result = await _poll_basilica_result(deployment, ctx.repo, eval_logger=ctx.eval_logger)
+    result = await _poll_basilica_result(
+        deployment,
+        ctx.repo,
+        eval_logger=ctx.eval_logger,
+        poll_interval_seconds=poll_interval_seconds,
+        max_poll_seconds=max_poll_seconds,
+    )
 
     if isinstance(result, dict):
         ctx.log_eval_step("poll_complete", deployment=deployment_name)

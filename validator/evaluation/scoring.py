@@ -680,6 +680,8 @@ async def _run_pvp_group_eval(
             base_model=base_model,
             environment_names=environment_names,
             seed=seed,
+            task_id=task.task_id,
+            psql_db=config.psql_db,
         )
 
         # Persist group eval pair results to DB
