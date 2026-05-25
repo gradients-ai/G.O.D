@@ -1149,6 +1149,29 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     if recovered:
                         continue
 
+                    # Env tasks with no augmentation: reuse sibling's baseline_stats
+                    is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+                    if is_env_task and task.augmentation_config is None:
+                        sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
+                            task_id_str, task.model_id, config.psql_db,
+                        )
+                        if sibling_stats is not None:
+                            task.baseline_stats = sibling_stats
+                            task.status = TaskStatus.LOOKING_FOR_NODES
+                            await task_sql.update_task(task, config.psql_db)
+                            logger.info(
+                                f"Copied baseline_stats from sibling for env task {task.task_id}, "
+                                f"skipping model prep"
+                            )
+                            continue
+
+                        # A sibling is already running model prep — wait for it
+                        sibling_ids = await tournament_sql.get_sibling_task_ids(
+                            task_id_str, config.psql_db,
+                        )
+                        if any(sid in _model_prep_in_progress for sid in sibling_ids):
+                            continue
+
                     gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
