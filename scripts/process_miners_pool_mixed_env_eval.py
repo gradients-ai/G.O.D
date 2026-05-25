@@ -21,6 +21,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 import types
 import warnings
 from dataclasses import dataclass
@@ -84,6 +85,64 @@ DEFAULT_SEED = 42
 class MinerSpec:
     hotkey: str
     expected_repo_name: str
+
+
+@dataclass
+class TimingWindow:
+    label: str
+    start: float
+    end: float
+    source: str
+
+    @property
+    def seconds(self) -> float:
+        return max(0.0, self.end - self.start)
+
+
+class EvaluationTimingTracker:
+    def __init__(self) -> None:
+        self.script_start = time.perf_counter()
+        self.windows: list[TimingWindow] = []
+
+    def record_window(self, label: str, start: float, end: float, source: str) -> None:
+        self.windows.append(TimingWindow(label=label, start=start, end=end, source=source))
+
+    def record_duration_ending_now(self, label: str, seconds: float, source: str) -> None:
+        end = time.perf_counter()
+        self.record_window(label=label, start=end - max(0.0, seconds), end=end, source=source)
+
+    def total_eval_seconds(self) -> float:
+        if not self.windows:
+            return 0.0
+
+        intervals = sorted((window.start, window.end) for window in self.windows)
+        total = 0.0
+        current_start, current_end = intervals[0]
+        for start, end in intervals[1:]:
+            if start <= current_end:
+                current_end = max(current_end, end)
+                continue
+            total += current_end - current_start
+            current_start, current_end = start, end
+        total += current_end - current_start
+        return total
+
+    def summary(self) -> dict[str, Any]:
+        script_wall_seconds = time.perf_counter() - self.script_start
+        eval_seconds = self.total_eval_seconds()
+        return {
+            "evaluation_wall_seconds_excluding_basilica_startup": round(eval_seconds, 3),
+            "full_script_wall_seconds": round(script_wall_seconds, 3),
+            "non_evaluation_wall_seconds": round(max(0.0, script_wall_seconds - eval_seconds), 3),
+            "windows": [
+                {
+                    "label": window.label,
+                    "seconds": round(window.seconds, 3),
+                    "source": window.source,
+                }
+                for window in self.windows
+            ],
+        }
 
 
 class InMemoryTournamentStore:
@@ -316,6 +375,7 @@ def install_in_memory_patches(
     seed: int,
     skip_hf_repo_check: bool,
     poll_interval_seconds: int | None,
+    timing_tracker: EvaluationTimingTracker,
 ) -> None:
     repo_by_hotkey = {miner.hotkey: miner.expected_repo_name for miner in miners}
 
@@ -351,27 +411,38 @@ def install_in_memory_patches(
     if skip_hf_repo_check:
         scoring.HfApi = FakeHfApi
 
-    if poll_interval_seconds is not None:
-        original_poll = basilica_eval._poll_basilica_result
+    original_poll = basilica_eval._poll_basilica_result
 
-        async def patched_poll(
-            deployment: Any,
-            repo: str,
-            eval_logger: Any,
-            poll_interval_seconds: int = poll_interval_seconds,
-            max_poll_seconds: int | None = None,
-        ) -> dict | str:
-            kwargs: dict[str, Any] = {"poll_interval_seconds": poll_interval_seconds}
-            if max_poll_seconds is not None:
-                kwargs["max_poll_seconds"] = max_poll_seconds
-            return await original_poll(deployment, repo, eval_logger=eval_logger, **kwargs)
+    async def patched_poll(
+        deployment: Any,
+        repo: str,
+        eval_logger: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict | str:
+        if poll_interval_seconds is not None:
+            kwargs.setdefault("poll_interval_seconds", poll_interval_seconds)
 
-        basilica_eval._poll_basilica_result = patched_poll
-        docker_evaluation._poll_basilica_result = patched_poll
+        start = time.perf_counter()
+        try:
+            return await original_poll(deployment, repo, *args, eval_logger=eval_logger, **kwargs)
+        finally:
+            end = time.perf_counter()
+            if not repo.startswith("pvp-"):
+                timing_tracker.record_window(
+                    label=f"individual:{repo}",
+                    start=start,
+                    end=end,
+                    source="post-deploy Basilica polling window",
+                )
+
+    basilica_eval._poll_basilica_result = patched_poll
+    docker_evaluation._poll_basilica_result = patched_poll
 
 
-def install_result_logging() -> None:
+def install_result_logging(timing_tracker: EvaluationTimingTracker) -> None:
     original_group_eval = scoring.run_evaluation_pvp_group
+    original_pair_eval = scoring.run_evaluation_pvp_pair
     original_individual_eval = scoring.run_evaluation_individual
 
     async def logged_group_eval(*args: Any, **kwargs: Any) -> Any:
@@ -382,6 +453,20 @@ def install_result_logging() -> None:
         result = await original_group_eval(*args, **kwargs)
         print("\n[pvp] Raw group evaluation result")
         print(model_dump_pretty(result))
+        timing_tracker.record_duration_ending_now(
+            label="pvp_group",
+            seconds=float(result.metadata.wall_time_seconds),
+            source="PvP evaluator metadata.wall_time_seconds",
+        )
+        return result
+
+    async def logged_pair_eval(*args: Any, **kwargs: Any) -> Any:
+        result = await original_pair_eval(*args, **kwargs)
+        timing_tracker.record_duration_ending_now(
+            label="pvp_pair",
+            seconds=float(result.metadata.wall_time_seconds),
+            source="PvP evaluator metadata.wall_time_seconds",
+        )
         return result
 
     async def logged_individual_eval(*args: Any, **kwargs: Any) -> Any:
@@ -395,6 +480,7 @@ def install_result_logging() -> None:
         return result
 
     scoring.run_evaluation_pvp_group = logged_group_eval
+    scoring.run_evaluation_pvp_pair = logged_pair_eval
     scoring.run_evaluation_individual = logged_individual_eval
 
 
@@ -408,6 +494,7 @@ async def run(args: argparse.Namespace) -> None:
 
     scoring.cts.RAYONLABS_HF_USERNAME = namespace
 
+    timing_tracker = EvaluationTimingTracker()
     store = InMemoryTournamentStore()
     install_in_memory_patches(
         store=store,
@@ -415,8 +502,9 @@ async def run(args: argparse.Namespace) -> None:
         seed=args.seed,
         skip_hf_repo_check=args.skip_hf_repo_check,
         poll_interval_seconds=args.poll_interval_seconds,
+        timing_tracker=timing_tracker,
     )
-    install_result_logging()
+    install_result_logging(timing_tracker)
 
     task = build_task(args)
     fake_config = SimpleNamespace(psql_db=object())
@@ -457,6 +545,9 @@ async def run(args: argparse.Namespace) -> None:
     print(model_dump_pretty(list(store.pvp_rows.values())))
     print("\n[store] Persisted in-memory individual rows")
     print(model_dump_pretty(list(store.individual_rows.values())))
+
+    print("\n[timing] Total evaluation time excluding Basilica startup")
+    print(model_dump_pretty(timing_tracker.summary()))
 
 
 def parse_args() -> argparse.Namespace:
