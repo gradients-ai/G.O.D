@@ -1500,7 +1500,6 @@ async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
         )
 
 
-
 async def get_sibling_env_baseline_stats(
     task_id: str, model_id: str, psql_db: PSQLDB,
 ) -> dict | None:
