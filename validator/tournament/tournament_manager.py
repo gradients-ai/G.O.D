@@ -1,6 +1,7 @@
 import asyncio
 import math
 import random
+import re
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -728,6 +729,14 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                 repo_url = responding_node.training_repo_response.github_repo
                 commit_hash = responding_node.training_repo_response.commit_hash
                 github_token = responding_node.training_repo_response.github_token
+
+                if not re.fullmatch(r"[0-9a-f]{40}", commit_hash.lower()):
+                    logger.warning(
+                        f"Miner {responding_node.node.hotkey} submitted invalid commit hash '{commit_hash}' "
+                        f"for repo {repo_url}. Must be a 40-char hex SHA. Excluding from tournament."
+                    )
+                    continue
+
                 logger.info(f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}")
 
                 is_not_obfuscated = await validate_repo_obfuscation(repo_url, commit_hash, github_token)
