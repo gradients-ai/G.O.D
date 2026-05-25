@@ -1083,7 +1083,7 @@ async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
         logger.info(f"Copied baseline_stats from sibling for env task {task.task_id}, skipping model prep")
         return True
 
-    sibling_ids = await tournament_sql.get_sibling_task_ids(task_id_str, config.psql_db)
+    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, task.model_id, config.psql_db)
     if any(sid in _model_prep_in_progress for sid in sibling_ids):
         return True
 

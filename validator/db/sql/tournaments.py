@@ -1500,7 +1500,6 @@ async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
         )
 
 
-
 async def get_sibling_env_baseline_stats(
     task_id: str, model_id: str, psql_db: PSQLDB,
 ) -> dict | None:
@@ -1535,8 +1534,11 @@ async def get_sibling_env_baseline_stats(
         return None
 
 
-async def get_sibling_task_ids(task_id: str, psql_db: PSQLDB) -> list[str]:
-    """Get task_ids of sibling tasks in the same tournament round."""
+async def get_matching_sibling_task_ids(
+    task_id: str, model_id: str, psql_db: PSQLDB,
+) -> list[str]:
+    """Get task_ids of sibling tasks in the same round with matching model_id
+    and no augmentation config (i.e. siblings that would produce identical model prep)."""
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(f"""
             SELECT tt_sibling.{cst.TASK_ID}::text AS task_id
@@ -1544,6 +1546,10 @@ async def get_sibling_task_ids(task_id: str, psql_db: PSQLDB) -> list[str]:
             JOIN {cst.TOURNAMENT_TASKS_TABLE} tt_sibling
                 ON tt_sibling.{cst.ROUND_ID} = tt_self.{cst.ROUND_ID}
                 AND tt_sibling.{cst.TASK_ID} != tt_self.{cst.TASK_ID}
+            JOIN {cst.TASKS_TABLE} t
+                ON t.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
             WHERE tt_self.{cst.TASK_ID} = $1
-        """, task_id)
+                AND t.{cst.MODEL_ID} = $2
+                AND t.{cst.AUGMENTATION_CONFIG} IS NULL
+        """, task_id, model_id)
         return [row["task_id"] for row in rows]
