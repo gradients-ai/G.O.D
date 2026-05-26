@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 
+import core.constants as core_cst
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -28,6 +29,14 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 _EVALUATING_ROWS_LOCK = asyncio.Lock()
+
+
+def _pvp_environment_names() -> list[str]:
+    return [
+        name.value
+        for name, env_config in core_cst.ENVIRONMENT_CONFIGS.items()
+        if env_config.eval_type == core_cst.EvalType.PVP
+    ]
 
 
 async def _select_miner_pool_and_add_to_task(task: AnyTypeRawTask, config: Config) -> AnyTypeRawTask:
@@ -279,7 +288,8 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
 async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
     assert task.task_id is not None
 
-    if task.task_type == TaskType.GRPOTASK or should_use_pvp(task):
+    batch_together = task.task_type == TaskType.GRPOTASK or should_use_pvp(task)
+    if batch_together:
         training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
         if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
             logger.info(f"Task {task.task_id} still has non-terminal training rows; deferring batch evaluation")
@@ -295,20 +305,36 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
     all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))
 
-    batch_together = task.task_type == TaskType.GRPOTASK or should_use_pvp(task)
     hotkey_batches = [all_hotkeys] if batch_together else [[hotkey] for hotkey in all_hotkeys]
     pending_evaluations = []
     for hotkeys in hotkey_batches:
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
         if pending_batch:
             async with _EVALUATING_ROWS_LOCK:
-                total_evaluating_rows = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
-                available_slots = cst.MAX_EVALUATING_ROWS - total_evaluating_rows
-                if len(pending_batch) > available_slots:
+                pvp_env_names = _pvp_environment_names()
+                group_evaluations = await tasks_sql.count_group_task_evaluations_by_status(
+                    "evaluating", pvp_env_names, config.psql_db
+                )
+                non_group_evaluating_rows = await tasks_sql.count_non_group_task_evaluation_rows_by_status(
+                    "evaluating", pvp_env_names, config.psql_db
+                )
+                total_eval_slots = group_evaluations + non_group_evaluating_rows
+                available_slots = cst.MAX_EVALUATING_ROWS - total_eval_slots
+
+                if batch_together:
+                    if group_evaluations >= cst.MAX_CONCURRENT_GROUP_EVALUATIONS or available_slots < 1:
+                        logger.info(
+                            f"Skipping grouped evaluation for task {task.task_id}; "
+                            f"group slots {group_evaluations}/{cst.MAX_CONCURRENT_GROUP_EVALUATIONS}, "
+                            f"eval slots {total_eval_slots}/{cst.MAX_EVALUATING_ROWS}"
+                        )
+                        continue
+                elif len(pending_batch) > available_slots:
                     logger.info(
                         f"Skipping pending evaluation rows for task {task.task_id} hotkeys {pending_batch}; "
                         f"needs {len(pending_batch)} slots but only {available_slots} available "
-                        f"({total_evaluating_rows}/{cst.MAX_EVALUATING_ROWS} evaluating rows)"
+                        f"({non_group_evaluating_rows} normal rows + {group_evaluations} grouped evals/"
+                        f"{cst.MAX_EVALUATING_ROWS} eval slots)"
                     )
                     continue
 

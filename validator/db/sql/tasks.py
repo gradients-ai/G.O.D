@@ -1521,6 +1521,58 @@ async def count_task_evaluations_by_status(status: str, psql_db: PSQLDB) -> int:
         )
 
 
+async def count_group_task_evaluations_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(DISTINCT e.{cst.TASK_ID})
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
+async def count_non_group_task_evaluation_rows_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND NOT (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
 async def get_task_ids_with_evaluation_statuses(
     statuses: list[str],
     psql_db: PSQLDB,
