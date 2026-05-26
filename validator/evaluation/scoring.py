@@ -652,14 +652,6 @@ async def _run_pvp_group_eval(
             logger.info(f"Excluding non-successful training hotkeys from PvP group eval: {skipped_hotkeys}")
         miner_repos = {hotkey: repo for hotkey, repo in miner_repos.items() if hotkey in successful_hotkeys}
 
-    participants = [
-        PvPGroupModelSpec(repo=repo, hotkey=hotkey)
-        for hotkey, repo in miner_repos.items()
-    ]
-
-    logger.info(f"PvP group eval: task={task.task_id}, {len(participants)} participants, envs={environment_names}")
-
-    # Check if all pairs already complete in DB — skip Basilica entirely
     all_hotkeys = list(miner_repos.keys())
     env_name_strs = [e.value for e in environment_names]
     task_id = str(task.task_id)
