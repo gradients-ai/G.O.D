@@ -56,6 +56,62 @@ logger = logging.getLogger(__name__)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Evaluator defaults
+# ─────────────────────────────────────────────────────────────────────────────
+
+DEFAULT_EVAL_LOG_LEVEL = "INFO"
+DEFAULT_DOWNLOAD_RETRIES = 3
+DEFAULT_BASE_SEED = vcst.ENV_EVAL_DEFAULT_SEED
+DEFAULT_TEMPERATURE = vcst.ENV_EVAL_TEMPERATURE
+
+DEFAULT_SGLANG_TENSOR_PARALLEL_SIZE = "1"
+DEFAULT_SGLANG_DTYPE = "float16"
+DEFAULT_SGLANG_PORT = "30000"
+DEFAULT_SGLANG_BASE_URL = "http://127.0.0.1:30000"
+DEFAULT_SGLANG_HEALTH_PATH = "/v1/models"
+DEFAULT_SGLANG_HEALTH_TIMEOUT_SECONDS = 1800
+DEFAULT_SGLANG_EXTRA_CLI = vcst.SGLANG_ENV_EVAL_EXTRA_CLI
+DEFAULT_FLASHINFER_WORKSPACE_MIN_BYTES = vcst.SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES
+DEFAULT_INTERCODE_LOG_SGLANG = False
+
+DEFAULT_INTERCODE_DATA_ROOT = Path("/intercode_data")
+DEFAULT_INTERCODE_FS_ROOT = Path("/intercode_fs")
+
+DEFAULT_ACTION_TIMEOUT_SECONDS = 30
+DEFAULT_OBS_TRUNCATE_CHARS = 350
+DEFAULT_MAX_TURNS = 10
+DEFAULT_MAX_TOKENS_PER_CALL = 512
+DEFAULT_ACTION_FALLBACK_MAX_TOKENS = 256
+DEFAULT_PER_TASK_TIMEOUT_SECONDS = vcst.ENV_EVAL_TASK_TIMEOUT
+DEFAULT_SESSION_TIMEOUT_SECONDS = vcst.ENV_EVAL_SESSION_TIMEOUT
+
+DEFAULT_SCORING_MODE = "continuous"
+VALID_SCORING_MODES = {"continuous", "binary"}
+
+ALL_MANAGED_PATHS = ("/testbed", "/system", "/workspace", "/backup")
+PATHS_PER_FS: dict[int, tuple[str, ...]] = {
+    1: ("/testbed",),
+    2: ("/system",),
+    3: ("/workspace", "/backup"),
+    4: (),  # filesystem-agnostic
+}
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# SGLang is chatty (per-batch progress lines) and floods Basilica logs. Default
+# off; flip INTERCODE_LOG_SGLANG=1 to re-enable when debugging the inference server.
+LOG_SGLANG_STDOUT = _env_bool("INTERCODE_LOG_SGLANG", DEFAULT_INTERCODE_LOG_SGLANG)
+SCORING_MODE = os.getenv("INTERCODE_SCORING_MODE", DEFAULT_SCORING_MODE).strip().lower()
+assert SCORING_MODE in VALID_SCORING_MODES, f"invalid INTERCODE_SCORING_MODE={SCORING_MODE!r}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # LoRA + SGLang setup
 #
 # This block is intentionally copy-pasted (with light edits) from
@@ -63,7 +119,7 @@ logger = logging.getLogger(__name__)
 # evolve independently. If you change SGLang flags here, sync the env eval.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _download_model_with_retry(repo_id: str, max_retries: int = 3) -> str:
+def _download_model_with_retry(repo_id: str, max_retries: int = DEFAULT_DOWNLOAD_RETRIES) -> str:
     for attempt in range(1, max_retries + 1):
         try:
             logger.info(
@@ -84,7 +140,7 @@ def _download_model_with_retry(repo_id: str, max_retries: int = 3) -> str:
                 raise
 
 
-def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3) -> str:
+def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = DEFAULT_DOWNLOAD_RETRIES) -> str:
     os.makedirs(local_dir, exist_ok=True)
     for attempt in range(1, max_retries + 1):
         try:
@@ -146,7 +202,7 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
 
 
 def _configure_logging() -> None:
-    level_name = os.getenv("EVAL_LOG_LEVEL", "INFO").upper()
+    level_name = os.getenv("EVAL_LOG_LEVEL", DEFAULT_EVAL_LOG_LEVEL).upper()
     level = getattr(logging, level_name, logging.INFO)
     fmt = "%(asctime)s %(levelname)s %(name)s - %(message)s"
     handler = logging.StreamHandler(sys.stderr)
@@ -188,9 +244,9 @@ def _parse_environment_name() -> cst.EnvironmentName:
 
 
 def _build_sglang_command(model_path: str, seed: int) -> str:
-    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
-    dtype = os.getenv("SGLANG_DTYPE", "float16")
-    port = os.getenv("SGLANG_PORT", "30000")
+    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", DEFAULT_SGLANG_TENSOR_PARALLEL_SIZE)
+    dtype = os.getenv("SGLANG_DTYPE", DEFAULT_SGLANG_DTYPE)
+    port = os.getenv("SGLANG_PORT", DEFAULT_SGLANG_PORT)
     base = (
         "python3 -m sglang.launch_server "
         f"--model-path {model_path} "
@@ -199,13 +255,8 @@ def _build_sglang_command(model_path: str, seed: int) -> str:
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed}"
     )
-    extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or vcst.SGLANG_ENV_EVAL_EXTRA_CLI).strip()
+    extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or DEFAULT_SGLANG_EXTRA_CLI).strip()
     return f"{base} {extra}" if extra else base
-
-
-# SGLang is chatty (per-batch progress lines) and floods Basilica logs. Default
-# off; flip INTERCODE_LOG_SGLANG=1 to re-enable when debugging the inference server.
-LOG_SGLANG_STDOUT = os.getenv("INTERCODE_LOG_SGLANG", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _start_process(command: str, name: str, *, capture_stdout: bool = True) -> subprocess.Popen:
@@ -328,16 +379,6 @@ def _map_task_id(global_id: int, ranges: list[tuple[int, int, int]]) -> tuple[in
 # the pristine snapshot, mimicking what `git status --short` produces upstream.
 # ─────────────────────────────────────────────────────────────────────────────
 
-ALL_MANAGED_PATHS = ("/testbed", "/system", "/workspace", "/backup")
-PATHS_PER_FS: dict[int, tuple[str, ...]] = {
-    1: ("/testbed",),
-    2: ("/system",),
-    3: ("/workspace", "/backup"),
-    4: (),  # filesystem-agnostic
-}
-
-ACTION_TIMEOUT_SECONDS = 30
-
 # Scoring mode for LocalBashEnv._get_reward().
 #   "continuous" — upstream InterCode formula, reward ∈ [0.01, 1.0]:
 #                    0.01
@@ -349,8 +390,6 @@ ACTION_TIMEOUT_SECONDS = 30
 #                  gold_obs exactly after whitespace normalization); else 0.0.
 # Override at deploy time without rebuilding the image via the
 # INTERCODE_SCORING_MODE env var.
-SCORING_MODE = os.getenv("INTERCODE_SCORING_MODE", "continuous").strip().lower()
-assert SCORING_MODE in {"continuous", "binary"}, f"invalid INTERCODE_SCORING_MODE={SCORING_MODE!r}"
 
 
 class LocalBashEnv:
@@ -460,7 +499,7 @@ class LocalBashEnv:
                 ["/bin/bash", "-c", action],
                 cwd="/" if is_cd else (self.workdir or "/"),
                 capture_output=True,
-                timeout=ACTION_TIMEOUT_SECONDS,
+                timeout=DEFAULT_ACTION_TIMEOUT_SECONDS,
             )
             stdout = res.stdout.decode("utf-8", errors="replace")
             stderr = res.stderr.decode("utf-8", errors="replace")
@@ -497,7 +536,7 @@ class LocalBashEnv:
                     ["/bin/bash", "-c", self.gold],
                     cwd="/",
                     capture_output=True,
-                    timeout=ACTION_TIMEOUT_SECONDS,
+                    timeout=DEFAULT_ACTION_TIMEOUT_SECONDS,
                 )
                 gold_obs = (
                     res.stdout.decode("utf-8", errors="replace")
@@ -697,10 +736,6 @@ the Hello World text. I can submit.
 Action 5: submit
 """
 
-OBS_TRUNCATE_CHARS = 350
-DEFAULT_MAX_TURNS = 10
-DEFAULT_MAX_TOKENS_PER_CALL = 512
-
 _REACT_ACTION_RE = re.compile(r"execute\[(.*)\]", re.DOTALL)
 
 
@@ -756,7 +791,7 @@ def _run_react_episode(
                 client, model_name, temperature,
                 prompt + f"Thought {turn}: {thought}\nAction {turn}:",
                 stop_seqs=["\n"],
-                max_tokens=256,
+                max_tokens=DEFAULT_ACTION_FALLBACK_MAX_TOKENS,
             )
             action = action_text.strip()
 
@@ -771,8 +806,8 @@ def _run_react_episode(
         else:
             observation, reward, done_step, _info = env.step(action_parsed)
 
-        if isinstance(observation, str) and len(observation) > OBS_TRUNCATE_CHARS:
-            observation = observation[:OBS_TRUNCATE_CHARS]
+        if isinstance(observation, str) and len(observation) > DEFAULT_OBS_TRUNCATE_CHARS:
+            observation = observation[:DEFAULT_OBS_TRUNCATE_CHARS]
 
         prompt += (
             f"Thought {turn}: {thought}\n"
@@ -801,7 +836,7 @@ async def _run() -> None:
         logger.info(
             "eval_intercode: start pid=%s EVAL_LOG_LEVEL=%s",
             os.getpid(),
-            os.getenv("EVAL_LOG_LEVEL", "INFO"),
+            os.getenv("EVAL_LOG_LEVEL", DEFAULT_EVAL_LOG_LEVEL),
         )
 
         models_raw = os.getenv("MODELS", "")
@@ -810,8 +845,8 @@ async def _run() -> None:
             raise ValueError("MODELS is required and must contain a single repo")
 
         original_model = os.getenv("ORIGINAL_MODEL", model_repo)
-        base_seed = int(os.getenv("EVAL_SEED", str(vcst.ENV_EVAL_DEFAULT_SEED)))
-        temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
+        base_seed = int(os.getenv("EVAL_SEED", str(DEFAULT_BASE_SEED)))
+        temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(DEFAULT_TEMPERATURE)))
 
         env_name = _parse_environment_name()
         env_config = cst.ENVIRONMENT_CONFIGS[env_name]
@@ -874,8 +909,8 @@ async def _run() -> None:
                 inference_model_name = model_repo
                 sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
 
-        sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800"))
-        _min_ws = vcst.SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES
+        sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", str(DEFAULT_SGLANG_HEALTH_TIMEOUT_SECONDS)))
+        _min_ws = DEFAULT_FLASHINFER_WORKSPACE_MIN_BYTES
         try:
             _cur_ws = int(os.environ.get("SGLANG_FLASHINFER_WORKSPACE_SIZE", "0") or "0")
         except ValueError:
@@ -888,10 +923,10 @@ async def _run() -> None:
         if LOG_SGLANG_STDOUT:
             sglang_log_task = asyncio.create_task(_stream_logs(sglang_proc, "sglang"))
 
-        sglang_base_url = os.getenv("SGLANG_BASE_URL", "http://127.0.0.1:30000")
+        sglang_base_url = os.getenv("SGLANG_BASE_URL", DEFAULT_SGLANG_BASE_URL)
         await _wait_for_health(
             sglang_base_url,
-            os.getenv("SGLANG_HEALTH_PATH", "/v1/models"),
+            os.getenv("SGLANG_HEALTH_PATH", DEFAULT_SGLANG_HEALTH_PATH),
             sglang_health_timeout,
             service_name="SGLang",
         )
@@ -900,8 +935,8 @@ async def _run() -> None:
         client = OpenAI(api_key="dummy", base_url=f"{sglang_base_url}/v1")
 
         # Load NL2Bash datasets + per-fs mapping.
-        data_root = Path(os.getenv("INTERCODE_DATA_ROOT", "/intercode_data"))
-        snapshot_root = Path(os.getenv("INTERCODE_FS_ROOT", "/intercode_fs"))
+        data_root = Path(os.getenv("INTERCODE_DATA_ROOT", str(DEFAULT_INTERCODE_DATA_ROOT)))
+        snapshot_root = Path(os.getenv("INTERCODE_FS_ROOT", str(DEFAULT_INTERCODE_FS_ROOT)))
         if not data_root.exists():
             raise RuntimeError(f"NL2Bash data not found at {data_root}; image may be misbuilt")
         if not snapshot_root.exists():
@@ -915,8 +950,8 @@ async def _run() -> None:
         rewards: list[float] = []
         max_turns = int(os.getenv("INTERCODE_MAX_TURNS", str(DEFAULT_MAX_TURNS)))
         max_tokens_per_call = int(os.getenv("INTERCODE_MAX_TOKENS_PER_CALL", str(DEFAULT_MAX_TOKENS_PER_CALL)))
-        per_task_timeout = vcst.ENV_EVAL_TASK_TIMEOUT
-        session_deadline = time.monotonic() + vcst.ENV_EVAL_SESSION_TIMEOUT
+        per_task_timeout = DEFAULT_PER_TASK_TIMEOUT_SECONDS
+        session_deadline = time.monotonic() + DEFAULT_SESSION_TIMEOUT_SECONDS
 
         for idx, task_id in enumerate(task_ids_to_test):
             if time.monotonic() >= session_deadline:
