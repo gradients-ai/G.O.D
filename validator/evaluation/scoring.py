@@ -640,6 +640,14 @@ async def _run_pvp_group_eval(
     eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
     seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
 
+    training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+    if training_statuses:
+        successful_hotkeys = {hotkey for hotkey, status in training_statuses.items() if status == "success"}
+        skipped_hotkeys = sorted(set(miner_repos) - successful_hotkeys)
+        if skipped_hotkeys:
+            logger.info(f"Excluding non-successful training hotkeys from PvP group eval: {skipped_hotkeys}")
+        miner_repos = {hotkey: repo for hotkey, repo in miner_repos.items() if hotkey in successful_hotkeys}
+
     participants = [
         PvPGroupModelSpec(repo=repo, hotkey=hotkey)
         for hotkey, repo in miner_repos.items()

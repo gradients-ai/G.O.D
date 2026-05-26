@@ -150,8 +150,7 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
     for task in preevaluation_tasks:
         try:
             assert task.task_id is not None
-            pvp = should_use_pvp(task)
-            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
@@ -189,18 +188,25 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
         successful_training_hotkeys = {
             hotkey for hotkey, status in training_statuses.items() if status == "success"
         }
-        evaluation_hotkeys = {row["hotkey"] for row in rows}
+        expected_rows = [row for row in rows if row["hotkey"] in successful_training_hotkeys]
+        evaluation_hotkeys = {row["hotkey"] for row in expected_rows}
 
         if evaluation_hotkeys != successful_training_hotkeys:
             missing_hotkeys = sorted(successful_training_hotkeys - evaluation_hotkeys)
-            extra_hotkeys = sorted(evaluation_hotkeys - successful_training_hotkeys)
             logger.info(
-                "Task %s evaluation coverage mismatch; deferring final scoring. missing=%s extra=%s",
+                "Task %s evaluation coverage mismatch; deferring final scoring. missing=%s",
                 task.task_id,
                 missing_hotkeys,
-                extra_hotkeys,
             )
             return False
+        extra_hotkeys = sorted({row["hotkey"] for row in rows} - successful_training_hotkeys)
+        if extra_hotkeys:
+            logger.info(
+                "Task %s ignoring stale evaluation rows for non-successful training hotkeys: %s",
+                task.task_id,
+                extra_hotkeys,
+            )
+        rows = expected_rows
 
     if not rows:
         if is_tournament_task:
