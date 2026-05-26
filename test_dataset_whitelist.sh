@@ -31,8 +31,7 @@ PAYLOAD=$(cat <<EOF
     "github_repo": "https://github.com/wonderingwanderingwonders/god-dataset-whitelist-test",
     "gpu_ids": [0],
     "hotkey": "5Gwwwk2hiYjsk7jhj9grvMagD7g6nqQDfFe4Y9NtM3C3KjXy",
-    "github_branch": null,
-    "github_commit_hash": "main",
+    "github_commit_hash": "abc123def456abc123def456abc123def456abc1",
     "github_token": null,
     "requested_datasets": ["tasksource/Boardgame-QA"]
 }

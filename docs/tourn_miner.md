@@ -89,7 +89,7 @@ You have two options for your tournament training repository:
 Use the official G.O.D repository as your starting point:
 
 - **GitHub Repository**: `https://github.com/rayonlabs/G.O.D`
-- **Commit Hash**: Use `"main"` for the latest version, or a specific commit hash for consistency
+- **Commit Hash**: Must be a full 40-character commit SHA (e.g. `"a1b2c3d4..."`) — branch names are not accepted
 
 The base repository includes functional training scripts that you can modify and improve.
 
@@ -115,7 +115,7 @@ Update the `get_training_repo()` function:
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     return TrainingRepoResponse(
         github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",  # Your repo URL
-        commit_hash="YOUR_COMMIT_HASH"  # Specific commit or "main"
+        commit_hash="YOUR_COMMIT_HASH"  # Must be a full 40-char commit SHA
     )
 ```
 
@@ -124,16 +124,18 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 ```python
 # Using the base miner
 github_repo="https://github.com/rayonlabs/G.O.D"
-commit_hash="main"
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"  # git rev-parse HEAD
 
 # Using your own fork
 github_repo="https://github.com/yourname/my-training-repo"
-commit_hash="a1b2c3d4e5f6..."
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"
 
 # Using a previous winner's approach
 github_repo="https://github.com/gradients-opensource/position-1-tournament-xyz"
-commit_hash="main"
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"
 ```
+
+> **Note**: Branch names (e.g. `"main"`) are not accepted. Use `git rev-parse HEAD` to get the commit SHA.
 
 ### Private Repositories (Optional)
 

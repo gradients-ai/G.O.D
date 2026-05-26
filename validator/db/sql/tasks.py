@@ -35,6 +35,13 @@ from validator.utils.minio import async_minio_client
 logger = get_logger(__name__)
 
 
+def _row_count(command_tag: str) -> int:
+    try:
+        return int(command_tag.split()[-1])
+    except (IndexError, ValueError):
+        return 0
+
+
 async def add_task(task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeRawTask:
     """Add a new task"""
     async with await psql_db.connection() as connection:
@@ -1514,6 +1521,58 @@ async def count_task_evaluations_by_status(status: str, psql_db: PSQLDB) -> int:
         )
 
 
+async def count_group_task_evaluations_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(DISTINCT e.{cst.TASK_ID})
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
+async def count_non_group_task_evaluation_rows_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND NOT (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
 async def get_task_ids_with_evaluation_statuses(
     statuses: list[str],
     psql_db: PSQLDB,
@@ -1555,8 +1614,9 @@ async def get_task_ids_with_evaluation_statuses(
 async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], status: str, psql_db: PSQLDB) -> None:
     if not hotkeys:
         return
+    expected_rows = len(set(hotkeys))
     async with await psql_db.connection() as connection:
-        await connection.execute(
+        result = await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
@@ -1567,6 +1627,16 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
             NETUID,
             status,
         )
+        updated_rows = _row_count(result)
+        if updated_rows != expected_rows:
+            logger.warning(
+                "Evaluation status update touched %s/%s rows task_id=%s status=%s hotkeys=%s",
+                updated_rows,
+                expected_rows,
+                task_id,
+                status,
+                hotkeys,
+            )
 
 
 async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> None:
@@ -1606,7 +1676,7 @@ async def set_evaluation_deployment_ids(
 ) -> None:
     """Store deployment IDs for an evaluation row. Overwrites on retry."""
     async with await psql_db.connection() as connection:
-        await connection.execute(
+        result = await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.DEPLOYMENT_ID} = $4, {cst.DEPLOYMENT_ENV_ID} = $5, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
@@ -1618,6 +1688,16 @@ async def set_evaluation_deployment_ids(
             deployment_id,
             deployment_env_id,
         )
+        updated_rows = _row_count(result)
+        if updated_rows != 1:
+            logger.warning(
+                "Deployment id update touched %s rows task_id=%s hotkey=%s deployment_id=%s deployment_env_id=%s",
+                updated_rows,
+                task_id,
+                hotkey,
+                deployment_id,
+                deployment_env_id,
+            )
 
 
 async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:

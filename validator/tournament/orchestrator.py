@@ -943,10 +943,7 @@ async def seed_tournament_evaluations_from_training(config: Config):
                         statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
                         if statuses and any(s not in ("success", "failure") for s in statuses.values()):
                             continue
-                        pvp = True
-                    else:
-                        pvp = False
-                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
+                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
                 except Exception as e:
                     logger.error(f"Error seeding evaluation rows for task {task.task_id}: {str(e)}", exc_info=True)
         except Exception as e:
@@ -1063,6 +1060,33 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
     return False
 
 
+async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
+    """For env tasks with no augmentation, try to copy baseline_stats from a
+    sibling in the same round, or skip if a sibling is already running prep.
+
+    Returns True if the task was handled (copied or should wait), False to proceed normally.
+    """
+    if task.task_type != TaskType.ENVIRONMENTTASK or task.augmentation_config is not None:
+        return False
+
+    task_id_str = str(task.task_id)
+    sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
+        task_id_str, task.model_id, config.psql_db,
+    )
+    if sibling_stats is not None:
+        task.baseline_stats = sibling_stats
+        task.status = TaskStatus.LOOKING_FOR_NODES
+        await task_sql.update_task(task, config.psql_db)
+        logger.info(f"Copied baseline_stats from sibling for env task {task.task_id}, skipping model prep")
+        return True
+
+    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, task.model_id, config.psql_db)
+    if any(sid in _model_prep_in_progress for sid in sibling_ids):
+        return True
+
+    return False
+
+
 async def process_awaiting_model_prep_tasks(config: Config):
     """Poll for tasks awaiting model prep and dispatch to a trainer with GPU.
 
@@ -1147,6 +1171,9 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     # (e.g. from before a vali restart)
                     recovered = await _recover_model_prep_from_trainer(task, config)
                     if recovered:
+                        continue
+
+                    if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
                     gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)

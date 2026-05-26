@@ -36,6 +36,13 @@ from validator.utils.util import normalise_float
 logger = get_logger(__name__)
 
 
+def _row_count(command_tag: str) -> int:
+    try:
+        return int(command_tag.split()[-1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def _parse_requested_datasets(raw_value: object) -> list[str] | None:
     """Parse requested_datasets from JSONB columns with strict type expectations."""
     if raw_value is None:
@@ -1452,16 +1459,33 @@ async def save_pvp_pair_result(
     a_wins = env_result.model_b_wins if swapped else env_result.model_a_wins
     b_wins = env_result.model_a_wins if swapped else env_result.model_b_wins
     async with await psql_db.connection() as connection:
-        await connection.execute(f"""
-            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
-            SET {cst.PVP_MODEL_A_WINS} = $5, {cst.PVP_MODEL_B_WINS} = $6,
-                {cst.PVP_DRAWS} = $7, {cst.PVP_TOTAL_GAMES} = $8,
-                {cst.STATUS} = $9, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2
-                AND {cst.PVP_HOTKEY_B} = $3 AND {cst.PVP_ENVIRONMENT_NAME} = $4
+        db_result = await connection.execute(f"""
+            INSERT INTO {cst.PVP_PAIR_RESULTS_TABLE}
+                ({cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B},
+                 {cst.PVP_ENVIRONMENT_NAME}, {cst.PVP_MODEL_A_WINS}, {cst.PVP_MODEL_B_WINS},
+                 {cst.PVP_DRAWS}, {cst.PVP_TOTAL_GAMES}, {cst.STATUS}, {cst.UPDATED_AT})
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+            ON CONFLICT ({cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}, {cst.PVP_ENVIRONMENT_NAME})
+            DO UPDATE SET
+                {cst.PVP_MODEL_A_WINS} = EXCLUDED.{cst.PVP_MODEL_A_WINS},
+                {cst.PVP_MODEL_B_WINS} = EXCLUDED.{cst.PVP_MODEL_B_WINS},
+                {cst.PVP_DRAWS} = EXCLUDED.{cst.PVP_DRAWS},
+                {cst.PVP_TOTAL_GAMES} = EXCLUDED.{cst.PVP_TOTAL_GAMES},
+                {cst.STATUS} = EXCLUDED.{cst.STATUS},
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
         """, task_id, hk_a, hk_b, environment_name,
             a_wins, b_wins, env_result.draws,
             env_result.total_games, cst.PVP_STATUS_COMPLETE)
+        updated_rows = _row_count(db_result)
+        if updated_rows != 1:
+            logger.warning(
+                "PvP pair result upsert touched %s rows task_id=%s pair=%s:%s environment=%s",
+                updated_rows,
+                task_id,
+                hk_a,
+                hk_b,
+                environment_name,
+            )
 
 
 async def increment_pvp_pair_attempts(
@@ -1498,3 +1522,58 @@ async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
         await connection.execute(
             f"DELETE FROM {cst.PVP_PAIR_RESULTS_TABLE} WHERE {cst.TASK_ID} = $1", task_id
         )
+
+
+async def get_sibling_env_baseline_stats(
+    task_id: str, model_id: str, psql_db: PSQLDB,
+) -> dict | None:
+    """Find a sibling env task in the same round with matching model_id,
+    matching environment_names, no augmentation, and completed baseline_stats.
+
+    Only call for env tasks where the calling task has augmentation_config=None.
+    Returns raw baseline_stats JSON dict if found, else None.
+    """
+    async with await psql_db.connection() as connection:
+        row = await connection.fetchrow(f"""
+            SELECT t.{cst.BASELINE_STATS}
+            FROM {cst.TOURNAMENT_TASKS_TABLE} tt_self
+            JOIN {cst.TOURNAMENT_TASKS_TABLE} tt_sibling
+                ON tt_sibling.{cst.ROUND_ID} = tt_self.{cst.ROUND_ID}
+                AND tt_sibling.{cst.TASK_ID} != tt_self.{cst.TASK_ID}
+            JOIN {cst.TASKS_TABLE} t
+                ON t.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
+            JOIN {cst.ENV_TASKS_TABLE} et_self
+                ON et_self.{cst.TASK_ID} = tt_self.{cst.TASK_ID}
+            JOIN {cst.ENV_TASKS_TABLE} et_sibling
+                ON et_sibling.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
+            WHERE tt_self.{cst.TASK_ID} = $1
+                AND t.{cst.MODEL_ID} = $2
+                AND t.{cst.AUGMENTATION_CONFIG} IS NULL
+                AND t.{cst.BASELINE_STATS} IS NOT NULL
+                AND et_sibling.{cst.ENVIRONMENT_NAMES} = et_self.{cst.ENVIRONMENT_NAMES}
+            LIMIT 1
+        """, task_id, model_id)
+        if row and row[cst.BASELINE_STATS]:
+            return row[cst.BASELINE_STATS]
+        return None
+
+
+async def get_matching_sibling_task_ids(
+    task_id: str, model_id: str, psql_db: PSQLDB,
+) -> list[str]:
+    """Get task_ids of sibling tasks in the same round with matching model_id
+    and no augmentation config (i.e. siblings that would produce identical model prep)."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT tt_sibling.{cst.TASK_ID}::text AS task_id
+            FROM {cst.TOURNAMENT_TASKS_TABLE} tt_self
+            JOIN {cst.TOURNAMENT_TASKS_TABLE} tt_sibling
+                ON tt_sibling.{cst.ROUND_ID} = tt_self.{cst.ROUND_ID}
+                AND tt_sibling.{cst.TASK_ID} != tt_self.{cst.TASK_ID}
+            JOIN {cst.TASKS_TABLE} t
+                ON t.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
+            WHERE tt_self.{cst.TASK_ID} = $1
+                AND t.{cst.MODEL_ID} = $2
+                AND t.{cst.AUGMENTATION_CONFIG} IS NULL
+        """, task_id, model_id)
+        return [row["task_id"] for row in rows]
