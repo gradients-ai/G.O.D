@@ -10,6 +10,7 @@ import re
 import signal
 
 import numpy as np
+import openai
 import pyspiel
 
 from core.models.pvp_models import ChatCompletionConfig, ChatFn, ChatMessage, ChatRole
@@ -25,6 +26,14 @@ class TurnTimeoutError(Exception):
     def __init__(self, player_id: int):
         self.player_id = player_id
         super().__init__(f"Player {player_id} exceeded {vcst.PVP_TURN_TIMEOUT_SECONDS}s turn timeout")
+
+
+class ContextOverflowError(Exception):
+    """Raised when a bot's input exceeds the model's context length."""
+
+    def __init__(self, player_id: int):
+        self.player_id = player_id
+        super().__init__(f"Player {player_id} exceeded model context length")
 
 
 class EmptyLegalActionsError(Exception):
@@ -125,7 +134,12 @@ class LLMBot(pyspiel.Bot):
         self._conversation.append(ChatMessage(role=ChatRole.USER, content=user_prompt))
 
         for attempt in range(vcst.PVP_BOT_MAX_PARSING_RETRIES + 1):
-            result = self._chat_fn(self._config, self._conversation)
+            try:
+                result = self._chat_fn(self._config, self._conversation)
+            except openai.BadRequestError as exc:
+                if "context length" in str(exc).lower():
+                    raise ContextOverflowError(self._player_id) from exc
+                raise
 
             response_text = result.content or ""
             self._conversation.append(ChatMessage(role=ChatRole.ASSISTANT, content=response_text))

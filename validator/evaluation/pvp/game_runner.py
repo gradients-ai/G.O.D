@@ -33,7 +33,7 @@ from validator.evaluation.pvp.agents import (
     LeducPokerAgent,
     LiarsDiceAgent,
 )
-from validator.evaluation.pvp.bot import EmptyLegalActionsError, LLMBot, TurnTimeoutError
+from validator.evaluation.pvp.bot import ContextOverflowError, EmptyLegalActionsError, LLMBot, TurnTimeoutError
 from validator.evaluation.pvp.chat import chat_completion, create_client
 from validator.evaluation.pvp.scoring import determine_outcome
 
@@ -269,6 +269,12 @@ def _evaluate_with_timeout(
     except TurnTimeoutError as exc:
         logger.warning(
             "Player %d timed out on turn — opponent wins by forfeit",
+            exc.player_id,
+        )
+        return _forfeit_returns(state, exc.player_id)
+    except ContextOverflowError as exc:
+        logger.warning(
+            "Player %d exceeded context length — opponent wins by forfeit",
             exc.player_id,
         )
         return _forfeit_returns(state, exc.player_id)
