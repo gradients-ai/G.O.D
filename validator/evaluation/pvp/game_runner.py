@@ -16,26 +16,29 @@ import openai
 import pyspiel
 from open_spiel.python.algorithms import evaluate_bots
 
-from core.constants import EnvironmentName, ENVIRONMENT_CONFIGS
-from core.models.pvp_models import (
-    ChatCompletionConfig,
-    ChatFn,
-    GameInstance,
-    GameOutcome,
-    GameScoringContext,
-    PvPEnvironmentResult,
-    PvPMatchupConfig,
-)
+from core.constants import ENVIRONMENT_CONFIGS
+from core.constants import EnvironmentName
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import ChatFn
+from core.models.pvp_models import GameInstance
+from core.models.pvp_models import GameOutcome
+from core.models.pvp_models import GameScoringContext
+from core.models.pvp_models import PvPEnvironmentResult
+from core.models.pvp_models import PvPMatchupConfig
 from validator.core import constants as vcst
-from validator.evaluation.pvp.agents import (
-    BaseGameAgent,
-    GinRummyAgent,
-    LeducPokerAgent,
-    LiarsDiceAgent,
-)
-from validator.evaluation.pvp.bot import ContextOverflowError, EmptyLegalActionsError, LLMBot, TurnTimeoutError
-from validator.evaluation.pvp.chat import chat_completion, create_client
+from validator.evaluation.pvp.agents import BaseGameAgent
+from validator.evaluation.pvp.agents import GinRummyAgent
+from validator.evaluation.pvp.agents import LeducPokerAgent
+from validator.evaluation.pvp.agents import LiarsDiceAgent
+from validator.evaluation.pvp.bot import ContextOverflowError
+from validator.evaluation.pvp.bot import EmptyLegalActionsError
+from validator.evaluation.pvp.bot import InvalidActionForfeitError
+from validator.evaluation.pvp.bot import LLMBot
+from validator.evaluation.pvp.bot import TurnTimeoutError
+from validator.evaluation.pvp.chat import chat_completion
+from validator.evaluation.pvp.chat import create_client
 from validator.evaluation.pvp.scoring import determine_outcome
+
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +158,14 @@ def _check_early_forfeit(
     else:
         return False
 
-    logger.info("%s: model_%s lost %d in a row (after %d games) — forfeiting %d remaining", env_name, loser, limit, games_played, remaining)
+    logger.info(
+        "%s: model_%s lost %d in a row (after %d games) — forfeiting %d remaining",
+        env_name,
+        loser,
+        limit,
+        games_played,
+        remaining,
+    )
     setattr(result, winner_attr, getattr(result, winner_attr) + remaining)
     result.total_games += remaining
     return True
@@ -257,11 +267,11 @@ def _evaluate_with_timeout(
     bots: list[LLMBot | None],
     seed: int,
 ) -> list[float]:
-    """Run evaluate_bots, catching per-turn timeouts as forfeits.
+    """Run evaluate_bots, catching bot-level forfeits.
 
     Per-turn timeouts are enforced inside LLMBot.step() via SIGALRM.
-    If a bot exceeds its turn limit, TurnTimeoutError propagates up
-    through evaluate_bots and is caught here as a forfeit.
+    Timeout, context overflow, and invalid-action strikeouts propagate up
+    through evaluate_bots and are caught here as forfeits.
     """
     try:
         returns = evaluate_bots.evaluate_bots(state, bots, np.random.RandomState(seed))
@@ -276,6 +286,13 @@ def _evaluate_with_timeout(
         logger.warning(
             "Player %d exceeded context length — opponent wins by forfeit",
             exc.player_id,
+        )
+        return _forfeit_returns(state, exc.player_id)
+    except InvalidActionForfeitError as exc:
+        logger.warning(
+            "Player %d failed to produce valid actions %d times — opponent wins by forfeit",
+            exc.player_id,
+            exc.invalid_action_failures,
         )
         return _forfeit_returns(state, exc.player_id)
     except EmptyLegalActionsError:
