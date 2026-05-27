@@ -477,6 +477,48 @@ async def get_effective_prep_model(task_id: str, model_id: str, psql_db: PSQLDB)
         return model_id
 
 
+async def get_miners_needing_baseline_stats(task_id: str, psql_db: PSQLDB) -> list[tuple[str, str]]:
+    """Get (hotkey, starting_model_repo) pairs for miners that have a starting model but no baseline_stats yet."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(f"""
+            SELECT {cst.HOTKEY}, {cst.STARTING_MODEL_REPO}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            AND {cst.BASELINE_STATS} IS NULL
+        """, task_id)
+        return [(row[cst.HOTKEY], row[cst.STARTING_MODEL_REPO]) for row in rows]
+
+
+async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats: dict, psql_db: PSQLDB) -> None:
+    """Store per-miner baseline_stats on task_nodes."""
+    import json
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        await connection.execute(f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET {cst.BASELINE_STATS} = $1::jsonb
+            WHERE {cst.TASK_ID} = $2
+            AND {cst.HOTKEY} = $3
+        """, json.dumps(baseline_stats), task_id, hotkey)
+
+
+async def get_miner_baseline_stats(task_id: str, hotkey: str, psql_db: PSQLDB) -> dict | None:
+    """Get per-miner baseline_stats from task_nodes."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT {cst.BASELINE_STATS}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.HOTKEY} = $2
+        """, task_id, hotkey)
+        if row and row[cst.BASELINE_STATS]:
+            return row[cst.BASELINE_STATS]
+        return None
+
+
 async def get_starting_model_repo(task_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
     """Get the per-miner starting model for this task, if set."""
     async with await psql_db.connection() as connection:

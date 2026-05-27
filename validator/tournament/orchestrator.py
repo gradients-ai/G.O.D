@@ -641,6 +641,10 @@ async def _create_training_request(
     starting_model = await task_sql.get_starting_model_repo(str(task.task_id), hotkey, config.psql_db)
     training_model = starting_model or task.augmented_model_id or task.model_id
 
+    # Per-miner baseline_stats (env continuous training), fall back to task-level
+    miner_stats = await task_sql.get_miner_baseline_stats(str(task.task_id), hotkey, config.psql_db)
+    baseline_stats = miner_stats or task.baseline_stats
+
     if task.task_type == TaskType.IMAGETASK:
         training_data = TrainRequestImage(
             model=training_model,
@@ -649,7 +653,7 @@ async def _create_training_request(
             expected_repo_name=expected_repo_name,
             dataset_zip=task.training_data,
             model_type=task.model_type,
-            baseline_stats=task.baseline_stats,
+            baseline_stats=baseline_stats,
         )
     else:
         dataset_type = _get_dataset_type(task)
@@ -662,7 +666,7 @@ async def _create_training_request(
             dataset=task.training_data,
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
-            baseline_stats=task.baseline_stats,
+            baseline_stats=baseline_stats,
         )
 
     return TrainerProxyRequest(
@@ -1061,11 +1065,12 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
 
 
 async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
-    """For env tasks with no augmentation, try to copy baseline_stats from a
-    sibling in the same round, or skip if a sibling is already running prep.
+    """For env tasks with no augmentation and no per-miner starting models,
+    try to copy baseline_stats from a sibling in the same round, or skip if
+    a sibling is already running prep.
 
-    Matches on effective prep model (starting_model_repo if set, else model_id)
-    so that tasks continuing from different checkpoints don't share baselines.
+    Skipped entirely when miners have per-miner starting models (continuous
+    training), since each miner needs their own baseline.
 
     Returns True if the task was handled (copied or should wait), False to proceed normally.
     """
@@ -1073,11 +1078,16 @@ async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
         return False
 
     task_id_str = str(task.task_id)
-    effective_model = await task_sql.get_effective_prep_model(
-        task_id_str, task.model_id, config.psql_db,
+
+    # Per-miner starting models → each miner needs their own baseline, no reuse
+    miners_with_starting = await task_sql.get_miners_needing_baseline_stats(
+        task_id_str, config.psql_db,
     )
+    if miners_with_starting:
+        return False
+
     sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
-        task_id_str, effective_model, config.psql_db,
+        task_id_str, task.model_id, config.psql_db,
     )
     if sibling_stats is not None:
         task.baseline_stats = sibling_stats
@@ -1086,7 +1096,7 @@ async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
         logger.info(f"Copied baseline_stats from sibling for env task {task.task_id}, skipping model prep")
         return True
 
-    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, effective_model, config.psql_db)
+    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, task.model_id, config.psql_db)
     if any(sid in _model_prep_in_progress for sid in sibling_ids):
         return True
 
@@ -1105,44 +1115,86 @@ async def process_awaiting_model_prep_tasks(config: Config):
     from validator.utils.model_prep import dispatch_augmentation_and_stats
     from validator.tournament.utils import get_tournament_gpu_requirement
 
+    async def _run_single_prep(task_id_str, model_id, task, trainer_ip, gpu_ids):
+        """Run one model prep for a given model_id and return the result."""
+        reward_fns = getattr(task, "reward_functions", None)
+        is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+        return await dispatch_augmentation_and_stats(
+            task_id=task_id_str,
+            model_id=model_id,
+            training_data_url=task.training_data,
+            augmentation_config=task.augmentation_config,
+            task_type=task.task_type,
+            trainer_ip=trainer_ip,
+            gpu_ids=gpu_ids,
+            reward_functions=reward_fns,
+            is_env_task=is_env_task,
+        )
+
     async def _run_model_prep(task, trainer_ip, gpu_ids):
         task_id_str = str(task.task_id)
         try:
-            reward_fns = getattr(task, "reward_functions", None)
             is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+            miners_needing_stats = []
+            if is_env_task:
+                miners_needing_stats = await task_sql.get_miners_needing_baseline_stats(
+                    task_id_str, config.psql_db,
+                )
 
-            effective_model = await task_sql.get_effective_prep_model(
-                task_id_str, task.model_id, config.psql_db,
-            )
-            prep_result = await dispatch_augmentation_and_stats(
-                task_id=task_id_str,
-                model_id=effective_model,
-                training_data_url=task.training_data,
-                augmentation_config=task.augmentation_config,
-                task_type=task.task_type,
-                trainer_ip=trainer_ip,
-                gpu_ids=gpu_ids,
-                reward_functions=reward_fns,
-                is_env_task=is_env_task,
-            )
+            if miners_needing_stats:
+                # Per-miner baseline: run prep for each miner's starting model
+                for hotkey, starting_model in miners_needing_stats:
+                    logger.info(
+                        f"Running per-miner model prep for task {task.task_id} "
+                        f"hotkey={hotkey[:8]}… model={starting_model}"
+                    )
+                    prep_result = await _run_single_prep(
+                        task_id_str, starting_model, task, trainer_ip, gpu_ids,
+                    )
+                    if prep_result is not None and prep_result.baseline_stats:
+                        await task_sql.set_miner_baseline_stats(
+                            task_id_str, hotkey, prep_result.baseline_stats, config.psql_db,
+                        )
+                        logger.info(f"Stored baseline_stats for hotkey={hotkey[:8]}…")
+                    else:
+                        logger.warning(
+                            f"Model prep returned no baseline_stats for hotkey={hotkey[:8]}…, "
+                            f"will retry next cycle"
+                        )
+                        return  # Don't advance task — retry next cycle
 
-            if prep_result is not None:
-                if prep_result.augmented_model_id:
-                    task.augmented_model_id = prep_result.augmented_model_id
-                if prep_result.baseline_stats:
-                    task.baseline_stats = prep_result.baseline_stats
-
+                # All miners done — store last result as task-level fallback
+                last_stats = prep_result.baseline_stats if prep_result else None
+                task.baseline_stats = last_stats
                 task.status = TaskStatus.LOOKING_FOR_NODES
                 await task_sql.update_task(task, config.psql_db)
                 logger.info(
-                    f"Model prep complete for task {task.task_id}, "
+                    f"Per-miner model prep complete for task {task.task_id} "
+                    f"({len(miners_needing_stats)} miners), "
                     f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
                 )
             else:
-                logger.warning(
-                    f"Model prep dispatch returned None for task {task.task_id}, "
-                    f"will retry next cycle"
+                # Standard task-level prep (text tasks, or env tasks without starting models)
+                prep_result = await _run_single_prep(
+                    task_id_str, task.model_id, task, trainer_ip, gpu_ids,
                 )
+                if prep_result is not None:
+                    if prep_result.augmented_model_id:
+                        task.augmented_model_id = prep_result.augmented_model_id
+                    if prep_result.baseline_stats:
+                        task.baseline_stats = prep_result.baseline_stats
+
+                    task.status = TaskStatus.LOOKING_FOR_NODES
+                    await task_sql.update_task(task, config.psql_db)
+                    logger.info(
+                        f"Model prep complete for task {task.task_id}, "
+                        f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+                    )
+                else:
+                    logger.warning(
+                        f"Model prep dispatch returned None for task {task.task_id}, "
+                        f"will retry next cycle"
+                    )
         except Exception as e:
             logger.error(
                 f"Model prep failed for task {task.task_id}: {e}",
