@@ -1529,7 +1529,7 @@ async def get_sibling_env_baseline_stats(
             LEFT JOIN LATERAL (
                 SELECT {cst.STARTING_MODEL_REPO}
                 FROM {cst.TASK_NODES_TABLE}
-                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}::text
+                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
                 AND {cst.STARTING_MODEL_REPO} IS NOT NULL
                 LIMIT 1
             ) sib_sm ON true
@@ -1566,7 +1566,7 @@ async def get_matching_sibling_task_ids(
             LEFT JOIN LATERAL (
                 SELECT {cst.STARTING_MODEL_REPO}
                 FROM {cst.TASK_NODES_TABLE}
-                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}::text
+                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
                 AND {cst.STARTING_MODEL_REPO} IS NOT NULL
                 LIMIT 1
             ) sib_sm ON true
