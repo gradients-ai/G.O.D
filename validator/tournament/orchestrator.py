@@ -943,10 +943,7 @@ async def seed_tournament_evaluations_from_training(config: Config):
                         statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
                         if statuses and any(s not in ("success", "failure") for s in statuses.values()):
                             continue
-                        pvp = True
-                    else:
-                        pvp = False
-                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
+                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
                 except Exception as e:
                     logger.error(f"Error seeding evaluation rows for task {task.task_id}: {str(e)}", exc_info=True)
         except Exception as e:

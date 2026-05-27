@@ -36,6 +36,13 @@ from validator.utils.util import normalise_float
 logger = get_logger(__name__)
 
 
+def _row_count(command_tag: str) -> int:
+    try:
+        return int(command_tag.split()[-1])
+    except (IndexError, ValueError):
+        return 0
+
+
 def _parse_requested_datasets(raw_value: object) -> list[str] | None:
     """Parse requested_datasets from JSONB columns with strict type expectations."""
     if raw_value is None:
@@ -1452,16 +1459,33 @@ async def save_pvp_pair_result(
     a_wins = env_result.model_b_wins if swapped else env_result.model_a_wins
     b_wins = env_result.model_a_wins if swapped else env_result.model_b_wins
     async with await psql_db.connection() as connection:
-        await connection.execute(f"""
-            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
-            SET {cst.PVP_MODEL_A_WINS} = $5, {cst.PVP_MODEL_B_WINS} = $6,
-                {cst.PVP_DRAWS} = $7, {cst.PVP_TOTAL_GAMES} = $8,
-                {cst.STATUS} = $9, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2
-                AND {cst.PVP_HOTKEY_B} = $3 AND {cst.PVP_ENVIRONMENT_NAME} = $4
+        db_result = await connection.execute(f"""
+            INSERT INTO {cst.PVP_PAIR_RESULTS_TABLE}
+                ({cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B},
+                 {cst.PVP_ENVIRONMENT_NAME}, {cst.PVP_MODEL_A_WINS}, {cst.PVP_MODEL_B_WINS},
+                 {cst.PVP_DRAWS}, {cst.PVP_TOTAL_GAMES}, {cst.STATUS}, {cst.UPDATED_AT})
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+            ON CONFLICT ({cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}, {cst.PVP_ENVIRONMENT_NAME})
+            DO UPDATE SET
+                {cst.PVP_MODEL_A_WINS} = EXCLUDED.{cst.PVP_MODEL_A_WINS},
+                {cst.PVP_MODEL_B_WINS} = EXCLUDED.{cst.PVP_MODEL_B_WINS},
+                {cst.PVP_DRAWS} = EXCLUDED.{cst.PVP_DRAWS},
+                {cst.PVP_TOTAL_GAMES} = EXCLUDED.{cst.PVP_TOTAL_GAMES},
+                {cst.STATUS} = EXCLUDED.{cst.STATUS},
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
         """, task_id, hk_a, hk_b, environment_name,
             a_wins, b_wins, env_result.draws,
             env_result.total_games, cst.PVP_STATUS_COMPLETE)
+        updated_rows = _row_count(db_result)
+        if updated_rows != 1:
+            logger.warning(
+                "PvP pair result upsert touched %s rows task_id=%s pair=%s:%s environment=%s",
+                updated_rows,
+                task_id,
+                hk_a,
+                hk_b,
+                environment_name,
+            )
 
 
 async def increment_pvp_pair_attempts(

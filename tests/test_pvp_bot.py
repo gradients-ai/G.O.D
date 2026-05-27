@@ -7,12 +7,10 @@ Bot integration tests require pyspiel and are skipped if unavailable.
 
 import pytest
 
-from core.models.pvp_models import (
-    ChatCompletionConfig,
-    ChatMessage,
-    ChatResult,
-    ChatRole,
-)
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import ChatMessage
+from core.models.pvp_models import ChatResult
+from core.models.pvp_models import ChatRole
 from validator.evaluation.pvp.chat import strip_think_tags
 
 
@@ -55,7 +53,10 @@ class TestStripThinkTags:
 
 try:
     import pyspiel
-    from validator.evaluation.pvp.bot import LLMBot, TurnTimeoutError, _parse_action
+
+    from validator.evaluation.pvp.bot import InvalidActionForfeitError
+    from validator.evaluation.pvp.bot import LLMBot
+    from validator.evaluation.pvp.bot import _parse_action
     HAS_PYSPIEL = True
 except ImportError:
     HAS_PYSPIEL = False
@@ -157,6 +158,22 @@ class TestBotStep:
         bot = _make_bot(chat_fn, player_id=0)
         action = bot.step(state)
         assert action in legal
+        assert bot._invalid_action_failures == 1
+
+    def test_three_invalid_action_failures_forfeits(self) -> None:
+        state = _get_state_with_legal_actions()
+        legal = state.legal_actions(0)
+        chat_fn = _make_scripted_chat_fn(["bad"] * 10)
+        bot = _make_bot(chat_fn, player_id=0)
+
+        assert bot.step(state) in legal
+        assert bot.step(state) in legal
+        with pytest.raises(InvalidActionForfeitError) as exc_info:
+            bot.step(state)
+
+        assert exc_info.value.player_id == 0
+        assert exc_info.value.invalid_action_failures == 3
+        assert bot._invalid_action_failures == 3
 
     def test_none_response_retries(self) -> None:
         state = _get_state_with_legal_actions()
@@ -181,9 +198,11 @@ class TestBotStep:
         bot = _make_bot(chat_fn, player_id=0)
         bot.step(state)
         assert len(bot._conversation) > 0
+        bot._invalid_action_failures = 1
         bot.restart_at(state)
         assert len(bot._conversation) == 0
         assert bot._system_prompt_set is False
+        assert bot._invalid_action_failures == 0
 
     def test_conversation_alternates_roles(self) -> None:
         state = _get_state_with_legal_actions()
@@ -277,3 +296,44 @@ class TestTurnTimeoutForfeit:
 
         assert returns[0] == game.max_utility()
         assert returns[1] == game.min_utility()
+
+
+@needs_pyspiel
+class TestInvalidActionForfeit:
+    def test_repeated_invalid_actions_forfeit_to_opponent(self) -> None:
+        from validator.evaluation.pvp.game_runner import _evaluate_with_timeout
+
+        game = pyspiel.load_game("leduc_poker", {"players": 2})
+
+        class ForfeitingBot(pyspiel.Bot):
+            def __init__(self, player_id: int):
+                pyspiel.Bot.__init__(self)
+                self.player_id = player_id
+
+            def restart_at(self, state) -> None:
+                pass
+
+            def inform_action(self, state, player_id, action) -> None:
+                pass
+
+            def step(self, state) -> int:
+                raise InvalidActionForfeitError(self.player_id, 3)
+
+        class ValidBot(pyspiel.Bot):
+            def restart_at(self, state) -> None:
+                pass
+
+            def inform_action(self, state, player_id, action) -> None:
+                pass
+
+            def step(self, state) -> int:
+                return state.legal_actions(state.current_player())[0]
+
+        bot_0 = ForfeitingBot(player_id=0)
+        bot_1 = ValidBot()
+        state = game.new_initial_state()
+
+        returns = _evaluate_with_timeout(state, [bot_0, bot_1], seed=42)
+
+        assert returns[0] == game.min_utility()
+        assert returns[1] == game.max_utility()
