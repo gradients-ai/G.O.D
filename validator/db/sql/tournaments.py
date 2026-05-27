@@ -1525,10 +1525,14 @@ async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
 
 
 async def get_sibling_env_baseline_stats(
-    task_id: str, model_id: str, psql_db: PSQLDB,
+    task_id: str, effective_model: str, psql_db: PSQLDB,
 ) -> dict | None:
-    """Find a sibling env task in the same round with matching model_id,
+    """Find a sibling env task in the same round with matching effective prep model,
     matching environment_names, no augmentation, and completed baseline_stats.
+
+    effective_model is starting_model_repo if set, else model_id.
+    Siblings match when their effective prep model (COALESCE of starting_model_repo
+    over model_id) equals the caller's.
 
     Only call for env tasks where the calling task has augmentation_config=None.
     Returns raw baseline_stats JSON dict if found, else None.
@@ -1546,23 +1550,34 @@ async def get_sibling_env_baseline_stats(
                 ON et_self.{cst.TASK_ID} = tt_self.{cst.TASK_ID}
             JOIN {cst.ENV_TASKS_TABLE} et_sibling
                 ON et_sibling.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
+            LEFT JOIN LATERAL (
+                SELECT {cst.STARTING_MODEL_REPO}
+                FROM {cst.TASK_NODES_TABLE}
+                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}::text
+                AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+                LIMIT 1
+            ) sib_sm ON true
             WHERE tt_self.{cst.TASK_ID} = $1
-                AND t.{cst.MODEL_ID} = $2
+                AND COALESCE(sib_sm.{cst.STARTING_MODEL_REPO}, t.{cst.MODEL_ID}) = $2
                 AND t.{cst.AUGMENTATION_CONFIG} IS NULL
                 AND t.{cst.BASELINE_STATS} IS NOT NULL
                 AND et_sibling.{cst.ENVIRONMENT_NAMES} = et_self.{cst.ENVIRONMENT_NAMES}
             LIMIT 1
-        """, task_id, model_id)
+        """, task_id, effective_model)
         if row and row[cst.BASELINE_STATS]:
             return row[cst.BASELINE_STATS]
         return None
 
 
 async def get_matching_sibling_task_ids(
-    task_id: str, model_id: str, psql_db: PSQLDB,
+    task_id: str, effective_model: str, psql_db: PSQLDB,
 ) -> list[str]:
-    """Get task_ids of sibling tasks in the same round with matching model_id
-    and no augmentation config (i.e. siblings that would produce identical model prep)."""
+    """Get task_ids of sibling tasks in the same round with matching effective
+    prep model and no augmentation config (i.e. siblings that would produce
+    identical model prep).
+
+    effective_model is starting_model_repo if set, else model_id.
+    """
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(f"""
             SELECT tt_sibling.{cst.TASK_ID}::text AS task_id
@@ -1572,8 +1587,15 @@ async def get_matching_sibling_task_ids(
                 AND tt_sibling.{cst.TASK_ID} != tt_self.{cst.TASK_ID}
             JOIN {cst.TASKS_TABLE} t
                 ON t.{cst.TASK_ID} = tt_sibling.{cst.TASK_ID}
+            LEFT JOIN LATERAL (
+                SELECT {cst.STARTING_MODEL_REPO}
+                FROM {cst.TASK_NODES_TABLE}
+                WHERE {cst.TASK_ID} = tt_sibling.{cst.TASK_ID}::text
+                AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+                LIMIT 1
+            ) sib_sm ON true
             WHERE tt_self.{cst.TASK_ID} = $1
-                AND t.{cst.MODEL_ID} = $2
+                AND COALESCE(sib_sm.{cst.STARTING_MODEL_REPO}, t.{cst.MODEL_ID}) = $2
                 AND t.{cst.AUGMENTATION_CONFIG} IS NULL
-        """, task_id, model_id)
+        """, task_id, effective_model)
         return [row["task_id"] for row in rows]
