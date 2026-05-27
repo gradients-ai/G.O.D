@@ -491,6 +491,19 @@ async def get_miners_needing_baseline_stats(task_id: str, psql_db: PSQLDB) -> li
         return [(row[cst.HOTKEY], row[cst.STARTING_MODEL_REPO]) for row in rows]
 
 
+async def has_miners_with_starting_model(task_id: str, psql_db: PSQLDB) -> bool:
+    """Check if any miners for this task have a starting_model_repo set."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT 1 FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            LIMIT 1
+        """, task_id)
+        return row is not None
+
+
 async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats: dict, psql_db: PSQLDB) -> None:
     """Store per-miner baseline_stats on task_nodes."""
     import json
