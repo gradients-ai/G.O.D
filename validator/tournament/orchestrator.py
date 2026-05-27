@@ -1067,14 +1067,20 @@ async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
     """For env tasks with no augmentation, try to copy baseline_stats from a
     sibling in the same round, or skip if a sibling is already running prep.
 
+    Matches on effective prep model (starting_model_repo if set, else model_id)
+    so that tasks continuing from different checkpoints don't share baselines.
+
     Returns True if the task was handled (copied or should wait), False to proceed normally.
     """
     if task.task_type != TaskType.ENVIRONMENTTASK or task.augmentation_config is not None:
         return False
 
     task_id_str = str(task.task_id)
-    sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
+    effective_model = await task_sql.get_effective_prep_model(
         task_id_str, task.model_id, config.psql_db,
+    )
+    sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
+        task_id_str, effective_model, config.psql_db,
     )
     if sibling_stats is not None:
         task.baseline_stats = sibling_stats
@@ -1083,7 +1089,7 @@ async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
         logger.info(f"Copied baseline_stats from sibling for env task {task.task_id}, skipping model prep")
         return True
 
-    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, task.model_id, config.psql_db)
+    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, effective_model, config.psql_db)
     if any(sid in _model_prep_in_progress for sid in sibling_ids):
         return True
 
@@ -1108,9 +1114,12 @@ async def process_awaiting_model_prep_tasks(config: Config):
             reward_fns = getattr(task, "reward_functions", None)
             is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
 
+            effective_model = await task_sql.get_effective_prep_model(
+                task_id_str, task.model_id, config.psql_db,
+            )
             prep_result = await dispatch_augmentation_and_stats(
                 task_id=task_id_str,
-                model_id=task.model_id,
+                model_id=effective_model,
                 training_data_url=task.training_data,
                 augmentation_config=task.augmentation_config,
                 task_type=task.task_type,

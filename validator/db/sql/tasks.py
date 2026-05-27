@@ -454,6 +454,22 @@ async def set_starting_model_repo(task_id: str, hotkey: str, starting_model_repo
         await connection.execute(query, starting_model_repo, task_id, hotkey, NETUID)
 
 
+async def get_effective_prep_model(task_id: str, model_id: str, psql_db: PSQLDB) -> str:
+    """Get the effective model for baseline prep: starting_model_repo if any miner has one, else model_id."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT DISTINCT {cst.STARTING_MODEL_REPO}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            LIMIT 1
+        """, task_id)
+        if row and row[cst.STARTING_MODEL_REPO]:
+            return row[cst.STARTING_MODEL_REPO]
+        return model_id
+
+
 async def get_starting_model_repo(task_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
     """Get the per-miner starting model for this task, if set."""
     async with await psql_db.connection() as connection:
