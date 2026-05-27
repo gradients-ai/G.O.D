@@ -504,9 +504,13 @@ async def has_miners_with_starting_model(task_id: str, psql_db: PSQLDB) -> bool:
         return row is not None
 
 
-async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats: dict, psql_db: PSQLDB) -> None:
+async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats, psql_db: PSQLDB) -> None:
     """Store per-miner baseline_stats on task_nodes."""
     import json
+    if hasattr(baseline_stats, "model_dump"):
+        stats_dict = baseline_stats.model_dump()
+    else:
+        stats_dict = baseline_stats
     async with await psql_db.connection() as connection:
         connection: Connection
         await connection.execute(f"""
@@ -514,7 +518,7 @@ async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats: di
             SET {cst.BASELINE_STATS} = $1::jsonb
             WHERE {cst.TASK_ID} = $2
             AND {cst.HOTKEY} = $3
-        """, json.dumps(baseline_stats), task_id, hotkey)
+        """, json.dumps(stats_dict), task_id, hotkey)
 
 
 async def get_miner_baseline_stats(task_id: str, hotkey: str, psql_db: PSQLDB) -> dict | None:
