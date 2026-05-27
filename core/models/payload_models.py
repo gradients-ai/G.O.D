@@ -133,6 +133,7 @@ class ModelPrepJob(TrainerJob):
     job_type: Literal["model_prep"] = "model_prep"
     task_id: str
     model_id: str
+    hotkey: str | None = None  # Set for per-miner preps
     result: "ModelPrepResponse | None" = None
 
     model_config = ConfigDict(protected_namespaces=())
@@ -179,6 +180,7 @@ class ModelPrepRequest(BaseModel):
     gpu_ids: list[int] = [0]
     reward_functions: list[RewardFunction] | None = None
     env_configs: dict[EnvironmentName, EnvConfig] | None = None
+    hotkey: str | None = None  # Per-miner prep key for recovery after restart
 
     model_config = ConfigDict(protected_namespaces=())
 

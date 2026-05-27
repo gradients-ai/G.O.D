@@ -44,6 +44,7 @@ async def dispatch_augmentation_and_stats(
     gpu_ids: list[int],
     reward_functions=None,
     is_env_task: bool = False,
+    hotkey: str | None = None,
 ) -> ModelPrepResponse | None:
     """Dispatch augmentation and stats collection to a trainer with GPU.
 
@@ -66,6 +67,7 @@ async def dispatch_augmentation_and_stats(
         gpu_ids=gpu_ids,
         reward_functions=reward_functions,
         env_configs=_build_env_configs() if is_env_task else None,
+        hotkey=hotkey,
     )
 
     url = f"http://{trainer_ip_with_port}{MODEL_PREP_ENDPOINT}"

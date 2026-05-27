@@ -137,7 +137,7 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
                 status_code=409,
                 detail="GPU conflict detected. Requested GPUs are already in use.",
             )
-        await _start_model_prep_unlocked(req.task_id, req.model_id, req.gpu_ids)
+        await _start_model_prep_unlocked(req.task_id, req.model_id, req.gpu_ids, req.hotkey)
     try:
         result = await asyncio.to_thread(
             run_model_prep_container,
@@ -150,15 +150,15 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             reward_functions=req.reward_functions,
             env_configs=req.env_configs,
         )
-        await complete_model_prep(req.task_id, success=True, result=result)
+        await complete_model_prep(req.task_id, success=True, result=result, hotkey=req.hotkey)
         return result
     except Exception:
-        await complete_model_prep(req.task_id, success=False)
+        await complete_model_prep(req.task_id, success=False, hotkey=req.hotkey)
         raise
 
 
-async def get_model_prep_status(task_id: str) -> ModelPrepJob:
-    job = get_model_prep_job(task_id)
+async def get_model_prep_status(task_id: str, hotkey: str | None = None) -> ModelPrepJob:
+    job = get_model_prep_job(task_id, hotkey)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Model prep job '{task_id}' not found.")
     return job

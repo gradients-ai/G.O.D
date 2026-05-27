@@ -1067,15 +1067,11 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
 async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[str, str]], config: Config) -> bool:
     """Check trainers for completed per-miner model prep results after a restart.
 
-    Polls each trainer for model prep jobs matching this task_id, then matches
-    by model_id to the miner's starting_model_repo. Stores recovered results
-    and returns True if any were found (caller should re-check miners_needing).
-    Also returns True if any prep is still in progress on a trainer.
+    Polls each trainer for each miner's prep job (keyed by task_id + hotkey).
+    Stores recovered results and returns True if any were found or still in progress.
     """
     task_id_str = str(task.task_id)
     trainers = await tournament_sql.get_trainers(config.psql_db)
-    # Build lookup: starting_model_repo → hotkey
-    repo_to_hotkey = {repo: hk for hk, repo in miners_needing}
     recovered_any = False
     in_progress = False
 
@@ -1083,24 +1079,23 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
         trainer_ip = trainer.trainer_ip
         trainer_ip_with_port = f"{trainer_ip}:8001" if ":" not in trainer_ip else trainer_ip
 
-        try:
-            url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
-            async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
-                response = await client.get(url)
-                if response.status_code == 404:
-                    continue
-                response.raise_for_status()
-                job = ModelPrepJob.model_validate(response.json())
-        except Exception:
-            continue
+        for hotkey, _starting_model in miners_needing:
+            try:
+                url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
+                async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+                    response = await client.get(url, params={"hotkey": hotkey})
+                    if response.status_code == 404:
+                        continue
+                    response.raise_for_status()
+                    job = ModelPrepJob.model_validate(response.json())
+            except Exception:
+                continue
 
-        if job.status == TaskStatus.TRAINING:
-            in_progress = True
-            continue
+            if job.status == TaskStatus.TRAINING:
+                in_progress = True
+                continue
 
-        if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
-            hotkey = repo_to_hotkey.get(job.model_id)
-            if hotkey:
+            if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
                 await task_sql.set_miner_baseline_stats(
                     task_id_str, hotkey, job.result.baseline_stats, config.psql_db,
                 )
@@ -1187,6 +1182,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 gpu_ids=gpu_ids,
                 reward_functions=reward_fns,
                 is_env_task=True,
+                hotkey=hotkey,
             )
             if prep_result is not None and prep_result.baseline_stats:
                 await task_sql.set_miner_baseline_stats(
