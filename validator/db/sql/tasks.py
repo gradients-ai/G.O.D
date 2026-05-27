@@ -523,6 +523,7 @@ async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats, ps
 
 async def get_miner_baseline_stats(task_id: str, hotkey: str, psql_db: PSQLDB) -> dict | None:
     """Get per-miner baseline_stats from task_nodes."""
+    import json
     async with await psql_db.connection() as connection:
         connection: Connection
         row = await connection.fetchrow(f"""
@@ -532,7 +533,10 @@ async def get_miner_baseline_stats(task_id: str, hotkey: str, psql_db: PSQLDB) -
             AND {cst.HOTKEY} = $2
         """, task_id, hotkey)
         if row and row[cst.BASELINE_STATS]:
-            return row[cst.BASELINE_STATS]
+            val = row[cst.BASELINE_STATS]
+            if isinstance(val, str):
+                return json.loads(val)
+            return val
         return None
 
 
