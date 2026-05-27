@@ -163,7 +163,11 @@ def _detect_and_merge_lora(model_dir: str) -> None:
         base_model_id, torch_dtype=torch.float16, device_map=device,
     )
     base_tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-    lora_tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    try:
+        lora_tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    except Exception:
+        print(f"[downloader] No tokenizer in adapter dir, using base tokenizer", flush=True)
+        lora_tokenizer = base_tokenizer
 
     if len(lora_tokenizer) > base_model.get_input_embeddings().weight.shape[0]:
         base_model.resize_token_embeddings(len(lora_tokenizer))
