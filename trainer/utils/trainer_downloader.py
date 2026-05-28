@@ -153,6 +153,25 @@ def _detect_and_merge_lora(model_dir: str) -> None:
         print(f"WARNING: {LORA_ADAPTER_CONFIG} missing base_model_name_or_path, skipping merge", flush=True)
         return
 
+    # Resolve LoRA chains: if base_model_id is itself a LoRA adapter, follow
+    # the chain until we find the real base model.
+    resolved_base = base_model_id
+    for _ in range(10):  # max depth guard
+        try:
+            remote_adapter = hf_hub_download(resolved_base, LORA_ADAPTER_CONFIG)
+            with open(remote_adapter) as f:
+                parent_config = json.load(f)
+            parent_base = parent_config.get("base_model_name_or_path")
+            if not parent_base:
+                break
+            print(f"[downloader] Chained LoRA: {resolved_base} -> {parent_base}", flush=True)
+            resolved_base = parent_base
+        except Exception:
+            break  # Not a LoRA repo — this is the real base model
+    if resolved_base != base_model_id:
+        print(f"[downloader] Resolved LoRA chain: {base_model_id} -> {resolved_base}", flush=True)
+        base_model_id = resolved_base
+
     print(f"[downloader] LoRA adapter detected in {model_dir}", flush=True)
     print(f"[downloader] Base model: {base_model_id}", flush=True)
 
