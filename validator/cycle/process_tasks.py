@@ -124,10 +124,18 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task = await get_task_config(task).task_prep_function(task, config.keypair, config.psql_db)
             logger.info(f"THE TASK HAS BEEN PREPPED {task}")
 
-            if not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC):
+            type_enabled = cst.MODEL_PREP_ENABLED_BY_TASK_TYPE.get(task.task_type, False)
+            needs_model_prep = type_enabled and not (
+                task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC
+            )
+
+            if needs_model_prep:
                 task.status = TaskStatus.AWAITING_MODEL_PREP
                 logger.info(f"Task {task.task_id} prepped, moving to {task.status.value}")
+            else:
+                task.status = TaskStatus.LOOKING_FOR_NODES
 
+            add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
         except Exception as e:
             logger.error(f"Error during task prep: {e}", exc_info=True)
