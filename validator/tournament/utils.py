@@ -4,6 +4,7 @@ import subprocess
 import tempfile
 from collections import Counter
 from collections import defaultdict
+from core.models.pvp_models import GameOutcome
 from urllib.parse import urlparse
 from pathlib import Path
 
@@ -413,7 +414,11 @@ async def determine_env_tournament_winner(
         logger.info("No contender found in boss round; boss wins by default")
         return [boss_hotkey]
 
-    # Contender must beat boss on ALL boss round tasks
+    # Contender must have zero losses and at least one win.
+    # Draws are acceptable but any single loss means boss retains.
+    wins = 0
+    losses = 0
+    draws = 0
     for task in final_tasks:
         scores = await _get_scores_for_task(task.task_id, psql_db)
         contender_score = scores.get(contender)
@@ -423,15 +428,33 @@ async def determine_env_tournament_winner(
             logger.info(f"Contender {contender} has no score on task {task.task_id}; boss retains")
             return [boss_hotkey, contender]
 
-        if boss_score is not None and contender_score <= boss_score:
-            logger.info(
-                f"Boss retains: contender {contender} scored {contender_score:.2f} vs boss {boss_score:.2f} "
-                f"on task {task.task_id}"
-            )
-            return [boss_hotkey, contender]
+        bs = boss_score if boss_score is not None else 0
+        if contender_score > bs:
+            outcome = GameOutcome.WIN
+            wins += 1
+        elif contender_score < bs:
+            outcome = GameOutcome.LOSS
+            losses += 1
+        else:
+            outcome = GameOutcome.DRAW
+            draws += 1
+        logger.info(
+            f"Boss round task {task.task_id}: contender={contender_score:.2f} boss={bs:.2f} -> {outcome.value} "
+            f"(running: W={wins} D={draws} L={losses})"
+        )
 
-    logger.info(f"Contender {contender} wins environment tournament: beat boss on all {len(final_tasks)} boss round tasks")
-    return [contender, boss_hotkey]
+    if losses == 0 and wins > 0:
+        logger.info(
+            f"Contender {contender} wins environment tournament: "
+            f"W={wins} D={draws} L={losses} across {len(final_tasks)} tasks"
+        )
+        return [contender, boss_hotkey]
+    else:
+        logger.info(
+            f"Boss retains: contender W={wins} D={draws} L={losses} "
+            f"across {len(final_tasks)} tasks (need zero losses and at least one win)"
+        )
+        return [boss_hotkey, contender]
 
 
 def get_real_winner_hotkey(winner_hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
