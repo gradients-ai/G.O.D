@@ -233,13 +233,12 @@ TOURNAMENT_INTERVAL_HOURS = 72
 # Environment tournaments: Monday at 14:00 UTC
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
 TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
-
-# Text tournaments: Thursday at 15:00 UTC
+# Text tournaments: Thursday at 14:00 UTC
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_TEXT_HOUR = 15  # 0-23 (UTC time)
-# Image tournaments: Thursday at 16:00 UTC
+TOURNAMENT_SCHEDULE_TEXT_HOUR = 14  # 0-23 (UTC time)
+# Image tournaments: Thursday at 15:00 UTC
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_IMAGE_HOUR = 16  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15  # 0-23 (UTC time)
 
 TOURNAMENT_INTERVAL_HOURS = (
     120  # Display value for frontend (5 days), not used for actual scheduling. TODO: remove once frontend is updated
@@ -248,6 +247,7 @@ TOURNAMENT_INTERVAL_HOURS = (
 BURN_REDUCTION_RATE = 5.0
 MAX_BURN_REDUCTION = 0.8
 EMISSION_MULTIPLIER_THRESHOLD = 0.05
+EMISSION_MULTIPLIER_RATE = 2.0
 EMISSION_MULTIPLIER_RATE = 2.0
 EMISSION_BOOST_DECAY_PER_WIN = 0.01  # Deprecated - kept for backwards compatibility
 # Time-based decay settings (replaces consecutive wins decay)
