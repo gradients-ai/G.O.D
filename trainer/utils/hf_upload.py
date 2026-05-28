@@ -10,11 +10,35 @@ import wandb
 from huggingface_hub import HfApi, login
 
 
+def _resolve_base_model(model_id: str) -> str:
+    """If model_id is a LoRA adapter repo, follow the chain to the real base model."""
+    from huggingface_hub import hf_hub_download
+    resolved = model_id
+    for _ in range(10):
+        try:
+            cfg_path = hf_hub_download(resolved, "adapter_config.json")
+            with open(cfg_path) as f:
+                parent = json.load(f).get("base_model_name_or_path")
+            if not parent:
+                break
+            print(f"[upload] Resolving LoRA chain: {resolved} -> {parent}", flush=True)
+            resolved = parent
+        except Exception:
+            break
+    return resolved
+
+
 def patch_model_metadata(output_dir: str, base_model_id: str):
     try:
         adapter_config_path = os.path.join(output_dir, "adapter_config.json")
 
         if os.path.exists(adapter_config_path):
+            # Resolve chained LoRA refs to the real base model
+            real_base = _resolve_base_model(base_model_id)
+            if real_base != base_model_id:
+                print(f"[upload] Resolved base model: {base_model_id} -> {real_base}", flush=True)
+                base_model_id = real_base
+
             with open(adapter_config_path, "r") as f:
                 config = json.load(f)
 
