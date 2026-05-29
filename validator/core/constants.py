@@ -89,7 +89,6 @@ PERSON_GEN_RETRIES = 3
 # endpoints
 PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
 IMAGE_GEN_ENDPOINT = "https://image.chutes.ai/generate"
-PROMPT_PATH = "validator/prompts.yml"
 NINETEEN_API_KEY = os.getenv("NINETEEN_API_KEY")
 EMISSION_BURN_HOTKEY = "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
 
@@ -165,8 +164,6 @@ RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 # grpo synth
 MIN_NUM_REWARD_FUNCTIONS = 1
 MAX_NUM_REWARD_FUNCTIONS = 5
-PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM = 0.0
-PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_DB = 1 - PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM
 
 # affine grpo synth
 GET_AFFINE_GRPO_DATA_ENDPOINT = f"{PROD_CONTENT_BASE_URL}/affine-grpo-data/latest"  # Force prod for affine data

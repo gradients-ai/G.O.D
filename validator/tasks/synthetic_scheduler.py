@@ -53,7 +53,6 @@ def maybe_get_yarn_factor() -> int | None:
     return None
 
 
-
 async def _get_text_models(
     keypair: Keypair, smallest_size_b: float = 0.1, largest_size_b: float = 12.0
 ) -> AsyncGenerator[str, None]:
@@ -277,7 +276,7 @@ async def create_synthetic_dpo_task(
     return task
 
 
-async def _get_generic_reward_functions(config: Config) -> list[RewardFunction]:
+def _get_generic_reward_functions() -> list[RewardFunction]:
     total_rewards = random.randint(vcst.MIN_NUM_REWARD_FUNCTIONS, vcst.MAX_NUM_REWARD_FUNCTIONS)
 
     code_strings = sample_template_groups(n=total_rewards, rng=random.Random())
@@ -328,7 +327,7 @@ async def create_synthetic_grpo_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    reward_functions = await _get_generic_reward_functions(config)
+    reward_functions = _get_generic_reward_functions()
 
     yarn_factor = maybe_get_yarn_factor()
     task = GrpoRawTask(
@@ -444,7 +443,7 @@ async def create_synthetic_affine_grpo_task(
 
         if not affine_reward_functions:
             logger.error("No affine reward functions found in database, falling back to generic functions")
-            reward_functions = await _get_generic_reward_functions(config)
+            reward_functions = _get_generic_reward_functions()
         else:
             logger.info(f"Using {len(affine_reward_functions)} affine-specific reward functions")
             reward_functions = affine_reward_functions

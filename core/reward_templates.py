@@ -367,7 +367,7 @@ REGEX_FORMAT = RewardTemplate(
         "pattern": ParamSpec(
             param_type=ParamType.CHOICE,
             choices=[
-                r"^<think>.*?</think>.*?<answer>.*?</answer>",
+                r"^<think>[\s\S]*?</think>[\s\S]*?<answer>[\s\S]*?</answer>",
                 r"^\d+\.\s",
                 r"\b(in conclusion|to summarize|in summary)\b",
                 r"```[\s\S]*?```",
