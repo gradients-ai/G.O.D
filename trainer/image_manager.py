@@ -185,7 +185,11 @@ async def run_trainer_container_image(
 
     environment: dict[str, str] = {"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH}
     if baseline_stats:
-        environment["BASELINE_STATS"] = json.dumps(baseline_stats.model_dump())
+        vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
+        stats_filename = f"baseline_stats_{task_id}.json"
+        with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
+            json.dump(baseline_stats.model_dump(), f)
+        environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
@@ -260,7 +264,11 @@ async def run_trainer_container_text(
 
     environment = build_wandb_env(task_id, hotkey)
     if baseline_stats:
-        environment["BASELINE_STATS"] = json.dumps(baseline_stats.model_dump())
+        vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
+        stats_filename = f"baseline_stats_{task_id}_{hotkey[:8]}.json"
+        with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
+            json.dump(baseline_stats.model_dump(), f)
+        environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
     if miner_datasets:
