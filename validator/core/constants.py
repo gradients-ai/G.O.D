@@ -348,7 +348,7 @@ MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
 AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
 AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
-AUGMENTATION_PROBABILITY = 0.5  # Probability that a task gets any augmentation at all
+AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation at all
 
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
@@ -362,18 +362,18 @@ AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
 # Weighted distribution over layer scope (normalised at runtime)
 # Determines how many layers the augmentation targets
 AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
-    AugmentationScope.SINGLE_LAYER: 0.40,
-    AugmentationScope.LAYER_TYPE_GROUP: 0.30,
-    AugmentationScope.MULTI_LAYER: 0.20,
-    AugmentationScope.ALL_LAYERS: 0.10,
+    AugmentationScope.SINGLE_LAYER: 0.20,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.25,
+    AugmentationScope.MULTI_LAYER: 0.30,
+    AugmentationScope.ALL_LAYERS: 0.25,
 }
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.005, 0.02),
-    AugmentationType.WEIGHT_SCALING: (0.8, 1.2),
-    AugmentationType.MAGNITUDE_PRUNING: (0.05, 0.15),
-    AugmentationType.LAYER_REINIT: (0.01, 0.05),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.04),
+    AugmentationType.WEIGHT_SCALING: (0.6, 1.4),
+    AugmentationType.MAGNITUDE_PRUNING: (0.10, 0.30),
+    AugmentationType.LAYER_REINIT: (0.02, 0.10),
 }
 
 # Environment evaluation constants
