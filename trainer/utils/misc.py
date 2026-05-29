@@ -19,8 +19,7 @@ from trainer.tasks import get_running_jobs
 def clone_repo(
     repo_url: str,
     parent_dir: str,
-    branch: str = None,
-    commit_hash: str = None,
+    commit_hash: str,
     github_token: str | None = None,
     task_id: str | None = None,
     hotkey: str | None = None,
@@ -39,10 +38,7 @@ def clone_repo(
         try:
             repo = Repo(repo_dir)
             current_commit = repo.head.commit.hexsha
-
-            if commit_hash and current_commit.startswith(commit_hash):
-                return repo_dir
-            elif branch and repo.active_branch.name == branch:
+            if current_commit.startswith(commit_hash):
                 return repo_dir
             shutil.rmtree(repo_dir)
         except Exception:
@@ -50,20 +46,15 @@ def clone_repo(
 
     try:
         clone_url = build_authenticated_git_url(repo_url, github_token)
-        repo = Repo.clone_from(clone_url, repo_dir, branch=branch) if branch else Repo.clone_from(clone_url, repo_dir)
-
-        if commit_hash:
-            repo.git.fetch("--all")
-            repo.git.fetch("origin")
-            try:
-                repo.git.checkout(commit_hash)
-            except GitCommandError as checkout_error:
-                # Check if it's an invalid commit hash format issue
-                if "pathspec" in str(checkout_error) and "did not match any file(s) known to git" in str(checkout_error):
-                    raise RuntimeError(f"Invalid commit hash '{commit_hash}' - commit not found in repository")
-                else:
-                    # Re-raise other git checkout errors
-                    raise
+        repo = Repo.clone_from(clone_url, repo_dir)
+        repo.git.fetch("--all")
+        repo.git.fetch("origin")
+        try:
+            repo.git.checkout(commit_hash)
+        except GitCommandError as checkout_error:
+            if "pathspec" in str(checkout_error) and "did not match any file(s) known to git" in str(checkout_error):
+                raise RuntimeError(f"Invalid commit hash '{commit_hash}' - commit not found in repository")
+            raise
 
         return repo_dir
 

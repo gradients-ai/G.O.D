@@ -54,3 +54,36 @@ async def persist_deployment_ids_for_repo(
     if not hotkey:
         return
     await tasks_sql.set_evaluation_deployment_ids(task_id, hotkey, deployment_id, deployment_env_id, psql_db)
+
+
+async def load_shared_eval_deployment_id(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+) -> str | None:
+    if task_id is None or psql_db is None or not hotkeys:
+        return None
+
+    hotkey_set = set(hotkeys)
+    rows = await tasks_sql.get_task_evaluation_rows(task_id, psql_db)
+    deployment_ids = {
+        row.get("deployment_id")
+        for row in rows
+        if row.get("hotkey") in hotkey_set and row.get("deployment_id")
+    }
+    if len(deployment_ids) == 1:
+        return next(iter(deployment_ids))
+    return None
+
+
+async def persist_shared_eval_deployment_id(
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+    deployment_id: str | None,
+) -> None:
+    if task_id is None or psql_db is None:
+        return
+
+    for hotkey in hotkeys:
+        await tasks_sql.set_evaluation_deployment_ids(task_id, hotkey, deployment_id, None, psql_db)

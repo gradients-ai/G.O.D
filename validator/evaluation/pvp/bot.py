@@ -10,11 +10,16 @@ import re
 import signal
 
 import numpy as np
+import openai
 import pyspiel
 
-from core.models.pvp_models import ChatCompletionConfig, ChatFn, ChatMessage, ChatRole
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import ChatFn
+from core.models.pvp_models import ChatMessage
+from core.models.pvp_models import ChatRole
 from validator.core import constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
+
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +32,31 @@ class TurnTimeoutError(Exception):
         super().__init__(f"Player {player_id} exceeded {vcst.PVP_TURN_TIMEOUT_SECONDS}s turn timeout")
 
 
+class ContextOverflowError(Exception):
+    """Raised when a bot's input exceeds the model's context length."""
+
+    def __init__(self, player_id: int):
+        self.player_id = player_id
+        super().__init__(f"Player {player_id} exceeded model context length")
+
+
 class EmptyLegalActionsError(Exception):
     """Raised when the game state has no legal actions for the current player."""
 
     def __init__(self, player_id: int):
         self.player_id = player_id
         super().__init__(f"No legal actions for player {player_id}")
+
+
+class InvalidActionForfeitError(Exception):
+    """Raised when a bot repeatedly fails to produce legal actions in one game."""
+
+    def __init__(self, player_id: int, invalid_action_failures: int):
+        self.player_id = player_id
+        self.invalid_action_failures = invalid_action_failures
+        super().__init__(
+            f"Player {player_id} failed to produce valid actions {invalid_action_failures} times and forfeits"
+        )
 
 
 class LLMBot(pyspiel.Bot):
@@ -61,10 +85,12 @@ class LLMBot(pyspiel.Bot):
         self._rng = np.random.RandomState(rng_seed)
         self._conversation: list[ChatMessage] = []
         self._system_prompt_set = False
+        self._invalid_action_failures = 0
 
     def restart_at(self, state: pyspiel.State) -> None:
         self._conversation.clear()
         self._system_prompt_set = False
+        self._invalid_action_failures = 0
 
     def inform_action(self, state: pyspiel.State, player_id: int, action: int) -> None:
         pass
@@ -125,7 +151,12 @@ class LLMBot(pyspiel.Bot):
         self._conversation.append(ChatMessage(role=ChatRole.USER, content=user_prompt))
 
         for attempt in range(vcst.PVP_BOT_MAX_PARSING_RETRIES + 1):
-            result = self._chat_fn(self._config, self._conversation)
+            try:
+                result = self._chat_fn(self._config, self._conversation)
+            except openai.BadRequestError as exc:
+                if "context length" in str(exc).lower():
+                    raise ContextOverflowError(self._player_id) from exc
+                raise
 
             response_text = result.content or ""
             self._conversation.append(ChatMessage(role=ChatRole.ASSISTANT, content=response_text))
@@ -141,10 +172,25 @@ class LLMBot(pyspiel.Bot):
             )
             self._conversation.append(ChatMessage(role=ChatRole.USER, content=retry_msg))
 
+        self._invalid_action_failures += 1
+        attempts = vcst.PVP_BOT_MAX_PARSING_RETRIES + 1
+        if self._invalid_action_failures >= vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD:
+            logger.warning(
+                "LLM failed to produce valid action after %d attempts; player %d reached %d/%d failures and forfeits",
+                attempts,
+                self._player_id,
+                self._invalid_action_failures,
+                vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD,
+            )
+            raise InvalidActionForfeitError(self._player_id, self._invalid_action_failures)
+
         fallback = int(self._rng.choice(legal_actions))
         logger.warning(
-            "LLM failed to produce valid action after %d attempts, falling back to %d",
-            vcst.PVP_BOT_MAX_PARSING_RETRIES + 1, fallback,
+            "LLM failed to produce valid action after %d attempts (%d/%d failures this game), falling back to %d",
+            attempts,
+            self._invalid_action_failures,
+            vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD,
+            fallback,
         )
         self._conversation.append(ChatMessage(role=ChatRole.ASSISTANT, content=str(fallback)))
         return fallback

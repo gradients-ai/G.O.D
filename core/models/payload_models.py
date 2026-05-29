@@ -97,7 +97,6 @@ class TrainerProxyRequest(BaseModel):
     github_repo: str
     gpu_ids: list[int]
     hotkey: str
-    github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
@@ -122,7 +121,6 @@ class TrainerTaskLog(TrainerJob):
     training_data: TrainRequestImage | TrainRequestText
     github_repo: str
     hotkey: str
-    github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
@@ -135,6 +133,7 @@ class ModelPrepJob(TrainerJob):
     job_type: Literal["model_prep"] = "model_prep"
     task_id: str
     model_id: str
+    hotkey: str | None = None  # Set for per-miner preps
     result: "ModelPrepResponse | None" = None
 
     model_config = ConfigDict(protected_namespaces=())
@@ -181,6 +180,7 @@ class ModelPrepRequest(BaseModel):
     gpu_ids: list[int] = [0]
     reward_functions: list[RewardFunction] | None = None
     env_configs: dict[EnvironmentName, EnvConfig] | None = None
+    hotkey: str | None = None  # Per-miner prep key for recovery after restart
 
     model_config = ConfigDict(protected_namespaces=())
 

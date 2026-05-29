@@ -6,6 +6,7 @@ from core.constants import NETUID
 from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
+from core.models.utility_models import TaskType
 
 
 RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"
@@ -55,7 +56,7 @@ IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
-MINIMUM_DATASET_ROWS = 2_000  # Minimum number of rows required in a dataset
+MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
 EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
@@ -69,11 +70,11 @@ DATASET_BINS_TO_SAMPLE = [
 
 # dataset row bins to training hours range
 INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 10_000): (1, 3),
-    (10_000, 25_000): (2, 4),
-    (25_000, 50_000): (3, 5),
-    (50_000, 100_000): (3, 6),
-    (100_000, 500_000): (4, 6),
+    (1_000, 10_000): (1, 2),
+    (10_000, 25_000): (2, 3),
+    (25_000, 50_000): (2, 4),
+    (50_000, 100_000): (3, 5),
+    (100_000, 500_000): (3, 6),
 }
 
 # text augmentation synth
@@ -88,6 +89,21 @@ IMAGE_PROMPT_GEN_MODEL_TEMPERATURE = 0.4
 IMAGE_PROMPT_GEN_MODEL_MAX_TOKENS = 5024
 IMAGE_STYLE_PICKING_NUM_TRIES = 10
 PERSON_GEN_RETRIES = 3
+IMAGE_SYNTH_FACE_IMAGE_URL = "https://thispersondoesnotexist.com/"
+FAL_KEY = os.getenv("FAL_KEY")
+FAL_TIMEOUT_SECONDS = 300
+FAL_IMAGE_GENERATION_CONCURRENCY = 20
+FAL_PERSON_PROMPT_MODEL = "openrouter/router/vision"
+FAL_PERSON_PROMPT_VLM = "google/gemini-2.5-flash"
+FAL_TEXT_PROMPT_MODEL = "openrouter/router"
+FAL_TEXT_PROMPT_LLM = "google/gemini-2.5-flash"
+FAL_AVATAR_MODEL = "fal-ai/nano-banana-2/edit"
+FAL_STYLE_MODEL_NANO_BANANA_2 = "fal-ai/nano-banana-2"
+FAL_STYLE_MODEL_GPT_IMAGE_2 = "openai/gpt-image-2"
+FAL_STYLE_MODELS = (FAL_STYLE_MODEL_NANO_BANANA_2, FAL_STYLE_MODEL_GPT_IMAGE_2)
+FAL_GPT_IMAGE_2_QUALITY = "medium"
+FAL_NANO_BANANA_RESOLUTION = "1K"
+FAL_IMAGE_OUTPUT_FORMAT = "png"
 
 # endpoints
 PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
@@ -146,11 +162,12 @@ FIRST_PLACE_SCORE = 3
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
 MAX_EVALUATING_ROWS = 10
+MAX_CONCURRENT_GROUP_EVALUATIONS = 5
 
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.5
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.7
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.2
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.1
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     1
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
@@ -158,18 +175,14 @@ PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 )
 PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
-    0.5  # person synth chance is 1 minus this (only for sdxl models, flux is always person)
+    0.5  # person synth chance is 1 minus this for every image model type
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
-SYNTH_CONTAINER_SAVE_PATH = "/app/images/"
-RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS = 1800
-RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
-RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
-MIN_NUM_REWARD_FUNCTIONS = 1
-MAX_NUM_REWARD_FUNCTIONS = 5
+MIN_NUM_REWARD_FUNCTIONS = 2
+MAX_NUM_REWARD_FUNCTIONS = 4
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM = 0.0
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_DB = 1 - PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM
 
@@ -222,10 +235,10 @@ IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 # scoring stuff
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.20
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.18
 TOURNAMENT_TEXT_WEIGHT = 0.15
 TOURNAMENT_IMAGE_WEIGHT = 0.10
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.10
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.17
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
@@ -331,38 +344,49 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 
 # Model prep constants
 BASELINE_STATS_ENABLED_ORGANIC = False  # Run model prep (stats) for organic requests
+MODEL_PREP_ENABLED_TEXT = True  # Route text tasks through model prep (augmentation + baseline stats)
+MODEL_PREP_ENABLED_IMAGE = False  # Route image tasks through model prep
+MODEL_PREP_ENABLED_ENV = True  # Route environment tasks through model prep
+MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
+    TaskType.INSTRUCTTEXTTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.DPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.GRPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.CHATTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.IMAGETASK: MODEL_PREP_ENABLED_IMAGE,
+    TaskType.ENVIRONMENTTASK: MODEL_PREP_ENABLED_ENV,
+}
 
 
 # Model augmentation constants
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
 AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
 AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
-AUGMENTATION_PROBABILITY = 0.5  # Probability that a task gets any augmentation at all
+AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation at all
 
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
-    AugmentationType.GAUSSIAN_NOISE: 0.35,
-    AugmentationType.WEIGHT_SCALING: 0.30,
+    AugmentationType.GAUSSIAN_NOISE: 0.10,
+    AugmentationType.WEIGHT_SCALING: 0.50,
     AugmentationType.MAGNITUDE_PRUNING: 0.25,
-    AugmentationType.LAYER_REINIT: 0.10,
+    AugmentationType.LAYER_REINIT: 0.15,
 }
 
 # Weighted distribution over layer scope (normalised at runtime)
 # Determines how many layers the augmentation targets
 AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
-    AugmentationScope.SINGLE_LAYER: 0.40,
-    AugmentationScope.LAYER_TYPE_GROUP: 0.30,
-    AugmentationScope.MULTI_LAYER: 0.20,
-    AugmentationScope.ALL_LAYERS: 0.10,
+    AugmentationScope.SINGLE_LAYER: 0.10,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.15,
+    AugmentationScope.MULTI_LAYER: 0.35,
+    AugmentationScope.ALL_LAYERS: 0.40,
 }
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.005, 0.02),
-    AugmentationType.WEIGHT_SCALING: (0.8, 1.2),
-    AugmentationType.MAGNITUDE_PRUNING: (0.05, 0.15),
-    AugmentationType.LAYER_REINIT: (0.01, 0.05),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.04),
+    AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
+    AugmentationType.MAGNITUDE_PRUNING: (0.15, 0.40),
+    AugmentationType.LAYER_REINIT: (0.05, 0.15),
 }
 
 # Environment evaluation constants
@@ -421,6 +445,7 @@ PVP_SEED_RANGE_MAX = 1_000_000
 PVP_CONFIG_ID_DIVISOR = 100_000_000
 PVP_LOG_INTERVAL_GAMES = 100
 PVP_BOT_MAX_PARSING_RETRIES = 0
+PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
 PVP_TURN_TIMEOUT_SECONDS = 5
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 INDIVIDUAL_WIN_MARGIN = 0.015

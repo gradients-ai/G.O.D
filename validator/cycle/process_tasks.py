@@ -1,6 +1,7 @@
 import asyncio
 import datetime
 
+import core.constants as core_cst
 import validator.core.constants as cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -18,7 +19,6 @@ from validator.db.database import PSQLDB
 from validator.evaluation.scoring import evaluate_and_score_hotkeys
 from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
 from validator.evaluation.scoring import should_use_tournament_eval
-from validator.tournament.utils import send_to_discord
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
 from validator.utils.logging import LogContext
@@ -28,6 +28,14 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 _EVALUATING_ROWS_LOCK = asyncio.Lock()
+
+
+def _pvp_environment_names() -> list[str]:
+    return [
+        name.value
+        for name, env_config in core_cst.ENVIRONMENT_CONFIGS.items()
+        if env_config.eval_type == core_cst.EvalType.PVP
+    ]
 
 
 async def _select_miner_pool_and_add_to_task(task: AnyTypeRawTask, config: Config) -> AnyTypeRawTask:
@@ -115,10 +123,18 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task = await get_task_config(task).task_prep_function(task, config.keypair, config.psql_db)
             logger.info(f"THE TASK HAS BEEN PREPPED {task}")
 
-            if not (task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC):
+            type_enabled = cst.MODEL_PREP_ENABLED_BY_TASK_TYPE.get(task.task_type, False)
+            needs_model_prep = type_enabled and not (
+                task.is_organic and not cst.BASELINE_STATS_ENABLED_ORGANIC
+            )
+
+            if needs_model_prep:
                 task.status = TaskStatus.AWAITING_MODEL_PREP
                 logger.info(f"Task {task.task_id} prepped, moving to {task.status.value}")
+            else:
+                task.status = TaskStatus.LOOKING_FOR_NODES
 
+            add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
         except Exception as e:
             logger.error(f"Error during task prep: {e}", exc_info=True)
@@ -189,18 +205,25 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
         successful_training_hotkeys = {
             hotkey for hotkey, status in training_statuses.items() if status == "success"
         }
-        evaluation_hotkeys = {row["hotkey"] for row in rows}
+        expected_rows = [row for row in rows if row["hotkey"] in successful_training_hotkeys]
+        evaluation_hotkeys = {row["hotkey"] for row in expected_rows}
 
         if evaluation_hotkeys != successful_training_hotkeys:
             missing_hotkeys = sorted(successful_training_hotkeys - evaluation_hotkeys)
-            extra_hotkeys = sorted(evaluation_hotkeys - successful_training_hotkeys)
             logger.info(
-                "Task %s evaluation coverage mismatch; deferring final scoring. missing=%s extra=%s",
+                "Task %s evaluation coverage mismatch; deferring final scoring. missing=%s",
                 task.task_id,
                 missing_hotkeys,
-                extra_hotkeys,
             )
             return False
+        extra_hotkeys = sorted({row["hotkey"] for row in rows} - successful_training_hotkeys)
+        if extra_hotkeys:
+            logger.info(
+                "Task %s ignoring stale evaluation rows for non-successful training hotkeys: %s",
+                task.task_id,
+                extra_hotkeys,
+            )
+        rows = expected_rows
 
     if not rows:
         if is_tournament_task:
@@ -273,7 +296,8 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
 async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
     assert task.task_id is not None
 
-    if task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task):
+    batch_together = task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task)
+    if batch_together:
         training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
         if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
             logger.info(f"Task {task.task_id} still has non-terminal training rows; deferring batch evaluation")
@@ -289,20 +313,36 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
     all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))
 
-    batch_together = task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task)
     hotkey_batches = [all_hotkeys] if batch_together else [[hotkey] for hotkey in all_hotkeys]
     pending_evaluations = []
     for hotkeys in hotkey_batches:
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
         if pending_batch:
             async with _EVALUATING_ROWS_LOCK:
-                total_evaluating_rows = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
-                available_slots = cst.MAX_EVALUATING_ROWS - total_evaluating_rows
-                if len(pending_batch) > available_slots:
+                pvp_env_names = _pvp_environment_names()
+                group_evaluations = await tasks_sql.count_group_task_evaluations_by_status(
+                    "evaluating", pvp_env_names, config.psql_db
+                )
+                non_group_evaluating_rows = await tasks_sql.count_non_group_task_evaluation_rows_by_status(
+                    "evaluating", pvp_env_names, config.psql_db
+                )
+                total_eval_slots = group_evaluations + non_group_evaluating_rows
+                available_slots = cst.MAX_EVALUATING_ROWS - total_eval_slots
+
+                if batch_together:
+                    if group_evaluations >= cst.MAX_CONCURRENT_GROUP_EVALUATIONS or available_slots < 1:
+                        logger.info(
+                            f"Skipping grouped evaluation for task {task.task_id}; "
+                            f"group slots {group_evaluations}/{cst.MAX_CONCURRENT_GROUP_EVALUATIONS}, "
+                            f"eval slots {total_eval_slots}/{cst.MAX_EVALUATING_ROWS}"
+                        )
+                        continue
+                elif len(pending_batch) > available_slots:
                     logger.info(
                         f"Skipping pending evaluation rows for task {task.task_id} hotkeys {pending_batch}; "
                         f"needs {len(pending_batch)} slots but only {available_slots} available "
-                        f"({total_evaluating_rows}/{cst.MAX_EVALUATING_ROWS} evaluating rows)"
+                        f"({non_group_evaluating_rows} normal rows + {group_evaluations} grouped evals/"
+                        f"{cst.MAX_EVALUATING_ROWS} eval slots)"
                     )
                     continue
 
@@ -424,6 +464,12 @@ async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
         tournament_only=True,
     )
     for task_id in tournament_task_ids:
+        task = await tasks_sql.get_task(task_id, config.psql_db)
+        if task:
+            tasks_by_id[str(task.task_id)] = task
+
+    completed_training_task_ids = await tournament_sql.get_tasks_with_all_training_completed(config.psql_db)
+    for task_id in completed_training_task_ids:
         task = await tasks_sql.get_task(task_id, config.psql_db)
         if task:
             tasks_by_id[str(task.task_id)] = task

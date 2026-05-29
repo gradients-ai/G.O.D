@@ -1,6 +1,5 @@
 import asyncio
 import math
-import os
 from datetime import datetime
 from uuid import UUID
 
@@ -13,7 +12,15 @@ from core import constants as core_cst
 from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupModelSpec, PvPGroupResults, PvPIncompleteError, PvPIndividualScoreDbRow, PvPPairDbRow, PvPPairResult, _canonical_pair_key
+from core.models.pvp_models import PvPEnvironmentResult
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPGroupModelSpec
+from core.models.pvp_models import PvPGroupResults
+from core.models.pvp_models import PvPIncompleteError
+from core.models.pvp_models import PvPIndividualScoreDbRow
+from core.models.pvp_models import PvPPairDbRow
+from core.models.pvp_models import PvPPairResult
+from core.models.pvp_models import _canonical_pair_key
 from core.models.scoring_models import EvalHotkeyResults
 from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import IndividualEvalResult
@@ -26,11 +33,8 @@ from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import InstructTextDatasetType
-from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
-from core.models.utility_models import TrainingStatus
-from core.utils import download_s3_file
 from validator.core.config import Config
 from validator.core.models import AnyTypeRawTask
 from validator.core.models import EnvRawTask
@@ -47,19 +51,16 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
-from validator.db.sql.tournaments import get_tournament_id_by_task_id
-from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_group
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
-from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
-from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
 from validator.utils.minio import async_minio_client
 
@@ -294,9 +295,17 @@ async def _evaluate_submissions(
 ) -> dict[str, EvaluationResultText | EvaluationResultImage | Exception]:
     unique_repos = list(set(submission_repos))
     if len(unique_repos) != len(submission_repos):
-        logger.warning(f"Found duplicate repos. Deduplicating {len(submission_repos)} repos to {len(unique_repos)} unique repos")
+        logger.warning(
+            f"Found duplicate repos. Deduplicating {len(submission_repos)} repos to {len(unique_repos)} unique repos"
+        )
 
-    if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
+    if task.task_type in [
+        TaskType.INSTRUCTTEXTTASK,
+        TaskType.DPOTASK,
+        TaskType.GRPOTASK,
+        TaskType.CHATTASK,
+        TaskType.ENVIRONMENTTASK,
+    ]:
         results: dict[str, EvaluationResultText | Exception] = {}
         repos_to_evaluate = []
         base_model = task.augmented_model_id or task.model_id
@@ -420,7 +429,11 @@ async def _update_scores(task: AnyTypeRawTask, task_results: list[MinerResultsTe
                 await add_submission(result.submission, psql_db)
 
 
-async def _persist_raw_task_results(task: AnyTypeRawTask, task_results: list[MinerResultsText | MinerResultsImage], psql_db) -> None:
+async def _persist_raw_task_results(
+    task: AnyTypeRawTask,
+    task_results: list[MinerResultsText | MinerResultsImage],
+    psql_db,
+) -> None:
     assert task.task_id is not None, "task id needs to be set to persist losses"
     for result in task_results:
         with LogContext(miner_hotkey=result.hotkey):
@@ -572,7 +585,13 @@ async def process_miners_pool(
                             )
                         )
                         continue
-                    elif task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
+                    elif task.task_type in [
+                        TaskType.INSTRUCTTEXTTASK,
+                        TaskType.DPOTASK,
+                        TaskType.GRPOTASK,
+                        TaskType.CHATTASK,
+                        TaskType.ENVIRONMENTTASK,
+                    ]:
                         test_result = eval_result
                     elif task.task_type == TaskType.IMAGETASK:
                         test_result = eval_result
@@ -588,7 +607,13 @@ async def process_miners_pool(
                         updated_on=datetime.now(),
                     )
 
-                if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
+                if task.task_type in [
+                    TaskType.INSTRUCTTEXTTASK,
+                    TaskType.DPOTASK,
+                    TaskType.GRPOTASK,
+                    TaskType.CHATTASK,
+                    TaskType.ENVIRONMENTTASK,
+                ]:
                     results.append(
                         MinerResultsText(
                             hotkey=miner.hotkey,
@@ -650,6 +675,15 @@ async def _run_env_tournament_eval(
     """Run tournament eval with env partitioning. Delegates to focused sub-functions."""
     if not isinstance(task, EnvRawTask):
         raise TypeError(f"Expected EnvRawTask, got {type(task).__name__}")
+
+    training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+    if training_statuses:
+        successful_hotkeys = {hotkey for hotkey, status in training_statuses.items() if status == "success"}
+        skipped_hotkeys = sorted(set(miner_repos) - successful_hotkeys)
+        if skipped_hotkeys:
+            logger.info(f"Excluding non-successful training hotkeys from tournament eval: {skipped_hotkeys}")
+        miner_repos = {hotkey: repo for hotkey, repo in miner_repos.items() if hotkey in successful_hotkeys}
+
     miners = MinerRepos(by_hotkey=miner_repos)
     base_model = task.augmented_model_id or task.model_id
     model_params = task.model_params_count or 0
@@ -658,7 +692,9 @@ async def _run_env_tournament_eval(
     seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
 
     pvp_envs = [e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.PVP]
-    individual_envs = [e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.INDIVIDUAL]
+    individual_envs = [
+        e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.INDIVIDUAL
+    ]
 
     logger.info(
         f"Tournament eval: task={task.task_id}, {len(miners)} miners, "
@@ -882,7 +918,9 @@ async def _eval_individual_envs(
                     task_id=task_id_str, hotkey=hk,
                     environment_name=env.value, score=0.0, psql_db=config.psql_db,
                 )
-            logger.warning(f"Individual eval {env.value}: assigned score=0 for exhausted hotkeys: {[hk[:8] for hk in missing_hks]}")
+            logger.warning(
+                f"Individual eval {env.value}: assigned score=0 for exhausted hotkeys: {[hk[:8] for hk in missing_hks]}"
+            )
 
     outcomes: list[PairwiseOutcome] = []
     for env in individual_envs:

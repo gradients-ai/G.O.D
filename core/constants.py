@@ -22,7 +22,7 @@ VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_ENV = "gradientsio/env-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_INTERCODE = "phoenixbeaudry/env-eval-intercode:basilica"
-VALIDATOR_DOCKER_IMAGE_PVP = "weightswandering/pvp-evaluator:v5"
+VALIDATOR_DOCKER_IMAGE_PVP = "phoenixbeaudry/pvp-evaluator:v7"
 MCTS_API_DOCKER_IMAGE = "diagonalge/mcts-api:latest"
 
 
@@ -64,7 +64,7 @@ class EnvironmentConfig:
     def __post_init__(self):
         if self.eval_type == EvalType.INDIVIDUAL and not self.tournament_eval_command:
             raise ValueError(
-                f"EnvironmentConfig with eval_type=INDIVIDUAL must define tournament_eval_command"
+                "EnvironmentConfig with eval_type=INDIVIDUAL must define tournament_eval_command"
             )
 
 

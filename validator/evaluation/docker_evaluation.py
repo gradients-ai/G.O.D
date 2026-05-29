@@ -25,11 +25,18 @@ from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
-from validator.evaluation.basilica import _poll_basilica_result
+from validator.evaluation.basilica import _BasilicaEvalContext
+from validator.evaluation.basilica import _db_call_with_retry
+from validator.evaluation.basilica import _delete_eval_deployment
+from validator.evaluation.basilica import _fetch_attempt_logs
+from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
+from validator.evaluation.basilica import _poll_eval_deployment
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
+from validator.evaluation.db_utils import load_shared_eval_deployment_id
+from validator.evaluation.db_utils import persist_shared_eval_deployment_id
+from validator.evaluation.utils import _log_eval_step
 from validator.evaluation.utils import create_basilica_eval_runner_source
-from validator.evaluation.utils import log_basilica_logs_block
 from validator.evaluation.utils import normalize_rewards_and_compute_loss
 from validator.evaluation.utils import process_evaluation_results
 from validator.utils.logging import get_environment_logger
@@ -334,13 +341,44 @@ async def run_evaluation_basilica_image(
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     return process_evaluation_results(evaluation_results, is_image=True)
 
+async def _persist_pvp_deployment_id(
+    *,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+    deployment_name: str,
+    ctx: _BasilicaEvalContext,
+) -> None:
+    if task_id is None or psql_db is None or not hotkeys:
+        return
 
-async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, repos_label: str, image: str, gpu_count: int) -> dict:
+    ctx.log_eval_step("deployment_id_persist_start", deployment=deployment_name)
+    await _db_call_with_retry(
+        lambda: persist_shared_eval_deployment_id(task_id, psql_db, hotkeys, deployment_name),
+        "persist_shared_eval_deployment_id",
+        ctx.eval_logger,
+        ctx.repo,
+    )
+    ctx.log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
+
+
+async def _deploy_pvp_eval(
+    pvp_config: PvPEvalConfig,
+    label: str,
+    repos_label: str,
+    image: str | None = None,
+    gpu_count: int | None = None,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+    hotkeys: list[str] | None = None,
+) -> dict:
     """Deploy a PvP eval container via Basilica and return the raw result dict.
 
     Shared by both group and pair eval paths.
     """
-    mode = pvp_config.mode.value
+    hotkeys = hotkeys or []
+    image = image or cst.VALIDATOR_DOCKER_IMAGE_PVP
+    gpu_count = gpu_count or vcst.PVP_BASILICA_GPU_COUNT
     env = {
         vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
         **vcst.HF_CONTAINER_ENV,
@@ -350,19 +388,73 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, repos_label: str, image: s
 
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
-        name=f"pvp-{mode}-{eval_id[:8]}",
+        name=f"pvp-{label}-{eval_id[:8]}",
         repo_id=repos_label,
         eval_id=eval_id,
         model=pvp_config.base_model or "",
         task_type=TaskType.ENVIRONMENTTASK.value,
+        task_id=str(task_id) if task_id else "unknown",
     )
+
+    def log_step(step: str, **fields) -> None:
+        _log_eval_step(eval_logger, step, **fields)
+
+    ctx = _BasilicaEvalContext(
+        repo=f"pvp-{label}",
+        eval_logger=eval_logger,
+        deleted_deployment_names=set(),
+        log_eval_step=log_step,
+    )
+
+    existing_deployment_name = await _db_read_with_retry(
+        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
+        "load_shared_eval_deployment_id",
+    )
+    if existing_deployment_name:
+        resume_deployment = await _get_healthy_existing_basilica_deployment(
+            existing_deployment_name=existing_deployment_name,
+            ctx=ctx,
+        )
+        if resume_deployment is not None:
+            client, deployment, deployment_name = resume_deployment
+            result = await _poll_eval_deployment(
+                ctx=ctx,
+                client=client,
+                deployment=deployment,
+                deployment_name=deployment_name,
+                success_cleanup_reason="pvp_resume_completed",
+                failure_cleanup_reason="pvp_resume_failed_or_timed_out",
+                timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
+                retry_on_failure=False,
+                poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+                max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
+            )
+            if isinstance(result, dict):
+                return result
+            eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
 
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
-            eval_logger.info("Starting PvP %s eval attempt %d/%d", mode, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
+            log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
+            eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
             client = basilica.BasilicaClient()
+            await _persist_pvp_deployment_id(
+                task_id=task_id,
+                psql_db=psql_db,
+                hotkeys=hotkeys,
+                deployment_name=deployment_name,
+                ctx=ctx,
+            )
+            log_step(
+                "deploy_start",
+                deployment=deployment_name,
+                image=image,
+                gpu_count=gpu_count,
+                gpu_models=",".join(vcst.BASILICA_GPU_MODELS),
+                min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+            )
             deployment = await asyncio.to_thread(
                 client.deploy,
                 name=deployment_name,
@@ -378,40 +470,58 @@ async def _deploy_pvp_eval(pvp_config: PvPEvalConfig, repos_label: str, image: s
                 gpu_models=vcst.BASILICA_GPU_MODELS,
                 min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
             )
-            eval_logger.info("PvP %s deployment started: %s", mode, deployment_name)
+            resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+            log_step("deploy_complete", deployment=resolved_deployment_name)
+            if resolved_deployment_name != deployment_name:
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=resolved_deployment_name,
+                    ctx=ctx,
+                )
+            eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
 
-            result = await _poll_basilica_result(
-                deployment, f"pvp-{mode}",
-                eval_logger=eval_logger,
+            result = await _poll_eval_deployment(
+                ctx=ctx,
+                client=client,
+                deployment=deployment,
+                deployment_name=resolved_deployment_name,
+                success_cleanup_reason="pvp_completed",
+                failure_cleanup_reason="pvp_failed",
+                timeout_cleanup_reason="pvp_timed_out",
+                retry_on_failure=True,
                 poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
             )
             if isinstance(result, dict):
                 return result
 
-            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            eval_logger.error("PvP %s eval returned non-dict result: %s", mode, result)
-            if remaining > 0:
-                eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
-                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+            raise RuntimeError(str(result))
 
         except Exception as exc:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            eval_logger.error("PvP %s eval attempt %d failed: %s", mode, attempt, exc, exc_info=True)
+            if deployment is not None:
+                dep_name = getattr(deployment, "name", None) or deployment_name
+                await _delete_eval_deployment(ctx, client, deployment, dep_name, "pvp_attempt_exception")
+            log_step(
+                "attempt_failed",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_name,
+                remaining=remaining,
+                error=exc,
+            )
+            eval_logger.error("PvP %s eval attempt %d failed: %s", label, attempt, exc, exc_info=True)
             if remaining > 0:
                 eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
-                raise RuntimeError(f"PvP {mode} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
+                raise RuntimeError(f"PvP {label} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
         finally:
             if deployment is not None:
-                try:
-                    await asyncio.to_thread(log_basilica_logs_block, eval_logger, f"pvp-{mode}", deployment_name, deployment)
-                    await asyncio.to_thread(deployment.delete)
-                except Exception as exc:
-                    eval_logger.warning("Failed to cleanup PvP %s deployment: %s", mode, exc)
+                await _fetch_attempt_logs(ctx, deployment, deployment_name)
 
-    raise RuntimeError(f"PvP {mode} evaluation failed")
+    raise RuntimeError(f"PvP {label} evaluation failed")
 
 
 async def run_evaluation_individual(
@@ -489,9 +599,11 @@ async def run_evaluation_pvp_group(
     base_model: str,
     environment_names: list[cst.EnvironmentName],
     seed: int,
-    image: str,
-    gpu_count: int,
+    image: str | None = None,
+    gpu_count: int | None = None,
     temperature: float = 0.0,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> PvPGroupResults:
     """Run PvP group round-robin evaluation via Basilica."""
     matchups = {
@@ -507,7 +619,16 @@ async def run_evaluation_pvp_group(
         temperature=temperature,
     )
     repos_label = ",".join(p.repo.split("/")[-1] for p in participants)
-    result = await _deploy_pvp_eval(pvp_config, repos_label, image=image, gpu_count=gpu_count)
+    result = await _deploy_pvp_eval(
+        pvp_config,
+        "group",
+        repos_label,
+        image=image,
+        gpu_count=gpu_count,
+        task_id=task_id,
+        psql_db=psql_db,
+        hotkeys=[participant.hotkey for participant in participants],
+    )
     return PvPGroupResults.model_validate(result)
 
 
@@ -519,9 +640,11 @@ async def run_evaluation_pvp_pair(
     base_model: str,
     environment_names: list[cst.EnvironmentName],
     seed: int,
-    image: str,
-    gpu_count: int,
+    image: str | None = None,
+    gpu_count: int | None = None,
     temperature: float = 0.0,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> PvPGroupResults:
     """Run PvP 1v1 pair evaluation via Basilica.
 
@@ -540,7 +663,16 @@ async def run_evaluation_pvp_pair(
         temperature=temperature,
     )
     repos_label = f"{model_a_repo.split('/')[-1]},{model_b_repo.split('/')[-1]}"
-    result = await _deploy_pvp_eval(pvp_config, repos_label, image=image, gpu_count=gpu_count)
+    result = await _deploy_pvp_eval(
+        pvp_config,
+        "pair",
+        repos_label,
+        image=image,
+        gpu_count=gpu_count,
+        task_id=task_id,
+        psql_db=psql_db,
+        hotkeys=[hotkey_a, hotkey_b],
+    )
 
     pair_eval = PvPEvalResults.model_validate(result)
     return PvPGroupResults(

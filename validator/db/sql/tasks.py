@@ -35,6 +35,30 @@ from validator.utils.minio import async_minio_client
 logger = get_logger(__name__)
 
 
+async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
+    """Get all historical test_loss values for tasks that used a given dataset."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT tn.{cst.TEST_LOSS}
+            FROM {cst.TASK_NODES_TABLE} tn
+            JOIN {cst.TASKS_TABLE} t ON tn.{cst.TASK_ID}::text = t.{cst.TASK_ID}::text
+            WHERE t.{cst.DS} = $1
+            AND tn.{cst.TEST_LOSS} IS NOT NULL
+            """,
+            ds_name,
+        )
+        return [float(row[cst.TEST_LOSS]) for row in rows]
+
+
+def _row_count(command_tag: str) -> int:
+    try:
+        return int(command_tag.split()[-1])
+    except (IndexError, ValueError):
+        return 0
+
+
 async def add_task(task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeRawTask:
     """Add a new task"""
     async with await psql_db.connection() as connection:
@@ -452,6 +476,85 @@ async def set_starting_model_repo(task_id: str, hotkey: str, starting_model_repo
             AND {cst.NETUID} = $4
         """
         await connection.execute(query, starting_model_repo, task_id, hotkey, NETUID)
+
+
+async def get_effective_prep_model(task_id: str, model_id: str, psql_db: PSQLDB) -> str:
+    """Get the effective model for baseline prep: starting_model_repo if any miner has one, else model_id."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT DISTINCT {cst.STARTING_MODEL_REPO}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            LIMIT 1
+        """, task_id)
+        if row and row[cst.STARTING_MODEL_REPO]:
+            return row[cst.STARTING_MODEL_REPO]
+        return model_id
+
+
+async def get_miners_needing_baseline_stats(task_id: str, psql_db: PSQLDB) -> list[tuple[str, str]]:
+    """Get (hotkey, starting_model_repo) pairs for miners that have a starting model but no baseline_stats yet."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(f"""
+            SELECT {cst.HOTKEY}, {cst.STARTING_MODEL_REPO}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            AND {cst.BASELINE_STATS} IS NULL
+        """, task_id)
+        return [(row[cst.HOTKEY], row[cst.STARTING_MODEL_REPO]) for row in rows]
+
+
+async def has_miners_with_starting_model(task_id: str, psql_db: PSQLDB) -> bool:
+    """Check if any miners for this task have a starting_model_repo set."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT 1 FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.STARTING_MODEL_REPO} IS NOT NULL
+            LIMIT 1
+        """, task_id)
+        return row is not None
+
+
+async def set_miner_baseline_stats(task_id: str, hotkey: str, baseline_stats, psql_db: PSQLDB) -> None:
+    """Store per-miner baseline_stats on task_nodes."""
+    import json
+    if hasattr(baseline_stats, "model_dump"):
+        stats_dict = baseline_stats.model_dump()
+    else:
+        stats_dict = baseline_stats
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        await connection.execute(f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET {cst.BASELINE_STATS} = $1::jsonb
+            WHERE {cst.TASK_ID} = $2
+            AND {cst.HOTKEY} = $3
+        """, json.dumps(stats_dict), task_id, hotkey)
+
+
+async def get_miner_baseline_stats(task_id: str, hotkey: str, psql_db: PSQLDB) -> dict | None:
+    """Get per-miner baseline_stats from task_nodes."""
+    import json
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(f"""
+            SELECT {cst.BASELINE_STATS}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.HOTKEY} = $2
+        """, task_id, hotkey)
+        if row and row[cst.BASELINE_STATS]:
+            val = row[cst.BASELINE_STATS]
+            if isinstance(val, str):
+                return json.loads(val)
+            return val
+        return None
 
 
 async def get_starting_model_repo(task_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
@@ -1514,6 +1617,58 @@ async def count_task_evaluations_by_status(status: str, psql_db: PSQLDB) -> int:
         )
 
 
+async def count_group_task_evaluations_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(DISTINCT e.{cst.TASK_ID})
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
+async def count_non_group_task_evaluation_rows_by_status(status: str, pvp_environment_names: list[str], psql_db: PSQLDB) -> int:
+    async with await psql_db.connection() as connection:
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(*)
+            FROM {cst.EVALUATIONS_TABLE} e
+            JOIN {cst.TASKS_TABLE} t ON e.{cst.TASK_ID} = t.{cst.TASK_ID}
+            LEFT JOIN {cst.ENV_TASKS_TABLE} et ON e.{cst.TASK_ID} = et.{cst.TASK_ID}
+            WHERE e.{cst.EVALUATION_STATUS} = $1
+              AND e.{cst.NETUID} = $2
+              AND NOT (
+                t.{cst.TASK_TYPE} = $3
+                OR (
+                  t.{cst.TASK_TYPE} = $4
+                  AND COALESCE(et.{cst.ENVIRONMENT_NAMES}, ARRAY[]::TEXT[]) && $5::TEXT[]
+                )
+              )
+            """,
+            status,
+            NETUID,
+            TaskType.GRPOTASK.value,
+            TaskType.ENVIRONMENTTASK.value,
+            pvp_environment_names,
+        )
+
+
 async def get_task_ids_with_evaluation_statuses(
     statuses: list[str],
     psql_db: PSQLDB,
@@ -1555,8 +1710,9 @@ async def get_task_ids_with_evaluation_statuses(
 async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], status: str, psql_db: PSQLDB) -> None:
     if not hotkeys:
         return
+    expected_rows = len(set(hotkeys))
     async with await psql_db.connection() as connection:
-        await connection.execute(
+        result = await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
@@ -1567,6 +1723,16 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
             NETUID,
             status,
         )
+        updated_rows = _row_count(result)
+        if updated_rows != expected_rows:
+            logger.warning(
+                "Evaluation status update touched %s/%s rows task_id=%s status=%s hotkeys=%s",
+                updated_rows,
+                expected_rows,
+                task_id,
+                status,
+                hotkeys,
+            )
 
 
 async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> None:
@@ -1606,7 +1772,7 @@ async def set_evaluation_deployment_ids(
 ) -> None:
     """Store deployment IDs for an evaluation row. Overwrites on retry."""
     async with await psql_db.connection() as connection:
-        await connection.execute(
+        result = await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.DEPLOYMENT_ID} = $4, {cst.DEPLOYMENT_ENV_ID} = $5, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
@@ -1618,6 +1784,16 @@ async def set_evaluation_deployment_ids(
             deployment_id,
             deployment_env_id,
         )
+        updated_rows = _row_count(result)
+        if updated_rows != 1:
+            logger.warning(
+                "Deployment id update touched %s rows task_id=%s hotkey=%s deployment_id=%s deployment_env_id=%s",
+                updated_rows,
+                task_id,
+                hotkey,
+                deployment_id,
+                deployment_env_id,
+            )
 
 
 async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:

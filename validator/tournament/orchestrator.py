@@ -623,6 +623,10 @@ async def _create_training_request(
     starting_model = await task_sql.get_starting_model_repo(str(task.task_id), hotkey, config.psql_db)
     training_model = starting_model or task.augmented_model_id or task.model_id
 
+    # Per-miner baseline_stats (env continuous training), fall back to task-level
+    miner_stats = await task_sql.get_miner_baseline_stats(str(task.task_id), hotkey, config.psql_db)
+    baseline_stats = miner_stats or task.baseline_stats
+
     if task.task_type == TaskType.IMAGETASK:
         training_data = TrainRequestImage(
             model=training_model,
@@ -631,7 +635,7 @@ async def _create_training_request(
             expected_repo_name=expected_repo_name,
             dataset_zip=task.training_data,
             model_type=task.model_type,
-            baseline_stats=task.baseline_stats,
+            baseline_stats=baseline_stats,
         )
     else:
         dataset_type = _get_dataset_type(task)
@@ -644,7 +648,7 @@ async def _create_training_request(
             dataset=task.training_data,
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
-            baseline_stats=task.baseline_stats,
+            baseline_stats=baseline_stats,
         )
 
     return TrainerProxyRequest(
@@ -925,10 +929,7 @@ async def seed_tournament_evaluations_from_training(config: Config):
                         statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
                         if statuses and any(s not in ("success", "failure") for s in statuses.values()):
                             continue
-                        pvp = True
-                    else:
-                        pvp = False
-                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
+                    await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
                 except Exception as e:
                     logger.error(f"Error seeding evaluation rows for task {task.task_id}: {str(e)}", exc_info=True)
         except Exception as e:
@@ -1045,6 +1046,89 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
     return False
 
 
+async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[str, str]], config: Config) -> bool:
+    """Check trainers for completed per-miner model prep results after a restart.
+
+    Polls each trainer for each miner's prep job (keyed by task_id + hotkey).
+    Stores recovered results and returns True if any were found or still in progress.
+    """
+    task_id_str = str(task.task_id)
+    trainers = await tournament_sql.get_trainers(config.psql_db)
+    recovered_any = False
+    in_progress = False
+
+    for trainer in trainers:
+        trainer_ip = trainer.trainer_ip
+        trainer_ip_with_port = f"{trainer_ip}:8001" if ":" not in trainer_ip else trainer_ip
+
+        for hotkey, _starting_model in miners_needing:
+            try:
+                url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
+                async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
+                    response = await client.get(url, params={"hotkey": hotkey})
+                    if response.status_code == 404:
+                        continue
+                    response.raise_for_status()
+                    job = ModelPrepJob.model_validate(response.json())
+            except Exception:
+                continue
+
+            if job.status == TaskStatus.TRAINING:
+                in_progress = True
+                continue
+
+            if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
+                await task_sql.set_miner_baseline_stats(
+                    task_id_str, hotkey, job.result.baseline_stats, config.psql_db,
+                )
+                logger.info(
+                    f"Recovered per-miner baseline_stats for task {task.task_id} "
+                    f"hotkey={hotkey[:8]}... from trainer {trainer_ip}"
+                )
+                recovered_any = True
+
+    return recovered_any or in_progress
+
+
+async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
+    """For env tasks with no augmentation and no per-miner starting models,
+    try to copy baseline_stats from a sibling in the same round, or skip if
+    a sibling is already running prep.
+
+    Skipped entirely when miners have per-miner starting models (continuous
+    training), since each miner needs their own baseline.
+
+    Returns True if the task was handled (copied or should wait), False to proceed normally.
+    """
+    if task.task_type != TaskType.ENVIRONMENTTASK or task.augmentation_config is not None:
+        return False
+
+    task_id_str = str(task.task_id)
+
+    # Per-miner starting models → each miner needs their own baseline, no reuse
+    miners_with_starting = await task_sql.get_miners_needing_baseline_stats(
+        task_id_str, config.psql_db,
+    )
+    if miners_with_starting:
+        return False
+
+    sibling_stats = await tournament_sql.get_sibling_env_baseline_stats(
+        task_id_str, task.model_id, config.psql_db,
+    )
+    if sibling_stats is not None:
+        task.baseline_stats = sibling_stats
+        task.status = TaskStatus.LOOKING_FOR_NODES
+        await task_sql.update_task(task, config.psql_db)
+        logger.info(f"Copied baseline_stats from sibling for env task {task.task_id}, skipping model prep")
+        return True
+
+    sibling_ids = await tournament_sql.get_matching_sibling_task_ids(task_id_str, task.model_id, config.psql_db)
+    if any(sid in _model_prep_in_progress for sid in sibling_ids):
+        return True
+
+    return False
+
+
 async def process_awaiting_model_prep_tasks(config: Config):
     """Poll for tasks awaiting model prep and dispatch to a trainer with GPU.
 
@@ -1057,24 +1141,78 @@ async def process_awaiting_model_prep_tasks(config: Config):
     from validator.utils.model_prep import dispatch_augmentation_and_stats
     from validator.tournament.gpu import get_tournament_gpu_requirement
 
-    async def _run_model_prep(task, trainer_ip, gpu_ids):
-        task_id_str = str(task.task_id)
-        try:
-            reward_fns = getattr(task, "reward_functions", None)
-            is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+    # Track per-miner preps independently: "task_id:hotkey"
+    _miner_prep_in_progress: set[str] = set()
 
+    async def _run_miner_prep(task, hotkey, starting_model, trainer_ip, gpu_ids):
+        """Run model prep for a single miner's starting model. Releases GPUs when done."""
+        task_id_str = str(task.task_id)
+        prep_key = f"{task_id_str}:{hotkey}"
+        try:
+            logger.info(
+                f"Running per-miner model prep for task {task.task_id} "
+                f"hotkey={hotkey[:8]}... model={starting_model}"
+            )
+            reward_fns = getattr(task, "reward_functions", None)
             prep_result = await dispatch_augmentation_and_stats(
                 task_id=task_id_str,
-                model_id=task.model_id,
+                model_id=starting_model,
                 training_data_url=task.training_data,
                 augmentation_config=task.augmentation_config,
                 task_type=task.task_type,
                 trainer_ip=trainer_ip,
                 gpu_ids=gpu_ids,
                 reward_functions=reward_fns,
-                is_env_task=is_env_task,
+                is_env_task=True,
+                hotkey=hotkey,
             )
+            if prep_result is not None and prep_result.baseline_stats:
+                await task_sql.set_miner_baseline_stats(
+                    task_id_str, hotkey, prep_result.baseline_stats, config.psql_db,
+                )
+                logger.info(f"Stored baseline_stats for task {task.task_id} hotkey={hotkey[:8]}...")
+            else:
+                logger.warning(
+                    f"Model prep returned no baseline_stats for task {task.task_id} "
+                    f"hotkey={hotkey[:8]}..., will retry next cycle"
+                )
+        except Exception as e:
+            logger.error(
+                f"Per-miner model prep failed for task {task.task_id} hotkey={hotkey[:8]}...: {e}",
+                exc_info=True,
+            )
+        finally:
+            _miner_prep_in_progress.discard(prep_key)
+            try:
+                await tournament_sql.update_gpu_availability(
+                    trainer_ip, gpu_ids, 0, config.psql_db
+                )
+            except Exception:
+                pass
 
+    async def _run_single_prep(task_id_str, model_id, task, trainer_ip, gpu_ids):
+        """Run one model prep for a given model_id and return the result."""
+        reward_fns = getattr(task, "reward_functions", None)
+        is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+        return await dispatch_augmentation_and_stats(
+            task_id=task_id_str,
+            model_id=model_id,
+            training_data_url=task.training_data,
+            augmentation_config=task.augmentation_config,
+            task_type=task.task_type,
+            trainer_ip=trainer_ip,
+            gpu_ids=gpu_ids,
+            reward_functions=reward_fns,
+            is_env_task=is_env_task,
+        )
+
+    async def _run_task_prep(task, trainer_ip, gpu_ids):
+        """Standard task-level model prep (text tasks, env round-1)."""
+        task_id_str = str(task.task_id)
+        try:
+            prep_result = await _run_single_prep(
+                task_id_str, task.model_id, task, trainer_ip, gpu_ids,
+            )
             if prep_result is not None:
                 if prep_result.augmented_model_id:
                     task.augmented_model_id = prep_result.augmented_model_id
@@ -1104,7 +1242,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     trainer_ip, gpu_ids, 0, config.psql_db
                 )
             except Exception:
-                pass  # Periodic sync will clean up
+                pass
 
     while True:
         try:
@@ -1121,14 +1259,59 @@ async def process_awaiting_model_prep_tasks(config: Config):
 
             for task in tasks:
                 task_id_str = str(task.task_id)
-                if task_id_str in _model_prep_in_progress:
-                    continue
 
                 with LogContext(task_id=task_id_str):
-                    # Check if a trainer already has a completed result
-                    # (e.g. from before a vali restart)
+                    is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+
+                    # --- Per-miner prep path (continuous training) ---
+                    if is_env_task:
+                        miners_needing = await task_sql.get_miners_needing_baseline_stats(
+                            task_id_str, config.psql_db,
+                        )
+                        if miners_needing:
+                            # Try to recover completed results from trainers (e.g. after restart)
+                            if await _recover_miner_preps_from_trainers(task, miners_needing, config):
+                                continue  # Re-check on next cycle
+
+                            gpu_req = get_tournament_gpu_requirement(
+                                task.task_type, task.model_params_count or 0, task.model_id,
+                            )
+                            for hotkey, starting_model in miners_needing:
+                                prep_key = f"{task_id_str}:{hotkey}"
+                                if prep_key in _miner_prep_in_progress:
+                                    continue
+                                suitable = await _check_suitable_gpus(config, gpu_req)
+                                if suitable is None:
+                                    continue
+                                trainer_ip, gpu_ids = suitable
+                                await tournament_sql.update_gpu_availability(
+                                    trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
+                                )
+                                _miner_prep_in_progress.add(prep_key)
+                                asyncio.create_task(
+                                    _run_miner_prep(task, hotkey, starting_model, trainer_ip, gpu_ids)
+                                )
+                            continue
+
+                        # No miners need stats — check if per-miner task is fully done
+                        if await task_sql.has_miners_with_starting_model(task_id_str, config.psql_db):
+                            task.status = TaskStatus.LOOKING_FOR_NODES
+                            await task_sql.update_task(task, config.psql_db)
+                            logger.info(
+                                f"All per-miner baseline_stats complete for task {task.task_id}, "
+                                f"moved to {TaskStatus.LOOKING_FOR_NODES.value}"
+                            )
+                            continue
+
+                    # --- Standard task-level prep path ---
+                    if task_id_str in _model_prep_in_progress:
+                        continue
+
                     recovered = await _recover_model_prep_from_trainer(task, config)
                     if recovered:
+                        continue
+
+                    if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
                     gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
@@ -1147,7 +1330,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
 
                     _model_prep_in_progress.add(task_id_str)
                     try:
-                        asyncio.create_task(_run_model_prep(task, trainer_ip, gpu_ids))
+                        asyncio.create_task(_run_task_prep(task, trainer_ip, gpu_ids))
                     except Exception:
                         _model_prep_in_progress.discard(task_id_str)
                         await tournament_sql.update_gpu_availability(

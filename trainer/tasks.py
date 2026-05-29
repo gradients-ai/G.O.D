@@ -128,12 +128,15 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
 # Model prep job helpers
 # ---------------------------------------------------------------------------
 
-async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int]) -> ModelPrepJob:
+async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int], hotkey: str | None = None) -> ModelPrepJob:
     load_task_history()
 
     now = datetime.utcnow()
     for existing in task_history:
         if isinstance(existing, ModelPrepJob) and existing.task_id == task_id and existing.status == TaskStatus.TRAINING:
+            # For per-miner preps, only mark the same hotkey's job as failed
+            if hotkey and existing.hotkey and existing.hotkey != hotkey:
+                continue
             logger.warning(
                 "model_prep retry: marking previous TRAINING entry for task_id=%s gpu_ids=%s as FAILURE",
                 task_id,
@@ -146,6 +149,7 @@ async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[
         task_id=task_id,
         model_id=model_id,
         gpu_ids=gpu_ids,
+        hotkey=hotkey,
         status=TaskStatus.TRAINING,
         started_at=now,
     )
@@ -154,11 +158,11 @@ async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[
     return job
 
 
-async def complete_model_prep(task_id: str, success: bool = True, result=None):
+async def complete_model_prep(task_id: str, success: bool = True, result=None, hotkey: str | None = None):
     async with _task_lock:
         load_task_history()
 
-        job = get_model_prep_job(task_id)
+        job = get_model_prep_job(task_id, hotkey)
         if job is None:
             return
         job.status = TaskStatus.SUCCESS if success else TaskStatus.FAILURE
@@ -168,12 +172,14 @@ async def complete_model_prep(task_id: str, success: bool = True, result=None):
         await save_task_history()
 
 
-def get_model_prep_job(task_id: str) -> ModelPrepJob | None:
+def get_model_prep_job(task_id: str, hotkey: str | None = None) -> ModelPrepJob | None:
     # Prefer the currently-running entry so complete_model_prep targets the
     # active job, not an older entry with the same task_id from a prior retry.
     fallback: ModelPrepJob | None = None
     for job in task_history:
         if isinstance(job, ModelPrepJob) and job.task_id == task_id:
+            if hotkey and job.hotkey and job.hotkey != hotkey:
+                continue
             if job.status == TaskStatus.TRAINING:
                 return job
             if fallback is None:
