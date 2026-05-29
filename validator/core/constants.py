@@ -76,6 +76,11 @@ INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
     (100_000, 500_000): (3, 5),
 }
 
+# Model size scaling for training hours — models at or above this size get
+# the full training time; smaller models scale linearly down to MIN_HOURS_SCALE.
+FULL_HOURS_MODEL_PARAMS = 8e9  # 8B
+MIN_HOURS_SCALE = 0.5
+
 # text augmentation synth
 TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"
 TEXT_SYNTH_MODEL_TEMPERATURE = 0.6
@@ -352,19 +357,19 @@ AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
-    AugmentationType.GAUSSIAN_NOISE: 0.13,
-    AugmentationType.WEIGHT_SCALING: 0.26,
-    AugmentationType.MAGNITUDE_PRUNING: 0.37,
-    AugmentationType.LAYER_REINIT: 0.24,
+    AugmentationType.GAUSSIAN_NOISE: 0.04,
+    AugmentationType.WEIGHT_SCALING: 0.30,
+    AugmentationType.MAGNITUDE_PRUNING: 0.40,
+    AugmentationType.LAYER_REINIT: 0.26,
 }
 
 # Weighted distribution over layer scope (normalised at runtime)
 # Determines how many layers the augmentation targets
 AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
-    AugmentationScope.SINGLE_LAYER: 0.29,
-    AugmentationScope.LAYER_TYPE_GROUP: 0.09,
-    AugmentationScope.MULTI_LAYER: 0.26,
-    AugmentationScope.ALL_LAYERS: 0.36,
+    AugmentationScope.SINGLE_LAYER: 0.08,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.12,
+    AugmentationScope.MULTI_LAYER: 0.35,
+    AugmentationScope.ALL_LAYERS: 0.45,
 }
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly

@@ -209,8 +209,12 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int) -> int:
-    """Randomly select training hours for a given dataset size in bytes based on range bins."""
+def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None) -> int:
+    """Randomly select training hours for a given dataset size based on range bins.
+
+    If model_id is provided, scales hours down for models smaller than 8B
+    (linearly from 1.0x at 8B+ to 0.5x at 0B, minimum 1 hour).
+    """
     min_hours, max_hours = 0, 0
     for min_rows, max_rows in vcst.INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE.keys():
         if min_rows <= num_rows <= max_rows:
@@ -218,7 +222,19 @@ def _get_training_hours_from_num_rows(num_rows: int) -> int:
             break
     if min_hours == 0 and max_hours == 0:
         raise ValueError(f"No training hours range found for {num_rows} rows")
-    return random.randint(min_hours, max_hours)
+
+    hours = random.randint(min_hours, max_hours)
+
+    if model_id is not None:
+        from validator.cycle.util_functions import get_model_num_params
+
+        num_params = get_model_num_params(model_id)
+        if num_params is not None and num_params < vcst.FULL_HOURS_MODEL_PARAMS:
+            ratio = num_params / vcst.FULL_HOURS_MODEL_PARAMS
+            scale = vcst.MIN_HOURS_SCALE + ratio * (1.0 - vcst.MIN_HOURS_SCALE)
+            hours = max(1, round(hours * scale))
+
+    return hours
 
 
 def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
@@ -307,7 +323,7 @@ async def create_synthetic_dpo_task(
 
     logger.info(f"Selected dataset: {dataset.dataset_id} (rows: {dataset.num_rows}, bytes: {dataset.num_bytes_parquet_files})")
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
     assert dataset.dpo_rejected_column, "we should have a reject column"
     assert dataset.dpo_accepted_column, "we should have a accepted column"
     assert dataset.dpo_prompt_column, "we should have a prompt column"
@@ -441,7 +457,7 @@ async def create_synthetic_grpo_task(
 
     dataset = await get_dataset(datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair)
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
 
     current_time = datetime.utcnow()
@@ -586,7 +602,7 @@ async def create_synthetic_affine_grpo_task(
             reward_functions = affine_reward_functions
 
         num_entries = response.get("num_entries", 10_000)
-        number_of_hours = _get_training_hours_from_num_rows(num_entries)
+        number_of_hours = _get_training_hours_from_num_rows(num_entries, model_id)
 
         current_time = datetime.utcnow()
         end_timestamp = current_time + timedelta(hours=number_of_hours)
@@ -632,7 +648,7 @@ async def create_synthetic_instruct_text_task(
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
     logger.info(f"INSTRUCT_TASK: Selected dataset: {dataset.dataset_id}")
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
 
     current_time = datetime.utcnow()
