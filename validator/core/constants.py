@@ -70,11 +70,11 @@ DATASET_BINS_TO_SAMPLE = [
 
 # dataset row bins to training hours range
 INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 10_000): (1, 3),
-    (10_000, 25_000): (2, 4),
-    (25_000, 50_000): (3, 5),
-    (50_000, 100_000): (3, 6),
-    (100_000, 500_000): (4, 6),
+    (1_000, 10_000): (1, 2),
+    (10_000, 25_000): (2, 3),
+    (25_000, 50_000): (2, 4),
+    (50_000, 100_000): (3, 5),
+    (100_000, 500_000): (3, 6),
 }
 
 # text augmentation synth
