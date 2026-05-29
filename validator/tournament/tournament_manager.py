@@ -91,8 +91,8 @@ from validator.utils.logging import get_logger
 logger = get_logger(__name__)
 
 
-def count_failed_trainings_percentage(trainings: dict[str, str]) -> bool:
-    """Return True if fraction of failures exceeds threshold."""
+def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
+    """Return True if the fraction of failed trainings exceeds the allowed threshold."""
     total = len(trainings)
     if total == 0:
         return False
@@ -1107,7 +1107,7 @@ async def _more_than_half_failures(tournament_task: TournamentTask, config: Conf
     Returns True if majority failure detected, False otherwise.
     """
     trainings = await get_training_status_for_task(tournament_task.task_id, config.psql_db)
-    is_more_than_half_failure = count_failed_trainings_percentage(trainings)
+    is_more_than_half_failure = exceeds_failure_threshold(trainings)
 
     if is_more_than_half_failure:
         logger.info(f"More than half of the trainings for task {tournament_task.task_id} failed. Please investigate.")
@@ -1370,18 +1370,6 @@ def _calculate_next_tournament_start_time(last_created_at: datetime, tournament_
 
     return next_start
 
-
-async def get_final_round_participants(completed_round: TournamentRoundData, psql_db: PSQLDB) -> tuple[str, str]:
-    if completed_round.round_type == RoundType.KNOCKOUT:
-        pairs = await get_tournament_pairs(completed_round.round_id, psql_db)
-        if not pairs:
-            raise ValueError(f"No pairs found for final round {completed_round.round_id}")
-
-        pair = pairs[0]
-
-        return pair.hotkey1, pair.hotkey2
-    else:
-        raise ValueError(f"Expected a knockout round, got {completed_round.round_type}")
 
 
 async def upload_participant_repository(

@@ -21,7 +21,7 @@ TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 15 * 60
 
 
 # Retry intervals (in seconds)
-TRAINING_START_RETRY_INTERVAL = 1 * 60  # 15 minutes
+TRAINING_START_RETRY_INTERVAL = 1 * 60  # 1 minute
 
 # Dstack orchestrator retry settings
 DSTACK_RETRY_DELAY_MINUTES = 30
@@ -87,7 +87,7 @@ MODEL_PARAMS_TO_BILLIONS = 1e9
 
 # Progressive championship threshold constants
 EXPONENTIAL_BASE_THRESHOLD = 0.05  # Starting threshold for new champions
-EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = 0.05  # Starting threshold for new champions
+EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
 EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
 EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
 

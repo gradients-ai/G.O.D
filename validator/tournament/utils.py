@@ -492,14 +492,9 @@ def get_real_tournament_winner(tournament: TournamentData | TournamentResultsWit
     When a defending champion wins, winner_hotkey is set to EMISSION_BURN_HOTKEY,
     and the actual winner hotkey is stored in base_winner_hotkey.
     """
-    if not tournament or not tournament.winner_hotkey:
+    if not tournament:
         return None
-
-    winner = tournament.winner_hotkey
-    if winner == EMISSION_BURN_HOTKEY:
-        winner = tournament.base_winner_hotkey
-
-    return winner
+    return get_real_winner_hotkey(tournament.winner_hotkey, tournament.base_winner_hotkey)
 
 
 def did_winner_change(previous_tournament: TournamentData | None, latest_tournament: TournamentData) -> bool:

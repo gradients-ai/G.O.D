@@ -294,38 +294,24 @@ def tournament_scores_to_weights(
     return weights
 
 
+def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
+    result = calculate_tournament_type_scores_from_data(tournament_type, data)
+    weights = (
+        tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
+        if result.scores
+        else {}
+    )
+    logger.info(f"{tournament_type.value} tournament weights: {weights}")
+    return weights
+
+
 def get_tournament_weights_from_data(
     text_tournament_data: TournamentResultsWithWinners | None,
     image_tournament_data: TournamentResultsWithWinners | None,
     environment_tournament_data: TournamentResultsWithWinners | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
     """Get tournament weights keeping text, image, and environment tournaments separate."""
-
-    # Calculate text tournament weights
-    text_result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, text_tournament_data)
-    text_weights = {}
-    if text_result.scores:
-        text_weights = tournament_scores_to_weights(
-            text_result.scores, text_result.prev_winner_hotkey, text_result.prev_winner_won_final
-        )
-    logger.info(f"Text tournament weights: {text_weights}")
-
-    # Calculate image tournament weights
-    image_result = calculate_tournament_type_scores_from_data(TournamentType.IMAGE, image_tournament_data)
-    image_weights = {}
-    if image_result.scores:
-        image_weights = tournament_scores_to_weights(
-            image_result.scores, image_result.prev_winner_hotkey, image_result.prev_winner_won_final
-        )
-    logger.info(f"Image tournament weights: {image_weights}")
-
-    # Calculate environment tournament weights
-    environment_result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, environment_tournament_data)
-    environment_weights = {}
-    if environment_result.scores:
-        environment_weights = tournament_scores_to_weights(
-            environment_result.scores, environment_result.prev_winner_hotkey, environment_result.prev_winner_won_final
-        )
-    logger.info(f"Environment tournament weights: {environment_weights}")
-
+    text_weights = _compute_weights(TournamentType.TEXT, text_tournament_data)
+    image_weights = _compute_weights(TournamentType.IMAGE, image_tournament_data)
+    environment_weights = _compute_weights(TournamentType.ENVIRONMENT, environment_tournament_data)
     return text_weights, image_weights, environment_weights
