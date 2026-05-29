@@ -56,7 +56,7 @@ IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
-MINIMUM_DATASET_ROWS = 2_000  # Minimum number of rows required in a dataset
+MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
 EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
@@ -151,10 +151,10 @@ MAX_CONCURRENT_TASK_PREPS = 3
 MAX_EVALUATING_ROWS = 10
 MAX_CONCURRENT_GROUP_EVALUATIONS = 5
 
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.5
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.7
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.2
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.1
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     1
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
@@ -172,8 +172,8 @@ RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
-MIN_NUM_REWARD_FUNCTIONS = 1
-MAX_NUM_REWARD_FUNCTIONS = 5
+MIN_NUM_REWARD_FUNCTIONS = 2
+MAX_NUM_REWARD_FUNCTIONS = 4
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM = 0.0
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_DB = 1 - PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM
 
@@ -357,27 +357,27 @@ AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
-    AugmentationType.GAUSSIAN_NOISE: 0.04,
-    AugmentationType.WEIGHT_SCALING: 0.30,
-    AugmentationType.MAGNITUDE_PRUNING: 0.40,
-    AugmentationType.LAYER_REINIT: 0.26,
+    AugmentationType.GAUSSIAN_NOISE: 0.10,
+    AugmentationType.WEIGHT_SCALING: 0.50,
+    AugmentationType.MAGNITUDE_PRUNING: 0.25,
+    AugmentationType.LAYER_REINIT: 0.15,
 }
 
 # Weighted distribution over layer scope (normalised at runtime)
 # Determines how many layers the augmentation targets
 AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
-    AugmentationScope.SINGLE_LAYER: 0.08,
-    AugmentationScope.LAYER_TYPE_GROUP: 0.12,
+    AugmentationScope.SINGLE_LAYER: 0.10,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.15,
     AugmentationScope.MULTI_LAYER: 0.35,
-    AugmentationScope.ALL_LAYERS: 0.45,
+    AugmentationScope.ALL_LAYERS: 0.40,
 }
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.08),
-    AugmentationType.WEIGHT_SCALING: (0.70, 1.75),
-    AugmentationType.MAGNITUDE_PRUNING: (0.10, 0.25),
-    AugmentationType.LAYER_REINIT: (0.08, 0.13),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.20),
+    AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
+    AugmentationType.MAGNITUDE_PRUNING: (0.15, 0.40),
+    AugmentationType.LAYER_REINIT: (0.05, 0.15),
 }
 
 # Environment evaluation constants
