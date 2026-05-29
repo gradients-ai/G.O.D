@@ -24,6 +24,7 @@ from core.models.utility_models import Role
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
+from validator.db.database import PSQLDB
 from validator.core.models import Dataset
 from validator.core.models import DpoRawTask
 from validator.core.models import EnvRawTask
@@ -34,6 +35,7 @@ from validator.core.models import RewardFunction
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.grpo import get_generic_reward_functions_from_db
 from validator.db.sql.tasks import add_task
+from validator.db.sql.tasks import get_dataset_test_losses
 from validator.tournament import constants as t_cst
 from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.call_endpoint import call_content_service
@@ -223,14 +225,48 @@ def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
     return t_cst.ENV_TRAINING_HOURS
 
 
+async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
+    """Check if a dataset has historically produced degenerate test_loss scores.
+
+    Returns True (degenerate) if:
+    - Any historical test_loss < 0.01 (model collapse)
+    - For DPO tasks: average test_loss in [0.68, 0.71] (random noise around ln(2))
+    """
+    try:
+        losses = await get_dataset_test_losses(ds_name, psql_db)
+    except Exception as e:
+        logger.warning(f"Failed to query historical losses for {ds_name}, allowing dataset: {e}")
+        return False
+
+    if not losses:
+        return False
+
+    if any(loss < 0.01 for loss in losses):
+        logger.warning(f"Dataset {ds_name} rejected: has test_loss < 0.01 (model collapse)")
+        return True
+
+    if task_type == TaskType.DPOTASK:
+        avg_loss = sum(losses) / len(losses)
+        if 0.68 <= avg_loss <= 0.71:
+            logger.warning(f"Dataset {ds_name} rejected: avg DPO test_loss {avg_loss:.4f} in noise range [0.68, 0.71]")
+            return True
+
+    return False
+
+
 async def get_dataset(
     datasets_generator: AsyncGenerator[Dataset, None],
     task_type: TaskType | None = None,
     keypair: Keypair | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> Dataset:
     """Get a single dataset from the generator, validating column availability."""
     while True:
         dataset = await anext(datasets_generator)
+
+        if task_type and psql_db:
+            if await _is_dataset_degenerate(dataset.dataset_id, task_type, psql_db):
+                continue
 
         if task_type and keypair and task_type != TaskType.DPOTASK:
             try:
@@ -260,7 +296,7 @@ async def create_synthetic_dpo_task(
     model_id = await anext(models)
     logger.info(f"We picked {model_id}")
 
-    dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair)
+    dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair, psql_db=config.psql_db)
 
     logger.info(f"Selected dataset: {dataset.dataset_id} (rows: {dataset.num_rows}, bytes: {dataset.num_bytes_parquet_files})")
 
@@ -586,7 +622,7 @@ async def create_synthetic_instruct_text_task(
     model_id = await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
-    dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair)
+    dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
     logger.info(f"INSTRUCT_TASK: Selected dataset: {dataset.dataset_id}")
 
     number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)

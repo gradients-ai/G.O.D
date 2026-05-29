@@ -35,6 +35,23 @@ from validator.utils.minio import async_minio_client
 logger = get_logger(__name__)
 
 
+async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
+    """Get all historical test_loss values for tasks that used a given dataset."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT tn.{cst.TEST_LOSS}
+            FROM {cst.TASK_NODES_TABLE} tn
+            JOIN {cst.TASKS_TABLE} t ON tn.{cst.TASK_ID}::text = t.{cst.TASK_ID}::text
+            WHERE t.{cst.DS} = $1
+            AND tn.{cst.TEST_LOSS} IS NOT NULL
+            """,
+            ds_name,
+        )
+        return [float(row[cst.TEST_LOSS]) for row in rows]
+
+
 def _row_count(command_tag: str) -> int:
     try:
         return int(command_tag.split()[-1])
