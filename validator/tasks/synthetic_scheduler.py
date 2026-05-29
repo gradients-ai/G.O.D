@@ -1,13 +1,11 @@
 import asyncio
 import random
-from ast import literal_eval
 from datetime import datetime
 from datetime import timedelta
 from typing import Any
 from typing import AsyncGenerator
 from uuid import UUID
 
-import yaml
 from substrateinterface import Keypair
 
 import validator.core.constants as vcst
@@ -15,11 +13,9 @@ from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
 from core.models.utility_models import FileFormat
-from core.models.utility_models import Message
-from core.models.utility_models import Prompts
-from core.models.utility_models import Role
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
+from core.reward_templates import sample_template_groups
 from validator.core.config import Config
 from validator.core.models import Dataset
 from validator.core.models import DpoRawTask
@@ -29,15 +25,10 @@ from validator.core.models import InstructTextRawTask
 from validator.core.models import RawTask
 from validator.core.models import RewardFunction
 from validator.db.sql import grpo as grpo_sql
-from validator.db.sql.grpo import get_generic_reward_functions_from_db
 from validator.db.sql.tasks import add_task
 from validator.utils.call_endpoint import call_content_service
-from validator.utils.llm import convert_to_nineteen_payload
-from validator.utils.llm import post_to_nineteen_chat_with_reasoning
 from validator.utils.logging import get_logger
-from validator.utils.reward_functions import validate_reward_function
 from validator.utils.util import retry_with_backoff
-from core.reward_templates import sample_template_groups
 
 
 logger = get_logger(__name__)
@@ -61,11 +52,6 @@ def maybe_get_yarn_factor() -> int | None:
         return random.choice(vcst.YARN_TOURNAMENT_FACTORS)
     return None
 
-
-def load_prompts() -> Prompts:
-    with open(vcst.PROMPT_PATH, "r") as file:
-        prompts_dict = yaml.safe_load(file)
-    return Prompts(**prompts_dict)
 
 
 async def _get_text_models(
@@ -203,7 +189,7 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int) -> tuple[int, int]:
+def _get_training_hours_from_num_rows(num_rows: int) -> int:
     """Randomly select training hours for a given dataset size in bytes based on range bins."""
     min_hours, max_hours = 0, 0
     for min_rows, max_rows in vcst.INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE.keys():
@@ -289,61 +275,6 @@ async def create_synthetic_dpo_task(
     task = await add_task(task, config.psql_db)
 
     return task
-
-
-def process_reward_functions(result: str) -> list[str]:
-    """
-    Process and validate the LLM-generated reward functions.
-    Returns list of valid reward function definitions.
-    """
-    valid_reward_functions = []
-    try:
-        list_str = result[result.find("[") : result.rfind("]") + 1]
-        func_list = literal_eval(list_str)
-        if not isinstance(func_list, list):
-            raise ValueError("Expected a list")
-        if not all(isinstance(item, str) for item in func_list):
-            raise ValueError("Expected a list of strings")
-
-        for func_def in func_list:
-            is_valid, error, _ = validate_reward_function(func_def)
-            if is_valid:
-                valid_reward_functions.append(func_def)
-            else:
-                logger.warning(f"Function validation failed: {error}")
-
-        return valid_reward_functions
-    except Exception as e:
-        logger.error(f"Failed to parse LLM response as list: {e}")
-        return []
-
-
-async def _generate_generic_reward_functions_from_llm(keypair: Keypair, num_rewards: int) -> list[RewardFunction]:
-    prompts = load_prompts()
-    num_rewards_with_margin = int(num_rewards * 1.5)
-
-    messages = [
-        Message(role=Role.SYSTEM, content=prompts.reward_function_generation_sys),
-        Message(role=Role.USER, content=prompts.reward_function_generation_user.format(num_rewards=num_rewards_with_margin)),
-    ]
-
-    payload = convert_to_nineteen_payload(
-        messages=messages,
-        model=vcst.TEXT_SYNTH_MODEL,
-        temperature=vcst.TEXT_SYNTH_MODEL_TEMPERATURE,
-        max_tokens=vcst.TEXT_SYNTH_MODEL_MAX_TOKENS,
-    )
-
-    result = await post_to_nineteen_chat_with_reasoning(payload, keypair, vcst.END_OF_REASONING_TAG)
-
-    if result:
-        valid_reward_functions = process_reward_functions(result)
-
-    reward_functions = [
-        RewardFunction(reward_func=valid_reward_function, is_generic=True, reward_weight=1.0)
-        for valid_reward_function in valid_reward_functions[:num_rewards]
-    ]
-    return reward_functions
 
 
 async def _get_generic_reward_functions(config: Config) -> list[RewardFunction]:
