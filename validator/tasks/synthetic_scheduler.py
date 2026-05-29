@@ -209,7 +209,7 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None) -> int:
+def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None) -> float:
     """Randomly select training hours for a given dataset size based on range bins.
 
     If model_id is provided, scales hours down for models smaller than 8B
@@ -232,7 +232,7 @@ def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None
         if num_params is not None and num_params < vcst.FULL_HOURS_MODEL_PARAMS:
             ratio = num_params / vcst.FULL_HOURS_MODEL_PARAMS
             scale = vcst.MIN_HOURS_SCALE + ratio * (1.0 - vcst.MIN_HOURS_SCALE)
-            hours = max(1, round(hours * scale))
+            hours = max(1, round(hours * scale * 2) / 2)
 
     return hours
 

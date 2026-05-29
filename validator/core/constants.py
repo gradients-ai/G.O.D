@@ -70,15 +70,14 @@ DATASET_BINS_TO_SAMPLE = [
 
 # dataset row bins to training hours range
 INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 25_000): (1, 2),
-    (25_000, 50_000): (2, 3),
-    (50_000, 100_000): (2, 4),
-    (100_000, 500_000): (3, 5),
+    (1_000, 50_000): (1, 2),
+    (50_000, 100_000): (2, 3),
+    (100_000, 500_000): (3, 4),
 }
 
 # Model size scaling for training hours — models at or above this size get
 # the full training time; smaller models scale linearly down to MIN_HOURS_SCALE.
-FULL_HOURS_MODEL_PARAMS = 8e9  # 8B
+FULL_HOURS_MODEL_PARAMS = 14e9  # 14B
 MIN_HOURS_SCALE = 0.5
 
 # text augmentation synth
