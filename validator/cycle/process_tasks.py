@@ -468,6 +468,12 @@ async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
         if task:
             tasks_by_id[str(task.task_id)] = task
 
+    completed_training_task_ids = await tournament_sql.get_tasks_with_all_training_completed(config.psql_db)
+    for task_id in completed_training_task_ids:
+        task = await tasks_sql.get_task(task_id, config.psql_db)
+        if task:
+            tasks_by_id[str(task.task_id)] = task
+
     return list(tasks_by_id.values())
 
 
