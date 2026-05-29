@@ -230,6 +230,7 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
 
     Returns True (degenerate) if:
     - Any historical test_loss < 0.01 (model collapse)
+    - For instruct tasks: best (min) test_loss > 2.0 (garbage / unlearnable data)
     - For DPO tasks: average test_loss in [0.68, 0.71] (random noise around ln(2))
     """
     try:
@@ -244,6 +245,12 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
     if any(loss < 0.01 for loss in losses):
         logger.warning(f"Dataset {ds_name} rejected: has test_loss < 0.01 (model collapse)")
         return True
+
+    if task_type == TaskType.INSTRUCTTEXTTASK:
+        best_loss = min(losses)
+        if best_loss > 2.0:
+            logger.warning(f"Dataset {ds_name} rejected: best instruct test_loss {best_loss:.4f} > 2.0 (garbage data)")
+            return True
 
     if task_type == TaskType.DPOTASK:
         avg_loss = sum(losses) / len(losses)
