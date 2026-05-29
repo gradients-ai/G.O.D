@@ -4,13 +4,12 @@
 2. _forfeit_returns correctness
 3. Server command construction (build_sglang_command)
 4. Chat client retry/backoff logic (_with_retries)
-5. Group round-robin orchestration (run_group_evaluation with mocked servers)
-6. _prepare_model LoRA vs full-weight detection
-7. _load_config from env var and file
-8. _write_results round-trip
-9. create_next_round / round progression logic
-10. Multi-group score aggregation
-11. Performance diff using actual production code
+5. _prepare_model LoRA vs full-weight detection
+6. _load_config from env var and file
+7. _write_results round-trip
+8. create_next_round / round progression logic
+9. Multi-group score aggregation
+10. Performance diff using actual production code
 """
 
 import os
@@ -26,13 +25,11 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import ChatRole
-from core.models.pvp_models import FullWeightContestants
 from core.models.pvp_models import PreparedModel
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalMetadata
 from core.models.pvp_models import PvPEvalResults
-from core.models.pvp_models import PvPGroupModelSpec
 from core.models.pvp_models import PvPGroupResults
 from core.models.pvp_models import PvPMatchupConfig
 from core.models.pvp_models import PvPMode
@@ -440,12 +437,9 @@ class TestConfigLoading:
         from validator.evaluation.pvp.__main__ import _load_config
 
         config_data = PvPEvalConfig(
-            mode=PvPMode.GROUP,
-            models=[
-                PvPGroupModelSpec(repo="org/a", hotkey="hk_a"),
-                PvPGroupModelSpec(repo="org/b", hotkey="hk_b"),
-            ],
-            base_model="base/model",
+            mode=PvPMode.PAIR,
+            model_a=PvPModelSpec(repo="org/a", original_model="base/m"),
+            model_b=PvPModelSpec(repo="org/b", original_model="base/m"),
             matchups={EnvironmentName.LIARS_DICE: PvPMatchupConfig(num_games=5)},
         )
 
@@ -461,8 +455,8 @@ class TestConfigLoading:
                 loaded = _load_config()
 
         os.unlink(f.name)
-        assert loaded.mode == PvPMode.GROUP
-        assert len(loaded.models) == 2
+        assert loaded.mode == PvPMode.PAIR
+        assert loaded.model_b.repo == "org/b"
 
     def test_raises_when_no_config(self):
         from validator.evaluation.pvp.__main__ import _load_config
@@ -499,39 +493,6 @@ class TestWriteResults:
             loaded = PvPEvalResults.model_validate_json(Path(results_path).read_text())
             assert loaded.model_a == "org/a"
             assert loaded.results[EnvironmentName.LEDUC_POKER].model_a_wins == 80
-
-    def test_group_results_round_trip(self):
-        from validator.evaluation.pvp.__main__ import _write_results
-
-        results = PvPGroupResults(
-            base_model="base/model",
-            hotkeys=["hk_a", "hk_b"],
-            pair_results=[
-                PvPPairResult(
-                    hotkey_a="hk_a", hotkey_b="hk_b",
-                    results={
-                        EnvironmentName.LIARS_DICE: PvPEnvironmentResult(
-                            model_a_wins=5, model_b_wins=3, draws=2, total_games=10,
-                        ),
-                    },
-                ),
-            ],
-            full_weight_fallbacks=FullWeightContestants(
-                hotkeys=["hk_c"], repos=["org/full-c"],
-            ),
-            metadata=PvPEvalMetadata(seed=42, temperature=0.0),
-        )
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            results_path = os.path.join(tmpdir, "results.json")
-            with patch.dict(os.environ, {"PVP_RESULTS_PATH": results_path}):
-                _write_results(results)
-
-            loaded = PvPGroupResults.model_validate_json(Path(results_path).read_text())
-            assert loaded.full_weight_fallbacks is not None
-            assert loaded.full_weight_fallbacks.hotkeys == ["hk_c"]
-            assert len(loaded.pair_results) == 1
-
 
 # =============================================================================
 # 7. Round finality decision logic
@@ -855,71 +816,7 @@ class TestGameAgentPrompts:
 
 
 # =============================================================================
-# 11. Group eval with fewer than 2 LoRA models
-# =============================================================================
-
-
-class TestGroupEdgeCases:
-    def test_all_full_weight_returns_empty_pair_results(self):
-        """When all models are full-weight, group eval returns empty pair_results
-        and all models in full_weight_fallbacks."""
-        from validator.evaluation.pvp.group import run_group_evaluation
-
-        config = PvPEvalConfig(
-            mode=PvPMode.GROUP,
-            models=[
-                PvPGroupModelSpec(repo="org/full-a", hotkey="hk_a"),
-                PvPGroupModelSpec(repo="org/full-b", hotkey="hk_b"),
-            ],
-            base_model="base/model",
-            matchups={EnvironmentName.LEDUC_POKER: PvPMatchupConfig(num_games=5)},
-        )
-
-        with patch("validator.evaluation.pvp.group.check_for_lora", return_value=False):
-            result = run_group_evaluation(config)
-
-        assert result.pair_results == []
-        assert result.full_weight_fallbacks is not None
-        assert len(result.full_weight_fallbacks.hotkeys) == 2
-
-    def test_single_lora_returns_empty(self):
-        """Only 1 LoRA model → no pairings possible → empty results."""
-        from validator.evaluation.pvp.group import run_group_evaluation
-
-        config = PvPEvalConfig(
-            mode=PvPMode.GROUP,
-            models=[
-                PvPGroupModelSpec(repo="org/lora-a", hotkey="hk_a"),
-                PvPGroupModelSpec(repo="org/full-b", hotkey="hk_b"),
-            ],
-            base_model="base/model",
-            matchups={EnvironmentName.LEDUC_POKER: PvPMatchupConfig(num_games=5)},
-        )
-
-        with patch("validator.evaluation.pvp.group.check_for_lora", side_effect=[True, False]):
-            result = run_group_evaluation(config)
-
-        assert result.pair_results == []
-        assert result.full_weight_fallbacks is not None
-        assert result.full_weight_fallbacks.hotkeys == ["hk_b"]
-
-    def test_no_models_raises(self):
-        """Group mode with None models raises."""
-        from validator.evaluation.pvp.group import run_group_evaluation
-
-        config = PvPEvalConfig(
-            mode=PvPMode.GROUP,
-            models=None,
-            base_model="base/model",
-            matchups={EnvironmentName.LEDUC_POKER: PvPMatchupConfig(num_games=5)},
-        )
-
-        with pytest.raises(ValueError, match="models"):
-            run_group_evaluation(config)
-
-
-# =============================================================================
-# 12. _resolve_spec defaults
+# 11. _resolve_spec defaults
 # =============================================================================
 
 

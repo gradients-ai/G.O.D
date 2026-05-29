@@ -7,7 +7,6 @@ from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalResults
-from core.models.pvp_models import PvPGroupModelSpec
 from core.models.pvp_models import PvPGroupResults
 from core.models.pvp_models import PvPMatchupConfig
 from core.models.pvp_models import PvPMode
@@ -374,7 +373,7 @@ async def _deploy_pvp_eval(
 ) -> dict:
     """Deploy a PvP eval container via Basilica and return the raw result dict.
 
-    Shared by both group and pair eval paths.
+    Shared by PvP pair eval calls.
     """
     hotkeys = hotkeys or []
     image = image or cst.VALIDATOR_DOCKER_IMAGE_PVP
@@ -592,44 +591,6 @@ async def run_evaluation_individual(
         environment_name=environment_name,
         scores_by_hotkey=scores,
     )
-
-
-async def run_evaluation_pvp_group(
-    participants: list[PvPGroupModelSpec],
-    base_model: str,
-    environment_names: list[cst.EnvironmentName],
-    seed: int,
-    image: str | None = None,
-    gpu_count: int | None = None,
-    temperature: float = 0.0,
-    task_id: UUID | None = None,
-    psql_db: PSQLDB | None = None,
-) -> PvPGroupResults:
-    """Run PvP group round-robin evaluation via Basilica."""
-    matchups = {
-        env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
-        for env in environment_names
-    }
-    pvp_config = PvPEvalConfig(
-        mode=PvPMode.GROUP,
-        models=participants,
-        base_model=base_model,
-        matchups=matchups,
-        seed=seed,
-        temperature=temperature,
-    )
-    repos_label = ",".join(p.repo.split("/")[-1] for p in participants)
-    result = await _deploy_pvp_eval(
-        pvp_config,
-        "group",
-        repos_label,
-        image=image,
-        gpu_count=gpu_count,
-        task_id=task_id,
-        psql_db=psql_db,
-        hotkeys=[participant.hotkey for participant in participants],
-    )
-    return PvPGroupResults.model_validate(result)
 
 
 async def run_evaluation_pvp_pair(

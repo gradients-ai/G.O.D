@@ -53,7 +53,7 @@ def accumulate_points(
 
 
 def pvp_results_to_pairwise(group_results: PvPGroupResults) -> list[PairwiseOutcome]:
-    """Convert PvP group round-robin results into universal pairwise outcomes."""
+    """Convert PvP pair results into universal pairwise outcomes."""
     outcomes: list[PairwiseOutcome] = []
 
     for pair in group_results.pair_results:

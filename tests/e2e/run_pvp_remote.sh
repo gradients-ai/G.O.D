@@ -12,7 +12,6 @@
 #   1. Symmetric base-vs-base  (win rates should be ~50/50)
 #   2. LoRA-vs-base            (trained adapter vs untrained base)
 #   3. LoRA-vs-LoRA            (two different adapters)
-#   4. Group round-robin       (3 LoRA adapters, multi-LoRA mode)
 #
 
 set -euo pipefail
@@ -47,7 +46,6 @@ BASE_MODEL="Qwen/Qwen2.5-1.5B-Instruct"
 LORA_BASE="NousResearch/Hermes-3-Llama-3.2-3B"
 LORA_A="gradients-io-tournaments/tournament-tourn_6ded1f069d76cb0e_20260427-7a724209-10e5-4a0b-8ed3-810c8bf53402-5C7vE26G"
 LORA_B="gradients-io-tournaments/tournament-tourn_6ded1f069d76cb0e_20260427-7a724209-10e5-4a0b-8ed3-810c8bf53402-5CmAQ61V"
-LORA_C="gradients-io-tournaments/tournament-tourn_6ded1f069d76cb0e_20260427-7a724209-10e5-4a0b-8ed3-810c8bf53402-5Ca32LwM"
 
 echo "============================================================"
 echo "PvP Remote E2E Test Suite"
@@ -59,7 +57,7 @@ echo ""
 
 PASSED=0
 FAILED=0
-TOTAL=4
+TOTAL=3
 
 # --- Helper: run a test ---
 run_pvp_test() {
@@ -109,8 +107,9 @@ results_path, expected_total = sys.argv[1], int(sys.argv[2])
 results = json.load(open(results_path))
 errors = []
 
-# Pair mode validation
-if "results" in results and "pair_results" not in results:
+if "results" not in results:
+    errors.append("Missing pair-mode results")
+else:
     for env, res in results["results"].items():
         total = res["total_games"]
         if total != expected_total:
@@ -118,18 +117,6 @@ if "results" in results and "pair_results" not in results:
         accounting = res["model_a_wins"] + res["model_b_wins"] + res["draws"]
         if accounting != total:
             errors.append(f"{env}: wins+draws={accounting} != total={total}")
-
-# Group mode validation
-if "pair_results" in results:
-    for pair in results["pair_results"]:
-        for env, res in pair["results"].items():
-            accounting = res["model_a_wins"] + res["model_b_wins"] + res["draws"]
-            if accounting != res["total_games"]:
-                errors.append(f"Pair {pair['hotkey_a'][:8]}v{pair['hotkey_b'][:8]} {env}: accounting mismatch")
-    if len(results["pair_results"]) == 0 and len(results.get("hotkeys", [])) >= 2:
-        fw = results.get("full_weight_fallbacks")
-        if not fw:
-            errors.append("No pair results and no full_weight_fallbacks — nothing happened")
 
 wall_time = results.get("metadata", {}).get("wall_time_seconds", 0)
 if wall_time <= 0:
@@ -141,34 +128,14 @@ if errors:
     sys.exit(1)
 
 # Print summary
-if "results" in results and "pair_results" not in results:
-    print(f"  Model A: {results.get('model_a', 'N/A')}")
-    print(f"  Model B: {results.get('model_b', 'N/A')}")
-    for env, res in results["results"].items():
-        t = res["total_games"]
-        a = res["model_a_wins"] / t * 100 if t else 0
-        b = res["model_b_wins"] / t * 100 if t else 0
-        d = res["draws"] / t * 100 if t else 0
-        print(f"  {env}: A={a:.0f}% B={b:.0f}% D={d:.0f}% ({t} games)")
-
-if "pair_results" in results:
-    hotkeys = results["hotkeys"]
-    scores = {h: 0 for h in hotkeys}
-    for pair in results["pair_results"]:
-        for env, res in pair["results"].items():
-            if res["model_a_wins"] > res["model_b_wins"]:
-                scores[pair["hotkey_a"]] += 3
-            elif res["model_b_wins"] > res["model_a_wins"]:
-                scores[pair["hotkey_b"]] += 3
-            else:
-                scores[pair["hotkey_a"]] += 1
-                scores[pair["hotkey_b"]] += 1
-    ranked = sorted(scores.items(), key=lambda x: -x[1])
-    print(f"  Leaderboard ({len(results['pair_results'])} pairings):")
-    for i, (hk, pts) in enumerate(ranked, 1):
-        print(f"    #{i} {hk} = {pts} pts")
-    if results.get("full_weight_fallbacks"):
-        print(f"  Full-weight fallbacks: {results['full_weight_fallbacks']['hotkeys']}")
+print(f"  Model A: {results.get('model_a', 'N/A')}")
+print(f"  Model B: {results.get('model_b', 'N/A')}")
+for env, res in results["results"].items():
+    t = res["total_games"]
+    a = res["model_a_wins"] / t * 100 if t else 0
+    b = res["model_b_wins"] / t * 100 if t else 0
+    d = res["draws"] / t * 100 if t else 0
+    print(f"  {env}: A={a:.0f}% B={b:.0f}% D={d:.0f}% ({t} games)")
 
 print(f"  Wall time: {wall_time:.0f}s")
 print(f"  PASS")
@@ -226,30 +193,6 @@ if run_pvp_test "lora_vs_lora" "{
     \"matchups\": {\"liars_dice\": {\"num_games\": $NUM_GAMES}, \"leduc_poker\": {\"num_games\": $NUM_GAMES}},
     \"seed\": 42, \"temperature\": 0.0
 }" && validate_results "lora_vs_lora"; then
-    PASSED=$((PASSED + 1))
-else
-    FAILED=$((FAILED + 1))
-fi
-
-# =============================================================
-# Test 4: Group round-robin (3 LoRAs)
-# =============================================================
-echo ""
-echo "============================================================"
-echo "Test 4/$TOTAL: Group round-robin (3 LoRA adapters)"
-echo "============================================================"
-
-if run_pvp_test "group_robin" "{
-    \"mode\": \"group\",
-    \"base_model\": \"$LORA_BASE\",
-    \"models\": [
-        {\"repo\": \"$LORA_A\", \"hotkey\": \"hk_alice\"},
-        {\"repo\": \"$LORA_B\", \"hotkey\": \"hk_bob\"},
-        {\"repo\": \"$LORA_C\", \"hotkey\": \"hk_carol\"}
-    ],
-    \"matchups\": {\"liars_dice\": {\"num_games\": $NUM_GAMES}, \"leduc_poker\": {\"num_games\": $NUM_GAMES}},
-    \"seed\": 42, \"temperature\": 0.0
-}" && validate_results "group_robin"; then
     PASSED=$((PASSED + 1))
 else
     FAILED=$((FAILED + 1))

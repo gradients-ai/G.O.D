@@ -441,27 +441,18 @@ def install_in_memory_patches(
 
 
 def install_result_logging(timing_tracker: EvaluationTimingTracker) -> None:
-    original_group_eval = scoring.run_evaluation_pvp_group
     original_pair_eval = scoring.run_evaluation_pvp_pair
     original_individual_eval = scoring.run_evaluation_individual
 
-    async def logged_group_eval(*args: Any, **kwargs: Any) -> Any:
-        participants = kwargs.get("participants", args[0] if args else [])
-        environment_names = kwargs.get("environment_names", [])
-        print("\n[pvp] Starting group evaluation")
-        print(model_dump_pretty({"participants": participants, "environment_names": environment_names}))
-        result = await original_group_eval(*args, **kwargs)
-        print("\n[pvp] Raw group evaluation result")
-        print(model_dump_pretty(result))
-        timing_tracker.record_duration_ending_now(
-            label="pvp_group",
-            seconds=float(result.metadata.wall_time_seconds),
-            source="PvP evaluator metadata.wall_time_seconds",
-        )
-        return result
-
     async def logged_pair_eval(*args: Any, **kwargs: Any) -> Any:
+        environment_names = kwargs.get("environment_names", [])
+        hotkey_a = kwargs.get("hotkey_a", args[2] if len(args) > 2 else None)
+        hotkey_b = kwargs.get("hotkey_b", args[3] if len(args) > 3 else None)
+        print("\n[pvp] Starting pair evaluation")
+        print(model_dump_pretty({"hotkey_a": hotkey_a, "hotkey_b": hotkey_b, "environment_names": environment_names}))
         result = await original_pair_eval(*args, **kwargs)
+        print("\n[pvp] Raw pair evaluation result")
+        print(model_dump_pretty(result))
         timing_tracker.record_duration_ending_now(
             label="pvp_pair",
             seconds=float(result.metadata.wall_time_seconds),
@@ -479,7 +470,6 @@ def install_result_logging(timing_tracker: EvaluationTimingTracker) -> None:
         print(model_dump_pretty(result))
         return result
 
-    scoring.run_evaluation_pvp_group = logged_group_eval
     scoring.run_evaluation_pvp_pair = logged_pair_eval
     scoring.run_evaluation_individual = logged_individual_eval
 
@@ -490,7 +480,7 @@ async def run(args: argparse.Namespace) -> None:
 
     namespace, miners = resolve_miners(args.miner, args.hf_namespace)
     if len(miners) < 2:
-        raise SystemExit("At least two --miner entries are required because liars_dice uses PvP group evaluation.")
+        raise SystemExit("At least two --miner entries are required because PvP uses pairwise evaluation.")
 
     scoring.cts.RAYONLABS_HF_USERNAME = namespace
 
