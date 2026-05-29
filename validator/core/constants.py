@@ -56,7 +56,7 @@ IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
-MINIMUM_DATASET_ROWS = 2_000  # Minimum number of rows required in a dataset
+MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
 EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
@@ -70,11 +70,11 @@ DATASET_BINS_TO_SAMPLE = [
 
 # dataset row bins to training hours range
 INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 10_000): (1, 3),
-    (10_000, 25_000): (2, 4),
-    (25_000, 50_000): (3, 5),
-    (50_000, 100_000): (3, 6),
-    (100_000, 500_000): (4, 6),
+    (1_000, 10_000): (1, 2),
+    (10_000, 25_000): (2, 3),
+    (25_000, 50_000): (2, 4),
+    (50_000, 100_000): (3, 5),
+    (100_000, 500_000): (3, 6),
 }
 
 # text augmentation synth
@@ -168,8 +168,8 @@ RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
 RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
-MIN_NUM_REWARD_FUNCTIONS = 1
-MAX_NUM_REWARD_FUNCTIONS = 5
+MIN_NUM_REWARD_FUNCTIONS = 2
+MAX_NUM_REWARD_FUNCTIONS = 4
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM = 0.0
 PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_DB = 1 - PERCENTAGE_REWARD_FUNCTIONS_GENERIC_FROM_LLM
 
