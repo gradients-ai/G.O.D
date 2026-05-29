@@ -119,8 +119,13 @@ async def _post_to_nineteen_ai(url: str, payload: dict[str, Any], keypair: Keypa
             "Content-Type": "application/json",
         }
 
+    model = payload.get("model", "unknown")
+    started = time.monotonic()
+    logger.info(f"Calling Nineteen/Chutes endpoint={url} model={model}")
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(url=url, json=payload, headers=headers)
+        elapsed = time.monotonic() - started
+        logger.info(f"Nineteen/Chutes endpoint={url} model={model} returned status={response.status_code} in {elapsed:.2f}s")
         if response.status_code != 200:
             # NOTE: What do to about these as they pollute everywhere
             logger.error(f"Error in nineteen ai response: {response.content}")
@@ -156,7 +161,8 @@ async def call_content_service_fast(
             response = await client.get(url=endpoint, headers=headers, params=params)
             if response.status_code != 200:
                 logger.error(
-                    f"Error in content service response. URL: {endpoint}, Status code: {response.status_code} and response: {response.text}"
+                    f"Error in content service response. URL: {endpoint}, "
+                    f"Status code: {response.status_code} and response: {response.text}"
                 )
                 response.raise_for_status()
             logger.info(f"Successful request to {endpoint}, response size: {len(response.text)} chars")

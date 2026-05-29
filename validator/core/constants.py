@@ -89,6 +89,21 @@ IMAGE_PROMPT_GEN_MODEL_TEMPERATURE = 0.4
 IMAGE_PROMPT_GEN_MODEL_MAX_TOKENS = 5024
 IMAGE_STYLE_PICKING_NUM_TRIES = 10
 PERSON_GEN_RETRIES = 3
+IMAGE_SYNTH_FACE_IMAGE_URL = "https://thispersondoesnotexist.com/"
+FAL_KEY = os.getenv("FAL_KEY")
+FAL_TIMEOUT_SECONDS = 300
+FAL_IMAGE_GENERATION_CONCURRENCY = 20
+FAL_PERSON_PROMPT_MODEL = "openrouter/router/vision"
+FAL_PERSON_PROMPT_VLM = "google/gemini-2.5-flash"
+FAL_TEXT_PROMPT_MODEL = "openrouter/router"
+FAL_TEXT_PROMPT_LLM = "google/gemini-2.5-flash"
+FAL_AVATAR_MODEL = "fal-ai/nano-banana-2/edit"
+FAL_STYLE_MODEL_NANO_BANANA_2 = "fal-ai/nano-banana-2"
+FAL_STYLE_MODEL_GPT_IMAGE_2 = "openai/gpt-image-2"
+FAL_STYLE_MODELS = (FAL_STYLE_MODEL_NANO_BANANA_2, FAL_STYLE_MODEL_GPT_IMAGE_2)
+FAL_GPT_IMAGE_2_QUALITY = "medium"
+FAL_NANO_BANANA_RESOLUTION = "1K"
+FAL_IMAGE_OUTPUT_FORMAT = "png"
 
 # endpoints
 PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
@@ -158,14 +173,10 @@ PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 )
 PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
-    0.5  # person synth chance is 1 minus this (only for sdxl models, flux is always person)
+    0.5  # person synth chance is 1 minus this for every image model type
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
-SYNTH_CONTAINER_SAVE_PATH = "/app/images/"
-RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS = 1800
-RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
-RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
 MIN_NUM_REWARD_FUNCTIONS = 2
