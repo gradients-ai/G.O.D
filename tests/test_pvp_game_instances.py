@@ -2,18 +2,32 @@
 config ID variation, and tally correctness.
 """
 
+import importlib.util
+from unittest.mock import patch
+
 import pytest
 
+from core.constants import EnvironmentName
+from core.models.pvp_models import GameInstance
+from core.models.pvp_models import GameOutcome
+from core.models.pvp_models import PvPEnvironmentResult
+
+
 try:
-    import pyspiel
-    from validator.evaluation.pvp.game_runner import _build_instances, _tally
-    from validator.evaluation.pvp.agents import LiarsDiceAgent, LeducPokerAgent, GinRummyAgent
+    if importlib.util.find_spec("pyspiel") is None:
+        raise ImportError
+
+    from validator.evaluation.pvp.agents import GinRummyAgent
+    from validator.evaluation.pvp.agents import LeducPokerAgent
+    from validator.evaluation.pvp.agents import LiarsDiceAgent
+    from validator.evaluation.pvp.game_runner import PlayedGame
+    from validator.evaluation.pvp.game_runner import _build_instances
+    from validator.evaluation.pvp.game_runner import _execute_matchup
+    from validator.evaluation.pvp.game_runner import _tally
+
     HAS_PYSPIEL = True
 except ImportError:
     HAS_PYSPIEL = False
-
-from core.constants import EnvironmentName
-from core.models.pvp_models import GameOutcome, PvPEnvironmentResult
 
 needs_pyspiel = pytest.mark.skipif(not HAS_PYSPIEL, reason="pyspiel not installed")
 
@@ -106,6 +120,7 @@ class TestConfigIdVariation:
 # --- 3d: _tally correctness ---
 
 
+@needs_pyspiel
 class TestTally:
     def _fresh_result(self) -> PvPEnvironmentResult:
         return PvPEnvironmentResult()
@@ -138,3 +153,47 @@ class TestTally:
         _tally(r, GameOutcome.DRAW)
         assert r.total_games == 3
         assert r.model_a_wins + r.model_b_wins + r.draws == 3
+
+
+# --- 3e: matchup-level forfeit shortcut ---
+
+
+def _make_test_instances(count: int) -> list[GameInstance]:
+    return [
+        GameInstance(
+            game_name="leduc_poker",
+            game_params={"players": 2},
+            model_a_player_id=i % 2,
+            seed=i,
+            is_zero_sum=True,
+            min_utility=-1.0,
+            max_utility=1.0,
+        )
+        for i in range(count)
+    ]
+
+
+@needs_pyspiel
+class TestEpisodeForfeitLimit:
+    def test_ten_non_consecutive_model_a_forfeits_awards_remaining_games_to_model_b(self):
+        instances = _make_test_instances(24)
+        played_games = []
+        for _ in range(9):
+            played_games.append(PlayedGame(outcome=GameOutcome.LOSS, forfeiting_model="a"))
+            played_games.append(PlayedGame(outcome=GameOutcome.DRAW))
+        played_games.append(PlayedGame(outcome=GameOutcome.LOSS, forfeiting_model="a"))
+
+        with patch("validator.evaluation.pvp.game_runner._play_game", side_effect=played_games) as play_game:
+            result = _execute_matchup(
+                env_name=EnvironmentName.LEDUC_POKER,
+                instances=instances,
+                player_a=object(),
+                player_b=object(),
+                agent=object(),
+            )
+
+        assert play_game.call_count == 19
+        assert result.model_a_wins == 0
+        assert result.model_b_wins == 15
+        assert result.draws == 9
+        assert result.total_games == 24

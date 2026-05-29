@@ -61,6 +61,20 @@ class Player(NamedTuple):
     chat_fn: ChatFn
 
 
+class GameEvaluation(NamedTuple):
+    """Raw game returns plus the player ID that forfeited, when any."""
+
+    returns: list[float]
+    forfeiting_player_id: int | None = None
+
+
+class PlayedGame(NamedTuple):
+    """Scored game outcome plus the model label that forfeited, when any."""
+
+    outcome: GameOutcome
+    forfeiting_model: str | None = None
+
+
 def create_player(config: ChatCompletionConfig) -> Player:
     """Create a Player with a client bound to the config. Enforces client/config invariant."""
     client = create_client(config)
@@ -171,6 +185,35 @@ def _check_early_forfeit(
     return True
 
 
+def _check_episode_forfeit_limit(
+    result: PvPEnvironmentResult,
+    model_a_forfeits: int,
+    model_b_forfeits: int,
+    remaining: int,
+    env_name: str,
+    games_played: int,
+) -> bool:
+    """Award remaining games when one model forfeits too many episodes in a matchup."""
+    if model_a_forfeits >= vcst.PVP_EPISODE_FORFEIT_THRESHOLD:
+        loser, forfeits, winner_attr = "a", model_a_forfeits, "model_b_wins"
+    elif model_b_forfeits >= vcst.PVP_EPISODE_FORFEIT_THRESHOLD:
+        loser, forfeits, winner_attr = "b", model_b_forfeits, "model_a_wins"
+    else:
+        return False
+
+    logger.info(
+        "%s: model_%s forfeited %d episodes (after %d games) — forfeiting %d remaining",
+        env_name,
+        loser,
+        forfeits,
+        games_played,
+        remaining,
+    )
+    setattr(result, winner_attr, getattr(result, winner_attr) + remaining)
+    result.total_games += remaining
+    return True
+
+
 def _execute_matchup(
     env_name: EnvironmentName,
     instances: list[GameInstance],
@@ -184,22 +227,39 @@ def _execute_matchup(
     result = PvPEnvironmentResult()
     consec_a_losses = 0
     consec_b_losses = 0
+    model_a_forfeits = 0
+    model_b_forfeits = 0
 
     for i, instance in enumerate(instances):
-        outcome = play(instance)
-        _tally(result, outcome)
+        played = play(instance)
+        _tally(result, played.outcome)
 
-        if outcome == GameOutcome.LOSS:
+        if played.outcome == GameOutcome.LOSS:
             consec_a_losses += 1
             consec_b_losses = 0
-        elif outcome == GameOutcome.WIN:
+        elif played.outcome == GameOutcome.WIN:
             consec_b_losses += 1
             consec_a_losses = 0
         else:
             consec_a_losses = 0
             consec_b_losses = 0
 
+        if played.forfeiting_model == "a":
+            model_a_forfeits += 1
+        elif played.forfeiting_model == "b":
+            model_b_forfeits += 1
+
         remaining = len(instances) - i - 1
+        if _check_episode_forfeit_limit(
+            result,
+            model_a_forfeits,
+            model_b_forfeits,
+            remaining,
+            env_name.value,
+            i + 1,
+        ):
+            break
+
         if _check_early_forfeit(result, consec_a_losses, consec_b_losses, remaining, env_name.value, i + 1):
             break
 
@@ -223,7 +283,7 @@ def _play_game(
     player_a: Player,
     player_b: Player,
     agent: BaseGameAgent,
-) -> GameOutcome:
+) -> PlayedGame:
     """Play a single game with timeout and return outcome from model_a's perspective."""
     game = pyspiel.load_game(instance.game_name, instance.game_params)
     model_b_player_id = 1 - instance.model_a_player_id
@@ -250,23 +310,27 @@ def _play_game(
     bots[model_b_player_id] = bot_b
 
     state = game.new_initial_state()
-    returns = _evaluate_with_timeout(state, bots, instance.seed)
+    evaluation = _evaluate_game_with_timeout(state, bots, instance.seed)
 
     scoring = GameScoringContext(
-        returns=list(returns),
+        returns=evaluation.returns,
         player_id=instance.model_a_player_id,
         is_zero_sum=instance.is_zero_sum,
         min_utility=instance.min_utility,
         max_utility=instance.max_utility,
     )
-    return determine_outcome(scoring)
+    forfeiting_model = None
+    if evaluation.forfeiting_player_id is not None:
+        forfeiting_model = "a" if evaluation.forfeiting_player_id == instance.model_a_player_id else "b"
+
+    return PlayedGame(outcome=determine_outcome(scoring), forfeiting_model=forfeiting_model)
 
 
-def _evaluate_with_timeout(
+def _evaluate_game_with_timeout(
     state: pyspiel.State,
     bots: list[LLMBot | None],
     seed: int,
-) -> list[float]:
+) -> GameEvaluation:
     """Run evaluate_bots, catching bot-level forfeits.
 
     Per-turn timeouts are enforced inside LLMBot.step() via SIGALRM.
@@ -275,29 +339,42 @@ def _evaluate_with_timeout(
     """
     try:
         returns = evaluate_bots.evaluate_bots(state, bots, np.random.RandomState(seed))
-        return list(returns)
+        return GameEvaluation(returns=list(returns))
     except TurnTimeoutError as exc:
         logger.warning(
             "Player %d timed out on turn — opponent wins by forfeit",
             exc.player_id,
         )
-        return _forfeit_returns(state, exc.player_id)
+        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except ContextOverflowError as exc:
         logger.warning(
             "Player %d exceeded context length — opponent wins by forfeit",
             exc.player_id,
         )
-        return _forfeit_returns(state, exc.player_id)
+        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except InvalidActionForfeitError as exc:
         logger.warning(
             "Player %d failed to produce valid actions %d times — opponent wins by forfeit",
             exc.player_id,
             exc.invalid_action_failures,
         )
-        return _forfeit_returns(state, exc.player_id)
+        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except EmptyLegalActionsError:
         logger.warning("Game stuck with no legal actions — scoring as draw")
-        return [0.0] * state.num_players()
+        return GameEvaluation(returns=[0.0] * state.num_players())
+
+
+def _evaluate_with_timeout(
+    state: pyspiel.State,
+    bots: list[LLMBot | None],
+    seed: int,
+) -> list[float]:
+    """Run evaluate_bots and return only game returns.
+
+    Kept as a returns-only wrapper for tests and callers that do not need
+    forfeit attribution.
+    """
+    return _evaluate_game_with_timeout(state, bots, seed).returns
 
 
 def _tally(result: PvPEnvironmentResult, outcome: GameOutcome) -> None:
