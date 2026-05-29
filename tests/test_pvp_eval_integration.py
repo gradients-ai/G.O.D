@@ -12,6 +12,10 @@ from uuid import uuid4
 
 import pytest
 
+import validator.core.constants as validator_cst
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPGroupResults
+
 
 def _preload_tournament_gpu_module() -> None:
     module_name = "validator.tournament.gpu"
@@ -137,6 +141,33 @@ class TestEnvRankingDirection:
 
 
 @pytest.mark.asyncio
+async def test_pvp_env_eval_requests_two_h100(monkeypatch):
+    captured_kwargs = {}
+
+    async def fake_get_or_run_pvp_pairs(**kwargs):
+        captured_kwargs.update(kwargs)
+        return PvPGroupResults(
+            base_model=kwargs["base_model"],
+            hotkeys=kwargs["miners"].hotkeys,
+            pair_results=[],
+            metadata=PvPEvalMetadata(seed=kwargs["seed"], temperature=0.0),
+        )
+
+    monkeypatch.setattr(scoring, "_get_or_run_pvp_pairs", fake_get_or_run_pvp_pairs)
+
+    await scoring._eval_pvp_envs(
+        task_id=str(uuid4()),
+        pvp_envs=[EnvironmentName.LIARS_DICE],
+        miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a", "hk_b": "org/repo-b"}),
+        base_model="Qwen/Qwen2.5-72B-Instruct",
+        seed=42,
+        config=SimpleNamespace(psql_db=object()),
+    )
+
+    assert captured_kwargs["gpu_count"] == validator_cst.PVP_BASILICA_GPU_COUNT
+
+
+@pytest.mark.asyncio
 async def test_individual_env_eval_requests_one_h100(monkeypatch):
     captured_kwargs = {}
 
@@ -166,4 +197,13 @@ async def test_individual_env_eval_requests_one_h100(monkeypatch):
         db_scores=[],
     )
 
-    assert captured_kwargs["gpu_count"] == 1
+    assert captured_kwargs["gpu_count"] == validator_cst.INDIVIDUAL_BASILICA_GPU_COUNT
+
+
+def test_tournament_group_slot_envs_include_individual_envs():
+    from validator.cycle import process_tasks
+
+    names = process_tasks._tournament_environment_names()
+
+    assert EnvironmentName.INTERCODE.value in names
+    assert EnvironmentName.LIARS_DICE.value in names

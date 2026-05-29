@@ -56,7 +56,6 @@ from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
-from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
 from validator.utils.minio import async_minio_client
@@ -703,7 +702,7 @@ async def _run_env_tournament_eval(
     if pvp_envs:
         all_outcomes.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
-            base_model=base_model, model_params=model_params, seed=seed, config=config,
+            base_model=base_model, seed=seed, config=config,
         ))
 
     if individual_envs:
@@ -769,22 +768,17 @@ async def _eval_pvp_envs(
     pvp_envs: list[core_cst.EnvironmentName],
     miners: MinerRepos,
     base_model: str,
-    model_params: int,
     seed: int,
     config: Config,
 ) -> list[PairwiseOutcome]:
     """Run pairwise PvP eval for PVP-type environments, return pairwise outcomes."""
     env_config = _get_shared_env_config(pvp_envs)
-    gpu_req = get_tournament_gpu_requirement(
-        TaskType.ENVIRONMENTTASK, model_params, base_model,
-        gpu_multiplier=env_config.gpu_multiplier,
-    )
 
     group_results = await _get_or_run_pvp_pairs(
         task_id=task_id, pvp_envs=pvp_envs, miners=miners,
         base_model=base_model, seed=seed,
         image=env_config.tournament_eval_image,
-        gpu_count=gpu_req.gpu_count, config=config,
+        gpu_count=cts.PVP_BASILICA_GPU_COUNT, config=config,
     )
 
     return pvp_results_to_pairwise(group_results)
@@ -1002,8 +996,8 @@ async def _dispatch_missing_individual(
     if not to_run:
         return scores
 
-    # Individual env evals deploy one model per Basilica job, so keep each deployment to 1xH100.
-    individual_gpu_count = 1
+    # Individual env evals deploy one model per Basilica job.
+    individual_gpu_count = cts.INDIVIDUAL_BASILICA_GPU_COUNT
 
     eval_result = await run_evaluation_individual(
         miners=miners.subset(to_run),

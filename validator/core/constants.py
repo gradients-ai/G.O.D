@@ -461,6 +461,8 @@ PVP_PERF_DIFF_SLOPE = 0.125  # Linear map: 60% win rate → emission threshold, 
 
 # PvP Basilica deployment
 PVP_BASILICA_TTL_SECONDS = 28800
+PVP_BASILICA_GPU_COUNT = 2
+INDIVIDUAL_BASILICA_GPU_COUNT = 1
 PVP_BASILICA_PORT = 8000
 
 # HuggingFace container env vars (shared across all eval containers)

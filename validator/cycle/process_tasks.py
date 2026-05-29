@@ -28,13 +28,14 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 _EVALUATING_ROWS_LOCK = asyncio.Lock()
+_TOURNAMENT_GROUP_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
 
 
-def _pvp_environment_names() -> list[str]:
+def _tournament_environment_names() -> list[str]:
     return [
         name.value
         for name, env_config in core_cst.ENVIRONMENT_CONFIGS.items()
-        if env_config.eval_type == core_cst.EvalType.PVP
+        if env_config.eval_type in _TOURNAMENT_GROUP_EVAL_TYPES
     ]
 
 
@@ -319,12 +320,12 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
         if pending_batch:
             async with _EVALUATING_ROWS_LOCK:
-                pvp_env_names = _pvp_environment_names()
+                tournament_env_names = _tournament_environment_names()
                 group_evaluations = await tasks_sql.count_group_task_evaluations_by_status(
-                    "evaluating", pvp_env_names, config.psql_db
+                    "evaluating", tournament_env_names, config.psql_db
                 )
                 non_group_evaluating_rows = await tasks_sql.count_non_group_task_evaluation_rows_by_status(
-                    "evaluating", pvp_env_names, config.psql_db
+                    "evaluating", tournament_env_names, config.psql_db
                 )
                 total_eval_slots = group_evaluations + non_group_evaluating_rows
                 available_slots = cst.MAX_EVALUATING_ROWS - total_eval_slots

@@ -385,6 +385,9 @@ def install_in_memory_patches(
     async def get_env_task_eval_seed(_task_id: UUID, _psql_db: Any) -> int:
         return seed
 
+    async def get_training_status_for_task(_task_id: str, _psql_db: Any) -> dict[str, str]:
+        return {}
+
     async def load_eval_pair_state_for_models(
         _task_id: UUID | None,
         _psql_db: Any,
@@ -392,11 +395,22 @@ def install_in_memory_patches(
     ) -> tuple[dict[str, str], dict[str, str]]:
         return {}, {}
 
+    async def load_shared_eval_deployment_id(
+        _task_id: UUID | None,
+        _psql_db: Any,
+        _hotkeys: list[str],
+    ) -> None:
+        return None
+
     async def persist_deployment_ids_for_repo(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    async def persist_shared_eval_deployment_id(*_args: Any, **_kwargs: Any) -> None:
         return None
 
     scoring.get_expected_repo_name = get_expected_repo_name
     scoring.get_env_task_eval_seed = get_env_task_eval_seed
+    scoring.tournament_sql.get_training_status_for_task = get_training_status_for_task
     scoring.tournament_sql.get_pvp_pair_results = store.get_pvp_pair_results
     scoring.tournament_sql.ensure_pvp_pairs_exist = store.ensure_pvp_pairs_exist
     scoring.tournament_sql.save_pvp_pair_result = store.save_pvp_pair_result
@@ -406,6 +420,8 @@ def install_in_memory_patches(
     scoring.tournament_sql.save_individual_score = store.save_individual_score
     scoring.tournament_sql.increment_individual_score_attempts = store.increment_individual_score_attempts
     docker_evaluation.load_eval_pair_state_for_models = load_eval_pair_state_for_models
+    docker_evaluation.load_shared_eval_deployment_id = load_shared_eval_deployment_id
+    docker_evaluation.persist_shared_eval_deployment_id = persist_shared_eval_deployment_id
     basilica_eval.persist_deployment_ids_for_repo = persist_deployment_ids_for_repo
 
     if skip_hf_repo_check:
@@ -448,8 +464,19 @@ def install_result_logging(timing_tracker: EvaluationTimingTracker) -> None:
         environment_names = kwargs.get("environment_names", [])
         hotkey_a = kwargs.get("hotkey_a", args[2] if len(args) > 2 else None)
         hotkey_b = kwargs.get("hotkey_b", args[3] if len(args) > 3 else None)
+        gpu_count = kwargs.get("gpu_count", args[8] if len(args) > 8 else None)
+        if gpu_count != scoring.cts.PVP_BASILICA_GPU_COUNT:
+            raise RuntimeError(
+                f"PvP pair eval requested gpu_count={gpu_count}; "
+                f"expected {scoring.cts.PVP_BASILICA_GPU_COUNT}"
+            )
         print("\n[pvp] Starting pair evaluation")
-        print(model_dump_pretty({"hotkey_a": hotkey_a, "hotkey_b": hotkey_b, "environment_names": environment_names}))
+        print(model_dump_pretty({
+            "hotkey_a": hotkey_a,
+            "hotkey_b": hotkey_b,
+            "environment_names": environment_names,
+            "gpu_count": gpu_count,
+        }))
         result = await original_pair_eval(*args, **kwargs)
         print("\n[pvp] Raw pair evaluation result")
         print(model_dump_pretty(result))
@@ -463,8 +490,18 @@ def install_result_logging(timing_tracker: EvaluationTimingTracker) -> None:
     async def logged_individual_eval(*args: Any, **kwargs: Any) -> Any:
         miners = kwargs.get("miners")
         environment_name = kwargs.get("environment_name")
+        gpu_count = kwargs.get("gpu_count", args[5] if len(args) > 5 else None)
+        if gpu_count != scoring.cts.INDIVIDUAL_BASILICA_GPU_COUNT:
+            raise RuntimeError(
+                f"Individual eval requested gpu_count={gpu_count}; "
+                f"expected {scoring.cts.INDIVIDUAL_BASILICA_GPU_COUNT}"
+            )
         print("\n[individual] Starting evaluation")
-        print(model_dump_pretty({"miners": miners, "environment_name": environment_name}))
+        print(model_dump_pretty({
+            "miners": miners,
+            "environment_name": environment_name,
+            "gpu_count": gpu_count,
+        }))
         result = await original_individual_eval(*args, **kwargs)
         print("\n[individual] Raw evaluation result")
         print(model_dump_pretty(result))
@@ -516,6 +553,10 @@ async def run(args: argparse.Namespace) -> None:
                     for miner in miners
                 ],
                 "environments": [env.value for env in task.environment_names],
+                "expected_gpu_counts": {
+                    "pvp_pair": scoring.cts.PVP_BASILICA_GPU_COUNT,
+                    "individual": scoring.cts.INDIVIDUAL_BASILICA_GPU_COUNT,
+                },
                 "seed": args.seed,
             }
         )
@@ -562,7 +603,7 @@ def parse_args() -> argparse.Namespace:
         "--model-params-count",
         type=int,
         default=DEFAULT_MODEL_PARAMS_COUNT,
-        help="Parameter count used by tournament GPU sizing.",
+        help="Parameter count recorded on the synthetic task; eval deploy GPU counts are fixed by validator constants.",
     )
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help="Environment evaluation seed.")
     parser.add_argument("--task-id", help="Optional UUID to use for the synthetic task.")
@@ -570,7 +611,7 @@ def parse_args() -> argparse.Namespace:
         "--num-gpus",
         type=int,
         default=1,
-        help="process_miners_pool num_gpus argument. Tournament envs size GPUs from model params.",
+        help="process_miners_pool num_gpus argument. Tournament env evals ignore this and use fixed deploy counts.",
     )
     parser.add_argument(
         "--skip-hf-repo-check",
