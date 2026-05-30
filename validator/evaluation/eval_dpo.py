@@ -152,6 +152,9 @@ def evaluate_dpo_model(
         logger.debug(f"Collating {len(features)} features")
         return _collate_dpo_batch(features, tokenizer)
 
+    max_length = getattr(finetuned_model.config, "max_position_embeddings", 8192)
+    logger.info(f"DPO eval max_length set to {max_length} (from model config)")
+
     @find_executable_batch_size(starting_batch_size=evaluation_config.starting_batch_size)
     def evaluate_dpo_with_batch_size(batch_size):
         training_args = DPOConfig(
@@ -160,6 +163,7 @@ def evaluate_dpo_model(
             report_to="none",
             bf16=True,
             beta=cst.BETA_DPO,
+            max_length=max_length,
         )
         dpo_trainer = DPOTrainer(
             model=finetuned_model,
