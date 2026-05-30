@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import aiohttp
@@ -364,6 +365,41 @@ def _map_task_id(global_id: int, ranges: list[tuple[int, int, int]]) -> tuple[in
             return fs, global_id - start
     total = ranges[-1][2]
     raise ValueError(f"task id {global_id} out of range; valid range is 1..{total}")
+
+
+@dataclass(frozen=True)
+class InterCodeAssets:
+    data: dict[int, list[dict]]
+    ranges: list[tuple[int, int, int]]
+    snapshot_root: Path
+
+    @property
+    def total_tasks(self) -> int:
+        return self.ranges[-1][2] if self.ranges else 0
+
+
+def load_intercode_assets(
+    data_root: Path | str | None = None,
+    snapshot_root: Path | str | None = None,
+) -> InterCodeAssets:
+    data_path = (
+        Path(data_root)
+        if data_root is not None
+        else Path(os.getenv("INTERCODE_DATA_ROOT", str(DEFAULT_INTERCODE_DATA_ROOT)))
+    )
+    snapshot_path = (
+        Path(snapshot_root)
+        if snapshot_root is not None
+        else Path(os.getenv("INTERCODE_FS_ROOT", str(DEFAULT_INTERCODE_FS_ROOT)))
+    )
+    if not data_path.exists():
+        raise RuntimeError(f"NL2Bash data not found at {data_path}; image may be misbuilt")
+    if not snapshot_path.exists():
+        raise RuntimeError(f"InterCode fs snapshots not found at {snapshot_path}; image may be misbuilt")
+
+    data = _load_data(data_path)
+    ranges = _compute_fs_ranges(data)
+    return InterCodeAssets(data=data, ranges=ranges, snapshot_root=snapshot_path)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -825,6 +861,36 @@ def _run_react_episode(
     return float(reward) if reward is not None else 0.0
 
 
+async def run_intercode_task(
+    task_id: int,
+    assets: InterCodeAssets,
+    client,
+    model_name: str,
+    temperature: float,
+    *,
+    max_turns: int = DEFAULT_MAX_TURNS,
+    max_tokens_per_call: int = DEFAULT_MAX_TOKENS_PER_CALL,
+    per_task_timeout: int = DEFAULT_PER_TASK_TIMEOUT_SECONDS,
+    progress_label: str | None = None,
+) -> float:
+    fs_version, local_idx = _map_task_id(task_id, assets.ranges)
+    env = LocalBashEnv(fs_version, assets.data[fs_version], assets.snapshot_root)
+    query = env.reset(local_idx)
+    label = f" {progress_label}" if progress_label else ""
+    logger.info(
+        "eval_progress%s task_global=%s fs=%s local=%s query=%r",
+        label, task_id, fs_version, local_idx, query[:120],
+    )
+    return await asyncio.wait_for(
+        asyncio.to_thread(
+            _run_react_episode,
+            env, query, client, model_name, temperature,
+            max_turns, max_tokens_per_call,
+        ),
+        timeout=per_task_timeout,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Main entry
 # ─────────────────────────────────────────────────────────────────────────────
@@ -935,16 +1001,8 @@ async def _run() -> None:
         client = OpenAI(api_key="dummy", base_url=f"{sglang_base_url}/v1")
 
         # Load NL2Bash datasets + per-fs mapping.
-        data_root = Path(os.getenv("INTERCODE_DATA_ROOT", str(DEFAULT_INTERCODE_DATA_ROOT)))
-        snapshot_root = Path(os.getenv("INTERCODE_FS_ROOT", str(DEFAULT_INTERCODE_FS_ROOT)))
-        if not data_root.exists():
-            raise RuntimeError(f"NL2Bash data not found at {data_root}; image may be misbuilt")
-        if not snapshot_root.exists():
-            raise RuntimeError(f"InterCode fs snapshots not found at {snapshot_root}; image may be misbuilt")
-        data = _load_data(data_root)
-        ranges = _compute_fs_ranges(data)
-        total_global_tasks = ranges[-1][2]
-        logger.info("eval_setup intercode: %s total tasks across fs_1..fs_4 (%s)", total_global_tasks, ranges)
+        assets = load_intercode_assets()
+        logger.info("eval_setup intercode: %s total tasks across fs_1..fs_4 (%s)", assets.total_tasks, assets.ranges)
 
         # Run tasks sequentially — managed paths are global per-deployment.
         rewards: list[float] = []
@@ -960,23 +1018,20 @@ async def _run() -> None:
                     idx, len(task_ids_to_test),
                 )
                 break
-            fs_version, local_idx = _map_task_id(task_id, ranges)
+            fs_version, _ = _map_task_id(task_id, assets.ranges)
 
             start_t = time.time()
             try:
-                env = LocalBashEnv(fs_version, data[fs_version], snapshot_root)
-                query = env.reset(local_idx)
-                logger.info(
-                    "eval_progress %s/%s task_global=%s fs=%s local=%s query=%r",
-                    idx + 1, len(task_ids_to_test), task_id, fs_version, local_idx, query[:120],
-                )
-                reward = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        _run_react_episode,
-                        env, query, client, inference_model_name, temperature,
-                        max_turns, max_tokens_per_call,
-                    ),
-                    timeout=per_task_timeout,
+                reward = await run_intercode_task(
+                    task_id,
+                    assets,
+                    client,
+                    inference_model_name,
+                    temperature,
+                    max_turns=max_turns,
+                    max_tokens_per_call=max_tokens_per_call,
+                    per_task_timeout=per_task_timeout,
+                    progress_label=f"{idx + 1}/{len(task_ids_to_test)}",
                 )
             except asyncio.TimeoutError:
                 logger.warning(

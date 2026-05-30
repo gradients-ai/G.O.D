@@ -25,6 +25,7 @@ def _build_env_configs() -> dict[EnvironmentName, EnvConfig]:
     return {
         env_name: EnvConfig(
             env_image=cfg.env_image,
+            env_server_command=cfg.env_server_command,
             task_id_min=cfg.task_id_min,
             task_id_max=cfg.task_id_max,
             num_episodes=cfg.num_baseline_episodes,

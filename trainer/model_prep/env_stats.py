@@ -15,9 +15,11 @@ import time
 
 import aiohttp
 
-from core.models.model_prep_models import EnvBaselineStats, EnvStats
 from core.constants import EnvironmentName
+from core.models.model_prep_models import EnvBaselineStats
+from core.models.model_prep_models import EnvStats
 from trainer.model_prep.stats import compute_weight_stats
+
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +108,10 @@ def _build_env_stats(scores: list[float]) -> EnvStats:
     return EnvStats(num_episodes=0)
 
 
+def _sample_task_id(seed: int, task_id_min: int, task_id_max: int) -> int:
+    return random.Random(seed).randint(task_id_min, task_id_max)
+
+
 async def _play_episodes(
     session: aiohttp.ClientSession,
     env_name: EnvironmentName,
@@ -131,8 +137,7 @@ async def _play_episodes(
 
     for i in range(num_episodes):
         seed = seed_rng.randint(1, 1_000_000)
-        task_rng = random.Random(seed)
-        task_id = task_rng.randint(task_id_min + 1, task_id_max)
+        task_id = _sample_task_id(seed, task_id_min, task_id_max)
 
         payload: dict = {
             "model": model_name,

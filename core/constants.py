@@ -56,6 +56,7 @@ class EnvironmentConfig:
     num_baseline_episodes: int
     eval_type: EvalType
     env_image: str = ""
+    env_server_command: list[str] | None = None
     tournament_eval_image: str = VALIDATOR_DOCKER_IMAGE_PVP
     tournament_eval_command: list[str] | None = None
     gpu_multiplier: int = 4
@@ -123,6 +124,17 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=20,
         num_baseline_episodes=10,
         eval_type=EvalType.INDIVIDUAL,
+        env_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
+        env_server_command=[
+            "python",
+            "-m",
+            "uvicorn",
+            "validator.evaluation.intercode_server:app",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "8000",
+        ],
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
         tournament_eval_command=["python", "-m", "validator.evaluation.eval_intercode"],
         gpu_multiplier=4,

@@ -11,10 +11,10 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from core import constants as cst
+from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import EnvironmentDatasetType
-from core.constants import EnvironmentName
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
@@ -165,6 +165,7 @@ class JobStatusResponse(BaseModel):
 class EnvConfig(BaseModel):
     """Per-environment config for model prep evaluation."""
     env_image: str
+    env_server_command: list[str] | None = None
     task_id_min: int
     task_id_max: int
     num_episodes: int = 100

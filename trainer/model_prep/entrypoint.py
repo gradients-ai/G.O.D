@@ -21,13 +21,13 @@ from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 from core import constants as cst
-from core.utils import download_s3_file
+from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import ModelPrepResult
-from core.constants import EnvironmentName
 from core.models.utility_models import TaskType
+from core.utils import download_s3_file
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
@@ -121,7 +121,14 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--intensity", type=float, default=None)
     parser.add_argument("--reward-functions", default=None, help="JSON list of reward function objects (for GRPO)")
-    parser.add_argument("--env-configs", default=None, help="JSON dict of {env_name: {url, task_id_min, task_id_max, num_episodes, eval_payload_extra}}")
+    parser.add_argument(
+        "--env-configs",
+        default=None,
+        help=(
+            "JSON dict of {env_name: {url, task_id_min, task_id_max, "
+            "num_episodes, eval_payload_extra}}"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -279,7 +286,11 @@ def main():
         print(f"[model_prep] loss={stats.training.init_loss:.4f}, entropy={stats.training.output_entropy:.4f}", flush=True)
     elif stats and hasattr(stats, "env_stats"):
         for env_name, env_stat in stats.env_stats.items():
-            print(f"[model_prep]   {env_name.value}: {env_stat.num_episodes} episodes, mean={env_stat.mean_score:.3f}", flush=True)
+            print(
+                f"[model_prep]   {env_name.value}: {env_stat.num_episodes} episodes, "
+                f"mean={env_stat.mean_score:.3f}",
+                flush=True,
+            )
 
     print(f"[model_prep] Total time: {time.time() - t_total:.1f}s", flush=True)
 

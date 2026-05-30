@@ -119,7 +119,7 @@ def _build_instances(
     for _ in range(num_games):
         seed = seed_rng.randint(1, vcst.PVP_SEED_RANGE_MAX)
         task_rng = random.Random(seed)
-        task_id = task_rng.randint(env_config.task_id_min + 1, env_config.task_id_max)
+        task_id = task_rng.randint(env_config.task_id_min, env_config.task_id_max)
         config_id = task_id % vcst.PVP_CONFIG_ID_DIVISOR
         game_params = agent.generate_params(config_id)
 
