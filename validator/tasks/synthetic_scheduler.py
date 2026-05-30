@@ -42,6 +42,7 @@ from validator.utils.call_endpoint import call_content_service
 from validator.utils.llm import convert_to_nineteen_payload
 from validator.utils.llm import post_to_nineteen_chat_with_reasoning
 from validator.utils.logging import get_logger
+from validator.cycle.util_functions import get_model_num_params
 from validator.utils.reward_functions import validate_reward_function
 from validator.utils.util import retry_with_backoff
 
@@ -209,32 +210,53 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None) -> float:
-    """Randomly select training hours for a given dataset size based on range bins.
+def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
+    """Compute training hours from row count, model size, and task type.
 
-    If model_id is provided, scales hours down for models smaller than 8B
-    (linearly from 1.0x at 8B+ to 0.5x at 0B, minimum 1 hour).
+    Base hours scale linearly from TRAINING_HOURS_MIN at TRAINING_HOURS_SCALE_START_ROWS
+    up to TRAINING_HOURS_MAX_BASE at TRAINING_HOURS_MAX_ROWS. Model size scales hours
+    down for models below 14B. Task-type multiplier is applied here so the default
+    is correct even if apply_baseline_ctx_scale is never called. Snaps to nearest 0.5h,
+    minimum 1h. Context-length scaling is applied later via apply_baseline_ctx_scale.
     """
-    min_hours, max_hours = 0, 0
-    for min_rows, max_rows in vcst.INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE.keys():
-        if min_rows <= num_rows <= max_rows:
-            min_hours, max_hours = vcst.INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE[(min_rows, max_rows)]
-            break
-    if min_hours == 0 and max_hours == 0:
-        raise ValueError(f"No training hours range found for {num_rows} rows")
-
-    hours = random.randint(min_hours, max_hours)
+    row_range = vcst.TRAINING_HOURS_MAX_ROWS - vcst.TRAINING_HOURS_SCALE_START_ROWS
+    t = max(0.0, min(1.0, (num_rows - vcst.TRAINING_HOURS_SCALE_START_ROWS) / row_range))
+    base = vcst.TRAINING_HOURS_MIN + t * (vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN)
+    hours = max(vcst.TRAINING_HOURS_MIN, round(base * 2) / 2)
 
     if model_id is not None:
-        from validator.cycle.util_functions import get_model_num_params
-
         num_params = get_model_num_params(model_id)
         if num_params is not None and num_params < vcst.FULL_HOURS_MODEL_PARAMS:
             ratio = num_params / vcst.FULL_HOURS_MODEL_PARAMS
             scale = vcst.MIN_HOURS_SCALE + ratio * (1.0 - vcst.MIN_HOURS_SCALE)
-            hours = max(1, round(hours * scale * 2) / 2)
+            hours = max(vcst.TRAINING_HOURS_MIN, round(hours * scale * 2) / 2)
 
-    return hours
+    type_mult = vcst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0) if task_type is not None else 1.0
+    hours = max(vcst.TRAINING_HOURS_MIN, round(hours * type_mult * 2) / 2)
+
+    return min(hours, vcst.MAX_TRAINING_HOURS)
+
+
+def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
+    """Scale training hours by mean sequence length from baseline stats.
+
+    Applies ctx scale only — task-type multiplier is already baked in at task creation.
+    Scale is quadratic in (mean_seq_len / CTX_REF_SEQ_LEN), reflecting O(n²) attention
+    cost, clamped to [CTX_SCALE_MIN, CTX_SCALE_MAX] = [0.25, 3.0].
+    Returns hours snapped to nearest 0.5, minimum 1h, capped at MAX_TRAINING_HOURS.
+    If baseline_stats is None or lacks sequence length data, returns hours unchanged.
+    """
+    if baseline_stats is None:
+        return hours
+    try:
+        mean_seq_len = baseline_stats.dataset.seq_length_distribution.mean
+    except AttributeError:
+        return hours
+    if not mean_seq_len:
+        return hours
+    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, (mean_seq_len / vcst.CTX_REF_SEQ_LEN) ** 2))
+    scaled = max(vcst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
+    return min(scaled, vcst.MAX_TRAINING_HOURS)
 
 
 def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
@@ -323,7 +345,7 @@ async def create_synthetic_dpo_task(
 
     logger.info(f"Selected dataset: {dataset.dataset_id} (rows: {dataset.num_rows}, bytes: {dataset.num_bytes_parquet_files})")
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id, task_type=TaskType.DPOTASK)
     assert dataset.dpo_rejected_column, "we should have a reject column"
     assert dataset.dpo_accepted_column, "we should have a accepted column"
     assert dataset.dpo_prompt_column, "we should have a prompt column"
@@ -457,7 +479,7 @@ async def create_synthetic_grpo_task(
 
     dataset = await get_dataset(datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair)
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id, task_type=TaskType.GRPOTASK)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
 
     current_time = datetime.utcnow()
@@ -602,7 +624,7 @@ async def create_synthetic_affine_grpo_task(
             reward_functions = affine_reward_functions
 
         num_entries = response.get("num_entries", 10_000)
-        number_of_hours = _get_training_hours_from_num_rows(num_entries, model_id)
+        number_of_hours = _get_training_hours_from_num_rows(num_entries, model_id, task_type=TaskType.GRPOTASK)
 
         current_time = datetime.utcnow()
         end_timestamp = current_time + timedelta(hours=number_of_hours)
@@ -648,7 +670,7 @@ async def create_synthetic_instruct_text_task(
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
     logger.info(f"INSTRUCT_TASK: Selected dataset: {dataset.dataset_id}")
 
-    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id)
+    number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id, task_type=TaskType.INSTRUCTTEXTTASK)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
 
     current_time = datetime.utcnow()

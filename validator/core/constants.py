@@ -68,17 +68,32 @@ DATASET_BINS_TO_SAMPLE = [
     (100_000, 500_000),
 ]
 
-# dataset row bins to training hours range
-INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 50_000): (1, 2),
-    (50_000, 100_000): (2, 3),
-    (100_000, 500_000): (3, 4),
-}
+# Training hours: linear base scaled by row count
+# Flat at MIN below TRAINING_HOURS_SCALE_START_ROWS, scales to MAX_BASE at MAX_ROWS.
+TRAINING_HOURS_SCALE_START_ROWS = 75_000
+TRAINING_HOURS_MAX_ROWS = 500_000
+TRAINING_HOURS_MIN = 1.0
+TRAINING_HOURS_MAX_BASE = 4.0   # before ctx/type scaling
 
-# Model size scaling for training hours — models at or above this size get
-# the full training time; smaller models scale linearly down to MIN_HOURS_SCALE.
+# Model size scaling — linear from MIN_HOURS_SCALE at 0 params to 1.0x at FULL_HOURS_MODEL_PARAMS.
 FULL_HOURS_MODEL_PARAMS = 14e9  # 14B
 MIN_HOURS_SCALE = 0.5
+
+# Per-task-type multiplier applied at task creation (known without baseline stats).
+# DPO runs a reference model forward pass; GRPO generates multiple completions per prompt.
+TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
+    TaskType.INSTRUCTTEXTTASK: 1.0,
+    TaskType.CHATTASK: 1.0,
+    TaskType.DPOTASK: 1.4,
+    TaskType.GRPOTASK: 1.3,
+}
+
+# Context-length scaling applied after model prep using baseline stats mean seq length.
+# Scaling is quadratic (attention is O(n²)), clamped to avoid extreme values.
+CTX_REF_SEQ_LEN = 1024   # 1x at this length
+CTX_SCALE_MIN = 0.25     # floor (very short / heavily packed sequences)
+CTX_SCALE_MAX = 3.0      # ceiling (very long sequences)
+MAX_TRAINING_HOURS = 6.0
 
 # text augmentation synth
 TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"

@@ -437,9 +437,6 @@ async def _create_single_group_text_tasks(
     assert t_cst.TEXT_TASKS_PER_GROUP == 1, "Only 1 text task per group is supported"
     task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
 
-    task.hours_to_complete = 2
-    await task_sql.update_task(task, config.psql_db)
-
     await _create_and_register_tournament_task(
         task, tournament_id, round_id, config, group_id=group_id
     )
@@ -547,14 +544,10 @@ async def _create_round_one_group_text_replacement_task(config: Config) -> RawTa
     """
     Create a replacement task that matches round-1 group text constraints:
     - small text model pool (0.1B-4.0B)
-    - 2 training hours
     """
     models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    new_task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
-    new_task.hours_to_complete = 2
-    await task_sql.update_task(new_task, config.psql_db)
-    return new_task
+    return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:
