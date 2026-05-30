@@ -21,8 +21,8 @@ IS_PROD_ENV = NETUID == DEFAULT_NETUID
 VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_ENV = "gradientsio/env-evaluator:basilica"
-VALIDATOR_DOCKER_IMAGE_INTERCODE = "phoenixbeaudry/env-eval-intercode:basilica"
-VALIDATOR_DOCKER_IMAGE_PVP = "phoenixbeaudry/pvp-evaluator:v8"
+VALIDATOR_DOCKER_IMAGE_INTERCODE = "phoenixbeaudry/env-eval-intercode:testing"
+VALIDATOR_DOCKER_IMAGE_PVP = "phoenixbeaudry/pvp-evaluator:testing"
 MCTS_API_DOCKER_IMAGE = "diagonalge/mcts-api:latest"
 
 

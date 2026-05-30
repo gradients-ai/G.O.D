@@ -1,0 +1,13 @@
+.git
+__pycache__
+.venv
+venv
+node_modules
+wandb
+outputs
+checkpoints
+secure_checkpoints
+*.pt
+*.safetensors
+*.ckpt
+data
