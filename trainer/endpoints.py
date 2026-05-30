@@ -7,18 +7,26 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from core.models.payload_models import ModelPrepJob
+from core.models.payload_models import ModelPrepRequest
+from core.models.payload_models import ModelPrepResponse
+from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.utility_models import GPUInfo
 from trainer import constants as cst
+from trainer.image_manager import run_model_prep_container
 from trainer.image_manager import start_training_task
 from trainer.tasks import _start_task_unlocked
 from trainer.tasks import _task_lock
+from trainer.tasks import complete_model_prep
 from trainer.tasks import complete_task
 from trainer.tasks import get_recent_tasks
 from trainer.tasks import get_task
+from trainer.tasks import get_model_prep_job
 from trainer.tasks import load_task_history
 from trainer.tasks import log_task
+from trainer.tasks import _start_model_prep_unlocked
 from trainer.utils.dataset_whitelist import download_whitelisted_datasets
 from trainer.utils.misc import are_gpus_available
 from trainer.utils.misc import clone_repo
@@ -26,6 +34,8 @@ from trainer.utils.misc import get_gpu_info
 from trainer.utils.trainer_logging import logger
 from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.core.constants import GET_RECENT_TASKS_ENDPOINT
+from validator.core.constants import MODEL_PREP_ENDPOINT
+from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 
@@ -48,7 +58,6 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             clone_repo,
             repo_url=req.github_repo,
             parent_dir=cst.TEMP_REPO_PATH,
-            branch=req.github_branch,
             commit_hash=req.github_commit_hash,
             github_token=req.github_token,
             task_id=req.training_data.task_id,
@@ -121,6 +130,40 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
     return {"message": "Started Training!", "task_id": req.training_data.task_id}
 
 
+async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
+    async with _task_lock:
+        if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
+            raise HTTPException(
+                status_code=409,
+                detail="GPU conflict detected. Requested GPUs are already in use.",
+            )
+        await _start_model_prep_unlocked(req.task_id, req.model_id, req.gpu_ids, req.hotkey)
+    try:
+        result = await asyncio.to_thread(
+            run_model_prep_container,
+            task_id=req.task_id,
+            model_id=req.model_id,
+            training_data_url=req.training_data_url,
+            task_type=req.task_type,
+            augmentation_config=req.augmentation_config,
+            gpu_ids=req.gpu_ids,
+            reward_functions=req.reward_functions,
+            env_configs=req.env_configs,
+        )
+        await complete_model_prep(req.task_id, success=True, result=result, hotkey=req.hotkey)
+        return result
+    except Exception:
+        await complete_model_prep(req.task_id, success=False, hotkey=req.hotkey)
+        raise
+
+
+async def get_model_prep_status(task_id: str, hotkey: str | None = None) -> ModelPrepJob:
+    job = get_model_prep_job(task_id, hotkey)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Model prep job '{task_id}' not found.")
+    return job
+
+
 async def get_available_gpus() -> list[GPUInfo]:
     gpu_info = await get_gpu_info()
     return gpu_info
@@ -133,7 +176,7 @@ async def get_task_details(task_id: str, hotkey: str) -> TrainerTaskLog:
     return task
 
 
-async def get_recent_tasks_list(hours: int) -> list[TrainerTaskLog]:
+async def get_recent_tasks_list(hours: int) -> list[TrainerJob]:
     tasks = get_recent_tasks(hours)
     if not tasks:
         raise HTTPException(status_code=404, detail=f"Tasks not found in the last {hours} hours.")
@@ -146,10 +189,16 @@ def factory_router() -> APIRouter:
         PROXY_TRAINING_IMAGE_ENDPOINT, start_training, methods=["POST"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     router.add_api_route(
+        MODEL_PREP_ENDPOINT, model_prep, methods=["POST"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
+    router.add_api_route(
         GET_GPU_AVAILABILITY_ENDPOINT, get_available_gpus, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     router.add_api_route(
         GET_RECENT_TASKS_ENDPOINT, get_recent_tasks_list, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     router.add_api_route(TASK_DETAILS_ENDPOINT, get_task_details, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)])
+    router.add_api_route(
+        MODEL_PREP_STATUS_ENDPOINT, get_model_prep_status, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
     return router

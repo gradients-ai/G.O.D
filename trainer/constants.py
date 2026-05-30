@@ -9,6 +9,7 @@ VOLUME_NAMES = [CHECKPOINTS_VOLUME_NAME, CACHE_VOLUME_NAME]
 HF_UPLOAD_DOCKER_IMAGE = "gradientsio/trainer-uploader:latest"
 TRAINER_DOWNLOADER_DOCKER_IMAGE = "gradientsio/trainer-downloader:latest"
 CACHE_CLEANER_DOCKER_IMAGE = "gradientsio/trainer-cacher-cleaner:latest"
+MODEL_PREP_DOCKER_IMAGE = "gradientsio/model-prep:latest"
 IMAGE_TASKS_HF_SUBFOLDER_PATH = "checkpoints"
 VECTOR_URL = "http://localhost:8688"  # Vector http_server for logging
 INTERNAL_BRIDGE_NAME = "internal_bridge"
@@ -20,6 +21,7 @@ CPUS_PER_GPU = 24  # Conservative allocation leaving headroom
 
 CACHE_CLEANUP_CUTOFF_HOURS = 72
 STALE_TASK_GRACE_MINUTES = 10
+MODEL_PREP_TIMEOUT_MINUTES = 60
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
 

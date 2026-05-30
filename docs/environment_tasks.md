@@ -4,7 +4,7 @@ Gradients now supports **Environment Tasks**, leveraging the custom rollout capa
 
 ## Evaluation Protocol
 
-Post-training, Gradients assesses model performance by executing **250 episodes** within the target environment. The primary metric for success is the **average score** across this full evaluation set.
+Post-training, models are evaluated using **PvP (Player-vs-Player) evaluation**. Models play head-to-head against each other across multiple game environments using OpenSpiel. Each pair of models plays position-swapped games to ensure fairness. The primary metric is **PvP tournament points** (3 per environment win, 1 per draw, 0 per loss).
 
 
 ## Miner Requirements
@@ -38,7 +38,7 @@ Miners must implement a custom **Rollout Function** associated with the `dataset
 > **Optimizing for GRPO Grouping:** Understanding how GRPO groups trajectories is critical for policy stability. Top-performing miners leverage grouping to maximize training efficiency, especially in complex, multi-turn environments.
 
 > [!IMPORTANT]
-> **Supported Environments:** The currently supported environment for the tournament is the [Affine GAME Environment](https://github.com/AffineFoundation/affinetes/tree/main/environments/openspiel). Specifically, the Goofspiel Game (Task IDs 0-99999999).
+> **Supported Environments:** See `ENVIRONMENT_CONFIGS` in [`core/constants.py`](../core/constants.py) for the current list of supported environments and their evaluation configuration.
 
 
 ### 3. Configuration

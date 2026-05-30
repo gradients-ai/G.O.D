@@ -24,7 +24,7 @@ RANDOM_SEED = 42
 GPU_ID = 0
 
 async def run_evaluation() -> None:
-    dataset_type = EnvironmentDatasetType(environment_name=GAME_TO_EVAL)
+    dataset_type = EnvironmentDatasetType(environment_names=[GAME_TO_EVAL])
     model_to_eval = LORA_MODEL_NAME or BASE_MODEL_NAME
 
     print(f"🚀 Running local environment evaluation for: {model_to_eval}")

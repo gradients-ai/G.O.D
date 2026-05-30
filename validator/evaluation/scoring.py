@@ -1,3 +1,4 @@
+import asyncio
 import math
 import os
 from datetime import datetime
@@ -7,9 +8,14 @@ from fiber.chain.models import Node
 from huggingface_hub import HfApi
 
 import validator.core.constants as cts
+from core import constants as core_cst
 from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
+from core.models.pvp_models import PvPEnvironmentResult, PvPEvalMetadata, PvPGroupResults, PvPIncompleteError, PvPPairDbRow, PvPPairResult, _canonical_pair_key
+
+PairKey = str  # sorted "hotkey_a:hotkey_b"
+from core.models.scoring_models import EvalHotkeyResults
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -34,10 +40,13 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
+from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
+from validator.evaluation.tournament_scoring import compute_pvp_tournament_points
 from validator.utils.logging import LogContext
 from validator.utils.logging import add_context_tag
 from validator.utils.logging import get_logger
@@ -204,8 +213,9 @@ def _get_dataset_type(task: AnyTypeRawTask) -> TextDatasetType | None:
             extra_column=task.extra_column,
         )
     elif task.task_type == TaskType.ENVIRONMENTTASK:
+        env_names = getattr(task, "environment_names", [])
         return EnvironmentDatasetType(
-            environment_name=task.environment_name
+            environment_names=env_names or None
         )
     elif task.task_type == TaskType.CHATTASK:
         return ChatTemplateDatasetType(
@@ -275,9 +285,10 @@ async def _evaluate_submissions(
     if task.task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
         results: dict[str, EvaluationResultText | Exception] = {}
         repos_to_evaluate = []
+        base_model = task.augmented_model_id or task.model_id
         for repo in unique_repos:
-            if repo == task.model_id:
-                logger.warning(f"Repository {repo} matches original model ID - marking as non-finetuned")
+            if repo == base_model:
+                logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
                 results[repo] = EvaluationResultText(is_finetune=False, eval_loss=0.0)
             else:
                 repos_to_evaluate.append(repo)
@@ -296,7 +307,7 @@ async def _evaluate_submissions(
 
         evaluation_params = {
             "file_format": FileFormat.JSON,
-            "original_model": task.model_id,
+            "original_model": base_model,
             "models": repos_to_evaluate,
             "dataset_type": dataset_type,
             "num_gpus": num_gpus,
@@ -310,7 +321,6 @@ async def _evaluate_submissions(
             test_results = await run_evaluation_basilica_text(dataset=task.test_data, **evaluation_params)
         else:
             test_results = await run_evaluation_basilica_text(dataset="proxy", **evaluation_params)
-            test_eval_results = test_results.results
 
         test_eval_results = test_results.results
         task.model_params_count = test_results.base_model_params_count
@@ -325,9 +335,10 @@ async def _evaluate_submissions(
     elif task.task_type == TaskType.IMAGETASK:
         results: dict[str, EvaluationResultImage | Exception] = {}
         repos_to_evaluate = []
+        base_model = task.augmented_model_id or task.model_id
         for repo in unique_repos:
-            if repo == task.model_id:
-                logger.warning(f"Repository {repo} matches original model ID - marking as non-finetuned")
+            if repo == base_model:
+                logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
                 results[repo] = EvaluationResultImage(
                     eval_losses=DiffusionLosses(text_guided_losses=[0], no_text_losses=[0]), is_finetune=False
                 )
@@ -339,7 +350,7 @@ async def _evaluate_submissions(
 
         evaluation_params = {
             "test_split_url": task.test_data,
-            "original_model_repo": task.model_id,
+            "original_model_repo": base_model,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
             "num_gpus": num_gpus,
@@ -498,10 +509,28 @@ async def process_miners_pool(
                 continue
 
             repo = f"{cts.RAYONLABS_HF_USERNAME}/{expected_name}"
+            try:
+                HfApi().repo_info(repo, timeout=30)
+            except Exception:
+                logger.warning(f"Repo {repo} not found for miner {miner.hotkey} — scoring 0")
+                results.append(
+                    _create_failed_miner_result(
+                        miner.hotkey, score_reason="Model repo not found on HuggingFace", task_type=task.task_type
+                    )
+                )
+                continue
             logger.info(f"Constructed repo {repo} for miner {miner.hotkey}")
             miner_repos[miner.hotkey] = repo
 
-    if miner_repos:
+    if miner_repos and should_use_pvp(task):
+        try:
+            results.extend(await _run_pvp_group_eval(task, miner_repos, config))
+        except PvPIncompleteError:
+            raise
+        except Exception as e:
+            logger.error(f"PvP group evaluation failed: {e}", exc_info=True)
+            raise PvPIncompleteError(f"PvP eval failed, will retry: {e}") from e
+    elif miner_repos:
         try:
             eval_results = await _evaluate_submissions(
                 task=task,
@@ -584,16 +613,224 @@ async def process_miners_pool(
     return results
 
 
+def should_use_pvp(task: AnyTypeRawTask) -> bool:
+    """Check if this task should use PvP evaluation based on its games' eval_type."""
+    if task.task_type != TaskType.ENVIRONMENTTASK:
+        return False
+    env_names = getattr(task, "environment_names", None)
+    if not env_names:
+        return False
+    for name in env_names:
+        env_config = core_cst.ENVIRONMENT_CONFIGS.get(name)
+        if env_config and env_config.eval_type == core_cst.EvalType.PVP:
+            return True
+    return False
+
+
+async def _run_pvp_group_eval(
+    task: AnyTypeRawTask,
+    miner_repos: dict[str, str],
+    config: Config,
+) -> list[MinerResultsText]:
+    """Run all-pairwise PvP eval and convert standings to MinerResultsText.
+
+    Generates all C(n,2) pairs and dispatches each as an independent pair
+    eval in parallel. No group/multi-LoRA mode — every pair gets its own
+    servers, which is simpler and parallelises better.
+    """
+    base_model = task.augmented_model_id or task.model_id
+    environment_names = getattr(task, "environment_names", None) or list(core_cst.EnvironmentName)
+
+    eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
+    seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
+
+    training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
+    if training_statuses:
+        successful_hotkeys = {hotkey for hotkey, status in training_statuses.items() if status == "success"}
+        skipped_hotkeys = sorted(set(miner_repos) - successful_hotkeys)
+        if skipped_hotkeys:
+            logger.info(f"Excluding non-successful training hotkeys from PvP group eval: {skipped_hotkeys}")
+        miner_repos = {hotkey: repo for hotkey, repo in miner_repos.items() if hotkey in successful_hotkeys}
+
+    all_hotkeys = list(miner_repos.keys())
+    env_name_strs = [e.value for e in environment_names]
+    task_id = str(task.task_id)
+    max_pair_attempts = 3
+
+    logger.info(f"PvP pairwise eval: task={task.task_id}, {len(all_hotkeys)} participants, envs={environment_names}")
+
+    # Generate all C(n,2) pairs
+    required_pairs: set[str] = set()
+    for i, hk_a in enumerate(all_hotkeys):
+        for hk_b in all_hotkeys[i + 1:]:
+            required_pairs.add(_canonical_pair_key(hk_a, hk_b))
+
+    # Ensure DB rows exist for all pairs
+    stub_pairs = [
+        PvPPairResult(hotkey_a=k.split(":")[0], hotkey_b=k.split(":")[1], results={})
+        for k in required_pairs
+    ]
+    await tournament_sql.ensure_pvp_pairs_exist(task_id, stub_pairs, env_name_strs, config.psql_db)
+
+    # Check which pairs are already complete in DB
+    db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
+    rows_by_pair = _group_db_rows_by_pair(db_rows)
+
+    completed_keys: set[str] = set()
+    all_pair_results: list[PvPPairResult] = []
+    for pair_key in required_pairs:
+        if pair_key in rows_by_pair:
+            pr = _try_build_pair_result(pair_key, rows_by_pair[pair_key], env_name_strs, max_pair_attempts)
+            if pr:
+                completed_keys.add(pair_key)
+                all_pair_results.append(pr)
+
+    remaining_keys = [k for k in required_pairs if k not in completed_keys]
+
+    if not remaining_keys:
+        logger.info(f"All {len(required_pairs)} pairs already complete in DB — skipping eval")
+    else:
+        # Dispatch all incomplete pairs in parallel
+        failed_pairs: list[str] = []
+
+        async def _run_and_persist(pair_key: str):
+            hk_a, hk_b = pair_key.split(":")
+            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
+            try:
+                pair_group = await run_evaluation_pvp_pair(
+                    model_a_repo=miner_repos[hk_a],
+                    model_b_repo=miner_repos[hk_b],
+                    hotkey_a=hk_a,
+                    hotkey_b=hk_b,
+                    base_model=base_model,
+                    environment_names=environment_names,
+                    seed=seed,
+                )
+                for pair_result in pair_group.pair_results:
+                    for env_name, env_result in pair_result.results.items():
+                        await tournament_sql.save_pvp_pair_result(
+                            task_id=task_id,
+                            result=pair_result,
+                            environment_name=env_name.value,
+                            env_result=env_result,
+                            psql_db=config.psql_db,
+                        )
+                logger.info(f"Pair {pair_key} completed and persisted")
+            except Exception as e:
+                logger.error(f"Pair {pair_key} failed: {e}")
+                failed_pairs.append(pair_key)
+
+        logger.info(f"Dispatching {len(remaining_keys)} pairs in parallel")
+        await asyncio.gather(*[_run_and_persist(k) for k in remaining_keys])
+
+        if failed_pairs:
+            logger.warning(f"{len(failed_pairs)}/{len(remaining_keys)} pairs failed: {failed_pairs}")
+
+        # Re-read DB and collect results
+        updated_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
+        updated_by_pair = _group_db_rows_by_pair(updated_rows)
+
+        for pair_key, rows in updated_by_pair.items():
+            if pair_key in completed_keys:
+                continue
+            pr = _try_build_pair_result(pair_key, rows, env_name_strs, max_pair_attempts)
+            if pr:
+                completed_keys.add(pair_key)
+                all_pair_results.append(pr)
+
+        still_incomplete = [k for k in required_pairs if k not in completed_keys]
+        if still_incomplete:
+            raise PvPIncompleteError(
+                f"{len(still_incomplete)}/{len(required_pairs)} pairs incomplete: {still_incomplete}"
+            )
+
+    group_results = PvPGroupResults(
+        base_model=base_model,
+        hotkeys=all_hotkeys,
+        pair_results=all_pair_results,
+        metadata=PvPEvalMetadata(seed=seed, temperature=0.0),
+    )
+
+    env_weights = getattr(task, "environment_weights", None) or None
+    logger.info(
+        f"Scoring: {len(group_results.pair_results)} pair_results, "
+        f"{len(group_results.hotkeys)} hotkeys: {group_results.hotkeys}"
+    )
+    for pr in group_results.pair_results:
+        for env, er in pr.results.items():
+            logger.info(f"  {pr.hotkey_a[:8]} vs {pr.hotkey_b[:8]} {env.value}: a={er.model_a_wins} b={er.model_b_wins} d={er.draws}")
+    standings = compute_pvp_tournament_points(group_results, weights=env_weights)
+    points_by_hotkey = {s.hotkey: s.points for s in standings}
+    logger.info(f"Standings: {[(s.hotkey[:8], s.points) for s in standings]}")
+
+    return [
+        MinerResultsText(
+            hotkey=hotkey,
+            test_loss=points_by_hotkey.get(hotkey, 0.0),
+            synth_loss=points_by_hotkey.get(hotkey, 0.0),
+            is_finetune=True,
+            submission=Submission(
+                task_id=task.task_id,
+                hotkey=hotkey,
+                repo=repo,
+                created_on=datetime.now(),
+                updated_on=datetime.now(),
+            ),
+            task_type=task.task_type,
+        )
+        for hotkey, repo in miner_repos.items()
+    ]
+
+
+def _group_db_rows_by_pair(rows: list[PvPPairDbRow]) -> dict[PairKey, list[PvPPairDbRow]]:
+    grouped: dict[PairKey, list[PvPPairDbRow]] = {}
+    for row in rows:
+        grouped.setdefault(row.pair_key, []).append(row)
+    return grouped
+
+
+def _try_build_pair_result(
+    pair_key: str,
+    rows: list[PvPPairDbRow],
+    required_envs: list[str],
+    max_attempts: int,
+) -> PvPPairResult | None:
+    """Build a PvPPairResult if the pair is complete or exhausted retries."""
+    complete_rows = {r.environment_name: r for r in rows if r.is_complete}
+    if set(required_envs) <= set(complete_rows.keys()):
+        results = {
+            core_cst.EnvironmentName(env): PvPEnvironmentResult(
+                total_games=complete_rows[env].total_games,
+                model_a_wins=complete_rows[env].model_a_wins,
+                model_b_wins=complete_rows[env].model_b_wins,
+                draws=complete_rows[env].draws,
+            )
+            for env in required_envs
+        }
+        hk_a, hk_b = pair_key.split(":")
+        logger.info(f"Pair {pair_key} complete in DB")
+        return PvPPairResult(hotkey_a=hk_a, hotkey_b=hk_b, results=results)
+
+    # Check if exhausted — any non-complete row at max attempts
+    if any(r.n_attempts >= max_attempts and not r.is_complete for r in rows):
+        logger.warning(f"Pair {pair_key} exhausted {max_attempts} attempts — scoring as 0-0 draw")
+        hk_a, hk_b = pair_key.split(":")
+        results = {
+            core_cst.EnvironmentName(env): PvPEnvironmentResult()
+            for env in required_envs
+        }
+        return PvPPairResult(hotkey_a=hk_a, hotkey_b=hk_b, results=results)
+
+    return None
+
+
 async def evaluate_and_score_hotkeys(
     task: AnyTypeRawTask,
     hotkeys: list[str],
     num_gpus: int,
     config: Config,
-) -> tuple[list[str], list[str]]:
-    """
-    Evaluate a subset of task hotkeys, persist raw losses, and return:
-    (evaluated_hotkeys, failed_hotkeys).
-    """
+) -> EvalHotkeyResults:
+    """Evaluate a subset of task hotkeys, persist raw losses, return results."""
     assert task.task_id is not None, "Task ID must be present"
 
     miner_pool = await get_nodes_assigned_to_task(str(task.task_id), config.psql_db)
@@ -603,10 +840,10 @@ async def evaluate_and_score_hotkeys(
     logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
     task_results = await process_miners_pool(miner_pool, task, config, num_gpus, dataset_type)
 
-    failed_hotkeys = [result.hotkey for result in task_results if (not result.is_finetune) or np.isnan(result.test_loss)]
-    evaluated_hotkeys = [result.hotkey for result in task_results]
+    failed = [r.hotkey for r in task_results if (not r.is_finetune) or np.isnan(r.test_loss)]
+    evaluated = [r.hotkey for r in task_results]
     await _persist_raw_task_results(task, task_results, config.psql_db)
-    return evaluated_hotkeys, failed_hotkeys
+    return EvalHotkeyResults(evaluated=evaluated, failed=failed)
 
 
 async def finalize_task_scores_from_raw_losses(
@@ -637,88 +874,3 @@ def has_disk_cache_error(task_results: list[MinerResultsText | MinerResultsImage
     return False
 
 
-async def evaluate_and_score(task: AnyTypeRawTask, num_gpus: int, config: Config) -> AnyTypeRawTask:
-    assert task.task_id is not None, "Task ID must be present"
-    assert task.test_data is not None, "Test data must be present"
-
-    miner_pool = await get_nodes_assigned_to_task(str(task.task_id), config.psql_db)
-    
-    # For tournament tasks, only evaluate miners with training status "success"
-    tournament_id = await get_tournament_id_by_task_id(str(task.task_id), config.psql_db)
-    if tournament_id:
-        logger.info(f"Task {task.task_id} is a tournament task (tournament_id: {tournament_id}), filtering to only evaluate miners with training status 'success'")
-        hotkeys = [node.hotkey for node in miner_pool]
-        training_statuses = await get_training_status_for_task_and_hotkeys(str(task.task_id), hotkeys, config.psql_db)
-        
-        # Filter to only include miners with SUCCESS training status
-        filtered_miner_pool = [
-            node for node in miner_pool 
-            if training_statuses.get(node.hotkey) == TrainingStatus.SUCCESS.value
-        ]
-        
-        skipped_count = len(miner_pool) - len(filtered_miner_pool)
-        if skipped_count > 0:
-            skipped_hotkeys = [
-                node.hotkey for node in miner_pool 
-                if training_statuses.get(node.hotkey) != TrainingStatus.SUCCESS.value
-            ]
-            logger.info(
-                f"Skipping {skipped_count} miners without 'success' training status: {skipped_hotkeys}"
-            )
-        
-        miner_pool = filtered_miner_pool
-        logger.info(f"Filtered to {len(miner_pool)} miners with 'success' training status for tournament task evaluation")
-    
-    dataset_type = _get_dataset_type(task)
-
-    logger.info(f"Beginning evaluation for task {task.task_id} with {len(miner_pool)} miners")
-    task_results = await process_miners_pool(miner_pool, task, config, num_gpus, dataset_type)
-
-    if has_disk_cache_error(task_results):
-        if task.n_eval_attempts < cts.MAX_EVAL_ATTEMPTS - 1:
-            task.status = TaskStatus.PREEVALUATION
-            add_context_tag("status", task.status.value)
-            logger.info(f"Task {task.task_id} marked as pre-evaluation due to disk cache error")
-            task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
-            return task
-        else:
-            logger.info(
-                f"Task {task.task_id} has a disk cache error but has reached the maximum number of retries. "
-                "Will let it continue with what we have."
-            )
-
-    logger.info("Calculating final scores...")
-    task_results = calculate_miner_ranking_and_scores(task_results)
-    await _update_scores(task, task_results, config.psql_db)
-    all_scores_zero = all(result.score == 0.0 for result in task_results)
-
-    if cts.DELETE_S3_AFTER_COMPLETE:
-        if task.task_type in [
-            TaskType.INSTRUCTTEXTTASK,
-            TaskType.DPOTASK,
-            TaskType.GRPOTASK,
-            TaskType.CHATTASK,
-            TaskType.IMAGETASK,
-            TaskType.ENVIRONMENTTASK
-        ]:
-            files_to_delete = [task.training_data, task.test_data]
-        else:
-            raise ValueError(f"Unknown task type: {task.task_type}")
-
-    if all_scores_zero:
-        if task.n_eval_attempts < cts.MAX_EVAL_ATTEMPTS - 1:
-            task.status = TaskStatus.PREEVALUATION
-            add_context_tag("status", task.status.value)
-            logger.info(f"All scores are zero for task {task.task_id}, setting status to PREEVALUATION to re-evaluate")
-        else:
-            task.status = TaskStatus.FAILURE
-            add_context_tag("status", task.status.value)
-            logger.info(f"Task {task.task_id} marked as failure")
-            await _clear_up_s3(files_to_delete)
-    else:
-        await _clear_up_s3(files_to_delete)
-        task.status = TaskStatus.SUCCESS
-        add_context_tag("status", task.status.value)
-        logger.info(f"Task {task.task_id} completed successfully with non-zero scores")
-    task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
-    return task

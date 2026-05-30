@@ -89,7 +89,7 @@ You have two options for your tournament training repository:
 Use the official G.O.D repository as your starting point:
 
 - **GitHub Repository**: `https://github.com/rayonlabs/G.O.D`
-- **Commit Hash**: Use `"main"` for the latest version, or a specific commit hash for consistency
+- **Commit Hash**: Must be a full 40-character commit SHA (e.g. `"a1b2c3d4..."`) — branch names are not accepted
 
 The base repository includes functional training scripts that you can modify and improve.
 
@@ -115,7 +115,7 @@ Update the `get_training_repo()` function:
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     return TrainingRepoResponse(
         github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",  # Your repo URL
-        commit_hash="YOUR_COMMIT_HASH"  # Specific commit or "main"
+        commit_hash="YOUR_COMMIT_HASH"  # Must be a full 40-char commit SHA
     )
 ```
 
@@ -124,16 +124,18 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 ```python
 # Using the base miner
 github_repo="https://github.com/rayonlabs/G.O.D"
-commit_hash="main"
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"  # git rev-parse HEAD
 
 # Using your own fork
 github_repo="https://github.com/yourname/my-training-repo"
-commit_hash="a1b2c3d4e5f6..."
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"
 
 # Using a previous winner's approach
 github_repo="https://github.com/gradients-opensource/position-1-tournament-xyz"
-commit_hash="main"
+commit_hash="a1b2c3d4e5f6789012345678901234567890abcd"
 ```
+
+> **Note**: Branch names (e.g. `"main"`) are not accepted. Use `git rev-parse HEAD` to get the commit SHA.
 
 ### Private Repositories (Optional)
 
@@ -216,6 +218,17 @@ Your training scripts accept these standardised CLI arguments:
 --expected-repo-name  # Expected HuggingFace repository name for upload
 --hours-to-complete   # Time limit in hours for the job to finish
 ```
+
+## Environment Variables
+
+Your training container receives these environment variables in addition to CLI arguments:
+
+| Variable | Description |
+|----------|-------------|
+| `BASELINE_STATS_PATH` | Path to a JSON file containing pre-training baseline statistics (model weights, dataset stats, initial loss, gradient norms). Mounted via the cache volume. Structure varies by task type — see [`core/models/model_prep_models.py`](../core/models/model_prep_models.py) for the full schema. Optional — safe to ignore. |
+| `MINER_DATASETS_DIR` | Parent directory for requested datasets (see [Miner-Requested Datasets](#miner-requested-datasets)) |
+| `MINER_DATASETS` | Comma-separated list of downloaded dataset directory names |
+| `ENVIRONMENT_SERVER_URLS` | Comma-separated env server URLs (environment tasks only) |
 
 ## Training Logs and Monitoring
 
@@ -415,13 +428,12 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- All participants (including boss) compete in a single large group each round
-- Minimum 5 participants required to start
-- Four group rounds total (no knockout rounds)
-- Round 1: 1 env task, top 8 non-boss advance
-- Round 2: 1 env task, top 2 non-boss advance
-- Round 3: 1 env task with boss + 2 contenders
-- Round 4: boss vs the best contender on 3 env tasks
+- Participants are split into groups of up to 6 (see `MAX_ENVIRONMENT_GROUP_SIZE` in `validator/tournament/constants.py`)
+- Boss (defending champion) is added to every group's evaluation
+- All groups in a round receive the same task configuration (environments, model, seed)
+- Each group is evaluated independently via PvP head-to-head play
+- Top 2 per group advance each round (at least 1 eliminated per group to guarantee convergence)
+- Group rounds repeat until 1 contender remains, then the boss round is triggered
 
 ### Knockout Rounds
 
@@ -433,7 +445,7 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- No knockout rounds - environment uses 4 group rounds
+- No knockout rounds — group rounds continue until 1 contender remains, then boss round
 
 ### Boss Round
 
@@ -446,11 +458,9 @@ Tournaments run continuously with 4-7 day duration and 72-hour gaps between tour
 
 **Environment Tournaments:**
 
-- Boss (defending champion) competes in all rounds
-- Round-3 winner determination picks one Round-4 contender from the two non-boss finalists using cumulative R1-R3 threshold wins vs boss (picks the best contender)
-- If Round-3 winner determination returns no contender (0 threshold-qualified wins), the generic zero-winner fallback declares boss as tournament winner and Round 4 is skipped
-- Final winner rule: contender must win at least 4 out of 6 total tasks (R1 + R2 + R3 + 3xR4), with threshold applied per task
-- If contender wins fewer than 4/6, boss retains title
+- The single remaining contender faces the boss in a boss round with 3 tasks, each with a different training starting point (continuation, from-scratch, previous winner's model)
+- Contender must beat the boss on **all 3 tasks** (strictly higher PvP tournament points)
+- If the contender fails any task, the boss retains the title
 
 #### Championship Defense Thresholds
 
@@ -497,34 +507,34 @@ This system ensures:
 
 ## Environment Tournaments
 
-Environment tournaments are a specialized tournament type focused on reinforcement learning with environment interactions.
+Environment tournaments are a specialized tournament type focused on reinforcement learning with environment interactions, evaluated via PvP (Player-vs-Player) head-to-head play.
 
-### Key Differences
+### Tournament Flow
 
-- **Four-Round Group Structure**: Four group rounds (no knockout rounds)
-- **All Participants Together**: Boss and participants compete in shared group rounds
-- **Minimum Participants**: Requires at least 5 participants (vs 8 for text/image tournaments)
+1. **Group Stage**: Participants are split into groups of up to 6. Each group plays PvP round-robin across multiple game environments. Top 2 per group advance. Group rounds repeat until 1 contender remains.
+2. **Boss Round**: The final contender faces the defending champion on 3 tasks with different training starting conditions (continuation from previous round, from-scratch, and previous winner's model). The contender must beat the boss on all 3 tasks to win.
+3. **Model Continuation**: In rounds 2+, miners continue training from their previous round's output model, building on their work across rounds.
+
+### Key Parameters
+
 - **Participation Fee**: 0.20 TAO per tournament
 - **Schedule**: Starts every Monday at 14:00 UTC
+- **Group Size**: Up to 6 per group (see `MAX_ENVIRONMENT_GROUP_SIZE` in `validator/tournament/constants.py`)
+- **Environments per Task**: Scales with round number (R1=2, R2=4, R3=6, etc.)
+- **Training Hours**: 1.5 hours per round. Boss round from-scratch task gets 3 hours
+- **Supported Environments**: See `ENVIRONMENT_CONFIGS` in [`core/constants.py`](../core/constants.py)
 
 ### Scoring System
 
-- **GRPO-Based**: Uses Group Relative Policy Optimization scoring where **higher scores are better**
-- **Progressive Threshold**: Defending champion benefits from progressive threshold (same system as text/image tournaments)
-  - A contender wins an individual task only if: `contender_score >= boss_score * (1 + threshold_percentage)`
-- **Winner Selection**:
-  - Round-3 winnering selects one contender (or none) using cumulative R1-R3 threshold wins vs boss
-  - Final champion is based on a 6-task majority: contender must win 4/6+ tasks
-  - If Round-3 yields zero winners, boss wins via zero-winner fallback and tournament ends early
+- **PvP Tournament Points**: Models play head-to-head via OpenSpiel. Per environment: 3 points for a win, 1 for a draw, 0 for a loss. Higher total points = better.
+- **Weight Setting**: Performance margin derived from win percentage across boss round tasks. Only dominant wins earn emission boost above the base weight.
 
 ### Technical Requirements
 
 - **Rollout Functions**: Must implement custom rollout functions for environment interaction
 - **Environment Servers**: Environment servers are provisioned during training (typically one per GPU)
 - **Environment Variable**: Server URLs provided via `ENVIRONMENT_SERVER_URLS` environment variable
-- **Evaluation**: Post-training evaluation uses 250 episodes to determine final scores
-
-For detailed information on implementing environment tasks, see the [Environment Tasks documentation](environment_tasks.md).
+- **Evaluation**: Post-training, models are evaluated via PvP head-to-head play across the task's environments. See the [Environment Tasks documentation](environment_tasks.md) for details.
 
 ## Reference Implementation
 

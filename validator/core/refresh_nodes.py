@@ -45,20 +45,16 @@ async def _get_and_store_nodes(config: Config) -> list[Node]:
     except Exception as e:
         logger.warning(f"DB pool not ready, reconnecting... {e}")
     if await _is_recent_update(config):
-        nodes = await get_all_nodes(config.psql_db)
+        return await get_all_nodes(config.psql_db)
 
-    logger.info("At fetch")
+    logger.info("Fetching nodes from substrate")
     raw_nodes = await _fetch_nodes_from_substrate(config)
-    logger.info("afer  fetch")
     nodes = [Node(**node.model_dump(mode="json")) for node in raw_nodes]
-    logger.info("afer  nodes")
 
     async with await config.psql_db.connection() as connection:
-        logger.info("connection made")
-        await migrate_nodes_to_history(connection)
-        logger.info("after migrate")
-        await insert_nodes(connection, nodes)
-        logger.info("after insret")
+        async with connection.transaction():
+            await migrate_nodes_to_history(connection)
+            await insert_nodes(connection, nodes)
 
     logger.info(f"Stored {len(nodes)} nodes.")
     return nodes

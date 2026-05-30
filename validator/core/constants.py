@@ -3,6 +3,10 @@ from datetime import date
 
 from core.constants import GRPO_DEFAULT_FIELD_PROMPT
 from core.constants import NETUID
+from core.constants import EnvironmentName
+from core.models.model_prep_models import AugmentationScope
+from core.models.model_prep_models import AugmentationType
+from core.models.utility_models import TaskType
 
 
 RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"
@@ -45,14 +49,14 @@ GET_ALL_MODELS_ID = "model_id"
 
 # data stuff
 TRAIN_TEST_SPLIT_PERCENTAGE = 0.1
-MAX_TEST_DATA_POINTS = 400
+MAX_TEST_DATA_POINTS = 1000
 
 IMAGE_TRAIN_SPLIT_ZIP_NAME = "train_data.zip"
 IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
-MINIMUM_DATASET_ROWS = 2_000  # Minimum number of rows required in a dataset
+MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
 EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
@@ -66,11 +70,11 @@ DATASET_BINS_TO_SAMPLE = [
 
 # dataset row bins to training hours range
 INSTRUCT_TEXT_DATASET_BINS_TO_TRAINING_HOURS_RANGE = {
-    (1_000, 10_000): (1, 3),
-    (10_000, 25_000): (2, 4),
-    (25_000, 50_000): (3, 5),
-    (50_000, 100_000): (3, 6),
-    (100_000, 500_000): (4, 6),
+    (1_000, 10_000): (1, 2),
+    (10_000, 25_000): (2, 3),
+    (25_000, 50_000): (2, 4),
+    (50_000, 100_000): (3, 5),
+    (100_000, 500_000): (3, 6),
 }
 
 # text augmentation synth
@@ -85,6 +89,21 @@ IMAGE_PROMPT_GEN_MODEL_TEMPERATURE = 0.4
 IMAGE_PROMPT_GEN_MODEL_MAX_TOKENS = 5024
 IMAGE_STYLE_PICKING_NUM_TRIES = 10
 PERSON_GEN_RETRIES = 3
+IMAGE_SYNTH_FACE_IMAGE_URL = "https://thispersondoesnotexist.com/"
+FAL_KEY = os.getenv("FAL_KEY")
+FAL_TIMEOUT_SECONDS = 300
+FAL_IMAGE_GENERATION_CONCURRENCY = 20
+FAL_PERSON_PROMPT_MODEL = "openrouter/router/vision"
+FAL_PERSON_PROMPT_VLM = "google/gemini-2.5-flash"
+FAL_TEXT_PROMPT_MODEL = "openrouter/router"
+FAL_TEXT_PROMPT_LLM = "google/gemini-2.5-flash"
+FAL_AVATAR_MODEL = "fal-ai/nano-banana-2/edit"
+FAL_STYLE_MODEL_NANO_BANANA_2 = "fal-ai/nano-banana-2"
+FAL_STYLE_MODEL_GPT_IMAGE_2 = "openai/gpt-image-2"
+FAL_STYLE_MODELS = (FAL_STYLE_MODEL_NANO_BANANA_2, FAL_STYLE_MODEL_GPT_IMAGE_2)
+FAL_GPT_IMAGE_2_QUALITY = "medium"
+FAL_NANO_BANANA_RESOLUTION = "1K"
+FAL_IMAGE_OUTPUT_FORMAT = "png"
 
 # endpoints
 PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
@@ -140,11 +159,12 @@ FIRST_PLACE_SCORE = 3
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
 MAX_EVALUATING_ROWS = 10
+MAX_CONCURRENT_GROUP_EVALUATIONS = 5
 
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.4
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.7
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.2
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.15
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.1
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     1
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
@@ -152,18 +172,15 @@ PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 )
 PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
-    0.5  # person synth chance is 1 minus this (only for sdxl models, flux is always person)
+    0.5  # person synth chance is 1 minus this for every image model type
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
 PERSON_SYNTH_DS_PREFIX = "person"
-SYNTH_CONTAINER_SAVE_PATH = "/app/images/"
-RUNPOD_IMAGE_SYNTH_TIMEOUT_SECONDS = 1800
-RUNPOD_IMAGE_SYNTH_ENDPOINT = os.getenv("RUNPOD_IMAGE_SYNTH_ENDPOINT")
-RUNPOD_API_KEY = os.getenv("RUNPOD_API_KEY")
 
 # grpo synth
-MIN_NUM_REWARD_FUNCTIONS = 1
-MAX_NUM_REWARD_FUNCTIONS = 5
+
+MIN_NUM_REWARD_FUNCTIONS = 2
+MAX_NUM_REWARD_FUNCTIONS = 4
 
 # affine grpo synth
 GET_AFFINE_GRPO_DATA_ENDPOINT = f"{PROD_CONTENT_BASE_URL}/affine-grpo-data/latest"  # Force prod for affine data
@@ -214,10 +231,10 @@ IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 # scoring stuff
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.20
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.18
 TOURNAMENT_TEXT_WEIGHT = 0.15
 TOURNAMENT_IMAGE_WEIGHT = 0.10
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.10
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.17
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
@@ -226,11 +243,12 @@ TOURNAMENT_INTERVAL_HOURS = 72
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
 TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
 
-# Text and Image tournaments: Thursday at 14:00 UTC
+# Text tournaments: Thursday at 14:00 UTC
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
 TOURNAMENT_SCHEDULE_TEXT_HOUR = 14  # 0-23 (UTC time)
+# Image tournaments: Thursday at 15:00 UTC
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_IMAGE_HOUR = 14  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15  # 0-23 (UTC time)
 
 TOURNAMENT_INTERVAL_HOURS = (
     120  # Display value for frontend (5 days), not used for actual scheduling. TODO: remove once frontend is updated
@@ -295,6 +313,8 @@ STANDARD_CHAT_MESSAGES_COLUMN = "conversations"
 # Trainer endpoints
 
 PROXY_TRAINING_IMAGE_ENDPOINT = "/v1/trainer/start_training"
+MODEL_PREP_ENDPOINT = "/v1/trainer/model_prep"
+MODEL_PREP_STATUS_ENDPOINT = "/v1/trainer/model_prep/{task_id}"
 GET_GPU_AVAILABILITY_ENDPOINT = "/v1/trainer/get_gpu_availability"
 TASK_DETAILS_ENDPOINT = "/v1/trainer/{task_id}"
 GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
@@ -318,60 +338,59 @@ YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to to
 YARN_TOURNAMENT_FACTORS = [2, 4]
 MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate"
 
+# Model prep constants
+BASELINE_STATS_ENABLED_ORGANIC = False  # Run model prep (stats) for organic requests
+MODEL_PREP_ENABLED_TEXT = True  # Route text tasks through model prep (augmentation + baseline stats)
+MODEL_PREP_ENABLED_IMAGE = False  # Route image tasks through model prep
+MODEL_PREP_ENABLED_ENV = True  # Route environment tasks through model prep
+MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
+    TaskType.INSTRUCTTEXTTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.DPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.GRPOTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.CHATTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.IMAGETASK: MODEL_PREP_ENABLED_IMAGE,
+    TaskType.ENVIRONMENTTASK: MODEL_PREP_ENABLED_ENV,
+}
+
+
+# Model augmentation constants
+AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
+AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
+AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
+AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation at all
+
+# Weighted distribution over augmentation types (normalised at runtime)
+# When an augmentation is applied, one type is chosen according to these weights
+AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
+    AugmentationType.GAUSSIAN_NOISE: 0.10,
+    AugmentationType.WEIGHT_SCALING: 0.50,
+    AugmentationType.MAGNITUDE_PRUNING: 0.25,
+    AugmentationType.LAYER_REINIT: 0.15,
+}
+
+# Weighted distribution over layer scope (normalised at runtime)
+# Determines how many layers the augmentation targets
+AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
+    AugmentationScope.SINGLE_LAYER: 0.10,
+    AugmentationScope.LAYER_TYPE_GROUP: 0.15,
+    AugmentationScope.MULTI_LAYER: 0.35,
+    AugmentationScope.ALL_LAYERS: 0.40,
+}
+
+# Intensity ranges per augmentation type (min, max) — sampled uniformly
+AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.04),
+    AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
+    AugmentationType.MAGNITUDE_PRUNING: (0.15, 0.40),
+    AugmentationType.LAYER_REINIT: (0.05, 0.15),
+}
+
 # Environment evaluation constants
 ENV_SERVER_CMD_DEFAULT = "python -m uvicorn _affinetes.server:app --host 0.0.0.0 --port 8001 --workers 1 --loop asyncio"
 BASILICA_GPU_MODELS = ["A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
 
-ENVIRONMENTS = {
-    "alfworld": {
-        "task_id_range": (1, 2500),
-        "num_seeds": 100,
-        "env_image": "affinefoundation/agentgym:alfworld",
-        "eval_payload_extra": {"max_round": 30},
-    },
-    "goofspiel": {
-        "task_id_range": (0, 99999999),
-        "num_seeds": 2000,
-        "env_image": "diagonalge/openspiel:latest",
-        "eval_payload_extra": {"opponent": "random", "api_key": "dummy-key"},
-    },
-    "gin_rummy": {
-        "task_id_range": (300000000, 399999999),
-        "num_seeds": 1000,
-        "env_image": "diagonalge/mcts-api:latest",
-        "eval_payload_extra": {
-            "opponent": "mcts",
-            "mcts_max_simulations": 50,
-            "mcts_num_rollouts": 1,
-            "api_key": "dummy-key",
-        },
-    },
-    "liars_dice": {
-        "task_id_range": (100000000, 199999999),
-        "num_seeds": 10000,
-        "env_image": "diagonalge/mcts-api:latest",
-        "eval_payload_extra": {
-            "opponent": "mcts",
-            "mcts_max_simulations": 225,
-            "mcts_num_rollouts": 1,
-            "api_key": "dummy-key",
-        },
-    },
-    "leduc_poker": {
-        "task_id_range": (200000000, 299999999),
-        "num_seeds": 2000,
-        "env_image": "diagonalge/mcts-api:latest",
-        "eval_payload_extra": {
-            "opponent": "mcts",
-            "mcts_max_simulations": 50,
-            "mcts_num_rollouts": 1,
-            "api_key": "dummy-key",
-        },
-    },
-}
-
-DEFAULT_ENV = "gin_rummy"
+DEFAULT_ENV = EnvironmentName.GIN_RUMMY
 ENV_EVAL_DEFAULT_SEED = 42
 ENV_EVAL_NUM_SEEDS = 2000
 ENV_EVAL_TEMPERATURE = 0.0
@@ -392,7 +411,7 @@ SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
 EVAL_BASILICA_CPU = "4"
 EVAL_BASILICA_MEMORY = "64Gi"
 EVAL_BASILICA_TTL_SECONDS = 16000
-EVAL_BASILICA_TIMEOUT = 1800
+EVAL_BASILICA_TIMEOUT = 14400
 EVAL_BASILICA_MAX_RETRIES = 3
 EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
@@ -407,3 +426,46 @@ LOCAL_ENV_SERVER_PORT = 8001
 LOCAL_ENV_SGLANG_HEALTH_TIMEOUT = 600
 LOCAL_ENV_SERVER_HEALTH_TIMEOUT = 300
 LOCAL_ENV_HF_CACHE_PATH = "/mnt/hf_cache"
+
+# PvP evaluation constants
+PVP_SGLANG_HOST = "127.0.0.1"
+PVP_SGLANG_PORT_A = 30000
+PVP_SGLANG_PORT_B = 30001
+PVP_SGLANG_HEALTH_TIMEOUT = 1800
+PVP_SGLANG_HEALTH_PATH = "/v1/models"
+PVP_SGLANG_API_PATH = "/v1"
+PVP_RESULTS_PATH = "/app/pvp_results.json"
+PVP_CONFIG_PATH = "/config/pvp_eval.json"
+PVP_CONFIG_ENV_VAR = "PVP_EVAL_CONFIG"
+PVP_SEED_RANGE_MAX = 1_000_000
+PVP_CONFIG_ID_DIVISOR = 100_000_000
+PVP_LOG_INTERVAL_GAMES = 100
+PVP_BOT_MAX_PARSING_RETRIES = 0
+PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
+PVP_TURN_TIMEOUT_SECONDS = 5
+PVP_RETRY_BACKOFF_CAP_SECONDS = 32
+MCTS_WIN_MARGIN = 0.015
+
+# PvP tournament scoring
+PVP_ENV_WIN_POINTS = 3
+PVP_ENV_DRAW_POINTS = 1
+PVP_ENV_LOSS_POINTS = 0
+PVP_NUM_GAMES_PER_ENV = 100
+PVP_CONSECUTIVE_LOSS_FORFEIT = 10
+PVP_WIN_PCT_THRESHOLD = 0.60
+PVP_PERF_DIFF_SLOPE = 0.125  # Linear map: 60% win rate → emission threshold, 100% → max boost
+
+# PvP Basilica deployment
+PVP_BASILICA_TTL_SECONDS = 28800
+PVP_BASILICA_GPU_COUNT = 2
+PVP_BASILICA_PORT = 8000
+
+# HuggingFace container env vars (shared across all eval containers)
+_HF_CONTAINER_ENV_BASE = {
+    "HF_HOME": "/root/.cache/huggingface",
+    "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+    "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+    "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+}
+HF_CONTAINER_ENV = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "1"}
+HF_CONTAINER_ENV_IMAGE = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "0"}

@@ -8,14 +8,12 @@ from core.models.utility_models import TaskType
 from validator.core import constants as cts
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.db.sql.tasks import get_task
-from core.models.tournament_models import TournamentType
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
 from validator.db.sql.tournament_performance import update_tournament_winning_performance
 from validator.db.sql.tournaments import count_champion_consecutive_wins_at_tournament
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
-from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
 from validator.tournament.utils import get_progressive_threshold
@@ -45,17 +43,8 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         f"with {consecutive_wins} consecutive wins, threshold: {threshold * 100:.1f}%"
     )
 
-    # For environment tournaments, evaluate winner vs boss across all rounds
-    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-        all_rounds = await get_tournament_rounds(tournament_id, psql_db)
-        all_round_tasks = []
-        for round_data in all_rounds:
-            round_tasks = await get_tournament_tasks(round_data.round_id, psql_db)
-            all_round_tasks.extend(round_tasks)
-        logger.info(f"Environment tournament: evaluating performance across {len(all_rounds)} rounds ({len(all_round_tasks)} tasks)")
-    else:
-        round_id = await get_final_round_id(tournament_id, psql_db)
-        all_round_tasks = await get_tournament_tasks(round_id, psql_db)
+    round_id = await get_final_round_id(tournament_id, psql_db)
+    all_round_tasks = await get_tournament_tasks(round_id, psql_db)
 
     performance_differences = []
 
@@ -152,7 +141,16 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             )
             continue
 
-        if is_higher_better:
+        if task_obj.task_type == TaskType.ENVIRONMENTTASK:
+            num_envs = len(task_obj.environment_names) if task_obj.environment_names else 1
+            win_pct = (2 * challenger_score + boss_score - 3 * num_envs) / (3 * num_envs)
+            win_pct = max(0.0, win_pct)
+            if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
+                perf_diff = 0.0
+            else:
+                perf_diff = cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+            challenger_won = challenger_score > boss_score
+        elif is_higher_better:
             if boss_score > 0:
                 perf_diff = (challenger_score - boss_score) / boss_score
             else:

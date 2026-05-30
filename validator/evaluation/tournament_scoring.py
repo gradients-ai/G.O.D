@@ -1,14 +1,131 @@
 
+import itertools
+
 import validator.core.constants as cts
+from core.constants import EnvironmentName
+from core.models.pvp_models import PvPGroupResults
+from core.models.scoring_models import EnvironmentWeight
+from core.models.scoring_models import GroupStagePoints
+from core.models.scoring_models import PairwiseOutcome
+from core.models.scoring_models import TournamentScore
+from core.models.scoring_models import TournamentTypeResult
 from core.models.tournament_models import TournamentResultsWithWinners
-from core.models.tournament_models import TournamentScore
 from core.models.tournament_models import TournamentType
-from core.models.tournament_models import TournamentTypeResult
-from validator.tournament.utils import get_real_winner_hotkey
 from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
+
+
+# --- Universal pairwise scoring ---
+
+
+def accumulate_points(
+    outcomes: list[PairwiseOutcome],
+    hotkeys: list[str],
+    weights: list[EnvironmentWeight] | None = None,
+) -> list[GroupStagePoints]:
+    """Universal 3/1/0 accumulator. Works with outcomes from any eval type.
+
+    Weights are per-environment multipliers (default 1.0 = uniform).
+    Returns list sorted by points descending.
+    """
+    weight_map = {w.environment: w.weight for w in weights} if weights else {}
+    points = {hotkey: 0.0 for hotkey in hotkeys}
+
+    for outcome in outcomes:
+        weight = weight_map.get(outcome.environment, 1.0)
+
+        if outcome.winner == outcome.hotkey_a:
+            points[outcome.hotkey_a] += cts.PVP_ENV_WIN_POINTS * weight
+        elif outcome.winner == outcome.hotkey_b:
+            points[outcome.hotkey_b] += cts.PVP_ENV_WIN_POINTS * weight
+        elif outcome.winner is None:
+            points[outcome.hotkey_a] += cts.PVP_ENV_DRAW_POINTS * weight
+            points[outcome.hotkey_b] += cts.PVP_ENV_DRAW_POINTS * weight
+
+    standings = [GroupStagePoints(hotkey=hk, points=pts) for hk, pts in points.items()]
+    standings.sort(key=lambda s: s.points, reverse=True)
+    return standings
+
+
+# --- PvP → pairwise ---
+
+
+def pvp_results_to_pairwise(group_results: PvPGroupResults) -> list[PairwiseOutcome]:
+    """Convert PvP group round-robin results into universal pairwise outcomes."""
+    outcomes: list[PairwiseOutcome] = []
+
+    for pair in group_results.pair_results:
+        for env_name, env_result in pair.results.items():
+            if env_result.model_a_wins > env_result.model_b_wins:
+                winner = pair.hotkey_a
+            elif env_result.model_b_wins > env_result.model_a_wins:
+                winner = pair.hotkey_b
+            else:
+                winner = None
+
+            outcomes.append(PairwiseOutcome(
+                hotkey_a=pair.hotkey_a,
+                hotkey_b=pair.hotkey_b,
+                environment=env_name,
+                winner=winner,
+            ))
+
+    return outcomes
+
+
+# --- MCTS scores → pairwise ---
+
+
+def mcts_scores_to_pairwise(
+    scores_by_hotkey: dict[str, float],
+    environment: EnvironmentName,
+    win_margin: float = cts.MCTS_WIN_MARGIN,
+) -> list[PairwiseOutcome]:
+    """Convert independent MCTS scores into pairwise outcomes.
+
+    A must exceed B by win_margin (fractional) to count as a win.
+    Scores within the margin = draw.
+    """
+    hotkeys = list(scores_by_hotkey.keys())
+    outcomes: list[PairwiseOutcome] = []
+
+    for hotkey_a, hotkey_b in itertools.combinations(hotkeys, 2):
+        score_a = scores_by_hotkey[hotkey_a]
+        score_b = scores_by_hotkey[hotkey_b]
+        threshold = abs(score_b) * win_margin
+
+        if score_a > score_b + threshold:
+            winner = hotkey_a
+        elif score_b > score_a + threshold:
+            winner = hotkey_b
+        else:
+            winner = None
+
+        outcomes.append(PairwiseOutcome(
+            hotkey_a=hotkey_a,
+            hotkey_b=hotkey_b,
+            environment=environment,
+            winner=winner,
+        ))
+
+    return outcomes
+
+
+# --- Convenience: PvP group results → standings ---
+
+
+def compute_pvp_tournament_points(
+    group_results: PvPGroupResults,
+    weights: list[EnvironmentWeight] | None = None,
+) -> list[GroupStagePoints]:
+    """Convert PvP group results into per-hotkey tournament points.
+
+    Convenience wrapper: pvp_results_to_pairwise → accumulate_points.
+    """
+    outcomes = pvp_results_to_pairwise(group_results)
+    return accumulate_points(outcomes, group_results.hotkeys, weights)
 
 
 def calculate_tournament_type_scores_from_data(
@@ -29,8 +146,13 @@ def calculate_tournament_type_scores_from_data(
     score_dict = {}
     prev_winner_won_final = False
 
-    # Get real winner hotkey (handles EMISSION_BURN_HOTKEY placeholder for defending champions)
-    actual_winner_hotkey = get_real_winner_hotkey(tournament_data.winner_hotkey, tournament_data.base_winner_hotkey)
+    # Resolve EMISSION_BURN_HOTKEY placeholder to the real defending champion hotkey
+    winner_hk = tournament_data.winner_hotkey
+    base_hk = tournament_data.base_winner_hotkey
+    if winner_hk == cts.EMISSION_BURN_HOTKEY and base_hk:
+        actual_winner_hotkey = base_hk
+    else:
+        actual_winner_hotkey = winner_hk
     if tournament_data.winner_hotkey == cts.EMISSION_BURN_HOTKEY and tournament_data.base_winner_hotkey:
         logger.info(f"Swapped EMISSION_BURN_HOTKEY with actual defending champion: {actual_winner_hotkey}")
 
@@ -172,38 +294,24 @@ def tournament_scores_to_weights(
     return weights
 
 
+def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
+    result = calculate_tournament_type_scores_from_data(tournament_type, data)
+    weights = (
+        tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
+        if result.scores
+        else {}
+    )
+    logger.info(f"{tournament_type.value} tournament weights: {weights}")
+    return weights
+
+
 def get_tournament_weights_from_data(
     text_tournament_data: TournamentResultsWithWinners | None,
     image_tournament_data: TournamentResultsWithWinners | None,
     environment_tournament_data: TournamentResultsWithWinners | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
     """Get tournament weights keeping text, image, and environment tournaments separate."""
-
-    # Calculate text tournament weights
-    text_result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, text_tournament_data)
-    text_weights = {}
-    if text_result.scores:
-        text_weights = tournament_scores_to_weights(
-            text_result.scores, text_result.prev_winner_hotkey, text_result.prev_winner_won_final
-        )
-    logger.info(f"Text tournament weights: {text_weights}")
-
-    # Calculate image tournament weights
-    image_result = calculate_tournament_type_scores_from_data(TournamentType.IMAGE, image_tournament_data)
-    image_weights = {}
-    if image_result.scores:
-        image_weights = tournament_scores_to_weights(
-            image_result.scores, image_result.prev_winner_hotkey, image_result.prev_winner_won_final
-        )
-    logger.info(f"Image tournament weights: {image_weights}")
-
-    # Calculate environment tournament weights
-    environment_result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, environment_tournament_data)
-    environment_weights = {}
-    if environment_result.scores:
-        environment_weights = tournament_scores_to_weights(
-            environment_result.scores, environment_result.prev_winner_hotkey, environment_result.prev_winner_won_final
-        )
-    logger.info(f"Environment tournament weights: {environment_weights}")
-
+    text_weights = _compute_weights(TournamentType.TEXT, text_tournament_data)
+    image_weights = _compute_weights(TournamentType.IMAGE, image_tournament_data)
+    environment_weights = _compute_weights(TournamentType.ENVIRONMENT, environment_tournament_data)
     return text_weights, image_weights, environment_weights

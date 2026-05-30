@@ -13,14 +13,13 @@ from core.models.utility_models import GPUInfo
 from core.models.utility_models import GPUType
 from core.utils import build_authenticated_git_url
 from core.utils import sanitize_git_text
-from trainer.tasks import get_running_tasks
+from trainer.tasks import get_running_jobs
 
 
 def clone_repo(
     repo_url: str,
     parent_dir: str,
-    branch: str = None,
-    commit_hash: str = None,
+    commit_hash: str,
     github_token: str | None = None,
     task_id: str | None = None,
     hotkey: str | None = None,
@@ -39,10 +38,7 @@ def clone_repo(
         try:
             repo = Repo(repo_dir)
             current_commit = repo.head.commit.hexsha
-
-            if commit_hash and current_commit.startswith(commit_hash):
-                return repo_dir
-            elif branch and repo.active_branch.name == branch:
+            if current_commit.startswith(commit_hash):
                 return repo_dir
             shutil.rmtree(repo_dir)
         except Exception:
@@ -50,20 +46,15 @@ def clone_repo(
 
     try:
         clone_url = build_authenticated_git_url(repo_url, github_token)
-        repo = Repo.clone_from(clone_url, repo_dir, branch=branch) if branch else Repo.clone_from(clone_url, repo_dir)
-
-        if commit_hash:
-            repo.git.fetch("--all")
-            repo.git.fetch("origin")
-            try:
-                repo.git.checkout(commit_hash)
-            except GitCommandError as checkout_error:
-                # Check if it's an invalid commit hash format issue
-                if "pathspec" in str(checkout_error) and "did not match any file(s) known to git" in str(checkout_error):
-                    raise RuntimeError(f"Invalid commit hash '{commit_hash}' - commit not found in repository")
-                else:
-                    # Re-raise other git checkout errors
-                    raise
+        repo = Repo.clone_from(clone_url, repo_dir)
+        repo.git.fetch("--all")
+        repo.git.fetch("origin")
+        try:
+            repo.git.checkout(commit_hash)
+        except GitCommandError as checkout_error:
+            if "pathspec" in str(checkout_error) and "did not match any file(s) known to git" in str(checkout_error):
+                raise RuntimeError(f"Invalid commit hash '{commit_hash}' - commit not found in repository")
+            raise
 
         return repo_dir
 
@@ -94,11 +85,11 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
                 break
 
     busy_gpu_ids: set[int] = set()
-    running_tasks = get_running_tasks()
+    running_jobs = get_running_jobs()
 
-    if running_tasks:
-        for task in running_tasks:
-            for gpu_id in task.gpu_ids:
+    if running_jobs:
+        for job in running_jobs:
+            for gpu_id in job.gpu_ids:
                 busy_gpu_ids.add(gpu_id)
 
     gpu_infos: list[GPUInfo] = []
@@ -143,16 +134,16 @@ def extract_container_error(logs: str) -> str | None:
 
 def are_gpus_available(requested_gpu_ids: list[int]) -> bool:
     """
-    Check if any of the requested GPU IDs are already in use by training tasks.
+    Check if any of the requested GPU IDs are already in use by running jobs.
 
     Returns:
         bool: True if all requested GPUs are available, False otherwise
     """
-    running_tasks = get_running_tasks()
+    running_jobs = get_running_jobs()
 
-    for task in running_tasks:
+    for job in running_jobs:
         for gpu_id in requested_gpu_ids:
-            if gpu_id in task.gpu_ids:
+            if gpu_id in job.gpu_ids:
                 return False
 
     busy_gpu_ids = _get_busy_gpu_ids_from_running_containers()
@@ -168,7 +159,7 @@ def _get_busy_gpu_ids_from_running_containers() -> set[int]:
     try:
         client = docker.from_env()
         containers = client.containers.list()
-        trainer_containers = [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-")]
+        trainer_containers = [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-") or c.name.startswith("model-prep-")]
         for container in trainer_containers:
             device_requests = container.attrs.get("HostConfig", {}).get("DeviceRequests", []) or []
             for request in device_requests:

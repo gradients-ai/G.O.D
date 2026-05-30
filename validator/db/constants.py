@@ -36,6 +36,19 @@ TOURNAMENT_TASKS_TABLE = "tournament_tasks"
 BENCHMARK_ROOT_TASKS_TABLE = "benchmark_root_tasks"
 BENCHMARK_TASK_COPIES_TABLE = "benchmark_task_copies"
 TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE = "tournament_task_hotkey_trainings"
+PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
+
+# PvP Pair Results Table Columns
+PVP_HOTKEY_A = "hotkey_a"
+PVP_HOTKEY_B = "hotkey_b"
+PVP_ENVIRONMENT_NAME = "environment_name"
+PVP_MODEL_A_WINS = "model_a_wins"
+PVP_MODEL_B_WINS = "model_b_wins"
+PVP_DRAWS = "draws"
+PVP_TOTAL_GAMES = "total_games"
+PVP_N_ATTEMPTS = "n_attempts"
+PVP_STATUS_PENDING = "pending"
+PVP_STATUS_COMPLETE = "complete"
 
 # Tournament Task Hotkey Trainings Table Columns
 PRIORITY = "priority"
@@ -88,6 +101,9 @@ RESULT_MODEL_NAME = "result_model_name"
 MODEL_PARAMS_COUNT = "model_params_count"
 BACKEND = "backend"
 YARN_FACTOR = "yarn_factor"
+AUGMENTATION_CONFIG = "augmentation_config"
+AUGMENTED_MODEL_ID = "augmented_model_id"
+BASELINE_STATS = "baseline_stats"
 
 # Instruct Text Tasks Table Columns
 FIELD_SYSTEM = "field_system"
@@ -132,7 +148,9 @@ IS_MANUAL = "is_manual"
 REWARD_WEIGHT = "reward_weight"
 
 # Environment Task Functions Table Columns
-ENVIRONMENT_NAME = "environment_name"
+ENVIRONMENT_NAMES = "environment_names"
+ENVIRONMENT_WEIGHTS = "environment_weights"
+TRAINING_START_POINT = "training_start_point"
 EVAL_SEED = "eval_seed"
 
 # Submissions Table Columns
@@ -144,6 +162,7 @@ CREATED_ON = "created_on"
 TASK_NODE_QUALITY_SCORE = "quality_score"
 
 EXPECTED_REPO_NAME = "expected_repo_name"
+STARTING_MODEL_REPO = "starting_model_repo"
 EVALUATION_STATUS = "evaluation_status"
 DEPLOYMENT_ID = "deployment_id"
 DEPLOYMENT_ENV_ID = "deployment_env_id"
@@ -164,6 +183,8 @@ BASE_WINNER_HOTKEY = "base_winner_hotkey"
 WINNER_HOTKEY = "winner_hotkey"
 WINNING_PERFORMANCE_DIFFERENCE = "winning_performance_difference"
 DIFF_REPORT = "diff_report"
+WINNER_MODEL_REPO = "winner_model_repo"
+WINNER_MODEL_BASE = "winner_model_base"
 ROUND_ID = "round_id"
 ROUND_NUMBER = "round_number"
 ROUND_TYPE = "round_type"

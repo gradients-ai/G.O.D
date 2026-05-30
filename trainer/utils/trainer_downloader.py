@@ -1,21 +1,30 @@
 import argparse
 import asyncio
+import json
 import os
 import shutil
 import tempfile
-import json
 from pathlib import Path
+
+import torch
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
 from huggingface_hub import snapshot_download
+from peft import PeftModel
+from transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
 from transformers import CLIPTokenizer
 
 import trainer.utils.training_paths as train_paths
 from core.models.utility_models import FileFormat
-from core.models.utility_models import TaskType
 from core.models.utility_models import ImageModelType
+from core.models.utility_models import TaskType
 from core.utils import download_s3_file
 from trainer import constants as cst
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
+from trainer.utils.model_anonymizer import scrub_model_identity
+
+LORA_ADAPTER_CONFIG = "adapter_config.json"
 
 
 hf_api = HfApi()
@@ -102,27 +111,121 @@ def download_from_huggingface(repo_id: str, filename: str, local_dir: str) -> st
         raise e
 
 
-async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType) -> str:
-    model_name = repo_id.replace("/", "--")
+def _model_dir_name(repo_id: str, anonymize: bool) -> str:
+    if anonymize:
+        return get_anonymous_model_dir(repo_id)
+    return repo_id.replace("/", "--")
+
+
+async def download_base_model(repo_id: str, save_root: str, model_type: ImageModelType, anonymize: bool = True) -> str:
+    model_name = _model_dir_name(repo_id, anonymize)
     save_path = os.path.join(save_root, model_name)
     if os.path.exists(save_path):
-        print(f"Model {repo_id} already exists at {save_path}. Skipping download.")
+        print(f"Model already cached at {save_path}. Skipping download.")
         return save_path
     else:
         has_safetensors, safetensors_path = is_safetensors_available(repo_id)
         if has_safetensors and safetensors_path and model_type in [ImageModelType.FLUX, ImageModelType.SDXL]:
-            return download_from_huggingface(repo_id, safetensors_path, save_path)
+            result = download_from_huggingface(repo_id, safetensors_path, save_path)
         else:
             snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
-            return save_path
+            result = save_path
+        if anonymize:
+            scrub_model_identity(save_path)
+        return result
 
 
-async def download_axolotl_base_model(repo_id: str, save_dir: str) -> str:
-    model_dir = os.path.join(save_dir, repo_id.replace("/", "--"))
+def _detect_and_merge_lora(model_dir: str) -> None:
+    """If model_dir contains a LoRA adapter, merge it into the base model in-place.
+
+    After merge the directory contains full merged weights and the adapter
+    files are removed so downstream code sees a normal model.
+    """
+    adapter_config_path = os.path.join(model_dir, LORA_ADAPTER_CONFIG)
+    if not os.path.exists(adapter_config_path):
+        return
+
+    with open(adapter_config_path) as f:
+        adapter_config = json.load(f)
+
+    base_model_id = adapter_config.get("base_model_name_or_path")
+    if not base_model_id:
+        print(f"WARNING: {LORA_ADAPTER_CONFIG} missing base_model_name_or_path, skipping merge", flush=True)
+        return
+
+    # Resolve LoRA chains: if base_model_id is itself a LoRA adapter, follow
+    # the chain until we find the real base model.
+    resolved_base = base_model_id
+    for _ in range(10):  # max depth guard
+        try:
+            remote_adapter = hf_hub_download(resolved_base, LORA_ADAPTER_CONFIG)
+            with open(remote_adapter) as f:
+                parent_config = json.load(f)
+            parent_base = parent_config.get("base_model_name_or_path")
+            if not parent_base:
+                break
+            print(f"[downloader] Chained LoRA: {resolved_base} -> {parent_base}", flush=True)
+            resolved_base = parent_base
+        except Exception:
+            break  # Not a LoRA repo — this is the real base model
+    if resolved_base != base_model_id:
+        print(f"[downloader] Resolved LoRA chain: {base_model_id} -> {resolved_base}", flush=True)
+        base_model_id = resolved_base
+
+    print(f"[downloader] LoRA adapter detected in {model_dir}", flush=True)
+    print(f"[downloader] Base model: {base_model_id}", flush=True)
+
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    print(f"[downloader] Merging LoRA on {device}", flush=True)
+
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_id, torch_dtype=torch.float16, device_map=device,
+    )
+    base_tokenizer = AutoTokenizer.from_pretrained(base_model_id)
+    try:
+        lora_tokenizer = AutoTokenizer.from_pretrained(model_dir)
+    except Exception:
+        print(f"[downloader] No tokenizer in adapter dir, using base tokenizer", flush=True)
+        lora_tokenizer = base_tokenizer
+
+    if len(lora_tokenizer) > base_model.get_input_embeddings().weight.shape[0]:
+        base_model.resize_token_embeddings(len(lora_tokenizer))
+
+    merged = PeftModel.from_pretrained(base_model, model_dir)
+    merged = merged.merge_and_unload(safe_merge=False)
+
+    # Disable peft hooks that break save_pretrained in newer transformers
+    if hasattr(merged, "_hf_peft_config_loaded"):
+        merged._hf_peft_config_loaded = False
+
+    # Save merged model to a temp dir, then swap into model_dir
+    merge_tmp = model_dir + ".merged_tmp"
+    os.makedirs(merge_tmp, exist_ok=True)
+    merged.save_pretrained(merge_tmp, safe_serialization=True)
+    target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
+    target_tokenizer.save_pretrained(merge_tmp)
+
+    del base_model, merged
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+    # Replace adapter dir with merged weights
+    shutil.rmtree(model_dir)
+    os.rename(merge_tmp, model_dir)
+    print(f"[downloader] LoRA merge complete → {model_dir}", flush=True)
+
+
+async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bool = True) -> str:
+    model_dir = os.path.join(save_dir, _model_dir_name(repo_id, anonymize))
     if os.path.exists(model_dir):
-        print(f"Model {repo_id} already exists at {model_dir}. Skipping download.")
+        print(f"Model already cached at {model_dir}.", flush=True)
+        _detect_and_merge_lora(model_dir)
+        print(f"Skipping download.", flush=True)
         return model_dir
     snapshot_download(repo_id=repo_id, repo_type="model", local_dir=model_dir, local_dir_use_symlinks=False)
+    _detect_and_merge_lora(model_dir)
+    if anonymize:
+        scrub_model_identity(model_dir)
     return model_dir
 
 
@@ -164,6 +267,7 @@ async def main():
     parser.add_argument("--dataset")
     parser.add_argument("--file-format")
     parser.add_argument("--model-type", choices=[ImageModelType.FLUX.value, ImageModelType.SDXL.value, ImageModelType.Z_IMAGE.value, ImageModelType.QWEN_IMAGE.value])
+    parser.add_argument("--anonymize", action="store_true", help="Anonymize model directory name and scrub identity")
     args = parser.parse_args()
 
     if args.command == "download-miner-dataset":
@@ -185,7 +289,7 @@ async def main():
 
     if args.task_type == TaskType.IMAGETASK.value:
         dataset_zip_path = await download_image_dataset(args.dataset, args.task_id, dataset_dir)
-        model_path = await download_base_model(args.model, model_dir, args.model_type)
+        model_path = await download_base_model(args.model, model_dir, args.model_type, anonymize=args.anonymize)
 
         if args.model_type == ImageModelType.Z_IMAGE.value:
             print("Downloading Z-Image adapter...", flush=True)
@@ -216,7 +320,7 @@ async def main():
             allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
         )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
-        model_path = await download_axolotl_base_model(args.model, model_dir)
+        model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)
         write_environment_task_proxy_dataset(
             out_path=input_data_path,
@@ -226,7 +330,7 @@ async def main():
         )
     else:
         dataset_path, _ = await download_text_dataset(args.task_id, args.dataset, args.file_format, dataset_dir)
-        model_path = await download_axolotl_base_model(args.model, model_dir)
+        model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
 
     print(f"Model path: {model_path}", flush=True)
     print(f"Dataset path: {dataset_dir}", flush=True)

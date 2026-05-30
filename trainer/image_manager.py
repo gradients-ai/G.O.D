@@ -9,7 +9,12 @@ from docker.errors import APIError
 from docker.errors import BuildError
 from docker.models.containers import Container
 
+import core.constants as core_cst
 import trainer.utils.training_paths as train_paths
+from core.constants import EnvironmentName
+from core.models.model_prep_models import BaselineStats
+from core.models.payload_models import EnvConfig
+from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
@@ -29,6 +34,7 @@ from trainer.tasks import update_wandb_url
 from trainer.utils.trainer_logging import logger
 from trainer.utils.misc import build_wandb_env
 from trainer.utils.misc import extract_container_error
+from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import get_all_context_tags
 from validator.utils.logging import stream_container_logs
 from validator.utils.logging import stream_image_build_logs
@@ -151,6 +157,7 @@ async def run_trainer_container_image(
     hours_to_complete: float,
     hotkey: str,
     trigger_word: str | None = None,
+    baseline_stats: BaselineStats | None = None,
     log_labels: dict[str, str] | None = None,
     gpu_ids: list[int] = [0],
 ) -> Container:
@@ -175,6 +182,14 @@ async def run_trainer_container_image(
 
     if trigger_word:
         command += ["--trigger-word", trigger_word]
+
+    environment: dict[str, str] = {"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH}
+    if baseline_stats:
+        vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
+        stats_filename = f"baseline_stats_{task_id}.json"
+        with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
+            json.dump(baseline_stats.model_dump(), f)
+        environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
@@ -207,7 +222,7 @@ async def run_trainer_container_image(
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
                 network=cst.INTERNAL_BRIDGE_NAME,
-                environment={"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH},
+                environment=environment,
                 detach=True,
             )
 
@@ -237,6 +252,7 @@ async def run_trainer_container_text(
     file_format: FileFormat,
     expected_repo_name: str,
     hours_to_complete: float,
+    baseline_stats: BaselineStats | None = None,
     log_labels: dict[str, str] | None = None,
     gpu_ids: list[int] = [0],
     env_server_urls: str | None = None,
@@ -247,6 +263,12 @@ async def run_trainer_container_text(
     await asyncio.to_thread(ensure_internal_network)
 
     environment = build_wandb_env(task_id, hotkey)
+    if baseline_stats:
+        vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
+        stats_filename = f"baseline_stats_{task_id}_{hotkey[:8]}.json"
+        with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
+            json.dump(baseline_stats.model_dump(), f)
+        environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
     if miner_datasets:
@@ -346,6 +368,7 @@ def run_downloader_container(
     file_format: FileFormat | None = None,
     model_type: ImageModelType | None = None,
     log_labels: dict[str, str] | None = None,
+    anonymize: bool = True,
 ) -> tuple[int, Exception | None]:
     client = docker.from_env()
 
@@ -365,8 +388,15 @@ def run_downloader_container(
     if model_type:
         command += ["--model-type", model_type]
 
+    if anonymize:
+        command += ["--anonymize"]
+
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
+
+    environment = {}
+    if anonymize:
+        environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
 
     try:
         logger.info(f"Starting downloader container: {container_name}", extra=log_labels)
@@ -376,11 +406,15 @@ def run_downloader_container(
             command=command,
             labels=log_labels,
             volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
+            environment=environment,
             remove=False,
             detach=True,
         )
 
-        stream_container_logs(container, get_all_context_tags())
+        try:
+            stream_container_logs(container, get_all_context_tags())
+        except Exception as log_err:
+            logger.warning(f"Log streaming error (non-fatal): {log_err}", extra=log_labels)
 
         result = container.wait()
         exit_code = result.get("StatusCode", -1)
@@ -410,25 +444,223 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
-async def run_environment_server_container(environment_name: str, log_labels: dict) -> Container:
+def _start_env_sidecars(
+    env_configs: dict[EnvironmentName, EnvConfig],
+    log_labels: dict[str, str] | None,
+) -> tuple[dict[EnvironmentName, str], list[Container]]:
+    """Start one sidecar per unique env_image. Returns (env_name→url mapping, container list).
+
+    Multiple environments may share the same image (e.g. all MCTS games use mcts-api).
+    We start one container per unique image and map all environments using that image
+    to the same sidecar URL.
+    """
+    ensure_internal_network()
+    loop = asyncio.new_event_loop()
+
+    image_to_url: dict[str, str] = {}
+    containers: list[Container] = []
+
+    try:
+        for env_name, cfg in env_configs.items():
+            if cfg.env_image in image_to_url:
+                continue
+
+            container = loop.run_until_complete(
+                run_environment_server_container(env_name, log_labels or {}, image=cfg.env_image)
+            )
+            if container is None:
+                continue
+
+            containers.append(container)
+            ip = loop.run_until_complete(_resolve_container_ip(container))
+            url = f"http://{ip}:8000"
+            image_to_url[cfg.env_image] = url
+            logger.info(f"Env sidecar for {cfg.env_image}: {url}", extra=log_labels)
+    finally:
+        loop.close()
+
+    env_url_map: dict[EnvironmentName, str] = {}
+    for env_name, cfg in env_configs.items():
+        if cfg.env_image in image_to_url:
+            env_url_map[env_name] = image_to_url[cfg.env_image]
+
+    return env_url_map, containers
+
+
+async def _resolve_container_ip(container) -> str:
+    """Wait for a container to get an IP on the internal bridge network."""
+    await asyncio.sleep(2)
+    container.reload()
+    networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
+    if cst.INTERNAL_BRIDGE_NAME in networks:
+        ip = networks[cst.INTERNAL_BRIDGE_NAME].get("IPAddress")
+        if ip:
+            return ip
+    ip = container.attrs.get("NetworkSettings", {}).get("IPAddress")
+    if ip:
+        return ip
+    raise RuntimeError("Could not resolve container IP on internal bridge")
+
+
+def run_model_prep_container(
+    task_id: str,
+    model_id: str,
+    training_data_url: str,
+    task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
+    augmentation_config=None,
+    gpu_ids: list[int] = [0],
+    reward_functions=None,
+    env_configs: dict[EnvironmentName, EnvConfig] | None = None,
+    log_labels: dict[str, str] | None = None,
+) -> ModelPrepResponse:
+    """Run model prep container: augment model + compute baseline stats.
+    Downloads model to cache via downloader first. For env tasks, starts env server sidecars."""
+    client = docker.from_env()
+    env_containers: list[Container] = []
+
+    # Download model to cache volume
+    download_exit, download_err = run_downloader_container(
+        task_id=task_id,
+        model=model_id,
+        dataset_url=training_data_url,
+        task_type=task_type,
+        hotkey="",
+        file_format=FileFormat.S3,
+        log_labels=log_labels,
+    )
+    if download_exit != 0:
+        raise RuntimeError(f"Downloader failed: {download_err}")
+
+    anonymous_model = get_anonymous_model_dir(model_id)
+    model_cache_path = f"/cache/models/{anonymous_model}"
+
+    # For env tasks, start env server sidecars and build env_configs with URLs
+    env_configs_with_urls: dict[str, dict] | None = None
+    if env_configs:
+        env_url_map, env_containers = _start_env_sidecars(env_configs, log_labels)
+        env_configs_with_urls = {}
+        for env_name, cfg in env_configs.items():
+            if env_name in env_url_map:
+                env_configs_with_urls[env_name.value] = {
+                    "url": env_url_map[env_name],
+                    "task_id_min": cfg.task_id_min,
+                    "task_id_max": cfg.task_id_max,
+                    "num_episodes": cfg.num_episodes,
+                    "eval_payload_extra": cfg.eval_payload_extra,
+                }
+
+    command = [
+        "--model", model_cache_path,
+        "--training-data", training_data_url,
+        "--task-type", task_type,
+    ]
+
+    if augmentation_config is not None:
+        command += [
+            "--aug-type", augmentation_config.aug_type.value,
+            "--scope", augmentation_config.scope.value,
+            "--seed", str(augmentation_config.seed),
+            "--intensity", str(augmentation_config.intensity),
+        ]
+
+    if reward_functions:
+        command += ["--reward-functions", json.dumps([rf.model_dump() if hasattr(rf, "model_dump") else rf for rf in reward_functions])]
+
+    if env_configs_with_urls:
+        command += ["--env-configs", json.dumps(env_configs_with_urls)]
+
+    env = {
+        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
+        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
+    }
+
+    container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
+    container = None
+    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+
+    try:
+        logger.info(f"Starting model prep container: {container_name}", extra=log_labels)
+        network = cst.INTERNAL_BRIDGE_NAME if env_configs else None
+        container = client.containers.run(
+            image=cst.MODEL_PREP_DOCKER_IMAGE,
+            name=container_name,
+            command=command,
+            labels=log_labels,
+            environment=env,
+            volumes={cst.CACHE_VOLUME_NAME: {"bind": "/cache", "mode": "rw"}},
+            device_requests=[docker.types.DeviceRequest(
+                device_ids=[str(i) for i in gpu_ids],
+                capabilities=[["gpu"]],
+            )],
+            mem_limit=memory_limit,
+            nano_cpus=cpu_limit_nanocpus,
+            network=network,
+            remove=False,
+            detach=True,
+        )
+
+        stream_container_logs(container, get_all_context_tags())
+
+        result = container.wait()
+        exit_code = result.get("StatusCode", -1)
+        logs_output = container.logs().decode("utf-8", errors="ignore")
+
+        if exit_code != 0:
+            error_message = extract_container_error(logs_output)
+            raise RuntimeError(f"Model prep container failed (exit {exit_code}): {error_message}")
+
+        # Container writes JSON result to last line of stdout
+        result_line = logs_output.strip().rsplit("\n", 1)[-1]
+        return ModelPrepResponse.model_validate_json(result_line)
+
+    finally:
+        if container:
+            try:
+                container.remove(force=True)
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
+        for sidecar in env_containers:
+            try:
+                sidecar.stop()
+                sidecar.remove(force=True)
+            except Exception as env_cleanup_err:
+                logger.warning(f"Failed to cleanup env sidecar: {env_cleanup_err}", extra=log_labels)
+        if env_containers:
+            logger.info(f"Cleaned up {len(env_containers)} env sidecars", extra=log_labels)
+
+
+FALLBACK_ENV_IMAGES: dict[core_cst.EnvironmentName, str] = {
+    core_cst.EnvironmentName.GIN_RUMMY: core_cst.MCTS_API_DOCKER_IMAGE,
+    core_cst.EnvironmentName.LIARS_DICE: core_cst.MCTS_API_DOCKER_IMAGE,
+    core_cst.EnvironmentName.LEDUC_POKER: core_cst.MCTS_API_DOCKER_IMAGE,
+}
+
+
+async def run_environment_server_container(
+    environment_name: core_cst.EnvironmentName,
+    log_labels: dict,
+    image: str | None = None,
+) -> Container | None:
     client = docker.from_env()
 
     ensure_internal_network()
 
-    container_name = f"environment-server-{uuid.uuid4().hex[:8]}"
-    logger.info(f"Starting env server container: {container_name}", extra=log_labels)
-    if environment_name in ["goofspiel", "gin_rummy", "liars_dice", "leduc_poker"]:
-        container = await asyncio.to_thread(
-            client.containers.run,
-            image="phoenixbeaudry/game:mcts-api",
-            name=container_name,
-            detach=True,
-            labels=log_labels,
-            network=cst.INTERNAL_BRIDGE_NAME,
-        )
-        return container
-    else:
+    resolved_image = image or FALLBACK_ENV_IMAGES.get(environment_name)
+    if resolved_image is None:
+        logger.warning(f"No image for environment '{environment_name}', cannot start sidecar")
         return None
+
+    container_name = f"environment-server-{uuid.uuid4().hex[:8]}"
+    logger.info(f"Starting env server container: {container_name} (image={resolved_image})", extra=log_labels)
+    container = await asyncio.to_thread(
+        client.containers.run,
+        image=resolved_image,
+        name=container_name,
+        detach=True,
+        labels=log_labels,
+        network=cst.INTERNAL_BRIDGE_NAME,
+    )
+    return container
 
 
 async def upload_repo_to_hf(
@@ -580,6 +812,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         logger.info("Running Cache Download Container", extra=log_labels)
         await log_task(training_data.task_id, task.hotkey, "Downloading data")
 
+        model_prep_ran = training_data.baseline_stats is not None
+
         download_status, exc = await asyncio.to_thread(
             run_downloader_container,
             task_id=training_data.task_id,
@@ -590,6 +824,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             file_format=getattr(training_data, "file_format", None),
             model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
+            anonymize=model_prep_ran,
         )
 
         if download_status == 0:
@@ -623,9 +858,10 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         if task_type == TaskType.ENVIRONMENTTASK:
             logger.info("Running Environment Server Containers", extra=log_labels)
             await log_task(training_data.task_id, task.hotkey, "Starting Environment Servers...")
+            env_name = (task.training_data.dataset_type.environment_names or [None])[0]
             for gpu in task.gpu_ids:
                 environment_server_container = await run_environment_server_container(
-                    task.training_data.dataset_type.environment_name, log_labels
+                    env_name, log_labels
                 )
                 env_server_containers.append(environment_server_container)
                 ip_address = await wait_for_env_container_ip(environment_server_container)
@@ -633,18 +869,24 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             env_server_url_str = ",".join(env_urls)
             await log_task(training_data.task_id, task.hotkey, f"Environment servers ready.")
 
+        if model_prep_ran:
+            model_for_container = get_anonymous_model_dir(training_data.model)
+        else:
+            model_for_container = training_data.model
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
                     task_id=training_data.task_id,
                     tag=tag,
-                    model=training_data.model,
+                    model=model_for_container,
                     dataset_zip=training_data.dataset_zip,
                     model_type=training_data.model_type,
                     expected_repo_name=training_data.expected_repo_name,
                     hours_to_complete=training_data.hours_to_complete,
                     hotkey=task.hotkey,
                     trigger_word=training_data.trigger_word if training_data.trigger_word else None,
+                    baseline_stats=training_data.baseline_stats,
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
                 ),
@@ -656,13 +898,14 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     task_id=training_data.task_id,
                     hotkey=task.hotkey,
                     tag=tag,
-                    model=training_data.model,
+                    model=model_for_container,
                     dataset=training_data.dataset,
                     dataset_type=training_data.dataset_type,
                     task_type=task_type,
                     file_format=training_data.file_format,
                     expected_repo_name=training_data.expected_repo_name,
                     hours_to_complete=training_data.hours_to_complete,
+                    baseline_stats=training_data.baseline_stats,
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
                     env_server_urls=env_server_url_str,

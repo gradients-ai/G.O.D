@@ -7,9 +7,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.models.payload_models import ModelPrepJob
+from core.models.payload_models import TrainerTaskLog
 from trainer.endpoints import factory_router
+from trainer.tasks import complete_model_prep
 from trainer.tasks import complete_task
-from trainer.tasks import get_running_tasks
+from trainer.tasks import get_running_jobs
 from trainer.tasks import log_task
 from trainer.utils.cleanup_loop import start_cleanup_loop_in_thread
 from validator.utils.logging import get_logger
@@ -23,7 +26,7 @@ logger = get_logger(__name__)
 def _list_running_trainer_containers() -> list:
     client = docker.from_env()
     containers = client.containers.list()
-    return [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-")]
+    return [c for c in containers if c.name.startswith("text-trainer-") or c.name.startswith("image-trainer-") or c.name.startswith("model-prep-")]
 
 
 def _remove_container(container) -> None:
@@ -34,8 +37,8 @@ def _remove_container(container) -> None:
 
 
 async def cleanup_orphaned_trainer_state():
-    running_tasks = get_running_tasks()
-    tracked_container_names = {getattr(t, "container_name", None) for t in running_tasks if getattr(t, "container_name", None)}
+    running_jobs = get_running_jobs()
+    tracked_container_names = {j.container_name for j in running_jobs if j.container_name}
 
     running_containers = await asyncio.to_thread(_list_running_trainer_containers)
     running_container_names = {c.name for c in running_containers}
@@ -44,24 +47,25 @@ async def cleanup_orphaned_trainer_state():
     for container in orphan_containers:
         try:
             await asyncio.to_thread(_remove_container, container)
-            logger.warning(f"Removed orphaned trainer container {container.name}")
+            logger.warning(f"Removed orphaned container {container.name}")
         except Exception as e:
-            logger.warning(f"Failed to remove orphaned trainer container {container.name}: {e}")
+            logger.warning(f"Failed to remove orphaned container {container.name}: {e}")
 
     active_container_names = running_container_names - {c.name for c in orphan_containers}
-    stale_tasks = [
-        t
-        for t in running_tasks
-        if not getattr(t, "container_name", None) or getattr(t, "container_name", None) not in active_container_names
-    ]
+    stale_jobs = [j for j in running_jobs if not j.container_name or j.container_name not in active_container_names]
+
     now = datetime.utcnow().isoformat()
-    for task in stale_tasks:
-        await log_task(
-            task.training_data.task_id,
-            task.hotkey,
-            f"[STARTUP_RECOVERY] Marking stale training task as failure at {now}.",
-        )
-        await complete_task(task.training_data.task_id, task.hotkey, success=False)
+    for job in stale_jobs:
+        if isinstance(job, TrainerTaskLog):
+            await log_task(
+                job.training_data.task_id,
+                job.hotkey,
+                f"[STARTUP_RECOVERY] Marking stale training task as failure at {now}.",
+            )
+            await complete_task(job.training_data.task_id, job.hotkey, success=False)
+        elif isinstance(job, ModelPrepJob):
+            logger.warning(f"[STARTUP_RECOVERY] Marking stale model prep {job.task_id} as failure")
+            await complete_model_prep(job.task_id, success=False)
 
 
 def factory() -> FastAPI:

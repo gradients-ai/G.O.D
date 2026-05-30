@@ -12,8 +12,13 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
+from core.constants import EnvironmentName
+from core.constants import TrainingStartPoint
+from core.models.scoring_models import EnvironmentWeight
 from core.constants import YARN_VALID_FACTORS
+from core.models.model_prep_models import AugmentationConfig
 from core.models.utility_models import Backend
+from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -108,6 +113,10 @@ class RawTask(BaseModel):
     model_params_count: int = 0
     backend: Backend | None = None
     yarn_factor: int | None = None
+    augmentation_config: AugmentationConfig | None = None
+    augmented_model_id: str | None = None
+    baseline_stats: BaselineStats | None = None
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT
 
     # Turn off protected namespace for model
     model_config = ConfigDict(protected_namespaces=())
@@ -166,7 +175,8 @@ class EnvRawTask(RawTask):
     Environment task data as stored in the database. It expand the RawTask with fields from the EnvTask table.
     """
 
-    environment_name: str | None = None
+    environment_names: list[EnvironmentName] = []
+    environment_weights: list[EnvironmentWeight] = []
     eval_seed: int | None = None
     task_type: TaskType = TaskType.ENVIRONMENTTASK
     synthetic_data: str | None = None

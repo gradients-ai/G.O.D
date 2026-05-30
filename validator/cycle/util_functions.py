@@ -46,13 +46,17 @@ def get_model_num_params(model_id: str) -> int:
 
 
 async def get_total_image_dataset_size(task: ImageRawTask) -> int:
-    if not task.image_text_pairs:
-        return 0
-    return len(task.image_text_pairs)
+    if task.image_text_pairs:
+        return len(task.image_text_pairs)
+    # Zip-backed image tasks are validated and counted during task prep.
+    return 0
 
 
 async def run_image_task_prep(task: ImageRawTask, keypair: Keypair, psql_db=None) -> ImageRawTask:
-    test_url, train_url = await prepare_image_task(task.image_text_pairs)
+    test_url, train_url = await prepare_image_task(
+        image_text_pairs=task.image_text_pairs,
+        dataset_zip_url=task.ds if not task.image_text_pairs else None,
+    )
     task.training_data = train_url
     task.test_data = test_url
     task.status = TaskStatus.LOOKING_FOR_NODES

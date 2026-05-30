@@ -12,11 +12,15 @@ import validator.core.constants as vcst
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
+from core.constants import EnvironmentName
+from core.constants import TrainingStartPoint
+from core.models.scoring_models import EnvironmentWeight
 from core.models.utility_models import FileFormat
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.reward_templates import sample_template_groups
 from validator.core.config import Config
+from validator.db.database import PSQLDB
 from validator.core.models import Dataset
 from validator.core.models import DpoRawTask
 from validator.core.models import EnvRawTask
@@ -26,6 +30,9 @@ from validator.core.models import RawTask
 from validator.core.models import RewardFunction
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.tasks import add_task
+from validator.db.sql.tasks import get_dataset_test_losses
+from validator.tournament import constants as t_cst
+from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.call_endpoint import call_content_service
 from validator.utils.logging import get_logger
 from validator.utils.util import retry_with_backoff
@@ -200,18 +207,59 @@ def _get_training_hours_from_num_rows(num_rows: int) -> int:
     return random.randint(min_hours, max_hours)
 
 
-def _get_training_hours_for_environment_task() -> int:
-    return 3
+def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
+    return t_cst.ENV_TRAINING_HOURS
+
+
+async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
+    """Check if a dataset has historically produced degenerate test_loss scores.
+
+    Returns True (degenerate) if:
+    - Any historical test_loss < 0.01 (model collapse)
+    - For instruct tasks: best (min) test_loss > 2.0 (garbage / unlearnable data)
+    - For DPO tasks: average test_loss in [0.68, 0.71] (random noise around ln(2))
+    """
+    try:
+        losses = await get_dataset_test_losses(ds_name, psql_db)
+    except Exception as e:
+        logger.warning(f"Failed to query historical losses for {ds_name}, allowing dataset: {e}")
+        return False
+
+    if not losses:
+        return False
+
+    if any(loss < 0.01 for loss in losses):
+        logger.warning(f"Dataset {ds_name} rejected: has test_loss < 0.01 (model collapse)")
+        return True
+
+    if task_type == TaskType.INSTRUCTTEXTTASK:
+        best_loss = min(losses)
+        if best_loss > 2.0:
+            logger.warning(f"Dataset {ds_name} rejected: best instruct test_loss {best_loss:.4f} > 2.0 (garbage data)")
+            return True
+
+    if task_type == TaskType.DPOTASK:
+        avg_loss = sum(losses) / len(losses)
+        if 0.68 <= avg_loss <= 0.71:
+            logger.warning(f"Dataset {ds_name} rejected: avg DPO test_loss {avg_loss:.4f} in noise range [0.68, 0.71]")
+            return True
+
+    return False
 
 
 async def get_dataset(
     datasets_generator: AsyncGenerator[Dataset, None],
     task_type: TaskType | None = None,
     keypair: Keypair | None = None,
+    psql_db: PSQLDB | None = None,
 ) -> Dataset:
     """Get a single dataset from the generator, validating column availability."""
     while True:
         dataset = await anext(datasets_generator)
+
+        if task_type and psql_db:
+            if await _is_dataset_degenerate(dataset.dataset_id, task_type, psql_db):
+                continue
 
         if task_type and keypair and task_type != TaskType.DPOTASK:
             try:
@@ -241,7 +289,7 @@ async def create_synthetic_dpo_task(
     model_id = await anext(models)
     logger.info(f"We picked {model_id}")
 
-    dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair)
+    dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair, psql_db=config.psql_db)
 
     logger.info(f"Selected dataset: {dataset.dataset_id} (rows: {dataset.num_rows}, bytes: {dataset.num_bytes_parquet_files})")
 
@@ -254,6 +302,7 @@ async def create_synthetic_dpo_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.DPOTASK)
     task = DpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -268,8 +317,9 @@ async def create_synthetic_dpo_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"New DPO task created with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"New DPO task created with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
 
@@ -330,6 +380,7 @@ async def create_synthetic_grpo_task(
     reward_functions = _get_generic_reward_functions()
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
     task = GrpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -342,8 +393,9 @@ async def create_synthetic_grpo_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"New GRPO task created with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"New GRPO task created with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
 
@@ -355,37 +407,47 @@ async def create_synthetic_env_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
-    exclude_environments: list[str] | None = None,
-    force_environment: str | None = None,
+    num_environments: int = 1,
+    exclude_environments: list[EnvironmentName] | None = None,
+    round_number: int = 1,
+    model_id_override: str | None = None,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    environment_names_override: list[EnvironmentName] | None = None,
+    eval_seed_override: int | None = None,
+    exclude_models: list[str] | None = None,
+    hours_override: float | None = None,
 ) -> RawTask:
-    # hardoced model for now. the model and ds generators kept for signature compatibility
-    model_id = random.choice(SUPPORTED_ENV_MODELS)
-
-    # Environment tasks don't use the actual dataset - trainer generates a dummy one
-    # Use a placeholder to satisfy DB constraint
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        candidates = [m for m in SUPPORTED_ENV_MODELS if m not in (exclude_models or [])]
+        model_id = random.choice(candidates or SUPPORTED_ENV_MODELS)
     dummy_dataset = "env_task_dummy_dataset"
 
-    number_of_hours = _get_training_hours_for_environment_task()
-
+    number_of_hours = hours_override or _get_training_hours_for_environment_task(round_number)
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    if force_environment:
-        selected_environment = force_environment
+    if environment_names_override:
+        selected_environments = environment_names_override
     else:
-        game_candidates = ["gin_rummy", "liars_dice", "leduc_poker"]
-        if exclude_environments:
-            game_candidates = [g for g in game_candidates if g not in exclude_environments]
-        selected_environment = random.choice(game_candidates)
+        all_envs = list(EnvironmentName)
+        candidates = [g for g in all_envs if g not in (exclude_environments or [])]
+        count = min(num_environments, len(candidates))
+        selected_environments = random.sample(candidates, count) if candidates else []
 
-    # Generate a random seed for evaluation reproducibility
-    eval_seed = random.randint(0, 2**31 - 1)
+    eval_seed = eval_seed_override if eval_seed_override is not None else random.randint(0, 2**31 - 1)
 
+    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
+    weights = [EnvironmentWeight(environment=env) for env in selected_environments]
+
+    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
     task = EnvRawTask(
         model_id=model_id,
         ds=dummy_dataset,
         status=TaskStatus.PENDING,
-        environment_name=selected_environment,
+        environment_names=selected_environments,
+        environment_weights=weights,
         eval_seed=eval_seed,
         is_organic=False,
         created_at=current_time,
@@ -393,8 +455,13 @@ async def create_synthetic_env_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=None,
+        augmentation_config=augmentation_config,
+        training_start_point=training_start_point,
     )
-    logger.info(f"New Environment task created with eval_seed={eval_seed}")
+    logger.info(
+        f"New Environment task: {len(selected_environments)} envs={[e.value for e in selected_environments]}, "
+        f"eval_seed={eval_seed}, augmented={augmentation_config is not None}"
+    )
 
     task = await add_task(task, config.psql_db)
 
@@ -455,6 +522,7 @@ async def create_synthetic_affine_grpo_task(
         end_timestamp = current_time + timedelta(hours=number_of_hours)
 
         yarn_factor = maybe_get_yarn_factor()
+        augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
         task = GrpoRawTask(
             model_id=model_id,
             ds=s3_url,
@@ -469,9 +537,10 @@ async def create_synthetic_affine_grpo_task(
             file_format=FileFormat.S3,
             extra_column="extra",
             yarn_factor=yarn_factor,
+            augmentation_config=augmentation_config,
         )
 
-        logger.info(f"New affine GRPO task created with S3 dataset: {s3_url}, yarn_factor={yarn_factor}")
+        logger.info(f"New affine GRPO task created with S3 dataset: {s3_url}, augmented={augmentation_config is not None}")
 
         task = await add_task(task, config.psql_db)
 
@@ -490,7 +559,7 @@ async def create_synthetic_instruct_text_task(
     model_id = await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
-    dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair)
+    dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
     logger.info(f"INSTRUCT_TASK: Selected dataset: {dataset.dataset_id}")
 
     number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows)
@@ -500,6 +569,7 @@ async def create_synthetic_instruct_text_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
+    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
     task = InstructTextRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -514,8 +584,9 @@ async def create_synthetic_instruct_text_task(
         hours_to_complete=number_of_hours,
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
+        augmentation_config=augmentation_config,
     )
-    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, yarn_factor={yarn_factor}")
+    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
 
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")

@@ -1,44 +1,55 @@
 import asyncio
-import io
-import json
-import logging
-import os
-import re
-import tarfile
+import random
 import uuid
 from uuid import UUID
-import requests
-import time
-import random
-import basilica
 
 from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
+from core.models.pvp_models import (
+    PvPEvalConfig,
+    PvPEvalResults,
+    PvPGroupResults,
+    PvPMatchupConfig,
+    PvPMode,
+    PvPModelSpec,
+    PvPPairResult,
+)
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
+from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
+from core.models.utility_models import TaskType
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
-from validator.utils.logging import get_logger
-from validator.utils.logging import get_environment_logger
+from validator.evaluation.basilica import _BasilicaEvalContext
+from validator.evaluation.basilica import _db_call_with_retry
+from validator.evaluation.basilica import _delete_eval_deployment
+from validator.evaluation.basilica import _fetch_attempt_logs
+from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
+from validator.evaluation.basilica import _poll_eval_deployment
+from validator.evaluation.basilica import run_basilica_eval_repos
+from validator.evaluation.db_utils import load_shared_eval_deployment_id
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
-from validator.evaluation.db_utils import persist_deployment_ids_for_repo
-from validator.evaluation.utils import (
-    EVAL_RESULT_STATUS_PATH,
-    deployment_is_healthy,
-    create_basilica_eval_runner_source,
-    log_basilica_logs_block,
-)
+from validator.evaluation.db_utils import persist_shared_eval_deployment_id
+from validator.evaluation.utils import create_basilica_eval_runner_source
+from validator.evaluation.utils import _log_eval_step
+from validator.evaluation.utils import normalize_rewards_and_compute_loss
+from validator.evaluation.utils import process_evaluation_results
+from validator.utils.logging import get_environment_logger
+from validator.utils.logging import get_logger
+
+try:
+    import basilica
+except ImportError:
+    basilica = None
 
 
 logger = get_logger(__name__)
-_EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -61,504 +72,33 @@ async def _db_read_with_retry(coro_factory, op_name: str):
     raise last_exc
 
 
-async def cleanup_resources(client):
-    """Clean up Docker resources including containers, images, and volumes."""
-    try:
-        await asyncio.to_thread(client.containers.prune)
-        await asyncio.to_thread(client.images.prune, filters={"dangling": True})
-        await asyncio.to_thread(client.volumes.prune)
-        logger.debug("Completed Docker resource cleanup")
-    except Exception as e:
-        logger.error(f"Cleanup failed: {str(e)}")
+def _collect_repo_evaluation_results(models: list[str], repo_results: dict[str, dict | str]) -> dict[str, dict | str | int]:
+    evaluation_results: dict[str, dict | str | int] = {}
+    model_params_count = 0
 
-
-async def get_evaluation_results(container):
-    archive_data = await asyncio.to_thread(container.get_archive, cst.CONTAINER_EVAL_RESULTS_PATH)
-    tar_stream = archive_data[0]
-
-    file_like_object = io.BytesIO()
-    for chunk in tar_stream:
-        file_like_object.write(chunk)
-    file_like_object.seek(0)
-
-    with tarfile.open(fileobj=file_like_object) as tar:
-        members = tar.getnames()
-        logger.debug(f"Tar archive members: {members}")
-        eval_results_file = None
-        for member_info in tar.getmembers():
-            if member_info.name.endswith(("evaluation_results.json")):
-                eval_results_file = tar.extractfile(member_info)
-                break
-
-        if eval_results_file is None:
-            raise Exception("Evaluation results file not found in tar archive")
-
-        eval_results_content = eval_results_file.read().decode("utf-8")
-        return json.loads(eval_results_content)
-
-
-def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
-    """
-    Normalize rewards across repos and compute final evaluation loss with KL penalty.
-
-    Steps:
-    1. For each reward type, normalize values across repos by dividing by max (after shifting if negative)
-    2. Apply weights to normalized rewards (weights sum to 1)
-    3. Sum weighted rewards to get final score in [0,1] range
-    4. Apply KL penalty: score - (BETA_GRPO * kl_divergence)
-
-    Special case: 2 repos with negative rewards map to [0.25, 0.75] to avoid extreme scores.
-
-    Args:
-        evaluation_results: Dict with model repos as keys and evaluation data as values
-
-    Returns:
-        Modified evaluation_results dict with updated eval_loss values
-    """
-    # Filter out non-repo keys (like model_params_count)
-    repo_keys = [key for key in evaluation_results.keys() if key != "model_params_count"]
-
-    if len(repo_keys) < 2:
-        # Need at least 2 repos for meaningful normalization
-        return evaluation_results
-
-    reward_collections = {}
-    for repo_key in repo_keys:
-        repo_data = evaluation_results[repo_key]
-        if isinstance(repo_data, str):  # Skip error entries
+    for repo in models:
+        raw_result = repo_results.get(repo)
+        if not isinstance(raw_result, dict):
+            evaluation_results[repo] = str(raw_result)
             continue
 
-        final_raw_rewards = repo_data.get('final_raw_rewards', {})
+        if raw_result.get("model_params_count") and model_params_count == 0:
+            model_params_count = raw_result["model_params_count"]
 
-        for reward_name, reward_value in final_raw_rewards.items():
-            if reward_name not in reward_collections:
-                reward_collections[reward_name] = []
-            reward_collections[reward_name].append((repo_key, reward_value))
-
-    # Step 1: Normalize each reward type using shift + divide by max
-    normalized_rewards_per_repo = {repo_key: {} for repo_key in repo_keys}
-
-    for reward_name, repo_value_pairs in reward_collections.items():
-        if len(repo_value_pairs) < 2:
-            # Only one value, set to 1.0
-            for repo_key, value in repo_value_pairs:
-                normalized_rewards_per_repo[repo_key][reward_name] = 1.0
+        if repo in raw_result:
+            evaluation_results[repo] = raw_result[repo]
             continue
 
-        values = [value for _, value in repo_value_pairs]
-        min_value = min(values)
-
-        # Check if we need to shift (have negatives)
-        has_negatives = min_value < 0
-
-        # Shift to positive if needed
-        if has_negatives:
-            shifted_values = [(repo, value - min_value) for repo, value in repo_value_pairs]
+        candidate_keys = [key for key in raw_result.keys() if key != "model_params_count"]
+        if len(candidate_keys) == 1:
+            evaluation_results[repo] = raw_result[candidate_keys[0]]
         else:
-            shifted_values = repo_value_pairs
+            evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
 
-        # Find max of shifted values
-        max_shifted = max(value for _, value in shifted_values)
-
-        # Special case: 2 repos with negatives -> map to [0.25, 0.75]
-        if len(repo_value_pairs) == 2 and has_negatives:
-            sorted_pairs = sorted(shifted_values, key=lambda x: x[1])
-            normalized_rewards_per_repo[sorted_pairs[0][0]][reward_name] = 0.25
-            normalized_rewards_per_repo[sorted_pairs[1][0]][reward_name] = 0.75
-        elif max_shifted > 0:
-            # Normal case: divide by max
-            for repo, shifted_value in shifted_values:
-                normalized_rewards_per_repo[repo][reward_name] = shifted_value / max_shifted
-        else:
-            # All values are zero after shift (all were equal and negative or zero)
-            for repo, _ in repo_value_pairs:
-                normalized_rewards_per_repo[repo][reward_name] = 1.0
-
-    # Step 2-3: Apply weights and sum (weights already sum to 1)
-    final_scores = []
-
-    for repo_key in repo_keys:
-        repo_data = evaluation_results[repo_key]
-        if isinstance(repo_data, str):  # Skip error entries
-            continue
-
-        weights = repo_data.get('weights', {})
-        normalized_rewards = normalized_rewards_per_repo.get(repo_key, {})
-
-        # Calculate weighted sum
-        weighted_sum = 0.0
-        for reward_name, normalized_value in normalized_rewards.items():
-            weight = weights.get(reward_name, 1.0)
-            weighted_sum += normalized_value * weight
-
-        final_scores.append(weighted_sum)
-
-    # Step 4: Apply KL penalty and update eval_loss
-    for i, repo_key in enumerate(repo_keys):
-        repo_data = evaluation_results[repo_key]
-        if isinstance(repo_data, str):  # Skip error entries
-            continue
-
-        if i < len(final_scores):
-            kl_divergence = repo_data.get('kl_divergence', 0.0)
-            # Final score: weighted_sum - BETA_GRPO * kl_divergence
-            new_eval_loss = final_scores[i] - (vcst.BETA_GRPO * kl_divergence)
-            repo_data['eval_loss'] = new_eval_loss
+    if model_params_count:
+        evaluation_results["model_params_count"] = model_params_count
 
     return evaluation_results
-
-
-def process_evaluation_results(results: dict, is_image: bool = False) -> DockerEvaluationResults:
-    model_params_count = results.pop("model_params_count", 0)
-
-    processed_results = {}
-    for repo, result in results.items():
-        if isinstance(result, str) and not isinstance(result, dict):
-            processed_results[repo] = Exception(result)
-        else:
-            if is_image:
-                result["is_finetune"] = True
-                processed_results[repo] = EvaluationResultImage.model_validate(result)
-            else:
-                processed_results[repo] = EvaluationResultText.model_validate(result)
-
-    return DockerEvaluationResults(
-        results=processed_results,
-        base_model_params_count=model_params_count
-    )
-
-
-async def _poll_basilica_result(
-    deployment,
-    repo: str,
-    eval_logger: logging.Logger,
-    poll_interval_seconds: int = vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
-    max_poll_seconds: int = vcst.EVAL_BASILICA_MAX_POLL_SECONDS,
-) -> dict | str:
-    """Poll Basilica /result endpoint. Handles status: completed, failed, running, in_progress."""
-    started_monotonic = time.monotonic()
-    deadline = started_monotonic + max_poll_seconds
-    next_poll_at = started_monotonic
-    deployment_name = getattr(deployment, "name", "unknown")
-    while time.monotonic() < deadline:
-        now = time.monotonic()
-        if now < next_poll_at:
-            await asyncio.sleep(next_poll_at - now)
-        try:
-            await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
-            response = await asyncio.to_thread(
-                requests.get,
-                f"{deployment.url}{EVAL_RESULT_STATUS_PATH}",
-                timeout=30,
-            )
-            if response.status_code == 200:
-                payload = response.json()
-                status = payload.get("status")
-                if status == "completed":
-                    result = payload.get("result")
-                    if isinstance(result, dict):
-                        eval_logger.info(f"[{repo}] Poll successful. Evaluation completed and result payload received.")
-                        return result
-                    return f"Completed but result payload invalid: {result}"
-                if status == "failed":
-                    return payload.get("error", "Basilica eval reported failure")
-                eval_logger.info(f"[{repo}] Poll ping: status={status}.")
-        except Exception as e:
-            eval_logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
-            pass
-
-        eval_logger.info(
-            f"[{repo}] result not ready yet (status may be running/in_progress), "
-            f"polling again in {poll_interval_seconds}s..."
-        )
-        next_poll_at += poll_interval_seconds
-    return f"Timed out waiting for result after {max_poll_seconds}s"
-
-
-async def _run_single_basilica_eval_repo(
-    *,
-    repo: str,
-    model_name: str,
-    task_type: str,
-    image: str,
-    source: str,
-    env: dict[str, str],
-    gpu_count: int,
-    gpu_models: list[str],
-    min_gpu_memory_gb: int,
-    task_id: UUID | None,
-    psql_db: PSQLDB | None,
-    repo_to_hotkey: dict[str, str],
-    hotkey: str | None = None,
-    existing_deployment_name: str | None = None,
-) -> dict | str:
-    """Run one repo eval with retries. Supports resume via existing_deployment_name."""
-    eval_id = str(uuid.uuid4())
-    task_id_str = str(task_id) if task_id else "unknown"
-    hotkey_str = hotkey or repo_to_hotkey.get(repo) or "unknown"
-    eval_logger = get_environment_logger(
-        name=f"basilica-{repo.split('/')[-1]}-{eval_id[:8]}",
-        repo_id=repo,
-        eval_id=eval_id,
-        model=model_name,
-        task_type=task_type,
-        task_id=task_id_str,
-        hotkey=hotkey_str,
-    )
-
-    def log_eval_step(step: str, **fields) -> None:
-        field_text = " ".join(f"{key}={value}" for key, value in fields.items() if value is not None)
-        eval_logger.info(f"[EVAL_STEP] step={step} repo={repo} task_id={task_id_str} hotkey={hotkey_str} {field_text}".rstrip())
-
-    deleted_deployment_names: set[str] = set()
-
-    async def delete_terminal_deployment(deployment, deployment_name: str, reason: str) -> None:
-        if deployment_name in deleted_deployment_names:
-            log_eval_step("delete_terminal_deployment_skipped", deployment=deployment_name, reason=reason)
-            return
-        try:
-            log_eval_step("terminal_basilica_log_fetch_start", deployment=deployment_name, reason=reason)
-            await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
-            log_eval_step("terminal_basilica_log_fetch_complete", deployment=deployment_name, reason=reason)
-        except Exception as e:
-            eval_logger.warning(f"[{repo}] failed to fetch terminal Basilica logs for deployment {deployment_name}: {e}")
-            log_eval_step("terminal_basilica_log_fetch_failed", deployment=deployment_name, reason=reason, error=e)
-        try:
-            log_eval_step("delete_terminal_deployment_start", deployment=deployment_name, reason=reason)
-            await asyncio.to_thread(deployment.delete)
-            deleted_deployment_names.add(deployment_name)
-            log_eval_step("delete_terminal_deployment_complete", deployment=deployment_name, reason=reason)
-        except Exception as e:
-            eval_logger.warning(f"[{repo}] failed to delete terminal deployment {deployment_name} ({reason}): {e}")
-            log_eval_step("delete_terminal_deployment_failed", deployment=deployment_name, reason=reason, error=e)
-
-    async def _db_call_with_retry(coro_factory, op_name: str):
-        last_exc = None
-        for attempt in range(1, vcst.EVAL_DB_RETRY_ATTEMPTS + 1):
-            try:
-                return await coro_factory()
-            except Exception as exc:
-                last_exc = exc
-                delay = vcst.EVAL_DB_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1))
-                jitter = random.uniform(0.0, 0.3)
-                if attempt < vcst.EVAL_DB_RETRY_ATTEMPTS:
-                    eval_logger.warning(
-                        f"[{repo}] DB op '{op_name}' failed attempt {attempt}/{vcst.EVAL_DB_RETRY_ATTEMPTS}: {exc}; "
-                        f"retrying in {delay + jitter:.2f}s"
-                    )
-                    await asyncio.sleep(delay + jitter)
-                else:
-                    eval_logger.error(
-                        f"[{repo}] DB op '{op_name}' failed after {vcst.EVAL_DB_RETRY_ATTEMPTS} attempts: {exc}"
-                    )
-        raise last_exc
-
-    if existing_deployment_name:
-        try:
-            log_eval_step("resume_lookup_start", deployment=existing_deployment_name)
-            client = basilica.BasilicaClient()
-            deployments = await asyncio.to_thread(client.list)
-            by_name = {getattr(dep, "name", None): dep for dep in deployments}
-            deployment = by_name.get(existing_deployment_name)
-            if deployment is None:
-                eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} not found, redeploying")
-                log_eval_step("resume_lookup_missing", deployment=existing_deployment_name)
-            elif not deployment_is_healthy(deployment):
-                eval_logger.warning(f"[{repo}] resume: deployment {existing_deployment_name} unhealthy, redeploying")
-                await delete_terminal_deployment(deployment, existing_deployment_name, "resume_unhealthy")
-            else:
-                log_eval_step("resume_poll_start", deployment=existing_deployment_name)
-                eval_logger.info(f"[{repo}] resuming polling deployment {existing_deployment_name}")
-                result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
-                if isinstance(result, dict):
-                    log_eval_step("resume_result_received", deployment=existing_deployment_name)
-                    await delete_terminal_deployment(deployment, existing_deployment_name, "resume_completed")
-                    return result
-                log_eval_step("resume_result_failed", deployment=existing_deployment_name, result=result)
-                await delete_terminal_deployment(deployment, existing_deployment_name, "resume_failed_or_timed_out")
-                return str(result) if result else "Resume poll returned empty"
-        except Exception as e:
-            eval_logger.error(f"[{repo}] resume failed, redeploying: {e}", exc_info=True)
-            log_eval_step("resume_failed_redeploying", deployment=existing_deployment_name, error=e)
-
-    for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
-        deployment = None
-        deployment_name = str(uuid.uuid4())
-        try:
-            log_eval_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
-            eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
-            client = basilica.BasilicaClient()
-            await asyncio.sleep(random.uniform(0.0, 0.25))
-            log_eval_step("deployment_id_persist_start", deployment=deployment_name)
-            async with _EVAL_DB_WRITE_SEMAPHORE:
-                await _db_call_with_retry(
-                    lambda: persist_deployment_ids_for_repo(
-                        task_id,
-                        psql_db,
-                        repo_to_hotkey,
-                        repo,
-                        deployment_name,
-                        None,
-                    ),
-                    "persist_deployment_ids_for_repo(pre-deploy)",
-                )
-            log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
-            log_eval_step(
-                "deploy_start",
-                deployment=deployment_name,
-                image=image,
-                gpu_count=gpu_count,
-                gpu_models=",".join(gpu_models),
-                min_gpu_memory_gb=min_gpu_memory_gb,
-            )
-            deployment = await asyncio.to_thread(
-                client.deploy,
-                name=deployment_name,
-                source=source,
-                image=image,
-                port=8000,
-                cpu=vcst.EVAL_BASILICA_CPU,
-                memory=vcst.EVAL_BASILICA_MEMORY,
-                ttl_seconds=vcst.EVAL_BASILICA_TTL_SECONDS,
-                timeout=vcst.EVAL_BASILICA_TIMEOUT,
-                env=env,
-                gpu_count=gpu_count,
-                gpu_models=gpu_models,
-                min_gpu_memory_gb=min_gpu_memory_gb,
-            )
-            resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
-            log_eval_step("deploy_complete", deployment=resolved_deployment_name)
-            if resolved_deployment_name != deployment_name:
-                await asyncio.sleep(random.uniform(0.0, 0.25))
-                log_eval_step(
-                    "deployment_id_repersist_start",
-                    deployment=resolved_deployment_name,
-                    previous_deployment=deployment_name,
-                )
-                async with _EVAL_DB_WRITE_SEMAPHORE:
-                    await _db_call_with_retry(
-                        lambda: persist_deployment_ids_for_repo(
-                            task_id,
-                            psql_db,
-                            repo_to_hotkey,
-                            repo,
-                            resolved_deployment_name,
-                            None,
-                        ),
-                        "persist_deployment_ids_for_repo(post-deploy)",
-                    )
-                log_eval_step("deployment_id_repersist_complete", deployment=resolved_deployment_name)
-            eval_logger.info(f"[{repo}] deployment started: {resolved_deployment_name}")
-            log_eval_step("poll_start", deployment=resolved_deployment_name)
-            result = await _poll_basilica_result(deployment, repo, eval_logger=eval_logger)
-            if isinstance(result, dict):
-                log_eval_step("result_received", deployment=resolved_deployment_name)
-                await delete_terminal_deployment(deployment, resolved_deployment_name, "completed")
-                return result
-            if "Timed out" in str(result):
-                logger.error(f"[{repo}] poll timeout, skipping retries: {result}")
-                log_eval_step("poll_timeout", deployment=resolved_deployment_name, result=result)
-                await delete_terminal_deployment(deployment, resolved_deployment_name, "timed_out")
-                return result
-            log_eval_step("poll_failed", deployment=resolved_deployment_name, result=result)
-            await delete_terminal_deployment(deployment, resolved_deployment_name, "failed")
-            raise RuntimeError(str(result))
-        except asyncio.CancelledError:
-            log_eval_step("attempt_cancelled", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
-            raise
-        except Exception as e:
-            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            if deployment is not None:
-                dep_name = getattr(deployment, "name", None) or deployment_name
-                await delete_terminal_deployment(deployment, dep_name, "attempt_exception")
-            log_eval_step(
-                "attempt_failed",
-                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
-                deployment=deployment_name,
-                remaining=remaining,
-                error=e,
-            )
-            eval_logger.error(
-                f"[{repo}] attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES} failed: {e}",
-                exc_info=True,
-            )
-            if remaining > 0:
-                eval_logger.info(
-                    f"[{repo}] retrying in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
-                    f"({remaining} attempts remaining)"
-                )
-                log_eval_step(
-                    "retry_sleep_start",
-                    delay_seconds=vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS,
-                    remaining=remaining,
-                )
-                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
-            else:
-                log_eval_step("all_attempts_failed", deployment=deployment_name, error=e)
-                return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
-        finally:
-            if deployment is not None:
-                try:
-                    dep_name = getattr(deployment, "name", None) or deployment_name
-                    if dep_name in deleted_deployment_names:
-                        log_eval_step("basilica_log_fetch_skipped_after_delete", deployment=dep_name)
-                    else:
-                        log_eval_step("basilica_log_fetch_start", deployment=dep_name)
-                        await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, dep_name, deployment)
-                        log_eval_step("basilica_log_fetch_complete", deployment=dep_name)
-                except Exception as e:
-                    eval_logger.warning(f"[{repo}] failed to fetch Basilica logs for deployment {dep_name}: {e}")
-                    log_eval_step("basilica_log_fetch_failed", deployment=dep_name, error=e)
-
-    return "Evaluation failed"
-
-
-async def _run_basilica_eval_repos(
-    *,
-    repos: list[str],
-    model_name: str,
-    task_type: str,
-    image: str,
-    source: str,
-    build_env_for_repo,
-    gpu_count: int,
-    gpu_models: list[str],
-    min_gpu_memory_gb: int,
-    task_id: UUID | None,
-    psql_db: PSQLDB | None,
-    repo_to_hotkey: dict[str, str],
-    deployment_ids_by_repo: dict[str, str] | None = None,
-) -> dict[str, dict | str]:
-    deployment_ids_by_repo = deployment_ids_by_repo or {}
-    task_results = await asyncio.gather(
-        *[
-            _run_single_basilica_eval_repo(
-                repo=repo,
-                model_name=model_name,
-                task_type=task_type,
-                image=image,
-                source=source,
-                env=build_env_for_repo(repo),
-                gpu_count=gpu_count,
-                gpu_models=gpu_models,
-                min_gpu_memory_gb=min_gpu_memory_gb,
-                task_id=task_id,
-                psql_db=psql_db,
-                repo_to_hotkey=repo_to_hotkey,
-                hotkey=repo_to_hotkey.get(repo),
-                existing_deployment_name=deployment_ids_by_repo.get(repo) if isinstance(deployment_ids_by_repo.get(repo), str) else None,
-            )
-            for repo in repos
-        ],
-        return_exceptions=True,
-    )
-    out: dict[str, dict | str] = {}
-    for repo, result in zip(repos, task_results):
-        if isinstance(result, Exception):
-            out[repo] = f"Evaluation failed: {result}"
-        else:
-            out[repo] = result
-    return out
 
 
 async def run_evaluation_basilica_text(
@@ -610,18 +150,14 @@ async def run_evaluation_basilica_text(
         "DATASET_TYPE": dataset_type_str,
         "FILE_FORMAT": file_format.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        **vcst.HF_CONTAINER_ENV,
     }
     if is_environment_eval:
-        env_name = dataset_type.environment_name
-        if env_name not in vcst.ENVIRONMENTS:
-            raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
+        env_name = (dataset_type.environment_names or [None])[0]
+        if env_name not in cst.ENVIRONMENT_CONFIGS:
+            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
         base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-        base_env["ENVIRONMENT_NAME"] = env_name
+        base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
         base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
@@ -637,7 +173,7 @@ async def run_evaluation_basilica_text(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-    repo_results = await _run_basilica_eval_repos(
+    repo_results = await run_basilica_eval_repos(
         repos=models,
         model_name=original_model,
         task_type=task_type,
@@ -653,29 +189,7 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo=deployment_ids_str,
     )
 
-    evaluation_results: dict[str, dict | str] = {}
-    model_params_count = 0
-    for repo in models:
-        raw_result = repo_results.get(repo)
-        if not isinstance(raw_result, dict):
-            evaluation_results[repo] = str(raw_result)
-            continue
-
-        if raw_result.get("model_params_count") and model_params_count == 0:
-            model_params_count = raw_result["model_params_count"]
-
-        if repo in raw_result:
-            evaluation_results[repo] = raw_result[repo]
-        else:
-            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
-            if len(candidate_keys) == 1:
-                evaluation_results[repo] = raw_result[candidate_keys[0]]
-            else:
-                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
-
-    if model_params_count:
-        evaluation_results["model_params_count"] = model_params_count
-
+    evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     return process_evaluation_results(evaluation_results, is_image=False)
 
 
@@ -714,11 +228,7 @@ async def run_evaluation_basilica_grpo(
         "DATASET_TYPE": dataset_type_str,
         "FILE_FORMAT": file_format.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
-        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        **vcst.HF_CONTAINER_ENV,
     }
 
     logger.debug(f"Starting Basilica GRPO evaluation for {len(models)} repos: {models}")
@@ -731,7 +241,7 @@ async def run_evaluation_basilica_grpo(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-    repo_results = await _run_basilica_eval_repos(
+    repo_results = await run_basilica_eval_repos(
         repos=models,
         model_name=original_model,
         task_type="grpo",
@@ -747,29 +257,7 @@ async def run_evaluation_basilica_grpo(
         deployment_ids_by_repo=deployment_ids_str,
     )
 
-    evaluation_results: dict[str, dict | str | int] = {}
-    model_params_count = 0
-    for repo in models:
-        raw_result = repo_results.get(repo)
-        if not isinstance(raw_result, dict):
-            evaluation_results[repo] = str(raw_result)
-            continue
-
-        if raw_result.get("model_params_count") and model_params_count == 0:
-            model_params_count = raw_result["model_params_count"]
-
-        if repo in raw_result:
-            evaluation_results[repo] = raw_result[repo]
-        else:
-            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
-            if len(candidate_keys) == 1:
-                evaluation_results[repo] = raw_result[candidate_keys[0]]
-            else:
-                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
-
-    if model_params_count:
-        evaluation_results["model_params_count"] = model_params_count
-
+    evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     evaluation_results = normalize_rewards_and_compute_loss(evaluation_results)
     logger.debug(f"Grpo evaluation results post normalization: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
@@ -800,11 +288,7 @@ async def run_evaluation_basilica_image(
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        "HF_HOME": "/root/.cache/huggingface",
-        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
-        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
-        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
-        "HF_HUB_ENABLE_HF_TRANSFER": "0",
+        **vcst.HF_CONTAINER_ENV_IMAGE,
     }
 
     logger.debug(f"Starting Basilica image evaluation for {len(models)} repos: {models}")
@@ -817,7 +301,7 @@ async def run_evaluation_basilica_image(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-    repo_results = await _run_basilica_eval_repos(
+    repo_results = await run_basilica_eval_repos(
         repos=models,
         model_name=original_model_repo,
         task_type="image",
@@ -833,27 +317,235 @@ async def run_evaluation_basilica_image(
         deployment_ids_by_repo=deployment_ids_str,
     )
 
-    evaluation_results: dict[str, dict | str] = {}
-    model_params_count = 0
-    for repo in models:
-        raw_result = repo_results.get(repo)
-        if not isinstance(raw_result, dict):
-            evaluation_results[repo] = str(raw_result)
-            continue
-
-        if raw_result.get("model_params_count") and model_params_count == 0:
-            model_params_count = raw_result["model_params_count"]
-
-        if repo in raw_result:
-            evaluation_results[repo] = raw_result[repo]
-        else:
-            candidate_keys = [k for k in raw_result.keys() if k != "model_params_count"]
-            if len(candidate_keys) == 1:
-                evaluation_results[repo] = raw_result[candidate_keys[0]]
-            else:
-                evaluation_results[repo] = f"Evaluation failed: missing result key for repo {repo}"
-
-    if model_params_count:
-        evaluation_results["model_params_count"] = model_params_count
-
+    evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     return process_evaluation_results(evaluation_results, is_image=True)
+
+
+async def _persist_pvp_deployment_id(
+    *,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+    deployment_name: str,
+    ctx: _BasilicaEvalContext,
+) -> None:
+    if task_id is None or psql_db is None or not hotkeys:
+        return
+
+    ctx.log_eval_step("deployment_id_persist_start", deployment=deployment_name)
+    await _db_call_with_retry(
+        lambda: persist_shared_eval_deployment_id(task_id, psql_db, hotkeys, deployment_name),
+        "persist_shared_eval_deployment_id",
+        ctx.eval_logger,
+        ctx.repo,
+    )
+    ctx.log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
+
+
+async def _deploy_pvp_eval(
+    pvp_config: PvPEvalConfig,
+    label: str,
+    repos_label: str,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+    hotkeys: list[str] | None = None,
+) -> dict:
+    """Deploy a PvP eval container via Basilica and return the raw result dict.
+
+    Shared by both group and pair eval paths.
+    """
+    hotkeys = hotkeys or []
+    env = {
+        vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
+        **vcst.HF_CONTAINER_ENV,
+    }
+    command = ["python", "-m", "validator.evaluation.pvp"]
+    source = create_basilica_eval_runner_source(command, vcst.PVP_RESULTS_PATH)
+
+    eval_id = str(uuid.uuid4())
+    eval_logger = get_environment_logger(
+        name=f"pvp-{label}-{eval_id[:8]}",
+        repo_id=repos_label,
+        eval_id=eval_id,
+        model=pvp_config.base_model or "",
+        task_type=TaskType.ENVIRONMENTTASK.value,
+        task_id=str(task_id) if task_id else "unknown",
+    )
+
+    def log_step(step: str, **fields) -> None:
+        _log_eval_step(eval_logger, step, **fields)
+
+    ctx = _BasilicaEvalContext(
+        repo=f"pvp-{label}",
+        eval_logger=eval_logger,
+        deleted_deployment_names=set(),
+        log_eval_step=log_step,
+    )
+
+    existing_deployment_name = await _db_read_with_retry(
+        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
+        "load_shared_eval_deployment_id",
+    )
+    if existing_deployment_name:
+        resume_deployment = await _get_healthy_existing_basilica_deployment(
+            existing_deployment_name=existing_deployment_name,
+            ctx=ctx,
+        )
+        if resume_deployment is not None:
+            client, deployment, deployment_name = resume_deployment
+            result = await _poll_eval_deployment(
+                ctx=ctx,
+                client=client,
+                deployment=deployment,
+                deployment_name=deployment_name,
+                success_cleanup_reason="pvp_resume_completed",
+                failure_cleanup_reason="pvp_resume_failed_or_timed_out",
+                timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
+                retry_on_failure=False,
+                poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+                max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
+            )
+            if isinstance(result, dict):
+                return result
+            eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
+
+    for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
+        deployment = None
+        deployment_name = str(uuid.uuid4())
+        try:
+            log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
+            eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
+            client = basilica.BasilicaClient()
+            await _persist_pvp_deployment_id(
+                task_id=task_id,
+                psql_db=psql_db,
+                hotkeys=hotkeys,
+                deployment_name=deployment_name,
+                ctx=ctx,
+            )
+            log_step(
+                "deploy_start",
+                deployment=deployment_name,
+                image=cst.VALIDATOR_DOCKER_IMAGE_PVP,
+                gpu_count=vcst.PVP_BASILICA_GPU_COUNT,
+                gpu_models=",".join(vcst.BASILICA_GPU_MODELS),
+                min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+            )
+            deployment = await asyncio.to_thread(
+                client.deploy,
+                name=deployment_name,
+                source=source,
+                image=cst.VALIDATOR_DOCKER_IMAGE_PVP,
+                port=vcst.PVP_BASILICA_PORT,
+                cpu=vcst.EVAL_BASILICA_CPU,
+                memory=vcst.EVAL_BASILICA_MEMORY,
+                ttl_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
+                timeout=vcst.EVAL_BASILICA_TIMEOUT,
+                env=env,
+                gpu_count=vcst.PVP_BASILICA_GPU_COUNT,
+                gpu_models=vcst.BASILICA_GPU_MODELS,
+                min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
+            )
+            resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+            log_step("deploy_complete", deployment=resolved_deployment_name)
+            if resolved_deployment_name != deployment_name:
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=resolved_deployment_name,
+                    ctx=ctx,
+                )
+            eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
+
+            result = await _poll_eval_deployment(
+                ctx=ctx,
+                client=client,
+                deployment=deployment,
+                deployment_name=resolved_deployment_name,
+                success_cleanup_reason="pvp_completed",
+                failure_cleanup_reason="pvp_failed",
+                timeout_cleanup_reason="pvp_timed_out",
+                retry_on_failure=True,
+                poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+                max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
+            )
+            if isinstance(result, dict):
+                return result
+
+            raise RuntimeError(str(result))
+
+        except Exception as exc:
+            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            if deployment is not None:
+                dep_name = getattr(deployment, "name", None) or deployment_name
+                await _delete_eval_deployment(ctx, client, deployment, dep_name, "pvp_attempt_exception")
+            log_step(
+                "attempt_failed",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_name,
+                remaining=remaining,
+                error=exc,
+            )
+            eval_logger.error("PvP %s eval attempt %d failed: %s", label, attempt, exc, exc_info=True)
+            if remaining > 0:
+                eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+            else:
+                raise RuntimeError(f"PvP {label} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
+        finally:
+            if deployment is not None:
+                await _fetch_attempt_logs(ctx, deployment, deployment_name)
+
+    raise RuntimeError(f"PvP {label} evaluation failed")
+
+
+async def run_evaluation_pvp_pair(
+    model_a_repo: str,
+    model_b_repo: str,
+    hotkey_a: str,
+    hotkey_b: str,
+    base_model: str,
+    environment_names: list[cst.EnvironmentName],
+    seed: int,
+    temperature: float = 0.0,
+    task_id: UUID | None = None,
+    psql_db: PSQLDB | None = None,
+) -> PvPGroupResults:
+    """Run PvP 1v1 pair evaluation via Basilica.
+
+    Returns PvPGroupResults (single pair) for consistent downstream processing.
+    """
+    matchups = {
+        env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
+        for env in environment_names
+    }
+    pvp_config = PvPEvalConfig(
+        mode=PvPMode.PAIR,
+        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model),
+        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model),
+        matchups=matchups,
+        seed=seed,
+        temperature=temperature,
+    )
+    repos_label = f"{model_a_repo.split('/')[-1]},{model_b_repo.split('/')[-1]}"
+    result = await _deploy_pvp_eval(
+        pvp_config,
+        "pair",
+        repos_label,
+        task_id=task_id,
+        psql_db=psql_db,
+        hotkeys=[hotkey_a, hotkey_b],
+    )
+
+    pair_eval = PvPEvalResults.model_validate(result)
+    return PvPGroupResults(
+        base_model=base_model,
+        hotkeys=[hotkey_a, hotkey_b],
+        pair_results=[PvPPairResult(
+            hotkey_a=hotkey_a,
+            hotkey_b=hotkey_b,
+            results=pair_eval.results,
+        )],
+        metadata=pair_eval.metadata,
+    )

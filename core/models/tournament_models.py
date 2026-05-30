@@ -11,6 +11,13 @@ from pydantic import Field
 from pydantic import field_validator
 
 from core.models.payload_models import TrainingRepoResponse
+from core.constants import EnvironmentName
+from core.models.scoring_models import EnvironmentWeight
+from core.models.scoring_models import EvalHotkeyResults
+from core.models.scoring_models import GroupStagePoints
+from core.models.scoring_models import PairwiseOutcome
+from core.models.scoring_models import TournamentScore
+from core.models.scoring_models import TournamentTypeResult
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
 from validator.core.models import AnyTypeRawTask
@@ -88,6 +95,8 @@ class TournamentData(BaseModel):
         "score = loss, so lower is better. Higher diff = better perf = less burn.",
     )
     diff_report: str | None = Field(default=None, description="Optional S3 URL for the winner-vs-previous-boss diff report.")
+    winner_model_repo: str | None = Field(default=None, description="HF repo of the winning trained model (for next tournament's final round)")
+    winner_model_base: str | None = Field(default=None, description="Base model the winner was trained from (for compatibility check)")
     updated_at: datetime | None = Field(
         default=None,
         description="Timestamp when the tournament was last updated (typically when it completed). "
@@ -150,11 +159,16 @@ class Group(BaseModel):
     task_ids: list[str] | None = None
 
 
-class GroupRound(BaseModel):
+class BaseRound(BaseModel):
+    round_id: str
+    round_number: int = 1
+
+
+class GroupRound(BaseRound):
     groups: list[Group]
 
 
-class KnockoutRound(BaseModel):
+class KnockoutRound(BaseRound):
     # pairs of hotkeys
     pairs: list[tuple[str, str]]
     tasks: list[str] | None = None
@@ -237,17 +251,6 @@ class TournamentResultsWithWinners(BaseModel):
     winner_hotkey: str | None = None
 
 
-class TournamentScore(BaseModel):
-    hotkey: str
-    score: float
-
-
-class TournamentTypeResult(BaseModel):
-    scores: list[TournamentScore]
-    prev_winner_hotkey: str | None
-    prev_winner_won_final: bool
-
-
 class TaskPerformanceDifference(BaseModel):
     """Performance difference data for a single task"""
 
@@ -316,6 +319,11 @@ class TaskScore(BaseModel):
     test_loss: float
     synth_loss: float
     quality_score: float
+
+
+class GitHubOwnerRepo(BaseModel):
+    owner: str
+    repo: str
 
 
 class RespondingNode(BaseModel):

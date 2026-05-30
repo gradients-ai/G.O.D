@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 from uuid import uuid4
 
@@ -10,7 +11,10 @@ from pydantic import field_validator
 from pydantic import model_validator
 
 from core import constants as cst
+from core.models.model_prep_models import AugmentationConfig
+from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import EnvironmentDatasetType
+from core.constants import EnvironmentName
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
@@ -44,6 +48,7 @@ class TrainRequest(BaseModel):
     task_id: str
     hours_to_complete: float
     expected_repo_name: str | None = None
+    baseline_stats: BaselineStats | None = None
 
 
 class TrainRequestText(TrainRequest):
@@ -92,19 +97,46 @@ class TrainerProxyRequest(BaseModel):
     github_repo: str
     gpu_ids: list[int]
     hotkey: str
-    github_branch: str | None = None
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
 
 
-class TrainerTaskLog(TrainerProxyRequest):
+class TrainerJob(BaseModel):
+    """Base for any job running on a trainer that occupies GPUs."""
+
+    job_type: str
+    gpu_ids: list[int]
     status: TaskStatus
-    started_at: datetime | None
-    finished_at: datetime | None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
     container_name: str | None = None
-    wandb_url: str | None = None
     logs: list[str] = []
+
+
+class TrainerTaskLog(TrainerJob):
+    """Training job tracked in the trainer's task history."""
+
+    job_type: Literal["training"] = "training"
+    training_data: TrainRequestImage | TrainRequestText
+    github_repo: str
+    hotkey: str
+    github_commit_hash: str | None = None
+    github_token: str | None = None
+    requested_datasets: list[str] | None = None
+    wandb_url: str | None = None
+
+
+class ModelPrepJob(TrainerJob):
+    """Model prep job tracked in the trainer's task history."""
+
+    job_type: Literal["model_prep"] = "model_prep"
+    task_id: str
+    model_id: str
+    hotkey: str | None = None  # Set for per-miner preps
+    result: "ModelPrepResponse | None" = None
+
+    model_config = ConfigDict(protected_namespaces=())
 
 
 class TrainResponse(BaseModel):
@@ -128,6 +160,34 @@ class JobStatusPayload(BaseModel):
 class JobStatusResponse(BaseModel):
     task_id: UUID
     status: JobStatus
+
+
+class EnvConfig(BaseModel):
+    """Per-environment config for model prep evaluation."""
+    env_image: str
+    task_id_min: int
+    task_id_max: int
+    num_episodes: int = 100
+    eval_payload_extra: dict | None = None
+
+
+class ModelPrepRequest(BaseModel):
+    task_id: str
+    model_id: str
+    training_data_url: str
+    task_type: str = TaskType.INSTRUCTTEXTTASK.value
+    augmentation_config: AugmentationConfig | None = None
+    gpu_ids: list[int] = [0]
+    reward_functions: list[RewardFunction] | None = None
+    env_configs: dict[EnvironmentName, EnvConfig] | None = None
+    hotkey: str | None = None  # Per-miner prep key for recovery after restart
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class ModelPrepResponse(BaseModel):
+    augmented_model_id: str | None = None
+    baseline_stats: BaselineStats | None = None
 
 
 class EvaluationRequest(TrainRequest):
@@ -267,8 +327,8 @@ class NewTaskRequestChat(NewTaskRequest):
 
 
 class NewTaskRequestEnvironment(NewTaskRequest):
-    environment_name: str = Field(
-        ..., description="The name of the specific environment we are training for.", examples=["alfworld"]
+    environment_names: list[EnvironmentName] = Field(
+        ..., description="Environments to train on.", examples=[["gin_rummy", "liars_dice"]]
     )
 
     ds_repo: str = Field(..., description="The repository for the dataset", examples=["Magpie-Align/Magpie-Pro-300K-Filtered"])
@@ -362,12 +422,26 @@ class NewTaskRequestImage(NewTaskRequest):
     model_repo: str = Field(..., description="The model repository to use")
     image_text_pairs: list[ImageTextPair] = Field(
         ...,
-        description="List of image and text file pairs",
+        description="List of image and text file URL pairs",
         min_length=cst.MIN_IMAGE_TEXT_PAIRS,
         max_length=cst.MAX_IMAGE_TEXT_PAIRS,
     )
     ds_id: str = Field(
-        default_factory=lambda: str(uuid4()), description="A ds name. The actual dataset is provided via the image_text_pairs"
+        default_factory=lambda: str(uuid4()),
+        description="A ds name. The actual dataset is provided via the image_text_pairs",
+    )
+    model_type: ImageModelType = ImageModelType.SDXL
+
+
+class NewTaskRequestImageZip(NewTaskRequest):
+    model_config = ConfigDict(protected_namespaces=())
+    model_repo: str = Field(..., description="The model repository to use")
+    ds: str = Field(
+        ...,
+        description=(
+            "Public or presigned URL to a zip file containing image files and matching .txt caption files. "
+            "Each image and caption must share the same filename stem."
+        ),
     )
     model_type: ImageModelType = ImageModelType.SDXL
 
@@ -496,7 +570,7 @@ class GrpoTaskDetails(TaskDetails):
 
 class EnvironmentTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.ENVIRONMENTTASK
-    environment_name: str
+    environment_names: list[EnvironmentName] = []
     base_model_repository: str
     ds_repo: str
 
@@ -506,7 +580,8 @@ class EnvironmentTaskDetails(TaskDetails):
 
 class ImageTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.IMAGETASK
-    image_text_pairs: list[ImageTextPair]
+    image_text_pairs: list[ImageTextPair] | None = None
+    ds_repo: str | None = None
     base_model_repository: str = Field(..., description="The repository for the model")
     model_type: ImageModelType = ImageModelType.SDXL
 

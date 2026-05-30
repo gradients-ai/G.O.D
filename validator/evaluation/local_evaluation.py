@@ -1,14 +1,14 @@
 import asyncio
 import glob
+import io
 import json
 import logging
 import os
 import random
 import shutil
-import time
+import tarfile
 import uuid
 
-import aiohttp
 import docker
 from docker.types import Mount
 from huggingface_hub import snapshot_download
@@ -24,17 +24,15 @@ from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
 from core.utils import download_s3_file
 from validator.core import constants as vcst
-from validator.evaluation.docker_evaluation import cleanup_resources
-from validator.evaluation.docker_evaluation import get_evaluation_results
-from validator.evaluation.docker_evaluation import normalize_rewards_and_compute_loss
-from validator.evaluation.docker_evaluation import process_evaluation_results
 from validator.evaluation.eval_environment import _build_sglang_command
 from validator.evaluation.eval_environment import _download_lora_with_retry
 from validator.evaluation.eval_environment import _download_model_with_retry
 from validator.evaluation.eval_environment import _merge_base_and_lora
 from validator.evaluation.eval_environment import _run_environment_evaluation as _run_eval_environment_rollouts
-from validator.evaluation.utils import check_lora_has_added_tokens
 from validator.evaluation.utils import check_for_lora
+from validator.evaluation.utils import check_lora_has_added_tokens
+from validator.evaluation.utils import normalize_rewards_and_compute_loss
+from validator.evaluation.utils import process_evaluation_results
 from validator.evaluation.utils import wait_for_basilica_health
 from validator.tasks.task_prep import unzip_to_temp_path
 from validator.utils.logging import get_all_context_tags
@@ -44,6 +42,42 @@ from validator.utils.logging import stream_container_logs
 
 
 logger = get_logger(__name__)
+
+
+async def cleanup_resources(client):
+    """Clean up Docker resources including containers, images, and volumes."""
+    try:
+        await asyncio.to_thread(client.containers.prune)
+        await asyncio.to_thread(client.images.prune, filters={"dangling": True})
+        await asyncio.to_thread(client.volumes.prune)
+        logger.debug("Completed Docker resource cleanup")
+    except Exception as e:
+        logger.error(f"Cleanup failed: {str(e)}")
+
+
+async def get_evaluation_results(container):
+    archive_data = await asyncio.to_thread(container.get_archive, cst.CONTAINER_EVAL_RESULTS_PATH)
+    tar_stream = archive_data[0]
+
+    file_like_object = io.BytesIO()
+    for chunk in tar_stream:
+        file_like_object.write(chunk)
+    file_like_object.seek(0)
+
+    with tarfile.open(fileobj=file_like_object) as tar:
+        members = tar.getnames()
+        logger.debug(f"Tar archive members: {members}")
+        eval_results_file = None
+        for member_info in tar.getmembers():
+            if member_info.name.endswith(("evaluation_results.json")):
+                eval_results_file = tar.extractfile(member_info)
+                break
+
+        if eval_results_file is None:
+            raise Exception("Evaluation results file not found in tar archive")
+
+        eval_results_content = eval_results_file.read().decode("utf-8")
+        return json.loads(eval_results_content)
 
 
 def _build_local_sglang_command(base_model: str, base_seed: int) -> str:
@@ -265,19 +299,20 @@ async def run_evaluation_local_environment(
     stream_sglang_logs = os.getenv("LOCAL_ENV_STREAM_SGLANG_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
     raw_sglang_log_file = os.getenv("LOCAL_ENV_SGLANG_RAW_LOG_FILE", "").strip()
 
-    env_name = dataset_type.environment_name
-    if env_name not in vcst.ENVIRONMENTS:
-        raise ValueError(f"Environment '{env_name}' not found. Supported: {list(vcst.ENVIRONMENTS.keys())}")
+    env_name = (dataset_type.environment_names or [None])[0]
+    if env_name not in cst.ENVIRONMENT_CONFIGS:
+        raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
 
-    env_config = vcst.ENVIRONMENTS[env_name]
-    task_id_min, task_id_max = env_config["task_id_range"]
+    env_config = cst.ENVIRONMENT_CONFIGS[env_name]
+    task_id_min = env_config.task_id_min
+    task_id_max = env_config.task_id_max
     num_seeds_override = os.getenv("ENV_EVAL_NUM_SEEDS", "").strip()
     if num_seeds_override:
         num_seeds = int(num_seeds_override)
     else:
-        num_seeds = env_config.get("num_seeds", vcst.ENV_EVAL_NUM_SEEDS)
-    env_image = env_config["env_image"]
-    env_payload_extra = env_config.get("eval_payload_extra", {})
+        num_seeds = env_config.num_seeds
+    env_image = env_config.env_image
+    env_payload_extra = env_config.eval_payload_extra
     temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
 
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED

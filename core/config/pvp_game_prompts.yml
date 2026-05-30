@@ -1,0 +1,86 @@
+system_prompt_template: >
+  You are playing {game_name}.
+
+  # Game Rules
+  {rules}
+
+  # Output Format
+  You must respond with ONLY the action ID (a single number).
+  Do NOT include descriptions or explanations.
+
+  Examples:
+  - For action "0 -> roll": respond "0"
+  - For action "89 -> a3": respond "89"
+
+liars_dice_rules: >
+  LIAR'S DICE RULES:
+
+  Setup: Each player has N dice (1-5 depending on variant). All players roll their dice secretly.
+
+  Goal: Make bids about total dice across ALL players, or call "Liar" on opponent's bid.
+
+  Actions:
+  - Bid (quantity, face): Claim there are at least 'quantity' dice showing 'face' among all dice.
+  - Call Liar: Challenge the previous bid.
+
+  Bidding rules: Each bid must be higher than the previous bid. "Higher" means:
+    - Same face value but higher quantity (e.g., "2 fours" beats "1 four")
+    - Same quantity but higher face value (e.g., "2 fives" beats "2 fours")
+
+  Wild dice: 6s are WILD and count as ANY face value.
+  - When counting dice for a bid, include 6s in the count
+  - Example: Bid "3 fours" means at least 3 dice showing EITHER 4 OR 6
+
+  Winning: If you call Liar and previous bid was false, opponent loses. If bid was true or exact, you lose.
+
+leduc_poker_rules: >
+  LEDUC POKER RULES:
+
+  Deck: 2 suits x (num_players + 1) ranks. For 2 players: 6 cards (J, J, Q, Q, K, K).
+
+  Setup: Each player starts with 100 chips, pays 1 ante. Two rounds of betting.
+
+  Round 1: Each player receives one private card. Actions: Fold (lose ante), Call/Check (match current bet), Raise (add 2 chips to bet). Maximum 2 raises per round.
+  Round 2: One public card is revealed. Same actions, but Raise adds 4 chips.
+
+  Winning: Player with best hand wins pot (or last remaining if others fold).
+  Hand ranking (high to low): Pair (private + public match) > High card value (K > Q > J).
+
+gin_rummy_rules: >
+  GIN RUMMY RULES:
+
+  SETUP:
+  - 52-card deck, each player receives 7-10 cards (variant dependent)
+  - Goal: Form MELDS to minimize DEADWOOD (unmelded cards)
+
+  MELDS (Valid Combinations):
+  1. SET: 3+ cards of SAME RANK (e.g., 7s 7h 7c)
+  2. RUN: 3+ CONSECUTIVE cards of SAME SUIT (e.g., 5d 6d 7d)
+  Examples:
+  - Valid runs: As-2s-3s, 9h-Th-Jh-Qh, Tc-Jc-Qc-Kc
+  - Invalid: Ks-As-2s (Ace is LOW only, not wraparound)
+
+  CARD NOTATION:
+  - Ranks: A(Ace), 2-9, T(10), J(Jack), Q(Queen), K(King)
+  - Suits: s(spades), h(hearts), d(diamonds), c(clubs)
+  - Example: 7c = 7 of clubs, Th = 10 of hearts, As = Ace of spades
+
+  GAME PHASES:
+  1. FirstUpcard: Choose to draw first upcard or pass (action IDs: 52=Draw upcard, 54=Pass)
+  2. Draw: Choose to draw from upcard or stock pile (action IDs: 52=Draw upcard, 53=Draw stock)
+  3. Discard: Choose which card to discard (action ID = card's index number, shown in Legal Actions)
+  4. Layoff: After opponent knocks, add cards to their melds or pass (action IDs: card indices or 54=Pass)
+  5. Knock: Declare end of hand when deadwood <= knock_card value
+
+  EACH TURN:
+  1. DRAW phase: Pick from stock pile (53) OR discard pile upcard (52)
+  2. DISCARD phase: Choose ONE card from hand to discard (use card's action ID from Legal Actions)
+
+  KNOCKING:
+  - When deadwood <= knock_card value (8-10), you MAY knock to end hand
+  - Gin: ALL cards form melds (0 deadwood) = 25-point bonus
+
+  SCORING: Winner scores difference in deadwood point values.
+  Card Values: A=1, 2-10=face value, J=10, Q=10, K=10
+
+  IMPORTANT: Always respond with the action ID number ONLY, never card names.

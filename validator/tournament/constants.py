@@ -1,3 +1,5 @@
+from core.constants import EnvironmentName
+
 MAX_TRAINING_ATTEMPTS = 2
 
 # Smart prioritization thresholds for task fetching
@@ -5,11 +7,13 @@ PENDING_QUEUE_THRESHOLD_PER_TYPE = 8  # Fetch tournament tasks when pending per 
 PENDING_QUEUE_THRESHOLD_FOR_BENCHMARK = 5  # Fetch benchmark tasks when pending < this
 
 # Orchestrator cycle intervals (in seconds)
-FETCH_TASKS_CYCLE_INTERVAL = 15 * 60  # 15 minutes
-PROCESS_PENDING_TASKS_CYCLE_INTERVAL = 15 * 60  # 15 minutes
-MONITOR_TRAINING_TASKS_CYCLE_INTERVAL = 15 * 60  # 15 minutes
-MOVE_COMPLETED_TASKS_CYCLE_INTERVAL = 15 * 60  # 15 minutes
-PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL = 15 * 60  # 15 minutes
+FETCH_TASKS_CYCLE_INTERVAL = 60  # 1 minute for testing
+PROCESS_PENDING_TASKS_CYCLE_INTERVAL = 60
+MONITOR_TRAINING_TASKS_CYCLE_INTERVAL = 60
+MOVE_COMPLETED_TASKS_CYCLE_INTERVAL = 60
+PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL = 60
+MODEL_PREP_CYCLE_INTERVAL = 30
+MODEL_PREP_GPU_RESERVE_HOURS = 1.0
 
 TOURNAMENT_PENDING_CYCLE_INTERVAL = 15 * 60
 TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 15 * 60
@@ -17,7 +21,7 @@ TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 15 * 60
 
 
 # Retry intervals (in seconds)
-TRAINING_START_RETRY_INTERVAL = 1 * 60  # 15 minutes
+TRAINING_START_RETRY_INTERVAL = 1 * 60  # 1 minute
 
 # Dstack orchestrator retry settings
 DSTACK_RETRY_DELAY_MINUTES = 30
@@ -29,6 +33,9 @@ DSTACK_TEXT_REGIONS = ["CA-MTL-1", "AP-JP-1", "US-KS-2", "US-GA-2", "US-CA-2", "
 
 # Trainer requests
 TRAINER_HTTP_TIMEOUT = 30.0  # seconds
+# Grace period after GPU reservation before trusting trainer "available" reports.
+# Covers the gap between dispatch and container startup (clone, docker build, etc).
+GPU_RESERVATION_GRACE_PERIOD_SECONDS = 10 * 60  # 10 minutes
 EXPECTED_TRAINING_START_MESSAGE = "Started Training!"
 NO_RETRY_RESULT = "No Retry"
 
@@ -38,17 +45,19 @@ MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 14
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
 MIN_ENVIRONMENT_GROUP_SIZE = 2
+MAX_ENVIRONMENT_GROUP_SIZE = 6
 
 
 # Environment tournament round structure
-ENV_ROUND_1_ADVANCE_COUNT = 8
-ENV_ROUND_2_ADVANCE_COUNT = 2
-ENV_ROUND_3_CANDIDATE_COUNT = 2
-ENV_TOTAL_ROUNDS = 4
+ENV_ADVANCE_PER_GROUP = 1
 ENV_FINAL_ROUND_TASK_COUNT = 3
+ENV_ENVS_PER_ROUND_MULTIPLIER = 2  # R1=2, R2=4, R3=6 (capped at total available)
+ENV_TRAINING_HOURS = 1.5
+ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
+ENV_TARGET_TOURN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
-FORCED_BOSS_ENVIRONMENT: str | None = None
+FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = None
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 
@@ -77,8 +86,8 @@ MODEL_SIZE_RANGE_MULTIPLIER_MAX = 1.2
 MODEL_PARAMS_TO_BILLIONS = 1e9
 
 # Progressive championship threshold constants
-EXPONENTIAL_BASE_THRESHOLD = 0.10  # Starting threshold for new champions
-EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = 0.05  # Starting threshold for new champions
+EXPONENTIAL_BASE_THRESHOLD = 0.05  # Starting threshold for new champions
+EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
 EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
 EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
 

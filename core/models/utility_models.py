@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
+from core.constants import EnvironmentName
+
 
 class FileFormat(str, Enum):
     CSV = "csv"  # needs to be local file
@@ -27,6 +29,7 @@ class TaskStatus(str, Enum):
     PENDING = "pending"
     PREPARING_DATA = "preparing_data"
     PREP_TASK_FAILURE = "prep_task_failure"
+    AWAITING_MODEL_PREP = "awaiting_model_prep"
     LOOKING_FOR_NODES = "looking_for_nodes"
     FAILURE_FINDING_NODES = "failure_finding_nodes"
     DELAYED = "delayed"
@@ -104,7 +107,7 @@ class GrpoDatasetType(BaseModel):
 
 
 class EnvironmentDatasetType(BaseModel):
-    environment_name: str | None = None
+    environment_names: list[EnvironmentName] | None = None
 
 
 class DpoDatasetType(BaseModel):
@@ -215,12 +218,15 @@ class Backend(str, Enum):
     RUNPOD = "runpod"
 
 
+
+
 class GPUInfo(BaseModel):
     gpu_id: int = Field(..., description="GPU ID")
     gpu_type: GPUType = Field(..., description="GPU Type")
     vram_gb: int = Field(..., description="GPU VRAM in GB")
     available: bool = Field(..., description="GPU Availability")
     used_until: datetime | None = Field(default=None, description="GPU Used Until")
+    updated_at: datetime | None = Field(default=None, description="When GPU status was last updated")
 
 
 class TrainerInfo(BaseModel):
