@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 from core.constants import VALIDATOR_DOCKER_IMAGE_INTERCODE
 from core.constants import EnvironmentName
 from validator.utils.model_prep import _build_env_configs
@@ -58,3 +60,30 @@ def test_start_env_sidecars_passes_intercode_command(monkeypatch):
             "command": intercode_cfg.env_server_command,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_run_environment_server_container_resolves_intercode_config(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
+
+    from trainer import image_manager
+
+    captured = {}
+    expected_container = object()
+
+    class FakeContainers:
+        def run(self, **kwargs):
+            captured.update(kwargs)
+            return expected_container
+
+    class FakeDockerClient:
+        containers = FakeContainers()
+
+    monkeypatch.setattr(image_manager, "ensure_internal_network", lambda: None)
+    monkeypatch.setattr(image_manager.docker, "from_env", lambda: FakeDockerClient())
+
+    container = await image_manager.run_environment_server_container(EnvironmentName.INTERCODE, {})
+
+    assert container is expected_container
+    assert captured["image"] == VALIDATOR_DOCKER_IMAGE_INTERCODE
+    assert captured["command"] == _build_env_configs()[EnvironmentName.INTERCODE].env_server_command

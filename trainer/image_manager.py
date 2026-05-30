@@ -644,7 +644,7 @@ FALLBACK_ENV_IMAGES: dict[core_cst.EnvironmentName, str] = {
 
 
 async def run_environment_server_container(
-    environment_name: core_cst.EnvironmentName,
+    environment_name: core_cst.EnvironmentName | None,
     log_labels: dict,
     image: str | None = None,
     command: list[str] | None = None,
@@ -653,7 +653,9 @@ async def run_environment_server_container(
 
     ensure_internal_network()
 
-    resolved_image = image or FALLBACK_ENV_IMAGES.get(environment_name)
+    env_config = core_cst.ENVIRONMENT_CONFIGS.get(environment_name) if environment_name else None
+    resolved_image = image or (env_config.env_image if env_config else None) or FALLBACK_ENV_IMAGES.get(environment_name)
+    resolved_command = command if command is not None else (env_config.env_server_command if env_config else None)
     if resolved_image is None:
         logger.warning(f"No image for environment '{environment_name}', cannot start sidecar")
         return None
@@ -664,7 +666,7 @@ async def run_environment_server_container(
         client.containers.run,
         image=resolved_image,
         name=container_name,
-        command=command,
+        command=resolved_command,
         detach=True,
         labels=log_labels,
         network=cst.INTERNAL_BRIDGE_NAME,
@@ -874,6 +876,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 environment_server_container = await run_environment_server_container(
                     env_name, log_labels
                 )
+                if environment_server_container is None:
+                    raise RuntimeError(f"Unable to start environment server for {env_name}")
                 env_server_containers.append(environment_server_container)
                 ip_address = await wait_for_env_container_ip(environment_server_container)
                 env_urls.append(f"http://{ip_address}:8000")
