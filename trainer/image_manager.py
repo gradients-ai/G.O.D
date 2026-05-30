@@ -643,6 +643,16 @@ FALLBACK_ENV_IMAGES: dict[core_cst.EnvironmentName, str] = {
 }
 
 
+def _select_training_env_server_name(
+    environment_names: list[core_cst.EnvironmentName] | None,
+) -> core_cst.EnvironmentName | None:
+    for env_name in environment_names or []:
+        resolved = core_cst.EnvironmentName(env_name)
+        if resolved != core_cst.EnvironmentName.INTERCODE:
+            return resolved
+    return None
+
+
 async def run_environment_server_container(
     environment_name: core_cst.EnvironmentName | None,
     log_labels: dict,
@@ -869,20 +879,24 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         env_urls = []
         env_server_url_str = None
         if task_type == TaskType.ENVIRONMENTTASK:
-            logger.info("Running Environment Server Containers", extra=log_labels)
-            await log_task(training_data.task_id, task.hotkey, "Starting Environment Servers...")
-            env_name = (task.training_data.dataset_type.environment_names or [None])[0]
-            for gpu in task.gpu_ids:
-                environment_server_container = await run_environment_server_container(
-                    env_name, log_labels
-                )
-                if environment_server_container is None:
-                    raise RuntimeError(f"Unable to start environment server for {env_name}")
-                env_server_containers.append(environment_server_container)
-                ip_address = await wait_for_env_container_ip(environment_server_container)
-                env_urls.append(f"http://{ip_address}:8000")
-            env_server_url_str = ",".join(env_urls)
-            await log_task(training_data.task_id, task.hotkey, "Environment servers ready.")
+            env_name = _select_training_env_server_name(task.training_data.dataset_type.environment_names)
+            if env_name is None:
+                logger.info("Skipping env server containers; only InterCode environments configured", extra=log_labels)
+                await log_task(training_data.task_id, task.hotkey, "Skipping Environment Servers.")
+            else:
+                logger.info("Running Environment Server Containers", extra=log_labels)
+                await log_task(training_data.task_id, task.hotkey, "Starting Environment Servers...")
+                for gpu in task.gpu_ids:
+                    environment_server_container = await run_environment_server_container(
+                        env_name, log_labels
+                    )
+                    if environment_server_container is None:
+                        raise RuntimeError(f"Unable to start environment server for {env_name}")
+                    env_server_containers.append(environment_server_container)
+                    ip_address = await wait_for_env_container_ip(environment_server_container)
+                    env_urls.append(f"http://{ip_address}:8000")
+                env_server_url_str = ",".join(env_urls)
+                await log_task(training_data.task_id, task.hotkey, "Environment servers ready.")
 
         if model_prep_ran:
             model_for_container = get_anonymous_model_dir(training_data.model)

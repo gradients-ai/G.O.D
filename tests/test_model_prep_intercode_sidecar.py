@@ -62,6 +62,20 @@ def test_start_env_sidecars_passes_intercode_command(monkeypatch):
     ]
 
 
+def test_training_env_server_selection_skips_intercode(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
+
+    from trainer import image_manager
+
+    assert image_manager._select_training_env_server_name(
+        [EnvironmentName.INTERCODE, EnvironmentName.LIARS_DICE]
+    ) == EnvironmentName.LIARS_DICE
+    assert image_manager._select_training_env_server_name(
+        [EnvironmentName.INTERCODE]
+    ) is None
+    assert image_manager._select_training_env_server_name([]) is None
+
+
 @pytest.mark.asyncio
 async def test_run_environment_server_container_resolves_intercode_config(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
