@@ -400,7 +400,7 @@ async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
     models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
     tasks = []

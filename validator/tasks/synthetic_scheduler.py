@@ -137,11 +137,12 @@ async def _get_datasets_for_bin(min_rows: int, max_rows: int, keypair: Keypair, 
             await asyncio.sleep(5)
 
 
-async def _get_instruct_text_datasets(keypair: Keypair) -> AsyncGenerator[Dataset, None]:
+async def _get_instruct_text_datasets(keypair: Keypair, small_only: bool = False) -> AsyncGenerator[Dataset, None]:
     """Round-robin generator that cycles through all dataset size bins."""
 
+    bins = [t_cst.R1_TEXT_DATASET_BIN] if small_only else vcst.DATASET_BINS_TO_SAMPLE
     bin_generators = [
-        _get_datasets_for_bin(min_rows, max_rows, keypair, False) for min_rows, max_rows in vcst.DATASET_BINS_TO_SAMPLE
+        _get_datasets_for_bin(min_rows, max_rows, keypair, False) for min_rows, max_rows in bins
     ]
 
     while True:
@@ -198,14 +199,7 @@ async def _get_columns_for_instruct_dataset(
 
 
 def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
-    """Compute training hours from row count, model size, and task type.
-
-    Base hours scale linearly from TRAINING_HOURS_MIN at TRAINING_HOURS_SCALE_START_ROWS
-    up to TRAINING_HOURS_MAX_BASE at TRAINING_HOURS_MAX_ROWS. Model size scales hours
-    down for models below 14B. Task-type multiplier is applied here so the default
-    is correct even if apply_baseline_ctx_scale is never called. Snaps to nearest 0.5h,
-    minimum 1h. Context-length scaling is applied later via apply_baseline_ctx_scale.
-    """
+    """Compute training hours from row count, model size, and task type."""
     row_range = vcst.TRAINING_HOURS_MAX_ROWS - vcst.TRAINING_HOURS_SCALE_START_ROWS
     t = max(0.0, min(1.0, (num_rows - vcst.TRAINING_HOURS_SCALE_START_ROWS) / row_range))
     base = vcst.TRAINING_HOURS_MIN + t * (vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN)
@@ -225,23 +219,19 @@ def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None
 
 
 def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
-    """Scale training hours by mean sequence length from baseline stats.
-
-    Applies ctx scale only — task-type multiplier is already baked in at task creation.
-    Scale is quadratic in (mean_seq_len / CTX_REF_SEQ_LEN), reflecting O(n²) attention
-    cost, clamped to [CTX_SCALE_MIN, CTX_SCALE_MAX] = [0.25, 3.0].
-    Returns hours snapped to nearest 0.5, minimum 1h, capped at MAX_TRAINING_HOURS.
-    If baseline_stats is None or lacks sequence length data, returns hours unchanged.
-    """
+    """Scale training hours by estimated packed block length (max(p95, 2*p50))."""
     if baseline_stats is None:
         return hours
     try:
-        mean_seq_len = baseline_stats.dataset.seq_length_distribution.mean
+        seq_dist = baseline_stats.dataset.seq_length_distribution
+        p95 = seq_dist.p95
+        p50 = seq_dist.p50
     except AttributeError:
         return hours
-    if not mean_seq_len:
+    if not p95:
         return hours
-    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, (mean_seq_len / vcst.CTX_REF_SEQ_LEN) ** 2))
+    packed_len = max(p95, 2 * (p50 or p95))
+    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, (packed_len / vcst.CTX_REF_SEQ_LEN) ** 2))
     scaled = max(vcst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
     return min(scaled, vcst.MAX_TRAINING_HOURS)
 
