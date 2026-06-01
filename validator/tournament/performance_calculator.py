@@ -142,13 +142,12 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             continue
 
         if task_obj.task_type == TaskType.ENVIRONMENTTASK:
+            # Local import breaks the weight_setting <-> performance_calculator import cycle.
+            from validator.core.weight_setting import calculate_env_perf_diff_from_win_pct
+
             num_envs = len(task_obj.environment_names) if task_obj.environment_names else 1
             win_pct = (2 * challenger_score + boss_score - 3 * num_envs) / (3 * num_envs)
-            win_pct = max(0.0, win_pct)
-            if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
-                perf_diff = 0.0
-            else:
-                perf_diff = cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+            perf_diff = calculate_env_perf_diff_from_win_pct(win_pct)
             challenger_won = challenger_score > boss_score
         elif is_higher_better:
             if boss_score > 0:
