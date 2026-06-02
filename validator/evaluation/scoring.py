@@ -25,7 +25,6 @@ from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import IndividualEvalResult
 from core.models.scoring_models import IndividualScoresByEnv
 from core.models.scoring_models import MinerRepos
-from core.models.scoring_models import PairwiseOutcome
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -53,9 +52,8 @@ from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
-from validator.evaluation.tournament_scoring import accumulate_points
-from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
-from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
+from validator.evaluation.tournament_scoring import dispersion_weighted_standings
+from validator.evaluation.tournament_scoring import pvp_results_to_winrates
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
 from validator.utils.minio import async_minio_client
@@ -697,21 +695,27 @@ async def _run_env_tournament_eval(
         f"pvp_envs={[e.value for e in pvp_envs]}, individual_envs={[e.value for e in individual_envs]}"
     )
 
-    all_outcomes: list[PairwiseOutcome] = []
+    env_scores: dict[core_cst.EnvironmentName, dict[str, float]] = {}
 
     if pvp_envs:
-        all_outcomes.extend(await _eval_pvp_envs(
+        env_scores.update(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
         ))
 
     if individual_envs:
-        all_outcomes.extend(await _eval_individual_envs(
+        env_scores.update(await _eval_individual_envs(
             task_id=task.task_id, individual_envs=individual_envs, miners=miners,
             base_model=base_model, model_params=model_params, seed=seed, config=config,
         ))
 
-    standings = accumulate_points(all_outcomes, miners.hotkeys, weights=task.environment_weights or None)
+    score_ref_max = {
+        env: core_cst.ENVIRONMENT_CONFIGS[env].score_ref_max for env in task.environment_names
+    }
+    standings = dispersion_weighted_standings(
+        env_scores, miners.hotkeys, score_ref_max=score_ref_max,
+        weights=task.environment_weights or None,
+    )
     return _standings_to_results(standings, miners, task)
 
 
@@ -770,8 +774,8 @@ async def _eval_pvp_envs(
     base_model: str,
     seed: int,
     config: Config,
-) -> list[PairwiseOutcome]:
-    """Run pairwise PvP eval for PVP-type environments, return pairwise outcomes."""
+) -> dict[core_cst.EnvironmentName, dict[str, float]]:
+    """Run pairwise PvP eval for PVP-type environments, return per-env win-rates."""
     env_config = _get_shared_env_config(pvp_envs)
 
     group_results = await _get_or_run_pvp_pairs(
@@ -781,7 +785,7 @@ async def _eval_pvp_envs(
         gpu_count=cts.PVP_BASILICA_GPU_COUNT, config=config,
     )
 
-    return pvp_results_to_pairwise(group_results)
+    return pvp_results_to_winrates(group_results)
 
 
 async def _get_or_run_pvp_pairs(
@@ -901,8 +905,8 @@ async def _eval_individual_envs(
     model_params: int,
     seed: int,
     config: Config,
-) -> list[PairwiseOutcome]:
-    """Run per-miner containers for INDIVIDUAL-type envs, return synthetic pairwise outcomes."""
+) -> dict[core_cst.EnvironmentName, dict[str, float]]:
+    """Run per-miner containers for INDIVIDUAL-type envs, return per-env raw scores."""
     task_id_str = str(task_id)
     env_name_strs = [e.value for e in individual_envs]
 
@@ -951,11 +955,7 @@ async def _eval_individual_envs(
                 f"Individual eval {env.value}: assigned score=0 for exhausted hotkeys: {[hk[:8] for hk in missing_hks]}"
             )
 
-    outcomes: list[PairwiseOutcome] = []
-    for env in individual_envs:
-        result = scores.results[env]
-        outcomes.extend(individual_scores_to_pairwise(result.scores_by_hotkey, env))
-    return outcomes
+    return {env: dict(scores.results[env].scores_by_hotkey) for env in individual_envs}
 
 
 def _build_scores_from_db(
