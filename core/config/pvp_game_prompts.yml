@@ -4,14 +4,6 @@ system_prompt_template: >
   # Game Rules
   {rules}
 
-  # Output Format
-  You must respond with ONLY the action ID (a single number).
-  Do NOT include descriptions or explanations.
-
-  Examples:
-  - For action "0 -> roll": respond "0"
-  - For action "89 -> a3": respond "89"
-
 liars_dice_rules: >
   LIAR'S DICE RULES:
 

@@ -266,6 +266,17 @@ class TestPromptAndTools:
         assert MemoryArea.WORKING.value.upper() in system.upper()
         assert MemoryArea.LONG_TERM.value.upper() in system.upper()
 
+    def test_system_prompt_does_not_demand_a_bare_action_id(self):
+        # The legacy single-shot instruction contradicts tool calling — must be gone.
+        game, state = _leduc()
+        pid = state.current_player()
+        legal = state.legal_actions(pid)
+        chat = ScriptedChat(_resp(_call("game_action", action_id=legal[0])))
+        _make_bot(game, chat, pid).step(state)
+        system = chat.calls[0]["messages"][0].content.lower()
+        assert "only the action id" not in system
+        assert "game_action" in system  # the tool-calling instruction stands instead
+
     def test_tool_result_protocol_shape(self):
         game, state = _leduc()
         pid = state.current_player()
