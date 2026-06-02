@@ -26,6 +26,7 @@ from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import ChatRole
 from core.models.pvp_models import PreparedModel
+from core.models.pvp_models import ToolCall
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalMetadata
@@ -56,18 +57,19 @@ class TestFullGamePipeline:
     """Play actual multi-turn games through the real pipeline with scripted bots."""
 
     @staticmethod
-    def _always_first_legal(config, messages):
-        """Chat function that always picks the first legal action.
-        Parses legal actions from the last user message."""
-        last_msg = messages[-1].content if messages else ""
-        # Extract first number from "Legal Actions:" section
+    def _always_first_legal(config, messages, tools=None):
+        """Chat function that commits the first legal action via game_action.
+        Parses the first legal id from the last user message's action list."""
+        last_msg = (messages[-1].content if messages else "") or ""
+        action_id = 0
         for line in last_msg.split("\n"):
             stripped = line.strip()
             if stripped and stripped[0].isdigit():
-                action_id = stripped.split()[0]
-                if action_id.isdigit():
-                    return ChatResult(content=action_id)
-        return ChatResult(content="0")
+                token = stripped.split()[0]
+                if token.isdigit():
+                    action_id = int(token)
+                    break
+        return ChatResult(tool_calls=[ToolCall(id="c1", name="game_action", arguments={"action_id": action_id})])
 
     def test_leduc_poker_completes(self):
         """A full Leduc Poker game completes without error."""

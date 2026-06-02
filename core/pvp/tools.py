@@ -13,15 +13,17 @@ returns an error string, never an exception.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any
 
 from pydantic import BaseModel
 
+from core.models.pvp_models import FunctionSchema
 from core.models.pvp_models import GameActionArgs
+from core.models.pvp_models import JsonScalar
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import MemoryConfig
 from core.models.pvp_models import MemoryOp
 from core.models.pvp_models import MemorySlotEdit
+from core.models.pvp_models import ToolSchema
 from core.pvp.memory import SlotMemory
 
 
@@ -50,8 +52,8 @@ _TOOL_TO_AREA_OP: dict[str, tuple[MemoryArea, MemoryOp]] = {
 }
 
 
-def _schema_from_model(model: type[BaseModel], *, slot_bounds: tuple[int, int] | None = None) -> dict[str, Any]:
-    """JSON schema for a tool's arguments, stripped of Pydantic titles.
+def _params_schema(model: type[BaseModel], *, slot_bounds: tuple[int, int] | None = None) -> dict:
+    """JSON Schema for a tool's arguments, stripped of Pydantic titles.
 
     When slot_bounds is given, the integer 'slot' field is constrained to the
     valid range so the grammar can't even emit an out-of-range slot.
@@ -68,32 +70,32 @@ def _schema_from_model(model: type[BaseModel], *, slot_bounds: tuple[int, int] |
     return schema
 
 
-def _function_tool(name: str, description: str, parameters: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
+def _function_tool(name: str, description: str, parameters: dict) -> ToolSchema:
+    return ToolSchema(function=FunctionSchema(name=name, description=description, parameters=parameters))
 
 
-def build_memory_tools(configs: dict[MemoryArea, MemoryConfig]) -> list[dict[str, Any]]:
+def build_memory_tools(configs: dict[MemoryArea, MemoryConfig]) -> list[ToolSchema]:
     """Generate memory tool schemas for the configured areas (one per area x op)."""
-    out: list[dict[str, Any]] = []
+    out: list[ToolSchema] = []
     for area, cfg in configs.items():
         for op in MemoryOp:
             verb, effect = _OP_PHRASING[op]
             description = f"{verb} a {area.value} slot (slots 1-{cfg.n_slots}; {_AREA_PURPOSE[area]}); {effect}."
-            parameters = _schema_from_model(MemorySlotEdit, slot_bounds=(1, cfg.n_slots))
+            parameters = _params_schema(MemorySlotEdit, slot_bounds=(1, cfg.n_slots))
             out.append(_function_tool(memory_tool_name(area, op), description, parameters))
     return out
 
 
-def build_game_action_tool(legal_hint: str) -> dict[str, Any]:
+def build_game_action_tool(legal_hint: str) -> ToolSchema:
     """Schema for the turn-terminating move tool. legal_hint surfaces current legal ids."""
     return _function_tool(
         GAME_ACTION_TOOL_NAME,
         f"Commit your move and end your turn. {legal_hint}",
-        _schema_from_model(GameActionArgs),
+        _params_schema(GameActionArgs),
     )
 
 
-def execute_memory_tool(memories: dict[MemoryArea, SlotMemory], name: str, args: dict[str, Any]) -> str:
+def execute_memory_tool(memories: dict[MemoryArea, SlotMemory], name: str, args: dict[str, JsonScalar]) -> str:
     """Apply a memory tool call against its area's SlotMemory and return the result string."""
     routed = _TOOL_TO_AREA_OP.get(name)
     if routed is None:
@@ -104,9 +106,12 @@ def execute_memory_tool(memories: dict[MemoryArea, SlotMemory], name: str, args:
     if target is None:
         return f"error: memory area {area.value} not configured"
 
+    raw_slot = args.get("slot")
+    if not isinstance(raw_slot, (int, str)):
+        return f"error: tool {name} requires an integer 'slot'"
     try:
-        slot = int(args["slot"])
-    except (KeyError, TypeError, ValueError):
+        slot = int(raw_slot)
+    except ValueError:
         return f"error: tool {name} requires an integer 'slot'"
 
     content = args.get("content", "")

@@ -114,5 +114,9 @@ class SlotMemory:
         body = "\n".join(lines)
         return f"{title}\n{body}" if title else body
 
+    def reset(self) -> None:
+        """Empty every slot (used when a per-game memory area starts a new game)."""
+        self.slots = {i: "" for i in range(1, self.n_slots + 1)}
+
     def to_dict(self) -> dict[int, str]:
         return dict(self.slots)

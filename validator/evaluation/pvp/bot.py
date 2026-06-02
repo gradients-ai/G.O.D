@@ -1,15 +1,21 @@
-"""LLM Bot implementation for OpenSpiel PvP evaluation.
+"""Tool-calling LLM bot for OpenSpiel PvP evaluation.
 
-Wraps an LLM inference endpoint as a pyspiel.Bot, maintaining
-conversation history and parsing actions from model responses.
-Accepts a ChatFn protocol for testability.
+Each turn runs a short agentic loop: the model is given the game state, its
+memory slots, and a set of tools. It may call memory tools (whose results are
+fed back) and must call game_action to commit a legal move, which ends the
+turn. The conversation is rebuilt fresh every turn — the only state carried
+across turns is the memory in SlotMemory, not a growing transcript.
+
+Two memory areas live behind the tools: working memory (reset each game) and
+long-term memory (persists across games against the same opponent). Robustness
+is layered: a per-turn SIGALRM timeout, a bounded number of inner tool
+round-trips, illegal moves rejected with an error result (retry), and bad
+memory ops that no-op rather than crash.
 """
 
 import logging
-import re
 import signal
 
-import numpy as np
 import openai
 import pyspiel
 
@@ -17,11 +23,24 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatFn
 from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatRole
+from core.models.pvp_models import MemoryArea
+from core.models.pvp_models import MemoryConfig
+from core.models.pvp_models import ToolCall
+from core.models.pvp_models import ToolSchema
+from core.pvp import tools as tool_lib
+from core.pvp.memory import SlotMemory
+from core.pvp.memory import WhitespaceTokenCounter
 from validator.core import constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 
 
 logger = logging.getLogger(__name__)
+
+_NUDGE = "You did not call a tool. Call game_action with a legal action id to make your move."
+_TOOL_GUIDANCE = (
+    "Use the memory tools to manage your notes between moves. When ready, call "
+    "game_action with a legal action id to commit your move and end your turn."
+)
 
 
 class TurnTimeoutError(Exception):
@@ -49,23 +68,31 @@ class EmptyLegalActionsError(Exception):
 
 
 class InvalidActionForfeitError(Exception):
-    """Raised when a bot repeatedly fails to produce legal actions in one game."""
+    """Raised when a bot fails to commit a legal move within the turn's budget."""
 
     def __init__(self, player_id: int, invalid_action_failures: int):
         self.player_id = player_id
         self.invalid_action_failures = invalid_action_failures
         super().__init__(
-            f"Player {player_id} failed to produce valid actions {invalid_action_failures} times and forfeits"
+            f"Player {player_id} failed to commit a legal action in {invalid_action_failures} tool steps and forfeits"
         )
 
 
-class LLMBot(pyspiel.Bot):
-    """OpenSpiel Bot backed by an LLM via injectable chat function.
+def default_memories() -> dict[MemoryArea, SlotMemory]:
+    """Build the standard working + long-term memory areas from constants.
 
-    Maintains full conversation history per game. On each step(),
-    generates a user prompt from the game state, calls the chat function,
-    and parses an action ID from the response.
+    Uses a whitespace token counter as a dependency-free default; production
+    wiring injects a tokenizer-backed counter so budgets match real tokens.
     """
+    counter = WhitespaceTokenCounter()
+    return {
+        MemoryArea.WORKING: SlotMemory(vcst.PVP_WORKING_MEM_SLOTS, vcst.PVP_WORKING_SLOT_TOKENS, counter),
+        MemoryArea.LONG_TERM: SlotMemory(vcst.PVP_LONGTERM_MEM_SLOTS, vcst.PVP_LONGTERM_SLOT_TOKENS, counter),
+    }
+
+
+class LLMBot(pyspiel.Bot):
+    """OpenSpiel Bot backed by an LLM that manages memory slots via tools."""
 
     def __init__(
         self,
@@ -75,146 +102,133 @@ class LLMBot(pyspiel.Bot):
         config: ChatCompletionConfig,
         agent: BaseGameAgent,
         rng_seed: int,
+        memories: dict[MemoryArea, SlotMemory] | None = None,
+        max_inner_steps: int | None = None,
     ):
         pyspiel.Bot.__init__(self)
         self._game = game
         self._player_id = player_id
         self._chat_fn = chat_fn
-        self._config = config
+        # The tool loop sets its own per-step generation budget; the inbound
+        # config's max_tokens (legacy action-only default) is not what we want.
+        self._config = config.model_copy(update={"max_tokens": vcst.PVP_PER_STEP_MAX_TOKENS})
         self._agent = agent
-        self._rng = np.random.RandomState(rng_seed)
-        self._conversation: list[ChatMessage] = []
-        self._system_prompt_set = False
-        self._invalid_action_failures = 0
+        self._rng_seed = rng_seed
+        self._memories = memories if memories is not None else default_memories()
+        self._max_inner_steps = max_inner_steps or vcst.PVP_MAX_INNER_STEPS
+        self._memory_tools = tool_lib.build_memory_tools(
+            {
+                area: MemoryConfig(n_slots=mem.n_slots, slot_token_budget=mem.slot_token_budget)
+                for area, mem in self._memories.items()
+            }
+        )
 
     def restart_at(self, state: pyspiel.State) -> None:
-        self._conversation.clear()
-        self._system_prompt_set = False
-        self._invalid_action_failures = 0
+        """Reset per-game memory at the start of a new game; keep persistent areas."""
+        for area, mem in self._memories.items():
+            if not area.persists_across_games:
+                mem.reset()
 
     def inform_action(self, state: pyspiel.State, player_id: int, action: int) -> None:
         pass
 
     def step(self, state: pyspiel.State) -> int:
-        """Choose an action by querying the LLM.
+        """Run one turn under a per-turn wall-clock timeout."""
 
-        Called by evaluate_bots during game play. Enforces a per-turn
-        timeout — if the turn (including all retries) exceeds the limit,
-        TurnTimeoutError propagates up to forfeit the game.
-        """
-
-        def _turn_timeout_handler(signum: int, frame: object) -> None:
+        def _timeout_handler(signum: int, frame: object) -> None:
             raise TurnTimeoutError(self._player_id)
 
-        prev_handler = signal.signal(signal.SIGALRM, _turn_timeout_handler)
+        prev_handler = signal.signal(signal.SIGALRM, _timeout_handler)
         signal.alarm(vcst.PVP_TURN_TIMEOUT_SECONDS)
-
         try:
-            return self._step_inner(state)
-        except TurnTimeoutError:
-            raise
+            return self._run_turn(state)
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, prev_handler)
 
-    def _step_inner(self, state: pyspiel.State) -> int:
-        """Core step logic: prompt the LLM, parse, retry, fallback."""
-        if not self._system_prompt_set:
-            system_prompt = self._agent.generate_system_prompt()
-            self._conversation.append(ChatMessage(role=ChatRole.SYSTEM, content=system_prompt))
-            self._system_prompt_set = True
-
-        current = state.current_player()
-        legal_actions = state.legal_actions(current)
-
-        if current != self._player_id:
-            logger.error(
-                "Player ID mismatch: bot._player_id=%d current_player=%d "
-                "legal_actions(current)=%s legal_actions(self)=%s "
-                "is_terminal=%s is_chance=%s",
-                self._player_id, current,
-                state.legal_actions(current), state.legal_actions(self._player_id),
-                state.is_terminal(), state.is_chance_node(),
-            )
-
+    def _run_turn(self, state: pyspiel.State) -> int:
+        legal_actions = state.legal_actions(self._player_id)
         if not legal_actions:
-            logger.error(
-                "Empty legal_actions: player_id=%d current_player=%d "
-                "is_terminal=%s is_chance=%s game=%s",
-                self._player_id, current,
-                state.is_terminal(), state.is_chance_node(),
-                self._game.get_type().short_name,
-            )
             raise EmptyLegalActionsError(self._player_id)
+        legal_set = set(legal_actions)
 
-        user_prompt = self._agent.generate_user_prompt(state, self._player_id, legal_actions)
-        self._conversation.append(ChatMessage(role=ChatRole.USER, content=user_prompt))
+        messages = [
+            ChatMessage(role=ChatRole.SYSTEM, content=self._system_prompt()),
+            ChatMessage(role=ChatRole.USER, content=self._user_prompt(state, legal_actions)),
+        ]
+        tools = self._memory_tools + [tool_lib.build_game_action_tool(self._legal_hint(legal_actions))]
 
-        for attempt in range(vcst.PVP_BOT_MAX_PARSING_RETRIES + 1):
-            try:
-                result = self._chat_fn(self._config, self._conversation)
-            except openai.BadRequestError as exc:
-                if "context length" in str(exc).lower():
-                    raise ContextOverflowError(self._player_id) from exc
-                raise
+        for _ in range(self._max_inner_steps):
+            result = self._chat(messages, tools)
 
-            response_text = result.content or ""
-            self._conversation.append(ChatMessage(role=ChatRole.ASSISTANT, content=response_text))
+            if not result.tool_calls:
+                messages.append(ChatMessage(role=ChatRole.ASSISTANT, content=result.content or ""))
+                messages.append(ChatMessage(role=ChatRole.USER, content=_NUDGE))
+                continue
 
-            if response_text:
-                parsed_action = _parse_action(response_text, legal_actions)
-                if parsed_action is not None:
-                    return parsed_action
-
-            retry_msg = (
-                f"Invalid response. Respond with ONLY the action ID number. "
-                f"Attempt {attempt + 1}/{vcst.PVP_BOT_MAX_PARSING_RETRIES + 1}."
+            messages.append(
+                ChatMessage(role=ChatRole.ASSISTANT, content=result.content, tool_calls=result.tool_calls)
             )
-            self._conversation.append(ChatMessage(role=ChatRole.USER, content=retry_msg))
+            for call in result.tool_calls:
+                if call.name == tool_lib.GAME_ACTION_TOOL_NAME:
+                    action = self._validate_action(call, legal_set)
+                    if action is not None:
+                        return action
+                    messages.append(
+                        self._tool_result(call.id, f"error: not a legal action; legal ids = {legal_actions}")
+                    )
+                else:
+                    output = tool_lib.execute_memory_tool(self._memories, call.name, call.arguments)
+                    messages.append(self._tool_result(call.id, output))
 
-        self._invalid_action_failures += 1
-        attempts = vcst.PVP_BOT_MAX_PARSING_RETRIES + 1
-        if self._invalid_action_failures >= vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD:
-            logger.warning(
-                "LLM failed to produce valid action after %d attempts; player %d reached %d/%d failures and forfeits",
-                attempts,
-                self._player_id,
-                self._invalid_action_failures,
-                vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD,
-            )
-            raise InvalidActionForfeitError(self._player_id, self._invalid_action_failures)
+        logger.warning("Player %d did not commit a legal move in %d steps — forfeit", self._player_id, self._max_inner_steps)
+        raise InvalidActionForfeitError(self._player_id, self._max_inner_steps)
 
-        fallback = int(self._rng.choice(legal_actions))
-        logger.warning(
-            "LLM failed to produce valid action after %d attempts (%d/%d failures this game), falling back to %d",
-            attempts,
-            self._invalid_action_failures,
-            vcst.PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD,
-            fallback,
+    def _chat(self, messages: list[ChatMessage], tools: list[ToolSchema]):
+        try:
+            return self._chat_fn(self._config, messages, tools)
+        except openai.BadRequestError as exc:
+            if "context length" in str(exc).lower():
+                raise ContextOverflowError(self._player_id) from exc
+            raise
+
+    @staticmethod
+    def _validate_action(call: ToolCall, legal_set: set[int]) -> int | None:
+        raw = call.arguments.get("action_id")
+        if not isinstance(raw, (int, str)):
+            return None
+        try:
+            action = int(raw)
+        except ValueError:
+            return None
+        return action if action in legal_set else None
+
+    @staticmethod
+    def _tool_result(tool_call_id: str, content: str) -> ChatMessage:
+        return ChatMessage(role=ChatRole.TOOL, tool_call_id=tool_call_id, content=content)
+
+    def _system_prompt(self) -> str:
+        parts = [self._agent.generate_system_prompt()]
+        for area, mem in self._memories.items():
+            parts.append(mem.render(title=f"{area.value.upper()} (your notes):"))
+        parts.append(_TOOL_GUIDANCE)
+        return "\n\n".join(parts)
+
+    def _user_prompt(self, state: pyspiel.State, legal_actions: list[int]) -> str:
+        state_desc = self._agent.format_state(state, self._player_id)
+        action_lines = "\n".join(self._action_line(state, action) for action in legal_actions)
+        return (
+            f"Current state:\n{state_desc}\n\n"
+            f"You are Player {self._player_id}.\n"
+            f"Legal actions:\n{action_lines}"
         )
-        self._conversation.append(ChatMessage(role=ChatRole.ASSISTANT, content=str(fallback)))
-        return fallback
 
+    def _action_line(self, state: pyspiel.State, action: int) -> str:
+        try:
+            return f"{action} -> {state.action_to_string(self._player_id, action)}"
+        except (RuntimeError, AttributeError):
+            return str(action)
 
-def _parse_action(response: str, legal_actions: list[int]) -> int | None:
-    """Parse an action ID from LLM response text.
-
-    Strategies (in priority order):
-    1. Response is purely a number
-    2. Last number in text that is a legal action
-    """
-    cleaned = response.strip()
-    legal_set = set(legal_actions)
-
-    match = re.match(r"^\s*(\d+)\s*$", cleaned)
-    if match:
-        action = int(match.group(1))
-        if action in legal_set:
-            return action
-
-    numbers = [int(m) for m in re.findall(r"\b(\d+)\b", cleaned)]
-    for num in reversed(numbers):
-        if num in legal_set:
-            return num
-
-    return None
+    @staticmethod
+    def _legal_hint(legal_actions: list[int]) -> str:
+        return "Legal action ids: " + ", ".join(str(action) for action in legal_actions) + "."

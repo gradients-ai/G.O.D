@@ -453,9 +453,22 @@ PVP_CONFIG_ID_DIVISOR = 100_000_000
 PVP_LOG_INTERVAL_GAMES = 100
 PVP_BOT_MAX_PARSING_RETRIES = 0
 PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
-PVP_TURN_TIMEOUT_SECONDS = 5
+# Per-turn wall-clock forfeit budget. Covers the whole multi-step tool loop;
+# a healthy turn is a few seconds, this is the "stuck/too slow" cutoff.
+PVP_TURN_TIMEOUT_SECONDS = 15
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 PVP_EPISODE_FORFEIT_THRESHOLD = 10
+
+# Tool-calling memory harness
+# Max tool round-trips per turn before forfeiting (bounds the agentic loop).
+PVP_MAX_INNER_STEPS = 4
+# Generation cap per inner step. A step writes at most one slot (<=128 tokens)
+# plus brief reasoning + tool-call JSON, so this is comfortably sufficient.
+PVP_PER_STEP_MAX_TOKENS = 256
+PVP_WORKING_MEM_SLOTS = 4
+PVP_WORKING_SLOT_TOKENS = 128
+PVP_LONGTERM_MEM_SLOTS = 8
+PVP_LONGTERM_SLOT_TOKENS = 128
 INDIVIDUAL_WIN_MARGIN = 0.015
 
 # PvP tournament scoring

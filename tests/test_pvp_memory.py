@@ -154,38 +154,43 @@ class TestToolSchemas:
         schemas = tools.build_memory_tools(configs)
         # generative: count is areas x ops, names are derived, not hardcoded
         assert len(schemas) == len(configs) * len(MemoryOp)
-        names = {s["function"]["name"] for s in schemas}
+        names = {s.function.name for s in schemas}
         expected = {tools.memory_tool_name(a, o) for a in configs for o in MemoryOp}
         assert names == expected
 
     def test_memory_tools_are_openai_function_shape(self):
         for s in tools.build_memory_tools(make_configs(2, 2)):
-            assert s["type"] == "function"
-            params = s["function"]["parameters"]
+            assert s.type == "function"
+            params = s.function.parameters
             assert params["type"] == "object"
             assert set(params["required"]) == {"slot", "content"}
 
     def test_slot_field_is_range_constrained_for_grammar(self):
         schemas = tools.build_memory_tools(make_configs(n_working=4, n_longterm=8))
-        working = next(s for s in schemas if s["function"]["name"] == "working_memory_rewrite")
-        slot = working["function"]["parameters"]["properties"]["slot"]
+        working = next(s for s in schemas if s.function.name == "working_memory_rewrite")
+        slot = working.function.parameters["properties"]["slot"]
         assert slot["minimum"] == 1 and slot["maximum"] == 4
-        longterm = next(s for s in schemas if s["function"]["name"] == "long_term_memory_append")
-        assert longterm["function"]["parameters"]["properties"]["slot"]["maximum"] == 8
+        longterm = next(s for s in schemas if s.function.name == "long_term_memory_append")
+        assert longterm.function.parameters["properties"]["slot"]["maximum"] == 8
 
     def test_pydantic_titles_and_docstring_are_stripped(self):
-        schema = tools.build_memory_tools(make_configs())[0]["function"]["parameters"]
-        assert "title" not in schema
-        assert "description" not in schema  # model docstring not leaked onto the wire
-        assert all("title" not in p for p in schema["properties"].values())
+        params = tools.build_memory_tools(make_configs())[0].function.parameters
+        assert "title" not in params
+        assert "description" not in params  # model docstring not leaked onto the wire
+        assert all("title" not in p for p in params["properties"].values())
         # per-field descriptions are kept (they're useful to the model)
-        assert schema["properties"]["slot"]["description"]
+        assert params["properties"]["slot"]["description"]
+
+    def test_to_openai_round_trips_to_wire_shape(self):
+        wire = tools.build_game_action_tool("Legal: 1.").to_openai()
+        assert wire["type"] == "function"
+        assert wire["function"]["name"] == tools.GAME_ACTION_TOOL_NAME
 
     def test_game_action_tool_shape(self):
         t = tools.build_game_action_tool("Legal: 1, 2, 3.")
-        assert t["function"]["name"] == tools.GAME_ACTION_TOOL_NAME
-        assert t["function"]["parameters"]["required"] == ["action_id"]
-        assert "Legal: 1, 2, 3." in t["function"]["description"]
+        assert t.function.name == tools.GAME_ACTION_TOOL_NAME
+        assert t.function.parameters["required"] == ["action_id"]
+        assert "Legal: 1, 2, 3." in t.function.description
 
 
 # --- Tool dispatch (keyed by MemoryArea) ---

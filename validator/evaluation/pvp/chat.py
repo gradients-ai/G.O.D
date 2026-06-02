@@ -4,13 +4,19 @@ Uses the sync openai.OpenAI client since evaluate_bots calls
 bot.step() synchronously — no async machinery needed.
 """
 
+import json
 import logging
 import re
 import time
 
 import openai
 
-from core.models.pvp_models import ChatCompletionConfig, ChatMessage, ChatResult
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import ChatMessage
+from core.models.pvp_models import ChatResult
+from core.models.pvp_models import JsonScalar
+from core.models.pvp_models import ToolCall
+from core.models.pvp_models import ToolSchema
 from validator.core import constants as vcst
 
 logger = logging.getLogger(__name__)
@@ -43,15 +49,17 @@ def chat_completion(
     client: openai.OpenAI,
     config: ChatCompletionConfig,
     messages: list[ChatMessage],
+    tools: list[ToolSchema] | None = None,
 ) -> ChatResult:
     """Call chat endpoint with retries. Client should be created via create_client()."""
-    return _with_retries(client, config, messages)
+    return _with_retries(client, config, messages, tools)
 
 
 def _with_retries(
     client: openai.OpenAI,
     config: ChatCompletionConfig,
     messages: list[ChatMessage],
+    tools: list[ToolSchema] | None = None,
 ) -> ChatResult:
     """Execute chat with exponential backoff on transient failures."""
     last_exc: BaseException | None = None
@@ -59,7 +67,7 @@ def _with_retries(
 
     for attempt in range(attempts):
         try:
-            return _call(client, config, messages)
+            return _call(client, config, messages, tools)
 
         except (TimeoutError, openai.APITimeoutError, openai.APIConnectionError) as exc:
             last_exc = exc
@@ -85,25 +93,54 @@ def _call(
     client: openai.OpenAI,
     config: ChatCompletionConfig,
     messages: list[ChatMessage],
+    tools: list[ToolSchema] | None = None,
 ) -> ChatResult:
     """Execute a single chat completion request."""
-    messages_dicts = [msg.model_dump() for msg in messages]
+    kwargs = {
+        "model": config.inference_model,
+        "messages": [msg.to_openai() for msg in messages],
+        "temperature": config.temperature,
+        "seed": config.seed,
+        "max_tokens": config.max_tokens,
+    }
+    if tools:
+        kwargs["tools"] = [tool.to_openai() for tool in tools]
+        kwargs["tool_choice"] = "auto"
 
-    response = client.chat.completions.create(
-        model=config.inference_model,
-        messages=messages_dicts,
-        temperature=config.temperature,
-        seed=config.seed,
-        max_tokens=config.max_tokens,
-    )
+    response = client.chat.completions.create(**kwargs)
+    message = response.choices[0].message if response.choices else None
 
     content: str | None = None
-    if response.choices and response.choices[0].message.content:
-        raw = response.choices[0].message.content.strip()
+    if message is not None and message.content:
+        raw = message.content.strip()
         content = strip_think_tags(raw) if raw else None
+
+    tool_calls = _parse_tool_calls(message)
 
     usage: dict[str, int] | None = None
     if response.usage:
         usage = response.usage.model_dump()
 
-    return ChatResult(content=content, usage=usage)
+    return ChatResult(content=content, tool_calls=tool_calls, usage=usage)
+
+
+def _parse_tool_calls(message: object | None) -> list[ToolCall] | None:
+    """Normalise the SDK's tool_calls into our ToolCall model, decoding arguments JSON."""
+    raw_calls = getattr(message, "tool_calls", None)
+    if not isinstance(raw_calls, list) or not raw_calls:
+        return None
+    return [
+        ToolCall(id=call.id, name=call.function.name, arguments=_decode_arguments(call.function.arguments))
+        for call in raw_calls
+    ]
+
+
+def _decode_arguments(raw: str | None) -> dict[str, JsonScalar]:
+    """Decode a tool call's JSON arguments string; tolerate malformed output."""
+    if not raw:
+        return {}
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
