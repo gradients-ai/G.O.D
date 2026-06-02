@@ -120,7 +120,6 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
 
     validator_port = input("👀 Enter an exposed port to run the validator on (default: 9001): ") or "9001"
 
-
     s3_compatible_endpoint = input("🎯 Enter s3 compatible endpoint: ")
     s3_compatible_access_key = input("🎯 Enter s3 compatible access key: ")
     s3_compatible_secret_key = input("🎯 Enter s3 compatible secret key: ")
@@ -136,7 +135,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         subtensor_network=subtensor_network,
         subtensor_address=subtensor_address,
         netuid=netuid,
-        env=env,
+        env="dev" if dev else "prod",
         postgres_user=postgres_user,
         postgres_password=postgres_password,
         postgres_db=postgres_db,
@@ -167,7 +166,7 @@ def generate_config(dev: bool = False, miner: bool = False, trainer: bool = Fals
     if miner:
         return generate_miner_config(dev)
     elif trainer:
-        return generate_trainer_config
+        return generate_trainer_config()
     else:
         return generate_validator_config(dev)
 
@@ -214,7 +213,7 @@ if __name__ == "__main__":
     print("\n✨ Welcome to the Config Environment Generator! ✨\n")
 
     if args.miner:
-        config = generate_config(miner=True)
+        config = generate_config(dev=args.dev, miner=True)
         name = "1"
     elif args.auditor:
         config = generate_auditor_config(args.dev)

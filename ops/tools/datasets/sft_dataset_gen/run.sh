@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+REPO_DIR="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 VENV_DIR="$SCRIPT_DIR/.venv"
 OUTPUT_DIR="$REPO_DIR/output/sft_dataset"
 
@@ -27,7 +27,7 @@ echo "Output: $OUTPUT_DIR"
 echo "Checkpoint saves after every episode — safe to Ctrl+C and resume."
 echo ""
 
-PYTHONPATH="$REPO_DIR" "$VENV_DIR/bin/python" -m scripts.sft_dataset_gen.generate \
+PYTHONPATH="$REPO_DIR" "$VENV_DIR/bin/python" -m ops.tools.datasets.sft_dataset_gen.generate \
     --concurrency 4 \
     --haiku-ratio 0.8 \
     --output-dir "$OUTPUT_DIR" \

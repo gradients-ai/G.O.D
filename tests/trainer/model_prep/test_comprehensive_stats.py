@@ -1,22 +1,20 @@
 """
 Comprehensive stats test on distilgpt2.
 Verifies all fields are populated, types correct, and values sensible.
-Run with: python -m pytest tests/test_comprehensive_stats.py -v -o addopts= -s
+Run with: python -m pytest tests/trainer/model_prep/test_comprehensive_stats.py -v -o addopts= -s
 """
 
-import json
-
 import pytest
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
 
-from core.models.model_prep_models import (
-    AugmentationConfig,
-    AugmentationScope,
-    AugmentationType,
-    BaselineStats,
-)
+from core.models.model_prep_models import AugmentationConfig
+from core.models.model_prep_models import AugmentationScope
+from core.models.model_prep_models import AugmentationType
+from core.models.model_prep_models import BaselineStats
 from trainer.model_prep.augmentation import augment_model
-from trainer.model_prep.stats import compute_text_stats, classify_layer
+from trainer.model_prep.stats import classify_layer
+from trainer.model_prep.stats import compute_text_stats
 
 
 MODEL_ID = "distilgpt2"
