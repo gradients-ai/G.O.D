@@ -1,7 +1,7 @@
 import json
 import os
-import re
 import random
+import re
 import shutil
 import tempfile
 import urllib.request
@@ -15,17 +15,18 @@ from huggingface_hub import HfApi
 from huggingface_hub import snapshot_download
 from PIL import Image
 
+import validator.evaluation.constants as cst
 from core.models.utility_models import ImageModelType
-import validator.constants as cst
-from validator.evaluation.models import Img2ImgPayload
 from validator.evaluation.image_io import adjust_image_size
 from validator.evaluation.image_io import base64_to_image
 from validator.evaluation.image_io import download_from_huggingface
 from validator.evaluation.image_io import image_to_base64
 from validator.evaluation.image_io import list_supported_images
 from validator.evaluation.image_io import read_prompt_file
+from validator.evaluation.models import Img2ImgPayload
 from validator.infrastructure import comfy_gateway as api_gate
 from validator.infrastructure.retries import retry_on_5xx
+from validator.tasks.datasets.constants import SUPPORTED_IMAGE_FILE_EXTENSIONS
 
 
 logger = get_logger(__name__)
@@ -66,7 +67,7 @@ def load_comfy_workflows(model_type: str):
 
 def contains_image_files(directory: str) -> str:
     try:
-        return any(file.lower().endswith(cst.SUPPORTED_IMAGE_FILE_EXTENSIONS) for file in os.listdir(directory))
+        return any(file.lower().endswith(SUPPORTED_IMAGE_FILE_EXTENSIONS) for file in os.listdir(directory))
     except FileNotFoundError:
         return False
 
@@ -235,7 +236,7 @@ def eval_loop(dataset_path: str, params: Img2ImgPayload) -> dict[str, list[float
     total_text_guided_losses = []
     total_no_text_losses = []
 
-    test_images_list = list_supported_images(dataset_path, cst.SUPPORTED_IMAGE_FILE_EXTENSIONS)
+    test_images_list = list_supported_images(dataset_path, SUPPORTED_IMAGE_FILE_EXTENSIONS)
 
     for file_name in test_images_list:
         logger.info(f"Calculating losses for {file_name}")

@@ -1,8 +1,7 @@
+import validator.evaluation.constants as vcst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-import validator.constants as vcst
-
 
 
 def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:

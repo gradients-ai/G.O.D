@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from validator.evaluation.pvp.models import GameInstance
 from validator.evaluation.pvp.models import GameOutcome
 from validator.evaluation.pvp.models import PvPEnvironmentResult

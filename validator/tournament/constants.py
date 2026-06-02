@@ -1,6 +1,6 @@
 from datetime import date
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 
 
 TOURNAMENT_INTERVAL_HOURS = 120

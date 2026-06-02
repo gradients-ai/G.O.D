@@ -10,15 +10,15 @@ from uuid import UUID
 import basilica
 import requests
 
-import validator.constants as vcst
-from validator.db.database import PSQLDB
-from validator.evaluation.db_utils import persist_deployment_ids_for_repo
-from validator.evaluation.basilica_deployments import EVAL_RESULT_STATUS_PATH
-from validator.evaluation.evaluation_logging import _log_eval_step
-from validator.evaluation.basilica_deployments import deployment_is_healthy
-from validator.evaluation.evaluation_logging import log_basilica_logs_block
+import validator.evaluation.constants as vcst
 from core.logging import get_environment_logger
 from core.logging import get_logger
+from validator.db.database import PSQLDB
+from validator.evaluation.basilica_deployments import EVAL_RESULT_STATUS_PATH
+from validator.evaluation.basilica_deployments import deployment_is_healthy
+from validator.evaluation.db_utils import persist_deployment_ids_for_repo
+from validator.evaluation.evaluation_logging import _log_eval_step
+from validator.evaluation.evaluation_logging import log_basilica_logs_block
 
 
 logger = get_logger(__name__)

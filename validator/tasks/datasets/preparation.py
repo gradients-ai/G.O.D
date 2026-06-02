@@ -15,24 +15,25 @@ from datasets import concatenate_datasets
 from datasets import load_dataset
 from fiber import Keypair
 
-import validator.constants as cst
-from core import constants as core_cst
+import core.constants.datasets as core_cst
+import validator.tasks.datasets.constants as cst
+from core.constants.credentials import BUCKET_NAME
+from core.downloads import download_s3_file
+from core.logging import get_logger
 from core.models.payload_models import ImageTextPair
 from core.models.utility_models import FileFormat
-from core.downloads import download_s3_file
+from validator.db.sql.tasks import update_task
+from validator.evaluation.dataset_configs import get_default_dataset_config
+from validator.infrastructure.cache import delete_dataset_from_cache
+from validator.tasks.details import save_json_to_temp_file
+from validator.tasks.details import upload_file_to_minio
 from validator.tasks.models import AnyTextTypeRawTask
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
-from validator.db.sql.tasks import update_task
-from validator.evaluation.dataset_configs import get_default_dataset_config
-from validator.infrastructure.cache import delete_dataset_from_cache
-from core.logging import get_logger
 from validator.tasks.rewards.functions import validate_reward_function
-from validator.tasks.details import save_json_to_temp_file
-from validator.tasks.details import upload_file_to_minio
 
 
 logger = get_logger(__name__)
@@ -276,7 +277,7 @@ async def _process_and_upload_datasets(
             files_to_delete.append(train_json_path)
             await _check_file_size(train_json_size, "train_data")
             train_json_url = await upload_file_to_minio(
-                train_json_path, cst.BUCKET_NAME, f"{os.urandom(8).hex()}_train_data.json"
+                train_json_path, BUCKET_NAME, f"{os.urandom(8).hex()}_train_data.json"
             )
         else:
             train_json_url = train_dataset
@@ -285,7 +286,7 @@ async def _process_and_upload_datasets(
             test_json_path, test_json_size = await save_json_to_temp_file(test_data_json, prefix="test_data_")
             files_to_delete.append(test_json_path)
             await _check_file_size(test_json_size, "test_data")
-            test_json_url = await upload_file_to_minio(test_json_path, cst.BUCKET_NAME, f"{os.urandom(8).hex()}_test_data.json")
+            test_json_url = await upload_file_to_minio(test_json_path, BUCKET_NAME, f"{os.urandom(8).hex()}_test_data.json")
         else:
             test_json_url = test_dataset
     except Exception as e:
@@ -557,12 +558,12 @@ async def prepare_image_task(
                 test_zip_path, train_zip_path = train_test_split_image(dataset_path=dataset_path)
                 test_url = await upload_file_to_minio(
                     file_path=str(test_zip_path),
-                    bucket_name=cst.BUCKET_NAME,
+                    bucket_name=BUCKET_NAME,
                     object_name=f"{os.urandom(8).hex()}_test_data.zip",
                 )
                 train_url = await upload_file_to_minio(
                     file_path=str(train_zip_path),
-                    bucket_name=cst.BUCKET_NAME,
+                    bucket_name=BUCKET_NAME,
                     object_name=f"{os.urandom(8).hex()}_train_data.zip",
                 )
             finally:
@@ -586,10 +587,10 @@ async def prepare_image_task(
         test_zip_path, train_zip_path = train_test_split_image(dataset_path=source_dir)
 
         test_url = await upload_file_to_minio(
-            file_path=str(test_zip_path), bucket_name=cst.BUCKET_NAME, object_name=f"{os.urandom(8).hex()}_test_data.zip"
+            file_path=str(test_zip_path), bucket_name=BUCKET_NAME, object_name=f"{os.urandom(8).hex()}_test_data.zip"
         )
         train_url = await upload_file_to_minio(
-            file_path=str(train_zip_path), bucket_name=cst.BUCKET_NAME, object_name=f"{os.urandom(8).hex()}_train_data.zip"
+            file_path=str(train_zip_path), bucket_name=BUCKET_NAME, object_name=f"{os.urandom(8).hex()}_train_data.zip"
         )
 
         return (test_url.strip('"'), train_url.strip('"'))

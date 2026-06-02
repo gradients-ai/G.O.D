@@ -19,16 +19,16 @@ from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
 from trainer.model_artifacts import get_anonymous_model_dir
-from validator.db.sql import tasks as task_sql
-from validator.db.sql import tournaments as tournament_sql
-from validator.scoring.constants import EMISSION_BURN_HOTKEY
-from validator.scoring.tasks import _get_dataset_type
 from validator.app.config import Config
 from validator.app.config import load_config
-from validator.constants import DSTACK_RUNS_APPLY_ENDPOINT
-from validator.constants import DSTACK_RUNS_GET_ENDPOINT
-from validator.tasks.models import AnyTypeRawTask
+from validator.db.sql import tasks as task_sql
+from validator.db.sql import tournaments as tournament_sql
+from validator.infrastructure.service_constants import DSTACK_RUNS_APPLY_ENDPOINT
+from validator.infrastructure.service_constants import DSTACK_RUNS_GET_ENDPOINT
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.tasks import _get_dataset_type
 from validator.tasks.details import try_db_connections
+from validator.tasks.models import AnyTypeRawTask
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement
 

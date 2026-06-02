@@ -7,8 +7,10 @@ import numpy as np
 from fiber.chain.models import Node
 from huggingface_hub import HfApi
 
-import validator.constants as cts
-from core import constants as core_cst
+import core.constants.environments as core_cst
+import validator.evaluation.constants as eval_cst
+import validator.infrastructure.service_constants as service_cst
+import validator.scoring.constants as scoring_cst
 from core.logging import LogContext
 from core.logging import get_logger
 from core.models.payload_models import DiffusionLosses
@@ -132,7 +134,7 @@ def calculate_miner_ranking_and_scores(
     if ranked_results:
         top_result, top_metric = ranked_results[0]
         with LogContext(miner_hotkey=top_result.hotkey):
-            top_result.score = cts.FIRST_PLACE_SCORE
+            top_result.score = scoring_cst.FIRST_PLACE_SCORE
             top_result.score_reason = f"Ranked 1st by {ranking_type}"
             logger.info(
                 f"Miner {top_result.hotkey} (finetuned):"
@@ -143,7 +145,7 @@ def calculate_miner_ranking_and_scores(
             )
 
     total_valid_miners = len(valid_results)
-    if total_valid_miners > cts.MIN_IDEAL_NUM_MINERS_IN_POOL:
+    if total_valid_miners > scoring_cst.MIN_IDEAL_NUM_MINERS_IN_POOL:
         penalty_count = max(1, int(total_valid_miners * 0.25))
         penalty_start_idx = total_valid_miners - penalty_count
 
@@ -160,7 +162,7 @@ def calculate_miner_ranking_and_scores(
 
         for result, metric in ranked_results[penalty_start_idx:]:
             with LogContext(miner_hotkey=result.hotkey):
-                result.score = cts.SCORE_PENALTY
+                result.score = scoring_cst.SCORE_PENALTY
                 result.score_reason = f"Bottom 25% ranked by {ranking_type}"
                 logger.info(
                     f"Miner {result.hotkey} (finetuned):"
@@ -186,10 +188,10 @@ def calculate_miner_ranking_and_scores(
         for result in miner_results:
             # Find failed submissions that haven't been scored yet
             if (not result.is_finetune or np.isnan(result.test_loss)) and result.score == 0.0:
-                result.score = cts.SCORE_PENALTY
+                result.score = scoring_cst.SCORE_PENALTY
                 logger.info(
                     f"Miner {result.hotkey}: Failed submission ({result.score_reason}), "
-                    f"applying penalty score {cts.SCORE_PENALTY}"
+                    f"applying penalty score {scoring_cst.SCORE_PENALTY}"
                 )
 
     return miner_results
@@ -275,7 +277,7 @@ def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) 
         )
 
         weighted_loss = (
-            cts.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg + (1 - cts.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
+            eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
         )
         return weighted_loss
 
@@ -395,10 +397,10 @@ async def _evaluate_submissions(
 async def _clear_up_s3(file_paths: list[str]) -> None:
     for file_path in file_paths:
         try:
-            logger.info(f"files = {file_paths} and bucket is {cts.BUCKET_NAME}")
-            object_name = file_path.split(cts.BUCKET_NAME + "/")[-1]
-            logger.info(f"Deleting file {object_name} from MinIO bucket {cts.BUCKET_NAME}")
-            await async_minio_client.delete_file(cts.BUCKET_NAME, object_name)
+            logger.info(f"files = {file_paths} and bucket is {service_cst.BUCKET_NAME}")
+            object_name = file_path.split(service_cst.BUCKET_NAME + "/")[-1]
+            logger.info(f"Deleting file {object_name} from MinIO bucket {service_cst.BUCKET_NAME}")
+            await async_minio_client.delete_file(service_cst.BUCKET_NAME, object_name)
         except Exception as e:
             logger.error(f"Failed to delete file {file_path} from MinIO: {e}")
 
@@ -531,7 +533,7 @@ async def process_miners_pool(
                 )
                 continue
 
-            repo = f"{cts.RAYONLABS_HF_USERNAME}/{expected_name}"
+            repo = f"{service_cst.RAYONLABS_HF_USERNAME}/{expected_name}"
             try:
                 HfApi().repo_info(repo, timeout=30)
             except Exception:
@@ -685,7 +687,7 @@ async def _run_env_tournament_eval(
     model_params = task.model_params_count or 0
 
     eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
-    seed = eval_seed if eval_seed is not None else cts.ENV_EVAL_DEFAULT_SEED
+    seed = eval_seed if eval_seed is not None else eval_cst.ENV_EVAL_DEFAULT_SEED
 
     pvp_envs = [e for e in task.environment_names if core_cst.ENVIRONMENT_CONFIGS[e].eval_type == core_cst.EvalType.PVP]
     individual_envs = [
@@ -778,7 +780,7 @@ async def _eval_pvp_envs(
         task_id=task_id, pvp_envs=pvp_envs, miners=miners,
         base_model=base_model, seed=seed,
         image=env_config.tournament_eval_image,
-        gpu_count=cts.PVP_BASILICA_GPU_COUNT, config=config,
+        gpu_count=eval_cst.PVP_BASILICA_GPU_COUNT, config=config,
     )
 
     return pvp_results_to_pairwise(group_results)
@@ -796,7 +798,7 @@ async def _get_or_run_pvp_pairs(
 ) -> PvPGroupResults:
     """Check DB for complete pair results; if missing, run missing 1v1 pairs."""
     env_name_strs = [e.value for e in pvp_envs]
-    max_pair_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
+    max_pair_attempts = scoring_cst.MAX_TOURNAMENT_EVAL_ATTEMPTS
     task_uuid = UUID(task_id)
     all_hotkeys = miners.hotkeys
 
@@ -929,7 +931,7 @@ async def _eval_individual_envs(
         # Check if any missing hotkeys are still retryable — if so, raise to retry next cycle
         still_retryable = False
         for env, missing_hks in incomplete:
-            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=cts.MAX_TOURNAMENT_EVAL_ATTEMPTS)
+            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=scoring_cst.MAX_TOURNAMENT_EVAL_ATTEMPTS)
             if retryable:
                 still_retryable = True
                 break
@@ -991,13 +993,13 @@ async def _dispatch_missing_individual(
     if not missing_hotkeys:
         return scores
 
-    max_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
+    max_attempts = scoring_cst.MAX_TOURNAMENT_EVAL_ATTEMPTS
     to_run = _filter_exhausted(missing_hotkeys, env.value, db_scores, max_attempts)
     if not to_run:
         return scores
 
     # Individual env evals deploy one model per Basilica job.
-    individual_gpu_count = cts.INDIVIDUAL_BASILICA_GPU_COUNT
+    individual_gpu_count = eval_cst.INDIVIDUAL_BASILICA_GPU_COUNT
 
     eval_result = await run_evaluation_individual(
         miners=miners.subset(to_run),

@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import httpx
 
 import validator.tasks.synthetics.constants as synth_cst
-from core.constants import BUCKET_NAME
+from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
 from core.models.payload_models import ImageTextPair
 from validator.tasks.datasets.constants import TEMP_PATH_FOR_IMAGES

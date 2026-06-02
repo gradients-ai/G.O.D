@@ -5,14 +5,14 @@ Called during task prep, before miners are assigned.
 
 import httpx
 
-from core.constants import ENVIRONMENT_CONFIGS
-from core.constants import EnvironmentName
+from core.constants.environments import ENVIRONMENT_CONFIGS
+from core.constants.environments import EnvironmentName
+from core.logging import get_logger
 from core.models.model_prep_models import AugmentationConfig
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
-from validator.constants import MODEL_PREP_ENDPOINT
-from core.logging import get_logger
+from validator.infrastructure.service_constants import MODEL_PREP_ENDPOINT
 
 
 logger = get_logger(__name__)

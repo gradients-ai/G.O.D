@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import pytest
 
-import validator.constants as validator_cst
+import validator.evaluation.constants as validator_cst
 from validator.evaluation.pvp.models import PvPEvalMetadata
 from validator.evaluation.pvp.models import PvPGroupResults
 
@@ -41,9 +41,9 @@ def _preload_tournament_gpu_module() -> None:
 _preload_tournament_gpu_module()
 
 import validator.scoring.tasks as scoring
-from core.constants import ENVIRONMENT_CONFIGS
-from core.constants import EnvironmentName
-from core.constants import EvalType
+from core.constants.environments import ENVIRONMENT_CONFIGS
+from core.constants.environments import EnvironmentName
+from core.constants.environments import EvalType
 from core.models.utility_models import TaskType
 from validator.scoring.models import IndividualEvalResult
 from validator.scoring.models import IndividualScoresByEnv

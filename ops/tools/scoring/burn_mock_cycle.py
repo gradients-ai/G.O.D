@@ -17,7 +17,7 @@ from validator.scoring.weights import get_tournament_burn_details
 
 load_dotenv(".vali.env", override=True)
 
-import validator.constants as cts
+import validator.scoring.constants as cts
 from validator.tournament.models import TournamentBurnData
 from validator.tournament.models import TournamentType
 

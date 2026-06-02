@@ -7,7 +7,7 @@ from fiber.chain import fetch_nodes
 
 from core.logging import get_logger
 from validator.app.config import load_config
-from validator.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.tasks.details import try_db_connections

@@ -1,7 +1,7 @@
 import os
 import subprocess
-import time
 import tempfile
+import time
 import urllib.request
 
 
@@ -17,9 +17,9 @@ from transformers import AutoTokenizer
 from trl import GRPOConfig
 from trl import GRPOTrainer
 
+import validator.evaluation.constants as cst
+from core.logging import get_logger
 from core.models.utility_models import GrpoDatasetType
-import validator.constants as cst
-from validator.evaluation.models import EvaluationArgs
 from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
@@ -29,11 +29,13 @@ from validator.evaluation.common import load_model
 from validator.evaluation.common import load_results_dict
 from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
-from validator.evaluation.common import save_results_dict
 from validator.evaluation.common import sanitize_tokenizer_for_models
+from validator.evaluation.common import save_results_dict
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import model_is_a_finetune
-from core.logging import get_logger
+from validator.evaluation.models import EvaluationArgs
+from validator.infrastructure.service_constants import VALI_CONFIG_PATH
+from validator.tasks.datasets.constants import STANDARD_GRPO_EXTRA_COLUMN
 from validator.tasks.rewards.functions import supports_extra_data
 from validator.tasks.rewards.functions import validate_reward_function
 
@@ -56,7 +58,7 @@ def _adapt_grpo_columns_to_trl(dataset: Dataset, dataset_type: GrpoDatasetType) 
     }
 
     if dataset_type.extra_column:
-        column_mapping[dataset_type.extra_column] = cst.STANDARD_GRPO_EXTRA_COLUMN
+        column_mapping[dataset_type.extra_column] = STANDARD_GRPO_EXTRA_COLUMN
     for src_col, dst_col in column_mapping.items():
         if src_col in dataset.column_names and src_col != dst_col:
             dataset = dataset.rename_column(src_col, dst_col)
@@ -113,8 +115,8 @@ def evaluate_grpo_model(
     raw_rewards = {name: [] for name in reward_func_names}
     wrapped_reward_funcs = []
 
-    has_extra_column = evaluation_args.dataset_type.extra_column and cst.STANDARD_GRPO_EXTRA_COLUMN in eval_dataset.column_names
-    extra_column_data = eval_dataset[cst.STANDARD_GRPO_EXTRA_COLUMN] if has_extra_column else None
+    has_extra_column = evaluation_args.dataset_type.extra_column and STANDARD_GRPO_EXTRA_COLUMN in eval_dataset.column_names
+    extra_column_data = eval_dataset[STANDARD_GRPO_EXTRA_COLUMN] if has_extra_column else None
 
     if extra_column_data is not None:
         import json
@@ -153,7 +155,7 @@ def evaluate_grpo_model(
                     logger.info(f"🔍 {func_name}: TRL kwargs keys = {list(kwargs.keys())}")
 
                     # TRL already passes extra_data in kwargs - don't double-pass it
-                    extra_data_from_trl = kwargs.get(cst.STANDARD_GRPO_EXTRA_COLUMN)
+                    extra_data_from_trl = kwargs.get(STANDARD_GRPO_EXTRA_COLUMN)
                     if extra_data_from_trl:
                         logger.info(f"🔍 {func_name}: extra_data from TRL = {str(extra_data_from_trl[0])[:100]}...")
 
@@ -265,7 +267,7 @@ def evaluate_finetuned_grpo_model(
     tokenizer: AutoTokenizer,
 ) -> dict[str, float]:
     evaluation_config = _load_and_update_evaluation_config(
-        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=cst.VALI_CONFIG_PATH
+        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
     )
     return evaluate_grpo_model(evaluation_config, finetuned_model, tokenizer, evaluation_args)
 

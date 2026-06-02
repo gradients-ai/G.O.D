@@ -3,7 +3,7 @@ from uuid import UUID
 from asyncpg.connection import Connection
 
 import validator.db.constants as cst
-from core.constants import NETUID
+from core.constants.network import NETUID
 from core.models.utility_models import TaskStatus
 from validator.db.database import PSQLDB
 from validator.nodes.models import AllNodeStats

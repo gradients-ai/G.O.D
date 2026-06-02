@@ -6,7 +6,7 @@ from typing import Callable
 
 import astor
 
-import validator.constants as cst
+import validator.tasks.datasets.constants as cst
 from core.logging import get_logger
 
 

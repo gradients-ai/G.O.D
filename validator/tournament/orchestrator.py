@@ -26,20 +26,20 @@ from core.models.utility_models import GPUType
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
+from validator.app.config import Config
+from validator.app.config import load_config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
+from validator.infrastructure.service_constants import GET_GPU_AVAILABILITY_ENDPOINT
+from validator.infrastructure.service_constants import MODEL_PREP_STATUS_ENDPOINT
+from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDPOINT
+from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import _get_dataset_type
 from validator.scoring.tasks import should_use_tournament_eval
-from validator.app.config import Config
-from validator.app.config import load_config
-from validator.constants import GET_GPU_AVAILABILITY_ENDPOINT
-from validator.constants import MODEL_PREP_STATUS_ENDPOINT
-from validator.constants import PROXY_TRAINING_IMAGE_ENDPOINT
-from validator.constants import TASK_DETAILS_ENDPOINT
-from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.details import try_db_connections
+from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.synthetics.scheduler import apply_baseline_ctx_scale
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement

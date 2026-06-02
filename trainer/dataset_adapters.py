@@ -2,7 +2,7 @@ import json
 
 import pandas as pd
 
-import core.constants as cst
+import core.constants.datasets as cst
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
 from core.models.utility_models import GrpoDatasetType
@@ -119,4 +119,3 @@ def adapt_columns_for_environment_dataset(dataset_path: str, dataset_type: Envir
         json.dump(output_data, f, indent=2)
 
     print(f"Transformed dataset to adapt to axolotl's `{cst.GRPO_DEFAULT_FIELD_PROMPT}` expected column name.")
-

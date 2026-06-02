@@ -1,6 +1,6 @@
 import os
 
-from core.constants import NETUID
+from core.constants.network import NETUID
 
 
 RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"

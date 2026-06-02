@@ -9,9 +9,10 @@ from docker.errors import APIError
 from docker.errors import BuildError
 from docker.models.containers import Container
 
-import core.constants as core_cst
 import trainer.training_paths as train_paths
-from core.constants import EnvironmentName
+from core.constants.docker import MCTS_API_DOCKER_IMAGE
+from core.constants.environments import ENVIRONMENT_CONFIGS
+from core.constants.environments import EnvironmentName
 from core.logging import get_all_context_tags
 from core.logging import stream_container_logs
 from core.logging import stream_image_build_logs
@@ -644,25 +645,25 @@ def run_model_prep_container(
             logger.info(f"Cleaned up {len(env_containers)} env sidecars", extra=log_labels)
 
 
-FALLBACK_ENV_IMAGES: dict[core_cst.EnvironmentName, str] = {
-    core_cst.EnvironmentName.GIN_RUMMY: core_cst.MCTS_API_DOCKER_IMAGE,
-    core_cst.EnvironmentName.LIARS_DICE: core_cst.MCTS_API_DOCKER_IMAGE,
-    core_cst.EnvironmentName.LEDUC_POKER: core_cst.MCTS_API_DOCKER_IMAGE,
+FALLBACK_ENV_IMAGES: dict[EnvironmentName, str] = {
+    EnvironmentName.GIN_RUMMY: MCTS_API_DOCKER_IMAGE,
+    EnvironmentName.LIARS_DICE: MCTS_API_DOCKER_IMAGE,
+    EnvironmentName.LEDUC_POKER: MCTS_API_DOCKER_IMAGE,
 }
 
 
 def _select_training_env_server_name(
-    environment_names: list[core_cst.EnvironmentName] | None,
-) -> core_cst.EnvironmentName | None:
+    environment_names: list[EnvironmentName] | None,
+) -> EnvironmentName | None:
     for env_name in environment_names or []:
-        resolved = core_cst.EnvironmentName(env_name)
-        if resolved != core_cst.EnvironmentName.INTERCODE:
+        resolved = EnvironmentName(env_name)
+        if resolved != EnvironmentName.INTERCODE:
             return resolved
     return None
 
 
 async def run_environment_server_container(
-    environment_name: core_cst.EnvironmentName | None,
+    environment_name: EnvironmentName | None,
     log_labels: dict,
     image: str | None = None,
     command: list[str] | None = None,
@@ -671,7 +672,7 @@ async def run_environment_server_container(
 
     ensure_internal_network()
 
-    env_config = core_cst.ENVIRONMENT_CONFIGS.get(environment_name) if environment_name else None
+    env_config = ENVIRONMENT_CONFIGS.get(environment_name) if environment_name else None
     resolved_image = image or (env_config.env_image if env_config else None) or FALLBACK_ENV_IMAGES.get(environment_name)
     resolved_command = command if command is not None else (env_config.env_server_command if env_config else None)
     if resolved_image is None:

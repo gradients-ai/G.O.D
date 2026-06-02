@@ -7,13 +7,13 @@ from fiber.chain import chain_utils
 from fiber.chain.models import Node
 from fiber.validator import client
 
-from validator.app.config import Config
-from validator.constants import IMAGE_GEN_ENDPOINT
-from validator.constants import NETUID
-from validator.constants import NINETEEN_API_KEY
-from validator.constants import PROMPT_GEN_ENDPOINT
+from core.constants.network import NETUID
 from core.logging import get_logger
+from validator.app.config import Config
 from validator.tasks.details import retry_http_with_backoff
+from validator.tasks.synthetics.constants import IMAGE_GEN_ENDPOINT
+from validator.tasks.synthetics.constants import NINETEEN_API_KEY
+from validator.tasks.synthetics.constants import PROMPT_GEN_ENDPOINT
 
 
 logger = get_logger(__name__)

@@ -10,7 +10,7 @@ import time
 
 import openai
 
-import validator.constants as vcst
+import validator.evaluation.constants as vcst
 from validator.evaluation.pvp.models import ChatCompletionConfig
 from validator.evaluation.pvp.models import ChatMessage
 from validator.evaluation.pvp.models import ChatResult

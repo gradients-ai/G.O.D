@@ -10,7 +10,7 @@ import os
 import subprocess
 import threading
 
-import validator.constants as vcst
+import validator.evaluation.constants as vcst
 from validator.evaluation.evaluators.environment import _wait_for_health
 from validator.evaluation.pvp.models import PreparedModel
 

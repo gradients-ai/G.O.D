@@ -5,14 +5,14 @@ import numpy as np
 from fiber.chain.chain_utils import query_substrate
 from fiber.chain.weights import _normalize_and_quantize_weights
 
-from core.constants import NETUID
-from validator.tournament.models import TournamentAuditData
+from core.constants.network import NETUID
 from core.downloads import download_s3_file
+from core.logging import get_logger
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.scoring.weights import set_weights
-from core.logging import get_logger
+from validator.tournament.models import TournamentAuditData
 
 
 logger = get_logger(__name__)

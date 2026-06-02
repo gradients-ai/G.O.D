@@ -10,17 +10,17 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
+from core.constants.environments import EnvironmentName
 from core.models.payload_models import TrainingRepoResponse
-from core.constants import EnvironmentName
+from core.models.utility_models import TaskType
 from core.models.utility_models import TournamentType
+from core.models.utility_models import TrainingStatus
 from validator.scoring.models import EnvironmentWeight
 from validator.scoring.models import EvalHotkeyResults
 from validator.scoring.models import GroupStagePoints
 from validator.scoring.models import PairwiseOutcome
 from validator.scoring.models import TournamentScore
 from validator.scoring.models import TournamentTypeResult
-from core.models.utility_models import TaskType
-from core.models.utility_models import TrainingStatus
 from validator.tasks.models import AnyTypeRawTask
 
 

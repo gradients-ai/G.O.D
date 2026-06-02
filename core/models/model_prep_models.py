@@ -15,7 +15,7 @@ from pydantic import Field
 from pydantic import Tag
 from pydantic import model_validator
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 
 
 # --- Augmentation models ---

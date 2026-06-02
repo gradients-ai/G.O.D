@@ -3,9 +3,9 @@ modules like eval_instruct_text can import LoRA/utils without pulling DB deps.""
 
 from uuid import UUID
 
-import validator.constants as cst
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
+from validator.infrastructure.service_constants import RAYONLABS_HF_USERNAME
 
 
 async def load_eval_pair_state_for_models(
@@ -26,7 +26,7 @@ async def load_eval_pair_state_for_models(
         hotkey = row.get("hotkey")
         if not expected_repo_name or not hotkey:
             continue
-        repo = f"{cst.RAYONLABS_HF_USERNAME}/{expected_repo_name}"
+        repo = f"{RAYONLABS_HF_USERNAME}/{expected_repo_name}"
         if repo not in model_set:
             continue
         repo_to_hotkey[repo] = hotkey

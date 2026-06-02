@@ -1,6 +1,6 @@
 import pytest
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from trainer.model_prep import env_stats
 
 

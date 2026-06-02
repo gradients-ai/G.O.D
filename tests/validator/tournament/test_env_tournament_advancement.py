@@ -2,16 +2,19 @@
 env scaling via real task creator calls, and model continuation logic.
 """
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
+from unittest.mock import MagicMock
+from unittest.mock import patch
 
-from core.constants import EnvironmentName
-from core.constants import TrainingStartPoint
-from validator.tournament.models import TournamentType
+import pytest
+
+import validator.tournament.constants as t_cst
+from core.constants.environments import EnvironmentName
+from core.constants.environments import TrainingStartPoint
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
+from validator.tournament.models import TournamentType
 from validator.tournament.thresholds import get_progressive_threshold
-import validator.tournament.constants as t_cst
 
 
 BOSS = "5GBoss"

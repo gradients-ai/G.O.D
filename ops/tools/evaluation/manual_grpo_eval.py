@@ -12,11 +12,12 @@ from uuid import UUID
 import asyncpg
 from huggingface_hub import snapshot_download
 
-from core import constants as cst
+from core.constants.docker import VALIDATOR_DOCKER_IMAGE
+from core.constants.paths import CACHE_DIR_HUB
+from core.logging import get_logger
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import RewardFunction
-from core.logging import get_logger
 
 
 logger = get_logger(__name__)
@@ -123,7 +124,7 @@ def run_grpo_evaluation(task_info, reward_info, model_repo: str):
     original_model = task_row['model_id']
     file_format = FileFormat(task_row['file_format']) if task_row['file_format'] else FileFormat.S3
     
-    cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
+    cache_dir = os.path.expanduser(CACHE_DIR_HUB)
     
     # Download the original GRPO model (exactly like main validator does)
     print(f"📥 Downloading original GRPO model: {original_model}")
@@ -234,13 +235,13 @@ def run_grpo_evaluation(task_info, reward_info, model_repo: str):
         "-e", "HF_HOME=/root/.cache/huggingface",
         "-e", "TRANSFORMERS_CACHE=/root/.cache/huggingface/hub", 
         "-e", "HF_DATASETS_CACHE=/root/.cache/huggingface/datasets",
-        cst.VALIDATOR_DOCKER_IMAGE,
+        VALIDATOR_DOCKER_IMAGE,
         "python", "-m", "validator.evaluation.evaluators.grpo"
     ]
     
-    print(f"\n🐳 Docker image: {cst.VALIDATOR_DOCKER_IMAGE}")
+    print(f"\n🐳 Docker image: {VALIDATOR_DOCKER_IMAGE}")
     print(f"🐳 Running Docker command:")
-    print(f"   docker run --rm --gpus {gpu_device_requests} ... {cst.VALIDATOR_DOCKER_IMAGE}")
+    print(f"   docker run --rm --gpus {gpu_device_requests} ... {VALIDATOR_DOCKER_IMAGE}")
     
     try:
         print(f"\n📋 Container Output (streaming):")

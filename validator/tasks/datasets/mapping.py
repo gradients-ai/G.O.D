@@ -5,15 +5,15 @@ from fiber import Keypair
 
 from core.logging import get_logger
 from core.models.payload_models import TaskType
-from validator.constants import STANDARD_DPO_CHOSEN_COLUMN
-from validator.constants import STANDARD_DPO_PROMPT_COLUMN
-from validator.constants import STANDARD_DPO_REJECTED_COLUMN
-from validator.constants import STANDARD_GRPO_PROMPT_COLUMN
-from validator.constants import STANDARD_INPUT_COLUMN
-from validator.constants import STANDARD_INSTRUCT_COLUMN
-from validator.constants import STANDARD_OUTPUT_COLUMN
-from validator.constants import STANDARD_SYSTEM_COLUMN
 from validator.evaluation.dataset_configs import get_default_dataset_config
+from validator.tasks.datasets.constants import STANDARD_DPO_CHOSEN_COLUMN
+from validator.tasks.datasets.constants import STANDARD_DPO_PROMPT_COLUMN
+from validator.tasks.datasets.constants import STANDARD_DPO_REJECTED_COLUMN
+from validator.tasks.datasets.constants import STANDARD_GRPO_PROMPT_COLUMN
+from validator.tasks.datasets.constants import STANDARD_INPUT_COLUMN
+from validator.tasks.datasets.constants import STANDARD_INSTRUCT_COLUMN
+from validator.tasks.datasets.constants import STANDARD_OUTPUT_COLUMN
+from validator.tasks.datasets.constants import STANDARD_SYSTEM_COLUMN
 from validator.tasks.models import AnyTextTypeRawTask
 
 
@@ -22,8 +22,8 @@ logger = get_logger(__name__)
 
 async def get_dataset_column_mapping(dataset_id: str, task_type: TaskType, keypair: Keypair) -> dict[str, str]:
     """Get column mapping for a specific dataset based on task type."""
-    from validator.constants import CONTENT_BASE_URL
     from validator.infrastructure.content_service import call_content_service_fast
+    from validator.infrastructure.service_constants import CONTENT_BASE_URL
 
     url = f"{CONTENT_BASE_URL}/dataset/{dataset_id}/columns/suggest"
     response = await call_content_service_fast(url, keypair)
@@ -261,8 +261,8 @@ async def load_and_merge_multiple_datasets(dataset_ids: list[str], task: AnyText
                 # For DPO tasks, use the detectcolumns endpoint to get proper column mapping
                 if task.task_type == TaskType.DPOTASK:
                     try:
-                        from validator.constants import CONTENT_BASE_URL
                         from validator.infrastructure.content_service import call_content_service_fast
+                        from validator.infrastructure.service_constants import CONTENT_BASE_URL
 
                         url = f"{CONTENT_BASE_URL}/dataset/{dataset_id}/detectcolumns"
                         response = await call_content_service_fast(url, keypair)

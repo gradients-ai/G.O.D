@@ -22,7 +22,7 @@ sys.path.append(project_root)
 
 import trainer.constants as train_cst
 import trainer.training_paths as train_paths
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType

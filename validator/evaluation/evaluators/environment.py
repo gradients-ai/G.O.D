@@ -13,13 +13,14 @@ from pathlib import Path
 import aiohttp
 from huggingface_hub import snapshot_download
 
-from core import constants as cst
+import core.constants.environments as env_cst
+import validator.evaluation.constants as vcst
 from core.models.utility_models import EnvironmentDatasetType
-import validator.constants as vcst
+from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
-from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.runtime import stop_process
+from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
 
 
 
-def _parse_environment_name() -> cst.EnvironmentName:
+def _parse_environment_name() -> env_cst.EnvironmentName:
     dataset_type_raw = os.getenv("DATASET_TYPE", "{}")
     env_name = os.getenv("ENVIRONMENT_NAME")
 
@@ -171,9 +172,9 @@ def _parse_environment_name() -> cst.EnvironmentName:
     if not env_name:
         raise ValueError("Missing environment name. Set ENVIRONMENT_NAME or DATASET_TYPE.")
 
-    if env_name not in [e.value for e in cst.EnvironmentName]:
-        raise ValueError(f"Unsupported environment '{env_name}'. Supported: {[e.value for e in cst.EnvironmentName]}")
-    return cst.EnvironmentName(env_name)
+    if env_name not in [e.value for e in env_cst.EnvironmentName]:
+        raise ValueError(f"Unsupported environment '{env_name}'. Supported: {[e.value for e in env_cst.EnvironmentName]}")
+    return env_cst.EnvironmentName(env_name)
 
 
 def _build_sglang_command(model_path: str, seed: int) -> str:
@@ -436,7 +437,7 @@ async def _run() -> None:
         temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
 
         env_name = _parse_environment_name()
-        env_config = cst.ENVIRONMENT_CONFIGS[env_name]
+        env_config = env_cst.ENVIRONMENT_CONFIGS[env_name]
         task_id_min = env_config.task_id_min
         task_id_max = env_config.task_id_max
         _num_seeds_env = os.getenv("ENV_EVAL_NUM_SEEDS")
@@ -612,7 +613,7 @@ async def _run() -> None:
         )
 
         output = {model_repo: {"is_finetune": True, "eval_loss": avg_score}}
-        result_path = Path(cst.CONTAINER_EVAL_RESULTS_PATH)
+        result_path = Path(CONTAINER_EVAL_RESULTS_PATH)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(output), encoding="utf-8")
         logger.info(

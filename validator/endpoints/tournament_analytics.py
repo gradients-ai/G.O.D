@@ -16,14 +16,14 @@ from core.logging import get_logger
 from core.models.payload_models import GpuRequirementSummary
 from core.models.payload_models import TournamentGpuRequirementsResponse
 from core.models.utility_models import TaskStatus
+from validator.app.config import Config
+from validator.app.dependencies import get_api_key
+from validator.app.dependencies import get_config
 from validator.db.sql import benchmark_tasks
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
+from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
-from validator.app.config import Config
-from validator.constants import TASK_DETAILS_ENDPOINT
-from validator.app.dependencies import get_api_key
-from validator.app.dependencies import get_config
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_TTL

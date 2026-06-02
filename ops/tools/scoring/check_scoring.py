@@ -153,7 +153,7 @@ async def check_hotkey_scoring(hotkey: str):
         weight_sources.append(f"   ✅ Image tournament winner: ~{tournament_audit_data.image_tournament_weight:.4f}")
     if is_participant:
         # Approximate participation weight
-        import validator.constants as cts
+        import validator.scoring.constants as cts
 
         weight_sources.append(f"   ✅ Participation reward: {cts.TOURNAMENT_PARTICIPATION_WEIGHT:.6f}")
 

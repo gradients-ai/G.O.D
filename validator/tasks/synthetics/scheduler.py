@@ -12,8 +12,8 @@ import validator.infrastructure.service_constants as service_cst
 import validator.tasks.datasets.constants as data_cst
 import validator.tasks.prep.constants as prep_cst
 import validator.tasks.synthetics.constants as synth_cst
-from core.constants import EnvironmentName
-from core.constants import TrainingStartPoint
+from core.constants.environments import EnvironmentName
+from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse

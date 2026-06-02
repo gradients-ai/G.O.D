@@ -10,8 +10,10 @@ from pydantic import Field
 from pydantic import field_validator
 from pydantic import model_validator
 
-from core import constants as cst
-from core.constants import EnvironmentName
+from core.constants.datasets import MAX_IMAGE_TEXT_PAIRS
+from core.constants.datasets import MIN_IMAGE_TEXT_PAIRS
+from core.constants.environments import EnvironmentName
+from core.constants.training import YARN_VALID_FACTORS
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import EnvironmentDatasetType
@@ -211,7 +213,7 @@ class NewTaskRequest(BaseModel):
     )
     yarn_factor: int | None = Field(
         None,
-        description=f"YaRN extension factor for extending context length (powers of 2: {cst.YARN_VALID_FACTORS})",
+        description=f"YaRN extension factor for extending context length (powers of 2: {YARN_VALID_FACTORS})",
         examples=[2, 4, 8, 16],
     )
 
@@ -222,8 +224,8 @@ class NewTaskRequest(BaseModel):
             return v
         if not isinstance(v, int):
             raise ValueError("yarn_factor must be an integer")
-        if v not in cst.YARN_VALID_FACTORS:
-            raise ValueError(f"yarn_factor must be a power of 2: {cst.YARN_VALID_FACTORS}")
+        if v not in YARN_VALID_FACTORS:
+            raise ValueError(f"yarn_factor must be a power of 2: {YARN_VALID_FACTORS}")
         return v
 
 
@@ -382,8 +384,8 @@ class NewTaskRequestImage(NewTaskRequest):
     image_text_pairs: list[ImageTextPair] = Field(
         ...,
         description="List of image and text file URL pairs",
-        min_length=cst.MIN_IMAGE_TEXT_PAIRS,
-        max_length=cst.MAX_IMAGE_TEXT_PAIRS,
+        min_length=MIN_IMAGE_TEXT_PAIRS,
+        max_length=MAX_IMAGE_TEXT_PAIRS,
     )
     ds_id: str = Field(
         default_factory=lambda: str(uuid4()),

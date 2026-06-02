@@ -1,7 +1,7 @@
 import asyncio
 import datetime
 
-import core.constants as core_cst
+import core.constants.environments as core_cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
 import validator.db.sql.tournaments as tournament_sql

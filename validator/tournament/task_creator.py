@@ -1,16 +1,16 @@
 import random
 
-from core.constants import EnvironmentName
-from core.constants import TrainingStartPoint
+from core.constants.environments import EnvironmentName
+from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import TaskType
+from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
-from validator.app.config import Config
 from validator.tasks.models import RawTask
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO

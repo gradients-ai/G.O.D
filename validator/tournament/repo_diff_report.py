@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import validator.tournament.constants as t_cst
-from core.constants import BUCKET_NAME
+from core.constants.credentials import BUCKET_NAME
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
 from core.logging import get_logger

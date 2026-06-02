@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from pydantic import Field
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 
 
 class FileFormat(str, Enum):

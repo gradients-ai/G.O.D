@@ -9,7 +9,7 @@ from typing import Protocol
 from pydantic import BaseModel
 from pydantic import Field
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 
 
 class PvPIncompleteError(Exception):

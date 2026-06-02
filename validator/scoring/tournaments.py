@@ -2,7 +2,7 @@
 import itertools
 
 import validator.scoring.constants as cts
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.logging import get_logger
 from validator.evaluation.pvp.models import PvPGroupResults
 from validator.scoring.models import EnvironmentWeight

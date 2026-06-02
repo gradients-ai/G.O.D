@@ -16,9 +16,9 @@ import openai
 import pyspiel
 from open_spiel.python.algorithms import evaluate_bots
 
-import validator.constants as vcst
-from core.constants import ENVIRONMENT_CONFIGS
-from core.constants import EnvironmentName
+import validator.evaluation.constants as vcst
+from core.constants.environments import ENVIRONMENT_CONFIGS
+from core.constants.environments import EnvironmentName
 from validator.evaluation.pvp.agents import BaseGameAgent
 from validator.evaluation.pvp.agents import GinRummyAgent
 from validator.evaluation.pvp.agents import LeducPokerAgent

@@ -1,5 +1,5 @@
-from core.constants import GRPO_DEFAULT_FIELD_PROMPT
-from core.constants import EnvironmentName
+from core.constants.datasets import GRPO_DEFAULT_FIELD_PROMPT
+from core.constants.environments import EnvironmentName
 
 
 LORA_SDXL_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_sdxl.json"

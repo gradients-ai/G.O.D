@@ -22,9 +22,8 @@ from transformers import AutoTokenizer
 from transformers import Trainer
 from transformers import TrainingArguments
 
+from core.logging import get_logger
 from core.models.utility_models import TextDatasetType
-import validator.constants as cst
-from validator.evaluation.models import EvaluationArgs
 from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
@@ -38,7 +37,8 @@ from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import model_is_a_finetune
-from core.logging import get_logger
+from validator.evaluation.models import EvaluationArgs
+from validator.infrastructure.service_constants import VALI_CONFIG_PATH
 
 
 logger = get_logger(__name__)
@@ -203,7 +203,7 @@ def evaluate_finetuned_model(
     tokenizer: AutoTokenizer,
 ) -> dict[str, float]:
     evaluation_config = _load_and_update_evaluation_config(
-        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=cst.VALI_CONFIG_PATH
+        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
     )
     return evaluate_instruct_text_model(evaluation_config, finetuned_model, tokenizer)
 

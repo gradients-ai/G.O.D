@@ -6,7 +6,7 @@ from asyncpg.connection import Connection
 from fiber.chain.models import Node
 
 import validator.db.constants as cst
-from core.constants import NETUID
+from core.constants.network import NETUID
 from core.logging import get_logger
 from core.models.utility_models import ImageTextPair
 from core.models.utility_models import RewardFunction

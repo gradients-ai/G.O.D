@@ -1,4 +1,4 @@
-from core.constants import NETUID
+from core.constants.network import NETUID
 
 
 CACHE_TAU_DAYS = 10

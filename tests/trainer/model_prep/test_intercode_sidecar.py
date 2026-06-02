@@ -4,8 +4,8 @@ import types
 
 import pytest
 
-from core.constants import VALIDATOR_DOCKER_IMAGE_INTERCODE
-from core.constants import EnvironmentName
+from core.constants.docker import VALIDATOR_DOCKER_IMAGE_INTERCODE
+from core.constants.environments import EnvironmentName
 from validator.tasks.prep.model import _build_env_configs
 
 

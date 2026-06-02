@@ -23,7 +23,7 @@ import json
 import sys
 import time
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from validator.evaluation.pvp.models import PvPEvalConfig
 from validator.evaluation.pvp.models import PvPMatchupConfig
 from validator.evaluation.pvp.models import PvPModelSpec

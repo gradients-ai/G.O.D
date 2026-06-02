@@ -3,13 +3,13 @@ from typing import Callable
 from pydantic import BaseModel
 from pydantic import Field
 
+import validator.infrastructure.service_constants as cst
 from core.models.utility_models import TaskType
-import validator.constants as cst
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask
-from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import EnvRawTask
+from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import ImageRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.requests import get_fake_text_dataset_size

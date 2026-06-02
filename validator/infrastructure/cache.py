@@ -3,7 +3,7 @@ import os
 import shutil
 import tempfile
 
-from core import constants as cst
+import core.constants.paths as cst
 from core.logging import get_logger
 
 

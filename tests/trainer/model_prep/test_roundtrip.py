@@ -7,7 +7,7 @@ union or enum serialization breaks, training gets wrong parameters.
 
 from pydantic import TypeAdapter
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType

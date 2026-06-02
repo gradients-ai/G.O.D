@@ -2,7 +2,7 @@ import os
 
 from fiber.logging_utils import get_logger
 
-import core.constants as cst
+from core.constants.datasets import DPO_DEFAULT_DATASET_TYPE
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -79,7 +79,7 @@ def _process_dpo_dataset_fields(dataset_type: DpoDatasetType) -> dict:
     # Fallback to https://axolotl-ai-cloud.github.io/axolotl/docs/rlhf.html#chatml.intel
     # Column names are hardcoded in axolotl: "DPO_DEFAULT_FIELD_SYSTEM",
     # "DPO_DEFAULT_FIELD_PROMPT", "DPO_DEFAULT_FIELD_CHOSEN", "DPO_DEFAULT_FIELD_REJECTED"
-    return {"type": cst.DPO_DEFAULT_DATASET_TYPE, "split": "train"}
+    return {"type": DPO_DEFAULT_DATASET_TYPE, "split": "train"}
 
 
 def _process_instruct_dataset_fields(instruct_type_dict: dict) -> dict:

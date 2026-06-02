@@ -4,10 +4,10 @@ from asyncpg.connection import Connection
 from fiber import SubstrateInterface
 from fiber.chain.models import Node
 
-from core.constants import NETUID
+from core.constants.network import NETUID
+from core.logging import get_logger
 from validator.db import constants as dcst
 from validator.db.database import PSQLDB
-from core.logging import get_logger
 from validator.infrastructure.substrate import query_substrate
 
 

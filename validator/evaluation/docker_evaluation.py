@@ -3,8 +3,9 @@ import random
 import uuid
 from uuid import UUID
 
-import validator.constants as vcst
-from core import constants as cst
+import core.constants.docker as docker_cst
+import core.constants.environments as env_cst
+import validator.evaluation.constants as vcst
 from core.logging import get_environment_logger
 from core.logging import get_logger
 from core.models.payload_models import DockerEvaluationResults
@@ -40,6 +41,7 @@ from validator.evaluation.result_processing import normalize_rewards_and_compute
 from validator.evaluation.result_processing import process_evaluation_results
 from validator.scoring.models import IndividualEvalResult
 from validator.scoring.models import MinerRepos
+from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
 
 try:
@@ -51,7 +53,7 @@ except ImportError:
 logger = get_logger(__name__)
 
 
-def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.EnvironmentName | None:
+def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
     return environment_names[0] if environment_names else None
 
@@ -128,13 +130,13 @@ async def run_evaluation_basilica_text(
     is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
     environment_name = _first_environment_name(dataset_type) if is_environment_eval else None
     environment_name_value = getattr(environment_name, "value", environment_name)
-    is_intercode_eval = is_environment_eval and environment_name_value == cst.EnvironmentName.INTERCODE.value
+    is_intercode_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.INTERCODE.value
     if is_intercode_eval:
-        basilica_image = cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
+        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
     elif is_environment_eval:
-        basilica_image = cst.VALIDATOR_DOCKER_IMAGE_ENV
+        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_ENV
     else:
-        basilica_image = cst.VALIDATOR_DOCKER_IMAGE
+        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.evaluators.instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
@@ -159,7 +161,7 @@ async def run_evaluation_basilica_text(
             "Use validator.evaluation.local_evaluation.run_evaluation_docker_text for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
-    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": original_model,
@@ -169,9 +171,9 @@ async def run_evaluation_basilica_text(
         **vcst.HF_CONTAINER_ENV,
     }
     if is_environment_eval:
-        env_name = cst.EnvironmentName(environment_name_value) if environment_name_value else None
-        if env_name not in cst.ENVIRONMENT_CONFIGS:
-            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
+        env_name = env_cst.EnvironmentName(environment_name_value) if environment_name_value else None
+        if env_name not in env_cst.ENVIRONMENT_CONFIGS:
+            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in env_cst.EnvironmentName]}")
         base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
         base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
@@ -241,7 +243,7 @@ async def run_evaluation_basilica_grpo(
             "Use validator.evaluation.local_evaluation.run_evaluation_docker_grpo for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
-    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_environment = {
         "ORIGINAL_MODEL": original_model,
@@ -265,7 +267,7 @@ async def run_evaluation_basilica_grpo(
         repos=models,
         model_name=original_model,
         task_type="grpo",
-        image=cst.VALIDATOR_DOCKER_IMAGE,
+        image=docker_cst.VALIDATOR_DOCKER_IMAGE,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, num_gpus),
@@ -302,7 +304,7 @@ async def run_evaluation_basilica_image(
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
     command = ["/app/start.sh"]
-    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL_REPO": original_model_repo,
@@ -376,7 +378,7 @@ async def _deploy_pvp_eval(
     Shared by PvP pair eval calls.
     """
     hotkeys = hotkeys or []
-    image = image or cst.VALIDATOR_DOCKER_IMAGE_PVP
+    image = image or docker_cst.VALIDATOR_DOCKER_IMAGE_PVP
     gpu_count = gpu_count or vcst.PVP_BASILICA_GPU_COUNT
     env = {
         vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
@@ -526,7 +528,7 @@ async def _deploy_pvp_eval(
 async def run_evaluation_individual(
     miners: MinerRepos,
     base_model: str,
-    environment_name: cst.EnvironmentName,
+    environment_name: env_cst.EnvironmentName,
     seed: int,
     image: str,
     gpu_count: int,
@@ -538,11 +540,11 @@ async def run_evaluation_individual(
     Each miner gets its own container. The container runs one model and returns
     a score via the standard eval_loss result format.
     """
-    env_config = cst.ENVIRONMENT_CONFIGS[environment_name]
+    env_config = env_cst.ENVIRONMENT_CONFIGS[environment_name]
     if not env_config.tournament_eval_command:
         raise ValueError(f"No tournament_eval_command configured for {environment_name.value}")
     command = env_config.tournament_eval_command
-    source = create_basilica_eval_runner_source(command, cst.CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": base_model,
@@ -581,7 +583,7 @@ async def run_evaluation_individual(
         if isinstance(result, dict):
             inner = result.get(repo, result)
             if isinstance(inner, dict):
-                scores[hotkey] = float(inner.get(cst.CONTAINER_EVAL_SCORE_KEY, 0.0))
+                scores[hotkey] = float(inner.get("eval_loss", 0.0))
             else:
                 logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
         else:
@@ -599,7 +601,7 @@ async def run_evaluation_pvp_pair(
     hotkey_a: str,
     hotkey_b: str,
     base_model: str,
-    environment_names: list[cst.EnvironmentName],
+    environment_names: list[env_cst.EnvironmentName],
     seed: int,
     image: str | None = None,
     gpu_count: int | None = None,

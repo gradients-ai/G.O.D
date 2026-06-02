@@ -20,14 +20,14 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
-from core import constants as cst
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
+from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
+from core.downloads import download_s3_file
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import ModelPrepResult
 from core.models.utility_models import TaskType
-from core.downloads import download_s3_file
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
@@ -39,7 +39,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
     model_id can be a local path or HF repo. Checks for adapter_config.json
     locally first, falls back to HF API for remote repos.
     """
-    adapter_config_path = os.path.join(model_id, cst.LORA_ADAPTER_CONFIG_FILE)
+    adapter_config_path = os.path.join(model_id, LORA_ADAPTER_CONFIG_FILE)
     is_local = os.path.isdir(model_id)
 
     if is_local:
@@ -49,7 +49,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         try:
             api = HfApi(token=hf_token)
             repo_files = api.list_repo_files(model_id, token=hf_token)
-            if cst.LORA_ADAPTER_CONFIG_FILE not in repo_files:
+            if LORA_ADAPTER_CONFIG_FILE not in repo_files:
                 return ModelPrepResult(effective_model_path=model_id)
         except Exception as exc:
             print(f"Could not check for LoRA: {exc}, loading as full weights", flush=True)
@@ -62,7 +62,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
             with open(adapter_config_path) as f:
                 adapter_config = json.load(f)
         else:
-            config_path = hf_hub_download(model_id, cst.LORA_ADAPTER_CONFIG_FILE, token=hf_token)
+            config_path = hf_hub_download(model_id, LORA_ADAPTER_CONFIG_FILE, token=hf_token)
             with open(config_path) as f:
                 adapter_config = json.load(f)
 

@@ -13,7 +13,7 @@ import numpy as np
 import openai
 import pyspiel
 
-import validator.constants as vcst
+import validator.evaluation.constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 from validator.evaluation.pvp.models import ChatCompletionConfig
 from validator.evaluation.pvp.models import ChatFn

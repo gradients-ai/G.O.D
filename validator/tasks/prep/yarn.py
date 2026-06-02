@@ -13,8 +13,8 @@ from huggingface_hub import repo_exists
 from huggingface_hub.utils import build_hf_headers
 from huggingface_hub.utils import hf_raise_for_status
 
-from core.constants import YARN_HUGGINGFACE_TOKEN
-from core.constants import YARN_HUGGINGFACE_USERNAME
+from core.constants.credentials import YARN_HUGGINGFACE_TOKEN
+from core.constants.credentials import YARN_HUGGINGFACE_USERNAME
 from core.logging import get_logger
 from validator.tasks.prep.constants import MODEL_COPY_ENDPOINT
 

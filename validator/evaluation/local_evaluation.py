@@ -13,7 +13,15 @@ import docker
 from docker.types import Mount
 from huggingface_hub import snapshot_download
 
-from core import constants as cst
+import core.constants.docker as docker_cst
+import core.constants.environments as env_cst
+import validator.evaluation.constants as vcst
+from core.constants.paths import CACHE_DIR_HUB
+from core.downloads import download_s3_file
+from core.logging import get_all_context_tags
+from core.logging import get_environment_logger
+from core.logging import get_logger
+from core.logging import stream_container_logs
 from core.models.payload_models import DockerEvaluationResults
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
@@ -22,8 +30,6 @@ from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
-from core.downloads import download_s3_file
-import validator.constants as vcst
 from validator.evaluation.evaluators.environment import _build_sglang_command
 from validator.evaluation.evaluators.environment import _download_lora_with_retry
 from validator.evaluation.evaluators.environment import _download_model_with_retry
@@ -34,17 +40,14 @@ from validator.evaluation.model_checks import check_lora_has_added_tokens
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
 from validator.evaluation.runtime import wait_for_basilica_health
+from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 from validator.tasks.datasets.preparation import unzip_to_temp_path
-from core.logging import get_all_context_tags
-from core.logging import get_environment_logger
-from core.logging import get_logger
-from core.logging import stream_container_logs
 
 
 logger = get_logger(__name__)
 
 
-def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.EnvironmentName | None:
+def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
     return environment_names[0] if environment_names else None
 
@@ -52,8 +55,8 @@ def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.Environ
 def _is_intercode_environment(dataset_type: EnvironmentDatasetType) -> bool:
     env_name = _first_environment_name(dataset_type)
     return (
-        env_name == cst.EnvironmentName.INTERCODE
-        or getattr(env_name, "value", env_name) == cst.EnvironmentName.INTERCODE.value
+        env_name == env_cst.EnvironmentName.INTERCODE
+        or getattr(env_name, "value", env_name) == env_cst.EnvironmentName.INTERCODE.value
     )
 
 
@@ -69,7 +72,7 @@ async def cleanup_resources(client):
 
 
 async def get_evaluation_results(container):
-    archive_data = await asyncio.to_thread(container.get_archive, cst.CONTAINER_EVAL_RESULTS_PATH)
+    archive_data = await asyncio.to_thread(container.get_archive, CONTAINER_EVAL_RESULTS_PATH)
     tar_stream = archive_data[0]
 
     file_like_object = io.BytesIO()
@@ -162,7 +165,7 @@ async def run_evaluation_docker_text(
 
     volume_bindings = {
         dataset_dir: {"bind": "/workspace/input_data", "mode": "ro"},
-        os.path.expanduser(cst.CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
+        os.path.expanduser(CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
     }
 
     container = None
@@ -172,7 +175,7 @@ async def run_evaluation_docker_text(
             try:
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE,
+                    docker_cst.VALIDATOR_DOCKER_IMAGE,
                     command=command,
                     environment=environment,
                     volumes=volume_bindings,
@@ -222,7 +225,7 @@ async def run_evaluation_docker_grpo(
     gpu_ids: list[int],
 ) -> DockerEvaluationResults:
     logger.info(f"Downloading original GRPO model: {original_model}")
-    cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
+    cache_dir = os.path.expanduser(CACHE_DIR_HUB)
     await asyncio.to_thread(snapshot_download, repo_id=original_model, cache_dir=cache_dir, ignore_patterns=None)
 
     command = ["python", "-m", "validator.evaluation.evaluators.grpo"]
@@ -242,7 +245,7 @@ async def run_evaluation_docker_grpo(
     }
     volume_bindings = {
         dataset_dir: {"bind": "/workspace/input_data", "mode": "ro"},
-        os.path.expanduser(cst.CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
+        os.path.expanduser(CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
     }
 
     logger.info(f"Starting sequential GRPO evaluation for {len(models)} repos: {models}")
@@ -271,7 +274,7 @@ async def run_evaluation_docker_grpo(
             try:
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE,
+                    docker_cst.VALIDATOR_DOCKER_IMAGE,
                     command=command,
                     environment=environment,
                     volumes=volume_bindings,
@@ -329,10 +332,10 @@ async def run_evaluation_local_environment(
     raw_sglang_log_file = os.getenv("LOCAL_ENV_SGLANG_RAW_LOG_FILE", "").strip()
 
     env_name = (dataset_type.environment_names or [None])[0]
-    if env_name not in cst.ENVIRONMENT_CONFIGS:
-        raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
+    if env_name not in env_cst.ENVIRONMENT_CONFIGS:
+        raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in env_cst.EnvironmentName]}")
 
-    env_config = cst.ENVIRONMENT_CONFIGS[env_name]
+    env_config = env_cst.ENVIRONMENT_CONFIGS[env_name]
     task_id_min = env_config.task_id_min
     task_id_max = env_config.task_id_max
     num_seeds_override = os.getenv("ENV_EVAL_NUM_SEEDS", "").strip()
@@ -564,7 +567,7 @@ async def run_evaluation_local_intercode(
     base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
     temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
     dataset_type_str = dataset_type.model_dump_json()
-    cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
+    cache_dir = os.path.expanduser(CACHE_DIR_HUB)
     volume_bindings = {
         cache_dir: {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
     }
@@ -579,7 +582,7 @@ async def run_evaluation_local_intercode(
         "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
         "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
-        "ENVIRONMENT_NAME": cst.EnvironmentName.INTERCODE.value,
+        "ENVIRONMENT_NAME": env_cst.EnvironmentName.INTERCODE.value,
         "EVAL_SEED": str(base_seed),
         "ENV_EVAL_TEMPERATURE": str(temperature),
     }
@@ -595,7 +598,7 @@ async def run_evaluation_local_intercode(
                 logger.info(f"Running local InterCode evaluation for repo: {repo}")
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE_INTERCODE,
+                    docker_cst.VALIDATOR_DOCKER_IMAGE_INTERCODE,
                     command=command,
                     environment=environment,
                     volumes=volume_bindings,
@@ -682,8 +685,8 @@ async def run_evaluation_docker_image(
     base_path = "/app/validator/evaluation/ComfyUI/models"
     mounts = [
         Mount(target=container_dataset_path, source=dataset_dir, type="bind", read_only=True),
-        Mount(target=f"{base_path}/checkpoints", source=cst.CACHE_DIR_HUB, type="bind", read_only=False),
-        Mount(target=f"{base_path}/diffusers", source=cst.CACHE_DIR_HUB, type="bind", read_only=False),
+        Mount(target=f"{base_path}/checkpoints", source=CACHE_DIR_HUB, type="bind", read_only=False),
+        Mount(target=f"{base_path}/diffusers", source=CACHE_DIR_HUB, type="bind", read_only=False),
     ]
     environment = {
         "DATASET": container_dataset_path,
@@ -700,7 +703,7 @@ async def run_evaluation_docker_image(
             try:
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+                    docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
                     mounts=mounts,
                     environment=environment,
                     runtime="nvidia",

@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-import validator.constants as cts
+import validator.scoring.constants as cts
 from validator.scoring.weights import calculate_emission_boost_from_perf
 from validator.scoring.weights import get_tournament_burn_details
 

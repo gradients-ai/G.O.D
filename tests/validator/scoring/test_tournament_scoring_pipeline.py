@@ -4,8 +4,8 @@ Exercises the full chain that determines tournament outcomes and emission weight
 """
 
 
-import validator.constants as cts
-from core.constants import EnvironmentName
+import validator.scoring.constants as cts
+from core.constants.environments import EnvironmentName
 from validator.evaluation.pvp.models import PvPEnvironmentResult
 from validator.evaluation.pvp.models import PvPEvalMetadata
 from validator.evaluation.pvp.models import PvPGroupResults

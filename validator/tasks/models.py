@@ -7,9 +7,9 @@ from pydantic import ConfigDict
 from pydantic import field_validator
 from pydantic import model_validator
 
-from core.constants import YARN_VALID_FACTORS
-from core.constants import EnvironmentName
-from core.constants import TrainingStartPoint
+from core.constants.environments import EnvironmentName
+from core.constants.environments import TrainingStartPoint
+from core.constants.training import YARN_VALID_FACTORS
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.utility_models import Backend

@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import validator.constants as cts
+import validator.scoring.constants as cts
 from validator.scoring.models import PeriodScore
 from validator.scoring.weights import apply_tournament_weights
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data

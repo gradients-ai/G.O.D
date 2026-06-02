@@ -9,10 +9,10 @@ import os
 import asyncpg
 import requests
 
-import validator.constants as cst
 from validator.tasks.rewards.affine import abd_reward_function
 from validator.tasks.rewards.affine import ded_reward_function
 from validator.tasks.rewards.affine import sat_reward_function
+from validator.tasks.synthetics.constants import AFFINE_REWARD_FN_IDS
 
 
 def load_env_file():
@@ -182,7 +182,7 @@ async def main():
     else:
         print(f"\n❌ ERROR: Expected 3 function IDs, got {len(added_ids)}")
         print(f"📝 Current constants in validator/tasks/synthetics/constants.py:")
-        print(f"AFFINE_REWARD_FN_IDS = {cst.AFFINE_REWARD_FN_IDS}")
+        print(f"AFFINE_REWARD_FN_IDS = {AFFINE_REWARD_FN_IDS}")
         print(f"\n⚠️  MANUAL STEPS REQUIRED:")
         print(f"1. Check API responses above for any errors")
         print(f"2. Manually update AFFINE_REWARD_FN_IDS if needed")

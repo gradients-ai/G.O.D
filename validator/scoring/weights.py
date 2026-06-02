@@ -36,13 +36,13 @@ from fiber.chain.chain_utils import query_substrate
 from fiber.chain.models import Node
 from substrateinterface import SubstrateInterface
 
+import core.constants.network as ccst
 import validator.scoring.constants as cts
-from core import constants as ccst
-from core.constants import BUCKET_NAME
+from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
-from validator.db.sql.nodes import get_vali_node_id
 from validator.app.config import Config
 from validator.app.config import load_config
+from validator.db.sql.nodes import get_vali_node_id
 from validator.tasks.details import save_json_to_temp_file
 from validator.tasks.details import try_db_connections
 from validator.tasks.details import upload_file_to_minio

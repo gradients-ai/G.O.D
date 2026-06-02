@@ -16,8 +16,8 @@ import sys
 import time
 from pathlib import Path
 
-import validator.constants as vcst
-from core.constants import EnvironmentName
+import validator.evaluation.constants as vcst
+from core.constants.environments import EnvironmentName
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.pvp.models import ChatCompletionConfig

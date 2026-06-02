@@ -15,7 +15,7 @@ import time
 
 import aiohttp
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.model_prep_models import EnvStats
 

@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
 from core.models.utility_models import TaskType

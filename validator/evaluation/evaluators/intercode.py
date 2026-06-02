@@ -46,11 +46,12 @@ from pathlib import Path
 import aiohttp
 from huggingface_hub import snapshot_download
 
-from core import constants as cst
+import core.constants.environments as env_cst
+import validator.evaluation.constants as vcst
 from core.models.utility_models import EnvironmentDatasetType
-import validator.constants as vcst
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
+from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
 
 logger = logging.getLogger(__name__)
@@ -226,7 +227,7 @@ def _configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def _parse_environment_name() -> cst.EnvironmentName:
+def _parse_environment_name() -> env_cst.EnvironmentName:
     dataset_type_raw = os.getenv("DATASET_TYPE", "{}")
     env_name = os.getenv("ENVIRONMENT_NAME")
     if not env_name:
@@ -239,9 +240,9 @@ def _parse_environment_name() -> cst.EnvironmentName:
     env_name = getattr(env_name, "value", env_name)
     if not env_name:
         raise ValueError("Missing environment name. Set ENVIRONMENT_NAME or DATASET_TYPE.")
-    if env_name != cst.EnvironmentName.INTERCODE.value:
+    if env_name != env_cst.EnvironmentName.INTERCODE.value:
         raise ValueError(f"eval_intercode invoked with environment_name={env_name!r}; expected 'intercode'")
-    return cst.EnvironmentName.INTERCODE
+    return env_cst.EnvironmentName.INTERCODE
 
 
 def _build_sglang_command(model_path: str, seed: int) -> str:
@@ -915,7 +916,7 @@ async def _run() -> None:
         temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(DEFAULT_TEMPERATURE)))
 
         env_name = _parse_environment_name()
-        env_config = cst.ENVIRONMENT_CONFIGS[env_name]
+        env_config = env_cst.ENVIRONMENT_CONFIGS[env_name]
         task_id_min = env_config.task_id_min
         task_id_max = env_config.task_id_max
         _num_seeds_env = os.getenv("ENV_EVAL_NUM_SEEDS")
@@ -1060,7 +1061,7 @@ async def _run() -> None:
             logger.warning("eval_intercode: no completed tasks; writing avg=0.0")
 
         output = {model_repo: {"is_finetune": True, "eval_loss": avg}}
-        result_path = Path(cst.CONTAINER_EVAL_RESULTS_PATH)
+        result_path = Path(CONTAINER_EVAL_RESULTS_PATH)
         result_path.parent.mkdir(parents=True, exist_ok=True)
         result_path.write_text(json.dumps(output), encoding="utf-8")
         logger.info(

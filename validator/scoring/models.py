@@ -9,7 +9,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
-from core.constants import EnvironmentName
+from core.constants.environments import EnvironmentName
 from core.models.utility_models import FileFormat
 from core.models.utility_models import TaskType
 
