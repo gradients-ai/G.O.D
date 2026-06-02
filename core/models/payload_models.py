@@ -59,6 +59,8 @@ class TrainRequestText(TrainRequest):
     )
     dataset_type: TextDatasetType
     file_format: FileFormat
+    use_kl: bool = False
+    kl_coef: float | None = None
 
 
 class TrainRequestGrpo(TrainRequest):

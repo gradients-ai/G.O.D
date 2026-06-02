@@ -116,6 +116,8 @@ async def run_evaluation_basilica_text(
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
     local_logging: bool | None = False,
+    use_kl: bool = False,
+    kl_coef: float | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = {}
     db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
@@ -168,6 +170,10 @@ async def run_evaluation_basilica_text(
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         **vcst.HF_CONTAINER_ENV,
     }
+    if use_kl:
+        base_env[cst.USE_KL_ENV] = "1"
+        if kl_coef is not None:
+            base_env[cst.KL_COEF_ENV] = str(kl_coef)
     if is_environment_eval:
         env_name = cst.EnvironmentName(environment_name_value) if environment_name_value else None
         if env_name not in cst.ENVIRONMENT_CONFIGS:

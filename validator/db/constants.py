@@ -119,6 +119,8 @@ FIELD_OUTPUT = "field_output"
 FORMAT = "format"
 NO_INPUT_FORMAT = "no_input_format"
 FILE_FORMAT = "file_format"
+USE_KL = "use_kl"
+KL_COEF = "kl_coef"
 
 # Image Text Pairs Table Columns
 IMAGE_URL = "image_url"

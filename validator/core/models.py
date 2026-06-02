@@ -198,6 +198,8 @@ class InstructTextRawTask(RawTask):
     file_format: FileFormat = FileFormat.HF
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK
     synthetic_data: str | None = None
+    use_kl: bool = False
+    kl_coef: float | None = None
 
 
 class ChatRawTask(RawTask):

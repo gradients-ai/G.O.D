@@ -330,7 +330,7 @@ async def _create_task_by_type(
     if task_type == TaskType.IMAGETASK:
         return await create_synthetic_image_task(config, models)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
     elif task_type == TaskType.DPOTASK:
         return await create_synthetic_dpo_task(config, models, dpo_datasets)
     elif task_type == TaskType.GRPOTASK:
@@ -339,7 +339,7 @@ async def _create_task_by_type(
         return await create_synthetic_env_task(config, models, instruct_datasets)
     else:
         # Default to instruct text task
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
 
 async def _get_existing_tasks(existing_tournament_tasks: list, config: Config) -> list[RawTask]:
@@ -435,7 +435,7 @@ async def _create_single_group_text_tasks(
 
     logger.info(f"    Group {group_index + 1} has {existing_count}/{t_cst.TEXT_TASKS_PER_GROUP} task, creating 1 more")
     assert t_cst.TEXT_TASKS_PER_GROUP == 1, "Only 1 text task per group is supported"
-    task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+    task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
     await _create_and_register_tournament_task(
         task, tournament_id, round_id, config, group_id=group_id
@@ -494,7 +494,7 @@ async def _create_single_probability_task(
 ) -> RawTask:
     rand_val = random.random()
     if rand_val < instruct_prob:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
     elif rand_val < (instruct_prob + dpo_prob):
         return await create_synthetic_dpo_task(config, models, dpo_datasets)
     else:
@@ -547,7 +547,7 @@ async def _create_round_one_group_text_replacement_task(config: Config) -> RawTa
     """
     models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+    return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:

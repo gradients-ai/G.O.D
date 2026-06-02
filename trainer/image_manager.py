@@ -259,6 +259,8 @@ async def run_trainer_container_text(
     gpu_ids: list[int] = [0],
     env_server_urls: str | None = None,
     miner_datasets: list[str] | None = None,
+    use_kl: bool = False,
+    kl_coef: float | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
@@ -276,6 +278,10 @@ async def run_trainer_container_text(
     if miner_datasets:
         environment[cst.MINER_DATASETS_DIR_ENV] = cst.MINER_DATASETS_CACHE_DIR
         environment[cst.MINER_DATASETS_ENV] = ",".join(miner_datasets)
+    if use_kl:
+        environment[core_cst.USE_KL_ENV] = "1"
+        if kl_coef is not None:
+            environment[core_cst.KL_COEF_ENV] = str(kl_coef)
 
     command: list[str] = [
         "--task-id",
@@ -930,6 +936,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 timeout=60,
             )
         else:
+            use_kl = training_data.use_kl if isinstance(training_data, TrainRequestText) else False
+            kl_coef = training_data.kl_coef if isinstance(training_data, TrainRequestText) else None
             container = await asyncio.wait_for(
                 run_trainer_container_text(
                     task_id=training_data.task_id,
@@ -947,6 +955,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     gpu_ids=task.gpu_ids,
                     env_server_urls=env_server_url_str,
                     miner_datasets=task.requested_datasets,
+                    use_kl=use_kl,
+                    kl_coef=kl_coef,
                 ),
                 timeout=60,
             )

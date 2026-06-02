@@ -185,6 +185,10 @@ DPO_DEFAULT_FIELD_REJECTED = "rejected"
 
 GRPO_DEFAULT_FIELD_PROMPT = "prompt"
 
+# Env vars used to signal KL-regularised instruct training to miner containers and the evaluator.
+USE_KL_ENV = "USE_KL"
+KL_COEF_ENV = "KL_COEF"
+
 # YaRN extension HuggingFace credentials (separate from main HF credentials)
 YARN_HUGGINGFACE_USERNAME = os.getenv("YARN_HUGGINGFACE_USERNAME", "gradients-io")
 YARN_HUGGINGFACE_TOKEN = os.getenv("YARN_HUGGINGFACE_TOKEN")

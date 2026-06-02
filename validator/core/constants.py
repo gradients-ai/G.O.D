@@ -304,6 +304,13 @@ TRL_GRPO_FIELD_PROMPT = GRPO_DEFAULT_FIELD_PROMPT
 BETA_DPO = 0.1
 BETA_GRPO = 0.5
 
+# Instruct KL regularisation
+# Probability that a tournament instruct task asks miners to train with a KL term.
+INSTRUCT_KL_TASK_PROBABILITY = 0.2
+# Coefficient (beta) applied to KL(finetuned || base) when weighting the eval loss.
+# Stored per-task (kl_coef) and sent to miners so they can match the eval weighting.
+INSTRUCT_KL_COEFFICIENT = 0.1
+
 # GRPO evaluation
 GRPO_INITIAL_BATCH_SIZE = 16
 GRPO_KL_BATCH_SIZE = 1

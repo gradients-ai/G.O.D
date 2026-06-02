@@ -62,6 +62,18 @@ def maybe_get_yarn_factor() -> int | None:
     return None
 
 
+def maybe_get_kl_config() -> tuple[bool, float | None]:
+    """
+    Randomly decide whether this instruct task should ask miners to train with a KL term.
+
+    Returns (use_kl, kl_coef). When enabled, kl_coef is the coefficient the evaluator
+    will use to weight KL(finetuned || base) into the loss, and which we send to miners.
+    """
+    if random.random() < vcst.INSTRUCT_KL_TASK_PROBABILITY:
+        return True, vcst.INSTRUCT_KL_COEFFICIENT
+    return False, None
+
+
 async def _get_text_models(
     keypair: Keypair, smallest_size_b: float = 0.1, largest_size_b: float = 12.0
 ) -> AsyncGenerator[str, None]:
@@ -584,6 +596,7 @@ async def create_synthetic_instruct_text_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    enable_kl: bool = False,
 ) -> RawTask:
     model_id = await anext(models)
 
@@ -599,6 +612,7 @@ async def create_synthetic_instruct_text_task(
 
     yarn_factor = maybe_get_yarn_factor()
     augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
+    use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -614,8 +628,13 @@ async def create_synthetic_instruct_text_task(
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
         augmentation_config=augmentation_config,
+        use_kl=use_kl,
+        kl_coef=kl_coef,
     )
-    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
+    logger.info(
+        f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, "
+        f"augmented={augmentation_config is not None}, use_kl={use_kl}"
+    )
 
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")

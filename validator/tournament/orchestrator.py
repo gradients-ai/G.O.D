@@ -35,6 +35,7 @@ from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 from validator.core.models import AnyTypeRawTask
+from validator.core.models import InstructTextRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
@@ -641,6 +642,7 @@ async def _create_training_request(
     else:
         dataset_type = _get_dataset_type(task)
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         training_data = TrainRequestText(
             model=training_model,
             task_id=str(task.task_id),
@@ -650,6 +652,8 @@ async def _create_training_request(
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
             baseline_stats=baseline_stats,
+            use_kl=use_kl,
+            kl_coef=kl_coef,
         )
 
     return TrainerProxyRequest(

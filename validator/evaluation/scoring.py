@@ -37,6 +37,7 @@ from core.models.utility_models import TextDatasetType
 from validator.core.config import Config
 from validator.core.models import AnyTypeRawTask
 from validator.core.models import EnvRawTask
+from validator.core.models import InstructTextRawTask
 from validator.core.models import MinerResults
 from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
@@ -324,6 +325,7 @@ async def _evaluate_submissions(
             eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -333,6 +335,8 @@ async def _evaluate_submissions(
             "eval_seed": eval_seed,
             "task_id": task.task_id,
             "psql_db": config.psql_db if config is not None else None,
+            "use_kl": use_kl,
+            "kl_coef": kl_coef,
         }
 
         logger.info("Starting test evaluation")
