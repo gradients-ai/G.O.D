@@ -171,7 +171,7 @@ EXPECTED_REPO_NAME = "expected_repo_name"
 STARTING_MODEL_REPO = "starting_model_repo"
 EVALUATION_STATUS = "evaluation_status"
 DEPLOYMENT_ID = "deployment_id"
-DEPLOYMENT_ENV_ID = "deployment_env_id"
+GPU_COUNT = "gpu_count"
 
 TEST_LOSS = "test_loss"
 SYNTH_LOSS = "synth_loss"
