@@ -283,7 +283,13 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        boss_assigned = False
+        # The boss (EMISSION_BURN_HOTKEY) may already be a real member of one of the
+        # groups (e.g. it advanced into a group this round). Detect that up front so we
+        # don't greedily append it to an earlier group as well — otherwise the boss gets
+        # assigned to two tasks in the same round.
+        boss_assigned = any(
+            EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
+        )
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
