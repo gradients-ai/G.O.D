@@ -4,6 +4,7 @@ import random
 import re
 import tempfile
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -113,6 +114,23 @@ IMAGE_STYLES = [
 with open(cst.EXAMPLE_PROMPTS_PATH, "r") as f:
     FULL_PROMPTS = json.load(f)
 
+with open(Path(__file__).with_name("image_synth_prompts.json"), "r") as f:
+    IMAGE_SYNTH_PROMPT_TEMPLATES = json.load(f)
+
+
+@dataclass(frozen=True)
+class TriggeredPromptSet:
+    trigger: str
+    prompts: list[str]
+
+
+@dataclass(frozen=True)
+class ProductPromptSet:
+    trigger: str
+    product_description: str
+    reference_prompt: str
+    variant_prompts: list[str]
+
 
 def _load_json_from_text(text: str) -> dict:
     try:
@@ -134,6 +152,77 @@ def _get_prompts_from_response(text: str, num_prompts: int) -> list[str]:
     if len(clean_prompts) < num_prompts:
         raise ValueError(f"Generated {len(clean_prompts)} prompts, expected at least {num_prompts}")
     return clean_prompts[:num_prompts]
+
+
+def _normalize_trigger_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _clean_trigger(value: object, response_text: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Prompt response missing non-empty trigger/name: {response_text}")
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _get_clean_prompt_list(result: dict, prompt_key: str, num_prompts: int, response_text: str) -> list[str]:
+    prompts = result.get(prompt_key)
+    if not isinstance(prompts, list):
+        raise ValueError(f"Prompt response missing {prompt_key} list: {response_text}")
+
+    clean_prompts = [prompt.strip() for prompt in prompts if isinstance(prompt, str) and prompt.strip()]
+    if len(clean_prompts) < num_prompts:
+        raise ValueError(f"Generated {len(clean_prompts)} prompts, expected at least {num_prompts}")
+    return clean_prompts[:num_prompts]
+
+
+def _validate_trigger_in_prompts(trigger: str, prompts: list[str], context: str) -> None:
+    normalized_trigger = _normalize_trigger_text(trigger)
+    missing_indexes = [
+        index + 1 for index, prompt in enumerate(prompts) if normalized_trigger not in _normalize_trigger_text(prompt)
+    ]
+    if missing_indexes:
+        raise ValueError(f"{context} prompts missing trigger '{trigger}' at indexes: {missing_indexes}")
+
+
+def _get_triggered_prompt_set_from_response(
+    text: str, num_prompts: int, prompt_key: str = "prompts", context: str = "image"
+) -> TriggeredPromptSet:
+    result = _load_json_from_text(text)
+    trigger = _clean_trigger(result.get("trigger") or result.get("name"), text)
+    prompts = _get_clean_prompt_list(result, prompt_key, num_prompts, text)
+    _validate_trigger_in_prompts(trigger, prompts, context)
+    return TriggeredPromptSet(trigger=trigger, prompts=prompts)
+
+
+def _get_product_prompt_set_from_response(text: str, num_prompts: int) -> ProductPromptSet:
+    result = _load_json_from_text(text)
+    trigger = _clean_trigger(result.get("trigger"), text)
+    product_description = result.get("product_description")
+    reference_prompt = result.get("reference_prompt")
+    if not isinstance(product_description, str) or not product_description.strip():
+        raise ValueError(f"Product prompt response missing product_description: {text}")
+    if not isinstance(reference_prompt, str) or not reference_prompt.strip():
+        raise ValueError(f"Product prompt response missing reference_prompt: {text}")
+
+    variant_prompts = _get_clean_prompt_list(result, "variant_prompts", num_prompts, text)
+    _validate_trigger_in_prompts(trigger, [reference_prompt, *variant_prompts], "product")
+    return ProductPromptSet(
+        trigger=trigger,
+        product_description=product_description.strip(),
+        reference_prompt=reference_prompt.strip(),
+        variant_prompts=variant_prompts,
+    )
+
+
+def _sanitize_ds_fragment(value: str) -> str:
+    return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", value.lower())).strip("_")
+
+
+def _image_synth_prompt_template(template_name: str, **kwargs) -> str:
+    template = IMAGE_SYNTH_PROMPT_TEMPLATES.get(template_name)
+    if not isinstance(template, str):
+        raise ValueError(f"Missing image synth prompt template: {template_name}")
+    return template.format(**kwargs)
 
 
 def create_image_style_compatibility_prompt(first_style: str, second_style: str) -> str:
@@ -183,9 +272,43 @@ Requirements:
 - Return JSON only: {{"prompts": ["prompt 1", "prompt 2"]}}"""
 
 
+def _logo_prompt_request(num_prompts: int) -> str:
+    return _image_synth_prompt_template("logo", num_prompts=num_prompts)
+
+
+def _social_prompt_request(num_prompts: int) -> str:
+    return _image_synth_prompt_template("social", num_prompts=num_prompts)
+
+
+def _design_prompt_request(num_prompts: int, design_type: str) -> str:
+    return _image_synth_prompt_template("design", num_prompts=num_prompts, design_type=design_type)
+
+
+def _product_prompt_request(num_prompts: int) -> str:
+    return _image_synth_prompt_template("product", num_prompts=num_prompts)
+
+
 async def _post_to_fal_text(prompt: str) -> str:
     result = await post_to_fal(cst.FAL_TEXT_PROMPT_MODEL, {"prompt": prompt, "model": cst.FAL_TEXT_PROMPT_LLM})
     return extract_text(result)
+
+
+@retry_with_backoff
+async def generate_triggered_prompt_set(prompt_request: str, num_prompts: int, context: str) -> TriggeredPromptSet:
+    logger.info(f"Calling FAL text prompt model for {context} prompt generation")
+    result = await _post_to_fal_text(prompt_request)
+    prompt_set = _get_triggered_prompt_set_from_response(result, num_prompts, context=context)
+    logger.info(f"Generated {len(prompt_set.prompts)} {context} prompts with trigger: {prompt_set.trigger}")
+    return prompt_set
+
+
+@retry_with_backoff
+async def generate_product_prompt_set(num_prompts: int) -> ProductPromptSet:
+    logger.info("Calling FAL text prompt model for product prompt generation")
+    result = await _post_to_fal_text(_product_prompt_request(num_prompts))
+    prompt_set = _get_product_prompt_set_from_response(result, num_prompts)
+    logger.info(f"Generated {len(prompt_set.variant_prompts)} product prompts with trigger: {prompt_set.trigger}")
+    return prompt_set
 
 
 @retry_with_backoff
@@ -267,7 +390,7 @@ Return JSON only:
 
 
 @retry_with_backoff
-async def generate_person_prompts_with_fal_vision(face_image_url: str, num_prompts: int) -> list[str]:
+async def generate_person_prompts_with_fal_vision(face_image_url: str, num_prompts: int) -> TriggeredPromptSet:
     logger.info(f"Generating {num_prompts} person prompts with {cst.FAL_PERSON_PROMPT_MODEL}/{cst.FAL_PERSON_PROMPT_VLM}")
     payload = {
         "image_urls": [face_image_url],
@@ -275,9 +398,9 @@ async def generate_person_prompts_with_fal_vision(face_image_url: str, num_promp
         "model": cst.FAL_PERSON_PROMPT_VLM,
     }
     result = await post_to_fal(cst.FAL_PERSON_PROMPT_MODEL, payload)
-    prompts = _get_prompts_from_response(extract_text(result), num_prompts)
-    logger.info(f"Generated {len(prompts)} person prompts")
-    return prompts
+    prompt_set = _get_triggered_prompt_set_from_response(extract_text(result), num_prompts, context="person")
+    logger.info(f"Generated {len(prompt_set.prompts)} person prompts with trigger: {prompt_set.trigger}")
+    return prompt_set
 
 
 def _fal_image_payload(model_id: str, prompt: str, reference_image_url: str | None = None) -> dict:
@@ -332,6 +455,53 @@ async def generate_fal_images_for_prompts(
     return await asyncio.gather(*(generate_one(index, prompt) for index, prompt in enumerate(prompts)))
 
 
+def _triggered_ds_prefix(prefix: str, trigger: str) -> str:
+    trigger_fragment = _sanitize_ds_fragment(trigger)
+    return f"{prefix}_{trigger_fragment}" if trigger_fragment else prefix
+
+
+async def _generate_independent_triggered_synthetic(
+    prompt_set: TriggeredPromptSet, ds_prefix: str, category_description: str
+) -> tuple[list[ImageTextPair], str]:
+    model_id = random.choice(cst.FAL_IMAGE_MODELS)
+    logger.info(f"Selected FAL model for {category_description} task: {model_id}")
+    image_prompt_pairs = await generate_fal_images_for_prompts(model_id, prompt_set.prompts)
+    logger.info(f"Persisting {len(image_prompt_pairs)} {category_description} image-text pairs")
+    image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
+    logger.info(f"Persisted {len(image_text_pairs)} {category_description} image-text pairs")
+    return image_text_pairs, _triggered_ds_prefix(ds_prefix, prompt_set.trigger)
+
+
+async def generate_logo_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+    prompt_set = await generate_triggered_prompt_set(_logo_prompt_request(num_prompts), num_prompts, "logo")
+    return await _generate_independent_triggered_synthetic(prompt_set, cst.LOGO_SYNTH_DS_PREFIX, "logo")
+
+
+async def generate_social_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+    prompt_set = await generate_triggered_prompt_set(_social_prompt_request(num_prompts), num_prompts, "social")
+    return await _generate_independent_triggered_synthetic(prompt_set, cst.SOCIAL_SYNTH_DS_PREFIX, "social")
+
+
+async def generate_design_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+    design_type = random.choice(("mobile app", "web app or landing page"))
+    prompt_set = await generate_triggered_prompt_set(_design_prompt_request(num_prompts, design_type), num_prompts, "design")
+    return await _generate_independent_triggered_synthetic(prompt_set, cst.DESIGN_SYNTH_DS_PREFIX, f"{design_type} design")
+
+
+async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+    prompt_set = await generate_product_prompt_set(num_prompts)
+    logger.info(f"Generating product reference image for trigger: {prompt_set.trigger}")
+    reference_image_url = await generate_fal_image(cst.FAL_STYLE_MODEL_GPT_IMAGE_2, prompt_set.reference_prompt)
+    logger.info(f"Generating {len(prompt_set.variant_prompts)} product variants using reference image")
+    image_prompt_pairs = await generate_fal_images_for_prompts(
+        cst.FAL_AVATAR_MODEL, prompt_set.variant_prompts, reference_image_url
+    )
+    logger.info(f"Persisting {len(image_prompt_pairs)} product image-text pairs")
+    image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
+    logger.info(f"Persisted {len(image_text_pairs)} product image-text pairs")
+    return image_text_pairs, _triggered_ds_prefix(cst.PRODUCT_SYNTH_DS_PREFIX, prompt_set.trigger)
+
+
 async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[list[ImageTextPair], str]:
     use_combined_styles = random.random() < cst.PROBABILITY_STYLE_COMBINATION
 
@@ -353,7 +523,7 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
         logger.error(f"Failed to generate prompts for {first_style} and {second_style}: {e}")
         raise e
 
-    model_id = random.choice(cst.FAL_STYLE_MODELS)
+    model_id = random.choice(cst.FAL_IMAGE_MODELS)
     logger.info(f"Selected FAL style model for full task: {model_id}")
     image_prompt_pairs = await generate_fal_images_for_prompts(model_id, prompts)
     logger.info(f"Persisting {len(image_prompt_pairs)} style image-text pairs")
@@ -365,12 +535,53 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
 async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
     logger.info("Fetching and uploading person reference image")
     face_image_url = await _get_face_reference_url()
-    prompts = await generate_person_prompts_with_fal_vision(face_image_url, num_prompts)
-    image_prompt_pairs = await generate_fal_images_for_prompts(cst.FAL_AVATAR_MODEL, prompts, face_image_url)
+    prompt_set = await generate_person_prompts_with_fal_vision(face_image_url, num_prompts)
+    image_prompt_pairs = await generate_fal_images_for_prompts(cst.FAL_AVATAR_MODEL, prompt_set.prompts, face_image_url)
     logger.info(f"Persisting {len(image_prompt_pairs)} person image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} person image-text pairs")
-    return image_text_pairs, cst.PERSON_SYNTH_DS_PREFIX
+    return image_text_pairs, _triggered_ds_prefix(cst.PERSON_SYNTH_DS_PREFIX, prompt_set.trigger)
+
+
+def pick_image_synth_category() -> str:
+    categories = list(cst.IMAGE_SYNTH_CATEGORY_WEIGHTS.keys())
+    weights = list(cst.IMAGE_SYNTH_CATEGORY_WEIGHTS.values())
+    return random.choices(categories, weights=weights, k=1)[0]
+
+
+async def generate_image_synthetic_by_category(
+    config: Config, num_prompts: int, category: str
+) -> tuple[list[ImageTextPair], str]:
+    logger.info(f"Selected image synth category: {category}")
+
+    if category == cst.IMAGE_SYNTH_CATEGORY_STYLE:
+        return await generate_style_synthetic(config, num_prompts)
+    if category == cst.IMAGE_SYNTH_CATEGORY_LOGO:
+        return await generate_logo_synthetic(num_prompts)
+    if category == cst.IMAGE_SYNTH_CATEGORY_SOCIAL:
+        return await generate_social_synthetic(num_prompts)
+    if category == cst.IMAGE_SYNTH_CATEGORY_DESIGN:
+        return await generate_design_synthetic(num_prompts)
+    if category == cst.IMAGE_SYNTH_CATEGORY_PRODUCT:
+        return await generate_product_synthetic(num_prompts)
+    if category != cst.IMAGE_SYNTH_CATEGORY_PERSON:
+        raise ValueError(f"Unknown image synth category: {category}")
+
+    last_result: tuple[list[ImageTextPair], str] | None = None
+    for attempt in range(cst.PERSON_GEN_RETRIES):
+        image_text_pairs, ds_prefix = await generate_person_synthetic(num_prompts)
+        last_result = (image_text_pairs, ds_prefix)
+        if len(image_text_pairs) >= cst.MIN_IMAGE_SYNTH_PAIRS:
+            return image_text_pairs, ds_prefix
+        if attempt < cst.PERSON_GEN_RETRIES - 1:
+            logger.info(f"Person synth generation only produced {len(image_text_pairs)} pairs, trying again...")
+        else:
+            logger.warning(
+                f"Person synth generation only produced {len(image_text_pairs)} pairs after {cst.PERSON_GEN_RETRIES} attempts"
+            )
+    if last_result:
+        return last_result
+    raise ValueError("PERSON_GEN_RETRIES must be greater than zero")
 
 
 def _random_image_competition_hours() -> float:
@@ -381,7 +592,7 @@ def _random_image_competition_hours() -> float:
 
 
 async def create_synthetic_image_task(config: Config, models: AsyncGenerator[ImageModelInfo, None]) -> RawTask:
-    """Create a synthetic image task with random model and style."""
+    """Create a synthetic image task with a random image dataset category."""
     logger.info("Creating synthetic image task")
     number_of_hours = _random_image_competition_hours()
     num_prompts = random.randint(cst.MIN_IMAGE_SYNTH_PAIRS, cst.MAX_IMAGE_SYNTH_PAIRS)
@@ -390,20 +601,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     if is_qwen_model:
         number_of_hours = round(number_of_hours + cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
-    if random.random() < cst.PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE:
-        image_text_pairs, ds_prefix = await generate_style_synthetic(config, num_prompts)
-    else:
-        # Try person synth with a few retries for insufficient pairs
-        for attempt in range(cst.PERSON_GEN_RETRIES):
-            image_text_pairs, ds_prefix = await generate_person_synthetic(num_prompts)
-            if len(image_text_pairs) >= 10:
-                break
-            elif attempt < cst.PERSON_GEN_RETRIES - 1:
-                logger.info(f"Person synth generation only produced {len(image_text_pairs)} pairs, trying again...")
-            else:
-                logger.warning(
-                    f"Person synth generation only produced {len(image_text_pairs)} pairs after {cst.PERSON_GEN_RETRIES} attempts"
-                )
+    image_text_pairs, ds_prefix = await generate_image_synthetic_by_category(config, num_prompts, pick_image_synth_category())
 
     # Log image and text URLs for testing
     logger.info(f"Generated {len(image_text_pairs)} image-text pairs with prefix: {ds_prefix}")
