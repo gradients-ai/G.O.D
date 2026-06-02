@@ -27,7 +27,11 @@ FROM lmsysorg/sglang:latest
 WORKDIR /app
 
 COPY pyproject.toml README.md ./
-RUN mkdir -p src && touch src/__init__.py
+COPY core core
+COPY miner miner
+COPY ops ops
+COPY trainer trainer
+COPY validator validator
 
 # Install the gradients package itself so eval_intercode.py can import
 # `core.*` and `validator.*`. Keep --upgrade-strategy=only-if-needed so we

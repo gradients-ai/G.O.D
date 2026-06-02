@@ -8,7 +8,11 @@ COPY --from=mcts_runtime /app /opt/mcts
 ENV PYTHONPATH="/opt/mcts:/app"
 
 COPY pyproject.toml README.md ./
-RUN mkdir -p src && touch src/__init__.py
+COPY core core
+COPY miner miner
+COPY ops ops
+COPY trainer trainer
+COPY validator validator
 
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed .
 
