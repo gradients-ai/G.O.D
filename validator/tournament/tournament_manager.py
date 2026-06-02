@@ -80,6 +80,7 @@ from validator.tournament.utils import notify_tournament_completed
 from validator.tournament.utils import notify_tournament_started
 from validator.tournament.utils import send_to_discord
 from validator.tournament.utils import deduplicate_by_github_account
+from validator.tournament.utils import deduplicate_by_ip_address
 from validator.tournament.utils import validate_github_tokens
 from validator.tournament.utils import validate_repo_license
 from validator.tournament.utils import validate_repo_obfuscation
@@ -711,6 +712,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         logger.info(f"Got {len(responding_nodes)} responding nodes")
 
         await validate_github_tokens(responding_nodes)
+
+        pre_dedup_ip = len(responding_nodes)
+        responding_nodes = deduplicate_by_ip_address(responding_nodes)
+        if len(responding_nodes) < pre_dedup_ip:
+            logger.info(
+                f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
+            )
 
         pre_dedup = len(responding_nodes)
         responding_nodes = deduplicate_by_github_account(responding_nodes)
