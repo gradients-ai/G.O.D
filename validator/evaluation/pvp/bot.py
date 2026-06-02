@@ -23,6 +23,7 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatFn
 from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatRole
+from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import MemoryConfig
 from core.models.pvp_models import ToolCall
@@ -40,6 +41,11 @@ _NUDGE = "You did not call a tool. Call game_action with a legal action id to ma
 _TOOL_GUIDANCE = (
     "Use the memory tools to manage your notes between moves. When ready, call "
     "game_action with a legal action id to commit your move and end your turn."
+)
+_REFLECTION_GUIDANCE = (
+    "The game is over. Use the memory tools to update your long-term notes on this "
+    "opponent for future games — keep durable, generalisable reads (their tendencies, "
+    "your counter-strategy) and drop move-by-move detail. There is no move to make."
 )
 
 
@@ -146,6 +152,25 @@ class LLMBot(pyspiel.Bot):
             signal.alarm(0)
             signal.signal(signal.SIGALRM, prev_handler)
 
+    def reflect(self, state: pyspiel.State, outcome: GameOutcome) -> None:
+        """Single-shot, best-effort memory consolidation after a game ends.
+
+        The model is shown the result and may call memory tools (no game_action)
+        to update its notes. Failures are swallowed — the game is already decided,
+        so a flaky reflection must never affect the match.
+        """
+        try:
+            messages = [
+                ChatMessage(role=ChatRole.SYSTEM, content=self._reflection_system_prompt()),
+                ChatMessage(role=ChatRole.USER, content=self._reflection_user_prompt(state, outcome)),
+            ]
+            result = self._chat(messages, self._memory_tools)
+            for call in result.tool_calls or []:
+                if call.name != tool_lib.GAME_ACTION_TOOL_NAME:
+                    tool_lib.execute_memory_tool(self._memories, call.name, call.arguments)
+        except Exception as exc:
+            logger.warning("Reflection failed for player %d (ignored): %s", self._player_id, exc)
+
     def _run_turn(self, state: pyspiel.State) -> int:
         legal_actions = state.legal_actions(self._player_id)
         if not legal_actions:
@@ -207,12 +232,24 @@ class LLMBot(pyspiel.Bot):
     def _tool_result(tool_call_id: str, content: str) -> ChatMessage:
         return ChatMessage(role=ChatRole.TOOL, tool_call_id=tool_call_id, content=content)
 
+    def _memory_block(self) -> str:
+        return "\n\n".join(
+            mem.render(title=f"{area.value.upper()} (your notes):") for area, mem in self._memories.items()
+        )
+
     def _system_prompt(self) -> str:
-        parts = [self._agent.generate_system_prompt()]
-        for area, mem in self._memories.items():
-            parts.append(mem.render(title=f"{area.value.upper()} (your notes):"))
-        parts.append(_TOOL_GUIDANCE)
-        return "\n\n".join(parts)
+        return "\n\n".join([self._agent.generate_system_prompt(), self._memory_block(), _TOOL_GUIDANCE])
+
+    def _reflection_system_prompt(self) -> str:
+        return "\n\n".join([self._agent.generate_system_prompt(), self._memory_block(), _REFLECTION_GUIDANCE])
+
+    def _reflection_user_prompt(self, state: pyspiel.State, outcome: GameOutcome) -> str:
+        state_desc = self._agent.format_state(state, self._player_id)
+        return (
+            f"The game is over. Result for you: {outcome.value.upper()}.\n\n"
+            f"Final state:\n{state_desc}\n\n"
+            "Update your long-term notes on this opponent for future games."
+        )
 
     def _user_prompt(self, state: pyspiel.State, legal_actions: list[int]) -> str:
         state_desc = self._agent.format_state(state, self._player_id)

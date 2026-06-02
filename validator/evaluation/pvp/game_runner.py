@@ -23,8 +23,11 @@ from core.models.pvp_models import ChatFn
 from core.models.pvp_models import GameInstance
 from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import GameScoringContext
+from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPMatchupConfig
+from core.pvp.memory import SlotMemory
+from core.pvp.memory import WhitespaceTokenCounter
 from validator.core import constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 from validator.evaluation.pvp.agents import GinRummyAgent
@@ -214,6 +217,23 @@ def _check_episode_forfeit_limit(
     return True
 
 
+# Stateless word-based token counter; production wiring can inject a tokenizer-backed
+# counter so slot budgets reflect real tokens.
+_TOKEN_COUNTER = WhitespaceTokenCounter()
+
+
+def _new_long_term_memory() -> SlotMemory:
+    return SlotMemory(vcst.PVP_LONGTERM_MEM_SLOTS, vcst.PVP_LONGTERM_SLOT_TOKENS, _TOKEN_COUNTER)
+
+
+def _game_memories(long_term: SlotMemory) -> dict[MemoryArea, SlotMemory]:
+    """Fresh working memory for this game; long_term carried in from the matchup."""
+    return {
+        MemoryArea.WORKING: SlotMemory(vcst.PVP_WORKING_MEM_SLOTS, vcst.PVP_WORKING_SLOT_TOKENS, _TOKEN_COUNTER),
+        MemoryArea.LONG_TERM: long_term,
+    }
+
+
 def _execute_matchup(
     env_name: EnvironmentName,
     instances: list[GameInstance],
@@ -222,7 +242,18 @@ def _execute_matchup(
     agent: BaseGameAgent,
 ) -> PvPEnvironmentResult:
     """Play all game instances and tally results."""
-    play = functools.partial(_play_game, player_a=player_a, player_b=player_b, agent=agent)
+    # One long-term memory per player, carried across every game of the matchup
+    # so each side builds an opponent model over the series.
+    long_term_a = _new_long_term_memory()
+    long_term_b = _new_long_term_memory()
+    play = functools.partial(
+        _play_game,
+        player_a=player_a,
+        player_b=player_b,
+        agent=agent,
+        long_term_a=long_term_a,
+        long_term_b=long_term_b,
+    )
 
     result = PvPEnvironmentResult()
     consec_a_losses = 0
@@ -283,8 +314,14 @@ def _play_game(
     player_a: Player,
     player_b: Player,
     agent: BaseGameAgent,
+    long_term_a: SlotMemory,
+    long_term_b: SlotMemory,
 ) -> PlayedGame:
-    """Play a single game with timeout and return outcome from model_a's perspective."""
+    """Play a single game with timeout and return outcome from model_a's perspective.
+
+    Each bot gets fresh working memory plus the player's persistent long-term
+    memory; after the game both surviving bots reflect to consolidate it.
+    """
     game = pyspiel.load_game(instance.game_name, instance.game_params)
     model_b_player_id = 1 - instance.model_a_player_id
 
@@ -295,6 +332,7 @@ def _play_game(
         config=player_a.config,
         agent=agent,
         rng_seed=instance.seed + instance.model_a_player_id,
+        memories=_game_memories(long_term_a),
     )
     bot_b = LLMBot(
         game=game,
@@ -303,6 +341,7 @@ def _play_game(
         config=player_b.config,
         agent=agent,
         rng_seed=instance.seed + model_b_player_id,
+        memories=_game_memories(long_term_b),
     )
 
     bots = [None, None]
@@ -312,18 +351,33 @@ def _play_game(
     state = game.new_initial_state()
     evaluation = _evaluate_game_with_timeout(state, bots, instance.seed)
 
-    scoring = GameScoringContext(
-        returns=evaluation.returns,
-        player_id=instance.model_a_player_id,
-        is_zero_sum=instance.is_zero_sum,
-        min_utility=instance.min_utility,
-        max_utility=instance.max_utility,
-    )
-    forfeiting_model = None
-    if evaluation.forfeiting_player_id is not None:
-        forfeiting_model = "a" if evaluation.forfeiting_player_id == instance.model_a_player_id else "b"
+    def _outcome_for(player_id: int):
+        return determine_outcome(
+            GameScoringContext(
+                returns=evaluation.returns,
+                player_id=player_id,
+                is_zero_sum=instance.is_zero_sum,
+                min_utility=instance.min_utility,
+                max_utility=instance.max_utility,
+            )
+        )
 
-    return PlayedGame(outcome=determine_outcome(scoring), forfeiting_model=forfeiting_model)
+    outcome_a = _outcome_for(instance.model_a_player_id)
+    outcome_b = _outcome_for(model_b_player_id)
+
+    # Reflect to consolidate long-term memory — but skip a bot that forfeited
+    # (its model is broken/slow, so reflection would just hit the same wall).
+    forfeiting_pid = evaluation.forfeiting_player_id
+    if forfeiting_pid != instance.model_a_player_id:
+        bot_a.reflect(state, outcome_a)
+    if forfeiting_pid != model_b_player_id:
+        bot_b.reflect(state, outcome_b)
+
+    forfeiting_model = None
+    if forfeiting_pid is not None:
+        forfeiting_model = "a" if forfeiting_pid == instance.model_a_player_id else "b"
+
+    return PlayedGame(outcome=outcome_a, forfeiting_model=forfeiting_model)
 
 
 def _evaluate_game_with_timeout(

@@ -15,6 +15,7 @@ import pytest
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import ChatRole
+from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import ToolCall
 from core.pvp.memory import SlotMemory
@@ -296,3 +297,55 @@ class TestMemoryLifetime:
         bot.restart_at(state)
         assert mems[MemoryArea.WORKING].slots[1] == ""
         assert mems[MemoryArea.LONG_TERM].slots[1] == "durable opponent read"
+
+
+# --- End-of-game reflection (single-shot, same memory tools, no game_action) ---
+
+
+@needs_pyspiel
+class TestReflection:
+    def test_reflect_applies_memory_write(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        mems = _memories()
+        chat = ScriptedChat(_resp(_call("long_term_memory_append", cid="r", slot=1, content="opp over-folds to raises")))
+        bot = _make_bot(game, chat, pid, memories=mems)
+        bot.reflect(state, GameOutcome.WIN)
+        assert "opp over-folds to raises" in mems[MemoryArea.LONG_TERM].slots[1]
+
+    def test_reflect_offers_memory_tools_but_not_game_action(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = ScriptedChat(_resp())  # model writes nothing
+        bot = _make_bot(game, chat, pid)
+        bot.reflect(state, GameOutcome.LOSS)
+        names = {t.function.name for t in chat.calls[0]["tools"]}
+        assert "game_action" not in names
+        assert {"long_term_memory_rewrite", "long_term_memory_append"} <= names
+
+    def test_reflect_is_single_shot(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = ScriptedChat(_resp(_call("long_term_memory_append", cid="r", slot=1, content="note")))
+        bot = _make_bot(game, chat, pid)
+        bot.reflect(state, GameOutcome.DRAW)
+        assert len(chat.calls) == 1  # one generation, no loop
+
+    def test_reflect_is_best_effort_on_error(self):
+        game, state = _leduc()
+        pid = state.current_player()
+
+        def boom(config, messages, tools=None):
+            raise RuntimeError("inference down")
+
+        bot = _make_bot(game, boom, pid)
+        bot.reflect(state, GameOutcome.DRAW)  # must not raise — game is already decided
+
+    def test_reflection_outcome_appears_in_prompt(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = ScriptedChat(_resp())
+        bot = _make_bot(game, chat, pid)
+        bot.reflect(state, GameOutcome.WIN)
+        user_msg = chat.calls[0]["messages"][1].content
+        assert "WIN" in user_msg.upper()
