@@ -128,7 +128,7 @@ class TestTurnTimeout:
 @needs_pyspiel
 class TestForfeitPropagation:
     def test_timeout_forfeits_to_opponent_via_evaluate_bots(self):
-        from validator.evaluation.pvp.game_runner import _evaluate_with_timeout
+        from core.pvp.game_eval import _evaluate_with_timeout
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
         agent = LeducPokerAgent()
@@ -143,7 +143,7 @@ class TestForfeitPropagation:
         assert returns[1] == game.min_utility()
 
     def test_invalid_action_forfeit_propagates(self):
-        from validator.evaluation.pvp.game_runner import _evaluate_with_timeout
+        from core.pvp.game_eval import _evaluate_with_timeout
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
 

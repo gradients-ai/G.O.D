@@ -163,7 +163,7 @@ class TestFullGamePipeline:
 @needs_pyspiel
 class TestForfeitReturns:
     def test_player_0_forfeits(self):
-        from validator.evaluation.pvp.game_runner import _forfeit_returns
+        from core.pvp.game_eval import _forfeit_returns
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
         state = game.new_initial_state()
@@ -173,7 +173,7 @@ class TestForfeitReturns:
         assert returns[1] == game.max_utility()
 
     def test_player_1_forfeits(self):
-        from validator.evaluation.pvp.game_runner import _forfeit_returns
+        from core.pvp.game_eval import _forfeit_returns
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
         state = game.new_initial_state()

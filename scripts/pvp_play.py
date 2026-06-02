@@ -29,8 +29,8 @@ from core.pvp import tools as tool_lib
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import WhitespaceTokenCounter
 from validator.core import constants as vcst
-from validator.evaluation.pvp.bot import LLMBot
-from validator.evaluation.pvp.game_runner import _AGENT_REGISTRY
+from core.pvp.bot import LLMBot
+from core.pvp.game_eval import _AGENT_REGISTRY
 from core.constants import EnvironmentName
 
 

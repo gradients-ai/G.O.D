@@ -30,8 +30,6 @@ from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.game_eval import _evaluate_game_with_timeout
-from core.pvp.game_eval import _evaluate_with_timeout  # noqa: F401  (re-exported for tests)
-from core.pvp.game_eval import _forfeit_returns  # noqa: F401  (re-exported for tests)
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import TokenCounter
 from core.pvp.scoring import determine_outcome

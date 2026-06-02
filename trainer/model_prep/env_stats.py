@@ -35,8 +35,6 @@ SGLANG_EXTRA_CLI_DEFAULT = (
 )
 SGLANG_HEALTH_TIMEOUT = 600
 ENV_EVAL_TEMPERATURE = 0.0
-ENV_EVAL_TASK_TIMEOUT = 150
-CONSECUTIVE_FAILURE_LIMIT = 5
 
 
 # --- SGLang process management (from eval_environment.py) ---
