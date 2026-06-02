@@ -113,14 +113,14 @@ class TestTurnTimeout:
         pid = state.current_player()
         legal = state.legal_actions(pid)
         bot = _bot(game, pid, _committing_chat(sleep_seconds=1))
-        with patch("validator.core.constants.PVP_TURN_TIMEOUT_SECONDS", 3):
+        with patch("core.pvp.constants.PVP_TURN_TIMEOUT_SECONDS", 3):
             assert bot.step(state) == legal[0]
 
     def test_step_over_timeout_raises(self):
         game, state = _decision_state()
         pid = state.current_player()
         bot = _bot(game, pid, _committing_chat(sleep_seconds=3))
-        with patch("validator.core.constants.PVP_TURN_TIMEOUT_SECONDS", 1):
+        with patch("core.pvp.constants.PVP_TURN_TIMEOUT_SECONDS", 1):
             with pytest.raises(TurnTimeoutError):
                 bot.step(state)
 
@@ -136,7 +136,7 @@ class TestForfeitPropagation:
         bot_1 = _bot(game, 1, _committing_chat(sleep_seconds=2, sleep_on_call=2), agent)
         state = game.new_initial_state()
 
-        with patch("validator.core.constants.PVP_TURN_TIMEOUT_SECONDS", 1):
+        with patch("core.pvp.constants.PVP_TURN_TIMEOUT_SECONDS", 1):
             returns = _evaluate_with_timeout(state, [bot_0, bot_1], seed=42)
 
         assert returns[0] == game.max_utility()

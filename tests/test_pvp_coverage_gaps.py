@@ -239,7 +239,7 @@ class TestBuildSglangCommand:
 
 class TestChatRetryLogic:
     def test_succeeds_on_first_try(self):
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -262,7 +262,7 @@ class TestChatRetryLogic:
     def test_retries_on_timeout(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 
@@ -282,7 +282,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             result = _with_retries(mock_client, config, [
                 ChatMessage(role=ChatRole.USER, content="test")
             ])
@@ -293,7 +293,7 @@ class TestChatRetryLogic:
     def test_raises_after_exhausting_retries(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = oai.APITimeoutError(
@@ -305,7 +305,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             with pytest.raises(RuntimeError, match="Chat failed after 3 attempts"):
                 _with_retries(mock_client, config, [
                     ChatMessage(role=ChatRole.USER, content="test")
@@ -316,7 +316,7 @@ class TestChatRetryLogic:
     def test_retries_on_server_error(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 
@@ -343,7 +343,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             result = _with_retries(mock_client, config, [
                 ChatMessage(role=ChatRole.USER, content="test")
             ])
@@ -353,7 +353,7 @@ class TestChatRetryLogic:
     def test_does_not_retry_on_4xx(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 

@@ -448,27 +448,24 @@ PVP_SGLANG_API_PATH = "/v1"
 PVP_RESULTS_PATH = "/app/pvp_results.json"
 PVP_CONFIG_PATH = "/config/pvp_eval.json"
 PVP_CONFIG_ENV_VAR = "PVP_EVAL_CONFIG"
-PVP_SEED_RANGE_MAX = 1_000_000
-PVP_CONFIG_ID_DIVISOR = 100_000_000
 PVP_LOG_INTERVAL_GAMES = 100
 PVP_BOT_MAX_PARSING_RETRIES = 0
 PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
-# Per-turn wall-clock forfeit budget. Covers the whole multi-step tool loop;
-# a healthy turn is a few seconds, this is the "stuck/too slow" cutoff.
-PVP_TURN_TIMEOUT_SECONDS = 15
-PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 PVP_EPISODE_FORFEIT_THRESHOLD = 10
 
-# Tool-calling memory harness
-# Max tool round-trips per turn before forfeiting (bounds the agentic loop).
-PVP_MAX_INNER_STEPS = 4
-# Generation cap per inner step. A step writes at most one slot (<=128 tokens)
-# plus brief reasoning + tool-call JSON, so this is comfortably sufficient.
-PVP_PER_STEP_MAX_TOKENS = 256
-PVP_WORKING_MEM_SLOTS = 4
-PVP_WORKING_SLOT_TOKENS = 128
-PVP_LONGTERM_MEM_SLOTS = 8
-PVP_LONGTERM_SLOT_TOKENS = 128
+# Core PvP harness constants live in core.pvp.constants (shared with the model-prep
+# image, which ships core/ only); re-exported so validator code keeps using vcst.PVP_*.
+from core.pvp.constants import PVP_CONFIG_ID_DIVISOR  # noqa: E402,F401
+from core.pvp.constants import PVP_LONGTERM_MEM_SLOTS  # noqa: E402,F401
+from core.pvp.constants import PVP_LONGTERM_SLOT_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_MAX_INNER_STEPS  # noqa: E402,F401
+from core.pvp.constants import PVP_PER_STEP_MAX_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_RETRY_BACKOFF_CAP_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_SEED_RANGE_MAX  # noqa: E402,F401
+from core.pvp.constants import PVP_TURN_TIMEOUT_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_WORKING_MEM_SLOTS  # noqa: E402,F401
+from core.pvp.constants import PVP_WORKING_SLOT_TOKENS  # noqa: E402,F401
+
 INDIVIDUAL_WIN_MARGIN = 0.015
 
 # PvP tournament scoring

@@ -11,10 +11,8 @@ import logging
 import random
 from typing import NamedTuple
 
-import numpy as np
 import openai
 import pyspiel
-from open_spiel.python.algorithms import evaluate_bots
 
 from core.constants import ENVIRONMENT_CONFIGS
 from core.constants import EnvironmentName
@@ -26,34 +24,22 @@ from core.models.pvp_models import GameScoringContext
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPMatchupConfig
+from core.pvp.agents import BaseGameAgent
+from core.pvp.bot import LLMBot
+from core.pvp.chat import chat_completion
+from core.pvp.chat import create_client
+from core.pvp.game_eval import _AGENT_REGISTRY
+from core.pvp.game_eval import _evaluate_game_with_timeout
+from core.pvp.game_eval import _evaluate_with_timeout  # noqa: F401  (re-exported for tests)
+from core.pvp.game_eval import _forfeit_returns  # noqa: F401  (re-exported for tests)
 from core.pvp.memory import SlotMemory
-from core.pvp.memory import WhitespaceTokenCounter
+from core.pvp.memory import TokenCounter
+from core.pvp.scoring import determine_outcome
+from core.pvp.tokenizer_counter import load_token_counter
 from validator.core import constants as vcst
-from validator.evaluation.pvp.agents import BaseGameAgent
-from validator.evaluation.pvp.agents import GinRummyAgent
-from validator.evaluation.pvp.agents import LeducPokerAgent
-from validator.evaluation.pvp.agents import LiarsDiceAgent
-from validator.evaluation.pvp.bot import ContextOverflowError
-from validator.evaluation.pvp.bot import EmptyLegalActionsError
-from validator.evaluation.pvp.bot import InvalidActionForfeitError
-from validator.evaluation.pvp.bot import LLMBot
-from validator.evaluation.pvp.bot import TurnTimeoutError
-from validator.evaluation.pvp.chat import chat_completion
-from validator.evaluation.pvp.chat import create_client
-from validator.evaluation.pvp.scoring import determine_outcome
 
 
 logger = logging.getLogger(__name__)
-
-
-def _forfeit_returns(state: pyspiel.State, forfeiting_player: int) -> list[float]:
-    """Build returns where the forfeiting player gets min utility, opponent gets max."""
-    game = state.get_game()
-    min_util = game.min_utility()
-    max_util = game.max_utility()
-    returns = [max_util] * state.num_players()
-    returns[forfeiting_player] = min_util
-    return returns
 
 
 class Player(NamedTuple):
@@ -62,13 +48,6 @@ class Player(NamedTuple):
     client: openai.OpenAI
     config: ChatCompletionConfig
     chat_fn: ChatFn
-
-
-class GameEvaluation(NamedTuple):
-    """Raw game returns plus the player ID that forfeited, when any."""
-
-    returns: list[float]
-    forfeiting_player_id: int | None = None
 
 
 class PlayedGame(NamedTuple):
@@ -83,13 +62,6 @@ def create_player(config: ChatCompletionConfig) -> Player:
     client = create_client(config)
     bound_chat: ChatFn = functools.partial(chat_completion, client)
     return Player(client=client, config=config, chat_fn=bound_chat)
-
-
-_AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
-    EnvironmentName.LIARS_DICE: LiarsDiceAgent,
-    EnvironmentName.LEDUC_POKER: LeducPokerAgent,
-    EnvironmentName.GIN_RUMMY: GinRummyAgent,
-}
 
 
 def run_matchup(
@@ -217,19 +189,14 @@ def _check_episode_forfeit_limit(
     return True
 
 
-# Stateless word-based token counter; production wiring can inject a tokenizer-backed
-# counter so slot budgets reflect real tokens.
-_TOKEN_COUNTER = WhitespaceTokenCounter()
+def _new_long_term_memory(counter: TokenCounter) -> SlotMemory:
+    return SlotMemory(vcst.PVP_LONGTERM_MEM_SLOTS, vcst.PVP_LONGTERM_SLOT_TOKENS, counter)
 
 
-def _new_long_term_memory() -> SlotMemory:
-    return SlotMemory(vcst.PVP_LONGTERM_MEM_SLOTS, vcst.PVP_LONGTERM_SLOT_TOKENS, _TOKEN_COUNTER)
-
-
-def _game_memories(long_term: SlotMemory) -> dict[MemoryArea, SlotMemory]:
+def _game_memories(long_term: SlotMemory, counter: TokenCounter) -> dict[MemoryArea, SlotMemory]:
     """Fresh working memory for this game; long_term carried in from the matchup."""
     return {
-        MemoryArea.WORKING: SlotMemory(vcst.PVP_WORKING_MEM_SLOTS, vcst.PVP_WORKING_SLOT_TOKENS, _TOKEN_COUNTER),
+        MemoryArea.WORKING: SlotMemory(vcst.PVP_WORKING_MEM_SLOTS, vcst.PVP_WORKING_SLOT_TOKENS, counter),
         MemoryArea.LONG_TERM: long_term,
     }
 
@@ -242,10 +209,13 @@ def _execute_matchup(
     agent: BaseGameAgent,
 ) -> PvPEnvironmentResult:
     """Play all game instances and tally results."""
+    # Per-player tokenizer so slot budgets are real model tokens (whitespace fallback).
+    counter_a = load_token_counter(player_a.config.inference_model)
+    counter_b = load_token_counter(player_b.config.inference_model)
     # One long-term memory per player, carried across every game of the matchup
     # so each side builds an opponent model over the series.
-    long_term_a = _new_long_term_memory()
-    long_term_b = _new_long_term_memory()
+    long_term_a = _new_long_term_memory(counter_a)
+    long_term_b = _new_long_term_memory(counter_b)
     play = functools.partial(
         _play_game,
         player_a=player_a,
@@ -253,6 +223,8 @@ def _execute_matchup(
         agent=agent,
         long_term_a=long_term_a,
         long_term_b=long_term_b,
+        counter_a=counter_a,
+        counter_b=counter_b,
     )
 
     result = PvPEnvironmentResult()
@@ -316,6 +288,8 @@ def _play_game(
     agent: BaseGameAgent,
     long_term_a: SlotMemory,
     long_term_b: SlotMemory,
+    counter_a: TokenCounter,
+    counter_b: TokenCounter,
 ) -> PlayedGame:
     """Play a single game with timeout and return outcome from model_a's perspective.
 
@@ -332,7 +306,7 @@ def _play_game(
         config=player_a.config,
         agent=agent,
         rng_seed=instance.seed + instance.model_a_player_id,
-        memories=_game_memories(long_term_a),
+        memories=_game_memories(long_term_a, counter_a),
     )
     bot_b = LLMBot(
         game=game,
@@ -341,7 +315,7 @@ def _play_game(
         config=player_b.config,
         agent=agent,
         rng_seed=instance.seed + model_b_player_id,
-        memories=_game_memories(long_term_b),
+        memories=_game_memories(long_term_b, counter_b),
     )
 
     bots = [None, None]
@@ -378,57 +352,6 @@ def _play_game(
         forfeiting_model = "a" if forfeiting_pid == instance.model_a_player_id else "b"
 
     return PlayedGame(outcome=outcome_a, forfeiting_model=forfeiting_model)
-
-
-def _evaluate_game_with_timeout(
-    state: pyspiel.State,
-    bots: list[LLMBot | None],
-    seed: int,
-) -> GameEvaluation:
-    """Run evaluate_bots, catching bot-level forfeits.
-
-    Per-turn timeouts are enforced inside LLMBot.step() via SIGALRM.
-    Timeout, context overflow, and invalid-action strikeouts propagate up
-    through evaluate_bots and are caught here as forfeits.
-    """
-    try:
-        returns = evaluate_bots.evaluate_bots(state, bots, np.random.RandomState(seed))
-        return GameEvaluation(returns=list(returns))
-    except TurnTimeoutError as exc:
-        logger.warning(
-            "Player %d timed out on turn — opponent wins by forfeit",
-            exc.player_id,
-        )
-        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
-    except ContextOverflowError as exc:
-        logger.warning(
-            "Player %d exceeded context length — opponent wins by forfeit",
-            exc.player_id,
-        )
-        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
-    except InvalidActionForfeitError as exc:
-        logger.warning(
-            "Player %d failed to produce valid actions %d times — opponent wins by forfeit",
-            exc.player_id,
-            exc.invalid_action_failures,
-        )
-        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
-    except EmptyLegalActionsError:
-        logger.warning("Game stuck with no legal actions — scoring as draw")
-        return GameEvaluation(returns=[0.0] * state.num_players())
-
-
-def _evaluate_with_timeout(
-    state: pyspiel.State,
-    bots: list[LLMBot | None],
-    seed: int,
-) -> list[float]:
-    """Run evaluate_bots and return only game returns.
-
-    Kept as a returns-only wrapper for tests and callers that do not need
-    forfeit attribution.
-    """
-    return _evaluate_game_with_timeout(state, bots, seed).returns
 
 
 def _tally(result: PvPEnvironmentResult, outcome: GameOutcome) -> None:
