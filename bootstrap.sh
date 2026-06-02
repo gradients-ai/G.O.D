@@ -212,7 +212,7 @@ else
   if [[ WITH_AUTOUPDATES -eq 1 ]]; then
     . $HOME/.venv/bin/activate
   else
-    docker compose --env-file .vali.env -f docker-compose.yml up -d --build
+    docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up -d --build
   fi
 fi
 

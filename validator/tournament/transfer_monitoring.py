@@ -8,16 +8,16 @@ from typing import Optional
 
 import requests
 
-from validator.core.config import Config
-from validator.core.transfer_models import TaoStatsTransferData
-from validator.core.transfer_models import TaoStatsTransferResponse
-from validator.core.transfer_models import TransferData
+from validator.app.config import Config
+from validator.transfers.models import TaoStatsTransferData
+from validator.transfers.models import TaoStatsTransferResponse
+from validator.transfers.models import TransferData
 from validator.db.sql.transfers import get_or_create_coldkey_balance
 from validator.db.sql.transfers import get_transfer_processing_state
 from validator.db.sql.transfers import insert_transfer
 from validator.db.sql.transfers import update_coldkey_balance
 from validator.db.sql.transfers import update_transfer_processing_state
-from validator.utils.logging import get_logger
+from core.logging import get_logger
 
 
 logger = get_logger(__name__)
@@ -268,8 +268,8 @@ async def main():
     """
     Main function for standalone transfer monitoring check
     """
-    from validator.core.config import load_config
-    from validator.utils.util import try_db_connections
+    from validator.app.config import load_config
+    from validator.tasks.details import try_db_connections
 
     logger.info("🚀 Starting standalone transfer monitoring check...")
 

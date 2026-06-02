@@ -10,12 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
 from trainer.endpoints import factory_router
-from trainer.tasks import complete_model_prep
-from trainer.tasks import complete_task
-from trainer.tasks import get_running_jobs
-from trainer.tasks import log_task
-from trainer.utils.cleanup_loop import start_cleanup_loop_in_thread
-from validator.utils.logging import get_logger
+from trainer.job_state import complete_model_prep
+from trainer.job_state import complete_task
+from trainer.job_state import get_running_jobs
+from trainer.job_state import log_task
+from trainer.cleanup import start_cleanup_loop_in_thread
+from core.logging import get_logger
 
 
 load_dotenv(".trainer.env")

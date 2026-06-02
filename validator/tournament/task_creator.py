@@ -2,35 +2,35 @@ import random
 
 from core.constants import EnvironmentName
 from core.constants import TrainingStartPoint
-from core.models.tournament_models import GroupRound
-from core.models.tournament_models import TournamentType
-from core.models.tournament_models import KnockoutRound
-from core.models.tournament_models import Round
-from core.models.tournament_models import TournamentTask
+from core.logging import get_logger
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import TaskType
-from validator.core.config import Config
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
-from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
-from validator.tasks.diffusion_synth import create_synthetic_image_task
-from validator.tasks.synthetic_scheduler import _get_dpo_datasets
-from validator.tasks.synthetic_scheduler import _get_image_models
-from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
-from validator.tasks.synthetic_scheduler import _get_text_models
-from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
-from validator.tasks.synthetic_scheduler import create_synthetic_env_task
-from validator.tasks.synthetic_scheduler import create_synthetic_grpo_task
-from validator.tasks.synthetic_scheduler import create_synthetic_instruct_text_task
+from validator.app.config import Config
+from validator.tasks.models import RawTask
+from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
+from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
+from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
+from validator.tasks.synthetics.diffusion import create_synthetic_image_task
+from validator.tasks.synthetics.scheduler import _get_dpo_datasets
+from validator.tasks.synthetics.scheduler import _get_image_models
+from validator.tasks.synthetics.scheduler import _get_instruct_text_datasets
+from validator.tasks.synthetics.scheduler import _get_text_models
+from validator.tasks.synthetics.scheduler import create_synthetic_dpo_task
+from validator.tasks.synthetics.scheduler import create_synthetic_env_task
+from validator.tasks.synthetics.scheduler import create_synthetic_grpo_task
+from validator.tasks.synthetics.scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
-from validator.tournament.gpu import get_tournament_gpu_requirement
-from validator.utils.logging import get_logger
+from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.models import GroupRound
+from validator.tournament.models import KnockoutRound
+from validator.tournament.models import Round
+from validator.tournament.models import TournamentTask
+from validator.tournament.models import TournamentType
 
 
 logger = get_logger(__name__)

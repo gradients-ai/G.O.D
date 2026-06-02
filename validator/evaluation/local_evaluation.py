@@ -22,23 +22,23 @@ from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
-from core.utils import download_s3_file
-from validator.core import constants as vcst
-from validator.evaluation.eval_environment import _build_sglang_command
-from validator.evaluation.eval_environment import _download_lora_with_retry
-from validator.evaluation.eval_environment import _download_model_with_retry
-from validator.evaluation.eval_environment import _merge_base_and_lora
-from validator.evaluation.eval_environment import _run_environment_evaluation as _run_eval_environment_rollouts
-from validator.evaluation.utils import check_for_lora
-from validator.evaluation.utils import check_lora_has_added_tokens
-from validator.evaluation.utils import normalize_rewards_and_compute_loss
-from validator.evaluation.utils import process_evaluation_results
-from validator.evaluation.utils import wait_for_basilica_health
-from validator.tasks.task_prep import unzip_to_temp_path
-from validator.utils.logging import get_all_context_tags
-from validator.utils.logging import get_environment_logger
-from validator.utils.logging import get_logger
-from validator.utils.logging import stream_container_logs
+from core.downloads import download_s3_file
+import validator.constants as vcst
+from validator.evaluation.evaluators.environment import _build_sglang_command
+from validator.evaluation.evaluators.environment import _download_lora_with_retry
+from validator.evaluation.evaluators.environment import _download_model_with_retry
+from validator.evaluation.evaluators.environment import _merge_base_and_lora
+from validator.evaluation.evaluators.environment import _run_environment_evaluation as _run_eval_environment_rollouts
+from validator.evaluation.model_checks import check_for_lora
+from validator.evaluation.model_checks import check_lora_has_added_tokens
+from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
+from validator.evaluation.result_processing import process_evaluation_results
+from validator.evaluation.runtime import wait_for_basilica_health
+from validator.tasks.datasets.preparation import unzip_to_temp_path
+from core.logging import get_all_context_tags
+from core.logging import get_environment_logger
+from core.logging import get_logger
+from core.logging import stream_container_logs
 
 
 logger = get_logger(__name__)
@@ -124,9 +124,9 @@ async def run_evaluation_docker_text(
     eval_seed: int | None = None,
 ) -> DockerEvaluationResults:
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
-        command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
+        command = ["python", "-m", "validator.evaluation.evaluators.instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
-        command = ["python", "-m", "validator.evaluation.eval_dpo"]
+        command = ["python", "-m", "validator.evaluation.evaluators.dpo"]
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
@@ -225,7 +225,7 @@ async def run_evaluation_docker_grpo(
     cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
     await asyncio.to_thread(snapshot_download, repo_id=original_model, cache_dir=cache_dir, ignore_patterns=None)
 
-    command = ["python", "-m", "validator.evaluation.eval_grpo"]
+    command = ["python", "-m", "validator.evaluation.evaluators.grpo"]
     dataset_type_str = dataset_type.model_dump_json()
     dataset_filename = os.path.basename(dataset)
     dataset_dir = os.path.dirname(os.path.abspath(dataset))
@@ -568,7 +568,7 @@ async def run_evaluation_local_intercode(
     volume_bindings = {
         cache_dir: {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
     }
-    command = ["python", "-m", "validator.evaluation.eval_intercode"]
+    command = ["python", "-m", "validator.evaluation.evaluators.intercode"]
     base_environment = {
         "ORIGINAL_MODEL": original_model,
         "DATASET_TYPE": dataset_type_str,

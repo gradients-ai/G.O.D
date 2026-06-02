@@ -1,7 +1,7 @@
 """Game-specific agents for PvP evaluation.
 
 Each agent provides state formatting and parameter generation for its game.
-Rules text is loaded from core/config/pvp_game_prompts.yml.
+Rules text is loaded from core/training_templates/pvp_game_prompts.yml.
 """
 
 import functools
@@ -12,7 +12,7 @@ from pathlib import Path
 import pyspiel
 import yaml
 
-_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "core" / "config" / "pvp_game_prompts.yml"
+_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "core" / "training_templates" / "pvp_game_prompts.yml"
 
 
 @functools.cache

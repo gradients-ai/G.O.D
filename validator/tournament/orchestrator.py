@@ -1,6 +1,8 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 
 import httpx
 from dotenv import load_dotenv
@@ -10,16 +12,13 @@ from tenacity import stop_after_attempt
 from tenacity import wait_exponential
 
 import validator.tournament.constants as cst
+from core.logging import LogContext
+from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
-from core.models.tournament_models import GpuRequirement
-from core.models.tournament_models import TaskTrainingAssignment
-from core.models.tournament_models import TournamentTaskTraining
-from core.models.tournament_models import TournamentType
-from core.models.tournament_models import TrainingRepoInfo
 from core.models.utility_models import Backend
 from core.models.utility_models import FileFormat
 from core.models.utility_models import GPUInfo
@@ -27,24 +26,27 @@ from core.models.utility_models import GPUType
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
-from validator.core.config import Config
-from validator.core.config import load_config
-from validator.core.constants import EMISSION_BURN_HOTKEY
-from validator.core.constants import GET_GPU_AVAILABILITY_ENDPOINT
-from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
-from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
-from validator.core.constants import TASK_DETAILS_ENDPOINT
-from validator.core.models import AnyTypeRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
-from validator.evaluation.scoring import _get_dataset_type
-from validator.evaluation.scoring import should_use_tournament_eval
-from validator.tournament.gpu import get_tournament_gpu_requirement
-from validator.utils.logging import LogContext
-from validator.utils.logging import get_logger
-from validator.utils.util import try_db_connections
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.tasks import _get_dataset_type
+from validator.scoring.tasks import should_use_tournament_eval
+from validator.app.config import Config
+from validator.app.config import load_config
+from validator.constants import GET_GPU_AVAILABILITY_ENDPOINT
+from validator.constants import MODEL_PREP_STATUS_ENDPOINT
+from validator.constants import PROXY_TRAINING_IMAGE_ENDPOINT
+from validator.constants import TASK_DETAILS_ENDPOINT
+from validator.tasks.models import AnyTypeRawTask
+from validator.tasks.details import try_db_connections
+from validator.tasks.synthetics.scheduler import apply_baseline_ctx_scale
+from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.models import GpuRequirement
+from validator.tournament.models import TaskTrainingAssignment
+from validator.tournament.models import TournamentTaskTraining
+from validator.tournament.models import TournamentType
+from validator.tournament.models import TrainingRepoInfo
 
 
 logger = get_logger(__name__)
@@ -1142,8 +1144,8 @@ async def process_awaiting_model_prep_tasks(config: Config):
     """
     # Deferred imports to avoid circular dependency
     # (model_prep imports _check_suitable_gpus from this module)
-    from validator.utils.model_prep import dispatch_augmentation_and_stats
-    from validator.tournament.gpu import get_tournament_gpu_requirement
+    from validator.tasks.prep.model import dispatch_augmentation_and_stats
+    from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 
     # Track per-miner preps independently: "task_id:hotkey"
     _miner_prep_in_progress: set[str] = set()

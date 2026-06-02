@@ -1,0 +1,25 @@
+{
+    "name": "Validator Development",
+    "build": {
+        "dockerfile": "../docker/validator.dockerfile",
+        "context": "../.."
+    },
+    "runArgs": [
+        "--gpus=device=0",
+        "--runtime=nvidia",
+        "-v", "${env:HOME}/.cache/huggingface/hub:/root/.cache/huggingface/hub"
+    ],
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-python.python",
+                "ms-python.vscode-pylance",
+                "ms-python.debugpy",
+                "ms-azuretools.vscode-docker",
+                "eamodio.gitlens"
+            ]
+        }
+    },
+    "overrideCommand": true,
+    "postCreateCommand": "sleep infinity"
+}

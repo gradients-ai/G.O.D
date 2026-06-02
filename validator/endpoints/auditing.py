@@ -4,10 +4,10 @@ from fastapi import HTTPException
 from loguru import logger
 from pydantic import BaseModel  # noqa
 
-from validator.core.config import Config
-from validator.core.dependencies import get_config
-from validator.core.models import AnyTypeTask
-from validator.core.models import AnyTypeTaskWithHotkeyDetails
+from validator.app.config import Config
+from validator.app.dependencies import get_config
+from validator.tasks.models import AnyTypeTask
+from validator.tasks.models import AnyTypeTaskWithHotkeyDetails
 from validator.db.sql.auditing import get_latest_scores_url
 from validator.db.sql.auditing import get_recent_tasks
 from validator.db.sql.auditing import get_recent_tasks_for_hotkey

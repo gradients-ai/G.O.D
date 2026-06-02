@@ -1,9 +1,9 @@
 from typing import List
 
-from core.models.tournament_models import BenchmarkInstance
-from core.models.tournament_models import BenchmarkTaskCopy
-from core.models.tournament_models import BenchmarkTimeline
-from core.models.tournament_models import BenchmarkTimelineResponse
+from validator.tournament.models import BenchmarkInstance
+from validator.tournament.models import BenchmarkTaskCopy
+from validator.tournament.models import BenchmarkTimeline
+from validator.tournament.models import BenchmarkTimelineResponse
 from core.models.utility_models import TaskType
 from validator.db import constants as cst
 from validator.db.database import PSQLDB

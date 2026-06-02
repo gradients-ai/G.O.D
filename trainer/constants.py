@@ -1,6 +1,12 @@
-DEFAULT_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
-DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
-DEFAULT_TEXT_DOCKERFILE_PATH = "dockerfiles/standalone-text-trainer.dockerfile"
+DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
+DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
+DEFAULT_TEXT_DOCKERFILE_PATH = "ops/docker/standalone-text-trainer.dockerfile"
+LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
+LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
+LEGACY_TEXT_DOCKERFILE_PATH = "dockerfiles/standalone-text-trainer.dockerfile"
+IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
+IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)
+TEXT_DOCKERFILE_PATHS = (DEFAULT_TEXT_DOCKERFILE_PATH, LEGACY_TEXT_DOCKERFILE_PATH)
 TEMP_REPO_PATH = "/tmp/trainer/repos/"
 TASKS_FILE_PATH = "trainer/task_history.json"
 CHECKPOINTS_VOLUME_NAME = "checkpoints"
@@ -35,9 +41,13 @@ MINER_DATASETS_CACHE_DIR = "/cache/miner_datasets"
 MINER_DATASETS_DIR_ENV = "MINER_DATASETS_DIR"
 MINER_DATASETS_ENV = "MINER_DATASETS"
 WANDB_LOGS_DIR = "/app/checkpoints/wandb_logs"
-IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH = "/workspace/core/config"
+IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH = "/workspace/core/training_templates"
 IMAGE_CONTAINER_CONFIG_SAVE_PATH = "/dataset/configs"
 IMAGE_CONTAINER_IMAGES_PATH = "/dataset/images"
+DIFFUSION_SDXL_REPEATS = 10
+DIFFUSION_FLUX_REPEATS = 1
+DIFFUSION_DEFAULT_INSTANCE_PROMPT = "lora"
+DIFFUSION_DEFAULT_CLASS_PROMPT = "style"
 
 # Directories
 

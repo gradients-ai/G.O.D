@@ -19,28 +19,15 @@ from core.models.utility_models import FileFormat
 from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import ImageTextPair
-from core.models.utility_models import JobStatus
 from core.models.utility_models import MinerTaskResult
 from core.models.utility_models import RewardFunction
 from core.models.utility_models import TaskMinerResult
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TextDatasetType
-from validator.core.models import AllNodeStats
 
 
 logger = get_logger(__name__)
-
-
-class MinerTaskOffer(BaseModel):
-    ds_size: int | None = None
-    model: str
-    hours_to_complete: float
-    task_id: str
-    task_type: TaskType
-    model_params_count: int | None = None
-
-    model_config = ConfigDict(protected_namespaces=())
 
 
 class TrainRequest(BaseModel):
@@ -139,11 +126,6 @@ class ModelPrepJob(TrainerJob):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class TrainResponse(BaseModel):
-    message: str
-    task_id: UUID
-
-
 class TrainingRepoResponse(BaseModel):
     github_repo: str = Field(..., description="The GitHub repository URL")
     commit_hash: str = Field(..., description="The commit hash of the repository")
@@ -151,15 +133,6 @@ class TrainingRepoResponse(BaseModel):
     requested_datasets: list[str] | None = Field(
         default=None, description="Optional list of HuggingFace dataset repo IDs from the whitelist"
     )
-
-
-class JobStatusPayload(BaseModel):
-    task_id: UUID
-
-
-class JobStatusResponse(BaseModel):
-    task_id: UUID
-    status: JobStatus
 
 
 class EnvConfig(BaseModel):
@@ -191,16 +164,6 @@ class ModelPrepResponse(BaseModel):
     baseline_stats: BaselineStats | None = None
 
 
-class EvaluationRequest(TrainRequest):
-    original_model: str
-
-
-class EvaluationRequestDiffusion(BaseModel):
-    test_split_url: str
-    original_model_repo: str
-    models: list[str]
-
-
 class DiffusionLosses(BaseModel):
     text_guided_losses: list[float]
     no_text_losses: list[float]
@@ -220,11 +183,6 @@ class DockerEvaluationResults(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     results: dict[str, EvaluationResultText | EvaluationResultImage | Exception]
     base_model_params_count: int = 0
-
-
-class MinerTaskResponse(BaseModel):
-    message: str
-    accepted: bool
 
 
 class DpoDatasetColumnsResponse(BaseModel):
@@ -587,17 +545,6 @@ class ImageTaskDetails(TaskDetails):
     model_type: ImageModelType = ImageModelType.SDXL
 
     model_config = ConfigDict(protected_namespaces=())
-
-
-class TaskListResponse(BaseModel):
-    success: bool
-    task_id: UUID
-    status: TaskStatus
-
-
-class LeaderboardRow(BaseModel):
-    hotkey: str
-    stats: AllNodeStats
 
 
 class ImageModelInfo(BaseModel):

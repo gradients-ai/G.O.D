@@ -22,7 +22,7 @@ from core.models.model_prep_models import EnvStats
 
 logger = logging.getLogger(__name__)
 
-# Default SGLang CLI flags (inlined from validator.core.constants)
+# Default SGLang CLI flags (inlined from validator.constants)
 SGLANG_EXTRA_CLI_DEFAULT = (
     "--attention-backend triton --prefill-attention-backend triton "
     "--decode-attention-backend triton --sampling-backend pytorch"

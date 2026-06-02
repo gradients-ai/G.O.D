@@ -17,7 +17,7 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatFn
 from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatRole
-from validator.core import constants as vcst
+import validator.constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 
 

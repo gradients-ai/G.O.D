@@ -75,11 +75,11 @@ echo ""
 
 # --- Step 3: Build images ---
 echo ">>> Step 3a: Building pvp-eval:test..."
-$SSH "cd $REMOTE_DIR && docker build -f dockerfiles/pvp-eval.dockerfile -t pvp-eval:test . 2>&1 | tail -3"
+$SSH "cd $REMOTE_DIR && docker build -f ops/docker/pvp-eval.dockerfile -t pvp-eval:test . 2>&1 | tail -3"
 echo ""
 
 echo ">>> Step 3b: Building trainer-downloader:test..."
-$SSH "cd $REMOTE_DIR && docker build -f dockerfiles/trainer-downloader.dockerfile -t trainer-downloader:test . 2>&1 | tail -3"
+$SSH "cd $REMOTE_DIR && docker build -f ops/docker/trainer-downloader.dockerfile -t trainer-downloader:test . 2>&1 | tail -3"
 echo ""
 
 # --- Step 4: Create cache volume ---

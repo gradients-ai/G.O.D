@@ -12,8 +12,8 @@ from core.models.pvp_models import PvPMatchupConfig
 from core.models.pvp_models import PvPMode
 from core.models.pvp_models import PvPModelSpec
 from core.models.pvp_models import PvPPairResult
-from core.models.scoring_models import IndividualEvalResult
-from core.models.scoring_models import MinerRepos
+from validator.scoring.models import IndividualEvalResult
+from validator.scoring.models import MinerRepos
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -22,7 +22,7 @@ from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
-from validator.core import constants as vcst
+import validator.constants as vcst
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import _db_call_with_retry
@@ -34,12 +34,12 @@ from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.db_utils import load_shared_eval_deployment_id
 from validator.evaluation.db_utils import persist_shared_eval_deployment_id
-from validator.evaluation.utils import _log_eval_step
-from validator.evaluation.utils import create_basilica_eval_runner_source
-from validator.evaluation.utils import normalize_rewards_and_compute_loss
-from validator.evaluation.utils import process_evaluation_results
-from validator.utils.logging import get_environment_logger
-from validator.utils.logging import get_logger
+from validator.evaluation.evaluation_logging import _log_eval_step
+from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
+from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
+from validator.evaluation.result_processing import process_evaluation_results
+from core.logging import get_environment_logger
+from core.logging import get_logger
 
 
 try:
@@ -136,9 +136,9 @@ async def run_evaluation_basilica_text(
     else:
         basilica_image = cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
-        command = ["python", "-m", "validator.evaluation.eval_instruct_text"]
+        command = ["python", "-m", "validator.evaluation.evaluators.instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
-        command = ["python", "-m", "validator.evaluation.eval_dpo"]
+        command = ["python", "-m", "validator.evaluation.evaluators.dpo"]
     elif isinstance(dataset_type, GrpoDatasetType):
         return await run_evaluation_basilica_grpo(
             dataset, models, original_model, dataset_type, file_format, num_gpus,
@@ -148,9 +148,9 @@ async def run_evaluation_basilica_text(
         )
     elif isinstance(dataset_type, EnvironmentDatasetType):
         if is_intercode_eval:
-            command = ["python", "-m", "validator.evaluation.eval_intercode"]
+            command = ["python", "-m", "validator.evaluation.evaluators.intercode"]
         else:
-            command = ["python", "-m", "validator.evaluation.eval_environment"]
+            command = ["python", "-m", "validator.evaluation.evaluators.environment"]
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     if not is_environment_eval and not dataset.startswith("http://") and not dataset.startswith("https://"):
@@ -234,7 +234,7 @@ async def run_evaluation_basilica_grpo(
     """
     Run GRPO evaluation on Basilica with separate deployments per repo.
     """
-    command = ["python", "-m", "validator.evaluation.eval_grpo"]
+    command = ["python", "-m", "validator.evaluation.evaluators.grpo"]
     if not dataset.startswith("http://") and not dataset.startswith("https://"):
         raise ValueError(
             "Basilica GRPO eval expects dataset to be an S3/HTTP URL. "

@@ -12,12 +12,12 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from pydantic import Field
 
-from validator.evaluation.eval_intercode import DEFAULT_MAX_TOKENS_PER_CALL
-from validator.evaluation.eval_intercode import DEFAULT_MAX_TURNS
-from validator.evaluation.eval_intercode import DEFAULT_PER_TASK_TIMEOUT_SECONDS
-from validator.evaluation.eval_intercode import InterCodeAssets
-from validator.evaluation.eval_intercode import load_intercode_assets
-from validator.evaluation.eval_intercode import run_intercode_task
+from validator.evaluation.evaluators.intercode import DEFAULT_MAX_TOKENS_PER_CALL
+from validator.evaluation.evaluators.intercode import DEFAULT_MAX_TURNS
+from validator.evaluation.evaluators.intercode import DEFAULT_PER_TASK_TIMEOUT_SECONDS
+from validator.evaluation.evaluators.intercode import InterCodeAssets
+from validator.evaluation.evaluators.intercode import load_intercode_assets
+from validator.evaluation.evaluators.intercode import run_intercode_task
 
 
 logger = logging.getLogger(__name__)

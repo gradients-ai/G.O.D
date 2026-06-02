@@ -9,32 +9,28 @@ from datetime import timezone
 
 import httpx
 from dotenv import load_dotenv
-from tenacity import retry
-from tenacity import stop_after_attempt
-from tenacity import wait_exponential
 
 import validator.tournament.constants as cst
+from core.logging import LogContext
+from core.logging import get_logger
 from core.models.payload_models import DstackRunStatus
-from core.models.tournament_models import GpuRequirement
-from core.models.tournament_models import TournamentType
+from core.models.utility_models import Backend
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
-from validator.core.config import Config
-from validator.core.config import load_config
-from validator.core.constants import DSTACK_RUNS_APPLY_ENDPOINT
-from validator.core.constants import DSTACK_RUNS_GET_ENDPOINT
-from validator.core.constants import EMISSION_BURN_HOTKEY
-from validator.core.models import AnyTypeRawTask
+from trainer.model_artifacts import get_anonymous_model_dir
 from validator.db.sql import tasks as task_sql
-from core.models.utility_models import Backend
 from validator.db.sql import tournaments as tournament_sql
-from validator.evaluation.scoring import _get_dataset_type
-from validator.tournament.gpu import get_tournament_gpu_requirement
-from trainer.utils.model_anonymizer import get_anonymous_model_dir
-from validator.utils.logging import LogContext
-from validator.utils.logging import get_logger
-from validator.utils.util import try_db_connections
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.tasks import _get_dataset_type
+from validator.app.config import Config
+from validator.app.config import load_config
+from validator.constants import DSTACK_RUNS_APPLY_ENDPOINT
+from validator.constants import DSTACK_RUNS_GET_ENDPOINT
+from validator.tasks.models import AnyTypeRawTask
+from validator.tasks.details import try_db_connections
+from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.models import GpuRequirement
 
 
 logger = get_logger(__name__)
@@ -535,4 +531,3 @@ async def run_dstack_orchestrator_cycle():
 if __name__ == "__main__":
     load_dotenv(".vali.env", override=True)
     asyncio.run(run_dstack_orchestrator_cycle())
-

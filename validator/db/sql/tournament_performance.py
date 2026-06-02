@@ -1,5 +1,5 @@
-from core.models.tournament_models import BossRoundTaskPair
-from core.models.tournament_models import TaskScore
+from validator.tournament.models import BossRoundTaskPair
+from validator.tournament.models import TaskScore
 from validator.db import constants as cst
 from validator.db.database import PSQLDB
 

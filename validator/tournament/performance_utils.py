@@ -1,23 +1,23 @@
 from datetime import datetime
 from datetime import timezone
 
-import validator.core.constants as cts
-from core.models.tournament_models import MinerEmissionWeight
-from core.models.tournament_models import TournamentAuditData
-from core.models.tournament_models import TournamentProjection
-from core.models.tournament_models import TournamentType
-from core.models.tournament_models import WeightProjection
-from validator.core.constants import EMISSION_BURN_HOTKEY
-from validator.core.weight_setting import calculate_emission_boost_from_perf
-from validator.core.weight_setting import calculate_hybrid_decays
-from validator.core.weight_setting import calculate_tournament_weight_with_decay
+import validator.scoring.constants as cts
 from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.db.sql.tournaments import get_tournament_where_champion_first_won
-from validator.evaluation.tournament_scoring import exponential_decline_mapping
-from validator.tournament.utils import get_real_tournament_winner
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.weights import calculate_emission_boost_from_perf
+from validator.scoring.weights import calculate_hybrid_decays
+from validator.scoring.weights import calculate_tournament_weight_with_decay
+from validator.tournament.models import MinerEmissionWeight
+from validator.tournament.models import TournamentAuditData
+from validator.tournament.models import TournamentProjection
+from validator.tournament.models import TournamentType
+from validator.tournament.models import WeightProjection
+from validator.tournament.round_results import get_real_tournament_winner
 
 
 def calculate_scaled_weights(
@@ -181,4 +181,3 @@ async def calculate_tournament_projection(
         initial_weight=initial_weight,
         projections=projections,
     )
-

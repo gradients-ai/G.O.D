@@ -17,11 +17,11 @@ from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 from transformers import TrainerCallback
 
-from core.config.config_handler import create_dataset_entry
-from validator.core import constants as cst
-from validator.core.models import EvaluationArgs
-from validator.utils.logging import get_logger
-from validator.utils.retry_utils import retry_on_5xx
+from core.training_config import create_dataset_entry
+import validator.constants as cst
+from validator.evaluation.models import EvaluationArgs
+from core.logging import get_logger
+from validator.infrastructure.retries import retry_on_5xx
 
 
 logger = get_logger(__name__)

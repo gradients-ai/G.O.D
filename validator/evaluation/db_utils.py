@@ -3,7 +3,7 @@ modules like eval_instruct_text can import LoRA/utils without pulling DB deps.""
 
 from uuid import UUID
 
-from validator.core import constants as cst
+import validator.constants as cst
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
 

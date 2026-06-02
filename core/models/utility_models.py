@@ -1,10 +1,8 @@
-import uuid
 from datetime import datetime
 from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel
-from pydantic import ConfigDict
 from pydantic import Field
 
 from core.constants import EnvironmentName
@@ -15,14 +13,6 @@ class FileFormat(str, Enum):
     JSON = "json"  # needs to be local file
     HF = "hf"  # Hugging Face dataset
     S3 = "s3"
-
-
-class JobStatus(str, Enum):
-    QUEUED = "Queued"
-    RUNNING = "Running"
-    COMPLETED = "Completed"
-    FAILED = "Failed"
-    NOT_FOUND = "Not Found"
 
 
 class TaskStatus(str, Enum):
@@ -41,18 +31,10 @@ class TaskStatus(str, Enum):
     FAILURE = "failure"
 
 
-class WinningSubmission(BaseModel):
-    hotkey: str
-    score: float
-    model_repo: str
-
-    # Turn off protected namespace for model
-    model_config = ConfigDict(protected_namespaces=())
-
-
-class MinerSubmission(BaseModel):
-    repo: str
-    model_hash: str | None = None
+class TournamentType(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
+    ENVIRONMENT = "environment"
 
 
 class MinerTaskResult(BaseModel):
@@ -136,31 +118,7 @@ class ImageModelType(str, Enum):
     QWEN_IMAGE = "qwen-image"
 
 
-class Job(BaseModel):
-    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    model: str
-    status: JobStatus = JobStatus.QUEUED
-    error_message: str | None = None
-    expected_repo_name: str | None = None
-
-
 TextDatasetType = InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType
-
-
-class TextJob(Job):
-    dataset: str
-    dataset_type: TextDatasetType
-    file_format: FileFormat
-
-
-class DiffusionJob(Job):
-    model_config = ConfigDict(protected_namespaces=())
-    dataset_zip: str = Field(
-        ...,
-        description="Link to dataset zip file",
-        min_length=1,
-    )
-    model_type: ImageModelType = ImageModelType.SDXL
 
 
 class Role(str, Enum):
@@ -172,15 +130,6 @@ class Role(str, Enum):
 class Message(BaseModel):
     role: Role
     content: str
-
-
-class Prompts(BaseModel):
-    input_output_reformulation_sys: str
-    input_output_reformulation_user: str
-    input_reformulation_sys: str
-    input_reformulation_user: str
-    reward_function_generation_sys: str
-    reward_function_generation_user: str
 
 
 class TaskType(str, Enum):

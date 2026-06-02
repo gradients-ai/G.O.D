@@ -8,18 +8,18 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 
-from validator.core.config import Config
-from validator.core.dependencies import get_api_key
-from validator.core.dependencies import get_config
-from validator.core.transfer_models import BalanceEventResponse
-from validator.core.transfer_models import ColdkeyBalanceResponse
-from validator.core.transfer_models import TournamentFeesResponse
+from validator.app.config import Config
+from validator.app.dependencies import get_api_key
+from validator.app.dependencies import get_config
+from validator.transfers.models import BalanceEventResponse
+from validator.transfers.models import ColdkeyBalanceResponse
+from validator.transfers.models import TournamentFeesResponse
 from validator.db.sql.transfers import get_balance_events_by_coldkey
 from validator.db.sql.transfers import get_balance_events_by_tournament
 from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.db.sql.transfers import refund_tournament_participants
 from validator.tournament import constants as t_cst
-from validator.utils.logging import get_logger
+from core.logging import get_logger
 
 
 logger = get_logger(__name__)

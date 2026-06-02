@@ -11,7 +11,7 @@ import time
 import openai
 
 from core.models.pvp_models import ChatCompletionConfig, ChatMessage, ChatResult
-from validator.core import constants as vcst
+import validator.constants as vcst
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,50 @@
+from core.models.utility_models import TaskType
+
+
+TRAIN_TEST_SPLIT_PERCENTAGE = 0.1
+MAX_TEST_DATA_POINTS = 1000
+
+IMAGE_TRAIN_SPLIT_ZIP_NAME = "train_data.zip"
+IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
+TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
+SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
+MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
+MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
+
+CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
+
+# we sample datasets with these num_rows ranges equally
+DATASET_BINS_TO_SAMPLE = [
+    (20_000, 50_000),
+    (50_000, 100_000),
+    (100_000, 500_000),
+]
+
+# Training hours
+TRAINING_HOURS_SCALE_START_ROWS = 75_000
+TRAINING_HOURS_MAX_ROWS = 500_000
+TRAINING_HOURS_MIN = 1.0
+TRAINING_HOURS_MAX_BASE = 6.0
+FULL_HOURS_MODEL_PARAMS = 14e9
+MIN_HOURS_SCALE = 0.5
+TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
+    TaskType.INSTRUCTTEXTTASK: 1.0,
+    TaskType.CHATTASK: 1.0,
+    TaskType.DPOTASK: 1.4,
+    TaskType.GRPOTASK: 1.3,
+}
+CTX_REF_SEQ_LEN = 1024
+CTX_SCALE_MIN = 0.25
+CTX_SCALE_MAX = 3.0
+MAX_TRAINING_HOURS = 6.0
+
+STANDARD_INSTRUCT_COLUMN = "instruct"
+STANDARD_INPUT_COLUMN = "input"
+STANDARD_OUTPUT_COLUMN = "output"
+STANDARD_SYSTEM_COLUMN = "system"
+STANDARD_GRPO_PROMPT_COLUMN = "prompt"
+STANDARD_GRPO_EXTRA_COLUMN = "extra_data"
+STANDARD_DPO_PROMPT_COLUMN = "prompt"
+STANDARD_DPO_CHOSEN_COLUMN = "chosen"
+STANDARD_DPO_REJECTED_COLUMN = "rejected"
+STANDARD_CHAT_MESSAGES_COLUMN = "conversations"

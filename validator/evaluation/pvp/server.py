@@ -11,8 +11,8 @@ import subprocess
 import threading
 
 from core.models.pvp_models import PreparedModel
-from validator.core import constants as vcst
-from validator.evaluation.eval_environment import _wait_for_health
+import validator.constants as vcst
+from validator.evaluation.evaluators.environment import _wait_for_health
 
 logger = logging.getLogger(__name__)
 

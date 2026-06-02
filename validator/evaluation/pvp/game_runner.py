@@ -25,7 +25,7 @@ from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import GameScoringContext
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPMatchupConfig
-from validator.core import constants as vcst
+import validator.constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 from validator.evaluation.pvp.agents import GinRummyAgent
 from validator.evaluation.pvp.agents import LeducPokerAgent

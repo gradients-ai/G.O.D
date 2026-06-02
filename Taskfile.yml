@@ -10,23 +10,23 @@ tasks:
 
   config:
     cmds:
-      - python -m core.create_config
+      - python -m ops.tools.config.create_config
 
   auditor-config:
     cmds:
-      - python -m core.create_config --auditor
+      - python -m ops.tools.config.create_config --auditor
 
   miner-config:
     cmds:
-      - python -m core.create_config --miner
+      - python -m ops.tools.config.create_config --miner
 
   trainer-config:
     cmds:
-      - python -m core.create_config --trainer
+      - python -m ops.tools.config.create_config --trainer
 
   miner:
     cmds:
-      - ENV=DEV uvicorn miner.server:app --reload --host 0.0.0.0 --port 7999 --env-file .1.env --log-level debug
+      - ENV=DEV uvicorn miner.asgi:app --reload --host 0.0.0.0 --port 7999 --env-file .1.env --log-level debug
 
   trainer:
     cmds:
@@ -35,35 +35,35 @@ tasks:
 
   dbdown:
     cmds:
-      - docker compose --env-file .vali.env -f docker-compose.yml run dbmate --wait down
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml run dbmate --wait down
 
   dbup:
     cmds:
-      - docker compose --env-file .vali.env -f docker-compose.yml run dbmate --wait up
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml run dbmate --wait up
 
   setup:
     cmds:
-      - docker compose --env-file .vali.env -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml -f ops/compose/docker-compose.dev.yml up -d --build
 
   validator_dev:
     cmds:
-      - docker compose --env-file .vali.env -f docker-compose.yml -f docker-compose.dev.yml up -d --build --remove-orphans
-      - docker compose --env-file .vali.env -f docker-compose.yml -f docker-compose.dev.yml  run dbmate --wait up
-      - ./utils/start_validator.sh
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml -f ops/compose/docker-compose.dev.yml up -d --build --remove-orphans
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml -f ops/compose/docker-compose.dev.yml  run dbmate --wait up
+      - ./ops/validator_ops/start_validator.sh
 
   autoupdates:
     cmds:
       - pm2 delete autoupdater || true
-      - pm2 start "python utils/run_validator_auto_update.py" --name autoupdater
+      - pm2 start "python -m ops.validator_ops.run_validator_auto_update" --name autoupdater
 
   validator:
     cmds:
       - . $HOME/.venv/bin/activate
-      - ./utils/setup_grafana.sh
-      - docker compose --env-file .vali.env -f docker-compose.yml up -d --build --remove-orphans
+      - ./ops/validator_ops/setup_grafana.sh
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up -d --build --remove-orphans
       - docker compose rm -f -v grafana
-      - docker compose --env-file .vali.env -f docker-compose.yml up grafana -d
-      - ./utils/start_validator.sh
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up grafana -d
+      - ./ops/validator_ops/start_validator.sh
 
   postgres:
     cmds:
@@ -86,12 +86,12 @@ tasks:
     cmds:
       - . $HOME/.venv/bin/activate
       - pm2 delete auditor || true
-      - pm2 start "python -m auditing.audit" --name auditor
+      - pm2 start "python -m ops.auditing.audit" --name auditor
 
   auditor-autoupdates:
     cmds:
       - pm2 delete auditor-autoupdates || true
-      - pm2 start "python utils/run_auditor_autoupdate.py" --name auditor-autoupdates
+      - pm2 start "python -m ops.validator_ops.run_auditor_autoupdate" --name auditor-autoupdates
 
   db-dump:
     cmds:
@@ -145,27 +145,27 @@ tasks:
         EOF
       - |
         # Auto-create SSL certs if missing
-        mkdir -p config/nginx/ssl config/nginx
-        if [ ! -f config/nginx/ssl/cert.pem ]; then
+        mkdir -p ops/observability/nginx/ssl ops/observability/nginx
+        if [ ! -f ops/observability/nginx/ssl/cert.pem ]; then
           export $(cat .vali.env | grep -v '^#' | xargs)
           openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout config/nginx/ssl/key.pem \
-            -out config/nginx/ssl/cert.pem \
+            -keyout ops/observability/nginx/ssl/key.pem \
+            -out ops/observability/nginx/ssl/cert.pem \
             -subj "/C=US/ST=State/L=City/O=Training/CN=${OBSERVABILITY_DOMAIN}" 2>/dev/null
         fi
       - |
         # Auto-create basic auth file with password from .vali.env
-        if [ ! -f config/nginx/.htpasswd ] || [ "$LOKI_PASSWORD_UPDATED" = "true" ]; then
+        if [ ! -f ops/observability/nginx/.htpasswd ] || [ "$LOKI_PASSWORD_UPDATED" = "true" ]; then
           export $(cat .vali.env | grep -v '^#' | xargs)
           # Check if htpasswd is available, if not use Docker
           if command -v htpasswd >/dev/null 2>&1; then
-            htpasswd -b -B -c config/nginx/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD} 2>/dev/null
+            htpasswd -b -B -c ops/observability/nginx/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD} 2>/dev/null
           else
             # Use Docker to generate htpasswd file
-            docker run --rm -v $(pwd)/config/nginx:/work httpd:alpine htpasswd -b -B -c /work/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD}
+            docker run --rm -v $(pwd)/ops/observability/nginx:/work httpd:alpine htpasswd -b -B -c /work/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD}
           fi
         fi
-      - docker compose -f docker-compose.observability-server.yml --env-file .env.observability up -d
+      - docker compose -f ops/compose/docker-compose.observability-server.yml --env-file .env.observability up -d
       - |
         export $(cat .vali.env | grep -v '^#' | xargs)
         echo "========================================="
@@ -177,7 +177,7 @@ tasks:
   stop-observability-server:
     desc: "Stop the observability server"
     cmds:
-      - docker compose -f docker-compose.observability-server.yml down
+      - docker compose -f ops/compose/docker-compose.observability-server.yml down
 
   deploy-trainer-logs:
     desc: "Deploy log shipping on trainer node (uses .trainer.env)"
@@ -211,32 +211,32 @@ tasks:
         LOKI_PASSWORD=${LOKI_PASSWORD}
         VECTOR_LOG_LEVEL=${VECTOR_LOG_LEVEL:-info}
         EOF
-      - docker compose -f docker-compose.trainer-server.yml --env-file .env.trainer-logs up -d
+      - docker compose -f ops/compose/docker-compose.trainer-server.yml --env-file .env.trainer-logs up -d
       - echo "Log shipping started to ${LOKI_ENDPOINT}"
 
   stop-trainer-logs:
     desc: "Stop log shipping on trainer node"
     cmds:
-      - docker compose -f docker-compose.trainer-server.yml down
+      - docker compose -f ops/compose/docker-compose.trainer-server.yml down
 
   logs-observability:
     desc: "View logs from observability server"
     cmds:
-      - docker compose -f docker-compose.observability-server.yml logs -f
+      - docker compose -f ops/compose/docker-compose.observability-server.yml logs -f
 
   logs-trainer-shipper:
     desc: "View logs from trainer log shipper"
     cmds:
-      - docker compose -f docker-compose.trainer-server.yml logs -f vector-log-shipper
+      - docker compose -f ops/compose/docker-compose.trainer-server.yml logs -f vector-log-shipper
 
   status-trainer-logs:
     desc: "Check status of trainer logging system"
     cmds:
       - echo "=== Observability Server Status ==="
-      - docker compose -f docker-compose.observability-server.yml ps 2>/dev/null || echo "Not running on this server"
+      - docker compose -f ops/compose/docker-compose.observability-server.yml ps 2>/dev/null || echo "Not running on this server"
       - echo ""
       - echo "=== Trainer Log Shipper Status ==="
-      - docker compose -f docker-compose.trainer-server.yml ps 2>/dev/null || echo "Not running on this server"
+      - docker compose -f ops/compose/docker-compose.trainer-server.yml ps 2>/dev/null || echo "Not running on this server"
       - echo ""
       - echo "=== Vector Metrics ==="
       - curl -s http://localhost:8686/health 2>/dev/null && echo "Vector is healthy" || echo "Vector not accessible"
@@ -244,5 +244,4 @@ tasks:
   test-trainer-logs:
     desc: "Test log shipping by creating test containers with different labels"
     cmds:
-      - ./scripts/test-trainer-logs.sh
-
+      - ./ops/tools/observability/test_trainer_logs.sh

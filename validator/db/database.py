@@ -9,7 +9,7 @@ from asyncpg.pool import PoolAcquireContext
 from dotenv import load_dotenv
 
 import validator.db.constants as cst
-from validator.utils.logging import get_logger
+from core.logging import get_logger
 
 
 logger = get_logger(__name__)

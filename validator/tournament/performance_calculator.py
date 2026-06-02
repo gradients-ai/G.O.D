@@ -2,11 +2,9 @@ import statistics
 
 import numpy as np
 
-from core.models.tournament_models import TaskPerformanceDifference
-from core.models.tournament_models import TournamentPerformanceData
+import validator.scoring.constants as cts
+from core.logging import get_logger
 from core.models.utility_models import TaskType
-from validator.core import constants as cts
-from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
@@ -15,10 +13,12 @@ from validator.db.sql.tournaments import count_champion_consecutive_wins_at_tour
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
-from validator.evaluation.scoring import calculate_miner_ranking_and_scores
-from validator.tournament.utils import get_progressive_threshold
-from validator.tournament.utils import get_task_results_for_ranking
-from validator.utils.logging import get_logger
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.tasks import calculate_miner_ranking_and_scores
+from validator.tournament.models import TaskPerformanceDifference
+from validator.tournament.models import TournamentPerformanceData
+from validator.tournament.task_results import get_task_results_for_ranking
+from validator.tournament.thresholds import get_progressive_threshold
 
 
 logger = get_logger(__name__)

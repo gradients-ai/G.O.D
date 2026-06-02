@@ -12,26 +12,13 @@ Competitive events where the validator executes miners' open-source training scr
 - **Rewards**: Exponentially higher weight potential for top performers
 - **Open Source**: Winning AutoML scripts are released when tournaments complete
 - **Winners Repository**: First place tournament scripts is uploaded to [github.com/gradients-opensource](https://github.com/gradients-opensource) 🤙
-- [Tournament Overview](docs/tournament_overview.md)
 
-## Setup Guides
+## Documentation
 
-- [Tournament Miner Guide](docs/tourn_miner.md)
-- [Validator Setup Guide](docs/validator_setup.md)
+- [Developer Guide](docs/developer.md): repo layout, setup, validator/trainer/miner operations, tests, and common development workflows.
+- [Tournament Miner Guide](docs/miner.md): miner participation requirements, training repository contract, tournament types, and scoring expectations.
 
-## Developer Resources
-
-For technical documentation on GRPO reward functions and implementation details, see [GRPO Safe Code Execution Guide](docs/grpo_rewards_code_execution.md).
-
-## Recommended Compute Requirements
-
-[Compute Requirements](docs/compute.md)
-
-## Miner Advice
-
-[Miner Advice](docs/tourn_miner.md)
-
-## Running evaluations on your own
+## Running Evaluations
 
 You can re-evaluate existing tasks on your own machine. Or you can run non-submitted models to check if they are good.
 This works for tasks not older than 7 days.
@@ -39,24 +26,24 @@ This works for tasks not older than 7 days.
 Make sure to build the latest docker images before running the evaluation.
 
 ```bash
-docker build -f dockerfiles/validator.dockerfile -t weightswandering/tuning_vali:latest .
-docker build -f dockerfiles/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
+docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
+docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
 ```
 
 To see the available options, run:
 
 ```bash
-python -m utils.run_evaluation --help
+python -m ops.validator_ops.run_evaluation --help
 ```
 
 To re-evaluate a task, run:
 
 ```bash
-python -m utils.run_evaluation --task_id <task_id>
+python -m ops.validator_ops.run_evaluation --task_id <task_id>
 ```
 
 To run a non-submitted model, run:
 
 ```bash
-python -m utils.run_evaluation --task_id <task_id> --models <model_name>
+python -m ops.validator_ops.run_evaluation --task_id <task_id> --models <model_name>
 ```

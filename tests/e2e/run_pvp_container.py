@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 
 _IMAGE_NAME = "pvp-eval:test"
-_DOCKERFILE = "dockerfiles/pvp-eval.dockerfile"
+_DOCKERFILE = "ops/docker/pvp-eval.dockerfile"
 _RESULTS_CONTAINER_PATH = "/app/pvp_results.json"
 
 _BASE_MODEL = "NousResearch/Hermes-3-Llama-3.2-3B"

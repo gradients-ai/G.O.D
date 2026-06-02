@@ -1,0 +1,24 @@
+# Docker
+
+Dockerfiles and container support files for miner, trainer, validator, evaluation, model prep, uploads, and environment tasks.
+
+## Contents
+
+- `environment_functions/`: rollout/reward function files copied into environment training images.
+- `patches/`: patches applied to upstream training/evaluation dependencies.
+- `requirements/`: Docker-specific requirements files.
+- `cache-cleanup.dockerfile`: cache cleanup container image.
+- `hf-uploader.dockerfile`: Hugging Face upload container.
+- `intercode_build_fs.sh`: InterCode filesystem build helper.
+- `miner.dockerfile`: miner service image.
+- `miner-diffusion.dockerfile`: diffusion miner image.
+- `model-prep.dockerfile`: model-prep image.
+- `pvp-eval.dockerfile`: PvP evaluation image.
+- `standalone-image-trainer.dockerfile`: image trainer image expected in miner repos.
+- `standalone-image-toolkit-trainer.dockerfile`: image toolkit trainer variant.
+- `standalone-text-trainer.dockerfile`: text trainer image expected in miner repos.
+- `trainer-downloader.dockerfile`: model/dataset downloader image.
+- `validator.dockerfile`: base validator image.
+- `validator-diffusion.dockerfile`: image evaluation validator image.
+- `validator-env.dockerfile`: environment evaluation validator image.
+- `validator-intercode.dockerfile`: InterCode evaluation image.

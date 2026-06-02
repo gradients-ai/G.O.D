@@ -6,6 +6,8 @@ runs all matchups, writes results JSON.
 Usage: python -m validator.evaluation.pvp
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -14,6 +16,7 @@ import sys
 import time
 from pathlib import Path
 
+import validator.constants as vcst
 from core.constants import EnvironmentName
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import PreparedModel
@@ -22,15 +25,9 @@ from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalMetadata
 from core.models.pvp_models import PvPEvalResults
 from core.models.pvp_models import PvPModelSpec
-from validator.core import constants as vcst
-from validator.evaluation.pvp.game_runner import Player
-from validator.evaluation.pvp.game_runner import create_player
-from validator.evaluation.pvp.game_runner import run_matchup
-from validator.evaluation.pvp.server import start_sglang
-from validator.evaluation.pvp.server import wait_for_servers
-from validator.evaluation.utils import check_for_lora
-from validator.evaluation.utils import configure_eval_logging
-from validator.evaluation.utils import stop_process
+from validator.evaluation.evaluation_logging import configure_eval_logging
+from validator.evaluation.model_checks import check_for_lora
+from validator.evaluation.runtime import stop_process
 
 
 logger = logging.getLogger(__name__)
@@ -105,6 +102,11 @@ def _build_chat_config(port: int, eval_config: PvPEvalConfig, inference_name: st
 
 def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
     """Start servers, run pair matchups, return results."""
+    from validator.evaluation.pvp.game_runner import create_player
+    from validator.evaluation.pvp.game_runner import run_matchup
+    from validator.evaluation.pvp.server import start_sglang
+    from validator.evaluation.pvp.server import wait_for_servers
+
     if config.model_a is None or config.model_b is None:
         raise ValueError("Pair mode requires model_a and model_b")
 
@@ -120,8 +122,8 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
 
     sglang_a: subprocess.Popen | None = None
     sglang_b: subprocess.Popen | None = None
-    player_a: Player | None = None
-    player_b: Player | None = None
+    player_a = None
+    player_b = None
 
     try:
         sglang_a = start_sglang(prepared_a, gpu_a, port_a, config.seed)
