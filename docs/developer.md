@@ -287,8 +287,10 @@ Tournament and debugging tools live under:
 ```text
 ops/tools/tournament/
 ops/tools/evaluation/
+ops/tools/scoring/
 ops/tools/simulations/
-ops/manual/
+ops/examples/
+ops/runbooks/
 ```
 
 ## Testing And Linting

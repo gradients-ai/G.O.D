@@ -1,9 +1,9 @@
 import asyncio
 
-from validator.app.config import load_config
-from validator.tasks.models import ChatRawTask
-from validator.tasks.datasets.preparation import prepare_text_task
 from core.logging import get_logger
+from validator.app.config import load_config
+from validator.tasks.datasets.preparation import prepare_text_task
+from validator.tasks.models import ChatRawTask
 
 
 logger = get_logger(__name__)

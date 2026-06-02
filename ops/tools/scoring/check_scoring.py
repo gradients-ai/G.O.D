@@ -8,13 +8,13 @@ import sys
 
 from fiber.chain import fetch_nodes
 
-from validator.tournament.models import TournamentType
+from core.logging import get_logger
 from validator.app.config import load_config
+from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
-from validator.db.sql.tournaments import get_latest_completed_tournament
-from core.logging import get_logger
 from validator.tasks.details import try_db_connections
+from validator.tournament.models import TournamentType
 
 
 logger = get_logger(__name__)
@@ -52,7 +52,7 @@ async def check_hotkey_scoring(hotkey: str):
     else:
         print("  Image Tournament: None")
 
-    print(f"\nWeight Distribution:")
+    print("\nWeight Distribution:")
     print(f"  Text tournament weight: {tournament_audit_data.text_tournament_weight:.6f}")
     print(f"  Image tournament weight: {tournament_audit_data.image_tournament_weight:.6f}")
     print(f"  Burn weight: {tournament_audit_data.burn_weight:.6f}")
@@ -62,7 +62,6 @@ async def check_hotkey_scoring(hotkey: str):
     print("\nCalculating weights...")
     result = await get_node_weights_from_tournament_audit_data(config.substrate, config.netuid, tournament_audit_data)
 
-    all_node_ids = result.node_ids
     all_node_weights = result.node_weights
 
     # Get all nodes to map hotkey to node_id
@@ -88,14 +87,14 @@ async def check_hotkey_scoring(hotkey: str):
     image_winner = image_tournament.winner_hotkey == hotkey if image_tournament else False
 
     if text_winner or image_winner:
-        print(f"\n🎯 Tournament Winner:")
+        print("\n🎯 Tournament Winner:")
         if text_winner:
-            print(f"   ✅ Text Tournament Winner!")
+            print("   ✅ Text Tournament Winner!")
         if image_winner:
-            print(f"   ✅ Image Tournament Winner!")
+            print("   ✅ Image Tournament Winner!")
 
     # Check tournament rankings
-    print(f"\n📊 Tournament Rankings:")
+    print("\n📊 Tournament Rankings:")
 
     if tournament_audit_data.text_tournament_data:
         text_position = None
@@ -107,7 +106,7 @@ async def check_hotkey_scoring(hotkey: str):
         if text_position:
             print(f"   Text Tournament: Reached {text_position[1]} (Round {text_position[0] + 1})")
         else:
-            print(f"   Text Tournament: Did not participate")
+            print("   Text Tournament: Did not participate")
 
     if tournament_audit_data.image_tournament_data:
         image_position = None
@@ -119,7 +118,7 @@ async def check_hotkey_scoring(hotkey: str):
         if image_position:
             print(f"   Image Tournament: Reached {image_position[1]} (Round {image_position[0] + 1})")
         else:
-            print(f"   Image Tournament: Did not participate")
+            print("   Image Tournament: Did not participate")
 
     # Get calculated weight
     calculated_weight = all_node_weights[target_node.node_id]
@@ -127,14 +126,14 @@ async def check_hotkey_scoring(hotkey: str):
     # Calculate sum of all weights
     total_weight_sum = sum(all_node_weights)
 
-    print(f"\n💰 Weight Breakdown:")
+    print("\n💰 Weight Breakdown:")
     print(f"   Calculated weight: {calculated_weight:.6f}")
     print(f"   Sum of ALL node weights: {total_weight_sum:.6f}")
     print(f"   This node's share: {calculated_weight / total_weight_sum:.4%}")
 
     # Convert chain weight from raw to normalized
     chain_weight_normalized = target_node.incentive / 65535
-    print(f"\n⛓️  Chain Comparison:")
+    print("\n⛓️  Chain Comparison:")
     print(f"   Current chain weight (raw): {target_node.incentive}")
     print(f"   Current chain weight (normalized): {chain_weight_normalized:.6f}")
 
@@ -145,7 +144,7 @@ async def check_hotkey_scoring(hotkey: str):
         print(f"   Difference: {calculated_weight:.6f} (chain weight is zero)")
 
     # Show weight sources
-    print(f"\n📈 Weight Sources:")
+    print("\n📈 Weight Sources:")
     weight_sources = []
 
     if text_winner:
@@ -169,7 +168,7 @@ async def check_hotkey_scoring(hotkey: str):
 
 async def main():
     if len(sys.argv) < 2:
-        print("Usage: python check_scoring.py <hotkey>")
+        print("Usage: python -m ops.tools.scoring.check_scoring <hotkey>")
         sys.exit(1)
 
     hotkey = sys.argv[1]

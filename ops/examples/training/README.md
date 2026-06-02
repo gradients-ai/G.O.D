@@ -1,6 +1,6 @@
-# Manual Examples
+# Training Examples
 
-Shell examples for launching local training tasks.
+Shell examples for launching local training tasks through the reference Docker images.
 
 ## Contents
 

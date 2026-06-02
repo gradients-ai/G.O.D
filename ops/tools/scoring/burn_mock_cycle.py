@@ -98,8 +98,10 @@ def print_burn_data(burn_data: TournamentBurnData, scenario: str):
     print("\n📈 Emission Changes (from base):")
     print(f"   TEXT Emission Change:  {text_emission_increase:+.6f} ({text_emission_increase * 100:+.2f}%)")
     print(f"   IMAGE Emission Change: {image_emission_increase:+.6f} ({image_emission_increase * 100:+.2f}%)")
+    total_emission_increase = text_emission_increase + image_emission_increase
     print(
-        f"   Total Emission Change: {(text_emission_increase + image_emission_increase):+.6f} ({(text_emission_increase + image_emission_increase) * 100:+.2f}%)"
+        f"   Total Emission Change: {total_emission_increase:+.6f} "
+        f"({total_emission_increase * 100:+.2f}%)"
     )
 
     print()
@@ -239,7 +241,7 @@ async def scenario_4_new_winner():
                 burn_data = await get_tournament_burn_details(mock_db)
 
                 print(f"🔍 Performance calculation called: {mock_calc.called}")
-                print(f"   (Should be True - new winner needs fresh calculation)\n")
+                print("   (Should be True - new winner needs fresh calculation)\n")
 
                 print_burn_data(burn_data, "New Winner Scenario")
 
@@ -303,20 +305,23 @@ async def scenario_6_below_threshold():
 def print_constants():
     """Print current configuration constants"""
     print_separator("CONFIGURATION CONSTANTS")
-    print(f"📋 Base Configuration:")
+    print("📋 Base Configuration:")
     print(f"   TOURNAMENT_TEXT_WEIGHT:        {cts.TOURNAMENT_TEXT_WEIGHT:.2f} ({cts.TOURNAMENT_TEXT_WEIGHT * 100:.0f}%)")
     print(f"   TOURNAMENT_IMAGE_WEIGHT:       {cts.TOURNAMENT_IMAGE_WEIGHT:.2f} ({cts.TOURNAMENT_IMAGE_WEIGHT * 100:.0f}%)")
     print(f"   MAX_TEXT_TOURNAMENT_WEIGHT:    {cts.MAX_TEXT_TOURNAMENT_WEIGHT:.2f} ({cts.MAX_TEXT_TOURNAMENT_WEIGHT * 100:.0f}%)")
-    print(f"   MAX_IMAGE_TOURNAMENT_WEIGHT:   {cts.MAX_IMAGE_TOURNAMENT_WEIGHT:.2f} ({cts.MAX_IMAGE_TOURNAMENT_WEIGHT * 100:.0f}%)")
+    print(
+        f"   MAX_IMAGE_TOURNAMENT_WEIGHT:   {cts.MAX_IMAGE_TOURNAMENT_WEIGHT:.2f} "
+        f"({cts.MAX_IMAGE_TOURNAMENT_WEIGHT * 100:.0f}%)"
+    )
     print(f"   EMISSION_MULTIPLIER_THRESHOLD: {cts.EMISSION_MULTIPLIER_THRESHOLD:.2%}")
     print(f"   EMISSION_BOOST_DECAY_PER_WIN:  {cts.EMISSION_BOOST_DECAY_PER_WIN:.2%}")
-    print(f"\n📐 Base Weights:")
+    print("\n📐 Base Weights:")
     text_base = cts.TOURNAMENT_TEXT_WEIGHT
     image_base = cts.TOURNAMENT_IMAGE_WEIGHT
     print(f"   TEXT Base Weight:  {text_base:.4f} ({text_base * 100:.2f}%)")
     print(f"   IMAGE Base Weight: {image_base:.4f} ({image_base * 100:.2f}%)")
     print(f"   BURN Base Weight:  {1.0 - text_base - image_base:.4f} ({(1.0 - text_base - image_base) * 100:.2f}%)")
-    print(f"\n💡 Emission Multiplier Formula:")
+    print("\n💡 Emission Multiplier Formula:")
     print(f"   If performance > {cts.EMISSION_MULTIPLIER_THRESHOLD:.1%}:")
     print(f"   emission_increase = (performance - {cts.EMISSION_MULTIPLIER_THRESHOLD:.1%}) × 2.0")
     print(f"   emission_increase -= max(0, consecutive_wins - 1) × {cts.EMISSION_BOOST_DECAY_PER_WIN:.1%}")

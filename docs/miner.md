@@ -352,21 +352,21 @@ Tournament winners feed into validator weight setting. Strong champion performan
 
 ## Local Testing
 
-Reference manual scripts live under:
+Reference examples and tools live under:
 
 ```text
-ops/manual/examples/
+ops/examples/training/
 ops/tools/evaluation/
 ```
 
 Useful examples:
 
 ```bash
-ops/manual/examples/run_instruct_task.sh
-ops/manual/examples/run_dpo_task.sh
-ops/manual/examples/run_grpo_task.sh
-ops/manual/examples/run_environment_task.sh
-ops/manual/examples/run_image_task.sh
+ops/examples/training/run_instruct_task.sh
+ops/examples/training/run_dpo_task.sh
+ops/examples/training/run_grpo_task.sh
+ops/examples/training/run_environment_task.sh
+ops/examples/training/run_image_task.sh
 ```
 
 You can also use the base trainer entrypoints directly while developing:

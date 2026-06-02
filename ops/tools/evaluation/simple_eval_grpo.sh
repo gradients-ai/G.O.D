@@ -1,6 +1,6 @@
 #!/bin/bash
 # Simple GRPO evaluation script
-# Usage: ./simple_eval_grpo.sh
+# Usage: ./ops/tools/evaluation/simple_eval_grpo.sh
 
 TEMP_DIR=$(mktemp -d)
 DATASET_FILE="$TEMP_DIR/dataset.json"

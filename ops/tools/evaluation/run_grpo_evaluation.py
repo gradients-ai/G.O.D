@@ -7,10 +7,10 @@ It downloads a dataset from S3, prepares the environment, and runs the evaluatio
 in a Docker container similar to how it's done in production.
 
 Usage:
-    python run_grpo_evaluation.py <s3_dataset_url> <original_model> <model1,model2,...>
+    python -m ops.tools.evaluation.run_grpo_evaluation <s3_dataset_url> <original_model> <model1,model2,...>
 
 Example:
-    python run_grpo_evaluation.py https://bucket.s3.amazonaws.com/dataset.jsonl \
+    python -m ops.tools.evaluation.run_grpo_evaluation https://bucket.s3.amazonaws.com/dataset.jsonl \
         mistralai/Mistral-7B-v0.1 repo1/adapter,repo2/adapter
 """
 

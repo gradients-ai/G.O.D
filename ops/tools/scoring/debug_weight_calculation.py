@@ -5,11 +5,11 @@ from datetime import datetime
 
 from fiber.chain import fetch_nodes
 
+from core.logging import get_logger
 from validator.app.config import load_config
 from validator.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
-from core.logging import get_logger
 from validator.tasks.details import try_db_connections
 
 
@@ -28,61 +28,72 @@ async def debug_weight_calculation():
 
     print_section("1. LOADING CONFIG")
     config = load_config()
-    print(f"✓ Config loaded")
+    print("✓ Config loaded")
     print(f"  - NetUID: {config.netuid}")
     print(f"  - Substrate URL: {config.substrate.url if hasattr(config.substrate, 'url') else 'N/A'}")
 
     print_section("2. CONNECTING TO DATABASE")
     await try_db_connections(config)
-    print(f"✓ Database connections established")
+    print("✓ Database connections established")
 
     print_section("3. BUILDING TOURNAMENT AUDIT DATA")
     print("Calling build_tournament_audit_data()...")
     tournament_audit_data = await build_tournament_audit_data(config.psql_db)
-    print(f"✓ Tournament audit data built\n")
+    print("✓ Tournament audit data built\n")
 
     # Print detailed tournament audit data
     print("Tournament Audit Data Details:")
     print("-" * 80)
 
-    print(f"\n📊 Text Tournament Data:")
+    print("\n📊 Text Tournament Data:")
     if tournament_audit_data.text_tournament_data:
         print(f"  Tournament ID: {tournament_audit_data.text_tournament_data.tournament_id}")
         print(f"  Base Winner: {tournament_audit_data.text_tournament_data.base_winner_hotkey}")
         print(f"  Winner: {tournament_audit_data.text_tournament_data.winner_hotkey}")
         print(f"  Number of rounds: {len(tournament_audit_data.text_tournament_data.rounds)}")
         for idx, round_data in enumerate(tournament_audit_data.text_tournament_data.rounds):
-            print(f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks")
+            print(
+                f"    Round {round_data.round_number} ({round_data.round_type}): "
+                f"{round_data.round_id} - {len(round_data.tasks)} tasks"
+            )
     else:
         print("  ❌ No text tournament data")
 
-    print(f"\n📊 Image Tournament Data:")
+    print("\n📊 Image Tournament Data:")
     if tournament_audit_data.image_tournament_data:
         print(f"  Tournament ID: {tournament_audit_data.image_tournament_data.tournament_id}")
         print(f"  Base Winner: {tournament_audit_data.image_tournament_data.base_winner_hotkey}")
         print(f"  Winner: {tournament_audit_data.image_tournament_data.winner_hotkey}")
         print(f"  Number of rounds: {len(tournament_audit_data.image_tournament_data.rounds)}")
         for idx, round_data in enumerate(tournament_audit_data.image_tournament_data.rounds):
-            print(f"    Round {round_data.round_number} ({round_data.round_type}): {round_data.round_id} - {len(round_data.tasks)} tasks")
+            print(
+                f"    Round {round_data.round_number} ({round_data.round_type}): "
+                f"{round_data.round_id} - {len(round_data.tasks)} tasks"
+            )
     else:
         print("  ❌ No image tournament data")
 
-    print(f"\n💰 Weight Distribution:")
+    print("\n💰 Weight Distribution:")
     print(f"  Text tournament weight: {tournament_audit_data.text_tournament_weight:.6f}")
     print(f"  Image tournament weight: {tournament_audit_data.image_tournament_weight:.6f}")
     print(f"  Burn weight: {tournament_audit_data.burn_weight:.6f}")
+    total_weight = (
+        tournament_audit_data.text_tournament_weight
+        + tournament_audit_data.image_tournament_weight
+        + tournament_audit_data.burn_weight
+    )
     print(
-        f"  Total: {tournament_audit_data.text_tournament_weight + tournament_audit_data.image_tournament_weight + tournament_audit_data.burn_weight:.6f}"
+        f"  Total: {total_weight:.6f}"
     )
 
-    print(f"\n👥 Active Participants:")
+    print("\n👥 Active Participants:")
     print(f"  Count: {len(tournament_audit_data.participants)}")
     if tournament_audit_data.participants:
         print(f"  Hotkeys (first 5): {tournament_audit_data.participants[:5]}")
         if len(tournament_audit_data.participants) > 5:
             print(f"  ... and {len(tournament_audit_data.participants) - 5} more")
 
-    print(f"\n📈 Weekly Participation Data:")
+    print("\n📈 Weekly Participation Data:")
     print(f"  Count: {len(tournament_audit_data.weekly_participation)}")
     if tournament_audit_data.weekly_participation:
         for participation in tournament_audit_data.weekly_participation[:3]:
@@ -95,7 +106,7 @@ async def debug_weight_calculation():
     result = await get_node_weights_from_tournament_audit_data(config.substrate, config.netuid, tournament_audit_data)
     all_node_ids = result.node_ids
     all_node_weights = result.node_weights
-    print(f"✓ Node weights calculated")
+    print("✓ Node weights calculated")
 
     print_section("5. WEIGHT CALCULATION RESULTS")
 
@@ -103,7 +114,7 @@ async def debug_weight_calculation():
     print(f"Nodes with non-zero weights: {sum(1 for w in all_node_weights if w > 0)}")
     print(f"Sum of all weights: {sum(all_node_weights):.6f}")
 
-    print(f"\n🏆 Top 20 Nodes by Weight:")
+    print("\n🏆 Top 20 Nodes by Weight:")
     print(f"{'Rank':<6} {'Node ID':<10} {'Weight':<15} {'Weight %':<10}")
     print("-" * 80)
 
@@ -115,7 +126,7 @@ async def debug_weight_calculation():
         weight_pct = (weight / sum(all_node_weights) * 100) if sum(all_node_weights) > 0 else 0
         print(f"{idx:<6} {node_id:<10} {weight:<15.6f} {weight_pct:<10.4f}%")
 
-    print(f"\n📊 Weight Distribution Analysis:")
+    print("\n📊 Weight Distribution Analysis:")
     weights_sorted = sorted(all_node_weights, reverse=True)
     non_zero_weights = [w for w in weights_sorted if w > 0]
 
@@ -126,7 +137,7 @@ async def debug_weight_calculation():
         print(f"  Average weight (non-zero): {sum(non_zero_weights) / len(non_zero_weights):.6f}")
 
         # Show weight percentiles
-        print(f"\n  Weight Percentiles (non-zero):")
+        print("\n  Weight Percentiles (non-zero):")
         for percentile in [90, 75, 50, 25, 10]:
             idx = int(len(non_zero_weights) * (100 - percentile) / 100)
             if idx < len(non_zero_weights):
@@ -150,7 +161,7 @@ async def debug_weight_calculation():
             print(f"  Weight: {weight:.6f} ({weight_pct:.4f}%)")
             print(f"  Current chain incentive: {node.incentive / 65535:.6f}")
         else:
-            print(f"  ❌ Node not found on chain")
+            print("  ❌ Node not found on chain")
 
     # Check image tournament winner
     if tournament_audit_data.image_tournament_data and tournament_audit_data.image_tournament_data.winner_hotkey:
@@ -164,11 +175,11 @@ async def debug_weight_calculation():
             print(f"  Weight: {weight:.6f} ({weight_pct:.4f}%)")
             print(f"  Current chain incentive: {node.incentive / 65535:.6f}")
         else:
-            print(f"  ❌ Node not found on chain")
+            print("  ❌ Node not found on chain")
 
     # Check a few random participants
     if tournament_audit_data.participants:
-        print(f"\n👥 Sample Tournament Participants (first 3):")
+        print("\n👥 Sample Tournament Participants (first 3):")
         for participant_hotkey in tournament_audit_data.participants[:3]:
             node = hotkey_to_node.get(participant_hotkey)
             if node:
@@ -190,7 +201,7 @@ async def debug_weight_calculation():
         print(f"  Weight: {weight:.6f} ({weight_pct:.4f}%)")
         print(f"  Current chain incentive: {burn_node.incentive / 65535:.6f}")
     else:
-        print(f"  ❌ Burn node not found on chain")
+        print("  ❌ Burn node not found on chain")
 
     print_section("7. EXPORT DATA TO JSON")
 

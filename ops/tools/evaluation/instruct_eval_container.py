@@ -20,11 +20,20 @@ def create_test_dataset(output_path: Path) -> str:
         },
         {
             "instruction": "Explain photosynthesis in simple terms.",
-            "output": "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide to make their own food (glucose) and release oxygen as a byproduct."
+            "output": (
+                "Photosynthesis is the process by which plants use sunlight, water, and carbon dioxide "
+                "to make their own food (glucose) and release oxygen as a byproduct."
+            ),
         },
         {
             "instruction": "Write a Python function to calculate factorial.",
-            "output": "def factorial(n):\n    if n == 0 or n == 1:\n        return 1\n    else:\n        return n * factorial(n - 1)"
+            "output": (
+                "def factorial(n):\n"
+                "    if n == 0 or n == 1:\n"
+                "        return 1\n"
+                "    else:\n"
+                "        return n * factorial(n - 1)"
+            ),
         },
         {
             "instruction": "What are the three states of matter?",
@@ -36,11 +45,17 @@ def create_test_dataset(output_path: Path) -> str:
         },
         {
             "instruction": "List three benefits of regular exercise.",
-            "output": "Three benefits of regular exercise are: 1) Improved cardiovascular health, 2) Better mood and mental health, 3) Increased strength and endurance."
+            "output": (
+                "Three benefits of regular exercise are: 1) Improved cardiovascular health, "
+                "2) Better mood and mental health, 3) Increased strength and endurance."
+            ),
         },
         {
             "instruction": "What is machine learning?",
-            "output": "Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed."
+            "output": (
+                "Machine learning is a subset of artificial intelligence that enables computers to learn "
+                "and improve from experience without being explicitly programmed."
+            ),
         },
         {
             "instruction": "Calculate 15% of 200.",
@@ -52,8 +67,11 @@ def create_test_dataset(output_path: Path) -> str:
         },
         {
             "instruction": "What is the difference between a compiler and an interpreter?",
-            "output": "A compiler translates the entire source code into machine code before execution, while an interpreter translates and executes code line by line during runtime."
-        }
+            "output": (
+                "A compiler translates the entire source code into machine code before execution, while "
+                "an interpreter translates and executes code line by line during runtime."
+            ),
+        },
     ]
     
     # Save as JSON file
@@ -103,7 +121,7 @@ def main():
         "field_output": args.field_output
     }
     
-    print(f"\nConfiguration:")
+    print("\nConfiguration:")
     print(f"  Model to evaluate: {MODEL_ID}")
     print(f"  Dataset (host): {dataset_path}")
     print(f"  Dataset (container): /data/{dataset_path.name}")
@@ -123,7 +141,7 @@ def main():
         "-e", f"DATASET=/workspace/input_data/{dataset_path.name}",
         "-e", f"ORIGINAL_MODEL={MODEL_ID}",
         "-e", f"DATASET_TYPE={json.dumps(dataset_type)}",
-        "-e", f"FILE_FORMAT=json",
+        "-e", "FILE_FORMAT=json",
         "-e", f"MODELS={MODEL_ID}",  # Testing the base model itself
         # Container and command
         args.container_image,
@@ -163,7 +181,7 @@ def main():
                     print(json.dumps(results, indent=2))
                     
                     if MODEL_ID in results:
-                        print(f"\nSummary:")
+                        print("\nSummary:")
                         print(f"  Model: {MODEL_ID}")
                         print(f"  Eval Loss: {results[MODEL_ID].get('eval_loss', 'N/A')}")
                         print(f"  Is Finetune: {results[MODEL_ID].get('is_finetune', 'N/A')}")

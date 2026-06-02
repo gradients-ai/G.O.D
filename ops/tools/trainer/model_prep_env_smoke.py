@@ -2,8 +2,8 @@
 """Smoke-test model prep for selected environment baselines.
 
 Examples:
-    python -m ops.manual.trainer.test_model_prep_envs --model Qwen/Qwen2.5-0.5B-Instruct
-    python -m ops.manual.trainer.test_model_prep_envs --model Qwen/Qwen2.5-0.5B-Instruct --episodes 2 --gpu-ids 0,1
+    python -m ops.tools.trainer.model_prep_env_smoke --model Qwen/Qwen2.5-0.5B-Instruct
+    python -m ops.tools.trainer.model_prep_env_smoke --model Qwen/Qwen2.5-0.5B-Instruct --episodes 2 --gpu-ids 0,1
 """
 
 import argparse
@@ -164,7 +164,7 @@ def main() -> int:
             augmentation_config=None,
             gpu_ids=args.gpu_ids,
             env_configs=env_configs,
-            log_labels={"task_id": task_id, "script": "test_model_prep_envs"},
+            log_labels={"task_id": task_id, "script": "model_prep_env_smoke"},
         )
     except Exception as exc:
         print(f"\nModel prep smoke test failed: {exc}", file=sys.stderr)

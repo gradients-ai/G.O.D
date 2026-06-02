@@ -5,18 +5,15 @@ orchestrator schedule training on the trainer.
 """
 
 import asyncio
-import json
 import sys
 
 from validator.app.config import load_config
 from validator.db.sql import tournaments as tournament_sql
-from validator.tournament.tournament_manager import (
-    create_basic_tournament,
-    populate_tournament_participants,
-    create_first_round_for_active_tournament,
-)
-from validator.tournament.task_creator import create_environment_tournament_tasks
-from validator.tournament.models import TournamentType, TournamentStatus
+from validator.tournament.models import TournamentStatus
+from validator.tournament.models import TournamentType
+from validator.tournament.tournament_manager import create_basic_tournament
+from validator.tournament.tournament_manager import create_first_round_for_active_tournament
+from validator.tournament.tournament_manager import populate_tournament_participants
 
 
 async def main():
@@ -50,7 +47,7 @@ async def main():
         ds = p.requested_datasets
         print(f"  Hotkey: {p.hotkey[:16]}... | Datasets: {ds}")
         if ds:
-            print(f"  >>> requested_datasets stored correctly!")
+            print("  >>> requested_datasets stored correctly!")
 
     # 4. Activate tournament and create first round
     print("\n=== Step 4: Activating tournament ===")

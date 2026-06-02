@@ -4,13 +4,12 @@ import asyncio
 import os
 import sys
 import traceback
+
 from validator.app.config import load_config
-from validator.tasks.synthetics.scheduler import (
-    _get_text_models,
-    _get_instruct_text_datasets,
-    create_synthetic_env_task,
-)
 from validator.tasks.details import try_db_connections
+from validator.tasks.synthetics.scheduler import _get_instruct_text_datasets
+from validator.tasks.synthetics.scheduler import _get_text_models
+from validator.tasks.synthetics.scheduler import create_synthetic_env_task
 
 
 async def test_db_connection(config):
@@ -50,7 +49,7 @@ async def create_env_task():
         
         sys.stdout.flush()
         
-        print(f"\n✓ Successfully created environment task!", flush=True)
+        print("\n✓ Successfully created environment task!", flush=True)
         print(f"  Task ID: {task.task_id}", flush=True)
         print(f"  Dataset ID: {task.ds}", flush=True)
         print(f"  Model ID: {task.model_id}", flush=True)
