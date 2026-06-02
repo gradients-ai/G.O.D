@@ -1,6 +1,7 @@
 from validator.tournament.brackets import draw_group_stage_table
 from validator.tournament.brackets import draw_knockout_bracket
 from validator.tournament.github_validation import deduplicate_by_github_account
+from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import parse_github_owner_repo
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
@@ -37,6 +38,7 @@ __all__ = [
     "_get_final_round_participants",
     "_get_scores_for_task",
     "deduplicate_by_github_account",
+    "deduplicate_by_ip_address",
     "determine_boss_round_winner",
     "determine_env_tournament_winner",
     "did_contender_beat_boss_on_task",

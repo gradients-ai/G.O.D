@@ -2,10 +2,10 @@ from fastapi import APIRouter
 from fastapi import Depends
 
 import validator.scoring.constants as cts
-from validator.db.sql.tournaments import get_latest_completed_tournament
-from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.app.config import Config
 from validator.app.dependencies import get_config
+from validator.db.sql.tournaments import get_latest_completed_tournament
+from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament.models import BossBattleResponse
@@ -137,6 +137,7 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
 @router.get("/v1/performance/weight-projection")
 async def get_weight_projection(
     percentage_improvement: float,
+    environment_win_pct: float = 80.0,
     config: Config = Depends(get_config),
 ) -> WeightProjectionResponse:
     text_projection = await calculate_tournament_projection(
@@ -155,12 +156,14 @@ async def get_weight_projection(
         cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
     )
 
+    # Environment tournaments are PvP: the input is a win rate (%), not a score improvement.
     environment_projection = await calculate_tournament_projection(
         config.psql_db,
         TournamentType.ENVIRONMENT,
         percentage_improvement,
         cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
         cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
+        win_pct=environment_win_pct / 100.0,
     )
 
     return WeightProjectionResponse(
@@ -241,7 +244,9 @@ async def get_last_boss_battle(
     environment_tournament_id = None
     if latest_environment_tournament:
         environment_tournament_id = latest_environment_tournament.tournament_id
-        environment_performance_differences = await calculate_boss_round_performance_differences(environment_tournament_id, config.psql_db)
+        environment_performance_differences = await calculate_boss_round_performance_differences(
+            environment_tournament_id, config.psql_db
+        )
 
     return BossBattleResponse(
         text_tournament_id=text_tournament_id,

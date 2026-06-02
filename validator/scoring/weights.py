@@ -87,6 +87,20 @@ def calculate_emission_boost_from_perf(performance_diff: float | None) -> float:
     return emission_increase
 
 
+def calculate_env_perf_diff_from_win_pct(win_pct: float) -> float:
+    """
+    Map an environment-tournament win percentage (0.0-1.0) to a performance
+    difference, using the same PvP mapping the scoring pipeline applies.
+
+    Below the win-rate threshold the challenger gains no emission boost; above it
+    the perf diff scales linearly so 100% win rate hits the max boost.
+    """
+    win_pct = max(0.0, win_pct)
+    if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
+        return 0.0
+    return cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+
+
 def calculate_tournament_weight_with_decay(
     tournament_type: TournamentType,
     base_weight: float,
@@ -291,7 +305,10 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     logger.info(f"[TEXT] innovation_incentive={text_innovation_incentive:.4f} (perf_diff={text_performance_diff})")
     logger.info(f"[IMAGE] innovation_incentive={image_innovation_incentive:.4f} (perf_diff={image_performance_diff})")
-    logger.info(f"[ENVIRONMENT] innovation_incentive={environment_innovation_incentive:.4f} (perf_diff={environment_performance_diff})")
+    logger.info(
+        f"[ENVIRONMENT] innovation_incentive={environment_innovation_incentive:.4f} "
+        f"(perf_diff={environment_performance_diff})"
+    )
 
     text_consecutive_wins = 0
     image_consecutive_wins = 0
@@ -353,8 +370,12 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
     environment_old_decay, environment_new_decay, apply_hybrid_to_environment = 0.0, 0.0, False
     environment_champion_hotkey = get_real_tournament_winner(latest_environment_tournament)
     if environment_champion_hotkey:
-        environment_consecutive_wins = await count_champion_consecutive_wins(psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey)
-        first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey)
+        environment_consecutive_wins = await count_champion_consecutive_wins(
+            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
+        )
+        first_win_tournament = await get_tournament_where_champion_first_won(
+            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
+        )
 
         environment_old_decay, environment_new_decay, apply_hybrid_to_environment = calculate_hybrid_decays(
             first_win_tournament.updated_at, environment_consecutive_wins
@@ -362,7 +383,8 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         logger.info(
             f"Environment champion {environment_champion_hotkey[:8]}... has {environment_consecutive_wins} consecutive wins, "
             f"first won at {first_win_tournament.updated_at}, "
-            f"old_decay={environment_old_decay:.4f}, new_decay={environment_new_decay:.4f}, apply_hybrid={apply_hybrid_to_environment}"
+            f"old_decay={environment_old_decay:.4f}, new_decay={environment_new_decay:.4f}, "
+            f"apply_hybrid={apply_hybrid_to_environment}"
         )
 
     environment_tournament_weight = calculate_tournament_weight_with_decay(
@@ -379,9 +401,14 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     text_burn_proportion = (cts.MAX_TEXT_TOURNAMENT_WEIGHT - text_tournament_weight) / cts.MAX_TEXT_TOURNAMENT_WEIGHT
     image_burn_proportion = (cts.MAX_IMAGE_TOURNAMENT_WEIGHT - image_tournament_weight) / cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-    environment_burn_proportion = (cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_tournament_weight) / cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT
+    environment_burn_proportion = (
+        cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_tournament_weight
+    ) / cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT
 
-    logger.info(f"Weights - Text tournament: {text_tournament_weight}, Image tournament: {image_tournament_weight}, Environment tournament: {environment_tournament_weight}")
+    logger.info(
+        f"Weights - Text tournament: {text_tournament_weight}, Image tournament: {image_tournament_weight}, "
+        f"Environment tournament: {environment_tournament_weight}"
+    )
     logger.info(f"Total burn weight: {burn_weight}")
 
     return TournamentBurnData(
@@ -432,14 +459,16 @@ def apply_tournament_weights(
             logger.info(
                 f"Node ID {node_id} (hotkey: {hotkey[:8]}...): "
                 f"TEXT TOURNAMENT - weight={weight:.6f}, "
-                f"scaled_text_weight={scaled_text_tournament_weight if hotkey == text_winner_hotkey else scaled_text_base_weight:.6f}, "
+                f"scaled_text_weight="
+                f"{scaled_text_tournament_weight if hotkey == text_winner_hotkey else scaled_text_base_weight:.6f}, "
                 f"text_contribution={text_contribution:.6f}, "
                 f"total_weight={all_node_weights[node_id]:.6f}"
             )
 
     text_undistributed = scaled_text_tournament_weight - text_distributed
     logger.info(
-        f"Text tournament: allocated={scaled_text_tournament_weight:.10f}, distributed={text_distributed:.10f}, undistributed={text_undistributed:.10f}"
+        f"Text tournament: allocated={scaled_text_tournament_weight:.10f}, "
+        f"distributed={text_distributed:.10f}, undistributed={text_undistributed:.10f}"
     )
 
     image_distributed = 0.0
@@ -457,14 +486,16 @@ def apply_tournament_weights(
             logger.info(
                 f"Node ID {node_id} (hotkey: {hotkey[:8]}...): "
                 f"IMAGE TOURNAMENT - weight={weight:.6f}, "
-                f"scaled_image_weight={scaled_image_tournament_weight if hotkey == image_winner_hotkey else scaled_image_base_weight:.6f}, "
+                f"scaled_image_weight="
+                f"{scaled_image_tournament_weight if hotkey == image_winner_hotkey else scaled_image_base_weight:.6f}, "
                 f"image_contribution={image_contribution:.6f}, "
                 f"total_weight={all_node_weights[node_id]:.6f}"
             )
 
     image_undistributed = scaled_image_tournament_weight - image_distributed
     logger.info(
-        f"Image tournament: allocated={scaled_image_tournament_weight:.10f}, distributed={image_distributed:.10f}, undistributed={image_undistributed:.10f}"
+        f"Image tournament: allocated={scaled_image_tournament_weight:.10f}, "
+        f"distributed={image_distributed:.10f}, undistributed={image_undistributed:.10f}"
     )
 
     environment_distributed = 0.0
@@ -474,22 +505,25 @@ def apply_tournament_weights(
         if node_id is not None:
             if hotkey == environment_winner_hotkey:
                 environment_contribution = weight * scaled_environment_tournament_weight
+                scaled_environment_weight = scaled_environment_tournament_weight
             else:
                 environment_contribution = weight * scaled_environment_base_weight
+                scaled_environment_weight = scaled_environment_base_weight
             all_node_weights[node_id] = all_node_weights[node_id] + environment_contribution
             environment_distributed += environment_contribution
 
             logger.info(
                 f"Node ID {node_id} (hotkey: {hotkey[:8]}...): "
                 f"ENVIRONMENT TOURNAMENT - weight={weight:.6f}, "
-                f"scaled_environment_weight={scaled_environment_tournament_weight if hotkey == environment_winner_hotkey else scaled_environment_base_weight:.6f}, "
+                f"scaled_environment_weight={scaled_environment_weight:.6f}, "
                 f"environment_contribution={environment_contribution:.6f}, "
                 f"total_weight={all_node_weights[node_id]:.6f}"
             )
 
     environment_undistributed = scaled_environment_tournament_weight - environment_distributed
     logger.info(
-        f"Environment tournament: allocated={scaled_environment_tournament_weight:.10f}, distributed={environment_distributed:.10f}, undistributed={environment_undistributed:.10f}"
+        f"Environment tournament: allocated={scaled_environment_tournament_weight:.10f}, "
+        f"distributed={environment_distributed:.10f}, undistributed={environment_undistributed:.10f}"
     )
 
     total_undistributed = text_undistributed + image_undistributed + environment_undistributed
@@ -544,14 +578,23 @@ async def get_node_weights_from_tournament_audit_data(
     scaled_environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT * scale_factor
 
     # Check that scaled weights + participation still sum to 1.0
-    scaled_weight_sum = scaled_text_tournament_weight + scaled_image_tournament_weight + scaled_environment_tournament_weight + scaled_burn_weight + participation_total
-    logger.info(f"Scaled weights sum (scaled_text + scaled_image + scaled_environment + scaled_burn + participation): {scaled_weight_sum:.10f}")
+    scaled_weight_sum = (
+        scaled_text_tournament_weight
+        + scaled_image_tournament_weight
+        + scaled_environment_tournament_weight
+        + scaled_burn_weight
+        + participation_total
+    )
+    logger.info(
+        "Scaled weights sum (scaled_text + scaled_image + scaled_environment + scaled_burn + participation): "
+        f"{scaled_weight_sum:.10f}"
+    )
     logger.info(f"Scaled weights sum to 1.0? {abs(scaled_weight_sum - 1.0) < 0.0001}")
 
     text_tournament_weights, image_tournament_weights, environment_tournament_weights = get_tournament_weights_from_data(
-        tournament_audit_data.text_tournament_data, 
+        tournament_audit_data.text_tournament_data,
         tournament_audit_data.image_tournament_data,
-        tournament_audit_data.environment_tournament_data
+        tournament_audit_data.environment_tournament_data,
     )
 
     text_winner_hotkey = get_real_tournament_winner(tournament_audit_data.text_tournament_data)
@@ -596,14 +639,15 @@ async def get_node_weights_from_tournament_audit_data(
     if burn_node_id is not None:
         all_node_weights[burn_node_id] = scaled_burn_weight + undistributed_weight
         logger.info(
-            f"Burn weight: base={scaled_burn_weight:.10f} + undistributed={undistributed_weight:.10f} = total={all_node_weights[burn_node_id]:.10f}"
+            f"Burn weight: base={scaled_burn_weight:.10f} + undistributed={undistributed_weight:.10f} "
+            f"= total={all_node_weights[burn_node_id]:.10f}"
         )
 
     # Final weight sum check
     final_weight_sum = sum(all_node_weights)
-    logger.info(f"=== FINAL WEIGHT SUM CHECK ===")
+    logger.info("=== FINAL WEIGHT SUM CHECK ===")
     logger.info(f"Total weight sum (before normalization): {final_weight_sum:.10f}")
-    logger.info(f"Expected: 1.0")
+    logger.info("Expected: 1.0")
     logger.info(f"Difference from 1.0: {abs(final_weight_sum - 1.0):.10f}")
     logger.info(f"Weights sum to 1.0? {abs(final_weight_sum - 1.0) < 0.0001}")
     logger.info(f"Number of non zero node weights: {sum(1 for weight in all_node_weights if weight != 0)}")
@@ -611,7 +655,7 @@ async def get_node_weights_from_tournament_audit_data(
     if abs(final_weight_sum - 1.0) >= 0.0001:
         logger.warning(f"⚠️  WARNING: Weights DO NOT sum to 1.0! Sum is {final_weight_sum:.10f}")
     else:
-        logger.info(f"✅ Weights correctly sum to 1.0")
+        logger.info("✅ Weights correctly sum to 1.0")
 
     return NodeWeightsResult(node_ids=all_node_ids, node_weights=all_node_weights)
 

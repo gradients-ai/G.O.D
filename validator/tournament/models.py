@@ -10,17 +10,17 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
-from core.constants.environments import EnvironmentName
+from core.constants.environments import EnvironmentName as EnvironmentName
 from core.models.payload_models import TrainingRepoResponse
 from core.models.utility_models import TaskType
 from core.models.utility_models import TournamentType
 from core.models.utility_models import TrainingStatus
-from validator.scoring.models import EnvironmentWeight
-from validator.scoring.models import EvalHotkeyResults
-from validator.scoring.models import GroupStagePoints
-from validator.scoring.models import PairwiseOutcome
+from validator.scoring.models import EnvironmentWeight as EnvironmentWeight
+from validator.scoring.models import EvalHotkeyResults as EvalHotkeyResults
+from validator.scoring.models import GroupStagePoints as GroupStagePoints
+from validator.scoring.models import PairwiseOutcome as PairwiseOutcome
 from validator.scoring.models import TournamentScore
-from validator.scoring.models import TournamentTypeResult
+from validator.scoring.models import TournamentTypeResult as TournamentTypeResult
 from validator.tasks.models import AnyTypeRawTask
 
 
@@ -99,9 +99,15 @@ class TournamentData(BaseModel):
         "Calculated as: (defending_champion_score - new_winner_score) / defending_champion_score. "
         "score = loss, so lower is better. Higher diff = better perf = less burn.",
     )
-    diff_report: str | None = Field(default=None, description="Optional S3 URL for the winner-vs-previous-boss diff report.")
-    winner_model_repo: str | None = Field(default=None, description="HF repo of the winning trained model (for next tournament's final round)")
-    winner_model_base: str | None = Field(default=None, description="Base model the winner was trained from (for compatibility check)")
+    diff_report: str | None = Field(
+        default=None, description="Optional S3 URL for the winner-vs-previous-boss diff report."
+    )
+    winner_model_repo: str | None = Field(
+        default=None, description="HF repo of the winning trained model (for next tournament's final round)"
+    )
+    winner_model_base: str | None = Field(
+        default=None, description="Base model the winner was trained from (for compatibility check)"
+    )
     updated_at: datetime | None = Field(
         default=None,
         description="Timestamp when the tournament was last updated (typically when it completed). "
@@ -518,6 +524,12 @@ class TournamentProjection(BaseModel):
     current_champion_decay: float
     initial_weight: float
     projections: list[WeightProjection]
+    # "champion" if the projected performance dethrones the boss, else "runner_up"
+    placement: str = "champion"
+    # Performance margin (env: win rate) the challenger must exceed to take the crown
+    dethrone_threshold: float = 0.0
+    # Emission boost applied on top of base weight (0 when runner_up or below boost threshold)
+    emission_boost: float = 0.0
 
 
 class WeightProjectionResponse(BaseModel):

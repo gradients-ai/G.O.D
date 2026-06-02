@@ -142,13 +142,12 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             continue
 
         if task_obj.task_type == TaskType.ENVIRONMENTTASK:
+            # Local import breaks the weights <-> performance_calculator import cycle.
+            from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
+
             num_envs = len(task_obj.environment_names) if task_obj.environment_names else 1
             win_pct = (2 * challenger_score + boss_score - 3 * num_envs) / (3 * num_envs)
-            win_pct = max(0.0, win_pct)
-            if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
-                perf_diff = 0.0
-            else:
-                perf_diff = cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+            perf_diff = calculate_env_perf_diff_from_win_pct(win_pct)
             challenger_won = challenger_score > boss_score
         elif is_higher_better:
             if boss_score > 0:
@@ -205,7 +204,8 @@ async def get_tournament_performance_data(tournament_id: str, psql_db) -> list[T
 
     for i, task_pair in enumerate(task_pairs):
         logger.info(
-            f"Processing task pair {i + 1}/{len(task_pairs)}: tournament={task_pair.tournament_task_id}, synthetic={task_pair.synthetic_task_id}, winner={task_pair.winner_hotkey}"
+            f"Processing task pair {i + 1}/{len(task_pairs)}: tournament={task_pair.tournament_task_id}, "
+            f"synthetic={task_pair.synthetic_task_id}, winner={task_pair.winner_hotkey}"
         )
 
         tournament_scores = all_scores.get(task_pair.tournament_task_id, [])
@@ -272,7 +272,8 @@ async def get_tournament_performance_data(tournament_id: str, psql_db) -> list[T
         else:
             if winner_tournament_score is None and best_synthetic_score is not None:
                 logger.warning(
-                    f"Winner {task_pair.winner_hotkey} has no score in tournament task but synthetic miners do - applying max burn reduction"
+                    f"Winner {task_pair.winner_hotkey} has no score in tournament task but synthetic miners do "
+                    "- applying max burn reduction"
                 )
                 performance_diff = cts.MAX_BURN_REDUCTION / cts.BURN_REDUCTION_RATE
 

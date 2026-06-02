@@ -54,6 +54,7 @@ from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
 from validator.tournament.github_validation import deduplicate_by_github_account
+from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
@@ -711,6 +712,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         logger.info(f"Got {len(responding_nodes)} responding nodes")
 
         await validate_github_tokens(responding_nodes)
+
+        pre_dedup_ip = len(responding_nodes)
+        responding_nodes = deduplicate_by_ip_address(responding_nodes)
+        if len(responding_nodes) < pre_dedup_ip:
+            logger.info(
+                f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
+            )
 
         pre_dedup = len(responding_nodes)
         responding_nodes = deduplicate_by_github_account(responding_nodes)

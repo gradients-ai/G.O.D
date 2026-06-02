@@ -10,14 +10,18 @@ from core.models.utility_models import RewardFunction
 from core.models.utility_models import TaskType
 from validator.app.config import Config
 from validator.app.dependencies import get_config
+from validator.db import constants as cst
+from validator.db.sql import tasks as tasks_sql
+from validator.tasks.details import hide_sensitive_data_till_finished
+from validator.tasks.details import normalise_float
 from validator.tasks.models import AnyTypeTask
 from validator.tasks.models import AnyTypeTaskWithHotkeyDetails
 from validator.tasks.models import ChatTask
 from validator.tasks.models import ChatTaskWithHotkeyDetails
 from validator.tasks.models import DpoTask
+from validator.tasks.models import DpoTaskWithHotkeyDetails
 from validator.tasks.models import EnvTask
 from validator.tasks.models import EnvTaskWithHotkeyDetails
-from validator.tasks.models import DpoTaskWithHotkeyDetails
 from validator.tasks.models import GrpoTask
 from validator.tasks.models import GrpoTaskWithHotkeyDetails
 from validator.tasks.models import HotkeyDetails
@@ -25,10 +29,6 @@ from validator.tasks.models import ImageTask
 from validator.tasks.models import ImageTaskWithHotkeyDetails
 from validator.tasks.models import InstructTextTask
 from validator.tasks.models import InstructTextTaskWithHotkeyDetails
-from validator.db import constants as cst
-from validator.db.sql import tasks as tasks_sql
-from validator.tasks.details import hide_sensitive_data_till_finished
-from validator.tasks.details import normalise_float
 
 
 async def get_recent_tasks(
@@ -560,6 +560,18 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
     logger.info("Got a task!!")
 
     task = hide_sensitive_data_till_finished(task_raw)
+    if task.task_type == TaskType.ENVIRONMENTTASK:
+        async with await config.psql_db.connection() as connection:
+            env_task_row = await connection.fetchrow(
+                f"""
+                SELECT {cst.ENVIRONMENT_NAMES}
+                FROM {cst.ENV_TASKS_TABLE}
+                WHERE {cst.TASK_ID} = $1
+                """,
+                task_id,
+            )
+        if env_task_row is not None:
+            task.environment_names = env_task_row[cst.ENVIRONMENT_NAMES] or []
 
     higher_is_better = task_raw.task_type in (TaskType.ENVIRONMENTTASK, TaskType.GRPOTASK)
     rank_order = f"tn.{cst.TEST_LOSS} DESC NULLS LAST" if higher_is_better else f"tn.{cst.TEST_LOSS} ASC NULLS LAST"
