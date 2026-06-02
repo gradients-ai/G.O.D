@@ -273,3 +273,48 @@ class PvPGroupResults(PvPBaseModel):
         description="Present if any contestants were excluded due to full-weight submissions",
     )
     metadata: PvPEvalMetadata
+
+
+# --- Tool-calling memory models ---
+
+
+class MemoryArea(str, Enum):
+    """An area of model-managed memory in the tool-calling harness.
+
+    Add a member here (plus its SlotMemory instance and presentation metadata)
+    to introduce a new memory area; the tool layer expands automatically.
+    """
+
+    WORKING = "working_memory"
+    LONG_TERM = "long_term_memory"
+
+
+class MemoryOp(str, Enum):
+    """An edit operation on a memory slot.
+
+    The value equals the SlotMemory method name, so dispatch needs no lookup
+    table: getattr(slot_memory, op.value)(...).
+    """
+
+    REWRITE = "rewrite"
+    APPEND = "append"
+
+
+class MemoryConfig(BaseModel):
+    """Sizing for one memory area: a fixed number of fixed-size slots."""
+
+    n_slots: int = Field(gt=0, description="Number of addressable slots.")
+    slot_token_budget: int = Field(gt=0, description="Max tokens retained per slot.")
+
+
+class MemorySlotEdit(BaseModel):
+    """Arguments accepted by a memory edit tool (rewrite/append)."""
+
+    slot: int = Field(description="Target slot number.")
+    content: str = Field(description="Text content for the slot.")
+
+
+class GameActionArgs(BaseModel):
+    """Arguments accepted by the game_action tool."""
+
+    action_id: int = Field(description="A legal action id for the current state.")
