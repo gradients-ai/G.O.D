@@ -5,10 +5,6 @@ from datetime import timezone
 
 import validator.db.constants as cst
 from core.logging import get_logger
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPIndividualScoreDbRow
-from core.models.pvp_models import PvPPairDbRow
-from core.models.pvp_models import PvPPairResult
 from core.models.utility_models import GPUInfo
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainerInfo
@@ -17,6 +13,10 @@ from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import get_task_winners
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPIndividualScoreDbRow
+from validator.evaluation.pvp.models import PvPPairDbRow
+from validator.evaluation.pvp.models import PvPPairResult
 from validator.tasks.details import normalise_float
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation

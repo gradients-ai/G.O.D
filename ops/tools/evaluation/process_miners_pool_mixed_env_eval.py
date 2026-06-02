@@ -37,15 +37,15 @@ from uuid import uuid4
 warnings.filterwarnings("ignore", message=r'Field ".*" in .* has conflict with protected namespace')
 
 from core.constants import EnvironmentName
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPIndividualScoreDbRow
-from core.models.pvp_models import PvPPairDbRow
-from core.models.pvp_models import PvPPairResult
-from core.models.pvp_models import PvPStatus
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.evaluation import basilica as basilica_eval
 from validator.evaluation import docker_evaluation
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPIndividualScoreDbRow
+from validator.evaluation.pvp.models import PvPPairDbRow
+from validator.evaluation.pvp.models import PvPPairResult
+from validator.evaluation.pvp.models import PvPStatus
 from validator.tasks.models import EnvRawTask
 
 

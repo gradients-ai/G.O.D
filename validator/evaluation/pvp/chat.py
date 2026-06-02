@@ -10,8 +10,11 @@ import time
 
 import openai
 
-from core.models.pvp_models import ChatCompletionConfig, ChatMessage, ChatResult
 import validator.constants as vcst
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import ChatMessage
+from validator.evaluation.pvp.models import ChatResult
+
 
 logger = logging.getLogger(__name__)
 

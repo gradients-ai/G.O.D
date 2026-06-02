@@ -4,7 +4,7 @@ import itertools
 import validator.scoring.constants as cts
 from core.constants import EnvironmentName
 from core.logging import get_logger
-from core.models.pvp_models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPGroupResults
 from validator.scoring.models import EnvironmentWeight
 from validator.scoring.models import GroupStagePoints
 from validator.scoring.models import PairwiseOutcome

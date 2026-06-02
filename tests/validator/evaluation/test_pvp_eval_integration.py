@@ -13,8 +13,8 @@ from uuid import uuid4
 import pytest
 
 import validator.constants as validator_cst
-from core.models.pvp_models import PvPEvalMetadata
-from core.models.pvp_models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPEvalMetadata
+from validator.evaluation.pvp.models import PvPGroupResults
 
 
 def _preload_tournament_gpu_module() -> None:

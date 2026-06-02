@@ -3,31 +3,29 @@
 Exercises the full chain that determines tournament outcomes and emission weights.
 """
 
-import pytest
 
+import validator.constants as cts
 from core.constants import EnvironmentName
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPEvalMetadata
-from core.models.pvp_models import PvPGroupResults
-from core.models.pvp_models import PvPPairResult
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPEvalMetadata
+from validator.evaluation.pvp.models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPPairResult
+from validator.scoring.tournaments import accumulate_points
+from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
+from validator.scoring.tournaments import compute_pvp_tournament_points
+from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.tournaments import individual_scores_to_pairwise
+from validator.scoring.tournaments import pvp_results_to_pairwise
+from validator.scoring.tournaments import tournament_scores_to_weights
 from validator.tournament.models import EnvironmentWeight
-from validator.tournament.models import GroupStagePoints
 from validator.tournament.models import PairwiseOutcome
 from validator.tournament.models import TournamentResultsWithWinners
 from validator.tournament.models import TournamentRoundResult
 from validator.tournament.models import TournamentScore
 from validator.tournament.models import TournamentTaskScore
 from validator.tournament.models import TournamentType
-from validator.scoring.tournaments import accumulate_points
-from validator.scoring.tournaments import compute_pvp_tournament_points
-from validator.scoring.tournaments import exponential_decline_mapping
-from validator.scoring.tournaments import individual_scores_to_pairwise
-from validator.scoring.tournaments import pvp_results_to_pairwise
-from validator.scoring.tournaments import tournament_scores_to_weights
-from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.tournament.round_results import determine_boss_round_winner
 from validator.tournament.round_results import get_real_winner_hotkey
-import validator.constants as cts
 
 
 # --- Fixtures ---

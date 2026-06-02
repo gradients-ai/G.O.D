@@ -8,9 +8,9 @@ from unittest.mock import patch
 import pytest
 
 from core.constants import EnvironmentName
-from core.models.pvp_models import GameInstance
-from core.models.pvp_models import GameOutcome
-from core.models.pvp_models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import GameInstance
+from validator.evaluation.pvp.models import GameOutcome
+from validator.evaluation.pvp.models import PvPEnvironmentResult
 
 
 try:

@@ -3,9 +3,9 @@ from collections import Counter
 import numpy as np
 
 from core.logging import get_logger
-from core.models.pvp_models import GameOutcome
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
+from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.tasks import get_task
@@ -15,9 +15,9 @@ from validator.db.sql.tournaments import get_tournament_group_members
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
+from validator.evaluation.pvp.models import GameOutcome
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
-from validator.app.config import Config
 from validator.tournament import constants as t_cst
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData

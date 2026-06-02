@@ -11,20 +11,20 @@ import validator.tasks.prep.constants as prep_cst
 from core.logging import LogContext
 from core.logging import add_context_tag
 from core.logging import get_logger
-from core.models.pvp_models import PvPIncompleteError
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
+from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.evaluation.pvp.models import PvPIncompleteError
 from validator.infrastructure.cache import clean_all_hf_datasets_cache
 from validator.infrastructure.cache import manage_models_cache
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import evaluate_and_score_hotkeys
 from validator.scoring.tasks import finalize_task_scores_from_raw_losses
 from validator.scoring.tasks import should_use_tournament_eval
-from validator.app.config import Config
+from validator.tasks.config import get_task_config
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import RawTask
-from validator.tasks.config import get_task_config
 from validator.tasks.requests import get_model_num_params
 
 

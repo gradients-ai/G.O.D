@@ -18,15 +18,15 @@ from pathlib import Path
 
 import validator.constants as vcst
 from core.constants import EnvironmentName
-from core.models.pvp_models import ChatCompletionConfig
-from core.models.pvp_models import PreparedModel
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPEvalConfig
-from core.models.pvp_models import PvPEvalMetadata
-from core.models.pvp_models import PvPEvalResults
-from core.models.pvp_models import PvPModelSpec
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import PreparedModel
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPEvalConfig
+from validator.evaluation.pvp.models import PvPEvalMetadata
+from validator.evaluation.pvp.models import PvPEvalResults
+from validator.evaluation.pvp.models import PvPModelSpec
 from validator.evaluation.runtime import stop_process
 
 

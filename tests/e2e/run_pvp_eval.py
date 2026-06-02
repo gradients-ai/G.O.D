@@ -24,11 +24,9 @@ import sys
 import time
 
 from core.constants import EnvironmentName
-from core.models.pvp_models import (
-    PvPEvalConfig,
-    PvPMatchupConfig,
-    PvPModelSpec,
-)
+from validator.evaluation.pvp.models import PvPEvalConfig
+from validator.evaluation.pvp.models import PvPMatchupConfig
+from validator.evaluation.pvp.models import PvPModelSpec
 
 
 def parse_args() -> argparse.Namespace:
@@ -159,8 +157,9 @@ def _run_test(args: argparse.Namespace) -> int:
     print("=" * 60)
 
     # Import here so arg parsing / --help works without all deps installed
-    from validator.evaluation.utils import check_for_lora, configure_eval_logging
     from validator.evaluation.pvp.__main__ import _run_evaluation
+    from validator.evaluation.utils import check_for_lora
+    from validator.evaluation.utils import configure_eval_logging
 
     configure_eval_logging()
 

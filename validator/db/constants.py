@@ -1,4 +1,5 @@
-from core.models.pvp_models import PvPStatus
+from validator.evaluation.pvp.models import PvPStatus
+
 
 # Connection Pool Constants
 MIN_POOL_SIZE = 10  # Minimum number of connections to stay open

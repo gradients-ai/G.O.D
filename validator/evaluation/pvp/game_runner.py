@@ -16,16 +16,9 @@ import openai
 import pyspiel
 from open_spiel.python.algorithms import evaluate_bots
 
+import validator.constants as vcst
 from core.constants import ENVIRONMENT_CONFIGS
 from core.constants import EnvironmentName
-from core.models.pvp_models import ChatCompletionConfig
-from core.models.pvp_models import ChatFn
-from core.models.pvp_models import GameInstance
-from core.models.pvp_models import GameOutcome
-from core.models.pvp_models import GameScoringContext
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPMatchupConfig
-import validator.constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
 from validator.evaluation.pvp.agents import GinRummyAgent
 from validator.evaluation.pvp.agents import LeducPokerAgent
@@ -37,6 +30,13 @@ from validator.evaluation.pvp.bot import LLMBot
 from validator.evaluation.pvp.bot import TurnTimeoutError
 from validator.evaluation.pvp.chat import chat_completion
 from validator.evaluation.pvp.chat import create_client
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import ChatFn
+from validator.evaluation.pvp.models import GameInstance
+from validator.evaluation.pvp.models import GameOutcome
+from validator.evaluation.pvp.models import GameScoringContext
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPMatchupConfig
 from validator.evaluation.pvp.scoring import determine_outcome
 
 

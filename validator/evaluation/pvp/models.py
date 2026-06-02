@@ -14,6 +14,7 @@ from core.constants import EnvironmentName
 
 class PvPIncompleteError(Exception):
     """Raised when PvP eval has incomplete pairs — completed pairs are persisted in DB."""
+
     pass
 
 
@@ -76,7 +77,11 @@ class PvPModelSpec(PvPBaseModel):
         description="Base model repository, used for LoRA detection"
     )
     gpu_id: int | None = Field(default=None, ge=0, description="GPU device ID. Defaults to 0 for model_a, 1 for model_b")
-    port: int | None = Field(default=None, gt=0, description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b")
+    port: int | None = Field(
+        default=None,
+        gt=0,
+        description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b",
+    )
 
 
 class PvPMatchupConfig(BaseModel):
@@ -192,7 +197,6 @@ class PvPEvalResults(PvPBaseModel):
 
 
 # --- Group evaluation models ---
-
 
 
 def _canonical_pair_key(hotkey_a: str, hotkey_b: str) -> str:

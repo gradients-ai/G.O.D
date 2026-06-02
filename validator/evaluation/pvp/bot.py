@@ -13,12 +13,12 @@ import numpy as np
 import openai
 import pyspiel
 
-from core.models.pvp_models import ChatCompletionConfig
-from core.models.pvp_models import ChatFn
-from core.models.pvp_models import ChatMessage
-from core.models.pvp_models import ChatRole
 import validator.constants as vcst
 from validator.evaluation.pvp.agents import BaseGameAgent
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import ChatFn
+from validator.evaluation.pvp.models import ChatMessage
+from validator.evaluation.pvp.models import ChatRole
 
 
 logger = logging.getLogger(__name__)

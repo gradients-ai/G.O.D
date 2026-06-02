@@ -9,11 +9,11 @@ from __future__ import annotations
 
 import pytest
 
-from core.models.pvp_models import ChatCompletionConfig
-from core.models.pvp_models import ChatMessage
-from core.models.pvp_models import ChatResult
-from core.models.pvp_models import ChatRole
 from validator.evaluation.pvp.chat import strip_think_tags
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import ChatMessage
+from validator.evaluation.pvp.models import ChatResult
+from validator.evaluation.pvp.models import ChatRole
 
 
 # --- Helpers ---

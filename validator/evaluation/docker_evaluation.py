@@ -3,17 +3,11 @@ import random
 import uuid
 from uuid import UUID
 
+import validator.constants as vcst
 from core import constants as cst
+from core.logging import get_environment_logger
+from core.logging import get_logger
 from core.models.payload_models import DockerEvaluationResults
-from core.models.pvp_models import PvPEvalConfig
-from core.models.pvp_models import PvPEvalResults
-from core.models.pvp_models import PvPGroupResults
-from core.models.pvp_models import PvPMatchupConfig
-from core.models.pvp_models import PvPMode
-from core.models.pvp_models import PvPModelSpec
-from core.models.pvp_models import PvPPairResult
-from validator.scoring.models import IndividualEvalResult
-from validator.scoring.models import MinerRepos
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -22,7 +16,6 @@ from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
-import validator.constants as vcst
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import _db_call_with_retry
@@ -31,15 +24,22 @@ from validator.evaluation.basilica import _fetch_attempt_logs
 from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
 from validator.evaluation.basilica import _poll_eval_deployment
 from validator.evaluation.basilica import run_basilica_eval_repos
+from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.db_utils import load_shared_eval_deployment_id
 from validator.evaluation.db_utils import persist_shared_eval_deployment_id
 from validator.evaluation.evaluation_logging import _log_eval_step
-from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
+from validator.evaluation.pvp.models import PvPEvalConfig
+from validator.evaluation.pvp.models import PvPEvalResults
+from validator.evaluation.pvp.models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPMatchupConfig
+from validator.evaluation.pvp.models import PvPMode
+from validator.evaluation.pvp.models import PvPModelSpec
+from validator.evaluation.pvp.models import PvPPairResult
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
-from core.logging import get_environment_logger
-from core.logging import get_logger
+from validator.scoring.models import IndividualEvalResult
+from validator.scoring.models import MinerRepos
 
 
 try:

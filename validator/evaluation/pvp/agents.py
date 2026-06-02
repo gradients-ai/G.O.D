@@ -1,18 +1,20 @@
 """Game-specific agents for PvP evaluation.
 
 Each agent provides state formatting and parameter generation for its game.
-Rules text is loaded from core/training_templates/pvp_game_prompts.yml.
+Rules text is loaded from game_prompts.yml beside this module.
 """
 
 import functools
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from pathlib import Path
 
 import pyspiel
 import yaml
 
-_PROMPTS_PATH = Path(__file__).resolve().parents[3] / "core" / "training_templates" / "pvp_game_prompts.yml"
+
+_PROMPTS_PATH = Path(__file__).with_name("game_prompts.yml")
 
 
 @functools.cache
@@ -32,7 +34,7 @@ class BaseGameAgent(ABC):
     @property
     @abstractmethod
     def rules_key(self) -> str:
-        """Key in pvp_game_prompts.yml for this game's rules."""
+        """Key in game_prompts.yml for this game's rules."""
         ...
 
     @abstractmethod

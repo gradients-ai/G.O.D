@@ -21,20 +21,20 @@ from unittest.mock import patch
 import pytest
 
 from core.constants import EnvironmentName
-from core.models.pvp_models import ChatCompletionConfig
-from core.models.pvp_models import ChatMessage
-from core.models.pvp_models import ChatResult
-from core.models.pvp_models import ChatRole
-from core.models.pvp_models import PreparedModel
-from core.models.pvp_models import PvPEnvironmentResult
-from core.models.pvp_models import PvPEvalConfig
-from core.models.pvp_models import PvPEvalMetadata
-from core.models.pvp_models import PvPEvalResults
-from core.models.pvp_models import PvPGroupResults
-from core.models.pvp_models import PvPMatchupConfig
-from core.models.pvp_models import PvPMode
-from core.models.pvp_models import PvPModelSpec
-from core.models.pvp_models import PvPPairResult
+from validator.evaluation.pvp.models import ChatCompletionConfig
+from validator.evaluation.pvp.models import ChatMessage
+from validator.evaluation.pvp.models import ChatResult
+from validator.evaluation.pvp.models import ChatRole
+from validator.evaluation.pvp.models import PreparedModel
+from validator.evaluation.pvp.models import PvPEnvironmentResult
+from validator.evaluation.pvp.models import PvPEvalConfig
+from validator.evaluation.pvp.models import PvPEvalMetadata
+from validator.evaluation.pvp.models import PvPEvalResults
+from validator.evaluation.pvp.models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPMatchupConfig
+from validator.evaluation.pvp.models import PvPMode
+from validator.evaluation.pvp.models import PvPModelSpec
+from validator.evaluation.pvp.models import PvPPairResult
 
 
 try:

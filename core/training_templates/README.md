@@ -11,6 +11,5 @@ Base config files used by trainer entrypoints to generate per-task training conf
 - `base_diffusion_flux.toml`: Flux image training template.
 - `base_diffusion_zimage.yaml`: Z-Image training template.
 - `base_diffusion_qwen_image.yaml`: Qwen image training template.
-- `pvp_game_prompts.yml`: prompts used by PvP/environment evaluation flows.
 
 These files are runtime inputs, not examples. Keep path assumptions aligned with `trainer/constants.py` and `trainer/training_paths.py`.

@@ -1,8 +1,8 @@
 """Tests for PvP scoring: determine_outcome from game returns."""
 
-import pytest
 
-from core.models.pvp_models import GameOutcome, GameScoringContext
+from validator.evaluation.pvp.models import GameOutcome
+from validator.evaluation.pvp.models import GameScoringContext
 from validator.evaluation.pvp.scoring import determine_outcome
 
 
