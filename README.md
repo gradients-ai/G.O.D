@@ -55,6 +55,12 @@ To re-evaluate a task, run:
 python -m utils.run_evaluation --task_id <task_id>
 ```
 
+To re-evaluate a PvP environment task for selected hotkeys, run:
+
+```bash
+python -m utils.run_evaluation --task_id <task_id> --gpu_ids 0 1 --hotkeys <hotkey_a> <hotkey_b>
+```
+
 To run a non-submitted model, run:
 
 ```bash
