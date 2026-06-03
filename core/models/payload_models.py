@@ -92,8 +92,30 @@ class TrainRequestImage(TrainRequest):
     trigger_word: str | None = None
 
 
+class ConstituentSpec(BaseModel):
+    """One constituent of a composite task handed to the miner: its dataset + type/config (the
+    dataset_type carries DPO columns, GRPO reward functions, etc.), plus the metadata that makes
+    the round transparent — its source round, how much it weighs in this round's score, and the
+    miner's prior score on it (None if new this round)."""
+
+    dataset: str
+    dataset_type: TextDatasetType
+    file_format: FileFormat
+    source_round: int
+    weight: float
+    prior_score: float | None = None
+
+
+class TrainRequestComposite(TrainRequest):
+    """A composite training job: the cold-base reference (the shared DPO yardstick) plus the full
+    weighted set of constituents the miner trains one model on."""
+
+    reference_model: str | None = None
+    constituents: list[ConstituentSpec]
+
+
 class TrainerProxyRequest(BaseModel):
-    training_data: TrainRequestImage | TrainRequestText
+    training_data: TrainRequestImage | TrainRequestText | TrainRequestComposite
     github_repo: str
     gpu_ids: list[int]
     hotkey: str

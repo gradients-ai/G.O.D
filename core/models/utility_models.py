@@ -190,6 +190,7 @@ class TaskType(str, Enum):
     GRPOTASK = "GrpoTask"
     CHATTASK = "ChatTask"
     ENVIRONMENTTASK = "EnvTask"
+    COMPOSITETASK = "CompositeTask"
 
     def __hash__(self):
         return hash(str(self))

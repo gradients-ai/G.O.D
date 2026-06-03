@@ -12,6 +12,7 @@ from pydantic import field_validator
 
 from core.models.payload_models import TrainingRepoResponse
 from core.constants import EnvironmentName
+from core.constants import TrainingStartPoint
 from core.models.scoring_models import EnvironmentWeight
 from core.models.scoring_models import EvalHotkeyResults
 from core.models.scoring_models import GroupStagePoints
@@ -551,3 +552,74 @@ class BossBattleResponse(BaseModel):
     image_performance_differences: list[TaskPerformanceDifference]
     environment_tournament_id: str | None = None
     environment_performance_differences: list[TaskPerformanceDifference] = []
+
+
+# --- Text tournament scoring ---
+
+
+class DatasetEvalResult(BaseModel):
+    """One competitor's score on one eval dataset. `score=None` (or NaN) means no valid result
+    — failed training, or failed eval on this dataset — and ranks last."""
+
+    hotkey: str
+    dataset_id: str
+    source_round: int
+    task_type: TaskType
+    score: float | None = None
+
+
+class RoundWeight(BaseModel):
+    source_round: int
+    weight: float
+
+
+class RoundRank(BaseModel):
+    hotkey: str
+    source_round: int
+    rank: float
+
+
+class RoundValue(BaseModel):
+    """A value tagged with its source round, for round-weighted averaging."""
+
+    source_round: int
+    value: float
+
+
+class CompetitorScore(BaseModel):
+    hotkey: str
+    score: float
+
+
+class TaskNodeDatasetResult(BaseModel):
+    """A miner's persisted eval score for one task's model on one constituent's dataset (mirrors
+    `pvp_individual_scores`). `task_id` is the task whose model was evaluated; `dataset_task_id`
+    is the constituent task that supplied the eval dataset; `score` is None until a successful
+    eval. `status` mirrors the pvp table's TEXT status (pending/…)."""
+
+    task_id: str
+    hotkey: str
+    dataset_task_id: str
+    score: float | None = None
+    n_attempts: int = 0
+    status: str = "pending"
+
+
+class BossScenario(BaseModel):
+    """A boss-round scenario (from-scratch / continue-from-boss / continue-from-prev-winner):
+    the boss's and challenger's results across the whole accumulated eval surface."""
+
+    scenario: TrainingStartPoint
+    results: list[DatasetEvalResult]
+
+
+class BossScenarioOutcome(BaseModel):
+    scenario: TrainingStartPoint
+    challenger_share: float
+    challenger_won: bool
+
+
+class BossRoundOutcome(BaseModel):
+    scenarios: list[BossScenarioOutcome]
+    scenarios_won_by_challenger: int
+    challenger_dethrones: bool

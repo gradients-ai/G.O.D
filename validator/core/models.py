@@ -546,10 +546,25 @@ class EvaluationArgs(BaseModel):
         return value
 
 
+class CompositeRawTask(RawTask):
+    """A task composed of constituent tasks (instruct/dpo/grpo), trained as one model.
+
+    Constituents are linked via composite_task_constituents and carry their own dataset/type/
+    config; this row holds the track model and round metadata, with a placeholder `ds` (like env
+    tasks). Deliberately excluded from AnyTextTypeRawTask — it has no dataset of its own to prep.
+    """
+
+    task_type: TaskType = TaskType.COMPOSITETASK
+
+
+class CompositeTask(CompositeRawTask):
+    trained_model_repository: str | None = None
+
+
 # Type aliases for common task type groupings
 AnyTextTypeRawTask = InstructTextRawTask | DpoRawTask | GrpoRawTask | ChatRawTask | EnvRawTask
-AnyTypeRawTask = AnyTextTypeRawTask | ImageRawTask
-AnyTypeTask = InstructTextTask | DpoTask | ImageTask | GrpoTask | ChatTask | EnvTask
+AnyTypeRawTask = AnyTextTypeRawTask | ImageRawTask | CompositeRawTask
+AnyTypeTask = InstructTextTask | DpoTask | ImageTask | GrpoTask | ChatTask | EnvTask | CompositeTask
 AnyTypeTaskWithHotkeyDetails = (
     InstructTextTaskWithHotkeyDetails
     | ImageTaskWithHotkeyDetails

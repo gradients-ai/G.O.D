@@ -10,6 +10,7 @@ from core.models.pvp_models import PvPPairDbRow
 from core.models.pvp_models import PvPPairResult
 from core.models.tournament_models import GroupRound
 from core.models.tournament_models import HotkeyTaskParticipation
+from core.models.tournament_models import TaskNodeDatasetResult
 from core.models.tournament_models import TaskTrainingAssignment
 from core.models.tournament_models import TournamentData
 from core.models.tournament_models import TournamentGroupData
@@ -1605,6 +1606,103 @@ async def get_individual_scores(task_id: str, psql_db: PSQLDB) -> list[PvPIndivi
             WHERE {cst.TASK_ID} = $1
         """, task_id)
         return [PvPIndividualScoreDbRow(task_id=task_id, **dict(r)) for r in rows]
+
+
+async def add_composite_task_constituents(
+    composite_task_id: str, constituent_task_ids: list[str], psql_db: PSQLDB,
+) -> None:
+    """Link constituent tasks to a composite task, ordered by their position in the list."""
+    if not constituent_task_ids:
+        return
+    rows = [(composite_task_id, cid, position) for position, cid in enumerate(constituent_task_ids)]
+    async with await psql_db.connection() as connection:
+        await connection.executemany(f"""
+            INSERT INTO {cst.COMPOSITE_TASK_CONSTITUENTS_TABLE}
+                ({cst.COMPOSITE_TASK_ID}, {cst.CONSTITUENT_TASK_ID}, {cst.CONSTITUENT_POSITION})
+            VALUES ($1, $2, $3)
+            ON CONFLICT ({cst.COMPOSITE_TASK_ID}, {cst.CONSTITUENT_TASK_ID}) DO NOTHING
+        """, rows)
+
+
+async def get_composite_task_constituents(composite_task_id: str, psql_db: PSQLDB) -> list[str]:
+    """Get a composite task's constituent task_ids, ordered by position."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT {cst.CONSTITUENT_TASK_ID}
+            FROM {cst.COMPOSITE_TASK_CONSTITUENTS_TABLE}
+            WHERE {cst.COMPOSITE_TASK_ID} = $1
+            ORDER BY {cst.CONSTITUENT_POSITION}
+        """, composite_task_id)
+        return [str(r[cst.CONSTITUENT_TASK_ID]) for r in rows]
+
+
+async def ensure_dataset_results_exist(
+    task_id: str, hotkeys: list[str], dataset_task_ids: list[str], psql_db: PSQLDB,
+) -> None:
+    """Create pending rows for all required hotkey × dataset combos if they don't exist."""
+    if not hotkeys or not dataset_task_ids:
+        return
+    rows = [
+        (task_id, hk, did, cst.DATASET_RESULT_STATUS_PENDING)
+        for hk in hotkeys
+        for did in dataset_task_ids
+    ]
+    async with await psql_db.connection() as connection:
+        await connection.executemany(f"""
+            INSERT INTO {cst.TASK_NODE_DATASET_RESULTS_TABLE}
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.DATASET_TASK_ID}, {cst.STATUS})
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.DATASET_TASK_ID}) DO NOTHING
+        """, rows)
+
+
+async def save_dataset_result(
+    task_id: str, hotkey: str, dataset_task_id: str, score: float, psql_db: PSQLDB,
+) -> None:
+    """Mark a hotkey × dataset eval as successful with its score."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(f"""
+            UPDATE {cst.TASK_NODE_DATASET_RESULTS_TABLE}
+            SET {cst.DATASET_RESULT_SCORE} = $4, {cst.STATUS} = $5,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.DATASET_TASK_ID} = $3
+        """, task_id, hotkey, dataset_task_id, score, cst.DATASET_RESULT_STATUS_SUCCESS)
+
+
+async def increment_dataset_result_attempts(
+    task_id: str, hotkey: str, dataset_task_id: str, psql_db: PSQLDB,
+) -> None:
+    """Increment the attempt count for a hotkey × dataset that hasn't succeeded yet."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(f"""
+            UPDATE {cst.TASK_NODE_DATASET_RESULTS_TABLE}
+            SET {cst.DATASET_RESULT_N_ATTEMPTS} = {cst.DATASET_RESULT_N_ATTEMPTS} + 1,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.DATASET_TASK_ID} = $3
+                AND {cst.STATUS} != $4
+        """, task_id, hotkey, dataset_task_id, cst.DATASET_RESULT_STATUS_SUCCESS)
+
+
+async def get_dataset_results(task_id: str, psql_db: PSQLDB) -> list[TaskNodeDatasetResult]:
+    """Get all dataset eval-result rows for a task's model."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT {cst.HOTKEY}, {cst.DATASET_TASK_ID}, {cst.DATASET_RESULT_SCORE},
+                   {cst.DATASET_RESULT_N_ATTEMPTS}, {cst.STATUS}
+            FROM {cst.TASK_NODE_DATASET_RESULTS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+        """, task_id)
+        return [
+            TaskNodeDatasetResult(
+                task_id=task_id,
+                hotkey=r[cst.HOTKEY],
+                dataset_task_id=str(r[cst.DATASET_TASK_ID]),
+                score=r[cst.DATASET_RESULT_SCORE],
+                n_attempts=r[cst.DATASET_RESULT_N_ATTEMPTS],
+                status=r[cst.STATUS],
+            )
+            for r in rows
+        ]
 
 
 async def get_sibling_env_baseline_stats(
