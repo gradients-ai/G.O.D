@@ -13,7 +13,7 @@ from validator.core.config import Config
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.core.models import AnyTypeRawTask
 from validator.core.models import RawTask
-from validator.core.task_config_models import get_task_config
+from validator.cycle.util_functions import get_task_prep_function
 from validator.cycle.util_functions import get_model_num_params
 from validator.db.database import PSQLDB
 from validator.evaluation.scoring import evaluate_and_score_hotkeys
@@ -121,7 +121,7 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task.status = TaskStatus.PREPARING_DATA
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
-            task = await get_task_config(task).task_prep_function(task, config.keypair, config.psql_db)
+            task = await get_task_prep_function(task)(task, config.keypair, config.psql_db)
             logger.info(f"THE TASK HAS BEEN PREPPED {task}")
 
             type_enabled = cst.MODEL_PREP_ENABLED_BY_TASK_TYPE.get(task.task_type, False)

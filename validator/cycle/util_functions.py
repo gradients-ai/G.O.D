@@ -1,4 +1,7 @@
+import asyncio
 import re
+from typing import Callable
+from uuid import UUID
 
 from fiber import Keypair
 from huggingface_hub import HfApi
@@ -13,11 +16,16 @@ from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskStatus
 from validator.core import constants as cst
 from validator.core.models import AnyTextTypeRawTask
+from validator.core.models import AnyTypeRawTask
 from validator.core.models import ChatRawTask
+from validator.core.models import CompositeRawTask
 from validator.core.models import DpoRawTask
 from validator.core.models import GrpoRawTask
 from validator.core.models import ImageRawTask
 from validator.core.models import InstructTextRawTask
+from validator.db.database import PSQLDB
+from validator.db.sql import tasks as tasks_sql
+from validator.db.sql.tournaments import get_composite_task_constituents
 from validator.tasks.task_prep import prepare_image_task
 from validator.tasks.task_prep import prepare_text_task
 from validator.utils.logging import get_logger
@@ -99,6 +107,33 @@ async def run_text_task_prep(task: AnyTextTypeRawTask, keypair: Keypair, psql_db
 
     logger.info("Data creation is complete - now time to find some miners")
     return task
+
+
+async def run_composite_task_prep(task: CompositeRawTask, keypair: Keypair, psql_db: PSQLDB) -> CompositeRawTask:
+    """Prep the composite's not-yet-prepared constituents in parallel; carried-over ones keep
+    their existing split so the eval surface stays stable across rounds."""
+    constituent_ids = await get_composite_task_constituents(str(task.task_id), psql_db)
+    await asyncio.gather(*(_prep_constituent(cid, keypair, psql_db) for cid in constituent_ids))
+    return task
+
+
+async def _prep_constituent(constituent_id: str, keypair: Keypair, psql_db: PSQLDB) -> None:
+    constituent = await tasks_sql.get_task(UUID(constituent_id), psql_db)
+    if constituent.training_data and constituent.test_data:
+        return
+    prepared = await run_text_task_prep(constituent, keypair, psql_db)
+    await tasks_sql.update_task(prepared, psql_db)
+
+
+def get_task_prep_function(task: AnyTypeRawTask) -> Callable:
+    """Map a task to its data-prep function (train/test split etc.)."""
+    if isinstance(task, ImageRawTask):
+        return run_image_task_prep
+    if isinstance(task, CompositeRawTask):
+        return run_composite_task_prep
+    if isinstance(task, AnyTextTypeRawTask):  # instruct / dpo / grpo / env / chat
+        return run_text_task_prep
+    raise ValueError(f"Unsupported task type: {type(task).__name__}")
 
 
 def prepare_text_task_request(task: AnyTextTypeRawTask) -> TrainRequestText:

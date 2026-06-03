@@ -419,6 +419,12 @@ async def get_tasks_with_status(
                         ON t.{cst.TASK_ID} = gt.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
                 """
+            elif task_type == TaskType.COMPOSITETASK.value:
+                specific_query = f"""
+                    SELECT t.*
+                    FROM {cst.TASKS_TABLE} t
+                    WHERE t.{cst.TASK_ID} = $1
+                """
             else:
                 logger.warning(f"Unknown task type {task_type} for task_id {row[cst.TASK_ID]}")
                 continue
@@ -440,6 +446,8 @@ async def get_tasks_with_status(
                     tasks.append(ChatRawTask(**task_data))
                 elif task_type == TaskType.ENVIRONMENTTASK.value:
                     tasks.append(EnvRawTask(**task_data))
+                elif task_type == TaskType.COMPOSITETASK.value:
+                    tasks.append(CompositeRawTask(**task_data))
 
         logger.info(f"Retrieved {len(tasks)} tasks with status {status.value}")
         return tasks
