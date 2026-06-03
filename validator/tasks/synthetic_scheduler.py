@@ -314,6 +314,7 @@ async def create_synthetic_dpo_task(
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
     model_id_override: str | None = None,
+    status_override: TaskStatus | None = None,
 ) -> RawTask:
     logger.info("DPO task")
     model_id = model_id_override if model_id_override is not None else await anext(models)
@@ -340,7 +341,7 @@ async def create_synthetic_dpo_task(
         field_prompt=dataset.dpo_prompt_column,
         field_chosen=dataset.dpo_accepted_column,
         field_rejected=dataset.dpo_rejected_column,
-        status=TaskStatus.PENDING,
+        status=status_override if status_override is not None else TaskStatus.PENDING,
         is_organic=False,
         created_at=current_time,
         termination_at=end_timestamp,
@@ -397,6 +398,7 @@ async def create_synthetic_grpo_task(
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
     model_id_override: str | None = None,
+    status_override: TaskStatus | None = None,
 ) -> RawTask:
     model_id = model_id_override if model_id_override is not None else await anext(models)
 
@@ -417,7 +419,7 @@ async def create_synthetic_grpo_task(
         ds=dataset.dataset_id,
         field_prompt=columns.field_instruction,
         reward_functions=reward_functions,
-        status=TaskStatus.PENDING,
+        status=status_override if status_override is not None else TaskStatus.PENDING,
         is_organic=False,
         created_at=current_time,
         termination_at=end_timestamp,
@@ -587,6 +589,7 @@ async def create_synthetic_instruct_text_task(
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
     model_id_override: str | None = None,
+    status_override: TaskStatus | None = None,
 ) -> RawTask:
     model_id = model_id_override if model_id_override is not None else await anext(models)
 
@@ -609,7 +612,7 @@ async def create_synthetic_instruct_text_task(
         field_instruction=columns.field_instruction,
         field_input=columns.field_input,
         field_output=columns.field_output,
-        status=TaskStatus.PENDING,
+        status=status_override if status_override is not None else TaskStatus.PENDING,
         is_organic=False,
         created_at=current_time,
         termination_at=end_timestamp,

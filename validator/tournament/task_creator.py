@@ -1,4 +1,6 @@
 import random
+from datetime import datetime
+from datetime import timedelta
 
 from core.constants import EnvironmentName
 from core.constants import TrainingStartPoint
@@ -8,14 +10,19 @@ from core.models.tournament_models import KnockoutRound
 from core.models.tournament_models import Round
 from core.models.tournament_models import TournamentTask
 from core.models.utility_models import ImageModelType
+from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
+from validator.core.constants import NULL_ACCOUNT_ID
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
+from validator.core.models import CompositeRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
+from validator.db.sql.tournaments import add_composite_task_constituents
 from validator.db.sql.tournaments import add_tournament_tasks
+from validator.db.sql.tournaments import get_composite_task_constituents
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
@@ -324,22 +331,134 @@ async def _create_single_image_task_with_retry(
 
 
 async def _create_task_by_type(
-    task_type: TaskType, config: Config, models: list, instruct_datasets: list, dpo_datasets: list
+    task_type: TaskType, config: Config, models: list, instruct_datasets: list, dpo_datasets: list,
+    model_id_override: str | None = None, status_override: TaskStatus | None = None,
 ) -> RawTask:
     """Create a synthetic task of the specified type."""
     if task_type == TaskType.IMAGETASK:
         return await create_synthetic_image_task(config, models)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, model_id_override, status_override)
     elif task_type == TaskType.DPOTASK:
-        return await create_synthetic_dpo_task(config, models, dpo_datasets)
+        return await create_synthetic_dpo_task(config, models, dpo_datasets, model_id_override, status_override)
     elif task_type == TaskType.GRPOTASK:
-        return await create_synthetic_grpo_task(config, models, instruct_datasets)
+        return await create_synthetic_grpo_task(config, models, instruct_datasets, model_id_override, status_override)
     elif task_type == TaskType.ENVIRONMENTTASK:
         return await create_synthetic_env_task(config, models, instruct_datasets)
     else:
         # Default to instruct text task
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, model_id_override, status_override)
+
+
+def _round_constituent_types(round_number: int) -> list[TaskType]:
+    """Constituent types for a round; R2's alignment method is chosen probabilistically."""
+    if round_number <= 1:
+        return [TaskType.INSTRUCTTEXTTASK]
+    if round_number == 2:
+        return [TaskType.INSTRUCTTEXTTASK, random.choice([TaskType.DPOTASK, TaskType.GRPOTASK])]
+    return [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
+
+
+async def get_tournament_track_models(tournament_id: str, config: Config) -> tuple[str, str]:
+    """Derive (model_a, model_b) from R1's two composites, ordered by size (small = A, large = B)."""
+    rounds = await get_tournament_rounds(tournament_id, config.psql_db)
+    r1 = min(rounds, key=lambda r: r.round_number)
+    composites = []
+    for tournament_task in await get_tournament_tasks(r1.round_id, config.psql_db):
+        task_obj = await task_sql.get_task(tournament_task.task_id, config.psql_db)
+        if task_obj and task_obj.task_type == TaskType.COMPOSITETASK:
+            composites.append(task_obj)
+    composites.sort(key=lambda task: task.model_params_count)
+    return composites[0].model_id, composites[1].model_id
+
+
+async def _prior_track_constituents(tournament_id: str, round_number: int, track_model: str, config: Config) -> list[str]:
+    """Constituent task_ids of the previous round's composite for this track (cumulative chaining)."""
+    if round_number <= 1:
+        return []
+    rounds = await get_tournament_rounds(tournament_id, config.psql_db)
+    prev = next((r for r in rounds if r.round_number == round_number - 1), None)
+    if not prev:
+        return []
+    for tournament_task in await get_tournament_tasks(prev.round_id, config.psql_db):
+        task_obj = await task_sql.get_task(tournament_task.task_id, config.psql_db)
+        if task_obj and task_obj.task_type == TaskType.COMPOSITETASK and task_obj.model_id == track_model:
+            return await get_composite_task_constituents(str(tournament_task.task_id), config.psql_db)
+    return []
+
+
+async def _create_text_composite(
+    track_model: str, constituent_types: list[TaskType], hours: float, round_number: int,
+    tournament_id: str, round_id: str, group_id: str, config: Config,
+) -> RawTask:
+    """Build one track's CompositeTask: its new (inert) constituents + carried-over prior ones."""
+    models = _get_text_models(config.keypair)  # ignored (model_id_override set) but required positionally
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    dpo_datasets = _get_dpo_datasets(config.keypair)
+
+    new_constituents = []
+    for constituent_type in constituent_types:
+        constituent = await _create_task_by_type(
+            constituent_type, config, models, instruct_datasets, dpo_datasets,
+            model_id_override=track_model, status_override=TaskStatus.COMPOSITE_CONSTITUENT,
+        )
+        new_constituents.append(constituent)
+
+    prior_constituent_ids = await _prior_track_constituents(tournament_id, round_number, track_model, config)
+
+    now = datetime.utcnow()
+    composite = await task_sql.add_task(
+        CompositeRawTask(
+            model_id=track_model,
+            ds="composite",
+            status=TaskStatus.PENDING,
+            is_organic=False,
+            created_at=now,
+            termination_at=now + timedelta(hours=hours),
+            hours_to_complete=hours,
+            account_id=NULL_ACCOUNT_ID,
+        ),
+        config.psql_db,
+    )
+    await add_composite_task_constituents(
+        str(composite.task_id),
+        [str(constituent.task_id) for constituent in new_constituents] + prior_constituent_ids,
+        config.psql_db,
+    )
+    await _create_and_register_tournament_task(composite, tournament_id, round_id, config, group_id=group_id)
+    return composite
+
+
+async def create_text_round_tasks(round_data: Round, tournament_id: str, config: Config) -> list[str]:
+    """Create a round's per-track CompositeTask (A small, B large). Idempotent across restarts."""
+    round_id = round_data.round_id
+    round_number = round_data.round_number
+    group_id = f"{round_id}_group_001"
+
+    existing = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
+    if existing:
+        return [str(task.task_id) for task in existing]
+
+    if round_number <= 1:
+        model_a = await anext(_get_text_models(config.keypair, largest_size_b=t_cst.TEXT_TRACK_A_MAX_SIZE_B))
+        model_b = await anext(
+            _get_text_models(
+                config.keypair, smallest_size_b=t_cst.TEXT_TRACK_A_MAX_SIZE_B, largest_size_b=t_cst.TEXT_TRACK_B_MAX_SIZE_B
+            )
+        )
+    else:
+        model_a, model_b = await get_tournament_track_models(tournament_id, config)
+
+    constituent_types = _round_constituent_types(round_number)
+    hours = t_cst.TEXT_ROUND_HOURS[round_number]
+
+    composite_ids = []
+    for track_model in (model_a, model_b):
+        composite = await _create_text_composite(
+            track_model, constituent_types, hours, round_number, tournament_id, round_id, group_id, config
+        )
+        composite_ids.append(str(composite.task_id))
+    return composite_ids
 
 
 async def _get_existing_tasks(existing_tournament_tasks: list, config: Config) -> list[RawTask]:

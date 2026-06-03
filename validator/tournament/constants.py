@@ -84,6 +84,11 @@ PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 # round dominates more; higher = older rounds keep more weight.
 TEXT_ROUND_DECAY_BASE = 0.5
 
+# Text tournament round structure: one CompositeTask per size track, fixed 3-round gauntlet + boss.
+TEXT_TRACK_A_MAX_SIZE_B = 2.0  # small track (model A)
+TEXT_TRACK_B_MAX_SIZE_B = 8.0  # large track (model B)
+TEXT_ROUND_HOURS = {1: 2.0, 2: 4.0, 3: 5.0}  # composite training budget per round (tunable)
+
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1
 
