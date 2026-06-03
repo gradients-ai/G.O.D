@@ -38,6 +38,7 @@ from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.core.models import AnyTypeTask
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
+from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
 from validator.db.sql.tournaments import add_tournament_participants
@@ -278,12 +279,18 @@ async def _save_winner_model_repo(
 ) -> None:
     """Save the winner's HF model repo and base model to the tournament for next tournament's PREVIOUS_WINNER task.
 
-    Prefers the PREVIOUS_WINNER task output since it represents the champion lineage.
-    Falls back to any task with a valid repo if PREVIOUS_WINNER isn't found.
+    Carries forward the winner's *best-performing* boss-round model (highest
+    quality_score) — the model that actually won — rather than a lineage-preferred or
+    first-found one.
     """
     logger.info(f"Saving winner model repo for {winner_hotkey[:12]} from {len(round_tasks)} boss round tasks")
+    best_repo: str | None = None
+    best_task_model: str | None = None
+    best_score: float | None = None
+    # Always save *some* lineage even if no task is scored — never leave the next
+    # tournament without a champion model.
     fallback_repo: str | None = None
-    fallback_base_model: str | None = None
+    fallback_task_model: str | None = None
 
     for round_task in round_tasks:
         repo_name = await task_sql.get_expected_repo_name(round_task.task_id, winner_hotkey, psql_db)
@@ -295,26 +302,28 @@ async def _save_winner_model_repo(
             continue
 
         winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
+        if fallback_repo is None:
+            fallback_repo, fallback_task_model = winner_repo, task_obj.model_id
 
-        if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            # Record the winner's *actual* foundation base, not the target constant.
-            # Hardcoding ENV_TARGET_TOURN_MODEL here made next tournament's
-            # continue-vs-from-scratch check (winner_model_base == ENV_TARGET_TOURN_MODEL)
-            # always pass, so the boss kept continuing a stale-base lineage and never
-            # reset to the target when the constant changed.
-            base = await _resolve_winner_base_model(winner_repo, task_obj.model_id) or t_cst.ENV_TARGET_TOURN_MODEL
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (resolved base={base})")
-            await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
-            return
+        # Prefer the winner's best-performing boss-round model (highest quality_score) —
+        # the one that actually won — rather than a lineage-preferred or first-found one.
+        node_losses = await get_task_node_losses(round_task.task_id, psql_db)
+        score = next((n.get("quality_score") for n in node_losses if n.get("hotkey") == winner_hotkey), None)
+        if score is not None and (best_score is None or score > best_score):
+            best_score = score
+            best_repo, best_task_model = winner_repo, task_obj.model_id
 
-        if not fallback_repo:
-            fallback_repo = winner_repo
-            fallback_base_model = await _resolve_winner_base_model(winner_repo, task_obj.model_id)
+    winner_repo = best_repo or fallback_repo
+    task_model = best_task_model if best_repo else fallback_task_model
+    if not winner_repo:
+        logger.warning(f"Could not find a winner model repo for {winner_hotkey} in tournament {tournament_id}")
+        return
 
-    if fallback_repo and fallback_base_model:
-        await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
-    else:
-        logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
+    # Record the winner's *actual* foundation base, not the target constant, so the next
+    # tournament's continue-vs-from-scratch check works (see _get_prev_tourn_winner_model).
+    base = await _resolve_winner_base_model(winner_repo, task_model) or t_cst.ENV_TARGET_TOURN_MODEL
+    logger.info(f"Saving winner lineage: {winner_repo} (best quality_score={best_score}, base={base})")
+    await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
 
 
 async def assign_nodes_to_tournament_tasks(
