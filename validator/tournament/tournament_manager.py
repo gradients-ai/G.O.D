@@ -224,17 +224,21 @@ async def _create_tournament_tasks(
     return tasks
 
 
-async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
-    """Look up a miner's output repo from the previous round for model continuation."""
+async def _get_previous_round_repo(
+    tournament_id: str, hotkey: str, psql_db: PSQLDB, model_id: str | None = None
+) -> str | None:
+    """A miner's output repo from the previous round for model continuation. When `model_id` is
+    given, only the previous-round task with that base model is considered (track-aware)."""
     rounds = await get_tournament_rounds(tournament_id, psql_db)
     if len(rounds) < 2:
         return None
 
-    sorted_rounds = sorted(rounds, key=lambda r: r.round_number, reverse=True)
-    prev_round = sorted_rounds[1]  # second most recent = previous round
-
-    prev_tasks = await get_tournament_tasks(prev_round.round_id, psql_db)
-    for prev_task in prev_tasks:
+    prev_round = sorted(rounds, key=lambda r: r.round_number, reverse=True)[1]  # second most recent
+    for prev_task in await get_tournament_tasks(prev_round.round_id, psql_db):
+        if model_id is not None:
+            task_obj = await task_sql.get_task(prev_task.task_id, psql_db)
+            if not task_obj or task_obj.model_id != model_id:
+                continue
         repo_name = await task_sql.get_expected_repo_name(prev_task.task_id, hotkey, psql_db)
         if repo_name:
             return f"{RAYONLABS_HF_USERNAME}/{repo_name}"
@@ -287,6 +291,7 @@ async def assign_nodes_to_tournament_tasks(
 
     tournament = await get_tournament(tournament_id, psql_db)
     is_environment_tournament = tournament and tournament.tournament_type == TournamentType.ENVIRONMENT
+    is_text_tournament = tournament and tournament.tournament_type == TournamentType.TEXT
 
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
@@ -299,7 +304,7 @@ async def assign_nodes_to_tournament_tasks(
             EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
         )
         for i, group in enumerate(round_structure.groups):
-            if is_environment_tournament:
+            if is_environment_tournament or is_text_tournament:
                 group_participants = list(group.member_ids)
                 if EMISSION_BURN_HOTKEY in group_participants:
                     boss_assigned = True
@@ -322,7 +327,11 @@ async def assign_nodes_to_tournament_tasks(
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(tournament_task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
 
-                task_obj = await task_sql.get_task(tournament_task.task_id, psql_db) if is_environment_tournament else None
+                task_obj = (
+                    await task_sql.get_task(tournament_task.task_id, psql_db)
+                    if is_environment_tournament or is_text_tournament
+                    else None
+                )
 
                 for hotkey in participants_to_assign:
                     if hotkey in already_assigned_hotkeys:
@@ -336,13 +345,18 @@ async def assign_nodes_to_tournament_tasks(
                         expected_repo_name = f"tournament-{tournament_id}-{tournament_task.task_id}-{hotkey[:8]}"
                         await task_sql.set_expected_repo_name(tournament_task.task_id, node, psql_db, expected_repo_name)
 
-                        if task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
+                        prev_repo = None
+                        if is_text_tournament and round_structure.round_number > 1 and task_obj:
+                            prev_repo = await _get_previous_round_repo(
+                                tournament_id, hotkey, psql_db, model_id=task_obj.model_id
+                            )
+                        elif task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
                             prev_repo = await _get_previous_round_repo(tournament_id, hotkey, psql_db)
-                            if prev_repo:
-                                await task_sql.set_starting_model_repo(
-                                    tournament_task.task_id, hotkey, prev_repo, psql_db,
-                                )
-                                logger.info(f"Model continuation: {hotkey[:8]} starts from {prev_repo}")
+                        if prev_repo:
+                            await task_sql.set_starting_model_repo(
+                                tournament_task.task_id, hotkey, prev_repo, psql_db,
+                            )
+                            logger.info(f"Model continuation: {hotkey[:8]} starts from {prev_repo}")
 
                         logger.info(
                             f"Assigned {hotkey} to group task {tournament_task.task_id} "
