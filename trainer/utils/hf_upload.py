@@ -204,6 +204,15 @@ def main():
                 commit_message=f"Upload task output {task_id}",
                 token=hf_token,
                 delete_patterns=["*"],
+                ignore_patterns=[
+                    "trainer_state.json",
+                    "training_args.bin",
+                    "optimizer.pt",
+                    "optimizer.bin",
+                    "scheduler.pt",
+                    "scaler.pt",
+                    "rng_state*.pth",
+                ],
             )
             break
         except Exception as e:
