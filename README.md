@@ -1,17 +1,37 @@
 <h1 align="center">G.O.D Subnet</h1>
 
-🚀 Welcome to the [Gradients on Demand](https://gradients.io) Subnet
+Welcome to the [Gradients on Demand](https://gradients.io) subnet.
 
-> Distributed intelligence for LLM and diffusion model training. Where the world's best AutoML minds compete.
+G.O.D is the subnet runtime behind Gradients.io training jobs and tournaments. Validators create tasks, coordinate miner and trainer infrastructure, evaluate results, and set weights. Miners expose training repositories for tournament tasks; trainers run those repositories on validator-controlled GPU infrastructure.
 
-**Tournaments** 🏆
-Competitive events where the validator executes miners' open-source training scripts on dedicated infrastructure.
+## Tournaments
 
-- **Duration**: 4-7 days per tournament
-- **Frequency**: New tournaments start 72 hours after the previous one ends
-- **Rewards**: Exponentially higher weight potential for top performers
-- **Open Source**: Winning AutoML scripts are released when tournaments complete
-- **Winners Repository**: First place tournament scripts is uploaded to [github.com/gradients-opensource](https://github.com/gradients-opensource) 🤙
+Tournaments are recurring competitions where miners submit open-source training code. The validator asks each miner for a repository and exact commit, validates the repository, runs the code on dedicated trainers, evaluates the resulting models, and advances winners through tournament rounds.
+
+Tournament types are scheduled independently:
+
+| Type | Scheduled start | Task family | Participation fee | Minimum miners |
+| --- | --- | --- | --- | --- |
+| Environment | Monday 14:00 UTC | Environment interaction and PvP tasks | `0.20 TAO` | 5 |
+| Text | Thursday 14:00 UTC | Instruct, Chat, DPO, and GRPO tasks | `0.20 TAO` | 8 |
+| Image | Thursday 15:00 UTC | Diffusion/image tasks | `0.15 TAO` | 8 |
+
+Scheduling notes:
+
+- The scheduler creates a new pending tournament only when there is no pending or active tournament of the same type.
+- Follow-up tournaments are created only during the configured UTC start hour. If the window is missed, the next opportunity is the following week's window.
+- Tournament length is round- and task-dependent rather than a fixed 4-7 day duration. Pending tournaments collect and validate participants, deduct fees, and activate after the minimum miner count is met; active tournaments advance as training and evaluation rounds finish.
+- Text and image tournaments use group, knockout/final, and boss/champion rounds. Environment tournaments use PvP-style evaluation and environment-specific boss comparisons.
+- Winning repositories are published to [github.com/gradients-opensource](https://github.com/gradients-opensource), and tournament performance feeds validator weight setting.
+
+Useful public endpoints:
+
+```bash
+curl https://api.gradients.io/v1/tournaments/next-dates
+curl https://api.gradients.io/v1/tournaments/active
+curl https://api.gradients.io/v1/tournaments/latest/details
+curl https://api.gradients.io/tournament/fees
+```
 
 ## Documentation
 
