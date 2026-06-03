@@ -16,13 +16,14 @@ from transformers import AutoTokenizer
 from transformers import CLIPTokenizer
 
 import trainer.training_paths as train_paths
-from core.models.utility_models import FileFormat
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import TaskType
 from core.downloads import download_s3_file
+from core.models.dataset_models import FileFormat
+from core.models.image_models import ImageModelType
+from core.models.task_models import TaskType
 from trainer import constants as cst
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.model_artifacts import scrub_model_identity
+
 
 LORA_ADAPTER_CONFIG = "adapter_config.json"
 

@@ -1,8 +1,8 @@
 import pytest
 
 from core.constants.environments import EnvironmentName
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
 from validator.evaluation import local_evaluation
 
 

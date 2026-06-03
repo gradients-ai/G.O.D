@@ -23,7 +23,7 @@ from transformers import Trainer
 from transformers import TrainingArguments
 
 from core.logging import get_logger
-from core.models.utility_models import TextDatasetType
+from core.models.dataset_models import TextDatasetType
 from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info

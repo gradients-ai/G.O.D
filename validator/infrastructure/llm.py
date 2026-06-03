@@ -2,9 +2,9 @@ from typing import Any
 
 from fiber import Keypair
 
-from core.models.utility_models import Message
-from validator.infrastructure.content_service import post_to_nineteen_chat
 from core.logging import get_logger
+from validator.infrastructure.content_service import post_to_nineteen_chat
+from validator.infrastructure.models import Message
 
 
 logger = get_logger(__name__)

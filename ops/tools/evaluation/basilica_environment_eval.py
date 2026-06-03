@@ -9,8 +9,8 @@ Edit the config constants below, then run:
 import asyncio
 import time
 
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 
 

@@ -4,7 +4,7 @@ from datasets import load_dataset
 from fiber import Keypair
 
 from core.logging import get_logger
-from core.models.payload_models import TaskType
+from core.models.task_models import TaskType
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.tasks.datasets.constants import STANDARD_DPO_CHOSEN_COLUMN
 from validator.tasks.datasets.constants import STANDARD_DPO_PROMPT_COLUMN
@@ -131,7 +131,7 @@ def standardize_samples(samples: list[dict], task: AnyTextTypeRawTask) -> list[d
             else:
                 # Handle temp task objects that don't inherit from the models
                 if hasattr(task, "task_type"):
-                    from core.models.utility_models import TaskType
+                    from core.models.task_models import TaskType
 
                     if task.task_type == TaskType.GRPOTASK:
                         result = standardize_grpo_sample(processed_sample, task)
@@ -183,7 +183,7 @@ def create_temp_task_from_mapping(column_mapping: dict[str, str], task_type):
     column_mapping maps standard keys to actual dataset column names.
     We need to create a task that maps those actual column names to standard names.
     """
-    from core.models.utility_models import TaskType
+    from core.models.task_models import TaskType
 
     if task_type == TaskType.INSTRUCTTEXTTASK:
         temp_task_dict = {"task_type": task_type}

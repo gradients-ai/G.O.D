@@ -12,9 +12,9 @@ from pydantic import field_validator
 
 from core.constants.environments import EnvironmentName as EnvironmentName
 from core.models.payload_models import TrainingRepoResponse
-from core.models.utility_models import TaskType
-from core.models.utility_models import TournamentType
-from core.models.utility_models import TrainingStatus
+from core.models.task_models import TaskType
+from core.models.tournament_models import TournamentType
+from core.models.trainer_contract_models import GPUInfo
 from validator.scoring.models import EnvironmentWeight as EnvironmentWeight
 from validator.scoring.models import EvalHotkeyResults as EvalHotkeyResults
 from validator.scoring.models import GroupStagePoints as GroupStagePoints
@@ -40,6 +40,13 @@ class TournamentStatus(str, Enum):
     ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+
+
+class TrainingStatus(str, Enum):
+    PENDING = "pending"
+    TRAINING = "training"
+    SUCCESS = "success"
+    FAILURE = "failure"
 
 
 class RoundStatus(str, Enum):
@@ -69,6 +76,11 @@ class GpuRequirement(str, Enum):
             GpuRequirement.H100_4X: 4,
             GpuRequirement.H100_8X: 8,
         }[self]
+
+
+class TrainerInfo(BaseModel):
+    trainer_ip: str = Field(..., description="Trainer IP address")
+    gpus: list[GPUInfo] = Field(..., description="List of GPUs available on this trainer")
 
 
 def generate_tournament_id() -> str:

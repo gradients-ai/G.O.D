@@ -11,7 +11,7 @@ import httpx
 import validator.tasks.synthetics.constants as synth_cst
 from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
-from core.models.payload_models import ImageTextPair
+from core.models.dataset_models import ImageTextPair
 from validator.tasks.datasets.constants import TEMP_PATH_FOR_IMAGES
 from validator.tasks.details import retry_http_with_backoff
 from validator.tasks.details import upload_file_to_minio

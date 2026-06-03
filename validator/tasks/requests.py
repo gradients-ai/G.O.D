@@ -5,14 +5,14 @@ from huggingface_hub import HfApi
 
 import validator.tasks.datasets.constants as cst
 from core.logging import get_logger
+from core.models.dataset_models import ChatTemplateDatasetType
+from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.dataset_models import InstructTextDatasetType
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
-from core.models.utility_models import ChatTemplateDatasetType
-from core.models.utility_models import DpoDatasetType
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import InstructTextDatasetType
-from core.models.utility_models import TaskStatus
+from core.models.task_models import TaskStatus
 from validator.tasks.datasets.preparation import prepare_image_task
 from validator.tasks.datasets.preparation import prepare_text_task
 from validator.tasks.models import AnyTextTypeRawTask

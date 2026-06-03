@@ -6,12 +6,12 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import field_validator
 
-from core.models.utility_models import ChatTemplateDatasetType
-from core.models.utility_models import DpoDatasetType
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import InstructTextDatasetType
+from core.models.dataset_models import ChatTemplateDatasetType
+from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.dataset_models import InstructTextDatasetType
 
 
 class TokenizerConfig(BaseModel):

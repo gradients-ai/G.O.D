@@ -1,4 +1,4 @@
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 
 
 TRAIN_TEST_SPLIT_PERCENTAGE = 0.1

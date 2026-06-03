@@ -1,14 +1,14 @@
 import numpy as np
 
 from core.logging import get_logger
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.db import constants as db_cst
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.tasks import get_task
-from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.scoring.models import MinerResultsImage
 from validator.scoring.models import MinerResultsText
+from validator.scoring.tasks import calculate_miner_ranking_and_scores
 
 
 logger = get_logger(__name__)

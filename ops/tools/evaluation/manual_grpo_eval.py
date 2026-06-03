@@ -15,9 +15,9 @@ from huggingface_hub import snapshot_download
 from core.constants.docker import VALIDATOR_DOCKER_IMAGE
 from core.constants.paths import CACHE_DIR_HUB
 from core.logging import get_logger
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import RewardFunction
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.reward_models import RewardFunction
 
 
 logger = get_logger(__name__)

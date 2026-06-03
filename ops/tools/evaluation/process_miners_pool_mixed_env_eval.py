@@ -37,8 +37,8 @@ from uuid import uuid4
 warnings.filterwarnings("ignore", message=r'Field ".*" in .* has conflict with protected namespace')
 
 from core.constants.environments import EnvironmentName
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.evaluation import basilica as basilica_eval
 from validator.evaluation import docker_evaluation
 from validator.evaluation.pvp.models import PvPEnvironmentResult

@@ -325,6 +325,6 @@ uv run --extra dev pytest -q -o addopts='' tests/validator/scoring/test_tourname
 
 - Keep imports pointing at the owner module. Do not rely on compatibility imports from unrelated domains.
 - Keep constants near the thing that owns them. Docker/service endpoints live under infrastructure constants, scoring constants under scoring, tournament shape under tournament, task prep constants under task prep.
-- Keep miner-facing contracts in `core/models/payload_models.py` and `core/models/utility_models.py` when they cross process boundaries.
+- Keep miner-facing contracts in `core/models/payload_models.py` and the focused owner modules under `core/models/` when they cross process boundaries.
 - Keep validator-only schemas in the validator domain that owns them.
 - Prefer focused tests around changed behavior. For pure reorg work, run import smoke, `compileall`, and undefined-name lint.

@@ -10,8 +10,8 @@ from git import Repo
 import trainer.constants as cst
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
-from core.models.utility_models import GPUInfo
-from core.models.utility_models import GPUType
+from core.models.trainer_contract_models import GPUInfo
+from core.models.trainer_contract_models import GPUType
 from trainer.job_state import get_running_jobs
 
 

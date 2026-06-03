@@ -14,7 +14,7 @@ from core.datasets.whitelist import validate_requested_datasets
 from core.logging import LogContext
 from core.logging import get_logger
 from core.models.payload_models import TrainingRepoResponse
-from core.models.utility_models import TaskStatus
+from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql

@@ -9,14 +9,14 @@ from pathlib import Path
 import docker
 from dateutil.parser import isoparse
 
-from core.models.payload_models import TrainerTaskLog
-from core.models.utility_models import TaskStatus
-from trainer import constants as cst
-from trainer.job_state import save_task_history
-from trainer.job_state import task_history
 from core.logging import get_all_context_tags
 from core.logging import get_logger
 from core.logging import stream_container_logs
+from core.models.payload_models import TrainerTaskLog
+from core.models.task_models import TaskStatus
+from trainer import constants as cst
+from trainer.job_state import save_task_history
+from trainer.job_state import task_history
 
 
 logger = get_logger(__name__)

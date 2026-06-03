@@ -21,7 +21,7 @@ from trl import DPOTrainer
 
 import validator.evaluation.constants as cst
 from core.logging import get_logger
-from core.models.utility_models import DpoDatasetType
+from core.models.dataset_models import DpoDatasetType
 from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info

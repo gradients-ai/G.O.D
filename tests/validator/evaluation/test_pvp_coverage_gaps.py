@@ -582,7 +582,7 @@ class TestMultiGroupAggregation:
     @staticmethod
     def _make_miner_result(hotkey: str, score: float):
         """Build a real MinerResultsText so calculate_miner_ranking_and_scores works."""
-        from core.models.utility_models import TaskType as TT
+        from core.models.task_models import TaskType as TT
         from validator.scoring.models import MinerResultsText
         return MinerResultsText(
             hotkey=hotkey,

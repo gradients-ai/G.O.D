@@ -11,26 +11,27 @@ from collections import defaultdict
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from torch.utils.data import DataLoader
+from torch.utils.data import Dataset
+from transformers import AutoModelForCausalLM
+from transformers import AutoTokenizer
 
-from core.models.utility_models import TaskType
-from core.models.model_prep_models import (
-    BaselineStats,
-    DpoBaselineStats,
-    DpoDatasetStats,
-    DpoTrainingDynamics,
-    GrpoBaselineStats,
-    GrpoDatasetStats,
-    GrpoTrainingDynamics,
-    InstructBaselineStats,
-    InstructDatasetStats,
-    InstructTrainingDynamics,
-    LayerGradStats,
-    LayerGroupWeightStats,
-    SeqLengthDistribution,
-    WeightStats,
-)
+from core.models.model_prep_models import BaselineStats
+from core.models.model_prep_models import DpoBaselineStats
+from core.models.model_prep_models import DpoDatasetStats
+from core.models.model_prep_models import DpoTrainingDynamics
+from core.models.model_prep_models import GrpoBaselineStats
+from core.models.model_prep_models import GrpoDatasetStats
+from core.models.model_prep_models import GrpoTrainingDynamics
+from core.models.model_prep_models import InstructBaselineStats
+from core.models.model_prep_models import InstructDatasetStats
+from core.models.model_prep_models import InstructTrainingDynamics
+from core.models.model_prep_models import LayerGradStats
+from core.models.model_prep_models import LayerGroupWeightStats
+from core.models.model_prep_models import SeqLengthDistribution
+from core.models.model_prep_models import WeightStats
+from core.models.task_models import TaskType
+
 
 BPB_REFERENCE_MODEL = "gpt2"
 
@@ -180,7 +181,8 @@ def classify_layer(name: str) -> str:
 
 def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshold: float = 0.5) -> float:
     try:
-        from datasketch import MinHash, MinHashLSH
+        from datasketch import MinHash
+        from datasketch import MinHashLSH
         lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
         minhashes = []
         for i, text in enumerate(texts):

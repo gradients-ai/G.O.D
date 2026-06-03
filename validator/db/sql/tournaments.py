@@ -5,10 +5,8 @@ from datetime import timezone
 
 import validator.db.constants as cst
 from core.logging import get_logger
-from core.models.utility_models import GPUInfo
-from core.models.utility_models import TaskType
-from core.models.utility_models import TrainerInfo
-from core.models.utility_models import TrainingStatus
+from core.models.task_models import TaskType
+from core.models.trainer_contract_models import GPUInfo
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
@@ -33,7 +31,9 @@ from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentTaskScore
 from validator.tournament.models import TournamentTaskTraining
 from validator.tournament.models import TournamentType
+from validator.tournament.models import TrainerInfo
 from validator.tournament.models import TrainingRepoInfo
+from validator.tournament.models import TrainingStatus
 
 
 logger = get_logger(__name__)

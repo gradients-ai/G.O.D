@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from pydantic import Field
 
 import validator.infrastructure.service_constants as cst
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask

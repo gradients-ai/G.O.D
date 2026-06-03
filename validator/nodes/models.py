@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
 
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 
 
 class OnChainIncentive(BaseModel):

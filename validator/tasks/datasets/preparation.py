@@ -20,8 +20,8 @@ import validator.tasks.datasets.constants as cst
 from core.constants.credentials import BUCKET_NAME
 from core.downloads import download_s3_file
 from core.logging import get_logger
-from core.models.payload_models import ImageTextPair
-from core.models.utility_models import FileFormat
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import ImageTextPair
 from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache

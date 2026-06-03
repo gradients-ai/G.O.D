@@ -44,7 +44,7 @@ import validator.scoring.tasks as scoring
 from core.constants.environments import ENVIRONMENT_CONFIGS
 from core.constants.environments import EnvironmentName
 from core.constants.environments import EvalType
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.scoring.models import IndividualEvalResult
 from validator.scoring.models import IndividualScoresByEnv
 from validator.scoring.models import MinerRepos

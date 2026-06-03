@@ -1,5 +1,6 @@
 import hashlib
 from datetime import datetime
+from enum import Enum
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -10,15 +11,19 @@ from pydantic import model_validator
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.constants.training import YARN_VALID_FACTORS
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import ImageTextPair
+from core.models.image_models import ImageModelType
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
-from core.models.utility_models import Backend
-from core.models.utility_models import FileFormat
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import ImageTextPair
-from core.models.utility_models import RewardFunction
-from core.models.utility_models import TaskType
+from core.models.reward_models import RewardFunction
+from core.models.task_models import TaskType
 from validator.scoring.models import EnvironmentWeight
+
+
+class Backend(str, Enum):
+    OBLIVUS = "oblivus"
+    RUNPOD = "runpod"
 
 
 class RawTask(BaseModel):

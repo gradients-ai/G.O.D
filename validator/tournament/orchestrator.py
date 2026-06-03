@@ -14,18 +14,16 @@ from tenacity import wait_exponential
 import validator.tournament.constants as cst
 from core.logging import LogContext
 from core.logging import get_logger
+from core.models.dataset_models import FileFormat
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
-from core.models.utility_models import Backend
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GPUInfo
-from core.models.utility_models import GPUType
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
-from core.models.utility_models import TrainingStatus
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
+from core.models.trainer_contract_models import GPUInfo
+from core.models.trainer_contract_models import GPUType
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import tasks as task_sql
@@ -40,6 +38,7 @@ from validator.scoring.tasks import _get_dataset_type
 from validator.scoring.tasks import should_use_tournament_eval
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
+from validator.tasks.models import Backend
 from validator.tasks.synthetics.scheduler import apply_baseline_ctx_scale
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement
@@ -47,6 +46,7 @@ from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentTaskTraining
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingRepoInfo
+from validator.tournament.models import TrainingStatus
 
 
 logger = get_logger(__name__)

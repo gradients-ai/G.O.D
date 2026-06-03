@@ -4,7 +4,7 @@ from fiber.miner.dependencies import blacklist_low_stake
 from fiber.miner.dependencies import verify_get_request
 
 from core.models.payload_models import TrainingRepoResponse
-from core.models.utility_models import TournamentType
+from core.models.tournament_models import TournamentType
 
 
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:

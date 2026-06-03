@@ -6,6 +6,8 @@ from uuid import uuid4
 
 import pytest
 
+from core.models.task_models import TaskType
+from validator.endpoints.tournament_analytics import get_tournament_details
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
@@ -18,8 +20,6 @@ from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TournamentTypeResult
-from core.models.utility_models import TaskType
-from validator.endpoints.tournament_analytics import get_tournament_details
 
 
 # Mock data

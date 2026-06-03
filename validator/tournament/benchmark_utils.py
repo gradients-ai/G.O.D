@@ -1,14 +1,14 @@
 from typing import List
 
-from validator.tournament.models import TournamentParticipant
-from validator.tournament.models import TournamentType
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.logging import get_logger
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.nodes import get_node_by_hotkey
-from core.logging import get_logger
+from validator.tournament.models import TournamentParticipant
+from validator.tournament.models import TournamentType
 
 
 logger = get_logger(__name__)

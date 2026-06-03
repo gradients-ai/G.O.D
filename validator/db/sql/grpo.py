@@ -4,7 +4,7 @@ from uuid import UUID
 
 import validator.db.constants as cst
 from core.logging import get_logger
-from core.models.utility_models import RewardFunction
+from core.models.reward_models import RewardFunction
 from validator.db.database import PSQLDB
 
 

@@ -13,11 +13,11 @@ from fiber import Keypair
 
 import validator.tasks.synthetics.constants as synth_cst
 from core.logging import get_logger
+from core.models.dataset_models import ImageTextPair
+from core.models.image_models import ImageModelType
 from core.models.payload_models import ImageModelInfo
-from core.models.payload_models import ImageTextPair
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql.tasks import add_task
 from validator.infrastructure.fal_client import download_url

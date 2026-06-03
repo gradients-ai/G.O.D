@@ -3,9 +3,9 @@ import json
 import pandas as pd
 
 import core.constants.datasets as cst
-from core.models.utility_models import DpoDatasetType
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import GrpoDatasetType
+from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import GrpoDatasetType
 
 
 def _dpo_format_prompt(row, format_str):

@@ -3,8 +3,7 @@ from collections import Counter
 import numpy as np
 
 from core.logging import get_logger
-from core.models.utility_models import TaskType
-from core.models.utility_models import TrainingStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_task_winner
@@ -25,6 +24,7 @@ from validator.tournament.models import TournamentResultsWithWinners
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
+from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import get_progressive_threshold

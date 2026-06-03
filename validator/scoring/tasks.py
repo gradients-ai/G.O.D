@@ -13,17 +13,17 @@ import validator.infrastructure.service_constants as service_cst
 import validator.scoring.constants as scoring_cst
 from core.logging import LogContext
 from core.logging import get_logger
+from core.models.dataset_models import ChatTemplateDatasetType
+from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.dataset_models import InstructTextDatasetType
+from core.models.dataset_models import TextDatasetType
 from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-from core.models.utility_models import ChatTemplateDatasetType
-from core.models.utility_models import DpoDatasetType
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import InstructTextDatasetType
-from core.models.utility_models import TaskType
-from core.models.utility_models import TextDatasetType
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.submissions_and_scoring import add_submission

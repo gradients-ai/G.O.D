@@ -4,7 +4,7 @@ import numpy as np
 
 import validator.scoring.constants as cts
 from core.logging import get_logger
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch

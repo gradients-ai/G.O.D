@@ -3,8 +3,8 @@ import random
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import TaskType
+from core.models.image_models import ImageModelType
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks

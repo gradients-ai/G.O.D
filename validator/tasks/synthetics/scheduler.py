@@ -15,13 +15,13 @@ import validator.tasks.synthetics.constants as synth_cst
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
+from core.models.dataset_models import FileFormat
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
-from core.models.utility_models import FileFormat
-from core.models.utility_models import RewardFunction
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.reward_models import RewardFunction
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql

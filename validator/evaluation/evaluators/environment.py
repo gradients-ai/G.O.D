@@ -15,7 +15,7 @@ from huggingface_hub import snapshot_download
 
 import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
-from core.models.utility_models import EnvironmentDatasetType
+from core.models.dataset_models import EnvironmentDatasetType
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens

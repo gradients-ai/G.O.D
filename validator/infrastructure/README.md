@@ -11,6 +11,7 @@ Clients and adapters for external systems used by the validator.
 - `fal_client.py`: Fal client integration.
 - `llm.py`: LLM client helpers.
 - `minio_client.py`: MinIO/S3-compatible storage client.
+- `models.py`: validator infrastructure helper schemas.
 - `retries.py`: retry decorators and retry policy.
 - `service_constants.py`: service endpoint constants.
 - `substrate.py`: Substrate/Bittensor helpers.

@@ -1,7 +1,7 @@
 import asyncio
 
 from core.logging import get_logger
-from core.models.utility_models import ImageModelType
+from core.models.image_models import ImageModelType
 from validator.evaluation.local_evaluation import run_evaluation_docker_image
 
 

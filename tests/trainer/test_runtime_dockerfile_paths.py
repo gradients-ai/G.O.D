@@ -2,8 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import TaskType
+from core.models.image_models import ImageModelType
+from core.models.task_models import TaskType
 from trainer.runtime import get_dockerfile_path
 
 

@@ -2,7 +2,6 @@ import json
 import os
 import random
 import re
-import shutil
 import tempfile
 import urllib.request
 import zipfile
@@ -16,7 +15,7 @@ from huggingface_hub import snapshot_download
 from PIL import Image
 
 import validator.evaluation.constants as cst
-from core.models.utility_models import ImageModelType
+from core.models.image_models import ImageModelType
 from validator.evaluation.image_io import adjust_image_size
 from validator.evaluation.image_io import base64_to_image
 from validator.evaluation.image_io import download_from_huggingface

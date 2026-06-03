@@ -5,9 +5,9 @@ from fastapi import Depends
 from fastapi import HTTPException
 from loguru import logger  # noqa
 
-from core.models.utility_models import ImageTextPair
-from core.models.utility_models import RewardFunction
-from core.models.utility_models import TaskType
+from core.models.dataset_models import ImageTextPair
+from core.models.reward_models import RewardFunction
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.app.dependencies import get_config
 from validator.db import constants as cst

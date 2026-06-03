@@ -9,7 +9,7 @@ import validator.tasks.prep.constants as vcst
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 
 
 def weighted_choice(

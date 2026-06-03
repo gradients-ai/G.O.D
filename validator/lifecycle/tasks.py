@@ -11,8 +11,8 @@ import validator.tasks.prep.constants as prep_cst
 from core.logging import LogContext
 from core.logging import add_context_tag
 from core.logging import get_logger
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError

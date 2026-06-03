@@ -10,13 +10,13 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
-from core.models.utility_models import TaskStatus
+from core.models.task_models import TaskStatus
 from trainer import constants as cst
-from core.logging import get_logger
 
 
 logger = get_logger(__name__)

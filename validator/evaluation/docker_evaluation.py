@@ -8,15 +8,15 @@ import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
 from core.logging import get_environment_logger
 from core.logging import get_logger
+from core.models.dataset_models import ChatTemplateDatasetType
+from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.dataset_models import InstructTextDatasetType
+from core.models.image_models import ImageModelType
 from core.models.payload_models import DockerEvaluationResults
-from core.models.utility_models import ChatTemplateDatasetType
-from core.models.utility_models import DpoDatasetType
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import InstructTextDatasetType
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
 from validator.evaluation.basilica import EvaluationCapacityUnavailable

@@ -2,20 +2,15 @@
 performance calculator win percentage, and env tournament winner determination.
 """
 
-import math
-from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
 
-import numpy as np
 import pytest
 
 import validator.scoring.constants as cts
 import validator.tournament.constants as t_cst
-from core.constants.environments import EnvironmentName
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
-from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData

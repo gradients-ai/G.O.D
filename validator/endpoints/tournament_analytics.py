@@ -15,7 +15,7 @@ import validator.tournament.constants as tourn_cst
 from core.logging import get_logger
 from core.models.payload_models import GpuRequirementSummary
 from core.models.payload_models import TournamentGpuRequirementsResponse
-from core.models.utility_models import TaskStatus
+from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config

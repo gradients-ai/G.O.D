@@ -1,7 +1,7 @@
 """GPU requirement computation for tournament evaluation and training."""
 
 from core.logging import get_logger
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.tasks.requests import get_model_num_params
 from validator.tournament.models import GpuRequirement
 

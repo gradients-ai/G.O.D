@@ -66,7 +66,7 @@ async def main():
 
     # 5. Check that training assignments have requested_datasets
     print("\n=== Step 6: Checking training assignments ===")
-    from core.models.utility_models import TrainingStatus
+    from validator.tournament.models import TrainingStatus
     pending = await tournament_sql.get_tournament_training_tasks(
         config.psql_db, TrainingStatus.PENDING
     )

@@ -4,7 +4,7 @@ from asyncpg.connection import Connection
 
 import validator.db.constants as cst
 from core.constants.network import NETUID
-from core.models.utility_models import TaskStatus
+from core.models.task_models import TaskStatus
 from validator.db.database import PSQLDB
 from validator.nodes.models import AllNodeStats
 from validator.nodes.models import ModelMetrics

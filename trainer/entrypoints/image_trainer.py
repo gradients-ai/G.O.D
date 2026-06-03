@@ -20,7 +20,7 @@ sys.path.append(project_root)
 
 import trainer.constants as train_cst
 import trainer.training_paths as train_paths
-from core.models.utility_models import ImageModelType
+from core.models.image_models import ImageModelType
 from trainer.diffusion_dataset import prepare_dataset
 from trainer.training_config import save_config
 from trainer.training_config import save_config_toml

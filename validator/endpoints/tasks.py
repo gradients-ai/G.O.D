@@ -24,11 +24,10 @@ from core.models.payload_models import NewTaskResponse
 from core.models.payload_models import NewTaskWithCustomDatasetRequest
 from core.models.payload_models import NewTaskWithCustomDatasetRequestChat
 from core.models.payload_models import TaskResultResponse
-from core.models.utility_models import Backend
-from core.models.utility_models import MinerTaskResult
-from core.models.utility_models import TaskMinerResult
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.task_models import MinerTaskResult
+from core.models.task_models import TaskMinerResult
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
@@ -48,6 +47,7 @@ from validator.tasks.datasets.columns import validate_grpo_task_columns
 from validator.tasks.datasets.columns import validate_instruct_task_columns
 from validator.tasks.details import convert_task_to_task_details
 from validator.tasks.details import hide_sensitive_data_till_finished
+from validator.tasks.models import Backend
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DetailedNetworkStats
 from validator.tasks.models import DpoRawTask

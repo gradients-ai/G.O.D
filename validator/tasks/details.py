@@ -10,6 +10,7 @@ from tenacity import stop_after_attempt
 from tenacity import wait_exponential
 
 from core.logging import get_logger
+from core.models.dataset_models import ImageTextPair
 from core.models.payload_models import AnyTypeTaskDetails
 from core.models.payload_models import ChatTaskDetails
 from core.models.payload_models import DpoTaskDetails
@@ -17,9 +18,8 @@ from core.models.payload_models import EnvironmentTaskDetails
 from core.models.payload_models import GrpoTaskDetails
 from core.models.payload_models import ImageTaskDetails
 from core.models.payload_models import InstructTextTaskDetails
-from core.models.utility_models import ImageTextPair
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.infrastructure.minio_client import async_minio_client
 from validator.tasks.models import AnyTypeTask

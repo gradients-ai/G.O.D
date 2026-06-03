@@ -13,7 +13,7 @@ from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
-from core.models.utility_models import GPUInfo
+from core.models.trainer_contract_models import GPUInfo
 from trainer import constants as cst
 from trainer.containers.dataset_cache import download_whitelisted_datasets
 from trainer.host import are_gpus_available

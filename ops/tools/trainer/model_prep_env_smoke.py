@@ -20,7 +20,7 @@ if str(REPO_ROOT) not in sys.path:
 from core.constants.environments import EnvironmentName
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 from validator.tasks.prep.model import _build_env_configs
 
 

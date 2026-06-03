@@ -14,19 +14,19 @@ from core.constants.datasets import MAX_IMAGE_TEXT_PAIRS
 from core.constants.datasets import MIN_IMAGE_TEXT_PAIRS
 from core.constants.environments import EnvironmentName
 from core.constants.training import YARN_VALID_FACTORS
+from core.models.dataset_models import EnvironmentDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import GrpoDatasetType
+from core.models.dataset_models import ImageTextPair
+from core.models.dataset_models import TextDatasetType
+from core.models.image_models import ImageModelType
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
-from core.models.utility_models import EnvironmentDatasetType
-from core.models.utility_models import FileFormat
-from core.models.utility_models import GrpoDatasetType
-from core.models.utility_models import ImageModelType
-from core.models.utility_models import ImageTextPair
-from core.models.utility_models import MinerTaskResult
-from core.models.utility_models import RewardFunction
-from core.models.utility_models import TaskMinerResult
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
-from core.models.utility_models import TextDatasetType
+from core.models.reward_models import RewardFunction
+from core.models.task_models import MinerTaskResult
+from core.models.task_models import TaskMinerResult
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 
 
 logger = get_logger(__name__)

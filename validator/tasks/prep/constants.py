@@ -1,6 +1,6 @@
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
-from core.models.utility_models import TaskType
+from core.models.task_models import TaskType
 
 
 BASELINE_STATS_ENABLED_ORGANIC = False

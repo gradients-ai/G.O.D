@@ -9,10 +9,10 @@ import validator.db.constants as cst
 import validator.lifecycle.constants as lifecycle_cst
 from core.constants.network import NETUID
 from core.logging import get_logger
-from core.models.utility_models import ImageTextPair
-from core.models.utility_models import RewardFunction
-from core.models.utility_models import TaskStatus
-from core.models.utility_models import TaskType
+from core.models.dataset_models import ImageTextPair
+from core.models.reward_models import RewardFunction
+from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
 from validator.infrastructure.minio_client import async_minio_client
 from validator.tasks.models import AnyTypeRawTask
