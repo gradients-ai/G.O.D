@@ -313,9 +313,10 @@ async def create_synthetic_dpo_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    model_id_override: str | None = None,
 ) -> RawTask:
     logger.info("DPO task")
-    model_id = await anext(models)
+    model_id = model_id_override if model_id_override is not None else await anext(models)
     logger.info(f"We picked {model_id}")
 
     dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair, psql_db=config.psql_db)
@@ -395,8 +396,9 @@ async def create_synthetic_grpo_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    model_id_override: str | None = None,
 ) -> RawTask:
-    model_id = await anext(models)
+    model_id = model_id_override if model_id_override is not None else await anext(models)
 
     dataset = await get_dataset(datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair)
 
@@ -584,8 +586,9 @@ async def create_synthetic_instruct_text_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    model_id_override: str | None = None,
 ) -> RawTask:
-    model_id = await anext(models)
+    model_id = model_id_override if model_id_override is not None else await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)

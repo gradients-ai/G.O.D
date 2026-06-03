@@ -14,6 +14,7 @@ from core.models.utility_models import TaskType
 from validator.core.models import AnyTypeRawTask
 from validator.core.models import AnyTypeTask
 from validator.core.models import ChatRawTask
+from validator.core.models import CompositeRawTask
 from validator.core.models import ChatTask
 from validator.core.models import DetailedNetworkStats
 from validator.core.models import DpoRawTask
@@ -136,6 +137,10 @@ async def _insert_task_specific_data(connection: Connection, task: AnyTypeRawTas
         await _insert_env_task(connection, task, task_record)
     elif isinstance(task, ChatRawTask):
         await _insert_chat_task(connection, task, task_record)
+    elif isinstance(task, CompositeRawTask):
+        # No per-type table: a composite is just the base task row plus its
+        # composite_task_constituents links (written separately at round creation).
+        pass
 
 
 async def _insert_instruct_text_task(connection: Connection, task: InstructTextRawTask, task_record: dict) -> None:
@@ -963,6 +968,13 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
                     ON t.{cst.TASK_ID} = gt.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
             """
+        elif task_type == TaskType.COMPOSITETASK.value:
+            # No per-type table — the base task row is the whole composite.
+            specific_query = f"""
+                SELECT t.*
+                FROM {cst.TASKS_TABLE} t
+                WHERE t.{cst.TASK_ID} = $1
+            """
         else:
             raise ValueError(f"Unsupported task type: {task_type}")
 
@@ -986,6 +998,8 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             return ChatRawTask(**full_task_data)
         elif task_type == TaskType.ENVIRONMENTTASK.value:
             return EnvRawTask(**full_task_data)
+        elif task_type == TaskType.COMPOSITETASK.value:
+            return CompositeRawTask(**full_task_data)
 
     if connection is not None:
         return await _get_task_inner(connection)
