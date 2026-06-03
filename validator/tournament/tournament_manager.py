@@ -68,7 +68,7 @@ from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tour
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
-from validator.tournament.task_creator import create_text_tournament_tasks
+from validator.tournament.task_creator import create_text_round_tasks
 from validator.tournament.task_creator import replace_tournament_task
 from validator.tournament.utils import determine_env_tournament_winner
 from validator.tournament.utils import generate_diff_report_and_notify_tournament_completed
@@ -111,6 +111,13 @@ def organise_tournament_round(
 ) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
+
+    if tournament_type == TournamentType.TEXT:
+        return GroupRound(
+            groups=[Group(member_ids=[node.hotkey for node in nodes_copy], task_ids=[])],
+            round_id=round_id,
+            round_number=round_number,
+        )
 
     if tournament_type == TournamentType.ENVIRONMENT:
         if len(nodes_copy) < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
@@ -205,7 +212,8 @@ async def _create_tournament_tasks(
     tournament_id: str, round_structure: Round, tournament_type: TournamentType, is_final: bool, config: Config,
 ) -> list[str]:
     if tournament_type == TournamentType.TEXT:
-        tasks = await create_text_tournament_tasks(round_structure, tournament_id, config, is_final)
+        # TODO (C3 #5): is_final -> text boss round (3 composite scenarios)
+        tasks = await create_text_round_tasks(round_structure, tournament_id, config)
     elif tournament_type == TournamentType.IMAGE:
         tasks = await create_image_tournament_tasks(round_structure, tournament_id, config, is_final)
     elif tournament_type == TournamentType.ENVIRONMENT:
@@ -444,7 +452,9 @@ async def create_next_round(
 
         round_structure = organise_tournament_round(
             winner_nodes, config,
-            tournament.tournament_type if tournament.tournament_type == TournamentType.ENVIRONMENT else None,
+            tournament.tournament_type
+            if tournament.tournament_type in (TournamentType.ENVIRONMENT, TournamentType.TEXT)
+            else None,
             round_id=next_round_id, round_number=next_round_number,
         )
 
