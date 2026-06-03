@@ -7,7 +7,9 @@ from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
+from huggingface_hub import repo_exists
 
+from core.constants.credentials import HUGGINGFACE_TOKEN
 from core.constants.credentials import RAYONLABS_HF_USERNAME
 from core.constants.environments import TrainingStartPoint
 from core.datasets.whitelist import validate_requested_datasets
@@ -216,6 +218,15 @@ async def _create_tournament_tasks(
     return tasks
 
 
+async def _hf_repo_exists(repo_id: str) -> bool:
+    """Whether an HF model repo exists."""
+    try:
+        return await asyncio.to_thread(repo_exists, repo_id, repo_type="model", token=HUGGINGFACE_TOKEN)
+    except Exception as e:
+        logger.warning(f"HF repo existence check failed for {repo_id}: {e}; assuming it exists")
+        return True
+
+
 async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
     """Look up a miner's output repo from the previous round for model continuation."""
     rounds = await get_tournament_rounds(tournament_id, psql_db)
@@ -283,7 +294,7 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        boss_assigned = False
+        boss_assigned = any(EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups)
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
@@ -324,6 +335,12 @@ async def assign_nodes_to_tournament_tasks(
 
                         if task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
                             prev_repo = await _get_previous_round_repo(tournament_id, hotkey, psql_db)
+                            if prev_repo and not await _hf_repo_exists(prev_repo):
+                                logger.warning(
+                                    f"Continuation model {prev_repo} for {hotkey[:8]} not found on HF; "
+                                    f"falling back to base model {task_obj.model_id}"
+                                )
+                                prev_repo = task_obj.model_id
                             if prev_repo:
                                 await task_sql.set_starting_model_repo(
                                     tournament_task.task_id, hotkey, prev_repo, psql_db,

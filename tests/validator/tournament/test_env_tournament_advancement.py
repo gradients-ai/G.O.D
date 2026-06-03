@@ -2,6 +2,7 @@
 env scaling via real task creator calls, and model continuation logic.
 """
 
+from unittest.mock import ANY
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -11,8 +12,11 @@ import pytest
 import validator.tournament.constants as t_cst
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
+from validator.tournament.models import TournamentData
+from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.thresholds import get_progressive_threshold
 
@@ -250,3 +254,86 @@ class TestEnvironmentGroupTasks:
         calls = await self._run_group_task_creation(round_number=2, num_groups=3)
         for call in calls:
             assert call.get("model_id_override") == "Qwen/Qwen2.5-7B-Instruct"
+
+
+class TestEnvironmentTaskAssignment:
+    @staticmethod
+    def _node(hotkey: str):
+        node = MagicMock()
+        node.hotkey = hotkey
+        return node
+
+    @pytest.mark.asyncio
+    async def test_existing_boss_group_prevents_double_assignment(self):
+        from validator.tournament.tournament_manager import assign_nodes_to_tournament_tasks
+
+        round_data = GroupRound(
+            round_id="round_001",
+            round_number=1,
+            groups=[
+                Group(member_ids=["hk_a", "hk_b"]),
+                Group(member_ids=[EMISSION_BURN_HOTKEY, "hk_c"]),
+            ],
+        )
+        tournament = TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.ENVIRONMENT)
+        tasks = [
+            TournamentTask(tournament_id="tourn_1", round_id="round_001", task_id="task_g1", group_id="round_001_group_001"),
+            TournamentTask(tournament_id="tourn_1", round_id="round_001", task_id="task_g2", group_id="round_001_group_002"),
+        ]
+        assigned: list[tuple[str, str]] = []
+
+        async def assign_node_to_task(task_id, node, psql_db):
+            assigned.append((task_id, node.hotkey))
+
+        with (
+            patch("validator.tournament.tournament_manager.get_tournament", return_value=tournament),
+            patch("validator.tournament.tournament_manager.get_tournament_tasks", return_value=tasks),
+            patch("validator.tournament.tournament_manager.get_node_by_hotkey", side_effect=lambda hotkey, _: self._node(hotkey)),
+            patch("validator.tournament.tournament_manager.task_sql.get_nodes_assigned_to_task", return_value=[]),
+            patch("validator.tournament.tournament_manager.task_sql.assign_node_to_task", side_effect=assign_node_to_task),
+            patch("validator.tournament.tournament_manager.task_sql.set_expected_repo_name", new_callable=AsyncMock),
+            patch(
+                "validator.tournament.tournament_manager.task_sql.get_task",
+                return_value=MagicMock(training_start_point=TrainingStartPoint.DEFAULT),
+            ),
+        ):
+            await assign_nodes_to_tournament_tasks("tourn_1", round_data, MagicMock())
+
+        assert ("task_g1", EMISSION_BURN_HOTKEY) not in assigned
+        assert ("task_g2", EMISSION_BURN_HOTKEY) in assigned
+
+    @pytest.mark.asyncio
+    async def test_missing_continuation_repo_falls_back_to_base_model(self):
+        from validator.tournament.tournament_manager import assign_nodes_to_tournament_tasks
+
+        hotkey = "hk_contender"
+        round_data = GroupRound(
+            round_id="round_002",
+            round_number=2,
+            groups=[Group(member_ids=[hotkey])],
+        )
+        tournament = TournamentData(tournament_id="tourn_2", tournament_type=TournamentType.ENVIRONMENT)
+        tasks = [
+            TournamentTask(tournament_id="tourn_2", round_id="round_002", task_id="task_g1", group_id="round_002_group_001"),
+        ]
+        task = MagicMock(training_start_point=TrainingStartPoint.CONTINUATION, model_id="base/model")
+        set_starting_model_repo = AsyncMock()
+
+        with (
+            patch("validator.tournament.tournament_manager.get_tournament", return_value=tournament),
+            patch("validator.tournament.tournament_manager.get_tournament_tasks", return_value=tasks),
+            patch("validator.tournament.tournament_manager.get_node_by_hotkey", side_effect=lambda hotkey, _: self._node(hotkey)),
+            patch("validator.tournament.tournament_manager.task_sql.get_nodes_assigned_to_task", return_value=[]),
+            patch("validator.tournament.tournament_manager.task_sql.assign_node_to_task", new_callable=AsyncMock),
+            patch("validator.tournament.tournament_manager.task_sql.set_expected_repo_name", new_callable=AsyncMock),
+            patch("validator.tournament.tournament_manager.task_sql.get_task", return_value=task),
+            patch("validator.tournament.tournament_manager._get_previous_round_repo", return_value="gradients/missing-model"),
+            patch("validator.tournament.tournament_manager._hf_repo_exists", return_value=False),
+            patch(
+                "validator.tournament.tournament_manager.task_sql.set_starting_model_repo",
+                set_starting_model_repo,
+            ),
+        ):
+            await assign_nodes_to_tournament_tasks("tourn_2", round_data, MagicMock())
+
+        set_starting_model_repo.assert_any_await("task_g1", hotkey, "base/model", ANY)
