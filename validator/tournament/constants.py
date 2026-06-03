@@ -79,6 +79,11 @@ FINAL_ROUND_TEXT_TASKS = 6
 
 PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 
+# Text tournament round-decay weighting: each older round's eval datasets count this much as
+# much as the round after it (newest round = 1.0), normalised to sum to 1. Lower = the current
+# round dominates more; higher = older rounds keep more weight.
+TEXT_ROUND_DECAY_BASE = 0.5
+
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1
 
