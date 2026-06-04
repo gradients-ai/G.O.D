@@ -7,7 +7,8 @@ import subprocess
 import time
 
 import wandb
-from huggingface_hub import HfApi, login
+from huggingface_hub import HfApi
+from huggingface_hub import login
 
 
 def _resolve_base_model(model_id: str) -> str:
@@ -141,7 +142,6 @@ def detect_subfolder(base_folder: str) -> str | None:
             continue
         has_checkpoint_files = False
         for file in os.listdir(item_path):
-            file_path = os.path.join(item_path, file)
             if file.endswith('.safetensors'):
                 has_checkpoint_files = True
                 break
@@ -204,6 +204,15 @@ def main():
                 commit_message=f"Upload task output {task_id}",
                 token=hf_token,
                 delete_patterns=["*"],
+                ignore_patterns=[
+                    "trainer_state.json",
+                    "training_args.bin",
+                    "optimizer.pt",
+                    "optimizer.bin",
+                    "scheduler.pt",
+                    "scaler.pt",
+                    "rng_state*.pth",
+                ],
             )
             break
         except Exception as e:
