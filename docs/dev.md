@@ -37,7 +37,7 @@ task validator
 
 To test validator and miner communication locally:
 
-1. Register a miner in dev mode in the testnet (requires test TAOs): [Miner Setup Guide](docs/miner_setup.md).
+1. Register a miner in dev mode in the testnet (requires test TAO): [Miner Guide](miners.md).
 
 2. Under `miner/endpoints/tuning.py`, comment out the API  `dependencies`.
 
