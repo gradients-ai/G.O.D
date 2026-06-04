@@ -1,5 +1,7 @@
 
 import itertools
+import statistics
+from collections import defaultdict
 
 import validator.core.constants as cts
 from core.constants import EnvironmentName
@@ -49,6 +51,59 @@ def accumulate_points(
     return standings
 
 
+def dispersion_weighted_standings(
+    env_scores: dict[EnvironmentName, dict[str, float]],
+    hotkeys: list[str],
+    score_ref_max: dict[EnvironmentName, float] | None = None,
+    weights: list[EnvironmentWeight] | None = None,
+) -> list[GroupStagePoints]:
+    """Combine per-environment, per-miner scores into group standings.
+
+    Each environment contributes a continuous, normalized score per miner
+    (`raw / score_ref_max[env]`), and its influence on the final ranking is
+    `configured_weight * stdev(normalized scores)`. So an environment where
+    miners are barely distinguishable contributes little, while one that
+    separates them decisively dominates — preventing a low-signal env from
+    acting as kingmaker. The combined score is the influence-weighted average
+    of each miner's normalized per-env scores, so it stays on a [0, 1] scale.
+
+    Miners absent from an environment are treated as scoring 0.0 there (they
+    produced no result), matching the upstream exhausted-attempt behaviour.
+    """
+    weight_map = {w.environment: w.weight for w in weights} if weights else {}
+    ref_map = score_ref_max or {}
+
+    normalized: dict[EnvironmentName, dict[str, float]] = {}
+    influence: dict[EnvironmentName, float] = {}
+    for env, scores in env_scores.items():
+        ref = ref_map.get(env, 1.0)
+        if ref <= 0:
+            logger.warning(f"score_ref_max for {env} is {ref}; falling back to 1.0")
+            ref = 1.0
+        norm = {hk: scores.get(hk, 0.0) / ref for hk in hotkeys}
+        normalized[env] = norm
+        dispersion = statistics.pstdev(norm.values()) if len(hotkeys) > 1 else 0.0
+        influence[env] = weight_map.get(env, 1.0) * dispersion
+
+    total_influence = sum(influence.values())
+
+    points: dict[str, float] = {}
+    if total_influence > 0:
+        for hk in hotkeys:
+            points[hk] = sum(influence[env] * normalized[env][hk] for env in normalized) / total_influence
+    else:
+        # Every environment is flat (no separation) — fall back to an unweighted mean
+        # of normalized scores so ordering stays defined (miners are likely tied).
+        n_env = len(normalized)
+        for hk in hotkeys:
+            points[hk] = (sum(normalized[env][hk] for env in normalized) / n_env) if n_env else 0.0
+        logger.info("dispersion_weighted_standings: all environments flat, using unweighted mean")
+
+    standings = [GroupStagePoints(hotkey=hk, points=points[hk]) for hk in hotkeys]
+    standings.sort(key=lambda s: s.points, reverse=True)
+    return standings
+
+
 # --- PvP → pairwise ---
 
 
@@ -73,6 +128,33 @@ def pvp_results_to_pairwise(group_results: PvPGroupResults) -> list[PairwiseOutc
             ))
 
     return outcomes
+
+
+def pvp_results_to_winrates(group_results: PvPGroupResults) -> dict[EnvironmentName, dict[str, float]]:
+    """Per-environment win-rate for each hotkey across all of its round-robin games.
+
+    Win-rate (games won, counting draws as a half-win, over games played) preserves
+    margin of victory — a 200-0 sweep yields 1.0 while a 101-99 squeaker yields ~0.5 —
+    unlike the binary win/loss the pairwise converter produces.
+    """
+    wins: dict[EnvironmentName, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    games: dict[EnvironmentName, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for pair in group_results.pair_results:
+        for env_name, result in pair.results.items():
+            played = result.model_a_wins + result.model_b_wins + result.draws
+            wins[env_name][pair.hotkey_a] += result.model_a_wins + 0.5 * result.draws
+            wins[env_name][pair.hotkey_b] += result.model_b_wins + 0.5 * result.draws
+            games[env_name][pair.hotkey_a] += played
+            games[env_name][pair.hotkey_b] += played
+
+    winrates: dict[EnvironmentName, dict[str, float]] = {}
+    for env_name, env_games in games.items():
+        winrates[env_name] = {
+            hk: (wins[env_name][hk] / env_games[hk] if env_games[hk] else 0.0)
+            for hk in group_results.hotkeys
+        }
+    return winrates
 
 
 # --- Individual scores → pairwise ---

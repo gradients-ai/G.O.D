@@ -61,12 +61,19 @@ class EnvironmentConfig:
     tournament_eval_command: list[str] | None = None
     gpu_multiplier: int = 4
     eval_payload_extra: dict | None = None
+    score_ref_max: float = 1.0
+    """Reference maximum used to normalize this env's per-miner score onto a common
+    scale before combining environments. PvP envs contribute a win-rate (already in
+    [0, 1]) so the default of 1.0 is correct; INDIVIDUAL envs whose raw score is not
+    in [0, 1] should set this to their score's natural maximum."""
 
     def __post_init__(self):
         if self.eval_type == EvalType.INDIVIDUAL and not self.tournament_eval_command:
             raise ValueError(
                 "EnvironmentConfig with eval_type=INDIVIDUAL must define tournament_eval_command"
             )
+        if self.score_ref_max <= 0:
+            raise ValueError("EnvironmentConfig.score_ref_max must be positive")
 
 
 ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
