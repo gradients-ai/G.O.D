@@ -36,7 +36,7 @@ curl https://api.gradients.io/tournament/fees
 ## Documentation
 
 - [Developer Guide](docs/developer.md): repo layout, setup, validator/trainer/miner operations, tests, and common development workflows.
-- [Tournament Miner Guide](docs/miner.md): miner participation requirements, training repository contract, tournament types, and scoring expectations.
+- [Miner Guide](docs/miner.md): miner participation requirements, training repository contract, tournament types, and scoring expectations.
 
 ## Running Evaluations
 

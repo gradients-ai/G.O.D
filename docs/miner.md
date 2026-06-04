@@ -1,82 +1,171 @@
-# Tournament Miner Guide
+# Miner Guide
 
-This document is for miners who want to participate in Gradients on Demand tournaments. Miners submit training repositories; validators clone those repositories, build the Dockerfiles, run the training code on validator-controlled trainer infrastructure, evaluate the resulting models, and rank the submissions.
+This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text, image, and environment tournaments.
 
-Miners do not need to provide tournament training hardware, but they do need a running miner service, a valid training repository, and enough balance for tournament entry fees.
+## Table Of Contents
 
-## Tournament Types
+- [Quick Checklist](#quick-checklist)
+- [What Miners Do](#what-miners-do)
+- [Tournament Schedule](#tournament-schedule)
+- [Registration Requirements](#registration-requirements)
+- [Miner Setup](#miner-setup)
+- [Submitting Your Training Repository](#submitting-your-training-repository)
+- [Training Repository Requirements](#training-repository-requirements)
+- [How Validators Run Your Code](#how-validators-run-your-code)
+- [Runtime Arguments](#runtime-arguments)
+- [Runtime Environment Variables](#runtime-environment-variables)
+- [Cache And Output Paths](#cache-and-output-paths)
+- [Requested Datasets](#requested-datasets)
+- [Tournament Formats](#tournament-formats)
+- [Scoring And Weights](#scoring-and-weights)
+- [Environment Tournament Requirements](#environment-tournament-requirements)
+- [Image Tournament Tips](#image-tournament-tips)
+- [Local Testing](#local-testing)
+- [Common Failure Modes](#common-failure-modes)
+- [Useful References](#useful-references)
 
-The public tournament type passed to your miner endpoint is one of:
+## Quick Checklist
 
-| Type | Value | Task family |
-| --- | --- | --- |
-| Text | `text` | Instruct, Chat, DPO, and GRPO text training tasks. |
-| Image | `image` | Diffusion/image training tasks. |
-| Environment | `environment` | Environment interaction and reinforcement-learning-style tasks. |
+Before a tournament starts, make sure:
 
-Text and image tournaments use group rounds, elimination/final rounds, and a boss/champion comparison. Environment tournaments use PvP evaluation against environment servers and include boss comparisons with environment-specific rules.
+- Your hotkey is registered on the subnet and your miner IP is posted to the metagraph.
+- You have registered with Fiber at least 1 hour before the tournament you want to enter.
+- `task miner` is running and reachable on port `7999`.
+- `GET /training_repo/{task_type}` returns your GitHub repository, a full 40-character commit SHA, and an optional read-only GitHub token if the repo is private.
+- Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
+- Your training script writes the final model to `/app/checkpoints/{task_id}/{expected_repo_name}`.
+- Your coldkey has enough tournament balance for the tournament type.
+- You have tested the exact Dockerfile and entrypoint locally with the example scripts.
 
-Schedules and fees are defined by the validator code:
+## What Miners Do
 
-| Type | Schedule | Participation fee |
-| --- | --- | --- |
-| Environment | Monday 14:00 UTC | `0.20 TAO` |
-| Text | Thursday 14:00 UTC | `0.20 TAO` |
-| Image | Thursday 15:00 UTC | `0.15 TAO` |
+Tournament miners submit training code. Validators clone your submitted repository at the commit you provide, build your Docker image, run your training script on validator-managed GPUs, upload your model output to Hugging Face, then evaluate it against other miners.
 
-Fees are collected per coldkey balance and burned/staked according to the tournament transfer logic. Check current values through the public API when participating:
+You do not need to provide tournament compute. You do need a running miner endpoint so validators can ask which repository and commit you want to enter for each tournament type.
+
+Winning tournament repositories are re-uploaded to the public winners organization at [github.com/gradients-opensource](https://github.com/gradients-opensource), so only submit code you are prepared to open-source if it wins.
+
+## Tournament Schedule
+
+Tournament scheduling is weekly and independent for each tournament type. Times are in UTC.
+
+| Tournament type | Scheduled start |
+| --- | --- |
+| Environment | Monday at 14:00 UTC |
+| Text | Thursday at 14:00 UTC |
+| Image | Thursday at 15:00 UTC |
+
+The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
+
+The first tournament of a type can be created immediately when no previous tournament exists. After that, the previous tournament must be completed and the next scheduled window must arrive.
+
+## Registration Requirements
+
+### Subnet Registration
+
+Register your hotkey on the G.O.D subnet:
 
 ```bash
-curl https://api.gradients.io/tournament/fees
-curl https://api.gradients.io/tournament/balance/<coldkey>
+# Mainnet
+btcli s register --netuid 56
+
+# Testnet
+btcli s register --network test --netuid 241
 ```
 
-The collection address is:
+Post your miner IP to the metagraph. The default miner server port is `7999`:
+
+```bash
+fiber-post-ip \
+  --netuid 56 \
+  --subtensor.network finney \
+  --external_port 7999 \
+  --wallet.name default \
+  --wallet.hotkey default \
+  --external_ip YOUR_PUBLIC_IP
+```
+
+Use `--network test` and netuid `241` equivalents for testnet.
+
+Register with Fiber and post your miner IP at least 1 hour before the scheduled start of the tournament you want to enter.
+
+### Participation Balance
+
+Tournament fees are deducted from your coldkey balance after your repository passes validation. Current code constants are:
+
+| Tournament type | Fee |
+| --- | --- |
+| Text | 0.20 TAO |
+| Image | 0.15 TAO |
+| Environment | 0.20 TAO |
+
+Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
 
 ```text
 5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo
 ```
 
-## Participation Requirements
-
-You need:
-
-- A registered miner hotkey on the G.O.D subnet: netuid `56` on mainnet or `241` on testnet.
-- A running miner service that exposes `/training_repo/{task_type}`.
-- A training repository with the required Dockerfiles and entrypoints.
-- A full 40-character commit SHA. Branch names are not accepted.
-- Verbatim `LICENSE`/`LICENSE.md` and `NOTICE` files matching the G.O.D repository.
-- No obfuscated code or checked-in machine-code artifacts such as `.pyc`, `.bin`, `.dll`, or similar.
-- Sufficient coldkey tournament balance for the tournament type.
-
-Register and post your miner IP through Bittensor/Fiber tooling, for example:
+Useful API endpoints:
 
 ```bash
-btcli s register
-fiber-post-ip --netuid 56 --subtensor.network finney --external_port 7999 --wallet.name default --wallet.hotkey default --external_ip <your-ip>
+curl https://api.gradients.io/tournament/fees
+curl https://api.gradients.io/tournament/balance/{coldkey}
 ```
 
-## Miner Service Contract
+Collected fees are burned through the tournament balance system.
 
-Your miner service answers validator requests at:
+### Minimum Field Size
+
+A pending tournament activates only after enough validated miners are available:
+
+| Tournament type | Minimum validated miners |
+| --- | --- |
+| Text | 8 |
+| Image | 8 |
+| Environment | 5 |
+
+If too few miners validate, the pending tournament waits and retries participant collection.
+
+## Miner Setup
+
+From this repository:
+
+```bash
+git clone https://github.com/rayonlabs/G.O.D.git
+cd G.O.D
+task bootstrap
+task install
+task miner-config
+task miner
+```
+
+`task miner-config` writes `.1.env`. It prompts for:
+
+- Wallet name.
+- Hotkey name.
+- Subtensor network or websocket address.
+- Netuid, inferred as `56` for mainnet and `241` for testnet.
+- Minimum validator stake threshold for requests to your miner.
+
+`task miner` starts:
+
+```bash
+ENV=DEV uvicorn miner.asgi:app --reload --host 0.0.0.0 --port 7999 --env-file .1.env --log-level debug
+```
+
+The miner exposes:
 
 ```text
 GET /training_repo/{task_type}
 ```
 
-The base implementation lives in `miner/endpoints/training_repo.py`.
+where `task_type` is one of `text`, `image`, or `environment`.
 
-The response model is `TrainingRepoResponse`:
+Requests are verified by Fiber dependencies in `miner/endpoints/training_repo.py`, including low-stake validator blacklisting.
 
-```python
-class TrainingRepoResponse(BaseModel):
-    github_repo: str
-    commit_hash: str
-    github_token: str | None = None
-    requested_datasets: list[str] | None = None
-```
+## Submitting Your Training Repository
 
-Example:
+Validators submit you automatically by querying your miner endpoint during participant registration. You control the response in `miner/endpoints/training_repo.py`:
 
 ```python
 from core.models.payload_models import TrainingRepoResponse
@@ -85,14 +174,24 @@ from core.models.tournament_models import TournamentType
 
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     return TrainingRepoResponse(
-        github_repo="https://github.com/YOUR_USERNAME/YOUR_TRAINING_REPO",
+        github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
         commit_hash="0123456789abcdef0123456789abcdef01234567",
         github_token=None,
         requested_datasets=None,
     )
 ```
 
-For a private GitHub repository, use a fine-grained read-only token:
+Important details:
+
+- `commit_hash` must be a full 40-character hex commit SHA. Branch names such as `main` are rejected.
+- Use `git rev-parse HEAD` to get the commit you want validators to run.
+- The repository and commit must remain accessible until the tournament completes.
+- You may return different repositories or commits for `text`, `image`, and `environment`.
+- One miner is kept per duplicate IP address and one miner is kept per duplicate GitHub account. If duplicates exist, entries with a valid token are preferred.
+
+### Private Repositories
+
+Private repositories are supported if you return a GitHub fine-grained personal access token:
 
 ```python
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
@@ -100,44 +199,25 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
         github_repo="https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO.git",
         commit_hash="0123456789abcdef0123456789abcdef01234567",
         github_token="github_pat_xxx",
+        requested_datasets=None,
     )
 ```
 
-Use `git rev-parse HEAD` to get the required commit SHA.
+Use a fine-grained token with access only to the submitted repository and `Contents: Read-only`. The validator checks the token against the GitHub repository API. If the token is invalid, it is ignored, which will make a private repository fail to clone.
 
-## Starting Your Miner
+## Training Repository Requirements
 
-Generate config:
+Your submitted commit is validated before entry and built before every assigned task.
 
-```bash
-task miner-config
-```
+### Required Files
 
-Start the miner:
-
-```bash
-task miner
-```
-
-Check the endpoint:
-
-```bash
-curl http://localhost:7999/training_repo/text
-```
-
-Your miner must be reachable by validators at the IP and port you posted to the metagraph.
-
-## Training Repository Structure
-
-The validator clones your training repository, checks out the exact commit, then builds the expected Dockerfile for the tournament task.
-
-Required files:
+At minimum, include:
 
 ```text
 your-training-repo/
-├── LICENSE or LICENSE.md
-├── NOTICE
-└── <supported Dockerfile layout>
+|-- LICENSE.md
+|-- NOTICE
+`-- <supported Dockerfile layout>
 ```
 
 Preferred Dockerfile layout:
@@ -156,234 +236,338 @@ dockerfiles/standalone-image-trainer.dockerfile
 dockerfiles/standalone-image-toolkit-trainer.dockerfile
 ```
 
-For each task, the trainer checks the preferred path first and then the matching legacy path. You only need to include the Dockerfiles for the tournament types you plan to support.
+Required Dockerfiles by tournament type:
 
-The G.O.D repository contains reference entrypoints:
+| Tournament type | Required Dockerfile |
+| --- | --- |
+| Text | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
+| Environment | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
+| Image, SDXL/Flux | `ops/docker/standalone-image-trainer.dockerfile` or legacy image path |
+| Image, Z-Image/Qwen-Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
 
-```text
-trainer/entrypoints/text_trainer.py
-trainer/entrypoints/image_trainer.py
-```
+If you compete in image tournaments, include both image Dockerfiles because image tasks can use `sdxl`, `flux`, `z-image`, or `qwen-image`.
 
-You can start from the base repository, fork a previous winner, or build your own repository as long as it obeys the contract below.
+### License And Notice
 
-## Container Contract
-
-The trainer runs your Docker image with:
-
-- GPU device requests for the assigned GPU IDs.
-- A writable checkpoints volume mounted at `/app/checkpoints/`.
-- A read-only cache volume mounted at `/cache`.
-- Security options `no-new-privileges` and dropped Linux capabilities.
-- An internal Docker bridge network. Environment tasks receive environment server URLs on that network.
-
-Do not rely on ad hoc external state. Your dependencies should be in the Docker image, and task inputs should come from the provided CLI arguments, mounted cache, or approved requested datasets.
-
-## CLI Arguments
-
-Text-family training containers receive:
-
-```bash
---task-id <task-id>
---model <model-or-local-cache-path>
---dataset <dataset-url-or-local-path>
---dataset-type '<json-dataset-type>'
---task-type <task-type>
---file-format <file-format>
---expected-repo-name <repo-name>
---hours-to-complete <hours>
-```
-
-Text `task_type` values include:
+Your repo must include a LICENSE file and NOTICE file matching this repository's files. Accepted LICENSE names are:
 
 ```text
-InstructTextTask
-ChatTask
-DpoTask
-GrpoTask
-EnvTask
+LICENSE.md, LICENSE, license.md, license, License.md, License
 ```
 
-Image training containers receive:
+Accepted NOTICE names are:
+
+```text
+NOTICE, NOTICE.txt, notice.txt, Notice.txt, notice, Notice
+```
+
+The validation compares normalized line content against this repository's LICENSE and NOTICE. Do not rewrite, summarize, or remove them.
+
+### Readable Source
+
+Repositories are scanned for obfuscation at the submitted commit. Obfuscated or compiled-only submissions are rejected. Avoid files such as `.pyc`, `.bin`, `.dll`, packed source, minified logic, or anything meant to hide how the method works.
+
+Do not hide datasets, pretrained models, or private artifacts inside your Docker image. Environment tournaments explicitly allow supplementary SFT only through the requested dataset whitelist.
+
+## How Validators Run Your Code
+
+For each assigned task, the trainer:
+
+1. Clones your submitted GitHub repository at `commit_hash`.
+2. Downloads the base model and task dataset into a shared Docker cache volume.
+3. Builds the task-specific Dockerfile from your repository root.
+4. Starts your training container with assigned GPU IDs, CLI arguments, mounted volumes, and environment variables.
+5. Waits up to `hours_to_complete`.
+6. Uploads `/app/checkpoints/{task_id}/{expected_repo_name}` to the validator Hugging Face account.
+7. Sends the uploaded model into evaluation and scoring.
+
+Training containers run with:
+
+- Assigned NVIDIA GPUs only.
+- Docker security option `no-new-privileges`.
+- All Linux capabilities dropped.
+- `/cache` mounted read-only.
+- `/app/checkpoints/` mounted read-write.
+- An internal Docker bridge network. Treat this as no public internet; environment sidecars are reachable only when provided.
+- Dynamic resource limits of 110 GB RAM and 24 CPU cores per GPU.
+
+## Runtime Arguments
+
+Your Dockerfile entrypoint receives standardized CLI arguments.
+
+### Text And Environment Trainer
+
+Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 
 ```bash
---task-id <task-id>
---model <model-or-local-cache-path>
---dataset-zip <dataset-zip-url-or-local-path>
---model-type <sdxl|flux|z_image|qwen_image>
---expected-repo-name <repo-name>
---hours-to-complete <hours>
---trigger-word <optional-trigger-word>
+--task-id             # Unique task UUID/string
+--model               # Base or starting model identifier
+--dataset             # Original task dataset URL
+--dataset-type        # JSON string describing columns, rewards, or environments
+--task-type           # InstructTextTask, DpoTask, GrpoTask, ChatTask, or EnvTask
+--file-format         # Always s3 for tournament tasks
+--expected-repo-name  # Hugging Face repo name the uploader expects
+--hours-to-complete   # Task timeout in hours
 ```
 
-## Environment Variables
+`--dataset-type` is one of the Pydantic schemas in `core/models/dataset_models.py`:
+
+| Task type | Dataset type payload |
+| --- | --- |
+| `InstructTextTask` | Instruction/input/output column names and optional formatting fields. |
+| `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
+| `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
+| `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
+| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, or `intercode`. |
+
+For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
+
+### Image Trainer
+
+Used for `ImageTask`:
+
+```bash
+--task-id             # Unique task UUID/string
+--model               # Base model identifier or local cached model path
+--dataset-zip         # Original task dataset zip URL
+--model-type          # sdxl, flux, z-image, or qwen-image
+--expected-repo-name  # Hugging Face repo name the uploader expects
+--hours-to-complete   # Task timeout in hours
+--trigger-word        # Optional, only when provided by task data
+```
+
+## Runtime Environment Variables
 
 Your container may receive:
 
-| Variable | Meaning |
+| Variable | Tasks | Meaning |
+| --- | --- | --- |
+| `BASELINE_STATS_PATH` | Text, image, environment | Optional path to model/dataset baseline stats JSON. Safe to ignore. |
+| `WANDB_MODE` | Text, environment | Set to `offline`. |
+| `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | Text, environment | Point to the local WandB logs directory for later sync. |
+| `TRANSFORMERS_CACHE` | Image | Points to the Hugging Face cache path. |
+| `ENVIRONMENT_SERVER_URLS` | Environment | Comma-separated URLs for environment sidecars when the task needs live environment servers. |
+| `MINER_DATASETS_DIR` | Text, environment | Parent directory for approved requested datasets. |
+| `MINER_DATASETS` | Text, environment | Comma-separated downloaded dataset directory names. |
+
+For `intercode`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started.
+
+## Cache And Output Paths
+
+Use these paths or the helpers in `trainer/training_paths.py`. The uploader depends on the output path exactly.
+
+| Purpose | Path |
 | --- | --- |
-| `BASELINE_STATS_PATH` | Optional path under `/cache` with baseline stats from model prep. |
-| `ENVIRONMENT_SERVER_URLS` | Environment tasks only. Comma-separated internal server URLs. |
-| `MINER_DATASETS_DIR` | Parent directory for approved miner-requested datasets. |
-| `MINER_DATASETS` | Comma-separated downloaded dataset directory names. |
-| `WANDB_*` | Offline WandB directories and config for log capture. |
+| Final model output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
+| Text/environment dataset | `/cache/datasets/{task_id}_train_data.json` |
+| Image dataset zip | `/cache/datasets/{task_id}_tourn.zip` |
+| Cached models | `/cache/models/{model_id with "/" replaced by "--"}` |
+| Requested datasets | `/cache/miner_datasets/{dataset_id with "/" replaced by "--"}` |
+| WandB logs | `/app/checkpoints/wandb_logs` |
 
-Example environment server parsing:
+The cache volume is mounted read-only in your training container. Write checkpoints, adapters, configs that must be uploaded, and WandB logs under `/app/checkpoints`.
 
-```python
-import os
+## Requested Datasets
 
-raw_urls = os.environ.get("ENVIRONMENT_SERVER_URLS", "")
-server_urls = [url.strip() for url in raw_urls.split(",") if url.strip()]
-```
-
-Example requested dataset parsing:
-
-```python
-import os
-from pathlib import Path
-
-datasets_dir = os.environ.get("MINER_DATASETS_DIR")
-dataset_names = [name for name in os.environ.get("MINER_DATASETS", "").split(",") if name]
-
-if datasets_dir:
-    for name in dataset_names:
-        dataset_path = Path(datasets_dir) / name
-```
-
-## Output Contract
-
-Your training code must write the finished model to:
-
-```text
-/app/checkpoints/<task_id>/<expected_repo_name>
-```
-
-The helper in the base repo is:
-
-```python
-trainer.training_paths.get_checkpoints_output_path(task_id, expected_repo_name)
-```
-
-The trainer uploader expects this exact location. Changing it is the easiest way to submit a successful training run that cannot be uploaded.
-
-Common cache paths:
-
-| Path | Meaning |
-| --- | --- |
-| `/cache/models/<model-id-with-slashes-replaced>` | Downloaded base model cache. |
-| `/cache/datasets/<task_id>_train_data.json` | Text dataset cache path. |
-| `/cache/datasets/<task_id>_tourn.zip` | Image dataset zip cache path. |
-| `/cache/miner_datasets/` | Approved miner-requested datasets. |
-
-## Miner-Requested Datasets
-
-Miners may ask validators to pre-download a small number of approved Hugging Face datasets.
+Miners can ask validators to pre-download up to two approved Hugging Face datasets:
 
 ```python
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     return TrainingRepoResponse(
         github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
         commit_hash="0123456789abcdef0123456789abcdef01234567",
-        requested_datasets=["tasksource/Boardgame-QA"],
+        requested_datasets=[
+            "SoelMgd/Poker_Dataset",
+            "RZ412/PokerBench",
+        ],
     )
 ```
 
-Only datasets in `core/datasets/whitelisted_sft_datasets.json` are accepted. Non-whitelisted datasets are filtered out. The current maximum is `MAX_REQUESTED_DATASETS = 2` in `core/datasets/whitelist.py`.
+Only datasets in `core/datasets/whitelisted_sft_datasets.json` are accepted. Non-whitelisted entries are filtered out, and at most two are kept by `core/datasets/whitelist.py`.
 
-Environment tournament rule: you may only use approved requested datasets or task-provided data. Do not bake private datasets into your image.
+If downloads succeed, your text/environment container receives:
 
-## Text Tournaments
+```python
+import os
 
-Text tournaments cover Instruct, Chat, DPO, and GRPO task families. The trainer passes dataset structure through `--dataset-type` as JSON. Your code must map the supplied columns correctly rather than assuming fixed column names.
+root = os.environ.get("MINER_DATASETS_DIR")
+names = [name for name in os.environ.get("MINER_DATASETS", "").split(",") if name]
 
-Important behavior:
-
-- Instruct and Chat generally optimize lower evaluation loss.
-- DPO uses chosen/rejected preference pairs.
-- GRPO uses reward functions supplied in the task payload.
-- Finals currently use historical task copies across Instruct, DPO, and GRPO.
-
-For GRPO, reward function code is supplied through the dataset/task payload and must be wired into your trainer safely.
-
-## Image Tournaments
-
-Image tournaments pass a base model, a dataset zip, a model type, and optionally a trigger word. Your code should extract the zip, train the correct image model family, and save the model under the required checkpoint path.
-
-Current model type values come from `ImageModelType` and include:
-
-```text
-sdxl
-flux
-z_image
-qwen_image
+for name in names:
+    dataset_path = os.path.join(root, name)
 ```
 
-Current validator GPU requirement logic maps image tasks to `H100_1X`.
+Requested datasets are mounted read-only.
 
-## Environment Tournaments
+## Tournament Formats
 
-Environment tournaments train models through interaction with environment servers and evaluate by PvP or individual environment scoring.
+### Text Tournaments
 
-During training:
+Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 
-- The validator/trainer starts environment server sidecars.
-- Your container receives `ENVIRONMENT_SERVER_URLS`.
-- Your rollout function should call those servers, collect rewards, and return data compatible with your training loop.
+- If the field has more than 8 miners, the first round is a group round.
+- Group rounds create one instruct task per group.
+- The top 8 scored miners across group tasks advance.
+- Once the field is 8 or fewer, rounds become pairwise knockout rounds.
+- Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
+- The final boss round creates 6 tasks: 2 instruct, 2 DPO, and 2 GRPO. Some final tasks may use larger models.
+- The challenger must win a majority of boss-round tasks to dethrone the defending champion.
 
-The base text trainer wires selected environments into Axolotl rollout functions for games such as Gin Rummy, Liar's Dice, and Leduc Poker.
+For instruct and DPO tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
 
-Rules:
+### Image Tournaments
 
-- Do not bake private datasets into the image.
-- Do not bake pretrained models into the image.
-- SFT is allowed only through whitelisted requested datasets.
-- Environment training should use live environment interaction as the core training signal.
+Image tournaments use `ImageTask`.
 
-## Evaluation And Scoring
+- If the field has more than 8 miners, the first round is a group round.
+- Group rounds create one image task per group.
+- The top 8 scored miners across group tasks advance.
+- Once the field is 8 or fewer, rounds become pairwise knockout rounds.
+- Knockout pairs receive one image task.
+- The final boss round creates 6 image tasks. Up to 3 can be Z-Image or Qwen-Image tasks.
+- The challenger must win a majority of boss-round tasks to dethrone the defending champion.
 
-Final scoring depends on the task family:
+Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
-- Instruct, Chat, DPO, and image tasks generally use loss-style evaluation where lower is better.
-- GRPO and environment tasks use reward/point-style scoring where higher is better.
-- PvP environment scoring uses per-environment points: win `3`, draw `1`, loss `0`.
+### Environment Tournaments
 
-Tournament winners feed into validator weight setting. Strong champion performance can increase the tournament weight pool; weak performance leaves more emission with the burn address.
+Environment tournaments use `EnvTask` and PvP or environment-specific evaluation.
+
+- Participants are split into groups of 2 to 6.
+- The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
+- Non-final rounds create one environment task per group.
+- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported environments.
+- Round 2 and later can continue from each miner's previous-round model.
+- Up to one non-boss winner advances per group, with ties at the cutoff allowed.
+- If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
+- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start.
+- The contender wins the environment tournament only if they have no boss-round losses and at least one boss-round win. Draws are acceptable; any loss means the boss retains.
+
+Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The from-scratch boss-round task uses `3.0` hours.
+
+## Scoring And Weights
+
+The subnet is tournament-based. Emissions are split between tournament champions, active tournament participants, and burn.
+
+Current base and cap weights in `validator/scoring/constants.py`:
+
+| Tournament type | Base weight | Max weight |
+| --- | --- | --- |
+| Text | 0.15 | 0.48 |
+| Image | 0.125 | 0.32 |
+| Environment | 0.15 | 0.16 |
+
+Active tournament participants receive `0.0001` weight each. Undistributed weight goes to the burn hotkey.
+
+Within a tournament, ranked participants are distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.3`.
+
+Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.05` performance threshold. The excess is multiplied by `2.0`, capped by tournament type, and reduced by time-based champion decay of `0.0033` per day after the configured decay start date.
+
+Boss-round task wins use a progressive defense threshold:
+
+```text
+threshold = max(0.03, 0.05 * 0.8 ** (consecutive_wins - 1))
+```
+
+That means a defending champion starts with a 5% task advantage, then the threshold decays toward a 3% floor with consecutive wins.
+
+## Environment Tournament Requirements
+
+Supported environment names are defined in `core/constants/environments.py`:
+
+- `gin_rummy`
+- `liars_dice`
+- `leduc_poker`
+- `intercode`
+
+For OpenSpiel-style environments, one environment sidecar is usually started per assigned GPU. The URLs are passed through `ENVIRONMENT_SERVER_URLS`. Parse them as a comma-separated list:
+
+```python
+import os
+
+server_urls = [
+    url.strip()
+    for url in os.environ.get("ENVIRONMENT_SERVER_URLS", "").split(",")
+    if url.strip()
+]
+```
+
+Environment tasks can use rollout logic that can interact with environment servers during GRPO training.
+
+A rollout function:
+
+- Generates completions from the model.
+- Sends actions or completions to the environment server.
+- Collects rewards and trajectory data.
+- Returns the prompt tokens, completion tokens, logprobs, and reward values expected by your trainer.
+
+The base repository includes reference rollout functions in `ops/docker/environment_functions`.
+
+Rules for environment tournaments:
+
+- Do not bundle your own dataset in the Docker image.
+- Do not bundle a pretrained model in the Docker image.
+- SFT is allowed only with whitelisted requested datasets.
+
+## Image Tournament Tips
+
+The base diffusion trainer supports SDXL, Flux, Z-Image, and Qwen-Image. The common tuning split is:
+
+- Style LoRA tasks often prefer lower learning rates, more repeats, and less aggressive fitting.
+- Person, object, or concept tasks often overfit faster and may need fewer repeats, fewer epochs, and a higher learning rate.
+- SDXL defaults use more repeats than Flux in `trainer/constants.py`.
+- Z-Image and Qwen-Image use the AI Toolkit Dockerfile path.
+
+These are starting points, not rules. Your tournament edge usually comes from detecting the task shape and adapting the training recipe.
 
 ## Local Testing
 
-Reference examples and tools live under:
-
-```text
-ops/examples/training/
-ops/tools/evaluation/
-```
-
-Useful examples:
+Example local runners are in `ops/examples/training`:
 
 ```bash
-ops/examples/training/run_instruct_task.sh
-ops/examples/training/run_dpo_task.sh
-ops/examples/training/run_grpo_task.sh
-ops/examples/training/run_environment_task.sh
-ops/examples/training/run_image_task.sh
+./ops/examples/training/run_instruct_task.sh
+./ops/examples/training/run_dpo_task.sh
+./ops/examples/training/run_grpo_task.sh
+./ops/examples/training/run_image_task.sh
+./ops/examples/training/run_environment_task.sh
 ```
 
-You can also use the base trainer entrypoints directly while developing:
+You can also re-evaluate recent tasks locally after building the validator images:
 
 ```bash
-python -m trainer.entrypoints.text_trainer --help
-python -m trainer.entrypoints.image_trainer --help
+docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
+docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
+
+python -m ops.validator_ops.run_evaluation --help
+python -m ops.validator_ops.run_evaluation --task_id TASK_ID
+python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
+python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
 ```
 
-## Common Pitfalls
+## Common Failure Modes
 
 - Returning a branch name instead of a full commit SHA.
-- Forgetting matching `LICENSE` and `NOTICE` files.
-- Moving model output away from `/app/checkpoints/<task_id>/<expected_repo_name>`.
-- Assuming fixed dataset columns instead of reading `--dataset-type`.
-- Downloading non-whitelisted external datasets during training.
-- Depending on internet access or mutable external services from inside the training container.
-- Forgetting to handle `hours-to-complete`.
-- Ignoring `BASELINE_STATS_PATH` when your method would benefit from baseline/model-prep information.
-- Leaving obfuscated or generated binary artifacts in the repo.
+- Letting a private repo token expire or omitting `Contents: Read-only`.
+- Missing one of the required Dockerfiles for the tournament type.
+- Changing the final output path away from `/app/checkpoints/{task_id}/{expected_repo_name}`.
+- Writing outputs into `/cache`, which is read-only during training.
+- Depending on public internet access from the training container.
+- Bundling hidden datasets, weights, compiled code, or obfuscated code.
+- Ignoring `hours_to_complete` and getting killed before a usable checkpoint exists.
+- Not handling every model type in the tournament you enter.
+- Assuming `--dataset` or `--dataset-zip` can be downloaded directly by your script instead of using the pre-downloaded cache path.
+
+## Useful References
+
+- `miner/endpoints/training_repo.py`: miner repository response endpoint.
+- `core/models/payload_models.py`: `TrainingRepoResponse`, trainer request models, and runtime payloads.
+- `core/models/dataset_models.py`: dataset type schemas.
+- `core/models/task_models.py`: task type enum.
+- `trainer/runtime.py`: Docker build/run logic and runtime arguments.
+- `trainer/constants.py`: Dockerfile paths, cache paths, and resource constants.
+- `trainer/training_paths.py`: path helpers used by base scripts.
+- `validator/tournament/tournament_manager.py`: registration, validation, rounds, and scheduling.
+- `validator/tournament/task_creator.py`: task creation by tournament type.
+- `validator/tournament/gpu_requirements.py`: GPU requirement logic.
+- `validator/tournament/constants.py`: tournament structure, fees, and environment round constants.
+- `validator/scoring/constants.py`: scoring weights, decay, and emissions constants.

@@ -23,7 +23,7 @@ VOLUME_NAMES = [CHECKPOINTS_VOLUME_NAME, CACHE_VOLUME_NAME]
 HF_UPLOAD_DOCKER_IMAGE = "gradientsio/trainer-uploader:latest"
 TRAINER_DOWNLOADER_DOCKER_IMAGE = "gradientsio/trainer-downloader:latest"
 CACHE_CLEANER_DOCKER_IMAGE = "gradientsio/trainer-cacher-cleaner:latest"
-MODEL_PREP_DOCKER_IMAGE = "phoenixbeaudry/model-prep:v1"
+MODEL_PREP_DOCKER_IMAGE = "gradientsio/model-prep:latest"
 INTERNAL_BRIDGE_NAME = "internal_bridge"
 
 # Resource allocation
