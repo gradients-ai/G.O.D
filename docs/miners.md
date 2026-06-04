@@ -29,6 +29,7 @@ This guide is the single source of truth for miners who want to compete in G.O.D
 Before a tournament starts, make sure:
 
 - Your hotkey is registered on the subnet and your miner IP is posted to the metagraph.
+- You have registered with Fiber at least 1 hour before the tournament you want to enter.
 - `task miner` is running and reachable on port `7999`.
 - `GET /training_repo/{task_type}` returns your GitHub repository, a full 40-character commit SHA, and an optional read-only GitHub token if the repo is private.
 - Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
@@ -85,6 +86,8 @@ fiber-post-ip \
 ```
 
 Use `--network test` / netuid `241` equivalents for testnet.
+
+Register with Fiber and post your miner IP at least 1 hour before the scheduled start of the tournament you want to enter.
 
 ### Participation Balance
 
