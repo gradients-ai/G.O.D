@@ -7,29 +7,20 @@
 **Tournaments** 🏆
 Competitive events where the validator executes miners' open-source training scripts on dedicated infrastructure.
 
-- **Duration**: 4-7 days per tournament
-- **Frequency**: New tournaments start 72 hours after the previous one ends
+- **Schedule**: Environment tournaments start Mondays at 14:00 UTC; text tournaments start Thursdays at 14:00 UTC; image tournaments start Thursdays at 15:00 UTC.
 - **Rewards**: Exponentially higher weight potential for top performers
 - **Open Source**: Winning AutoML scripts are released when tournaments complete
 - **Winners Repository**: First place tournament scripts is uploaded to [github.com/gradients-opensource](https://github.com/gradients-opensource) 🤙
-- [Tournament Overview](docs/tournament_overview.md)
+- [Miner Guide](docs/miners.md)
 
 ## Setup Guides
 
-- [Tournament Miner Guide](docs/tourn_miner.md)
+- [Miner Guide](docs/miners.md)
 - [Validator Setup Guide](docs/validator_setup.md)
 
 ## Developer Resources
 
 For technical documentation on GRPO reward functions and implementation details, see [GRPO Safe Code Execution Guide](docs/grpo_rewards_code_execution.md).
-
-## Recommended Compute Requirements
-
-[Compute Requirements](docs/compute.md)
-
-## Miner Advice
-
-[Miner Advice](docs/tourn_miner.md)
 
 ## Running evaluations on your own
 
