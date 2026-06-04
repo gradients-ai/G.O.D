@@ -161,6 +161,54 @@ class TestBossRoundTaskConfig:
         assert result == "prev-winner/repo"
 
 
+class TestWinnerModelRepoSaving:
+    @pytest.mark.asyncio
+    async def test_resolve_winner_base_model_reads_adapter_config(self, tmp_path):
+        from validator.tournament.tournament_manager import _resolve_winner_base_model
+
+        cfg_path = tmp_path / "adapter_config.json"
+        cfg_path.write_text('{"base_model_name_or_path": "foundation/base"}')
+
+        with patch("validator.tournament.tournament_manager.asyncio.to_thread", new_callable=AsyncMock) as to_thread:
+            to_thread.return_value = str(cfg_path)
+
+            result = await _resolve_winner_base_model("gradients-io-tournaments/winner-repo", "fallback/base")
+
+        assert result == "foundation/base"
+
+    @pytest.mark.asyncio
+    async def test_save_previous_winner_records_resolved_foundation_base(self):
+        from validator.tournament.tournament_manager import _save_winner_model_repo
+
+        round_tasks = [
+            TournamentTask(
+                tournament_id="tourn_1",
+                round_id="round_004",
+                task_id="task_prev",
+            )
+        ]
+        task = MagicMock(training_start_point=TrainingStartPoint.PREVIOUS_WINNER, model_id="fallback/base")
+        update_tournament_winner_model = AsyncMock()
+
+        with (
+            patch("validator.tournament.tournament_manager.task_sql.get_expected_repo_name", return_value="winner-repo"),
+            patch("validator.tournament.tournament_manager.task_sql.get_task", return_value=task),
+            patch("validator.tournament.tournament_manager._resolve_winner_base_model", return_value="foundation/base"),
+            patch(
+                "validator.tournament.tournament_manager.update_tournament_winner_model",
+                update_tournament_winner_model,
+            ),
+        ):
+            await _save_winner_model_repo("tourn_1", "winner_hotkey", round_tasks, MagicMock())
+
+        update_tournament_winner_model.assert_awaited_once_with(
+            "tourn_1",
+            "gradients-io-tournaments/winner-repo",
+            "foundation/base",
+            ANY,
+        )
+
+
 # --- Environment group tasks: env scaling and model continuation ---
 
 

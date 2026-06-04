@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 import random
 import re
@@ -7,6 +8,7 @@ from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
+from huggingface_hub import hf_hub_download
 from huggingface_hub import repo_exists
 
 from core.constants.credentials import HUGGINGFACE_TOKEN
@@ -245,6 +247,21 @@ async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQ
     return None
 
 
+async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
+    """Return the winner model's real foundation base model."""
+    try:
+        cfg_path = await asyncio.to_thread(
+            hf_hub_download, winner_repo, "adapter_config.json", token=HUGGINGFACE_TOKEN,
+        )
+        with open(cfg_path) as f:
+            base = json.load(f).get("base_model_name_or_path")
+        if base:
+            return base
+    except Exception:
+        pass
+    return fallback_model_id
+
+
 async def _save_winner_model_repo(
     tournament_id: str, winner_hotkey: str, round_tasks: list[TournamentTask], psql_db: PSQLDB,
 ) -> None:
@@ -269,13 +286,14 @@ async def _save_winner_model_repo(
         winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
         if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (base={t_cst.ENV_TARGET_TOURN_MODEL})")
-            await update_tournament_winner_model(tournament_id, winner_repo, t_cst.ENV_TARGET_TOURN_MODEL, psql_db)
+            base = await _resolve_winner_base_model(winner_repo, task_obj.model_id) or t_cst.ENV_TARGET_TOURN_MODEL
+            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (resolved base={base})")
+            await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
             return
 
         if not fallback_repo:
             fallback_repo = winner_repo
-            fallback_base_model = task_obj.model_id
+            fallback_base_model = await _resolve_winner_base_model(winner_repo, task_obj.model_id)
 
     if fallback_repo and fallback_base_model:
         await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
