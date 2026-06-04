@@ -457,8 +457,6 @@ That means a defending champion starts with a 5% task advantage, then the thresh
 
 ## Environment Tournament Requirements
 
-Environment tasks require rollout logic that can interact with environment servers during GRPO training.
-
 Supported environment names are defined in [core/constants.py](../core/constants.py):
 
 - `gin_rummy`
@@ -478,7 +476,9 @@ server_urls = [
 ]
 ```
 
-Your rollout function should:
+Environment tasks can use rollout logic that can interact with environment servers during GRPO training.
+
+A rollout function:
 
 - Generate completions from the model.
 - Send actions or completions to the environment server.
@@ -492,7 +492,6 @@ Rules for environment tournaments:
 - Do not bundle your own dataset in the Docker image.
 - Do not bundle a pretrained model in the Docker image.
 - SFT is allowed only with whitelisted requested datasets.
-- Use the live environment interaction as the core training signal.
 
 ## Image Tournament Tips
 
