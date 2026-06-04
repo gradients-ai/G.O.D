@@ -9,4 +9,14 @@ Automated and end-to-end tests grouped by runtime/domain.
 - `validator/`: validator evaluation, scoring, and tournament tests.
 - `__init__.py`: package marker.
 
-Most tests can be run with `uv run --extra dev pytest -q`. Some evaluation tests need `--extra gpu` or optional image/model dependencies.
+Most tests can be run locally with:
+
+```bash
+uv run --extra dev pytest -q
+```
+
+GPU/model-download tests are marked `gpu` and skipped by default so local CPU-only development does not need Torch, Transformers, CUDA, or model downloads. Run them explicitly on a suitable machine with:
+
+```bash
+uv run --extra dev --extra gpu pytest -q --run-gpu
+```

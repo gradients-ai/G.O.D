@@ -1,21 +1,28 @@
 """
 Comprehensive stats test on distilgpt2.
 Verifies all fields are populated, types correct, and values sensible.
-Run with: python -m pytest tests/trainer/model_prep/test_comprehensive_stats.py -v -o addopts= -s
+Run with: uv run --extra dev --extra gpu pytest tests/trainer/model_prep/test_comprehensive_stats.py --run-gpu -v -o addopts= -s
 """
 
 import pytest
-from transformers import AutoModelForCausalLM
-from transformers import AutoTokenizer
 
-from core.models.model_prep_models import AugmentationConfig
-from core.models.model_prep_models import AugmentationScope
-from core.models.model_prep_models import AugmentationType
-from core.models.model_prep_models import BaselineStats
-from trainer.model_prep.augmentation import augment_model
-from trainer.model_prep.stats import classify_layer
-from trainer.model_prep.stats import compute_text_stats
 
+pytestmark = pytest.mark.gpu
+
+
+def _load_transformers():
+    pytest.importorskip("torch", reason="comprehensive stats test requires torch")
+    transformers = pytest.importorskip("transformers", reason="comprehensive stats test requires transformers")
+    return transformers.AutoModelForCausalLM, transformers.AutoTokenizer
+
+
+def _load_model_prep_stats():
+    pytest.importorskip("torch", reason="comprehensive stats test requires torch")
+    pytest.importorskip("transformers", reason="comprehensive stats test requires transformers")
+    from trainer.model_prep.stats import classify_layer
+    from trainer.model_prep.stats import compute_text_stats
+
+    return classify_layer, compute_text_stats
 
 MODEL_ID = "distilgpt2"
 
@@ -35,6 +42,9 @@ EVAL_DATA = [
 
 @pytest.fixture(scope="module")
 def baseline_stats():
+    AutoModelForCausalLM, AutoTokenizer = _load_transformers()
+    _, compute_text_stats = _load_model_prep_stats()
+
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -43,6 +53,15 @@ def baseline_stats():
 
 @pytest.fixture(scope="module")
 def augmented_stats():
+    from core.models.model_prep_models import AugmentationConfig
+    from core.models.model_prep_models import AugmentationScope
+    from core.models.model_prep_models import AugmentationType
+
+    pytest.importorskip("torch", reason="comprehensive stats test requires torch")
+    AutoModelForCausalLM, AutoTokenizer = _load_transformers()
+    _, compute_text_stats = _load_model_prep_stats()
+    from trainer.model_prep.augmentation import augment_model
+
     model = AutoModelForCausalLM.from_pretrained(MODEL_ID)
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     tokenizer.pad_token = tokenizer.eos_token
@@ -150,6 +169,8 @@ class TestAugmentedVsBase:
 
 class TestJsonRoundtrip:
     def test_serialise_deserialise(self, baseline_stats):
+        from core.models.model_prep_models import BaselineStats
+
         json_str = baseline_stats.model_dump_json()
         restored = BaselineStats.model_validate_json(json_str)
         assert restored.dataset.total_tokens == baseline_stats.dataset.total_tokens
@@ -161,6 +182,8 @@ class TestLayerClassification:
     """Test classify_layer across different architectures."""
 
     def test_gpt2_layers(self):
+        classify_layer, _ = _load_model_prep_stats()
+
         assert classify_layer("transformer.h.0.attn.c_attn.weight") == "attention_qkv"
         assert classify_layer("transformer.h.0.attn.c_proj.weight") == "attention_output"
         assert classify_layer("transformer.h.0.mlp.c_fc.weight") == "ffn_up"
@@ -170,6 +193,8 @@ class TestLayerClassification:
         assert classify_layer("transformer.ln_f.weight") == "layer_norm"
 
     def test_llama_layers(self):
+        classify_layer, _ = _load_model_prep_stats()
+
         assert classify_layer("model.layers.0.self_attn.q_proj.weight") == "attention_qkv"
         assert classify_layer("model.layers.0.self_attn.k_proj.weight") == "attention_qkv"
         assert classify_layer("model.layers.0.self_attn.v_proj.weight") == "attention_qkv"
@@ -182,6 +207,8 @@ class TestLayerClassification:
         assert classify_layer("model.layers.0.input_layernorm.weight") == "layer_norm"
 
     def test_falcon_layers(self):
+        classify_layer, _ = _load_model_prep_stats()
+
         assert classify_layer("transformer.h.0.self_attention.query_key_value.weight") == "attention_qkv"
         assert classify_layer("transformer.h.0.self_attention.dense.weight") == "attention_output"
         assert classify_layer("transformer.h.0.mlp.dense_h_to_4h.weight") == "ffn_up"
@@ -189,6 +216,8 @@ class TestLayerClassification:
         assert classify_layer("transformer.word_embeddings.weight") == "embedding"
 
     def test_unknown_falls_to_other(self):
+        classify_layer, _ = _load_model_prep_stats()
+
         assert classify_layer("some.weird.custom_layer.weight") == "other"
 
 

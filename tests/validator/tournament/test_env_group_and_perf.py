@@ -176,8 +176,8 @@ class TestEnvGroupWinnerAdvancement:
         assert "hk_0" in winners
 
     @pytest.mark.asyncio
-    async def test_boss_excluded_from_advancement_ranking(self):
-        """Boss is filtered out of non-boss sorted list — doesn't take an advancement slot."""
+    async def test_single_group_boss_retains_when_boss_tops_group(self):
+        """Single-group env rounds return no challenger when the boss wins or ties the group."""
         from validator.tournament.round_results import get_environment_group_winners
 
         round_data = TournamentRoundData(
@@ -205,10 +205,7 @@ class TestEnvGroupWinnerAdvancement:
         ):
             winners = await get_environment_group_winners(round_data, tasks, MagicMock(), MagicMock())
 
-        # Boss should not be in winners — only contenders
-        assert EMISSION_BURN_HOTKEY not in winners
-        assert len(winners) == t_cst.ENV_ADVANCE_PER_GROUP
-        assert "hk_0" in winners
+        assert winners == []
 
     @pytest.mark.asyncio
     async def test_at_least_one_eliminated(self):
@@ -417,8 +414,8 @@ class TestDetermineEnvTournamentWinner:
         assert result[0] == EMISSION_BURN_HOTKEY
 
     @pytest.mark.asyncio
-    async def test_tied_score_boss_retains(self):
-        """Contender ties boss on one task (not strictly higher) → boss retains."""
+    async def test_draws_are_allowed_when_contender_has_no_losses(self):
+        """Contender wins when they have at least one win and no losses, even with a draw."""
         from validator.tournament.round_results import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -447,7 +444,7 @@ class TestDetermineEnvTournamentWinner:
         ):
             result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
 
-        assert result[0] == EMISSION_BURN_HOTKEY
+        assert result[0] == "contender"
 
     @pytest.mark.asyncio
     async def test_no_final_round_boss_wins_default(self):

@@ -5,13 +5,15 @@ This test file validates the new separated burn system that applies different
 burn rates based on tournament participation and weekly task participation.
 """
 
+from datetime import datetime
+from datetime import timezone
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from unittest.mock import patch
 
 import pytest
 
 import validator.scoring.constants as cts
-from validator.scoring.models import PeriodScore
 from validator.scoring.weights import apply_tournament_weights
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
@@ -51,7 +53,11 @@ class TestSeparatedBurnDynamics:
                 image_proportion=1.0,
             ),
             HotkeyTournamentParticipation(
-                hotkey="hotkey3", participated_in_text=True, participated_in_image=True, text_proportion=0.6, image_proportion=0.4
+                hotkey="hotkey3",
+                participated_in_text=True,
+                participated_in_image=True,
+                text_proportion=0.6,
+                image_proportion=0.4,
             ),
         ]
 
@@ -70,29 +76,15 @@ class TestSeparatedBurnDynamics:
         return TournamentBurnData(
             text_performance_diff=0.3,
             image_performance_diff=0.1,
+            environment_performance_diff=0.2,
             text_burn_proportion=0.3,
             image_burn_proportion=0.1,
+            environment_burn_proportion=0.0625,
             text_tournament_weight=0.35,
             image_tournament_weight=0.36,
-            text_regular_weight=0.59,
-            image_regular_weight=0.52,
-            burn_weight=0.18,
+            environment_tournament_weight=0.15,
+            burn_weight=0.14,
         )
-
-    @pytest.fixture
-    def sample_period_scores(self):
-        """Sample period scores for testing."""
-        return [
-            PeriodScore(
-                hotkey="hotkey1", normalised_score=0.8, weight_multiplier=1.0, average_score=0.75, std_score=0.1, period_tasks=10
-            ),
-            PeriodScore(
-                hotkey="hotkey2", normalised_score=0.6, weight_multiplier=1.0, average_score=0.55, std_score=0.12, period_tasks=8
-            ),
-            PeriodScore(
-                hotkey="hotkey3", normalised_score=0.9, weight_multiplier=1.0, average_score=0.85, std_score=0.08, period_tasks=12
-            ),
-        ]
 
     @pytest.mark.asyncio
     async def test_tournament_participation_data_structure(self, sample_tournament_participation):
@@ -109,8 +101,8 @@ class TestSeparatedBurnDynamics:
         participation_both = sample_tournament_participation[2]
         assert participation_both.participated_in_text is True
         assert participation_both.participated_in_image is True
-        assert participation_both.text_proportion == cts.TOURNAMENT_TEXT_WEIGHT
-        assert participation_both.image_proportion == cts.TOURNAMENT_IMAGE_WEIGHT
+        assert participation_both.text_proportion == 0.6
+        assert participation_both.image_proportion == 0.4
 
     @pytest.mark.asyncio
     async def test_weekly_participation_data_structure(self, sample_weekly_participation):
@@ -128,39 +120,41 @@ class TestSeparatedBurnDynamics:
         """Test that separated burn data has correct structure."""
         assert sample_burn_data.text_performance_diff == 0.3
         assert sample_burn_data.image_performance_diff == 0.1
+        assert sample_burn_data.environment_performance_diff == 0.2
         assert sample_burn_data.text_burn_proportion == 0.3
         assert sample_burn_data.image_burn_proportion == 0.1
+        assert sample_burn_data.environment_burn_proportion == 0.0625
         assert sample_burn_data.text_tournament_weight == 0.35
         assert sample_burn_data.image_tournament_weight == 0.36
+        assert sample_burn_data.environment_tournament_weight == 0.15
 
-    def test_apply_tournament_weights(self, sample_tournament_participation):
+    def test_apply_tournament_weights(self):
         """Test tournament weight application with separated burn dynamics."""
-        # Setup
-        tournament_weights = {"hotkey1": 0.5, "hotkey2": 0.3, "hotkey3": 0.7}
-        hotkey_to_node_id = {"hotkey1": 0, "hotkey2": 1, "hotkey3": 2}
-        all_node_weights = [0.0, 0.0, 0.0]
-        tournament_participation_map = {p.hotkey: p for p in sample_tournament_participation}
-        scaled_text_tournament_weight = 0.35
-        scaled_image_tournament_weight = 0.36
+        text_tournament_weights = {"text_winner": 0.7, "shared": 0.3}
+        image_tournament_weights = {"image_winner": 1.0}
+        environment_tournament_weights = {"env_winner": 1.0}
+        hotkey_to_node_id = {"text_winner": 0, "shared": 1, "image_winner": 2, "env_winner": 3}
+        all_node_weights = [0.0, 0.0, 0.0, 0.0]
 
-        # Apply weights
-        apply_tournament_weights(
-            tournament_weights,
+        undistributed_weight = apply_tournament_weights(
+            text_tournament_weights,
+            image_tournament_weights,
+            environment_tournament_weights,
             hotkey_to_node_id,
             all_node_weights,
-            tournament_participation_map,
-            scaled_text_tournament_weight,
-            scaled_image_tournament_weight,
+            scaled_text_tournament_weight=0.35,
+            scaled_image_tournament_weight=0.36,
+            scaled_environment_tournament_weight=0.2,
+            scaled_text_base_weight=0.15,
+            scaled_image_base_weight=0.125,
+            scaled_environment_base_weight=0.15,
+            text_winner_hotkey="text_winner",
+            image_winner_hotkey="image_winner",
+            environment_winner_hotkey="env_winner",
         )
 
-        # Verify weights were applied
-        assert all_node_weights[0] > 0  # hotkey1 (text only)
-        assert all_node_weights[1] > 0  # hotkey2 (image only)
-        assert all_node_weights[2] > 0  # hotkey3 (both)
-
-        # hotkey3 participated in both tournaments, should have highest weight
-        assert all_node_weights[2] > all_node_weights[0]
-        assert all_node_weights[2] > all_node_weights[1]
+        assert all_node_weights == pytest.approx([0.245, 0.045, 0.36, 0.2])
+        assert undistributed_weight == pytest.approx(0.06)
 
     def test_node_weights_result_model(self):
         """Test NodeWeightsResult model functionality."""
@@ -179,19 +173,22 @@ class TestSeparatedBurnDynamics:
 
     @pytest.mark.asyncio
     async def test_separated_burn_calculation_logic(self, mock_psql_db):
-        """Test that separated burn calculation produces different results than combined."""
-        # Mock the dependencies
+        """Test that separated burn calculation tracks each tournament type independently."""
+        championship_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
         with (
-            pytest.mock.patch("validator.scoring.weights.get_latest_completed_tournament") as mock_get_tournament,
-            pytest.mock.patch("validator.scoring.weights.calculate_performance_difference") as mock_calc_perf,
+            patch("validator.scoring.weights.get_latest_completed_tournament") as mock_get_tournament,
+            patch("validator.scoring.weights.calculate_performance_difference") as mock_calc_perf,
+            patch("validator.scoring.weights.count_champion_consecutive_wins") as mock_count_wins,
+            patch("validator.scoring.weights.get_tournament_where_champion_first_won") as mock_first_win,
         ):
-            # Setup mocks - different performance for text vs image
             mock_text_tournament = TournamentData(
                 tournament_id="text_123",
                 tournament_type=TournamentType.TEXT,
                 status="completed",
                 base_winner_hotkey="winner1",
                 winner_hotkey="winner1",
+                updated_at=championship_time,
             )
             mock_image_tournament = TournamentData(
                 tournament_id="image_456",
@@ -199,38 +196,58 @@ class TestSeparatedBurnDynamics:
                 status="completed",
                 base_winner_hotkey="winner2",
                 winner_hotkey="winner2",
+                updated_at=championship_time,
             )
 
-            def mock_get_tournament_side_effect(psql_db, tournament_type):
+            def mock_get_tournament_side_effect(psql_db, tournament_type, exclude_tournament_id=None):
+                if exclude_tournament_id is not None:
+                    return None
                 if tournament_type == TournamentType.TEXT:
                     return mock_text_tournament
-                else:
+                if tournament_type == TournamentType.IMAGE:
                     return mock_image_tournament
+                return None
 
             mock_get_tournament.side_effect = mock_get_tournament_side_effect
 
             def mock_calc_perf_side_effect(tournament_id, psql_db):
                 if tournament_id == "text_123":
-                    return 0.4  # Higher performance diff for text
-                else:
-                    return 0.1  # Lower performance diff for image
+                    return 0.4
+                if tournament_id == "image_456":
+                    return 0.1
+                return 0.0
 
             mock_calc_perf.side_effect = mock_calc_perf_side_effect
+            mock_count_wins.return_value = 1
+            mock_first_win.return_value = TournamentData(
+                tournament_id="first_win",
+                tournament_type=TournamentType.TEXT,
+                status="completed",
+                winner_hotkey="winner1",
+                updated_at=championship_time,
+            )
 
-            # Run separated burn calculation
             result = await get_tournament_burn_details(mock_psql_db)
 
-            # Verify different burn rates were calculated
             assert result.text_performance_diff == 0.4
             assert result.image_performance_diff == 0.1
-            assert result.text_burn_proportion > result.image_burn_proportion
-            assert result.text_tournament_weight < result.image_tournament_weight  # Higher burn = lower weight
+            assert result.environment_performance_diff is None
+            assert result.text_tournament_weight <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
+            assert result.image_tournament_weight <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
+            assert result.environment_tournament_weight == cts.TOURNAMENT_ENVIRONMENT_WEIGHT
+            assert result.burn_weight == pytest.approx(
+                1.0 - result.text_tournament_weight - result.image_tournament_weight - result.environment_tournament_weight
+            )
 
     def test_participation_proportion_calculation(self):
         """Test that participation proportions are calculated correctly."""
         # Test text-only participation
         text_only = HotkeyTournamentParticipation(
-            hotkey="text_miner", participated_in_text=True, participated_in_image=False, text_proportion=1.0, image_proportion=0.0
+            hotkey="text_miner",
+            participated_in_text=True,
+            participated_in_image=False,
+            text_proportion=1.0,
+            image_proportion=0.0,
         )
         assert text_only.text_proportion == 1.0
         assert text_only.image_proportion == 0.0
@@ -240,11 +257,11 @@ class TestSeparatedBurnDynamics:
             hotkey="both_miner",
             participated_in_text=True,
             participated_in_image=True,
-            text_proportion=cts.TOURNAMENT_TEXT_WEIGHT,
-            image_proportion=cts.TOURNAMENT_IMAGE_WEIGHT,
+            text_proportion=0.6,
+            image_proportion=0.4,
         )
-        assert both_tournaments.text_proportion == cts.TOURNAMENT_TEXT_WEIGHT
-        assert both_tournaments.image_proportion == cts.TOURNAMENT_IMAGE_WEIGHT
+        assert both_tournaments.text_proportion == 0.6
+        assert both_tournaments.image_proportion == 0.4
         # Verify proportions sum to 1.0
         assert abs((both_tournaments.text_proportion + both_tournaments.image_proportion) - 1.0) < 0.001
 
@@ -261,13 +278,7 @@ class TestSeparatedBurnDynamics:
     @pytest.mark.asyncio
     async def test_integration_separated_weight_calculation(self, mock_psql_db):
         """Integration test for the full separated weight calculation."""
-        # This would require mocking many dependencies, but demonstrates the integration point
-        with (
-            pytest.mock.patch("validator.scoring.weights.fetch_nodes") as mock_fetch_nodes,
-            pytest.mock.patch("validator.scoring.weights.get_tournament_burn_details") as mock_burn_data,
-            pytest.mock.patch("validator.scoring.weights.get_weekly_task_participation_data") as mock_weekly_part,
-            pytest.mock.patch("validator.scoring.weights.get_active_tournament_participants") as mock_participants,
-        ):
+        with patch("validator.scoring.weights.fetch_nodes") as mock_fetch_nodes:
             # Setup basic mocks for integration test
             mock_substrate = MagicMock()
             mock_fetch_nodes.get_nodes_for_netuid.return_value = [
@@ -275,25 +286,11 @@ class TestSeparatedBurnDynamics:
                 MagicMock(hotkey="hotkey2", node_id=1),
             ]
 
-            mock_burn_data.return_value = TournamentBurnData(
-                text_performance_diff=0.2,
-                image_performance_diff=0.1,
-                text_burn_proportion=0.2,
-                image_burn_proportion=0.1,
-                text_tournament_weight=0.4,
-                image_tournament_weight=0.36,
-                text_regular_weight=0.54,
-                image_regular_weight=0.52,
-                burn_weight=0.14,
-            )
-
-            mock_weekly_part.return_value = []
-            mock_participants.return_value = []
-
             # Build tournament audit data
             tournament_audit_data = TournamentAuditData()
             tournament_audit_data.text_tournament_weight = 0.4
             tournament_audit_data.image_tournament_weight = 0.36
+            tournament_audit_data.environment_tournament_weight = 0.1
             tournament_audit_data.burn_weight = 0.14
             tournament_audit_data.participants = []
 

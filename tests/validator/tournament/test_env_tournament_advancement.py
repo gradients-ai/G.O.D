@@ -33,11 +33,11 @@ class TestProgressiveThreshold:
         t = get_progressive_threshold(1, TournamentType.TEXT)
         assert t == t_cst.EXPONENTIAL_BASE_THRESHOLD
 
-    def test_env_uses_lower_base_threshold(self):
+    def test_env_uses_configured_base_threshold(self):
         t_env = get_progressive_threshold(1, TournamentType.ENVIRONMENT)
         t_text = get_progressive_threshold(1, TournamentType.TEXT)
         assert t_env == t_cst.EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT
-        assert t_env < t_text
+        assert t_env == t_text
 
     def test_decay_with_consecutive_wins(self):
         t1 = get_progressive_threshold(1, TournamentType.TEXT)

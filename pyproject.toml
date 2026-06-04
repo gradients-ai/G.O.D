@@ -128,6 +128,9 @@ extend-ignore-identifiers-re = [
 addopts = "--random-order"
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "gpu: tests that require GPU/model dependencies such as torch, transformers, or model downloads",
+]
 
 
 # Missing pyright from here
