@@ -235,8 +235,9 @@ def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
     if not p95:
         return hours
     packed_len = max(p95, 2 * (p50 or p95))
-    # Linear ramp above the reference length (pivot 512), clamped to [MIN, MAX].
-    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, packed_len / vcst.CTX_REF_SEQ_LEN))
+    # Linear ramp: 1.0x at the pivot (512), +1.0x per CTX_SCALE_SPAN tokens, clamped.
+    # e.g. 1024 -> 1.5x, 1536 -> 2.0x, 2048 -> 2.5x.
+    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, 1.0 + (packed_len - vcst.CTX_REF_SEQ_LEN) / vcst.CTX_SCALE_SPAN))
     scaled = max(vcst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
     return min(scaled, vcst.MAX_TRAINING_HOURS)
 
