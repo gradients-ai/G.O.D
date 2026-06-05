@@ -557,12 +557,12 @@ class BossBattleResponse(BaseModel):
 # --- Text tournament scoring ---
 
 
-class DatasetEvalResult(BaseModel):
+class TaskEvalResult(BaseModel):
     """One competitor's score on one eval dataset. `score=None` (or NaN) means no valid result
     — failed training, or failed eval on this dataset — and ranks last."""
 
     hotkey: str
-    dataset_id: str
+    constituent_task_id: str
     source_round: int
     task_type: TaskType
     score: float | None = None
@@ -591,15 +591,22 @@ class CompetitorScore(BaseModel):
     score: float
 
 
-class TaskNodeDatasetResult(BaseModel):
+class CompositeConstituent(BaseModel):
+    """A composite's constituent task reference, tagged with the round its dataset was created in."""
+
+    constituent_task_id: str
+    source_round: int
+
+
+class CompositeTaskScore(BaseModel):
     """A miner's persisted eval score for one task's model on one constituent's dataset (mirrors
-    `pvp_individual_scores`). `task_id` is the task whose model was evaluated; `dataset_task_id`
+    `pvp_individual_scores`). `task_id` is the task whose model was evaluated; `constituent_task_id`
     is the constituent task that supplied the eval dataset; `score` is None until a successful
     eval. `status` mirrors the pvp table's TEXT status (pending/…)."""
 
     task_id: str
     hotkey: str
-    dataset_task_id: str
+    constituent_task_id: str
     score: float | None = None
     n_attempts: int = 0
     status: str = "pending"
@@ -610,7 +617,7 @@ class BossScenario(BaseModel):
     the boss's and challenger's results across the whole accumulated eval surface."""
 
     scenario: TrainingStartPoint
-    results: list[DatasetEvalResult]
+    results: list[TaskEvalResult]
 
 
 class BossScenarioOutcome(BaseModel):

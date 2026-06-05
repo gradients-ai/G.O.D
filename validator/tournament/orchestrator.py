@@ -13,6 +13,8 @@ import validator.tournament.constants as cst
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
+from core.models.payload_models import ConstituentSpec
+from core.models.payload_models import TrainRequestComposite
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.tournament_models import GpuRequirement
@@ -38,8 +40,11 @@ from validator.core.models import AnyTypeRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
+from validator.db.sql.tournaments import get_composite_task_constituents
+from validator.db.sql.tournaments import get_latest_composite_task_score
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
+from validator.tournament.text_scoring import round_decay_weights
 from validator.evaluation.scoring import should_use_tournament_eval
 from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.logging import LogContext
@@ -576,6 +581,45 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
 
 
 
+async def _build_composite_training_data(
+    task: AnyTypeRawTask,
+    hotkey: str,
+    training_model: str,
+    expected_repo_name: str | None,
+    baseline_stats,
+    config: Config,
+) -> TrainRequestComposite:
+    """Build a miner's composite job: the cold-base reference + the weighted constituent set
+    (each constituent's dataset, its decay weight, and the miner's prior score on it)."""
+    constituents = await get_composite_task_constituents(str(task.task_id), config.psql_db)
+    round_weights = round_decay_weights([constituent.source_round for constituent in constituents])
+
+    specs = []
+    for constituent in constituents:
+        constituent_task = await task_sql.get_task(constituent.constituent_task_id, config.psql_db)
+        weight = next(w.weight for w in round_weights if w.source_round == constituent.source_round)
+        specs.append(
+            ConstituentSpec(
+                dataset=constituent_task.training_data,  # TODO (OPEN-7): regen presigned URL for carried-over constituents
+                dataset_type=_get_dataset_type(constituent_task),
+                file_format=FileFormat.S3,
+                source_round=constituent.source_round,
+                weight=weight,
+                prior_score=await get_latest_composite_task_score(hotkey, constituent.constituent_task_id, config.psql_db),
+            )
+        )
+
+    return TrainRequestComposite(
+        model=training_model,
+        task_id=str(task.task_id),
+        hours_to_complete=task.hours_to_complete,
+        expected_repo_name=expected_repo_name,
+        reference_model=task.model_id,  # cold track base — the shared DPO reference (D5)
+        constituents=specs,
+        baseline_stats=baseline_stats,
+    )
+
+
 async def _create_training_request(
     task: AnyTypeRawTask,
     hotkey: str,
@@ -637,6 +681,10 @@ async def _create_training_request(
             dataset_zip=task.training_data,
             model_type=task.model_type,
             baseline_stats=baseline_stats,
+        )
+    elif task.task_type == TaskType.COMPOSITETASK:
+        training_data = await _build_composite_training_data(
+            task, hotkey, training_model, expected_repo_name, baseline_stats, config
         )
     else:
         dataset_type = _get_dataset_type(task)

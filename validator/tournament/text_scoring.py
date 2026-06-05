@@ -10,7 +10,7 @@ from core.models.tournament_models import BossRoundOutcome
 from core.models.tournament_models import BossScenario
 from core.models.tournament_models import BossScenarioOutcome
 from core.models.tournament_models import CompetitorScore
-from core.models.tournament_models import DatasetEvalResult
+from core.models.tournament_models import TaskEvalResult
 from core.models.tournament_models import RoundRank
 from core.models.tournament_models import RoundValue
 from core.models.tournament_models import RoundWeight
@@ -27,7 +27,7 @@ def _is_present(score: float | None) -> TypeGuard[float]:
     return score is not None and not math.isnan(score)
 
 
-def _score_for(rows: Sequence[DatasetEvalResult], hotkey: str) -> float | None:
+def _score_for(rows: Sequence[TaskEvalResult], hotkey: str) -> float | None:
     return next((row.score for row in rows if row.hotkey == hotkey), None)
 
 
@@ -55,7 +55,7 @@ def _weighted_round_average(values: Sequence[RoundValue]) -> float:
     )
 
 
-def _rank_dataset(rows: Sequence[DatasetEvalResult], competitors: Sequence[str]) -> list[RoundRank]:
+def _rank_dataset(rows: Sequence[TaskEvalResult], competitors: Sequence[str]) -> list[RoundRank]:
     """Tie-averaged ranks (1 = best) for one dataset over all competitors; missing scores rank
     last. Reuses scipy's average-method rankdata over an order key that ascends in "worse"."""
     higher_is_better = _higher_is_better(rows[0].task_type)
@@ -70,7 +70,7 @@ def _rank_dataset(rows: Sequence[DatasetEvalResult], competitors: Sequence[str])
 
 
 def weighted_rank_scores(
-    results: Iterable[DatasetEvalResult], competitors: Sequence[str]
+    results: Iterable[TaskEvalResult], competitors: Sequence[str]
 ) -> list[CompetitorScore]:
     """Per-competitor weighted-rank score, best first (lowest = best).
 
@@ -78,11 +78,11 @@ def weighted_rank_scores(
     are averaged within each source round, then combined with the round-decay weights.
     """
     results = list(results)
-    dataset_ids = list(dict.fromkeys(result.dataset_id for result in results))
+    constituent_task_ids = list(dict.fromkeys(result.constituent_task_id for result in results))
 
     round_ranks: list[RoundRank] = []
-    for dataset_id in dataset_ids:
-        rows = [result for result in results if result.dataset_id == dataset_id]
+    for constituent_task_id in constituent_task_ids:
+        rows = [result for result in results if result.constituent_task_id == constituent_task_id]
         round_ranks.extend(_rank_dataset(rows, competitors))
 
     scores = [
@@ -133,11 +133,11 @@ def _scenario_outcome(
     challenger_hotkey: str,
     threshold: float,
 ) -> BossScenarioOutcome:
-    dataset_ids = list(dict.fromkeys(result.dataset_id for result in scenario.results))
+    constituent_task_ids = list(dict.fromkeys(result.constituent_task_id for result in scenario.results))
 
     wins: list[RoundValue] = []
-    for dataset_id in dataset_ids:
-        rows = [result for result in scenario.results if result.dataset_id == dataset_id]
+    for constituent_task_id in constituent_task_ids:
+        rows = [result for result in scenario.results if result.constituent_task_id == constituent_task_id]
         challenger_won = _challenger_beats_boss_on_dataset(
             _score_for(rows, boss_hotkey),
             _score_for(rows, challenger_hotkey),

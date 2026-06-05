@@ -112,8 +112,8 @@ async def run_text_task_prep(task: AnyTextTypeRawTask, keypair: Keypair, psql_db
 async def run_composite_task_prep(task: CompositeRawTask, keypair: Keypair, psql_db: PSQLDB) -> CompositeRawTask:
     """Prep the composite's not-yet-prepared constituents in parallel; carried-over ones keep
     their existing split so the eval surface stays stable across rounds."""
-    constituent_ids = await get_composite_task_constituents(str(task.task_id), psql_db)
-    await asyncio.gather(*(_prep_constituent(cid, keypair, psql_db) for cid in constituent_ids))
+    constituents = await get_composite_task_constituents(str(task.task_id), psql_db)
+    await asyncio.gather(*(_prep_constituent(c.constituent_task_id, keypair, psql_db) for c in constituents))
     return task
 
 

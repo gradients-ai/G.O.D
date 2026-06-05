@@ -5,7 +5,7 @@ import pytest
 from core.constants import TrainingStartPoint
 from core.models.tournament_models import BossScenario
 from core.models.tournament_models import CompetitorScore
-from core.models.tournament_models import DatasetEvalResult
+from core.models.tournament_models import TaskEvalResult
 from core.models.utility_models import TaskType
 from validator.tournament.text_scoring import _challenger_beats_boss_on_dataset
 from validator.tournament.text_scoring import _rank_dataset
@@ -20,9 +20,9 @@ DPO = TaskType.DPOTASK
 GRPO = TaskType.GRPOTASK
 
 
-def res(hotkey: str, dataset_id: str, source_round: int, task_type: TaskType, score: float | None) -> DatasetEvalResult:
-    return DatasetEvalResult(
-        hotkey=hotkey, dataset_id=dataset_id, source_round=source_round, task_type=task_type, score=score
+def res(hotkey: str, constituent_task_id: str, source_round: int, task_type: TaskType, score: float | None) -> TaskEvalResult:
+    return TaskEvalResult(
+        hotkey=hotkey, constituent_task_id=constituent_task_id, source_round=source_round, task_type=task_type, score=score
     )
 
 
@@ -104,7 +104,7 @@ class TestRankWithTies:
 
 
 class TestWeightedRankScores:
-    def worked_example(self) -> list[DatasetEvalResult]:
+    def worked_example(self) -> list[TaskEvalResult]:
         # Ranks reproduce the design's worked R3 example (A best, then B, then Boss).
         return [
             res("A", "r1i", 1, INSTRUCT, 0.1), res("B", "r1i", 1, INSTRUCT, 0.2), res("Boss", "r1i", 1, INSTRUCT, 0.3),

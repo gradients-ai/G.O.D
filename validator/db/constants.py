@@ -41,7 +41,7 @@ TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE = "tournament_task_hotkey_trainings"
 PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 COMPOSITE_TASK_CONSTITUENTS_TABLE = "composite_task_constituents"
-TASK_NODE_DATASET_RESULTS_TABLE = "task_node_dataset_results"
+COMPOSITE_TASK_SCORES_TABLE = "composite_task_scores"
 
 # PvP Pair Results Table Columns
 PVP_HOTKEY_A = "hotkey_a"
@@ -55,15 +55,15 @@ PVP_N_ATTEMPTS = "n_attempts"
 PVP_STATUS_PENDING = PvPStatus.PENDING
 PVP_STATUS_COMPLETE = PvPStatus.COMPLETE
 
-# Composite task constituents / dataset-results columns (shared: TASK_ID, HOTKEY, STATUS, *_AT)
+# Composite task constituents + composite-task-scores columns (shared: TASK_ID, HOTKEY, STATUS, *_AT)
 COMPOSITE_TASK_ID = "composite_task_id"
 CONSTITUENT_TASK_ID = "constituent_task_id"
 CONSTITUENT_POSITION = "position"
-DATASET_TASK_ID = "dataset_task_id"
-DATASET_RESULT_SCORE = "score"
-DATASET_RESULT_N_ATTEMPTS = "n_attempts"
-DATASET_RESULT_STATUS_PENDING = "pending"
-DATASET_RESULT_STATUS_SUCCESS = "success"
+CONSTITUENT_SOURCE_ROUND = "source_round"
+SCORE = "score"
+N_ATTEMPTS = "n_attempts"
+SCORE_STATUS_PENDING = "pending"
+SCORE_STATUS_SUCCESS = "success"
 
 # PvP Individual Scores Table Columns
 PVP_INDIVIDUAL_SCORE = "score"

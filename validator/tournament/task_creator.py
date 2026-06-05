@@ -4,6 +4,7 @@ from datetime import timedelta
 
 from core.constants import EnvironmentName
 from core.constants import TrainingStartPoint
+from core.models.tournament_models import CompositeConstituent
 from core.models.tournament_models import GroupRound
 from core.models.tournament_models import TournamentType
 from core.models.tournament_models import KnockoutRound
@@ -372,8 +373,10 @@ async def get_tournament_track_models(tournament_id: str, config: Config) -> tup
     return composites[0].model_id, composites[1].model_id
 
 
-async def _prior_track_constituents(tournament_id: str, round_number: int, track_model: str, config: Config) -> list[str]:
-    """Constituent task_ids of the previous round's composite for this track (cumulative chaining)."""
+async def _prior_track_constituents(
+    tournament_id: str, round_number: int, track_model: str, config: Config
+) -> list[CompositeConstituent]:
+    """The previous round's composite-for-this-track constituents (with source rounds), carried forward."""
     if round_number <= 1:
         return []
     rounds = await get_tournament_rounds(tournament_id, config.psql_db)
@@ -404,7 +407,7 @@ async def _create_text_composite(
         )
         new_constituents.append(constituent)
 
-    prior_constituent_ids = await _prior_track_constituents(tournament_id, round_number, track_model, config)
+    prior_constituents = await _prior_track_constituents(tournament_id, round_number, track_model, config)
 
     now = datetime.utcnow()
     composite = await task_sql.add_task(
@@ -422,7 +425,11 @@ async def _create_text_composite(
     )
     await add_composite_task_constituents(
         str(composite.task_id),
-        [str(constituent.task_id) for constituent in new_constituents] + prior_constituent_ids,
+        [
+            CompositeConstituent(constituent_task_id=str(constituent.task_id), source_round=round_number)
+            for constituent in new_constituents
+        ]
+        + prior_constituents,
         config.psql_db,
     )
     await _create_and_register_tournament_task(composite, tournament_id, round_id, config, group_id=group_id)
