@@ -40,10 +40,7 @@ def _weight_stats():
 def _base_training_kwargs():
     return dict(
         init_loss=2.5,
-        grad_norms={"layer_0": 0.1},
-        gradient_noise_scale=0.5,
         activation_rms={"layer_0": 1.0},
-        grad_stats={},
         output_entropy=3.0,
     )
 

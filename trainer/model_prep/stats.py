@@ -26,7 +26,6 @@ from core.models.model_prep_models import (
     InstructBaselineStats,
     InstructDatasetStats,
     InstructTrainingDynamics,
-    LayerGradStats,
     LayerGroupWeightStats,
     SeqLengthDistribution,
     WeightStats,
@@ -260,9 +259,9 @@ def _get_model_device(model) -> torch.device:
 
 
 def _compute_base_training_dynamics(
-    model, tokenizer, texts: list[str], device, n_subbatches: int = 10, max_length: int = 512,
+    model, tokenizer, texts: list[str], device, max_length: int = 512,
 ) -> dict:
-    """Compute shared training dynamics (loss, grads, activations, SVD, entropy, noise scale)."""
+    """Compute shared training dynamics: init loss, activation RMS, output entropy (forward-only)."""
     t_start = time.time()
     dataset = SimpleTextDataset(texts, tokenizer, max_length=max_length)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -319,124 +318,14 @@ def _compute_base_training_dynamics(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Forward+backward for grads (with gradient checkpointing for large models)
-    t_grad = time.time()
-    model.train()
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-    model.zero_grad()
-    batch = next(iter(loader))
-    outputs = model(
-        input_ids=batch["input_ids"].to(device),
-        attention_mask=batch["attention_mask"].to(device),
-        labels=batch["input_ids"].to(device),
-    )
-    outputs.loss.backward()
-
-    grad_norms = {}
-    grad_stats = {}
-    for name, param in model.named_parameters():
-        if param.grad is None:
-            continue
-        grad_norms[name] = float(param.grad.norm(2).item())
-        g = param.grad.detach().float()
-        if g.dim() < 2:
-            g = g.unsqueeze(0)
-        g_2d = g.reshape(g.shape[0], -1) if g.dim() > 2 else g
-        k = min(8, min(g_2d.shape))
-        try:
-            _, s, _ = torch.svd_lowrank(g_2d, q=k)
-            top_sv = s.tolist()
-        except Exception:
-            top_sv = []
-        grad_stats[name] = LayerGradStats(
-            frobenius_norm=float(torch.norm(g_2d).item()),
-            rms=float(torch.sqrt(torch.mean(g_2d ** 2)).item()),
-            max_abs=float(torch.max(torch.abs(g_2d)).item()),
-            top_singular_values=top_sv,
-        )
-        del g, g_2d
-
-    model.zero_grad()
-    print(f"[stats] Gradient pass done in {time.time() - t_grad:.1f}s ({len(grad_norms)} params with grads)", flush=True)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    t_noise = time.time()
-    noise_scale = _compute_gradient_noise_scale(model, loader, device, n_subbatches)
-    print(f"[stats] Gradient noise scale done in {time.time() - t_noise:.1f}s (scale={noise_scale:.4f})", flush=True)
-
-    if hasattr(model, "gradient_checkpointing_disable"):
-        model.gradient_checkpointing_disable()
-    model.eval()
-    model.zero_grad()
-
     print(f"[stats] Training dynamics total: {time.time() - t_start:.1f}s", flush=True)
     return {
         "init_loss": init_loss,
         "init_loss_std": init_loss_std,
-        "grad_norms": grad_norms,
-        "gradient_noise_scale": noise_scale,
         "activation_rms": activation_rms,
-        "grad_stats": grad_stats,
         "output_entropy": output_entropy if not math.isnan(output_entropy) else 0.0,
         "output_entropy_std": output_entropy_std if not math.isnan(output_entropy_std) else 0.0,
     }
-
-
-def _compute_gradient_noise_scale(model, loader, device, n_subbatches: int) -> float:
-    """Gradient noise scale via one-pass variance estimation per parameter.
-
-    Computes Var(g) / ||E[g]||² across sub-batch gradient estimates using the
-    naive sum/sum_sq formula with Bessel's correction. Accumulates in fp32 to
-    avoid precision loss from fp16 squaring.
-    """
-    all_batches = list(loader)
-    if len(all_batches) < n_subbatches:
-        return 0.0
-    chunk_size = len(all_batches) // n_subbatches
-    n = n_subbatches
-
-    grad_sum: dict[str, torch.Tensor] = {}
-    grad_sum_sq: dict[str, torch.Tensor] = {}
-
-    for i in range(n):
-        chunk = all_batches[i * chunk_size:(i + 1) * chunk_size]
-        model.zero_grad()
-        total_loss = torch.tensor(0.0, device=device)
-        for batch in chunk:
-            outputs = model(
-                input_ids=batch["input_ids"].to(device),
-                attention_mask=batch["attention_mask"].to(device),
-                labels=batch["input_ids"].to(device),
-            )
-            total_loss = total_loss + outputs.loss
-        (total_loss / len(chunk)).backward()
-
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                continue
-            g = param.grad.detach().to(device="cpu", dtype=torch.float32)
-            if name not in grad_sum:
-                grad_sum[name] = torch.zeros_like(g)
-                grad_sum_sq[name] = torch.zeros_like(g)
-            grad_sum[name] += g
-            grad_sum_sq[name] += g ** 2
-
-    total_var = 0.0
-    total_mean_norm_sq = 0.0
-    for name in grad_sum:
-        mean = grad_sum[name] / n
-        # Bessel's correction (n-1) to match torch.var(dim=0)
-        var = (grad_sum_sq[name] - grad_sum[name] ** 2 / n) / (n - 1)
-        total_var += var.sum().item()
-        total_mean_norm_sq += mean.norm(2).item() ** 2
-
-    del grad_sum, grad_sum_sq
-
-    if total_mean_norm_sq < 1e-12:
-        return 0.0
-    return total_var / total_mean_norm_sq
 
 
 def _tokenize_prompt_completion(

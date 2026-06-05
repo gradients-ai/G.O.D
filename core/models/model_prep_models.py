@@ -77,13 +77,6 @@ class WeightStats(BaseModel):
     by_group: dict[str, LayerGroupWeightStats]
 
 
-class LayerGradStats(BaseModel):
-    frobenius_norm: float
-    rms: float
-    max_abs: float
-    top_singular_values: list[float]
-
-
 # --- Per-type dataset stats ---
 
 class DatasetStatsBase(BaseModel):
@@ -121,10 +114,7 @@ class GrpoDatasetStats(DatasetStatsBase):
 class TrainingDynamicsBase(BaseModel):
     init_loss: float
     init_loss_std: float = 0.0
-    grad_norms: dict[str, float]
-    gradient_noise_scale: float
     activation_rms: dict[str, float]
-    grad_stats: dict[str, LayerGradStats]
     output_entropy: float
     output_entropy_std: float = 0.0
 
