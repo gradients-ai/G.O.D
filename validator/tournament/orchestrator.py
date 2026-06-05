@@ -10,6 +10,7 @@ from tenacity import stop_after_attempt
 from tenacity import wait_exponential
 
 import validator.tournament.constants as cst
+from core.models.payload_models import CompositeSubtaskPrep
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
@@ -618,6 +619,25 @@ async def _build_composite_training_data(
         subtasks=specs,
         baseline_stats=baseline_stats,
     )
+
+
+async def _build_composite_subtask_preps(task: AnyTypeRawTask, config: Config) -> list[CompositeSubtaskPrep] | None:
+    """The composite's subtasks as model-prep units (dataset + type), so the trainer baselines each
+    against the shared model in one prep. None for non-composite tasks."""
+    if task.task_type != TaskType.COMPOSITETASK:
+        return None
+    preps = []
+    for subtask in await get_composite_task_subtasks(str(task.task_id), config.psql_db):
+        subtask_task = await task_sql.get_task(subtask.subtask_task_id, config.psql_db)
+        preps.append(
+            CompositeSubtaskPrep(
+                subtask_task_id=subtask.subtask_task_id,
+                training_data_url=subtask_task.training_data,
+                task_type=subtask_task.task_type.value,
+                reward_functions=getattr(subtask_task, "reward_functions", None),
+            )
+        )
+    return preps
 
 
 async def _create_training_request(
@@ -1254,6 +1274,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 gpu_ids=gpu_ids,
                 reward_functions=reward_fns,
                 is_env_task=(task.task_type == TaskType.ENVIRONMENTTASK),
+                composite_subtasks=await _build_composite_subtask_preps(task, config),
                 hotkey=hotkey,
             )
             if prep_result is not None and prep_result.baseline_stats:
@@ -1294,6 +1315,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             gpu_ids=gpu_ids,
             reward_functions=reward_fns,
             is_env_task=is_env_task,
+            composite_subtasks=await _build_composite_subtask_preps(task, config),
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):

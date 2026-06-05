@@ -25,12 +25,14 @@ from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
+from core.models.model_prep_models import CompositeBaselineStats
 from core.models.model_prep_models import ModelPrepResult
 from core.models.utility_models import TaskType
 from core.utils import download_s3_file
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
+from trainer.model_prep.stats import compute_weight_stats
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -128,6 +130,11 @@ def parse_args():
             "JSON dict of {env_name: {url, task_id_min, task_id_max, "
             "num_episodes, eval_payload_extra}}"
         ),
+    )
+    parser.add_argument(
+        "--composite-subtasks",
+        default=None,
+        help="JSON list of {subtask_task_id, training_data_url, task_type, reward_functions} for composite prep",
     )
     return parser.parse_args()
 
@@ -252,7 +259,26 @@ def main():
 
     t0 = time.time()
     try:
-        if args.env_configs:
+        if args.composite_subtasks:
+            # One model, several subtask datasets: compute model-level weights once, then a
+            # per-dataset baseline for each subtask (the cheap forward pass).
+            subtasks = json.loads(args.composite_subtasks)
+            print(f"[model_prep] Composite prep: {len(subtasks)} subtasks", flush=True)
+            shared_weights = compute_weight_stats(model)
+            by_subtask = {}
+            for subtask in subtasks:
+                data_records = load_training_data(subtask["training_data_url"])
+                if not data_records:
+                    print(f"[model_prep] no data for subtask {subtask['subtask_task_id']}, skipping", flush=True)
+                    continue
+                by_subtask[subtask["subtask_task_id"]] = compute_text_stats(
+                    model, tokenizer, data_records,
+                    task_type=TaskType(subtask["task_type"]),
+                    reward_functions=subtask.get("reward_functions"),
+                    precomputed_weights=shared_weights,
+                )
+            stats = CompositeBaselineStats(weights=shared_weights, by_subtask=by_subtask)
+        elif args.env_configs:
             raw_configs: dict[str, dict] = json.loads(args.env_configs)
             env_configs = {EnvironmentName(k): v for k, v in raw_configs.items()}
             stats = asyncio.run(compute_env_stats(

@@ -194,6 +194,16 @@ class EnvConfig(BaseModel):
     eval_payload_extra: dict | None = None
 
 
+class CompositeSubtaskPrep(BaseModel):
+    """One subtask of a composite to baseline (its dataset + type), so the trainer can loop the
+    composite's datasets in a single prep, computing a per-subtask baseline against the shared model."""
+
+    subtask_task_id: str
+    training_data_url: str
+    task_type: str
+    reward_functions: list[RewardFunction] | None = None
+
+
 class ModelPrepRequest(BaseModel):
     task_id: str
     model_id: str
@@ -203,6 +213,7 @@ class ModelPrepRequest(BaseModel):
     gpu_ids: list[int] = [0]
     reward_functions: list[RewardFunction] | None = None
     env_configs: dict[EnvironmentName, EnvConfig] | None = None
+    composite_subtasks: list[CompositeSubtaskPrep] | None = None  # set for COMPOSITETASK prep
     hotkey: str | None = None  # Per-miner prep key for recovery after restart
 
     model_config = ConfigDict(protected_namespaces=())

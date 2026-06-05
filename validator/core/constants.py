@@ -355,9 +355,7 @@ BASELINE_STATS_ENABLED_ORGANIC = False  # Run model prep (stats) for organic req
 MODEL_PREP_ENABLED_TEXT = True  # Route text tasks through model prep (augmentation + baseline stats)
 MODEL_PREP_ENABLED_IMAGE = False  # Route image tasks through model prep
 MODEL_PREP_ENABLED_ENV = True  # Route environment tasks through model prep
-# Composite prep needs the trainer to compute per-subtask baselines (loop the subtask datasets).
-# Keep off until the trainer side ships that; flip on when staging the two together.
-MODEL_PREP_ENABLED_COMPOSITE = False
+MODEL_PREP_ENABLED_COMPOSITE = True
 MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
     TaskType.INSTRUCTTEXTTASK: MODEL_PREP_ENABLED_TEXT,
     TaskType.DPOTASK: MODEL_PREP_ENABLED_TEXT,

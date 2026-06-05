@@ -522,18 +522,24 @@ def run_model_prep_container(
     gpu_ids: list[int] = [0],
     reward_functions=None,
     env_configs: dict[EnvironmentName, EnvConfig] | None = None,
+    composite_subtasks=None,
     log_labels: dict[str, str] | None = None,
 ) -> ModelPrepResponse:
     """Run model prep container: augment model + compute baseline stats.
-    Downloads model to cache via downloader first. For env tasks, starts env server sidecars."""
+    Downloads model to cache via downloader first. For env tasks, starts env server sidecars.
+    For composite tasks, baselines each subtask dataset against the shared model in one container."""
     client = docker.from_env()
     env_containers: list[Container] = []
+
+    # A composite's own training_data is a placeholder; use the first subtask's dataset for the
+    # downloader + the required --training-data arg (the entrypoint loops the subtasks itself).
+    primary_dataset_url = composite_subtasks[0].training_data_url if composite_subtasks else training_data_url
 
     # Download model to cache volume
     download_exit, download_err = run_downloader_container(
         task_id=task_id,
         model=model_id,
-        dataset_url=training_data_url,
+        dataset_url=primary_dataset_url,
         task_type=task_type,
         hotkey="",
         file_format=FileFormat.S3,
@@ -562,9 +568,15 @@ def run_model_prep_container(
 
     command = [
         "--model", model_cache_path,
-        "--training-data", training_data_url,
+        "--training-data", primary_dataset_url,
         "--task-type", task_type,
     ]
+
+    if composite_subtasks:
+        composite_payload = [
+            st.model_dump() if hasattr(st, "model_dump") else st for st in composite_subtasks
+        ]
+        command += ["--composite-subtasks", json.dumps(composite_payload)]
 
     if augmentation_config is not None:
         command += [

@@ -397,7 +397,7 @@ def _compute_log_probs(model, tokenizer, prompts: list[str], completions: list[s
 
 def _compute_instruct_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
-    text_extractor=None,
+    text_extractor=None, precomputed_weights: WeightStats | None = None,
 ) -> InstructBaselineStats:
     t_total = time.time()
     extractor = text_extractor or _extract_instruct_texts
@@ -441,7 +441,7 @@ def _compute_instruct_stats(
     training = InstructTrainingDynamics(**base_dynamics, masked_completion_loss=masked_loss)
 
     t0 = time.time()
-    weights = compute_weight_stats(model)
+    weights = precomputed_weights if precomputed_weights is not None else compute_weight_stats(model)
 
     print(f"[stats] Instruct stats total: {time.time() - t_total:.1f}s", flush=True)
     return InstructBaselineStats(
@@ -453,6 +453,7 @@ def _compute_instruct_stats(
 
 def _compute_dpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
+    precomputed_weights: WeightStats | None = None,
 ) -> DpoBaselineStats:
     # Compute lengths on ALL records for accurate distributions
     all_texts_full = _extract_dpo_texts(records)
@@ -504,14 +505,14 @@ def _compute_dpo_stats(
 
     return DpoBaselineStats(
         dataset=dataset_stats,
-        weights=compute_weight_stats(model),
+        weights=precomputed_weights if precomputed_weights is not None else compute_weight_stats(model),
         training=training,
     )
 
 
 def _compute_grpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
-    reward_functions=None,
+    reward_functions=None, precomputed_weights: WeightStats | None = None,
 ) -> GrpoBaselineStats:
     # Compute lengths on ALL records for accurate distributions
     all_prompts_full = _extract_grpo_texts(records)
@@ -567,7 +568,7 @@ def _compute_grpo_stats(
 
     return GrpoBaselineStats(
         dataset=dataset_stats,
-        weights=compute_weight_stats(model),
+        weights=precomputed_weights if precomputed_weights is not None else compute_weight_stats(model),
         training=training,
     )
 
@@ -594,19 +595,29 @@ def compute_text_stats(
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
     max_samples: int = 100,
     reward_functions=None,
+    precomputed_weights: WeightStats | None = None,
 ) -> BaselineStats:
-    """Compute stats for text-based tasks (instruct, DPO, GRPO, chat)."""
+    """Compute stats for text-based tasks (instruct, DPO, GRPO, chat).
+
+    `precomputed_weights` lets a composite prep compute the model-level weight stats once and reuse
+    them across its subtasks (weights depend only on the model, not the dataset)."""
     device = str(_get_model_device(model))
 
     if task_type == TaskType.CHATTASK:
         print("Computing chat stats...", flush=True)
-        return _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, text_extractor=_extract_chat_texts)
+        return _compute_instruct_stats(
+            model, tokenizer, data_records, device, max_samples,
+            text_extractor=_extract_chat_texts, precomputed_weights=precomputed_weights,
+        )
     elif task_type == TaskType.DPOTASK:
         print("Computing DPO stats...", flush=True)
-        return _compute_dpo_stats(model, tokenizer, data_records, device, max_samples)
+        return _compute_dpo_stats(model, tokenizer, data_records, device, max_samples, precomputed_weights=precomputed_weights)
     elif task_type == TaskType.GRPOTASK:
         print("Computing GRPO stats...", flush=True)
-        return _compute_grpo_stats(model, tokenizer, data_records, device, max_samples, reward_functions)
+        return _compute_grpo_stats(
+            model, tokenizer, data_records, device, max_samples, reward_functions,
+            precomputed_weights=precomputed_weights,
+        )
     else:
         print(f"Computing instruct stats (task_type={task_type})...", flush=True)
-        return _compute_instruct_stats(model, tokenizer, data_records, device, max_samples)
+        return _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, precomputed_weights=precomputed_weights)
