@@ -15,9 +15,6 @@ from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
 from validator.core.constants import NULL_ACCOUNT_ID
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
-from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
 from validator.core.models import CompositeRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
@@ -42,30 +39,6 @@ from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
-
-
-async def create_text_tournament_tasks(
-    round_data: Round,
-    tournament_id: str,
-    config: Config,
-    is_final_round: bool = False,
-) -> list[str]:
-    round_id = round_data.round_id
-    if isinstance(round_data, GroupRound):
-        num_groups = len(round_data.groups)
-        logger.info(f"Creating text tournament for {num_groups} groups (1 task per group)")
-        tasks = await _create_group_text_tasks(round_data, tournament_id, config, is_final_round)
-    elif is_final_round:
-        task_types = [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
-        tasks_per_type = t_cst.FINAL_ROUND_TEXT_TASKS // len(task_types)
-        logger.info(f"Creating final text tournament with new synthetic tasks ({tasks_per_type} of each: instruct, DPO, GRPO)")
-        tasks = await _create_new_text_boss_round_tasks(tournament_id, round_id, config)
-    else:
-        num_pairs = len(round_data.pairs)
-        logger.info(f"Creating text tournament for {num_pairs} knockout pairs (probability-based)")
-        tasks = await _create_probability_based_text_tasks(round_data, tournament_id, config)
-
-    return [str(task.task_id) for task in tasks]
 
 
 async def create_image_tournament_tasks(
@@ -561,111 +534,6 @@ async def _create_and_register_tournament_task(
         logger.info(f"{task_type_info}{task.task_id} - Model: {task.model_id}{dataset_info} - GPU: {gpu_req}{duration_info}")
 
 
-async def _create_group_text_tasks(
-    round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
-) -> list[RawTask]:
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
-    dpo_datasets = _get_dpo_datasets(config.keypair)
-
-    tasks = []
-    for i, group in enumerate(round_data.groups):
-        logger.info(f"  Group {i + 1} ({len(group.member_ids)} members): creating 1 instruct task")
-        group_tasks = await _create_single_group_text_tasks(
-            group, i, tournament_id, round_data.round_id, config, models, instruct_datasets, dpo_datasets
-        )
-        tasks.extend(group_tasks)
-
-    return tasks
-
-
-async def _create_single_group_text_tasks(
-    group,
-    group_index: int,
-    tournament_id: str,
-    round_id: str,
-    config: Config,
-    models: list,
-    instruct_datasets: list,
-    dpo_datasets: list,
-) -> list[RawTask]:
-    group_id = f"{round_id}_group_{group_index + 1:03d}"
-
-    existing_tasks = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
-    existing_count = len(existing_tasks)
-
-    if existing_count >= t_cst.TEXT_TASKS_PER_GROUP:
-        logger.info(f"    Group {group_index + 1} already has {existing_count} task(s), skipping task creation")
-        return await _get_existing_tasks(existing_tasks, config)
-
-    logger.info(f"    Group {group_index + 1} has {existing_count}/{t_cst.TEXT_TASKS_PER_GROUP} task, creating 1 more")
-    assert t_cst.TEXT_TASKS_PER_GROUP == 1, "Only 1 text task per group is supported"
-    task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
-
-    await _create_and_register_tournament_task(
-        task, tournament_id, round_id, config, group_id=group_id
-    )
-
-    return [task]
-
-
-async def _create_probability_based_text_tasks(
-    round_data: KnockoutRound, tournament_id: str, config: Config
-) -> list[RawTask]:
-    num_tasks = len(round_data.pairs)
-    models = _get_text_models(config.keypair)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    dpo_datasets = _get_dpo_datasets(config.keypair)
-
-    text_total = (
-        PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
-        + PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
-        + PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
-    )
-    instruct_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT / text_total
-    dpo_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO / text_total
-
-    tasks = []
-    for i in range(num_tasks):
-        pair = round_data.pairs[i]
-        logger.info(f"  Pair {i + 1} ({pair[0]} vs {pair[1]}):")
-        pair_id = f"{round_data.round_id}_pair_{i + 1:03d}"
-
-        existing_tasks = await _get_existing_tasks_by_identifier(round_data.round_id, config, pair_id=pair_id)
-        existing_count = len(existing_tasks)
-
-        if existing_tasks:
-            if existing_count > t_cst.KNOCKOUT_PAIR_TASKS:
-                logger.warning(
-                    f"   Pair {i + 1} has {existing_count} tasks when it should only have {t_cst.KNOCKOUT_PAIR_TASKS}!"
-                )
-            logger.info(f"    Pair {i + 1} already has {existing_count} task(s), skipping task creation")
-            pair_task_objects = await _get_existing_tasks(existing_tasks, config)
-            tasks.extend(pair_task_objects)
-            continue
-
-        logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
-        task = await _create_single_probability_task(config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob)
-
-        await _create_and_register_tournament_task(
-            task, tournament_id, round_data.round_id, config, pair_id=pair_id
-        )
-        tasks.append(task)
-    return tasks
-
-
-async def _create_single_probability_task(
-    config: Config, models: list, instruct_datasets: list, dpo_datasets: list, instruct_prob: float, dpo_prob: float
-) -> RawTask:
-    rand_val = random.random()
-    if rand_val < instruct_prob:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
-    elif rand_val < (instruct_prob + dpo_prob):
-        return await create_synthetic_dpo_task(config, models, dpo_datasets)
-    else:
-        return await create_synthetic_grpo_task(config, models, instruct_datasets)
-
-
 async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask:
     if task.task_type == TaskType.IMAGETASK:
         models = _get_image_models(config.keypair)
@@ -713,87 +581,6 @@ async def _create_round_one_group_text_replacement_task(config: Config) -> RawTa
     models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
-
-
-async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:
-    """Create boss round text tasks using new synthetic tasks."""
-    pair_id = f"{round_id}_pair_001"
-
-    existing_pair_tasks = await _get_existing_tasks_by_identifier(round_id, config, pair_id=pair_id)
-    existing_count = len(existing_pair_tasks)
-
-    if existing_count >= t_cst.FINAL_ROUND_TEXT_TASKS:
-        logger.info(f"Final round already has {existing_count} tasks, skipping task creation")
-        return await _get_existing_tasks(existing_pair_tasks, config)
-
-    logger.info("Creating boss round text tasks using new synthetic tasks")
-
-    task_types = [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
-    tasks_per_type = t_cst.FINAL_ROUND_TEXT_TASKS // len(task_types)
-
-    standard_models = _get_text_models(config.keypair)
-    big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    dpo_datasets = _get_dpo_datasets(config.keypair)
-
-    existing_task_type_counts = {}
-    tasks = []
-
-    for task in existing_pair_tasks:
-        task_obj = await task_sql.get_task(task.task_id, config.psql_db)
-        if task_obj:
-            task_type_value = task_obj.task_type.value if hasattr(task_obj.task_type, "value") else task_obj.task_type
-            existing_task_type_counts[task_type_value] = existing_task_type_counts.get(task_type_value, 0) + 1
-            tasks.append(task_obj)
-
-    for task_type in task_types:
-        existing_count = existing_task_type_counts.get(task_type.value, 0)
-        for i in range(tasks_per_type - existing_count):
-            rand_val = random.random()
-            if rand_val < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL:
-                models = big_models
-            else:
-                models = standard_models
-            task = await _create_single_new_text_task(
-                task_type,
-                tournament_id,
-                round_id,
-                pair_id,
-                config,
-                models,
-                instruct_datasets,
-                dpo_datasets,
-            )
-            if task:
-                tasks.append(task)
-
-    return tasks
-
-
-async def _create_single_new_text_task(
-    task_type: TaskType,
-    tournament_id: str,
-    round_id: str,
-    pair_id: str,
-    config: Config,
-    models: list,
-    instruct_datasets: list,
-    dpo_datasets: list,
-) -> RawTask | None:
-    """Create a single new synthetic text task of a specific type."""
-    try:
-        if task_type not in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK]:
-            logger.error(f"Unknown task type {task_type} for boss round text task")
-            return None
-
-        task = await _create_task_by_type(task_type, config, models, instruct_datasets, dpo_datasets)
-        await _create_and_register_tournament_task(
-            task, tournament_id, round_id, config, pair_id=pair_id
-        )
-        return task
-    except Exception as e:
-        logger.error(f"Failed to create boss round {task_type.value} task: {e}", exc_info=True)
-        return None
 
 
 async def _create_new_image_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:

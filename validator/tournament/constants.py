@@ -75,10 +75,6 @@ ENVIRONMENT_TASKS_PER_GROUP = 1
 # Final round task counts
 FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS = 3
-FINAL_ROUND_TEXT_TASKS = 6
-
-PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
-
 # Text tournament round-decay weighting: each older round's eval datasets count this much as
 # much as the round after it (newest round = 1.0), normalised to sum to 1. Lower = the current
 # round dominates more; higher = older rounds keep more weight.
