@@ -30,7 +30,7 @@ from validator.db.sql import tasks as task_sql
 from core.models.utility_models import Backend
 from validator.db.sql import tournaments as tournament_sql
 from validator.evaluation.scoring import _get_dataset_type
-from validator.tournament.gpu import get_tournament_gpu_requirement
+from validator.tournament.gpu import tournament_gpu_requirement_for_task
 from trainer.utils.model_anonymizer import get_anonymous_model_dir
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
@@ -298,7 +298,7 @@ async def _create_dstack_request(
     if not expected_repo_name:
         expected_repo_name = f"organic_{task.task_id}"
     
-    required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+    required_gpus = await tournament_gpu_requirement_for_task(task, config.psql_db)
     
     if task.task_type == TaskType.IMAGETASK:
         gpu_name = "H100"

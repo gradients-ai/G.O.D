@@ -48,6 +48,7 @@ from validator.evaluation.scoring import _get_dataset_type
 from validator.tournament.text_scoring import round_decay_weights
 from validator.evaluation.scoring import should_use_tournament_eval
 from validator.tournament.gpu import get_tournament_gpu_requirement
+from validator.tournament.gpu import tournament_gpu_requirement_for_task
 from validator.utils.logging import LogContext
 from validator.utils.logging import get_logger
 from validator.utils.util import try_db_connections
@@ -428,7 +429,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 continue
 
             # Determine required GPUs for this task
-            required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+            required_gpus = await tournament_gpu_requirement_for_task(task, config.psql_db)
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
             suitable_gpus_result = await _check_suitable_gpus(config, required_gpus)
@@ -1249,7 +1250,6 @@ async def process_awaiting_model_prep_tasks(config: Config):
     # Deferred imports to avoid circular dependency
     # (model_prep imports _check_suitable_gpus from this module)
     from validator.utils.model_prep import dispatch_augmentation_and_stats
-    from validator.tournament.gpu import get_tournament_gpu_requirement
 
     # Track per-miner preps independently: "task_id:hotkey"
     _miner_prep_in_progress: set[str] = set()
@@ -1399,9 +1399,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                             if await _recover_miner_preps_from_trainers(task, miners_needing, config):
                                 continue  # Re-check on next cycle
 
-                            gpu_req = get_tournament_gpu_requirement(
-                                task.task_type, task.model_params_count or 0, task.model_id,
-                            )
+                            gpu_req = await tournament_gpu_requirement_for_task(task, config.psql_db)
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
                                 if prep_key in _miner_prep_in_progress:
@@ -1440,7 +1438,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
-                    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
+                    gpu_req = await tournament_gpu_requirement_for_task(task, config.psql_db)
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
                         logger.info(
