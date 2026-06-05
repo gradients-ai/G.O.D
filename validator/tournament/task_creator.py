@@ -30,7 +30,6 @@ from validator.tasks.diffusion_synth import create_synthetic_image_task
 from validator.tasks.synthetic_scheduler import _get_dpo_datasets
 from validator.tasks.synthetic_scheduler import _get_image_models
 from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
-from validator.tasks.synthetic_scheduler import _get_text_datasets_for_hours
 from validator.tasks.synthetic_scheduler import _get_text_models
 from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_env_task
@@ -327,15 +326,6 @@ async def _create_task_by_type(
         return await create_synthetic_instruct_text_task(config, models, instruct_datasets, model_id_override, status_override)
 
 
-def _round_subtask_types(round_number: int) -> list[TaskType]:
-    """Subtask types for a round; R2's alignment method is chosen probabilistically."""
-    if round_number <= 1:
-        return [TaskType.INSTRUCTTEXTTASK]
-    if round_number == 2:
-        return [TaskType.INSTRUCTTEXTTASK, random.choice([TaskType.DPOTASK, TaskType.GRPOTASK])]
-    return [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
-
-
 async def get_tournament_track_models(tournament_id: str, config: Config) -> tuple[str, str]:
     """Derive (model_a, model_b) from R1's two composites, ordered by size (small = A, large = B)."""
     rounds = await get_tournament_rounds(tournament_id, config.psql_db)
@@ -366,27 +356,44 @@ async def _prior_track_subtasks(
     return []
 
 
+async def _create_subtask(subtask_type: TaskType, track_model: str, config: Config) -> RawTask:
+    """Create one new (inert) subtask of `subtask_type` on `track_model`, with a natural-sized dataset."""
+    return await _create_task_by_type(
+        subtask_type, config,
+        _get_text_models(config.keypair),
+        _get_instruct_text_datasets(config.keypair),
+        _get_dpo_datasets(config.keypair),
+        model_id_override=track_model, status_override=TaskStatus.COMPOSITE_SUBTASK,
+    )
+
+
+async def _sample_new_subtasks(budget_hours: float, track_model: str, config: Config) -> list[RawTask]:
+    """Sample this round's new subtasks to fill the training budget: an instruct anchor, then a 50/50
+    dpo/grpo method, then random fill — each a natural-sized job — until their job times cross the
+    budget. Datasets are real-sized; the count flexes to the budget."""
+    new_subtasks: list[RawTask] = []
+    total_hours = 0.0
+    for subtask_type in (TaskType.INSTRUCTTEXTTASK, random.choice([TaskType.DPOTASK, TaskType.GRPOTASK])):
+        subtask = await _create_subtask(subtask_type, track_model, config)
+        new_subtasks.append(subtask)
+        total_hours += subtask.hours_to_complete or 0.0
+    while total_hours < budget_hours:
+        subtask = await _create_subtask(
+            random.choice([TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]), track_model, config
+        )
+        new_subtasks.append(subtask)
+        total_hours += subtask.hours_to_complete or 0.0
+    return new_subtasks
+
+
 async def _create_text_composite(
-    track_model: str, subtask_types: list[TaskType], hours: float, round_number: int,
+    track_model: str, new_subtasks: list[RawTask], hours: float, round_number: int,
     tournament_id: str, round_id: str, group_id: str, config: Config,
     start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> RawTask:
-    """Build one track's CompositeTask: its new (inert) subtasks + carried-over prior ones."""
-    models = _get_text_models(config.keypair)  # ignored (model_id_override set) but required positionally
-    # Size each new subtask's dataset to its share of the round's fixed budget, so the composite's
-    # total training fits `hours` (later rounds bundle more subtasks, so each gets a smaller slice).
-    per_subtask_hours = hours / max(1, len(subtask_types))
-    instruct_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=False)
-    dpo_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=True)
-
-    new_subtasks = []
-    for subtask_type in subtask_types:
-        subtask = await _create_task_by_type(
-            subtask_type, config, models, instruct_datasets, dpo_datasets,
-            model_id_override=track_model, status_override=TaskStatus.COMPOSITE_SUBTASK,
-        )
-        new_subtasks.append(subtask)
-
+    """Assemble one track's CompositeTask from already-created new subtasks + carried-over prior ones.
+    `hours` is the round's budget; it covers only the new subtasks (prior ones are trained-by-continuation
+    and ride along eval-only)."""
     prior_subtasks = await _prior_track_subtasks(tournament_id, round_number, track_model, config)
 
     # Augment only when training from a fresh base: R1 bases and the boss from-scratch scenario.
@@ -443,13 +450,13 @@ async def create_text_round_tasks(round_data: Round, tournament_id: str, config:
     else:
         model_a, model_b = await get_tournament_track_models(tournament_id, config)
 
-    subtask_types = _round_subtask_types(round_number)
-    hours = t_cst.TEXT_ROUND_HOURS[round_number]
+    budget_hours = t_cst.TEXT_ROUND_HOURS[round_number]
 
     composite_ids = []
     for track_model in (model_a, model_b):
+        new_subtasks = await _sample_new_subtasks(budget_hours, track_model, config)
         composite = await _create_text_composite(
-            track_model, subtask_types, hours, round_number, tournament_id, round_id, group_id, config
+            track_model, new_subtasks, budget_hours, round_number, tournament_id, round_id, group_id, config
         )
         composite_ids.append(str(composite.task_id))
     return composite_ids
@@ -484,8 +491,9 @@ async def create_text_boss_round_tasks(round_data: Round, tournament_id: str, co
     ]
     composite_ids = []
     for model_id, subtask_types, start_point in scenarios:
+        new_subtasks = [await _create_subtask(subtask_type, model_id, config) for subtask_type in subtask_types]
         composite = await _create_text_composite(
-            model_id, subtask_types, hours, round_number, tournament_id, round_id, group_id, config,
+            model_id, new_subtasks, hours, round_number, tournament_id, round_id, group_id, config,
             start_point=start_point,
         )
         composite_ids.append(str(composite.task_id))
@@ -550,21 +558,12 @@ async def replace_failed_composite_subtasks(composite_task: RawTask, config: Con
     """Regenerate a composite's subtasks whose data prep failed (no train/test split), in place:
     a fresh same-type subtask on the same track model, swapped into the link. Already-prepped
     (incl. carried-over) subtasks are left untouched. Returns how many were replaced."""
-    models = _get_text_models(config.keypair)
-    all_subtasks = await get_composite_task_subtasks(str(composite_task.task_id), config.psql_db)
-    per_subtask_hours = (composite_task.hours_to_complete or 1.0) / max(1, len(all_subtasks))
-    instruct_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=False)
-    dpo_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=True)
-
     replaced = 0
-    for subtask in all_subtasks:
+    for subtask in await get_composite_task_subtasks(str(composite_task.task_id), config.psql_db):
         old = await task_sql.get_task(subtask.subtask_task_id, config.psql_db)
         if old.training_data and old.test_data:
             continue
-        new_subtask = await _create_task_by_type(
-            old.task_type, config, models, instruct_datasets, dpo_datasets,
-            model_id_override=composite_task.model_id, status_override=TaskStatus.COMPOSITE_SUBTASK,
-        )
+        new_subtask = await _create_subtask(old.task_type, composite_task.model_id, config)
         await replace_composite_subtask(
             str(composite_task.task_id), subtask.subtask_task_id, str(new_subtask.task_id), config.psql_db
         )

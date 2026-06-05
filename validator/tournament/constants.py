@@ -83,7 +83,7 @@ TEXT_ROUND_DECAY_BASE = 0.5
 # Text tournament round structure: one CompositeTask per size track, fixed 3-round gauntlet + boss.
 TEXT_TRACK_A_MAX_SIZE_B = 2.0  # small track (model A)
 TEXT_TRACK_B_MAX_SIZE_B = 8.0  # large track (model B)
-TEXT_ROUND_HOURS = {1: 1.0, 2: 3.0, 3: 5.0}  # composite training budget per round (tunable)
+TEXT_ROUND_HOURS = {1: 3.0, 2: 5.0, 3: 6.0}  # composite training budget per round (new subtasks only)
 TEXT_ROUND_ADVANCE = {1: 4, 2: 2, 3: 1}  # combined-pool survivors per round; R3's lone winner -> boss round
 TEXT_BOSS_SCENARIO_COUNT = 3  # B-only boss round: continue-from-boss / from-scratch / previous-winner
 TEXT_PREV_WINNER_PLACEHOLDER_MODEL = "Qwen/Qwen2.5-7B"
