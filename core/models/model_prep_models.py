@@ -183,6 +183,16 @@ class EnvBaselineStats(BaseModel):
     env_stats: dict[EnvironmentName, EnvStats]
 
 
+class CompositeBaselineStats(BaseModel):
+    """Baseline for a composite's single model over its subtask datasets. `weights` is model-level
+    (computed once); `by_subtask` holds each subtask's dataset + training baseline (incl. init loss),
+    keyed by `subtask_task_id`."""
+
+    task_type: Literal["composite"] = "composite"
+    weights: WeightStats
+    by_subtask: dict[str, InstructBaselineStats | DpoBaselineStats | GrpoBaselineStats]
+
+
 def _baseline_stats_discriminator(v) -> str:
     if isinstance(v, dict):
         return v.get("task_type", "instruct")
@@ -195,6 +205,7 @@ BaselineStats = Annotated[
         Annotated[DpoBaselineStats, Tag("dpo")],
         Annotated[GrpoBaselineStats, Tag("grpo")],
         Annotated[EnvBaselineStats, Tag("env")],
+        Annotated[CompositeBaselineStats, Tag("composite")],
     ],
     Discriminator(_baseline_stats_discriminator),
 ]

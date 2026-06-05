@@ -1253,7 +1253,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 trainer_ip=trainer_ip,
                 gpu_ids=gpu_ids,
                 reward_functions=reward_fns,
-                is_env_task=True,
+                is_env_task=(task.task_type == TaskType.ENVIRONMENTTASK),
                 hotkey=hotkey,
             )
             if prep_result is not None and prep_result.baseline_stats:
@@ -1363,10 +1363,12 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 task_id_str = str(task.task_id)
 
                 with LogContext(task_id=task_id_str):
-                    is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+                    # Env and composite tasks both use per-miner prep for continuation rounds
+                    # (R1 has no starting models, so it falls through to task-level prep below).
+                    uses_per_miner_prep = task.task_type in (TaskType.ENVIRONMENTTASK, TaskType.COMPOSITETASK)
 
                     # --- Per-miner prep path (continuous training) ---
-                    if is_env_task:
+                    if uses_per_miner_prep:
                         miners_needing = await task_sql.get_miners_needing_baseline_stats(
                             task_id_str, config.psql_db,
                         )

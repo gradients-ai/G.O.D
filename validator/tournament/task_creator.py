@@ -15,6 +15,7 @@ from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from validator.core.config import Config
 from validator.core.constants import NULL_ACCOUNT_ID
+from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.core.models import CompositeRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
@@ -383,6 +384,11 @@ async def _create_text_composite(
 
     prior_subtasks = await _prior_track_subtasks(tournament_id, round_number, track_model, config)
 
+    # Augment only when training from a fresh base: R1 bases and the boss from-scratch scenario.
+    # Continuation rounds inherit the already-augmented base through the lineage.
+    trains_from_fresh_base = round_number <= 1 or start_point == TrainingStartPoint.FROM_SCRATCH
+    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK) if trains_from_fresh_base else None
+
     now = datetime.utcnow()
     composite = await task_sql.add_task(
         CompositeRawTask(
@@ -395,6 +401,7 @@ async def _create_text_composite(
             hours_to_complete=hours,
             account_id=NULL_ACCOUNT_ID,
             training_start_point=start_point,
+            augmentation_config=augmentation_config,
         ),
         config.psql_db,
     )
