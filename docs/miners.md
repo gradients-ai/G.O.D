@@ -390,17 +390,33 @@ Requested datasets are mounted read-only.
 
 ### Text Tournaments
 
-Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
+Text tournaments run as a **fixed three-round gauntlet plus a boss round**, over two model-size
+tracks in parallel: **A** (small, < 2B) and **B** (large, < 8B). Each round is one **composite task
+per track** — a `CompositeTask` that bundles `InstructTextTask`, `DpoTask`, and `GrpoTask` subtasks
+that **accumulate** as the gauntlet progresses, trained as a single model:
 
-- If the field has more than 14 miners, the first round is a group round.
-- Group rounds create one instruct task per group.
-- The top 8 scored miners across group tasks advance.
-- Once the field is 14 or fewer, rounds become pairwise knockout rounds.
-- Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
-- The final boss round creates 6 tasks: 2 instruct, 2 DPO, and 2 GRPO. Some final tasks may use larger models.
-- The challenger must win a majority of boss-round tasks to dethrone the defending champion.
+- **Round 1:** `{instruct}`
+- **Round 2:** `{instruct, dpo or grpo}`
+- **Round 3:** `{instruct, dpo, grpo}`
 
-For instruct and DPO tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
+Every miner trains both tracks each round. Your composite payload carries the round's datasets plus
+every earlier round's datasets (the accumulated surface), each tagged with a weight and your previous
+score, and a shared `reference_model` (the cold track base) so DPO/GRPO scoring is reproducible.
+
+Scoring is a **combined weighted rank**: you are ranked on every dataset across both tracks (instruct
+and DPO by adjusted loss, lower is better; GRPO by reward, higher is better), ranks are averaged
+within a round and combined across rounds with a geometric round-decay weight (recent rounds count
+most). A missing or failed dataset ranks last. The field then narrows on the combined rank:
+
+- **Round 1 → top 4 advance**, **Round 2 → top 2**, **Round 3 → top 1**.
+- The defending champion (boss) is ranked alongside and auto-advances. From round 2 on, if the boss
+  holds the best rank the tournament ends immediately and the boss retains.
+
+The single round-3 survivor takes its **B-track model** to the boss round (track A retires). The boss
+round is B-only with **three scenarios** — continue from the boss's model, train from scratch, and a
+fixed previous-winner benchmark — each scored over the accumulated history with the boss's
+progressive defense handicap. Win a scenario by taking more than half its weighted dataset mass; win
+**2 of 3** scenarios to dethrone the champion.
 
 ### Image Tournaments
 
