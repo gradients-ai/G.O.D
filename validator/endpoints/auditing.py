@@ -8,10 +8,12 @@ from validator.core.config import Config
 from validator.core.dependencies import get_config
 from validator.core.models import AnyTypeTask
 from validator.core.models import AnyTypeTaskWithHotkeyDetails
+from core.models.tournament_models import TournamentDedupReview
 from validator.db.sql.auditing import get_latest_scores_url
 from validator.db.sql.auditing import get_recent_tasks
 from validator.db.sql.auditing import get_recent_tasks_for_hotkey
 from validator.db.sql.auditing import get_task_with_hotkey_details
+from validator.db.sql.dedup import get_resolved_dedup_reviews
 
 
 router = APIRouter(tags=["auditing"])
@@ -52,6 +54,19 @@ async def audit_latest_scores_url_endpoint(config: Config = Depends(get_config))
     if url is None:
         raise HTTPException(status_code=400, detail="No scores url found... sorry :/")
     return ScoresUrlResponse(url=url)
+
+
+@router.get("/auditing/dedup")
+async def audit_dedup_reviews_endpoint(
+    limit: int = 100, page: int = 1, config: Config = Depends(get_config)
+) -> list[TournamentDedupReview]:
+    """Confirmed functional-duplicate eliminations, for public transparency.
+
+    Returns the reasoning, the full report URL, and the PUBLIC re-uploaded copies of the
+    offending repos (not the miners' original private repo names) so anyone can clone them
+    and re-run the de-duplication check themselves.
+    """
+    return await get_resolved_dedup_reviews(config.psql_db, limit=limit, page=page)
 
 
 def factory_router():

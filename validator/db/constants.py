@@ -39,6 +39,7 @@ BENCHMARK_ROOT_TASKS_TABLE = "benchmark_root_tasks"
 BENCHMARK_TASK_COPIES_TABLE = "benchmark_task_copies"
 TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE = "tournament_task_hotkey_trainings"
 PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
+TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 
 # PvP Pair Results Table Columns

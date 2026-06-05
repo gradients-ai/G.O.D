@@ -69,6 +69,9 @@ from validator.db.sql.transfers import deduct_tournament_participation_fee
 from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.dedup_gate import apply_r1_eliminations
+from validator.tournament.dedup_gate import detect_r1_hash_duplicates
+from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -670,6 +673,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
         else:
+            # R2 gate: before building round 2, check the entrants for functional duplicates.
+            # On flags this HALTS advancement (returns) until a human approves in the DB.
+            if cst.TOURN_DEDUP_ENABLED and completed_round.round_number == 1:
+                decision = await evaluate_r2_dedup_gate(tournament, completed_round, winners, config, psql_db)
+                if decision.halt:
+                    logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
+                    return
+                if decision.eliminate:
+                    winners = [w for w in winners if w not in decision.eliminate]
+                    logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -955,9 +968,26 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
         logger.error(f"No valid nodes found for tournament {tournament_id} participants")
         return False
 
+    # R1 pre-training de-dup: detect exact/normalized hash duplicates and exclude them from the
+    # bracket (they've already paid the entry fee — they forfeit it and don't get to train).
+    dedup_result = None
+    if cst.TOURN_DEDUP_ENABLED:
+        dedup_result = await detect_r1_hash_duplicates(tournament, [n.hotkey for n in participant_nodes], psql_db)
+        flagged = set(dedup_result.flagged_hotkeys)
+        if flagged:
+            participant_nodes = [n for n in participant_nodes if n.hotkey not in flagged]
+            logger.info(f"R1 dedup excluded {len(flagged)} duplicate(s) from the bracket for {tournament_id}")
+        if not participant_nodes:
+            logger.error(f"All participants for {tournament_id} were flagged as duplicates; cannot create first round")
+            return False
+
     logger.info(f"Creating first round for tournament {tournament_id} with {len(participant_nodes)} participants")
 
     await _create_first_round(tournament_id, tournament.tournament_type, participant_nodes, psql_db, config)
+
+    # Eliminate the flagged duplicates now that the R1 round row exists (FK on eliminated_in_round_id)
+    if dedup_result is not None:
+        await apply_r1_eliminations(tournament, generate_round_id(tournament_id, 1), dedup_result, config, psql_db)
 
     logger.info(f"Successfully created first round for tournament {tournament_id}")
     return True

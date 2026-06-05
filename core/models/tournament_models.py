@@ -551,3 +551,57 @@ class BossBattleResponse(BaseModel):
     image_performance_differences: list[TaskPerformanceDifference]
     environment_tournament_id: str | None = None
     environment_performance_differences: list[TaskPerformanceDifference] = []
+
+
+class DedupReviewStatus(str, Enum):
+    PENDING_REVIEW = "pending_review"  # gate active, tournament advancement halted
+    APPROVED = "approved"  # eliminate approved_eliminations, then advance
+    SKIPPED = "skipped"  # advance with no eliminations
+
+
+class DedupPairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: str  # T0 | T1 | T2
+    relationship: str  # duplicate | distinct | drop_evasion
+    confidence: float
+    reason: str
+
+
+class DedupClusterRecord(BaseModel):
+    members: list[str]
+    basis: str  # T0 | T1 | T2
+    reason: str
+
+
+class PublishedRepo(BaseModel):
+    """A confirmed-duplicate repo re-uploaded to the public gradients-opensource org."""
+
+    hotkey: str
+    public_repo_url: str
+    commit_hash: str | None = None
+
+
+class TournamentDedupReview(BaseModel):
+    round_id: str  # the R2 round this gate guards
+    tournament_id: str
+    tournament_type: str
+    status: DedupReviewStatus = DedupReviewStatus.PENDING_REVIEW
+    cohort: list[str] = []
+    clusters: list[DedupClusterRecord] = []
+    pair_verdicts: list[DedupPairVerdict] = []
+    flagged_hotkeys: list[str] = []
+    approved_eliminations: list[str] = []
+    published_repos: list[PublishedRepo] = []
+    report_url: str | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class GateDecision(BaseModel):
+    """Result of the R2 dedup gate: whether to halt advancement and which hotkeys to drop."""
+
+    halt: bool
+    eliminate: set[str] = Field(default_factory=set)

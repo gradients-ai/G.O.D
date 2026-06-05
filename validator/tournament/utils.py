@@ -1188,6 +1188,65 @@ async def notify_tournament_completed(
         logger.error(f"Failed to send Discord notification for tournament completion: {e}")
 
 
+async def notify_tournament_dedup_autoremoved(
+    tournament_id: str, tournament_type: str, clusters, flagged: list[str], discord_url: str
+):
+    """R1 info ping: deterministic hash duplicates auto-removed before training (no halt)."""
+    try:
+        lines = [
+            "🧹 Dedup (R1, pre-training): auto-removed exact/normalized duplicate submissions.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Removed {len(flagged)} duplicate(s) across {len(clusters)} cluster(s); boss protected.",
+        ]
+        for i, c in enumerate(clusters, 1):
+            lines.append(f"  Cluster {i} [{c.basis}]: {', '.join(c.members)}")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R1 dedup: {e}")
+
+
+async def notify_tournament_dedup_review(
+    tournament_id: str, tournament_type: str, round_id: str, clusters, flagged: list[str], report_url: str | None, discord_url: str
+):
+    """R2 ping: duplicates flagged by Claude — tournament HALTED pending manual approval."""
+    try:
+        lines = [
+            "⚠️ Dedup (R2): functional duplicates flagged — TOURNAMENT HALTED pending manual review.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Guarded round: {round_id}",
+            f"Flagged for removal ({len(flagged)}): {', '.join(flagged)}",
+        ]
+        for i, c in enumerate(clusters, 1):
+            lines.append(f"  Cluster {i} [{c.basis}]: {', '.join(c.members)} — {c.reason}")
+        if report_url:
+            lines.append(f"Full report: {report_url}")
+        lines.append("")
+        lines.append("Review the report + code, then in the DB:")
+        lines.append(f"  approve:  UPDATE tournament_dedup_reviews SET status='approved', reviewed_at=now() WHERE round_id='{round_id}';")
+        lines.append(f"  (edit first if needed: SET approved_eliminations='[\"hk\", ...]'::jsonb ...)")
+        lines.append(f"  skip/none: UPDATE tournament_dedup_reviews SET status='skipped', reviewed_at=now() WHERE round_id='{round_id}';")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup review: {e}")
+
+
+async def notify_tournament_dedup_resolved(
+    tournament_id: str, tournament_type: str, eliminated: list[str], published, discord_url: str
+):
+    """R2 ping: review approved — duplicates eliminated, offending repos published."""
+    try:
+        lines = [
+            "✅ Dedup (R2): review approved — duplicates knocked out, tournament resuming.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Eliminated ({len(eliminated)}): {', '.join(eliminated) if eliminated else 'none'}",
+        ]
+        for p in published:
+            lines.append(f"  Published: {p.public_repo_url}")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup resolution: {e}")
+
+
 async def notify_organic_task_created(task_id: str, task_type: str, discord_url: str, is_benchmark: bool = False):
     try:
         if is_benchmark:

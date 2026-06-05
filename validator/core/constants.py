@@ -344,6 +344,16 @@ CLAUDE_REPO_DIFF_MAX_TURNS = 30
 CLAUDE_REPO_DIFF_MAX_BUDGET_USD = 2
 CLAUDE_REPO_DIFF_MAX_FOCUS_FILES = 180
 
+# Tournament submission de-duplication (anti-spam)
+# R1 (pre-training): deterministic exact-commit (T0) + normalized-content (T1) hashing auto-eliminates copies.
+# R2: Claude pairwise functional-equivalence judgement (T2), gated behind Discord ping + manual DB approval.
+TOURN_DEDUP_ENABLED = True
+TOURN_DEDUP_CLAUDE_MODEL = "claude-opus-4-8"  # best current model for the judgement
+# T2 runs the agent read-only (Read/Glob/Grep) over both cloned repos so it can inspect full
+# contents itself and see through reordering/renaming. These bound a single pairwise judgement.
+TOURN_DEDUP_CLAUDE_MAX_TURNS = 60
+TOURN_DEDUP_CLAUDE_MAX_BUDGET_USD = 10
+
 # YaRN extension constants
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]
