@@ -30,6 +30,7 @@ from validator.db.sql.tournaments import eliminate_tournament_participants
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.tournament.repo_uploader import upload_flagged_duplicate_repository
 from validator.tournament.utils import notify_tournament_dedup_autoremoved
+from validator.tournament.utils import notify_tournament_dedup_error
 from validator.tournament.utils import notify_tournament_dedup_resolved
 from validator.tournament.utils import notify_tournament_dedup_review
 from validator.utils.logging import get_logger
@@ -122,7 +123,18 @@ async def evaluate_r2_dedup_gate(
     existing = await get_dedup_review(next_round_id, psql_db)
 
     if existing is None:
-        return await _run_and_record_gate(tournament, next_round_id, winners, config, psql_db)
+        try:
+            return await _run_and_record_gate(tournament, next_round_id, winners, config, psql_db)
+        except Exception as exc:
+            # The gate failed before writing a review row (clone/API/parse error). Nothing is
+            # persisted, so it will retry next cycle — but we must NOT advance past an unevaluated
+            # gate. Halt and ping (every cycle, so it stays visible) with resume instructions.
+            logger.error(f"Dedup gate {next_round_id} failed to evaluate — halting tournament: {exc}", exc_info=True)
+            if config.discord_url:
+                await notify_tournament_dedup_error(
+                    tournament.tournament_id, tournament.tournament_type.value, next_round_id, str(exc), config.discord_url
+                )
+            return GateDecision(halt=True)
 
     if existing.status == DedupReviewStatus.PENDING_REVIEW:
         logger.info(f"Dedup gate {next_round_id}: still pending manual review — holding tournament")

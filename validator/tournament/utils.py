@@ -1230,6 +1230,34 @@ async def notify_tournament_dedup_review(
         logger.error(f"Failed to send Discord notification for R2 dedup review: {e}")
 
 
+async def notify_tournament_dedup_error(
+    tournament_id: str, tournament_type: str, round_id: str, error: str, discord_url: str
+):
+    """R2 ping: the dedup gate failed to evaluate (clone/API/parse) — tournament HALTED.
+
+    Nothing is persisted on failure, so the gate auto-retries every cycle once the underlying
+    cause is fixed. This pings every cycle until it clears so the failure stays visible."""
+    try:
+        lines = [
+            "🛑 Dedup (R2): gate FAILED to evaluate — TOURNAMENT HALTED (no eliminations applied).",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Guarded round: {round_id}",
+            f"Error: {error}",
+            "",
+            "To resume:",
+            "  - Fix the underlying cause (e.g. ANTHROPIC_API_KEY unset, repo clone access, "
+            "model budget/parse failure). The gate re-runs automatically next cycle once fixed.",
+            "  - OR bypass the dedup check for this round (advance with NO eliminations) by inserting a skip row:",
+            (
+                f"      INSERT INTO tournament_dedup_reviews (round_id, tournament_id, tournament_type, status) "
+                f"VALUES ('{round_id}', '{tournament_id}', '{tournament_type}', 'skipped');"
+            ),
+        ]
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup gate error: {e}")
+
+
 async def notify_tournament_dedup_resolved(
     tournament_id: str, tournament_type: str, eliminated: list[str], published, discord_url: str
 ):

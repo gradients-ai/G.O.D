@@ -14,6 +14,7 @@ from validator.db.sql.auditing import get_recent_tasks
 from validator.db.sql.auditing import get_recent_tasks_for_hotkey
 from validator.db.sql.auditing import get_task_with_hotkey_details
 from validator.db.sql.dedup import get_resolved_dedup_reviews
+from validator.utils.minio import async_minio_client
 
 
 router = APIRouter(tags=["auditing"])
@@ -66,7 +67,15 @@ async def audit_dedup_reviews_endpoint(
     offending repos (not the miners' original private repo names) so anyone can clone them
     and re-run the de-duplication check themselves.
     """
-    return await get_resolved_dedup_reviews(config.psql_db, limit=limit, page=page)
+    reviews = await get_resolved_dedup_reviews(config.psql_db, limit=limit, page=page)
+    # report_url is stored as a presigned S3 URL that expires (~7 days); re-sign on read so
+    # the public audit link doesn't go dead after the original signature lapses.
+    for review in reviews:
+        if review.report_url:
+            fresh_url = await async_minio_client.get_new_presigned_url(review.report_url)
+            if fresh_url:
+                review.report_url = fresh_url
+    return reviews
 
 
 def factory_router():
