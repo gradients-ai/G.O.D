@@ -12,10 +12,13 @@ import aiohttp
 import httpx
 import numpy as np
 
+from core.models.tournament_models import BossScenario
+from core.models.tournament_models import CompositeScoreboard
 from core.models.tournament_models import GitHubOwnerRepo
 from core.models.tournament_models import GpuRequirement
 from core.models.tournament_models import RespondingNode
 from core.models.tournament_models import RoundType
+from core.models.tournament_models import TaskEvalResult
 from core.models.tournament_models import TournamentData
 from core.models.tournament_models import TournamentParticipant
 from core.models.tournament_models import TournamentResultsWithWinners
@@ -39,6 +42,8 @@ from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import count_champion_consecutive_wins
+from validator.db.sql.tournaments import get_composite_task_scores
+from validator.db.sql.tournaments import get_composite_task_subtasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_group_members
@@ -51,6 +56,8 @@ from validator.db.sql.tournaments import get_training_status_for_task_and_hotkey
 from validator.db.sql.tournaments import update_tournament_diff_report
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.text_scoring import boss_round_outcome
+from validator.tournament.text_scoring import weighted_rank_scores
 from validator.utils.logging import get_logger
 from validator.utils.repo_diff_report import generate_and_upload_repo_diff_report
 
@@ -417,6 +424,51 @@ async def determine_env_tournament_winner(
             f"across {len(final_tasks)} tasks (need zero losses and at least one win)"
         )
         return [boss_hotkey, contender]
+
+
+async def determine_text_tournament_winner(
+    tournament: TournamentData, finalists: list[str], _config: Config, psql_db: PSQLDB
+) -> list[str]:
+    """Resolve the B-only text boss round: the single challenger faces the boss across the 3 composite
+    scenarios (from-scratch / continue-from-boss / continue-from-prev-winner), each scored over the
+    whole accumulated surface with the boss's progressive handicap. Win 2 of 3 → new boss (C2)."""
+    boss_hotkey = EMISSION_BURN_HOTKEY
+
+    all_rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
+    final_round = next((r for r in all_rounds if r.is_final_round), None)
+    if not final_round:
+        logger.warning("No final round found for text tournament; boss wins by default")
+        return [boss_hotkey]
+
+    final_tasks = await get_tournament_tasks(final_round.round_id, psql_db)
+    scenario_tasks = [task for task in final_tasks if (await get_task(task.task_id, psql_db)).task_type == TaskType.COMPOSITETASK]
+    if not scenario_tasks:
+        logger.warning("No boss round composite scenarios found; boss wins by default")
+        return [boss_hotkey]
+
+    challenger = next((hotkey for hotkey in finalists if hotkey != boss_hotkey), None)
+    if not challenger:
+        logger.info("No challenger in text boss round; boss wins by default")
+        return [boss_hotkey]
+
+    current_champion = tournament.base_winner_hotkey or boss_hotkey
+    consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
+    threshold = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
+
+    scenarios = []
+    for scenario_task in scenario_tasks:
+        composite = await get_task(scenario_task.task_id, psql_db)
+        rows = await _text_composite_eval_rows([scenario_task], [boss_hotkey, challenger], psql_db)
+        scenarios.append(BossScenario(scenario=composite.training_start_point, results=rows))
+
+    outcome = boss_round_outcome(scenarios, boss_hotkey, challenger, threshold)
+    logger.info(
+        f"Text boss round: challenger {challenger[:8]} won {outcome.scenarios_won_by_challenger}/{len(scenarios)} "
+        f"scenarios (threshold={threshold:.3f}) → dethrones={outcome.challenger_dethrones}"
+    )
+    if outcome.challenger_dethrones:
+        return [challenger, boss_hotkey]
+    return [boss_hotkey, challenger]
 
 
 def get_real_winner_hotkey(winner_hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
@@ -1066,14 +1118,14 @@ async def get_group_winners(
 ) -> list[str]:
     """Get winners from group round based on adjusted loss scores."""
 
-    # Check if this is an environment task
-    is_environment = False
-    if round_tasks:
-        first_task_object = await get_task(round_tasks[0].task_id, psql_db)
-        is_environment = first_task_object and first_task_object.task_type == TaskType.ENVIRONMENTTASK
+    # Group rounds are either env or text-composite — each has its own winner logic.
+    first_task_object = await get_task(round_tasks[0].task_id, psql_db) if round_tasks else None
+    task_type = first_task_object.task_type if first_task_object else None
 
-    if is_environment:
+    if task_type == TaskType.ENVIRONMENTTASK:
         return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
+    if task_type == TaskType.COMPOSITETASK:
+        return await get_text_round_winners(completed_round, round_tasks, psql_db)
 
     # Determine how many winners to advance
     if completed_round.is_final_round:
@@ -1136,6 +1188,54 @@ async def get_group_winners(
         all_winners.extend(group_winners)
 
     return all_winners
+
+
+async def _text_composite_eval_rows(
+    composite_tasks: list[TournamentTask], competitors: list[str], psql_db: PSQLDB
+) -> list[TaskEvalResult]:
+    """Pool both tracks' per-subtask scores into one (competitor × subtask) grid of TaskEvalResults.
+    A competitor with no successful score on a subtask gets None — weighted-rank ranks it last there."""
+    rows: list[TaskEvalResult] = []
+    for composite in composite_tasks:
+        composite_id = str(composite.task_id)
+        scoreboard = CompositeScoreboard(scores=await get_composite_task_scores(composite_id, psql_db))
+        for subtask in await get_composite_task_subtasks(composite_id, psql_db):
+            subtask_task = await get_task(subtask.subtask_task_id, psql_db)
+            for hotkey in competitors:
+                rows.append(
+                    TaskEvalResult(
+                        hotkey=hotkey,
+                        subtask_task_id=subtask.subtask_task_id,
+                        source_round=subtask.source_round,
+                        task_type=subtask_task.task_type,
+                        score=scoreboard.successful_score(hotkey, subtask.subtask_task_id),
+                    )
+                )
+    return rows
+
+
+async def get_text_round_winners(
+    completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
+) -> list[str]:
+    """Text gauntlet winners: rank the combined pool (both tracks' subtasks) by weighted rank and
+    advance the fixed top-K for the round (R1→4, R2→2, R3→1). The boss is ranked alongside; from
+    R2 on, if the boss holds the best rank the tournament stops here (boss retains)."""
+    composite_tasks = [task for task in round_tasks if task.group_id]
+    competitors = [member.hotkey for member in await get_tournament_group_members(round_tasks[0].group_id, psql_db)]
+    if EMISSION_BURN_HOTKEY not in competitors:
+        competitors.append(EMISSION_BURN_HOTKEY)
+
+    rows = await _text_composite_eval_rows(composite_tasks, competitors, psql_db)
+    ranked = weighted_rank_scores(rows, competitors)  # best (lowest) first
+
+    if completed_round.round_number > 1 and ranked and ranked[0].hotkey == EMISSION_BURN_HOTKEY:
+        logger.info(f"Text R{completed_round.round_number}: boss holds the best rank — early stop, boss retains")
+        return [EMISSION_BURN_HOTKEY]
+
+    advance_n = t_cst.TEXT_ROUND_ADVANCE.get(completed_round.round_number, 1)
+    winners = [competitor.hotkey for competitor in ranked if competitor.hotkey != EMISSION_BURN_HOTKEY][:advance_n]
+    logger.info(f"Text R{completed_round.round_number}: advancing top {len(winners)} of {len(ranked)} ranked: {winners}")
+    return winners
 
 
 async def get_round_winners(completed_round: TournamentRoundData, psql_db: PSQLDB, config: Config) -> list[str]:

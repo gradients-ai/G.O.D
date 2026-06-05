@@ -393,6 +393,7 @@ async def _prior_track_subtasks(
 async def _create_text_composite(
     track_model: str, subtask_types: list[TaskType], hours: float, round_number: int,
     tournament_id: str, round_id: str, group_id: str, config: Config,
+    start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> RawTask:
     """Build one track's CompositeTask: its new (inert) subtasks + carried-over prior ones."""
     models = _get_text_models(config.keypair)  # ignored (model_id_override set) but required positionally
@@ -420,6 +421,7 @@ async def _create_text_composite(
             termination_at=now + timedelta(hours=hours),
             hours_to_complete=hours,
             account_id=NULL_ACCOUNT_ID,
+            training_start_point=start_point,
         ),
         config.psql_db,
     )
@@ -463,6 +465,43 @@ async def create_text_round_tasks(round_data: Round, tournament_id: str, config:
     for track_model in (model_a, model_b):
         composite = await _create_text_composite(
             track_model, subtask_types, hours, round_number, tournament_id, round_id, group_id, config
+        )
+        composite_ids.append(str(composite.task_id))
+    return composite_ids
+
+
+async def create_text_boss_round_tasks(round_data: Round, tournament_id: str, config: Config) -> list[str]:
+    """B-only boss round: the finalist faces the boss across 3 structurally-distinct composite scenarios.
+    Idempotent across restarts.
+
+      - continuation:    continue from the boss's model, evaluated over the whole accumulated history
+      - from-scratch:    a fresh 3-stage {instruct, dpo, grpo} composite on any random model
+      - previous-winner: a fixed instruct-only benchmark on a placeholder model
+    """
+    round_id = round_data.round_id
+    round_number = round_data.round_number
+    group_id = f"{round_id}_group_001"
+
+    existing = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
+    if existing:
+        return [str(task.task_id) for task in existing]
+
+    _, model_b = await get_tournament_track_models(tournament_id, config)
+    random_model = await anext(_get_text_models(config.keypair))
+    hours = t_cst.TEXT_ROUND_HOURS[max(t_cst.TEXT_ROUND_HOURS)]
+
+    # (model_id, new subtask types, start point) — continuation creates no new subtasks; _create_text_composite
+    # carries the prior round's same-model surface, which for continuation is the full accumulated lineage.
+    scenarios = [
+        (model_b, [], TrainingStartPoint.CONTINUATION),
+        (random_model, [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK], TrainingStartPoint.FROM_SCRATCH),
+        (t_cst.TEXT_PREV_WINNER_PLACEHOLDER_MODEL, [TaskType.INSTRUCTTEXTTASK], TrainingStartPoint.PREVIOUS_WINNER),
+    ]
+    composite_ids = []
+    for model_id, subtask_types, start_point in scenarios:
+        composite = await _create_text_composite(
+            model_id, subtask_types, hours, round_number, tournament_id, round_id, group_id, config,
+            start_point=start_point,
         )
         composite_ids.append(str(composite.task_id))
     return composite_ids

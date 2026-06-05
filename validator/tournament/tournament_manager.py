@@ -68,9 +68,11 @@ from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tour
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
+from validator.tournament.task_creator import create_text_boss_round_tasks
 from validator.tournament.task_creator import create_text_round_tasks
 from validator.tournament.task_creator import replace_tournament_task
 from validator.tournament.utils import determine_env_tournament_winner
+from validator.tournament.utils import determine_text_tournament_winner
 from validator.tournament.utils import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.utils import get_base_contestant
 from validator.tournament.utils import get_challenger_participant_for_retained_boss
@@ -212,8 +214,10 @@ async def _create_tournament_tasks(
     tournament_id: str, round_structure: Round, tournament_type: TournamentType, is_final: bool, config: Config,
 ) -> list[str]:
     if tournament_type == TournamentType.TEXT:
-        # TODO (C3 #5): is_final -> text boss round (3 composite scenarios)
-        tasks = await create_text_round_tasks(round_structure, tournament_id, config)
+        if is_final:
+            tasks = await create_text_boss_round_tasks(round_structure, tournament_id, config)
+        else:
+            tasks = await create_text_round_tasks(round_structure, tournament_id, config)
     elif tournament_type == TournamentType.IMAGE:
         tasks = await create_image_tournament_tasks(round_structure, tournament_id, config, is_final)
     elif tournament_type == TournamentType.ENVIRONMENT:
@@ -513,12 +517,23 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Round winners: {winners}")
         logger.info(f"Number of winners: {len(winners)}")
 
-        # For environment tournaments, boss auto-advances through non-final rounds
+        # Text early-stop: get_text_round_winners returns [boss] alone when the boss holds the best
+        # rank in R2+ — the tournament ends here, boss retains (handled in the completion block below).
+        text_early_stop = (
+            tournament.tournament_type == TournamentType.TEXT
+            and not completed_round.is_final_round
+            and winners == [cst.EMISSION_BURN_HOTKEY]
+        )
+
+        # For environment and text tournaments, the boss auto-advances through non-final rounds
         # only when there are winners. Empty winners use generic boss fallback below.
-        if tournament.tournament_type == TournamentType.ENVIRONMENT and not completed_round.is_final_round:
+        if (
+            tournament.tournament_type in (TournamentType.ENVIRONMENT, TournamentType.TEXT)
+            and not completed_round.is_final_round
+        ):
             if winners and cst.EMISSION_BURN_HOTKEY not in winners:
                 winners.append(cst.EMISSION_BURN_HOTKEY)
-                logger.info(f"Boss {cst.EMISSION_BURN_HOTKEY} auto-advances to next environment round")
+                logger.info(f"Boss {cst.EMISSION_BURN_HOTKEY} auto-advances to the next round")
 
         # Get all active participants and handle eliminations
         all_participants = await get_tournament_participants(tournament.tournament_id, psql_db)
@@ -561,7 +576,10 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
 
-        if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
+        final_completion = completed_round.is_final_round and (
+            len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT
+        )
+        if final_completion or text_early_stop:
             # For environment tournaments, determine winner using 6-task majority over R1-R3 + R4x3
             if tournament.tournament_type == TournamentType.ENVIRONMENT:
                 logger.info("Environment tournament final round — applying 6-task majority boss-beating rule")
@@ -569,6 +587,15 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 winner = env_results[0]
                 # Replace winners list with the cross-round results for downstream use
                 winners = env_results
+            elif tournament.tournament_type == TournamentType.TEXT:
+                if text_early_stop:
+                    logger.info("Text tournament early-stop — boss retains")
+                    winner = cst.EMISSION_BURN_HOTKEY
+                else:
+                    logger.info("Text tournament boss round — applying 2-of-3 scenario dethrone rule")
+                    text_results = await determine_text_tournament_winner(tournament, winners, config, psql_db)
+                    winner = text_results[0]
+                    winners = text_results
             else:
                 winner = winners[0]
 
@@ -593,7 +620,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
             # Save winner's model repo for next tournament's PREVIOUS_WINNER task
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
+            if tournament.tournament_type in (TournamentType.ENVIRONMENT, TournamentType.TEXT):
                 save_hotkey = winner if winner != cst.EMISSION_BURN_HOTKEY else cst.EMISSION_BURN_HOTKEY
                 await _save_winner_model_repo(tournament.tournament_id, save_hotkey, round_tasks, psql_db)
 
