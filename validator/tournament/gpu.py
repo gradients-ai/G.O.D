@@ -44,6 +44,9 @@ def get_tournament_gpu_requirement(
         params_b *= TOURNAMENT_DPO_GPU_MULTIPLIER
     elif task_type == TaskType.GRPOTASK:
         params_b *= TOURNAMENT_GRPO_GPU_MULTIPLIER
+    elif task_type == TaskType.COMPOSITETASK:
+        # Composites bundle instruct/dpo/grpo on one model — size for the heaviest method (DPO).
+        params_b *= TOURNAMENT_DPO_GPU_MULTIPLIER
     elif task_type == TaskType.ENVIRONMENTTASK:
         if gpu_multiplier is not None:
             params_b *= gpu_multiplier
