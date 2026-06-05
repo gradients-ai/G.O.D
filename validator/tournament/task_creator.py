@@ -30,6 +30,7 @@ from validator.tasks.diffusion_synth import create_synthetic_image_task
 from validator.tasks.synthetic_scheduler import _get_dpo_datasets
 from validator.tasks.synthetic_scheduler import _get_image_models
 from validator.tasks.synthetic_scheduler import _get_instruct_text_datasets
+from validator.tasks.synthetic_scheduler import _get_text_datasets_for_hours
 from validator.tasks.synthetic_scheduler import _get_text_models
 from validator.tasks.synthetic_scheduler import create_synthetic_dpo_task
 from validator.tasks.synthetic_scheduler import create_synthetic_env_task
@@ -372,8 +373,11 @@ async def _create_text_composite(
 ) -> RawTask:
     """Build one track's CompositeTask: its new (inert) subtasks + carried-over prior ones."""
     models = _get_text_models(config.keypair)  # ignored (model_id_override set) but required positionally
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    dpo_datasets = _get_dpo_datasets(config.keypair)
+    # Size each new subtask's dataset to its share of the round's fixed budget, so the composite's
+    # total training fits `hours` (later rounds bundle more subtasks, so each gets a smaller slice).
+    per_subtask_hours = hours / max(1, len(subtask_types))
+    instruct_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=False)
+    dpo_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=True)
 
     new_subtasks = []
     for subtask_type in subtask_types:
@@ -547,11 +551,13 @@ async def replace_failed_composite_subtasks(composite_task: RawTask, config: Con
     a fresh same-type subtask on the same track model, swapped into the link. Already-prepped
     (incl. carried-over) subtasks are left untouched. Returns how many were replaced."""
     models = _get_text_models(config.keypair)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    dpo_datasets = _get_dpo_datasets(config.keypair)
+    all_subtasks = await get_composite_task_subtasks(str(composite_task.task_id), config.psql_db)
+    per_subtask_hours = (composite_task.hours_to_complete or 1.0) / max(1, len(all_subtasks))
+    instruct_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=False)
+    dpo_datasets = _get_text_datasets_for_hours(config.keypair, per_subtask_hours, dpo=True)
 
     replaced = 0
-    for subtask in await get_composite_task_subtasks(str(composite_task.task_id), config.psql_db):
+    for subtask in all_subtasks:
         old = await task_sql.get_task(subtask.subtask_task_id, config.psql_db)
         if old.training_data and old.test_data:
             continue

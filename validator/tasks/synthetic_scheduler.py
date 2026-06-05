@@ -178,6 +178,26 @@ async def _get_dpo_datasets(keypair: Keypair) -> AsyncGenerator[Dataset, None]:
                 continue
 
 
+def _num_rows_for_target_hours(target_hours: float) -> int:
+    """Inverse of `_get_training_hours_from_num_rows` (model-agnostic base): the row count whose
+    natural training budget is ~`target_hours`."""
+    span = vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN
+    t = max(0.0, min(1.0, (target_hours - vcst.TRAINING_HOURS_MIN) / span))
+    return int(vcst.TRAINING_HOURS_SCALE_START_ROWS + t * (vcst.TRAINING_HOURS_MAX_ROWS - vcst.TRAINING_HOURS_SCALE_START_ROWS))
+
+
+async def _get_text_datasets_for_hours(
+    keypair: Keypair, target_hours: float, dpo: bool = False
+) -> AsyncGenerator[Dataset, None]:
+    """Datasets sized to ~`target_hours` of training (a band around the matching row count), so a
+    composite subtask fits its share of the round's fixed budget."""
+    target_rows = _num_rows_for_target_hours(target_hours)
+    min_rows = max(20_000, int(target_rows * 0.6))
+    max_rows = int(target_rows * 1.4)
+    async for dataset in _get_datasets_for_bin(min_rows, max_rows, keypair, dpo):
+        yield dataset
+
+
 async def _get_columns_for_instruct_dataset(
     dataset_id: str,
     keypair: Keypair,
