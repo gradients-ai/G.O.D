@@ -22,6 +22,7 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_composite_task_subtasks
 from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_composite_task_subtasks
+from validator.db.sql.tournaments import replace_composite_subtask
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
@@ -541,10 +542,58 @@ async def _create_and_register_tournament_task(
         logger.info(f"{task_type_info}{task.task_id} - Model: {task.model_id}{dataset_info} - GPU: {gpu_req}{duration_info}")
 
 
+async def replace_failed_composite_subtasks(composite_task: RawTask, config: Config) -> int:
+    """Regenerate a composite's subtasks whose data prep failed (no train/test split), in place:
+    a fresh same-type subtask on the same track model, swapped into the link. Already-prepped
+    (incl. carried-over) subtasks are left untouched. Returns how many were replaced."""
+    models = _get_text_models(config.keypair)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    dpo_datasets = _get_dpo_datasets(config.keypair)
+
+    replaced = 0
+    for subtask in await get_composite_task_subtasks(str(composite_task.task_id), config.psql_db):
+        old = await task_sql.get_task(subtask.subtask_task_id, config.psql_db)
+        if old.training_data and old.test_data:
+            continue
+        new_subtask = await _create_task_by_type(
+            old.task_type, config, models, instruct_datasets, dpo_datasets,
+            model_id_override=composite_task.model_id, status_override=TaskStatus.COMPOSITE_SUBTASK,
+        )
+        await replace_composite_subtask(
+            str(composite_task.task_id), subtask.subtask_task_id, str(new_subtask.task_id), config.psql_db
+        )
+        await task_sql.delete_task(subtask.subtask_task_id, config.psql_db)
+        replaced += 1
+    return replaced
+
+
 async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask:
     if task.task_type == TaskType.IMAGETASK:
         models = _get_image_models(config.keypair)
         return await _create_task_by_type(task.task_type, config, models, [], [])
+
+    if task.task_type == TaskType.COMPOSITETASK:
+        # Composite-level failure (subtasks are prepped — e.g. model prep died): rebuild the composite
+        # over the same subtasks (already-prepped dataset carriers), same model/start point/budget.
+        subtasks = await get_composite_task_subtasks(str(task.task_id), config.psql_db)
+        now = datetime.utcnow()
+        new_composite = await task_sql.add_task(
+            CompositeRawTask(
+                model_id=task.model_id,
+                ds="composite",
+                status=TaskStatus.PENDING,
+                is_organic=False,
+                created_at=now,
+                termination_at=now + timedelta(hours=task.hours_to_complete),
+                hours_to_complete=task.hours_to_complete,
+                account_id=NULL_ACCOUNT_ID,
+                training_start_point=task.training_start_point,
+                augmentation_config=task.augmentation_config,
+            ),
+            config.psql_db,
+        )
+        await add_composite_task_subtasks(str(new_composite.task_id), subtasks, config.psql_db)
+        return new_composite
 
     model_params_b = int(task.model_params_count / t_cst.MODEL_PARAMS_TO_BILLIONS)
 

@@ -70,6 +70,7 @@ from validator.tournament.task_creator import create_environment_tournament_task
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_boss_round_tasks
 from validator.tournament.task_creator import create_text_round_tasks
+from validator.tournament.task_creator import replace_failed_composite_subtasks
 from validator.tournament.task_creator import replace_tournament_task
 from validator.tournament.utils import determine_env_tournament_winner
 from validator.tournament.utils import determine_text_tournament_winner
@@ -1214,6 +1215,14 @@ async def is_tourn_task_completed(
 
     elif task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:
         logger.info(f"Task {task_obj.task_id} failed during preparation, creating replacement immediately.")
+        # Composite: a subtask whose data prep failed is replaced in place and the composite re-queued;
+        # only a composite-level failure (all subtasks prepped) falls through to a full replacement.
+        if task_obj.task_type == TaskType.COMPOSITETASK:
+            replaced = await replace_failed_composite_subtasks(task_obj, config)
+            if replaced:
+                task_obj.status = TaskStatus.PENDING
+                await task_sql.update_task(task_obj, config.psql_db)
+                return False, f"Replaced {replaced} failed subtask(s); composite re-queued for prep."
         new_task_id = await replace_tournament_task(
             tournament_task.task_id,
             tournament_task.tournament_id,

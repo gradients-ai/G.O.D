@@ -1628,6 +1628,18 @@ async def add_composite_task_subtasks(
         """, rows)
 
 
+async def replace_composite_subtask(
+    composite_task_id: str, old_subtask_task_id: str, new_subtask_task_id: str, psql_db: PSQLDB,
+) -> None:
+    """Swap one subtask of a composite for a replacement, keeping its position + source round."""
+    async with await psql_db.connection() as connection:
+        await connection.execute(f"""
+            UPDATE {cst.COMPOSITE_TASK_SUBTASKS_TABLE}
+            SET {cst.SUBTASK_TASK_ID} = $3
+            WHERE {cst.COMPOSITE_TASK_ID} = $1 AND {cst.SUBTASK_TASK_ID} = $2
+        """, composite_task_id, old_subtask_task_id, new_subtask_task_id)
+
+
 async def get_composite_task_subtasks(composite_task_id: str, psql_db: PSQLDB) -> list[CompositeSubtask]:
     """Get a composite task's subtasks (task_id + source round), ordered by position."""
     async with await psql_db.connection() as connection:
