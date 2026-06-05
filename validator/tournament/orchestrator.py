@@ -600,7 +600,7 @@ async def _build_composite_training_data(
         weight = next(w.weight for w in round_weights if w.source_round == subtask.source_round)
         specs.append(
             SubtaskSpec(
-                dataset=subtask_task.training_data,  # TODO (OPEN-7): regen presigned URL for carried-over subtasks
+                dataset=subtask_task.training_data,
                 dataset_type=_get_dataset_type(subtask_task),
                 file_format=FileFormat.S3,
                 source_round=subtask.source_round,
