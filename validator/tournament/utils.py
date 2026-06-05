@@ -1235,8 +1235,8 @@ async def notify_tournament_dedup_error(
 ):
     """R2 ping: the dedup gate failed to evaluate (clone/API/parse) — tournament HALTED.
 
-    Nothing is persisted on failure, so the gate auto-retries every cycle once the underlying
-    cause is fixed. This pings every cycle until it clears so the failure stays visible."""
+    Fired once per failure: the gate is then held without re-running (T2 is expensive) until the
+    validator is restarted or a skip row is inserted, so it won't re-bill Anthropic on a loop."""
     try:
         lines = [
             "🛑 Dedup (R2): gate FAILED to evaluate — TOURNAMENT HALTED (no eliminations applied).",
@@ -1244,9 +1244,9 @@ async def notify_tournament_dedup_error(
             f"Guarded round: {round_id}",
             f"Error: {error}",
             "",
-            "To resume:",
+            "Held without re-running until you act. To resume:",
             "  - Fix the underlying cause (e.g. ANTHROPIC_API_KEY unset, repo clone access, "
-            "model budget/parse failure). The gate re-runs automatically next cycle once fixed.",
+            "model budget/parse failure), then RESTART the validator — the gate retries once on restart.",
             "  - OR bypass the dedup check for this round (advance with NO eliminations) by inserting a skip row:",
             (
                 f"      INSERT INTO tournament_dedup_reviews (round_id, tournament_id, tournament_type, status) "

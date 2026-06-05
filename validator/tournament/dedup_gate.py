@@ -44,6 +44,10 @@ from validator.utils.util import upload_file_to_minio
 
 logger = get_logger(__name__)
 
+# Round IDs whose T2 gate raised this process; held without re-running (T2 is expensive).
+# Cleared on restart (retries once) or bypassed via a DB skip row.
+_GATE_FAILED: set[str] = set()
+
 
 def _repo_refs(participants, hotkeys: set[str]) -> list[RepoRef]:
     return [
@@ -123,12 +127,16 @@ async def evaluate_r2_dedup_gate(
     existing = await get_dedup_review(next_round_id, psql_db)
 
     if existing is None:
+        if next_round_id in _GATE_FAILED:
+            # Failed earlier this process — hold without re-running the expensive T2 check.
+            logger.warning(f"Dedup gate {next_round_id}: held after earlier failure — restart or DB-skip to retry")
+            return GateDecision(halt=True)
         try:
             return await _run_and_record_gate(tournament, next_round_id, winners, config, psql_db)
         except Exception as exc:
-            # The gate failed before writing a review row (clone/API/parse error). Nothing is
-            # persisted, so it will retry next cycle — but we must NOT advance past an unevaluated
-            # gate. Halt and ping (every cycle, so it stays visible) with resume instructions.
+            # Gate failed before writing a review row (clone/API/parse). Don't advance past an
+            # unevaluated gate, and don't re-run it every cycle — halt, remember, ping once.
+            _GATE_FAILED.add(next_round_id)
             logger.error(f"Dedup gate {next_round_id} failed to evaluate — halting tournament: {exc}", exc_info=True)
             if config.discord_url:
                 await notify_tournament_dedup_error(
