@@ -46,6 +46,7 @@ from validator.evaluation.pvp.models import PvPPairDbRow
 from validator.evaluation.pvp.models import PvPPairResult
 from validator.evaluation.pvp.models import _canonical_pair_key
 from validator.infrastructure.minio_client import async_minio_client
+from validator.scoring.models import EnvMinerScores
 from validator.scoring.models import EvalHotkeyResults
 from validator.scoring.models import GroupStagePoints
 from validator.scoring.models import IndividualEvalResult
@@ -54,11 +55,9 @@ from validator.scoring.models import MinerRepos
 from validator.scoring.models import MinerResults
 from validator.scoring.models import MinerResultsImage
 from validator.scoring.models import MinerResultsText
-from validator.scoring.models import PairwiseOutcome
 from validator.scoring.models import Submission
-from validator.scoring.tournaments import accumulate_points
-from validator.scoring.tournaments import individual_scores_to_pairwise
-from validator.scoring.tournaments import pvp_results_to_pairwise
+from validator.scoring.tournaments import pvp_results_to_winrates
+from validator.scoring.tournaments import rank_weighted_standings
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import EnvRawTask
 
@@ -277,7 +276,8 @@ def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) 
         )
 
         weighted_loss = (
-            eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
+            eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg
+            + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
         )
         return weighted_loss
 
@@ -699,21 +699,21 @@ async def _run_env_tournament_eval(
         f"pvp_envs={[e.value for e in pvp_envs]}, individual_envs={[e.value for e in individual_envs]}"
     )
 
-    all_outcomes: list[PairwiseOutcome] = []
+    env_scores: list[EnvMinerScores] = []
 
     if pvp_envs:
-        all_outcomes.extend(await _eval_pvp_envs(
+        env_scores.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
         ))
 
     if individual_envs:
-        all_outcomes.extend(await _eval_individual_envs(
+        env_scores.extend(await _eval_individual_envs(
             task_id=task.task_id, individual_envs=individual_envs, miners=miners,
             base_model=base_model, model_params=model_params, seed=seed, config=config,
         ))
 
-    standings = accumulate_points(all_outcomes, miners.hotkeys, weights=task.environment_weights or None)
+    standings = rank_weighted_standings(env_scores, miners.hotkeys, weights=task.environment_weights or None)
     return _standings_to_results(standings, miners, task)
 
 
@@ -772,8 +772,8 @@ async def _eval_pvp_envs(
     base_model: str,
     seed: int,
     config: Config,
-) -> list[PairwiseOutcome]:
-    """Run pairwise PvP eval for PVP-type environments, return pairwise outcomes."""
+) -> list[EnvMinerScores]:
+    """Run pairwise PvP eval for PVP-type environments, return per-env win rates."""
     env_config = _get_shared_env_config(pvp_envs)
 
     group_results = await _get_or_run_pvp_pairs(
@@ -783,7 +783,7 @@ async def _eval_pvp_envs(
         gpu_count=eval_cst.PVP_BASILICA_GPU_COUNT, config=config,
     )
 
-    return pvp_results_to_pairwise(group_results)
+    return pvp_results_to_winrates(group_results)
 
 
 async def _get_or_run_pvp_pairs(
@@ -903,8 +903,8 @@ async def _eval_individual_envs(
     model_params: int,
     seed: int,
     config: Config,
-) -> list[PairwiseOutcome]:
-    """Run per-miner containers for INDIVIDUAL-type envs, return synthetic pairwise outcomes."""
+) -> list[EnvMinerScores]:
+    """Run per-miner containers for INDIVIDUAL-type envs, return per-env raw scores."""
     task_id_str = str(task_id)
     env_name_strs = [e.value for e in individual_envs]
 
@@ -931,7 +931,12 @@ async def _eval_individual_envs(
         # Check if any missing hotkeys are still retryable — if so, raise to retry next cycle
         still_retryable = False
         for env, missing_hks in incomplete:
-            retryable = _filter_exhausted(missing_hks, env.value, db_scores, max_attempts=scoring_cst.MAX_TOURNAMENT_EVAL_ATTEMPTS)
+            retryable = _filter_exhausted(
+                missing_hks,
+                env.value,
+                db_scores,
+                max_attempts=scoring_cst.MAX_TOURNAMENT_EVAL_ATTEMPTS,
+            )
             if retryable:
                 still_retryable = True
                 break
@@ -953,11 +958,10 @@ async def _eval_individual_envs(
                 f"Individual eval {env.value}: assigned score=0 for exhausted hotkeys: {[hk[:8] for hk in missing_hks]}"
             )
 
-    outcomes: list[PairwiseOutcome] = []
-    for env in individual_envs:
-        result = scores.results[env]
-        outcomes.extend(individual_scores_to_pairwise(result.scores_by_hotkey, env))
-    return outcomes
+    return [
+        EnvMinerScores(environment=env, scores_by_hotkey=dict(scores.results[env].scores_by_hotkey))
+        for env in individual_envs
+    ]
 
 
 def _build_scores_from_db(

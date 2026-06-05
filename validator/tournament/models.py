@@ -16,6 +16,7 @@ from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from core.models.trainer_contract_models import GPUInfo
 from validator.scoring.models import EnvironmentWeight as EnvironmentWeight
+from validator.scoring.models import EnvMinerScores as EnvMinerScores
 from validator.scoring.models import EvalHotkeyResults as EvalHotkeyResults
 from validator.scoring.models import GroupStagePoints as GroupStagePoints
 from validator.scoring.models import PairwiseOutcome as PairwiseOutcome

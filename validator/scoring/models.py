@@ -199,6 +199,17 @@ class IndividualScoresByEnv(BaseModel):
         return incomplete
 
 
+class EnvMinerScores(BaseModel):
+    """Continuous per-miner scores for a single environment, before rank normalization.
+
+    Holds either a PvP env's win-rates or an INDIVIDUAL env's raw scores. Both are
+    higher-is-better numbers per hotkey and are combined downstream by rank.
+    """
+
+    environment: EnvironmentName
+    scores_by_hotkey: dict[str, float]
+
+
 class EvalHotkeyResults(BaseModel):
     """Outcome of evaluating a batch of hotkeys."""
 
