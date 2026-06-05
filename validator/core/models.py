@@ -547,9 +547,9 @@ class EvaluationArgs(BaseModel):
 
 
 class CompositeRawTask(RawTask):
-    """A task composed of constituent tasks (instruct/dpo/grpo), trained as one model.
+    """A task composed of subtask tasks (instruct/dpo/grpo), trained as one model.
 
-    Constituents are linked via composite_task_constituents and carry their own dataset/type/
+    Subtasks are linked via composite_task_subtasks and carry their own dataset/type/
     config; this row holds the track model and round metadata, with a placeholder `ds` (like env
     tasks). Deliberately excluded from AnyTextTypeRawTask — it has no dataset of its own to prep.
     """

@@ -139,7 +139,7 @@ async def _insert_task_specific_data(connection: Connection, task: AnyTypeRawTas
         await _insert_chat_task(connection, task, task_record)
     elif isinstance(task, CompositeRawTask):
         # No per-type table: a composite is just the base task row plus its
-        # composite_task_constituents links (written separately at round creation).
+        # composite_task_subtasks links (written separately at round creation).
         pass
 
 

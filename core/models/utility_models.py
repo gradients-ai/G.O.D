@@ -39,7 +39,7 @@ class TaskStatus(str, Enum):
     EVALUATING = "evaluating"
     SUCCESS = "success"
     FAILURE = "failure"
-    COMPOSITE_CONSTITUENT = "composite_constituent"  # inert: a composite's dataset-carrier, never trained alone
+    COMPOSITE_SUBTASK = "composite_subtask"  # inert: a composite's dataset-carrier, never trained alone
 
 
 class WinningSubmission(BaseModel):

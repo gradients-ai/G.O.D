@@ -1,4 +1,5 @@
 from core.models.pvp_models import PvPStatus
+from core.models.tournament_models import CompositeScoreStatus
 
 # Connection Pool Constants
 MIN_POOL_SIZE = 10  # Minimum number of connections to stay open
@@ -40,7 +41,7 @@ BENCHMARK_TASK_COPIES_TABLE = "benchmark_task_copies"
 TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE = "tournament_task_hotkey_trainings"
 PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
-COMPOSITE_TASK_CONSTITUENTS_TABLE = "composite_task_constituents"
+COMPOSITE_TASK_SUBTASKS_TABLE = "composite_task_subtasks"
 COMPOSITE_TASK_SCORES_TABLE = "composite_task_scores"
 
 # PvP Pair Results Table Columns
@@ -55,15 +56,15 @@ PVP_N_ATTEMPTS = "n_attempts"
 PVP_STATUS_PENDING = PvPStatus.PENDING
 PVP_STATUS_COMPLETE = PvPStatus.COMPLETE
 
-# Composite task constituents + composite-task-scores columns (shared: TASK_ID, HOTKEY, STATUS, *_AT)
+# Composite task subtasks + composite-task-scores columns (shared: TASK_ID, HOTKEY, STATUS, *_AT)
 COMPOSITE_TASK_ID = "composite_task_id"
-CONSTITUENT_TASK_ID = "constituent_task_id"
-CONSTITUENT_POSITION = "position"
-CONSTITUENT_SOURCE_ROUND = "source_round"
+SUBTASK_TASK_ID = "subtask_task_id"
+SUBTASK_POSITION = "position"
+SUBTASK_SOURCE_ROUND = "source_round"
 SCORE = "score"
 N_ATTEMPTS = "n_attempts"
-SCORE_STATUS_PENDING = "pending"
-SCORE_STATUS_SUCCESS = "success"
+SCORE_STATUS_PENDING = CompositeScoreStatus.PENDING
+SCORE_STATUS_SUCCESS = CompositeScoreStatus.SUCCESS
 
 # PvP Individual Scores Table Columns
 PVP_INDIVIDUAL_SCORE = "score"

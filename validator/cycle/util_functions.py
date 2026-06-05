@@ -25,7 +25,7 @@ from validator.core.models import ImageRawTask
 from validator.core.models import InstructTextRawTask
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
-from validator.db.sql.tournaments import get_composite_task_constituents
+from validator.db.sql.tournaments import get_composite_task_subtasks
 from validator.tasks.task_prep import prepare_image_task
 from validator.tasks.task_prep import prepare_text_task
 from validator.utils.logging import get_logger
@@ -110,18 +110,18 @@ async def run_text_task_prep(task: AnyTextTypeRawTask, keypair: Keypair, psql_db
 
 
 async def run_composite_task_prep(task: CompositeRawTask, keypair: Keypair, psql_db: PSQLDB) -> CompositeRawTask:
-    """Prep the composite's not-yet-prepared constituents in parallel; carried-over ones keep
+    """Prep the composite's not-yet-prepared subtasks in parallel; carried-over ones keep
     their existing split so the eval surface stays stable across rounds."""
-    constituents = await get_composite_task_constituents(str(task.task_id), psql_db)
-    await asyncio.gather(*(_prep_constituent(c.constituent_task_id, keypair, psql_db) for c in constituents))
+    subtasks = await get_composite_task_subtasks(str(task.task_id), psql_db)
+    await asyncio.gather(*(_prep_subtask(c.subtask_task_id, keypair, psql_db) for c in subtasks))
     return task
 
 
-async def _prep_constituent(constituent_id: str, keypair: Keypair, psql_db: PSQLDB) -> None:
-    constituent = await tasks_sql.get_task(UUID(constituent_id), psql_db)
-    if constituent.training_data and constituent.test_data:
+async def _prep_subtask(subtask_id: str, keypair: Keypair, psql_db: PSQLDB) -> None:
+    subtask = await tasks_sql.get_task(UUID(subtask_id), psql_db)
+    if subtask.training_data and subtask.test_data:
         return
-    prepared = await run_text_task_prep(constituent, keypair, psql_db)
+    prepared = await run_text_task_prep(subtask, keypair, psql_db)
     await tasks_sql.update_task(prepared, psql_db)
 
 

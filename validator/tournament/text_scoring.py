@@ -78,11 +78,11 @@ def weighted_rank_scores(
     are averaged within each source round, then combined with the round-decay weights.
     """
     results = list(results)
-    constituent_task_ids = list(dict.fromkeys(result.constituent_task_id for result in results))
+    subtask_task_ids = list(dict.fromkeys(result.subtask_task_id for result in results))
 
     round_ranks: list[RoundRank] = []
-    for constituent_task_id in constituent_task_ids:
-        rows = [result for result in results if result.constituent_task_id == constituent_task_id]
+    for subtask_task_id in subtask_task_ids:
+        rows = [result for result in results if result.subtask_task_id == subtask_task_id]
         round_ranks.extend(_rank_dataset(rows, competitors))
 
     scores = [
@@ -133,11 +133,11 @@ def _scenario_outcome(
     challenger_hotkey: str,
     threshold: float,
 ) -> BossScenarioOutcome:
-    constituent_task_ids = list(dict.fromkeys(result.constituent_task_id for result in scenario.results))
+    subtask_task_ids = list(dict.fromkeys(result.subtask_task_id for result in scenario.results))
 
     wins: list[RoundValue] = []
-    for constituent_task_id in constituent_task_ids:
-        rows = [result for result in scenario.results if result.constituent_task_id == constituent_task_id]
+    for subtask_task_id in subtask_task_ids:
+        rows = [result for result in scenario.results if result.subtask_task_id == subtask_task_id]
         challenger_won = _challenger_beats_boss_on_dataset(
             _score_for(rows, boss_hotkey),
             _score_for(rows, challenger_hotkey),

@@ -26,6 +26,9 @@ from core.models.scoring_models import IndividualEvalResult
 from core.models.scoring_models import IndividualScoresByEnv
 from core.models.scoring_models import MinerRepos
 from core.models.scoring_models import PairwiseOutcome
+from core.models.tournament_models import CompositeSubtask
+from core.models.tournament_models import CompositeScoreboard
+from core.models.tournament_models import TaskEvalResult
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -41,6 +44,7 @@ from validator.core.models import MinerResults
 from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
 from validator.core.models import Submission
+from validator.db import constants as db_cst
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
@@ -49,9 +53,11 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql.tasks import get_task
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
+from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_pvp_pair
 from validator.evaluation.tournament_scoring import accumulate_points
 from validator.evaluation.tournament_scoring import individual_scores_to_pairwise
@@ -545,7 +551,15 @@ async def process_miners_pool(
             logger.info(f"Constructed repo {repo} for miner {miner.hotkey}")
             miner_repos[miner.hotkey] = repo
 
-    if miner_repos and should_use_tournament_eval(task):
+    if miner_repos and task.task_type == TaskType.COMPOSITETASK:
+        try:
+            results.extend(await _run_composite_eval(task, miner_repos, num_gpus, config))
+        except EvaluationRetryableError:
+            raise
+        except Exception as e:
+            logger.error(f"Composite evaluation failed: {e}", exc_info=True)
+            raise EvaluationRetryableError(f"Composite eval failed, will retry: {e}") from e
+    elif miner_repos and should_use_tournament_eval(task):
         try:
             results.extend(await _run_env_tournament_eval(task, miner_repos, config))
         except PvPIncompleteError:
@@ -646,6 +660,147 @@ async def process_miners_pool(
             )
 
     return results
+
+
+async def _eval_composite_subtask(
+    task: AnyTypeRawTask,
+    subtask: CompositeSubtask,
+    subtask_task: AnyTypeRawTask,
+    missing_repos: list[str],
+    repo_to_hotkey: dict[str, str],
+    num_gpus: int,
+    config: Config,
+) -> None:
+    """Eval the not-yet-scored repos against one subtask's dataset and persist each result.
+
+    The DPO/cold-track reference is the shared base (`task.model_id`), not any miner's continued
+    checkpoint — a fixed yardstick. The eval seed is pinned for a stable, comparable surface.
+    """
+    eval_results = await run_evaluation_basilica_text(
+        dataset=subtask_task.test_data,
+        models=missing_repos,
+        original_model=task.model_id,
+        dataset_type=_get_dataset_type(subtask_task),
+        file_format=FileFormat.JSON,
+        num_gpus=num_gpus,
+        eval_seed=cts.TEXT_COMPOSITE_EVAL_SEED,
+        task_id=task.task_id,
+        psql_db=config.psql_db,
+    )
+    for repo, result in eval_results.results.items():
+        hotkey = repo_to_hotkey[repo]
+        await tournament_sql.increment_composite_task_score_attempts(
+            str(task.task_id), hotkey, subtask.subtask_task_id, config.psql_db
+        )
+        if isinstance(result, Exception) or not result.is_finetune:
+            logger.warning(f"Composite eval failed for {hotkey[:8]} on {subtask.subtask_task_id}: {result}")
+            continue
+        await tournament_sql.save_composite_task_score(
+            str(task.task_id), hotkey, subtask.subtask_task_id, float(result.eval_loss), config.psql_db
+        )
+
+
+def _build_composite_eval_rows(
+    subtasks: list[CompositeSubtask],
+    subtask_tasks: dict[str, AnyTypeRawTask],
+    hotkeys: list[str],
+    scoreboard: CompositeScoreboard,
+) -> list[TaskEvalResult]:
+    """Assemble the full (hotkey × subtask) grid. A missing score stays None — weighted-rank treats
+    it as a failure that ranks last on that dataset, so no placeholder loss is needed."""
+    rows: list[TaskEvalResult] = []
+    for subtask in subtasks:
+        subtask_task = subtask_tasks[subtask.subtask_task_id]
+        for hotkey in hotkeys:
+            rows.append(
+                TaskEvalResult(
+                    hotkey=hotkey,
+                    subtask_task_id=subtask.subtask_task_id,
+                    source_round=subtask.source_round,
+                    task_type=subtask_task.task_type,
+                    score=scoreboard.successful_score(hotkey, subtask.subtask_task_id),
+                )
+            )
+    return rows
+
+
+def _composite_miner_result(
+    task: AnyTypeRawTask, hotkey: str, repo: str, aggregate: float, had_success: bool
+) -> MinerResultsText:
+    """One miner's result for a composite. `test_loss` is the weighted-rank aggregate (lower = better);
+    the authoritative round ranking is re-derived from `composite_task_scores` in advancement."""
+    return MinerResultsText(
+        hotkey=hotkey,
+        test_loss=aggregate,
+        synth_loss=aggregate,
+        is_finetune=had_success,
+        submission=Submission(
+            task_id=task.task_id, hotkey=hotkey, repo=repo, created_on=datetime.now(), updated_on=datetime.now()
+        ),
+        task_type=task.task_type,
+    )
+
+
+async def _run_composite_eval(
+    task: AnyTypeRawTask,
+    miner_repos: dict[str, str],  # {hotkey: repo_id}
+    num_gpus: int,
+    config: Config,
+) -> list[MinerResultsText]:
+    """Eval each miner's model over the composite's full subtask lineage, persist per-subtask scores,
+    and return the weighted-rank aggregate per miner. Crash-safe: only not-yet-scored repos are re-run
+    each cycle, and incomplete-but-retryable evals raise to retry next cycle."""
+    # Local import: the validator.tournament package init pulls tournament_manager → utils → scoring.
+    from validator.tournament.text_scoring import weighted_rank_scores
+
+    task_id_str = str(task.task_id)
+    hotkeys = list(miner_repos.keys())
+    repo_to_hotkey = {repo: hotkey for hotkey, repo in miner_repos.items()}
+
+    subtasks = await tournament_sql.get_composite_task_subtasks(task_id_str, config.psql_db)
+    subtask_tasks = {
+        subtask.subtask_task_id: await get_task(UUID(subtask.subtask_task_id), config.psql_db) for subtask in subtasks
+    }
+    await tournament_sql.ensure_composite_task_scores_exist(
+        task_id_str, hotkeys, [subtask.subtask_task_id for subtask in subtasks], config.psql_db
+    )
+
+    scoreboard = CompositeScoreboard(scores=await tournament_sql.get_composite_task_scores(task_id_str, config.psql_db))
+    for subtask in subtasks:
+        missing_repos = [
+            miner_repos[hotkey] for hotkey in hotkeys if not scoreboard.has_success(hotkey, subtask.subtask_task_id)
+        ]
+        if missing_repos:
+            await _eval_composite_subtask(
+                task, subtask, subtask_tasks[subtask.subtask_task_id], missing_repos, repo_to_hotkey, num_gpus, config
+            )
+
+    scoreboard = CompositeScoreboard(scores=await tournament_sql.get_composite_task_scores(task_id_str, config.psql_db))
+    incomplete = [
+        (hotkey, subtask)
+        for subtask in subtasks
+        for hotkey in hotkeys
+        if not scoreboard.has_success(hotkey, subtask.subtask_task_id)
+    ]
+    retryable = [
+        (hotkey, subtask)
+        for hotkey, subtask in incomplete
+        if scoreboard.attempts(hotkey, subtask.subtask_task_id) < cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
+    ]
+    if retryable:
+        raise EvaluationRetryableError(f"Composite scores incomplete ({len(retryable)} retryable of {len(incomplete)})")
+    if incomplete:
+        logger.warning(f"Composite eval exhausted attempts for {len(incomplete)} (hotkey, subtask) pairs — ranking them last")
+
+    eval_rows = _build_composite_eval_rows(subtasks, subtask_tasks, hotkeys, scoreboard)
+    aggregates = {competitor.hotkey: competitor.score for competitor in weighted_rank_scores(eval_rows, hotkeys)}
+    return [
+        _composite_miner_result(
+            task, hotkey, miner_repos[hotkey], aggregates[hotkey],
+            had_success=any(scoreboard.has_success(hotkey, subtask.subtask_task_id) for subtask in subtasks),
+        )
+        for hotkey in hotkeys
+    ]
 
 
 def should_use_tournament_eval(task: AnyTypeRawTask) -> bool:

@@ -20,9 +20,9 @@ DPO = TaskType.DPOTASK
 GRPO = TaskType.GRPOTASK
 
 
-def res(hotkey: str, constituent_task_id: str, source_round: int, task_type: TaskType, score: float | None) -> TaskEvalResult:
+def res(hotkey: str, subtask_task_id: str, source_round: int, task_type: TaskType, score: float | None) -> TaskEvalResult:
     return TaskEvalResult(
-        hotkey=hotkey, constituent_task_id=constituent_task_id, source_round=source_round, task_type=task_type, score=score
+        hotkey=hotkey, subtask_task_id=subtask_task_id, source_round=source_round, task_type=task_type, score=score
     )
 
 

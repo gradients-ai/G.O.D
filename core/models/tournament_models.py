@@ -562,7 +562,7 @@ class TaskEvalResult(BaseModel):
     — failed training, or failed eval on this dataset — and ranks last."""
 
     hotkey: str
-    constituent_task_id: str
+    subtask_task_id: str
     source_round: int
     task_type: TaskType
     score: float | None = None
@@ -591,25 +591,58 @@ class CompetitorScore(BaseModel):
     score: float
 
 
-class CompositeConstituent(BaseModel):
-    """A composite's constituent task reference, tagged with the round its dataset was created in."""
+class CompositeSubtask(BaseModel):
+    """A composite's subtask task reference, tagged with the round its dataset was created in."""
 
-    constituent_task_id: str
+    subtask_task_id: str
     source_round: int
 
 
+class CompositeScoreStatus(str, Enum):
+    """Status of a persisted composite-task eval-score row."""
+
+    PENDING = "pending"
+    SUCCESS = "success"
+
+
 class CompositeTaskScore(BaseModel):
-    """A miner's persisted eval score for one task's model on one constituent's dataset (mirrors
-    `pvp_individual_scores`). `task_id` is the task whose model was evaluated; `constituent_task_id`
-    is the constituent task that supplied the eval dataset; `score` is None until a successful
-    eval. `status` mirrors the pvp table's TEXT status (pending/…)."""
+    """A miner's persisted eval score for one task's model on one subtask's dataset (mirrors
+    `pvp_individual_scores`). `task_id` is the task whose model was evaluated; `subtask_task_id`
+    is the subtask task that supplied the eval dataset; `score` is None until a successful eval."""
 
     task_id: str
     hotkey: str
-    constituent_task_id: str
+    subtask_task_id: str
     score: float | None = None
     n_attempts: int = 0
-    status: str = "pending"
+    status: CompositeScoreStatus = CompositeScoreStatus.PENDING
+
+    @property
+    def succeeded(self) -> bool:
+        return self.status == CompositeScoreStatus.SUCCESS and self.score is not None
+
+
+class CompositeScoreboard(BaseModel):
+    """All persisted per-subtask eval scores for one composite task, with (hotkey, subtask)
+    lookups for the eval/advancement logic."""
+
+    scores: list[CompositeTaskScore]
+
+    def _entry(self, hotkey: str, subtask_task_id: str) -> CompositeTaskScore | None:
+        return next(
+            (s for s in self.scores if s.hotkey == hotkey and s.subtask_task_id == subtask_task_id), None
+        )
+
+    def successful_score(self, hotkey: str, subtask_task_id: str) -> float | None:
+        entry = self._entry(hotkey, subtask_task_id)
+        return entry.score if entry and entry.succeeded else None
+
+    def has_success(self, hotkey: str, subtask_task_id: str) -> bool:
+        return self.successful_score(hotkey, subtask_task_id) is not None
+
+    def attempts(self, hotkey: str, subtask_task_id: str) -> int:
+        entry = self._entry(hotkey, subtask_task_id)
+        return entry.n_attempts if entry else 0
 
 
 class BossScenario(BaseModel):

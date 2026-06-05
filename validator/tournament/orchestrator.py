@@ -13,7 +13,7 @@ import validator.tournament.constants as cst
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
-from core.models.payload_models import ConstituentSpec
+from core.models.payload_models import SubtaskSpec
 from core.models.payload_models import TrainRequestComposite
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
@@ -40,7 +40,7 @@ from validator.core.models import AnyTypeRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
-from validator.db.sql.tournaments import get_composite_task_constituents
+from validator.db.sql.tournaments import get_composite_task_subtasks
 from validator.db.sql.tournaments import get_latest_composite_task_score
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
@@ -589,23 +589,23 @@ async def _build_composite_training_data(
     baseline_stats,
     config: Config,
 ) -> TrainRequestComposite:
-    """Build a miner's composite job: the cold-base reference + the weighted constituent set
-    (each constituent's dataset, its decay weight, and the miner's prior score on it)."""
-    constituents = await get_composite_task_constituents(str(task.task_id), config.psql_db)
-    round_weights = round_decay_weights([constituent.source_round for constituent in constituents])
+    """Build a miner's composite job: the cold-base reference + the weighted subtask set
+    (each subtask's dataset, its decay weight, and the miner's prior score on it)."""
+    subtasks = await get_composite_task_subtasks(str(task.task_id), config.psql_db)
+    round_weights = round_decay_weights([subtask.source_round for subtask in subtasks])
 
     specs = []
-    for constituent in constituents:
-        constituent_task = await task_sql.get_task(constituent.constituent_task_id, config.psql_db)
-        weight = next(w.weight for w in round_weights if w.source_round == constituent.source_round)
+    for subtask in subtasks:
+        subtask_task = await task_sql.get_task(subtask.subtask_task_id, config.psql_db)
+        weight = next(w.weight for w in round_weights if w.source_round == subtask.source_round)
         specs.append(
-            ConstituentSpec(
-                dataset=constituent_task.training_data,  # TODO (OPEN-7): regen presigned URL for carried-over constituents
-                dataset_type=_get_dataset_type(constituent_task),
+            SubtaskSpec(
+                dataset=subtask_task.training_data,  # TODO (OPEN-7): regen presigned URL for carried-over subtasks
+                dataset_type=_get_dataset_type(subtask_task),
                 file_format=FileFormat.S3,
-                source_round=constituent.source_round,
+                source_round=subtask.source_round,
                 weight=weight,
-                prior_score=await get_latest_composite_task_score(hotkey, constituent.constituent_task_id, config.psql_db),
+                prior_score=await get_latest_composite_task_score(hotkey, subtask.subtask_task_id, config.psql_db),
             )
         )
 
@@ -615,7 +615,7 @@ async def _build_composite_training_data(
         hours_to_complete=task.hours_to_complete,
         expected_repo_name=expected_repo_name,
         reference_model=task.model_id,  # cold track base — the shared DPO reference (D5)
-        constituents=specs,
+        subtasks=specs,
         baseline_stats=baseline_stats,
     )
 

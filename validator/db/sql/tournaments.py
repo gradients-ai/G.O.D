@@ -8,7 +8,7 @@ from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPIndividualScoreDbRow
 from core.models.pvp_models import PvPPairDbRow
 from core.models.pvp_models import PvPPairResult
-from core.models.tournament_models import CompositeConstituent
+from core.models.tournament_models import CompositeSubtask
 from core.models.tournament_models import GroupRound
 from core.models.tournament_models import HotkeyTaskParticipation
 from core.models.tournament_models import CompositeTaskScore
@@ -1609,64 +1609,64 @@ async def get_individual_scores(task_id: str, psql_db: PSQLDB) -> list[PvPIndivi
         return [PvPIndividualScoreDbRow(task_id=task_id, **dict(r)) for r in rows]
 
 
-async def add_composite_task_constituents(
-    composite_task_id: str, constituents: list[CompositeConstituent], psql_db: PSQLDB,
+async def add_composite_task_subtasks(
+    composite_task_id: str, subtasks: list[CompositeSubtask], psql_db: PSQLDB,
 ) -> None:
-    """Link constituents to a composite task, ordered by position and tagged with source round."""
-    if not constituents:
+    """Link subtasks to a composite task, ordered by position and tagged with source round."""
+    if not subtasks:
         return
     rows = [
-        (composite_task_id, constituent.constituent_task_id, position, constituent.source_round)
-        for position, constituent in enumerate(constituents)
+        (composite_task_id, subtask.subtask_task_id, position, subtask.source_round)
+        for position, subtask in enumerate(subtasks)
     ]
     async with await psql_db.connection() as connection:
         await connection.executemany(f"""
-            INSERT INTO {cst.COMPOSITE_TASK_CONSTITUENTS_TABLE}
-                ({cst.COMPOSITE_TASK_ID}, {cst.CONSTITUENT_TASK_ID}, {cst.CONSTITUENT_POSITION}, {cst.CONSTITUENT_SOURCE_ROUND})
+            INSERT INTO {cst.COMPOSITE_TASK_SUBTASKS_TABLE}
+                ({cst.COMPOSITE_TASK_ID}, {cst.SUBTASK_TASK_ID}, {cst.SUBTASK_POSITION}, {cst.SUBTASK_SOURCE_ROUND})
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT ({cst.COMPOSITE_TASK_ID}, {cst.CONSTITUENT_TASK_ID}) DO NOTHING
+            ON CONFLICT ({cst.COMPOSITE_TASK_ID}, {cst.SUBTASK_TASK_ID}) DO NOTHING
         """, rows)
 
 
-async def get_composite_task_constituents(composite_task_id: str, psql_db: PSQLDB) -> list[CompositeConstituent]:
-    """Get a composite task's constituents (task_id + source round), ordered by position."""
+async def get_composite_task_subtasks(composite_task_id: str, psql_db: PSQLDB) -> list[CompositeSubtask]:
+    """Get a composite task's subtasks (task_id + source round), ordered by position."""
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(f"""
-            SELECT {cst.CONSTITUENT_TASK_ID}, {cst.CONSTITUENT_SOURCE_ROUND}
-            FROM {cst.COMPOSITE_TASK_CONSTITUENTS_TABLE}
+            SELECT {cst.SUBTASK_TASK_ID}, {cst.SUBTASK_SOURCE_ROUND}
+            FROM {cst.COMPOSITE_TASK_SUBTASKS_TABLE}
             WHERE {cst.COMPOSITE_TASK_ID} = $1
-            ORDER BY {cst.CONSTITUENT_POSITION}
+            ORDER BY {cst.SUBTASK_POSITION}
         """, composite_task_id)
         return [
-            CompositeConstituent(
-                constituent_task_id=str(r[cst.CONSTITUENT_TASK_ID]), source_round=r[cst.CONSTITUENT_SOURCE_ROUND]
+            CompositeSubtask(
+                subtask_task_id=str(r[cst.SUBTASK_TASK_ID]), source_round=r[cst.SUBTASK_SOURCE_ROUND]
             )
             for r in rows
         ]
 
 
 async def ensure_composite_task_scores_exist(
-    task_id: str, hotkeys: list[str], constituent_task_ids: list[str], psql_db: PSQLDB,
+    task_id: str, hotkeys: list[str], subtask_task_ids: list[str], psql_db: PSQLDB,
 ) -> None:
     """Create pending rows for all required hotkey × dataset combos if they don't exist."""
-    if not hotkeys or not constituent_task_ids:
+    if not hotkeys or not subtask_task_ids:
         return
     rows = [
         (task_id, hk, did, cst.SCORE_STATUS_PENDING)
         for hk in hotkeys
-        for did in constituent_task_ids
+        for did in subtask_task_ids
     ]
     async with await psql_db.connection() as connection:
         await connection.executemany(f"""
             INSERT INTO {cst.COMPOSITE_TASK_SCORES_TABLE}
-                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.CONSTITUENT_TASK_ID}, {cst.STATUS})
+                ({cst.TASK_ID}, {cst.HOTKEY}, {cst.SUBTASK_TASK_ID}, {cst.STATUS})
             VALUES ($1, $2, $3, $4)
-            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.CONSTITUENT_TASK_ID}) DO NOTHING
+            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.SUBTASK_TASK_ID}) DO NOTHING
         """, rows)
 
 
 async def save_composite_task_score(
-    task_id: str, hotkey: str, constituent_task_id: str, score: float, psql_db: PSQLDB,
+    task_id: str, hotkey: str, subtask_task_id: str, score: float, psql_db: PSQLDB,
 ) -> None:
     """Mark a hotkey × dataset eval as successful with its score."""
     async with await psql_db.connection() as connection:
@@ -1674,12 +1674,12 @@ async def save_composite_task_score(
             UPDATE {cst.COMPOSITE_TASK_SCORES_TABLE}
             SET {cst.SCORE} = $4, {cst.STATUS} = $5,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.CONSTITUENT_TASK_ID} = $3
-        """, task_id, hotkey, constituent_task_id, score, cst.SCORE_STATUS_SUCCESS)
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.SUBTASK_TASK_ID} = $3
+        """, task_id, hotkey, subtask_task_id, score, cst.SCORE_STATUS_SUCCESS)
 
 
 async def increment_composite_task_score_attempts(
-    task_id: str, hotkey: str, constituent_task_id: str, psql_db: PSQLDB,
+    task_id: str, hotkey: str, subtask_task_id: str, psql_db: PSQLDB,
 ) -> None:
     """Increment the attempt count for a hotkey × dataset that hasn't succeeded yet."""
     async with await psql_db.connection() as connection:
@@ -1687,16 +1687,16 @@ async def increment_composite_task_score_attempts(
             UPDATE {cst.COMPOSITE_TASK_SCORES_TABLE}
             SET {cst.N_ATTEMPTS} = {cst.N_ATTEMPTS} + 1,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.CONSTITUENT_TASK_ID} = $3
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.SUBTASK_TASK_ID} = $3
                 AND {cst.STATUS} != $4
-        """, task_id, hotkey, constituent_task_id, cst.SCORE_STATUS_SUCCESS)
+        """, task_id, hotkey, subtask_task_id, cst.SCORE_STATUS_SUCCESS)
 
 
 async def get_composite_task_scores(task_id: str, psql_db: PSQLDB) -> list[CompositeTaskScore]:
     """Get all dataset eval-result rows for a task's model."""
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(f"""
-            SELECT {cst.HOTKEY}, {cst.CONSTITUENT_TASK_ID}, {cst.SCORE},
+            SELECT {cst.HOTKEY}, {cst.SUBTASK_TASK_ID}, {cst.SCORE},
                    {cst.N_ATTEMPTS}, {cst.STATUS}
             FROM {cst.COMPOSITE_TASK_SCORES_TABLE}
             WHERE {cst.TASK_ID} = $1
@@ -1705,7 +1705,7 @@ async def get_composite_task_scores(task_id: str, psql_db: PSQLDB) -> list[Compo
             CompositeTaskScore(
                 task_id=task_id,
                 hotkey=r[cst.HOTKEY],
-                constituent_task_id=str(r[cst.CONSTITUENT_TASK_ID]),
+                subtask_task_id=str(r[cst.SUBTASK_TASK_ID]),
                 score=r[cst.SCORE],
                 n_attempts=r[cst.N_ATTEMPTS],
                 status=r[cst.STATUS],
@@ -1714,16 +1714,16 @@ async def get_composite_task_scores(task_id: str, psql_db: PSQLDB) -> list[Compo
         ]
 
 
-async def get_latest_composite_task_score(hotkey: str, constituent_task_id: str, psql_db: PSQLDB) -> float | None:
+async def get_latest_composite_task_score(hotkey: str, subtask_task_id: str, psql_db: PSQLDB) -> float | None:
     """A miner's most recent successful eval score on a dataset (across the composites it appeared in)."""
     async with await psql_db.connection() as connection:
         row = await connection.fetchrow(f"""
             SELECT {cst.SCORE}
             FROM {cst.COMPOSITE_TASK_SCORES_TABLE}
-            WHERE {cst.HOTKEY} = $1 AND {cst.CONSTITUENT_TASK_ID} = $2 AND {cst.STATUS} = $3
+            WHERE {cst.HOTKEY} = $1 AND {cst.SUBTASK_TASK_ID} = $2 AND {cst.STATUS} = $3
             ORDER BY {cst.UPDATED_AT} DESC
             LIMIT 1
-        """, hotkey, constituent_task_id, cst.SCORE_STATUS_SUCCESS)
+        """, hotkey, subtask_task_id, cst.SCORE_STATUS_SUCCESS)
         return row[cst.SCORE] if row else None
 
 
