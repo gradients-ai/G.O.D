@@ -187,6 +187,30 @@ class KnockoutRound(BaseRound):
 Round = GroupRound | KnockoutRound
 
 
+class MatchRanking(BaseModel):
+    """Competitors ranked best-first (rank 1 = lowest adjusted loss) for a single match."""
+
+    task_id: str
+    ranked_hotkeys: list[str]
+
+
+class GroupMatchStanding(BaseModel):
+    """A competitor's standing across a small tournament's matches by average rank.
+
+    Each match is ranked independently (rank 1 = lowest adjusted loss = best); a
+    competitor with no valid score in a match is ranked last for it. average_rank is
+    the mean rank across all matches in the round, and the lowest averages advance.
+    """
+
+    hotkey: str
+    total_rank: float
+    matches_counted: int
+
+    @property
+    def average_rank(self) -> float:
+        return self.total_rank / self.matches_counted if self.matches_counted else float("inf")
+
+
 class TournamentRound(BaseModel):
     round_structure: Round
     tasks: list[str] = Field(default_factory=list)

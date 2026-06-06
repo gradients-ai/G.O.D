@@ -137,6 +137,20 @@ def organise_tournament_round(
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
 
+    # Small text/image tournament: at round 1 with 3..9 competitors, run a single
+    # group that plays multiple matches and advances only the top few, rather than
+    # a thin knockout (<=8) or a tiny group that still advances 8. Only applies to
+    # the first round so later rounds (e.g. a large group advancing 8 into a round
+    # of 8) are never mistaken for this format.
+    if (
+        round_number == 1
+        and tournament_type in (TournamentType.TEXT, TournamentType.IMAGE)
+        and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
+    ):
+        group_hotkeys = [node.hotkey for node in nodes_copy]
+        single_group = Group(member_ids=group_hotkeys, task_ids=[])
+        return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
+
     if len(nodes_copy) <= t_cst.MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND:
         hotkeys = [node.hotkey for node in nodes_copy]
 
