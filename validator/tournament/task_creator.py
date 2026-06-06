@@ -39,11 +39,13 @@ logger = get_logger(__name__)
 def is_small_tournament_group(round_data: GroupRound) -> bool:
     """Whether a group round is the small text/image tournament round-1 format.
 
-    Identified structurally: a single group whose membership is in the small-tournament
-    band (3..9). A normal group round never has a single group that small (groups are
-    sized at least MIN_GROUP_SIZE), so this is unambiguous.
+    Identified by round 1 (the only round the small format is ever created in — see
+    organise_tournament_round) plus a single group whose membership is in the
+    small-tournament band (3..9). The round-1 guard is load-bearing: a normal large
+    tournament can narrow to a single group of 9 in a *later* round (a reduced group can
+    be 9..19 members), which would otherwise match the structural check.
     """
-    if len(round_data.groups) != 1:
+    if round_data.round_number != 1 or len(round_data.groups) != 1:
         return False
     size = len(round_data.groups[0].member_ids)
     return t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= size <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS

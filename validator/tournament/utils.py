@@ -1148,8 +1148,10 @@ async def get_group_winners(
     # Small-tournament round 1 is a single group that plays multiple matches (normal
     # groups have exactly one task each). Rank each match, combine the ranks, and
     # advance only the best few into the knockout that decides the boss challenger.
+    # Gated to round 1 — the small format is only created there — so a normal large
+    # tournament that narrows to a single group in a later round is never misclassified.
     distinct_groups = {task.group_id for task in round_tasks}
-    if len(round_tasks) > 1 and len(distinct_groups) == 1:
+    if completed_round.round_number == 1 and len(round_tasks) > 1 and len(distinct_groups) == 1:
         return await _get_small_tournament_group_winners(round_tasks, psql_db)
 
     # Determine how many winners to advance
