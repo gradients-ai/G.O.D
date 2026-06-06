@@ -1067,12 +1067,16 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
     """Winners for the small-tournament single group: average each competitor's rank across matches.
 
     Each match is ranked independently (rank 1 = lowest adjusted loss = best); a competitor
-    with no valid score in a match is ranked last for it. Ranks are averaged across all matches
-    and the SMALL_TOURNAMENT_ADVANCE competitors with the lowest average rank advance. Ties are
-    broken by best single-match rank, then hotkey, for determinism.
+    absent from a match (no scoreable model) is penalised one slot worse than last for it.
+    A competitor that errored out of any match cannot advance over an error-free one — they
+    only fill a slot if there aren't SMALL_TOURNAMENT_ADVANCE clean competitors. Among
+    competitors in the same error tier, the lowest average rank advances; ties on average
+    rank are broken by smallest summed adjusted loss, then hotkey, for determinism.
     """
-    # Gather each match's loss-ranking (rank 1 = lowest adjusted loss).
+    # Gather each match's loss-ranking (rank 1 = lowest adjusted loss) and the per-match
+    # losses (kept for the summed-loss tiebreak).
     match_rankings: list[MatchRanking] = []
+    match_losses: list[dict[str, float]] = []
     competitors: set[str] = set()
     for task in round_tasks:
         miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
@@ -1092,6 +1096,7 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
 
         scored.sort(key=lambda x: x[1])  # lowest loss is best
         match_rankings.append(MatchRanking(task_id=task.task_id, ranked_hotkeys=[hk for hk, _ in scored]))
+        match_losses.append({hk: loss for hk, loss in scored})
         competitors.update(hk for hk, _ in scored)
 
     if not match_rankings:
@@ -1100,36 +1105,41 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
 
     # Sum 1-based ranks across matches. A competitor absent from a match (no scoreable
     # submission) is penalised one worse than last place, so failing to show is always
-    # worse than placing last in a fully-attended match — a competitor who can't produce a
-    # scoreable model shouldn't advance over one who did and merely scored poorly.
+    # worse than placing last in a fully-attended match. Beyond that, any competitor that
+    # missed a match (has_error) is sorted strictly below every fully-attending one, so an
+    # error-free competitor always advances over one that couldn't produce a model — the
+    # errored competitor only fills a slot if there aren't enough clean ones.
+    total_matches = len(match_rankings)
     absent_rank = len(competitors) + 1
-    standings: dict[str, GroupMatchStanding] = {
-        hotkey: GroupMatchStanding(hotkey=hotkey, total_rank=0.0, matches_counted=0) for hotkey in competitors
-    }
-    for match in match_rankings:
-        ranked_in_match = set(match.ranked_hotkeys)
-        for position, hotkey in enumerate(match.ranked_hotkeys, start=1):
-            standings[hotkey].total_rank += position
-            standings[hotkey].matches_counted += 1
-        for hotkey in competitors - ranked_in_match:
-            standings[hotkey].total_rank += absent_rank
-            standings[hotkey].matches_counted += 1
-
-    best_match_rank = {
-        hotkey: min(
-            (m.ranked_hotkeys.index(hotkey) + 1 for m in match_rankings if hotkey in m.ranked_hotkeys),
-            default=absent_rank,
+    standings: dict[str, GroupMatchStanding] = {}
+    for hotkey in competitors:
+        total_rank = 0.0
+        summed_loss = 0.0
+        matches_attended = 0
+        for match, losses in zip(match_rankings, match_losses):
+            if hotkey in losses:
+                total_rank += match.ranked_hotkeys.index(hotkey) + 1
+                summed_loss += losses[hotkey]
+                matches_attended += 1
+            else:
+                total_rank += absent_rank
+        standings[hotkey] = GroupMatchStanding(
+            hotkey=hotkey,
+            total_rank=total_rank,
+            matches_attended=matches_attended,
+            total_matches=total_matches,
+            summed_loss=summed_loss,
         )
-        for hotkey in competitors
-    }
+
     ordered = sorted(
         standings.values(),
-        key=lambda s: (s.average_rank, best_match_rank[s.hotkey], s.hotkey),
+        key=lambda s: (s.has_error, s.average_rank, s.summed_loss, s.hotkey),
     )
     winners = [s.hotkey for s in ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]]
     logger.info(
-        f"Small-tournament average-rank standings "
-        f"{[(s.hotkey, round(s.average_rank, 3)) for s in ordered]}; advancing top {len(winners)}: {winners}"
+        f"Small-tournament standings "
+        f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}; "
+        f"advancing top {len(winners)}: {winners}"
     )
     return winners
 

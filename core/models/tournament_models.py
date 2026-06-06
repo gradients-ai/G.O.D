@@ -195,20 +195,31 @@ class MatchRanking(BaseModel):
 
 
 class GroupMatchStanding(BaseModel):
-    """A competitor's standing across a small tournament's matches by average rank.
+    """A competitor's standing across a small tournament's matches.
 
     Each match is ranked independently (rank 1 = lowest adjusted loss = best); a
-    competitor with no valid score in a match is ranked last for it. average_rank is
-    the mean rank across all matches in the round, and the lowest averages advance.
+    competitor absent from a match (no scoreable model) is penalised one slot worse
+    than last for it. average_rank is the mean penalised rank across every match in
+    the round. A competitor that errored out of any match (matches_attended <
+    total_matches) is flagged via has_error and only advances if there aren't enough
+    error-free competitors to fill the advancing slots; summed_loss is the
+    tiebreaker among equally-clean, rank-tied competitors (smallest total wins).
     """
 
     hotkey: str
     total_rank: float
-    matches_counted: int
+    matches_attended: int
+    total_matches: int
+    summed_loss: float
 
     @property
     def average_rank(self) -> float:
-        return self.total_rank / self.matches_counted if self.matches_counted else float("inf")
+        return self.total_rank / self.total_matches if self.total_matches else float("inf")
+
+    @property
+    def has_error(self) -> bool:
+        """True if the competitor failed to produce a scoreable model in some match."""
+        return self.matches_attended < self.total_matches
 
 
 class TournamentRound(BaseModel):
