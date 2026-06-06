@@ -122,10 +122,12 @@ def organise_tournament_round(
                 f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
                 f"got {len(nodes_copy)}"
             )
-        # Small fields use a smaller group size so more contenders survive each round.
+        # A small starting field uses a smaller group size so more contenders survive round 1.
+        # Round 1 only — later rounds keep the normal size so the bracket still converges
+        # rather than re-splitting the shrinking field into ever-smaller groups.
         max_group_size = (
             t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
-            if len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
+            if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
             else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
         )
         num_groups = math.ceil(len(nodes_copy) / max_group_size)
