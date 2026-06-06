@@ -62,6 +62,11 @@ SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
 MAX_ENVIRONMENT_GROUP_SIZE = 6
+# Small env tournaments collapse too fast (one big group advancing 1 contender). When the
+# field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
+# are more groups, more contenders survive each round, and the bracket plays out over more rounds.
+SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
+SMALL_ENVIRONMENT_GROUP_SIZE = 3
 
 
 # Environment tournament round structure

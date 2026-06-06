@@ -122,7 +122,13 @@ def organise_tournament_round(
                 f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
                 f"got {len(nodes_copy)}"
             )
-        num_groups = math.ceil(len(nodes_copy) / t_cst.MAX_ENVIRONMENT_GROUP_SIZE)
+        # Small fields use a smaller group size so more contenders survive each round.
+        max_group_size = (
+            t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
+            if len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
+            else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
+        )
+        num_groups = math.ceil(len(nodes_copy) / max_group_size)
         while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             num_groups -= 1
 
