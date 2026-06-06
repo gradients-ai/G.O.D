@@ -403,7 +403,7 @@ async def _create_and_register_tournament_task(
 async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
@@ -547,9 +547,9 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
 async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
     """
     Create a replacement task that matches round-1 group text constraints:
-    - small text model pool (0.1B-4.0B)
+    - small text model pool (0.1B-3.0B)
     """
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
