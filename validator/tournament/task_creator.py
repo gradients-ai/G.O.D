@@ -13,6 +13,7 @@ from validator.core.config import Config
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
+from validator.core.models import InstructTextRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks
@@ -380,7 +381,10 @@ async def _create_and_register_tournament_task(
         pair_id=pair_id,
     )
     await add_tournament_tasks([tournament_task], config.psql_db)
-    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+    gpu_req = get_tournament_gpu_requirement(
+        task.task_type, task.model_params_count, task.model_id,
+        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+    )
 
     # Format log message based on task type
     if task.task_type == TaskType.IMAGETASK:

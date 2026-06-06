@@ -159,6 +159,10 @@ TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100 = 40.0
 # Tournament task type GPU multipliers
 TOURNAMENT_DPO_GPU_MULTIPLIER = 3
 TOURNAMENT_GRPO_GPU_MULTIPLIER = 2
+# Instruct KL tasks keep a frozen reference (base) model resident alongside the
+# trainable model, so they need extra VRAM headroom — same class of overhead as
+# the GRPO reference policy.
+TOURNAMENT_KL_GPU_MULTIPLIER = 2
 MODEL_SIZE_REQUIRING_3_GPUS = 70 * 10**9
 MODEL_SIZE_REQUIRING_4_GPUS = 100 * 10**9
 

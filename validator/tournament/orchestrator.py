@@ -423,7 +423,10 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 continue
 
             # Determine required GPUs for this task
-            required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+            required_gpus = get_tournament_gpu_requirement(
+                task.task_type, task.model_params_count, task.model_id,
+                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+            )
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
             suitable_gpus_result = await _check_suitable_gpus(config, required_gpus)
@@ -1286,6 +1289,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
 
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
+                                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
@@ -1325,7 +1329,10 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
-                    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
+                    gpu_req = get_tournament_gpu_requirement(
+                        task.task_type, task.model_params_count or 0, task.model_id,
+                        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                    )
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
                         logger.info(

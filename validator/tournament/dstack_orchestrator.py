@@ -22,6 +22,7 @@ from core.models.utility_models import TaskType
 from core.models.utility_models import TrainingStatus
 from validator.core.config import Config
 from validator.core.config import load_config
+from validator.core.models import InstructTextRawTask
 from validator.core.constants import DSTACK_RUNS_APPLY_ENDPOINT
 from validator.core.constants import DSTACK_RUNS_GET_ENDPOINT
 from validator.core.constants import EMISSION_BURN_HOTKEY
@@ -298,8 +299,11 @@ async def _create_dstack_request(
     if not expected_repo_name:
         expected_repo_name = f"organic_{task.task_id}"
     
-    required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
-    
+    required_gpus = get_tournament_gpu_requirement(
+        task.task_type, task.model_params_count, task.model_id,
+        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+    )
+
     if task.task_type == TaskType.IMAGETASK:
         gpu_name = "H100"
         gpu_count = required_gpus.gpu_count
