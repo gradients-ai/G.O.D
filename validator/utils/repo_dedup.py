@@ -17,6 +17,8 @@ import itertools
 import json
 import os
 import shutil
+import subprocess
+import tarfile
 import tempfile
 from functools import lru_cache
 from pathlib import Path
@@ -259,6 +261,91 @@ async def _prepare_repos(repos: list[RepoRef], temp_root: Path) -> dict[str, Pre
 
 
 # --------------------------------------------------------------------------- #
+# Runtime-contract source for the agent (verify claimed differentiators)
+# --------------------------------------------------------------------------- #
+def _god_repo_root() -> Path:
+    """Repo root of the validator's running source (validator/utils/repo_dedup.py -> root)."""
+    return Path(__file__).resolve().parents[2]
+
+
+def _snapshot_god_source(dest: Path) -> bool:
+    """Check out the validator's exact running source (git HEAD, TRACKED files only — local
+    .vali.env/.trainer.env and other secrets are untracked and excluded) so the agent can verify
+    whether a repo's claimed differentiators are real training-time inputs. False on any failure."""
+    root = _god_repo_root()
+    tar_path = dest.with_suffix(".tar")
+    try:
+        dest.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["git", "-C", str(root), "archive", "--format=tar", "-o", str(tar_path), "HEAD"],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+        with tarfile.open(tar_path) as tar:
+            # Keep only regular files and directories. Dropping symlinks/hardlinks/devices means the
+            # snapshot can never contain an absolute-path symlink (the repo tracks build-artifact
+            # links like core/outputs/axolotl-artifacts) that would both abort the strict filter and
+            # let the read-only agent escape the snapshot back onto the validator filesystem.
+            members = [m for m in tar.getmembers() if m.isreg() or m.isdir()]
+            try:
+                tar.extractall(dest, members=members, filter="data")  # py>=3.12
+            except TypeError:
+                tar.extractall(dest, members=members)
+        return True
+    except Exception as exc:  # noqa: BLE001 - verification is best-effort; never break the gate
+        logger.warning(f"dedup: could not snapshot G.O.D source for agent verification: {exc}")
+        return False
+    finally:
+        try:
+            tar_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _build_runtime_context(has_source: bool) -> str:
+    """Instruction block telling the agent how to verify differentiators against the real contract."""
+    if not has_source:
+        return (
+            "(The validator source snapshot is unavailable this run. Still apply the runtime-contract "
+            "rules from your instructions: treat any divergence that only triggers under conditions which "
+            "do NOT hold during tournament training — unset env vars, absent baseline-stats fields, "
+            "reward-function inputs that are not provided, hostnames, missing files, dates, untouched CLI "
+            "flags — as dead code, and the submissions as duplicate.)"
+        )
+    return (
+        "AUTHORITATIVE SOURCE FOR VERIFICATION. The validator's exact running code (git HEAD, no secrets) "
+        "is checked out read-only at ./_god_source. Use Read/Glob/Grep on it to establish what is ACTUALLY "
+        "provided to training code, then verify every input the two repos rely on to differentiate themselves:\n"
+        "- Env vars set at training time and the CLI args passed to the training entrypoint: see "
+        "./_god_source/trainer/image_manager.py (run_trainer_container_text / run_trainer_container_image / "
+        "build_wandb_env). Every other environment variable is UNSET at training time.\n"
+        "- Baseline stats: read the BaselineStats model and where it is populated (Grep 'BaselineStats' and "
+        "'baseline_stats' under ./_god_source). Baseline-stats VALUES differ per task, so do not assume a "
+        "specific value — confirm a field a repo branches on is a real, actually-computed member of the model, "
+        "not an invented or never-populated key.\n"
+        "- Reward functions and their inputs (GRPO): defined in code and delivered via the --reward-functions "
+        "CLI arg. Read the templates and implementations (Grep 'reward_templates', 'RewardFunction', "
+        "'reward_functions' under ./_god_source; e.g. core/reward_templates.py, "
+        "validator/utils/affine_reward_functions.py, core/models/utility_models.py, and the --reward-functions "
+        "handling in trainer/image_manager.py). Reward functions receive `completions`, `extra_data` and "
+        "**kwargs — confirm any field a repo's reward logic branches on is actually populated, not assumed.\n"
+        "- Environment-task inputs/config: defined in code under ./_god_source/core.\n"
+        "- Third-party library params/tools (e.g. axolotl, transformers, trl, peft): a repo may fake a "
+        "difference by passing a config key or calling a 'tool'/feature that does not exist in the pinned "
+        "library version, or that the library silently ignores (a no-op). Ground the version from each repo's "
+        "pinned dependencies (requirements*.txt / pyproject / Dockerfile in each of the two submission "
+        "directories), and "
+        "when in doubt CHECK THE LIBRARY'S ACTUAL CODE where it is available to confirm the parameter exists "
+        "AND changes training behaviour. A non-existent or silently-ignored param is a fake differentiator.\n"
+        "For ANY input Repository A or B uses to differentiate behaviour, confirm against ./_god_source that it "
+        "is genuinely delivered/populated at training time. If you CANNOT confirm it is a real training-time "
+        "input, treat that branch as dead and the submissions as duplicate, and name the unverified input in "
+        "your reason."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Claude pairwise judgement (T2)
 # --------------------------------------------------------------------------- #
 _VALID_RELATIONSHIPS = {"duplicate", "distinct", "drop_evasion"}
@@ -286,15 +373,20 @@ def _parse_verdict(text: str) -> tuple[str, float, str]:
     return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
 
 
-async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str) -> PairVerdict:
+async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runtime_context: str = "") -> PairVerdict:
     """Read-only agentic judgement over both cloned repos checked out under ``cwd``.
 
     The miners' private repo URLs are deliberately NOT passed to the model — it sees only
     the neutral on-disk dirs and is instructed to reason in terms of "Repository A/B" — so
-    the published reasoning never leaks the original private repo/org names."""
+    the published reasoning never leaks the original private repo/org names.
+
+    ``runtime_context`` points the agent at ./_god_source (the validator's running code) so it can
+    verify whether each repo's claimed differentiators are real training-time inputs."""
     ClaudeAgentOptions, ResultMessage, query = _import_claude_sdk()
     config = _load_config()
-    prompt = config["user_prompt_template"].format(dir_a=dir_a, dir_b=dir_b, file_summary=file_summary)
+    prompt = config["user_prompt_template"].format(
+        dir_a=dir_a, dir_b=dir_b, file_summary=file_summary, runtime_context=runtime_context
+    )
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         model=cst.TOURN_DEDUP_CLAUDE_MODEL,
@@ -373,6 +465,11 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
         hash_pairs, tier = _hash_dup_pairs(prepared)
         hash_set = set(hash_pairs)
 
+        # Give the agent the validator's running source so it can verify whether claimed
+        # differentiators are real training-time inputs (vs evasive dead code). Best-effort.
+        has_source = await asyncio.to_thread(_snapshot_god_source, temp_root / "_god_source")
+        runtime_context = _build_runtime_context(has_source)
+
         dup_pairs: list[tuple[str, str]] = list(hash_pairs)
         evasion: set[str] = set()
         verdicts: list[PairVerdict] = [
@@ -396,7 +493,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
                 continue
             pa, pb = prepared[a], prepared[b]
             file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
-            verdict = await _judge_pair(temp_root, a, b, file_summary)
+            verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
             verdict.hotkey_a, verdict.hotkey_b = a, b
             verdicts.append(verdict)
             if verdict.relationship == "duplicate":
