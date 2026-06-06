@@ -13,8 +13,10 @@ from pathlib import Path
 
 from core.models.tournament_models import DedupClusterRecord
 from core.models.tournament_models import DedupPairVerdict
+from core.models.tournament_models import DedupResult
 from core.models.tournament_models import DedupReviewStatus
 from core.models.tournament_models import GateDecision
+from core.models.tournament_models import RepoRef
 from core.models.tournament_models import PublishedRepo
 from core.models.tournament_models import TournamentData
 from core.models.tournament_models import TournamentDedupReview
@@ -34,8 +36,6 @@ from validator.tournament.utils import notify_tournament_dedup_error
 from validator.tournament.utils import notify_tournament_dedup_resolved
 from validator.tournament.utils import notify_tournament_dedup_review
 from validator.utils.logging import get_logger
-from validator.utils.repo_dedup import DedupResult
-from validator.utils.repo_dedup import RepoRef
 from validator.utils.repo_dedup import find_hash_duplicates
 from validator.utils.repo_dedup import render_report
 from validator.utils.repo_dedup import run_pairwise_dedup

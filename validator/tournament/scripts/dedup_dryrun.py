@@ -14,8 +14,8 @@ import os
 
 import asyncpg
 
+from core.models.tournament_models import RepoRef
 from validator.core import constants as cst
-from validator.utils.repo_dedup import RepoRef
 from validator.utils.repo_dedup import find_hash_duplicates
 from validator.utils.repo_dedup import render_report
 from validator.utils.repo_dedup import run_pairwise_dedup

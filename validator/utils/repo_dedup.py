@@ -26,8 +26,13 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
-
+from core.models.tournament_models import DedupCluster
+from core.models.tournament_models import DedupResult
+from core.models.tournament_models import DedupTier
+from core.models.tournament_models import DupRelationship
+from core.models.tournament_models import PairVerdict
+from core.models.tournament_models import PreparedRepo
+from core.models.tournament_models import RepoRef
 from core.utils import sanitize_git_text
 from validator.core import constants as cst
 from validator.utils.logging import get_logger
@@ -56,47 +61,6 @@ CONFIG_PATH = Path(__file__).with_name("repo_dedup_config.json")
 def _load_config() -> dict[str, Any]:
     with CONFIG_PATH.open() as handle:
         return json.load(handle)
-
-
-class RepoRef(BaseModel):
-    hotkey: str
-    repo_url: str
-    commit_hash: str | None = None
-    github_token: str | None = None
-
-
-class PreparedRepo(BaseModel):
-    hotkey: str
-    repo_url: str
-    head_commit: str | None = None
-    normalized_digest: str | None = None
-    content_chars: int = 0
-    path: str | None = None
-    clone_ok: bool = False
-
-
-class PairVerdict(BaseModel):
-    hotkey_a: str
-    hotkey_b: str
-    tier: str  # "T0" | "T1" | "T2"
-    relationship: str  # "duplicate" | "distinct" | "drop_evasion"
-    confidence: float
-    reason: str
-
-
-class DedupCluster(BaseModel):
-    members: list[str]
-    basis: str  # "T0" | "T1" | "T2"
-    reason: str
-
-
-class DedupResult(BaseModel):
-    cohort: list[str]
-    clusters: list[DedupCluster] = []
-    pair_verdicts: list[PairVerdict] = []
-    flagged_hotkeys: list[str] = []  # recommended eliminations (boss excluded)
-    evasion_hotkeys: list[str] = []
-    unclonable_hotkeys: list[str] = []
 
 
 # --------------------------------------------------------------------------- #
@@ -227,27 +191,36 @@ def _flag_from_clusters(clusters: list[DedupCluster], boss_hotkey: str | None) -
     return flagged
 
 
-def _hash_dup_pairs(prepared: dict[str, PreparedRepo]) -> tuple[list[tuple[str, str]], dict[tuple[str, str], str]]:
+def _hash_dup_pairs(prepared: dict[str, PreparedRepo]) -> list[PairVerdict]:
+    """Deterministic T0/T1 duplicate verdicts (identical commit / identical normalized source)."""
     ok = sorted((p for p in prepared.values() if p.clone_ok), key=lambda p: p.hotkey)
-    pairs: list[tuple[str, str]] = []
-    tier: dict[tuple[str, str], str] = {}
+    verdicts: list[PairVerdict] = []
     for a, b in itertools.combinations(ok, 2):
-        key = (a.hotkey, b.hotkey)
         if a.head_commit and a.head_commit == b.head_commit:
-            pairs.append(key)
-            tier[key] = "T0"
+            tier, reason = DedupTier.T0, "Identical commit hash."
         elif a.normalized_digest and a.normalized_digest == b.normalized_digest:
-            pairs.append(key)
-            tier[key] = "T1"
-    return pairs, tier
+            tier, reason = DedupTier.T1, "Identical normalized content."
+        else:
+            continue
+        verdicts.append(
+            PairVerdict(
+                hotkey_a=a.hotkey,
+                hotkey_b=b.hotkey,
+                tier=tier,
+                relationship=DupRelationship.DUPLICATE,
+                confidence=1.0,
+                reason=reason,
+            )
+        )
+    return verdicts
 
 
-def _cluster_basis(members: list[str], prepared: dict[str, PreparedRepo]) -> tuple[str, str]:
+def _cluster_basis(members: list[str], prepared: dict[str, PreparedRepo]) -> tuple[DedupTier, str]:
     if len({prepared[m].head_commit for m in members}) == 1:
-        return "T0", "Identical commit hash."
+        return DedupTier.T0, "Identical commit hash."
     if len({prepared[m].normalized_digest for m in members}) == 1:
-        return "T1", "Identical source after stripping whitespace/comments/ordering."
-    return "T2", "Judged functionally equivalent by Claude (cosmetic/evasive deltas only)."
+        return DedupTier.T1, "Identical source after stripping whitespace/comments/ordering."
+    return DedupTier.T2, "Judged functionally equivalent by Claude (cosmetic/evasive deltas only)."
 
 
 # --------------------------------------------------------------------------- #
@@ -366,9 +339,6 @@ def _build_runtime_context(has_source: bool) -> str:
 # --------------------------------------------------------------------------- #
 # Claude pairwise judgement (T2)
 # --------------------------------------------------------------------------- #
-_VALID_RELATIONSHIPS = {"duplicate", "distinct", "drop_evasion"}
-
-
 def _import_claude_sdk():
     try:
         from claude_agent_sdk import ClaudeAgentOptions
@@ -379,15 +349,17 @@ def _import_claude_sdk():
     return ClaudeAgentOptions, ResultMessage, query
 
 
-def _parse_verdict(text: str) -> tuple[str, float, str]:
+def _parse_verdict(text: str) -> tuple[DupRelationship, float, str]:
     """Extract the strict JSON verdict object from the model's reply."""
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
         raise ValueError(f"no JSON object in verdict reply: {text[:200]!r}")
     obj = json.loads(text[start : end + 1])
-    relationship = str(obj["relationship"]).strip()
-    if relationship not in _VALID_RELATIONSHIPS:
-        raise ValueError(f"invalid relationship {relationship!r}")
+    raw = str(obj["relationship"]).strip()
+    try:
+        relationship = DupRelationship(raw)
+    except ValueError as exc:
+        raise ValueError(f"invalid relationship {raw!r}") from exc
     return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
 
 
@@ -425,7 +397,14 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
                 result_text = message.result or ""
         try:
             relationship, confidence, reason = _parse_verdict(result_text)
-            return PairVerdict(hotkey_a="", hotkey_b="", tier="T2", relationship=relationship, confidence=confidence, reason=reason)
+            return PairVerdict(
+                hotkey_a=dir_a,
+                hotkey_b=dir_b,
+                tier=DedupTier.T2,
+                relationship=relationship,
+                confidence=confidence,
+                reason=reason,
+            )
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             last_error = exc
             logger.warning(f"dedup: unparseable verdict (attempt {attempt + 1}): {exc}")
@@ -441,19 +420,9 @@ async def find_hash_duplicates(repos: list[RepoRef], boss_hotkey: str | None = N
     try:
         prepared = await _prepare_repos(repos, temp_root)
         ok_hotkeys = [p.hotkey for p in prepared.values() if p.clone_ok]
-        pairs, tier = _hash_dup_pairs(prepared)
+        verdicts = _hash_dup_pairs(prepared)
+        pairs = [(v.hotkey_a, v.hotkey_b) for v in verdicts]
 
-        verdicts = [
-            PairVerdict(
-                hotkey_a=a,
-                hotkey_b=b,
-                tier=tier[(a, b)],
-                relationship="duplicate",
-                confidence=1.0,
-                reason="Identical commit hash." if tier[(a, b)] == "T0" else "Identical normalized content.",
-            )
-            for (a, b) in pairs
-        ]
         clusters = []
         for members in _cluster(ok_hotkeys, pairs):
             basis, reason = _cluster_basis(members, prepared)
@@ -480,7 +449,8 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
     try:
         prepared = await _prepare_repos(repos, temp_root)
         ok_hotkeys = sorted(p.hotkey for p in prepared.values() if p.clone_ok)
-        hash_pairs, tier = _hash_dup_pairs(prepared)
+        verdicts: list[PairVerdict] = _hash_dup_pairs(prepared)
+        hash_pairs = [(v.hotkey_a, v.hotkey_b) for v in verdicts]
         hash_set = set(hash_pairs)
         repo_tokens = {r.github_token for r in repos if r.github_token}
 
@@ -491,17 +461,6 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
 
         dup_pairs: list[tuple[str, str]] = list(hash_pairs)
         evasion: set[str] = set()
-        verdicts: list[PairVerdict] = [
-            PairVerdict(
-                hotkey_a=a,
-                hotkey_b=b,
-                tier=tier[(a, b)],
-                relationship="duplicate",
-                confidence=1.0,
-                reason="Identical commit hash." if tier[(a, b)] == "T0" else "Identical normalized content.",
-            )
-            for (a, b) in hash_pairs
-        ]
 
         # Collapse hash-duplicate clusters to one representative each so T2 only compares
         # representatives. hash_pairs already link every member to its rep, so a duplicate
@@ -518,16 +477,15 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             started = time.monotonic()
             file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
             verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
-            verdict.hotkey_a, verdict.hotkey_b = a, b
             verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
             verdicts.append(verdict)
             logger.info(
                 f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} → "
-                f"{verdict.relationship} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
+                f"{verdict.relationship.value} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
             )
-            if verdict.relationship == "duplicate":
+            if verdict.relationship == DupRelationship.DUPLICATE:
                 dup_pairs.append((a, b))
-            elif verdict.relationship == "drop_evasion":
+            elif verdict.relationship == DupRelationship.DROP_EVASION:
                 evasion.add(a if pa.content_chars >= pb.content_chars else b)
 
         clusters = []
@@ -564,7 +522,7 @@ def render_report(result: DedupResult, tournament_id: str, round_id: str, boss_h
     if result.clusters:
         for i, cluster in enumerate(result.clusters, 1):
             kept = f" (boss `{boss_hotkey}` kept)" if boss_hotkey and boss_hotkey in cluster.members else ""
-            lines.append(f"\n### Cluster {i} — basis {cluster.basis}{kept}")
+            lines.append(f"\n### Cluster {i} — basis {cluster.basis.value}{kept}")
             lines.append(f"{cluster.reason}")
             for m in cluster.members:
                 tag = " — KEPT (boss)" if m == boss_hotkey else " — DROP"
@@ -581,7 +539,10 @@ def render_report(result: DedupResult, tournament_id: str, round_id: str, boss_h
 
     lines.append("\n## All pairwise verdicts")
     for v in result.pair_verdicts:
-        lines.append(f"- [{v.tier}] `{v.hotkey_a}` vs `{v.hotkey_b}`: **{v.relationship}** ({v.confidence:.2f}) — {v.reason}")
+        lines.append(
+            f"- [{v.tier.value}] `{v.hotkey_a}` vs `{v.hotkey_b}`: "
+            f"**{v.relationship.value}** ({v.confidence:.2f}) — {v.reason}"
+        )
 
     lines.append("\n## Recommended eliminations")
     lines.extend(f"- `{h}`" for h in result.flagged_hotkeys) if result.flagged_hotkeys else lines.append("- none")

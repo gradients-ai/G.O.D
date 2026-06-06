@@ -76,6 +76,21 @@ class GpuRequirement(str, Enum):
         }[self]
 
 
+class DedupTier(str, Enum):
+    """How a duplicate was established: identical commit (T0), identical normalized source (T1),
+    or Claude pairwise judgement (T2)."""
+
+    T0 = "T0"
+    T1 = "T1"
+    T2 = "T2"
+
+
+class DupRelationship(str, Enum):
+    DUPLICATE = "duplicate"
+    DISTINCT = "distinct"
+    DROP_EVASION = "drop_evasion"
+
+
 def generate_tournament_id() -> str:
     hash_part = secrets.token_hex(8)
     date_part = datetime.now().strftime("%Y%m%d")
@@ -562,15 +577,15 @@ class DedupReviewStatus(str, Enum):
 class DedupPairVerdict(BaseModel):
     hotkey_a: str
     hotkey_b: str
-    tier: str  # T0 | T1 | T2
-    relationship: str  # duplicate | distinct | drop_evasion
+    tier: DedupTier
+    relationship: DupRelationship
     confidence: float
     reason: str
 
 
 class DedupClusterRecord(BaseModel):
     members: list[str]
-    basis: str  # T0 | T1 | T2
+    basis: DedupTier
     reason: str
 
 
@@ -605,3 +620,44 @@ class GateDecision(BaseModel):
 
     halt: bool
     eliminate: set[str] = Field(default_factory=set)
+
+
+class RepoRef(BaseModel):
+    hotkey: str
+    repo_url: str
+    commit_hash: str | None = None
+    github_token: str | None = None
+
+
+class PreparedRepo(BaseModel):
+    hotkey: str
+    repo_url: str
+    head_commit: str | None = None
+    normalized_digest: str | None = None
+    content_chars: int = 0
+    path: str | None = None
+    clone_ok: bool = False
+
+
+class PairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: DedupTier
+    relationship: DupRelationship
+    confidence: float
+    reason: str
+
+
+class DedupCluster(BaseModel):
+    members: list[str]
+    basis: DedupTier
+    reason: str
+
+
+class DedupResult(BaseModel):
+    cohort: list[str]
+    clusters: list[DedupCluster] = []
+    pair_verdicts: list[PairVerdict] = []
+    flagged_hotkeys: list[str] = []  # recommended eliminations (boss excluded)
+    evasion_hotkeys: list[str] = []
+    unclonable_hotkeys: list[str] = []
