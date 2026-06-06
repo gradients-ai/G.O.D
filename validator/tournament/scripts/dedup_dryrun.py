@@ -21,14 +21,22 @@ from validator.utils.repo_dedup import render_report
 from validator.utils.repo_dedup import run_pairwise_dedup
 
 
-async def _load_repos(tournament_id: str) -> list[RepoRef]:
+async def _load_repos(tournament_id: str, hotkeys: list[str] | None = None) -> list[RepoRef]:
     conn = await asyncpg.connect(os.environ["DATABASE_URL"])
     try:
-        rows = await conn.fetch(
-            "SELECT hotkey, training_repo, training_commit_hash, github_token "
-            "FROM tournament_participants WHERE tournament_id = $1 ORDER BY hotkey",
-            tournament_id,
-        )
+        if hotkeys:
+            rows = await conn.fetch(
+                "SELECT hotkey, training_repo, training_commit_hash, github_token "
+                "FROM tournament_participants WHERE tournament_id = $1 AND hotkey = ANY($2::text[]) ORDER BY hotkey",
+                tournament_id,
+                hotkeys,
+            )
+        else:
+            rows = await conn.fetch(
+                "SELECT hotkey, training_repo, training_commit_hash, github_token "
+                "FROM tournament_participants WHERE tournament_id = $1 ORDER BY hotkey",
+                tournament_id,
+            )
     finally:
         await conn.close()
     return [
@@ -47,10 +55,12 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("tournament_id")
     parser.add_argument("--full", action="store_true", help="run T2 Claude pairwise (otherwise T0+T1 only)")
+    parser.add_argument("--hotkeys", help="comma-separated hotkeys to restrict to (e.g. the R2 cohort)")
     parser.add_argument("--out", help="also write the report to this path")
     args = parser.parse_args()
 
-    repos = await _load_repos(args.tournament_id)
+    hotkeys = [h.strip() for h in args.hotkeys.split(",") if h.strip()] if args.hotkeys else None
+    repos = await _load_repos(args.tournament_id, hotkeys)
     print(f"Loaded {len(repos)} participant repos for {args.tournament_id}")
     print(f"Boss (protected) hotkey: {cst.EMISSION_BURN_HOTKEY}")
     print(f"Mode: {'T0+T1+T2 (Claude)' if args.full else 'T0+T1 (deterministic only)'}\n")
