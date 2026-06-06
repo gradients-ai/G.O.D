@@ -507,15 +507,24 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
         # representatives. hash_pairs already link every member to its rep, so a duplicate
         # verdict between two reps merges their whole clusters in the final clustering.
         representatives = _hash_group_representatives(ok_hotkeys, hash_pairs, boss_hotkey)
-        for a, b in itertools.combinations(representatives, 2):
-            if (a, b) in hash_set:
-                continue
+        pairs_to_judge = [(a, b) for a, b in itertools.combinations(representatives, 2) if (a, b) not in hash_set]
+        logger.info(
+            f"dedup T2: {len(representatives)} representatives after hash-collapse "
+            f"({len(hash_pairs)} hash-dup pairs), {len(pairs_to_judge)} pairs to judge with Claude"
+        )
+        for idx, (a, b) in enumerate(pairs_to_judge, 1):
             pa, pb = prepared[a], prepared[b]
+            logger.info(f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} — judging…")
+            started = time.monotonic()
             file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
             verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
             verdict.hotkey_a, verdict.hotkey_b = a, b
             verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
             verdicts.append(verdict)
+            logger.info(
+                f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} → "
+                f"{verdict.relationship} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
+            )
             if verdict.relationship == "duplicate":
                 dup_pairs.append((a, b))
             elif verdict.relationship == "drop_evasion":
