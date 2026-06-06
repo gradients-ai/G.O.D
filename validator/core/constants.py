@@ -308,8 +308,11 @@ BETA_GRPO = 0.5
 # Probability that a tournament instruct task asks miners to train with a KL term.
 INSTRUCT_KL_TASK_PROBABILITY = 0.2
 # Coefficient (beta) applied to KL(finetuned || base) when weighting the eval loss.
-# Stored per-task (kl_coef) and sent to miners so they can match the eval weighting.
-INSTRUCT_KL_COEFFICIENT = 0.1
+# Sampled uniformly per task in [MIN, MAX], stored per-task (kl_coef) and sent to
+# miners so they can match the eval weighting. Range spans a light nudge up to an
+# aggressive pull (~half of tasks land in the aggressive upper half).
+INSTRUCT_KL_COEFFICIENT_MIN = 0.1
+INSTRUCT_KL_COEFFICIENT_MAX = 1.5
 
 # GRPO evaluation
 GRPO_INITIAL_BATCH_SIZE = 16
@@ -375,7 +378,7 @@ MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
 AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
 AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
-AUGMENTATION_PROBABILITY = 0.75  # Probability that a task gets any augmentation at all
+AUGMENTATION_PROBABILITY = 0.6  # Probability that a task gets any augmentation at all
 
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights

@@ -53,7 +53,8 @@ def test_maybe_get_kl_config_enabled_below_probability():
     with mock.patch("validator.tasks.synthetic_scheduler.random.random", return_value=0.0):
         use_kl, kl_coef = maybe_get_kl_config()
     assert use_kl is True
-    assert kl_coef == vcst.INSTRUCT_KL_COEFFICIENT
+    assert kl_coef is not None
+    assert vcst.INSTRUCT_KL_COEFFICIENT_MIN <= kl_coef <= vcst.INSTRUCT_KL_COEFFICIENT_MAX
 
 
 def test_maybe_get_kl_config_disabled_above_probability():
@@ -65,7 +66,7 @@ def test_maybe_get_kl_config_disabled_above_probability():
 
 def test_kl_probability_and_coef_are_sane():
     assert 0.0 <= vcst.INSTRUCT_KL_TASK_PROBABILITY <= 1.0
-    assert vcst.INSTRUCT_KL_COEFFICIENT > 0
+    assert 0 < vcst.INSTRUCT_KL_COEFFICIENT_MIN <= vcst.INSTRUCT_KL_COEFFICIENT_MAX
 
 
 # --- pivot regression: dataset carrier must stay clean --------------------------

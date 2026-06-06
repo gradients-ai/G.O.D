@@ -70,7 +70,8 @@ def maybe_get_kl_config() -> tuple[bool, float | None]:
     will use to weight KL(finetuned || base) into the loss, and which we send to miners.
     """
     if random.random() < vcst.INSTRUCT_KL_TASK_PROBABILITY:
-        return True, vcst.INSTRUCT_KL_COEFFICIENT
+        kl_coef = random.uniform(vcst.INSTRUCT_KL_COEFFICIENT_MIN, vcst.INSTRUCT_KL_COEFFICIENT_MAX)
+        return True, kl_coef
     return False, None
 
 
