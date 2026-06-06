@@ -45,6 +45,7 @@ class EnvironmentName(str, Enum):
     GIN_RUMMY = "gin_rummy"
     LIARS_DICE = "liars_dice"
     LEDUC_POKER = "leduc_poker"
+    OTHELLO = "othello"
     INTERCODE = "intercode"
 
 
@@ -106,6 +107,22 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=300_000_000,
         task_id_max=399_999_999,
         num_seeds=1000,
+        num_baseline_episodes=25,
+        eval_type=EvalType.PVP,
+        env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
+        eval_payload_extra={
+            "opponent": "mcts",
+            "mcts_max_simulations": 50,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    ),
+    EnvironmentName.OTHELLO: EnvironmentConfig(
+        task_id_min=400_000_000,
+        task_id_max=499_999_999,
+        num_seeds=10_000,
         num_baseline_episodes=25,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
