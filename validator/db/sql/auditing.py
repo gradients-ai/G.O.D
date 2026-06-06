@@ -560,6 +560,18 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
     logger.info("Got a task!!")
 
     task = hide_sensitive_data_till_finished(task_raw)
+    if task.task_type == TaskType.ENVIRONMENTTASK:
+        async with await config.psql_db.connection() as connection:
+            env_task_row = await connection.fetchrow(
+                f"""
+                SELECT {cst.ENVIRONMENT_NAMES}
+                FROM {cst.ENV_TASKS_TABLE}
+                WHERE {cst.TASK_ID} = $1
+                """,
+                task_id,
+            )
+        if env_task_row is not None:
+            task.environment_names = env_task_row[cst.ENVIRONMENT_NAMES] or []
 
     higher_is_better = task_raw.task_type in (TaskType.ENVIRONMENTTASK, TaskType.GRPOTASK)
     rank_order = f"tn.{cst.TEST_LOSS} DESC NULLS LAST" if higher_is_better else f"tn.{cst.TEST_LOSS} ASC NULLS LAST"

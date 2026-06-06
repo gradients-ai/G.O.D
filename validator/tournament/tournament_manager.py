@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 import random
 import re
@@ -7,7 +8,10 @@ from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
+from huggingface_hub import hf_hub_download
+from huggingface_hub import repo_exists
 
+from core.constants import HUGGINGFACE_TOKEN
 from core.constants import RAYONLABS_HF_USERNAME
 from core.constants import TrainingStartPoint
 import validator.core.constants as cst
@@ -80,6 +84,7 @@ from validator.tournament.utils import notify_tournament_completed
 from validator.tournament.utils import notify_tournament_started
 from validator.tournament.utils import send_to_discord
 from validator.tournament.utils import deduplicate_by_github_account
+from validator.tournament.utils import deduplicate_by_ip_address
 from validator.tournament.utils import validate_github_tokens
 from validator.tournament.utils import validate_repo_license
 from validator.tournament.utils import validate_repo_obfuscation
@@ -215,6 +220,20 @@ async def _create_tournament_tasks(
     return tasks
 
 
+async def _hf_repo_exists(repo_id: str) -> bool:
+    """Whether an HF model repo exists.
+
+    A continuation model can be missing if the miner's previous round failed to
+    upload (e.g. its training errored). On a lookup error we assume it exists, so
+    we only fall back to the base model on a definitive 'not found'.
+    """
+    try:
+        return await asyncio.to_thread(repo_exists, repo_id, repo_type="model", token=HUGGINGFACE_TOKEN)
+    except Exception as e:
+        logger.warning(f"HF repo existence check failed for {repo_id}: {e}; assuming it exists")
+        return True
+
+
 async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
     """Look up a miner's output repo from the previous round for model continuation."""
     rounds = await get_tournament_rounds(tournament_id, psql_db)
@@ -231,6 +250,27 @@ async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQ
             return f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
     return None
+
+
+async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
+    """The winner model's real foundation base model.
+
+    With the trainer's merge-on-download + base-repoint-on-upload, a winner adapter's
+    base_model_name_or_path already points at the real foundation (no adapter-on-adapter
+    chains), so a single read is enough. Full merged-model winners have no adapter_config,
+    so fall back to the task's declared base model.
+    """
+    try:
+        cfg_path = await asyncio.to_thread(
+            hf_hub_download, winner_repo, "adapter_config.json", token=HUGGINGFACE_TOKEN
+        )
+        with open(cfg_path) as f:
+            base = json.load(f).get("base_model_name_or_path")
+        if base:
+            return base
+    except Exception:
+        pass  # not an adapter (full merged model) — use the task's declared base
+    return fallback_model_id
 
 
 async def _save_winner_model_repo(
@@ -257,13 +297,19 @@ async def _save_winner_model_repo(
         winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
         if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (base={t_cst.ENV_TARGET_TOURN_MODEL})")
-            await update_tournament_winner_model(tournament_id, winner_repo, t_cst.ENV_TARGET_TOURN_MODEL, psql_db)
+            # Record the winner's *actual* foundation base, not the target constant.
+            # Hardcoding ENV_TARGET_TOURN_MODEL here made next tournament's
+            # continue-vs-from-scratch check (winner_model_base == ENV_TARGET_TOURN_MODEL)
+            # always pass, so the boss kept continuing a stale-base lineage and never
+            # reset to the target when the constant changed.
+            base = await _resolve_winner_base_model(winner_repo, task_obj.model_id) or t_cst.ENV_TARGET_TOURN_MODEL
+            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (resolved base={base})")
+            await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
             return
 
         if not fallback_repo:
             fallback_repo = winner_repo
-            fallback_base_model = task_obj.model_id
+            fallback_base_model = await _resolve_winner_base_model(winner_repo, task_obj.model_id)
 
     if fallback_repo and fallback_base_model:
         await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
@@ -282,7 +328,13 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        boss_assigned = False
+        # The boss (EMISSION_BURN_HOTKEY) may already be a real member of one of the
+        # groups (e.g. it advanced into a group this round). Detect that up front so we
+        # don't greedily append it to an earlier group as well — otherwise the boss gets
+        # assigned to two tasks in the same round.
+        boss_assigned = any(
+            EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
+        )
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
@@ -323,6 +375,15 @@ async def assign_nodes_to_tournament_tasks(
 
                         if task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
                             prev_repo = await _get_previous_round_repo(tournament_id, hotkey, psql_db)
+                            # The continuation model may not exist (e.g. the miner's previous
+                            # round failed to upload). Fall back to the base model so prep and
+                            # training still run instead of blocking on a 404 forever.
+                            if prev_repo and not await _hf_repo_exists(prev_repo):
+                                logger.warning(
+                                    f"Continuation model {prev_repo} for {hotkey[:8]} not found on HF; "
+                                    f"falling back to base model {task_obj.model_id}"
+                                )
+                                prev_repo = task_obj.model_id
                             if prev_repo:
                                 await task_sql.set_starting_model_repo(
                                     tournament_task.task_id, hotkey, prev_repo, psql_db,
@@ -711,6 +772,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         logger.info(f"Got {len(responding_nodes)} responding nodes")
 
         await validate_github_tokens(responding_nodes)
+
+        pre_dedup_ip = len(responding_nodes)
+        responding_nodes = deduplicate_by_ip_address(responding_nodes)
+        if len(responding_nodes) < pre_dedup_ip:
+            logger.info(
+                f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
+            )
 
         pre_dedup = len(responding_nodes)
         responding_nodes = deduplicate_by_github_account(responding_nodes)

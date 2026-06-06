@@ -87,6 +87,20 @@ def calculate_emission_boost_from_perf(performance_diff: float | None) -> float:
     return emission_increase
 
 
+def calculate_env_perf_diff_from_win_pct(win_pct: float) -> float:
+    """
+    Map an environment-tournament win percentage (0.0-1.0) to a performance
+    difference, using the same PvP mapping the scoring pipeline applies.
+
+    Below the win-rate threshold the challenger gains no emission boost; above it
+    the perf diff scales linearly so 100% win rate hits the max boost.
+    """
+    win_pct = max(0.0, win_pct)
+    if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
+        return 0.0
+    return cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+
+
 def calculate_tournament_weight_with_decay(
     tournament_type: TournamentType,
     base_weight: float,

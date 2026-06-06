@@ -39,6 +39,16 @@ ENV_EVAL_TEMPERATURE = 0.0
 
 # --- SGLang process management (from eval_environment.py) ---
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+LOG_SGLANG_STDOUT = _env_bool("MODEL_PREP_LOG_SGLANG", False)
+
+
 def build_sglang_command(model_path: str, seed: int) -> str:
     tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
     dtype = os.getenv("SGLANG_DTYPE", "float16")
@@ -55,13 +65,30 @@ def build_sglang_command(model_path: str, seed: int) -> str:
     return f"{base} {extra}" if extra else base
 
 
-def start_process(command: str, name: str) -> subprocess.Popen:
+def start_process(command: str, name: str, *, capture_stdout: bool = False) -> subprocess.Popen:
     logger.info("Starting %s: %s", name, command)
+    stdout = subprocess.PIPE if capture_stdout else subprocess.DEVNULL
+    stderr = subprocess.STDOUT if capture_stdout else subprocess.DEVNULL
     return subprocess.Popen(
         command, shell=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout=stdout, stderr=stderr,
         text=True, bufsize=1, preexec_fn=os.setsid,
     )
+
+
+async def stream_process_logs(proc: subprocess.Popen | None, name: str) -> None:
+    if proc is None or proc.stdout is None:
+        return
+    while True:
+        if proc.poll() is not None and proc.stdout.closed:
+            return
+        line = await asyncio.to_thread(proc.stdout.readline)
+        if not line:
+            if proc.poll() is not None:
+                return
+            await asyncio.sleep(0.2)
+            continue
+        logger.info("[%s] %s", name, line.rstrip())
 
 
 def stop_process(proc: subprocess.Popen | None, name: str) -> None:
@@ -170,7 +197,8 @@ async def compute_env_stats(
     weight_stats = compute_weight_stats(model)
 
     sglang_cmd = build_sglang_command(model_path, seed=42)
-    sglang_proc = start_process(sglang_cmd, "sglang")
+    sglang_proc = start_process(sglang_cmd, "sglang", capture_stdout=LOG_SGLANG_STDOUT)
+    sglang_log_task = None
     sglang_port = int(os.getenv("SGLANG_PORT", "30000"))
     sglang_local_url = f"http://localhost:{sglang_port}"
     container_ip = socket.gethostbyname(socket.gethostname())
@@ -180,6 +208,9 @@ async def compute_env_stats(
     all_stats: dict[EnvironmentName, EnvStats] = {}
 
     try:
+        if LOG_SGLANG_STDOUT:
+            sglang_log_task = asyncio.create_task(stream_process_logs(sglang_proc, "sglang"))
+
         await wait_for_health(sglang_local_url, "/v1/models", SGLANG_HEALTH_TIMEOUT, service_name="sglang")
 
         print(f"SGLang ready at {sglang_base_url}", flush=True)
@@ -199,6 +230,8 @@ async def compute_env_stats(
 
     finally:
         stop_process(sglang_proc, "sglang")
+        if sglang_log_task:
+            sglang_log_task.cancel()
 
     # Fill in empty stats for any envs that weren't reached
     for env_name in env_configs:

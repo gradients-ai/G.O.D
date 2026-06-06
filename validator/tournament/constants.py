@@ -15,6 +15,10 @@ PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL = 60
 MODEL_PREP_CYCLE_INTERVAL = 30
 MODEL_PREP_GPU_RESERVE_HOURS = 1.0
 
+# Reject a task whose dataset near-duplicate rate (from baseline_stats) is at or above this
+# fraction. Only applies to text tasks (instruct/dpo/grpo); env tasks have no dataset stats.
+MAX_NEAR_DUPLICATE_RATE = 0.20
+
 TOURNAMENT_PENDING_CYCLE_INTERVAL = 15 * 60
 TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 15 * 60
 TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 15 * 60
@@ -41,7 +45,7 @@ NO_RETRY_RESULT = "No Retry"
 
 
 # Tournament structure constants
-MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 14
+MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 8
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
 MIN_ENVIRONMENT_GROUP_SIZE = 2

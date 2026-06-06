@@ -1425,3 +1425,35 @@ def deduplicate_by_github_account(nodes: list[RespondingNode]) -> list[Respondin
             )
 
     return kept
+
+
+def deduplicate_by_ip_address(nodes: list[RespondingNode]) -> list[RespondingNode]:
+    by_ip: defaultdict[str, list[RespondingNode]] = defaultdict(list)
+
+    for node in nodes:
+        by_ip[node.node.ip].append(node)
+
+    kept: list[RespondingNode] = []
+    for ip, group in by_ip.items():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+
+        with_token = [n for n in group if n.training_repo_response.github_token]
+        without_token = [n for n in group if not n.training_repo_response.github_token]
+
+        if with_token:
+            winner = with_token[0]
+            rejected = with_token[1:] + without_token
+        else:
+            winner = without_token[0]
+            rejected = without_token[1:]
+
+        kept.append(winner)
+        for r in rejected:
+            logger.warning(
+                f"Rejecting {r.node.hotkey} — duplicate IP address '{ip}' "
+                f"(kept {winner.node.hotkey})"
+            )
+
+    return kept

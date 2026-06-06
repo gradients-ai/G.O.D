@@ -523,6 +523,12 @@ class TournamentProjection(BaseModel):
     current_champion_decay: float
     initial_weight: float
     projections: list[WeightProjection]
+    # "champion" if the projected performance dethrones the boss, else "runner_up"
+    placement: str = "champion"
+    # Performance margin (env: win rate) the challenger must exceed to take the crown
+    dethrone_threshold: float = 0.0
+    # Emission boost applied on top of base weight (0 when runner_up or below boost threshold)
+    emission_boost: float = 0.0
 
 
 class WeightProjectionResponse(BaseModel):

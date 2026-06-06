@@ -12,6 +12,7 @@ import requests
 
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
+from validator.db.sql import tasks as tasks_sql
 from validator.evaluation.db_utils import persist_deployment_ids_for_repo
 from validator.evaluation.utils import EVAL_RESULT_STATUS_PATH
 from validator.evaluation.utils import _log_eval_step
@@ -23,6 +24,18 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 _EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
+
+
+class EvaluationRetryableError(RuntimeError):
+    """Evaluation should be retried later without marking rows as failed."""
+
+
+class EvaluationCapacityUnavailable(EvaluationRetryableError):
+    pass
+
+
+class DeploymentNotReadyError(EvaluationRetryableError):
+    pass
 
 
 @dataclass
@@ -105,6 +118,65 @@ async def _deployment_exists(client, deployment_name: str) -> bool:
     return any(getattr(dep, "name", None) == deployment_name for dep in deployments)
 
 
+async def _get_deployment_by_name(client, deployment_name: str):
+    deployments = await asyncio.to_thread(client.list)
+    by_name = {getattr(dep, "name", None): dep for dep in deployments}
+    return by_name.get(deployment_name)
+
+
+async def _wait_for_deployment_ready(client, deployment, deployment_name: str, timeout_seconds: int):
+    deadline = time.monotonic() + timeout_seconds
+    current_deployment = deployment
+    while time.monotonic() < deadline:
+        if current_deployment is not None and deployment_is_healthy(current_deployment):
+            return current_deployment
+        refreshed = await _get_deployment_by_name(client, deployment_name)
+        if refreshed is not None:
+            current_deployment = refreshed
+        await asyncio.sleep(5)
+    return None
+
+
+async def _deploy_with_readiness_timeout(
+    *,
+    ctx: _BasilicaEvalContext,
+    client,
+    deployment_name: str,
+    deploy_kwargs: dict,
+):
+    timeout_seconds = vcst.EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS
+    started_monotonic = time.monotonic()
+    deployment = None
+    try:
+        deployment = await asyncio.wait_for(asyncio.to_thread(client.deploy, **deploy_kwargs), timeout=timeout_seconds)
+        resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+        remaining_seconds = max(1, int(timeout_seconds - (time.monotonic() - started_monotonic)))
+        ready_deployment = await _wait_for_deployment_ready(
+            client,
+            deployment,
+            resolved_deployment_name,
+            remaining_seconds,
+        )
+        if ready_deployment is not None:
+            return ready_deployment, resolved_deployment_name
+        deployment_name = resolved_deployment_name
+    except asyncio.TimeoutError as exc:
+        ctx.log_eval_step("deploy_ready_timeout", deployment=deployment_name, timeout_seconds=timeout_seconds)
+        existing = deployment or await _get_deployment_by_name(client, deployment_name)
+        if existing is not None:
+            await _delete_eval_deployment(ctx, client, existing, deployment_name, "deploy_ready_timeout")
+        raise DeploymentNotReadyError(f"Deployment {deployment_name} was not ready within {timeout_seconds}s") from exc
+    except DeploymentNotReadyError:
+        raise
+    except Exception:
+        raise
+
+    existing = deployment or await _get_deployment_by_name(client, deployment_name)
+    if existing is not None:
+        await _delete_eval_deployment(ctx, client, existing, deployment_name, "not_ready_timeout")
+    raise DeploymentNotReadyError(f"Deployment {deployment_name} was not ready within {timeout_seconds}s")
+
+
 async def _delete_terminal_deployment(
     *,
     client,
@@ -171,6 +243,24 @@ async def _delete_eval_deployment(
     )
 
 
+async def _release_reserved_gpus(
+    *,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+    deployment_name: str,
+    ctx: _BasilicaEvalContext,
+) -> None:
+    if task_id is None or psql_db is None or not hotkeys:
+        return
+    await _db_call_with_retry(
+        lambda: tasks_sql.release_evaluation_gpu_reservation(task_id, hotkeys, deployment_name, psql_db),
+        "release_evaluation_gpu_reservation",
+        ctx.eval_logger,
+        ctx.repo,
+    )
+
+
 async def _get_healthy_existing_basilica_deployment(
     *,
     existing_deployment_name: str,
@@ -218,6 +308,27 @@ async def _deploy_basilica_eval_repo(
 ):
     client = basilica.BasilicaClient()
     await asyncio.sleep(random.uniform(0.0, 0.25))
+    reserved_hotkeys = [repo_to_hotkey[ctx.repo]] if ctx.repo in repo_to_hotkey else []
+    requested_gpus = max(0, gpu_count or 0)
+
+    if task_id is not None and psql_db is not None and reserved_hotkeys and requested_gpus > 0:
+        reserved = await _db_call_with_retry(
+            lambda: tasks_sql.try_reserve_evaluation_gpus(
+                task_id,
+                reserved_hotkeys,
+                deployment_name,
+                requested_gpus,
+                psql_db,
+            ),
+            "try_reserve_evaluation_gpus",
+            ctx.eval_logger,
+            ctx.repo,
+        )
+        if not reserved:
+            ctx.log_eval_step("gpu_capacity_unavailable", deployment=deployment_name, gpu_count=requested_gpus)
+            raise EvaluationCapacityUnavailable(
+                f"Not enough evaluation GPU capacity for deployment {deployment_name} ({requested_gpus} GPUs)"
+            )
 
     ctx.log_eval_step("deployment_id_persist_start", deployment=deployment_name)
     async with _EVAL_DB_WRITE_SEMAPHORE:
@@ -228,7 +339,6 @@ async def _deploy_basilica_eval_repo(
                 repo_to_hotkey,
                 ctx.repo,
                 deployment_name,
-                None,
             ),
             "persist_deployment_ids_for_repo(pre-deploy)",
             ctx.eval_logger,
@@ -261,11 +371,40 @@ async def _deploy_basilica_eval_repo(
         deploy_kwargs["gpu_models"] = gpu_models
         deploy_kwargs["min_gpu_memory_gb"] = min_gpu_memory_gb
 
-    deployment = await asyncio.to_thread(client.deploy, **deploy_kwargs)
+    deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
+        ctx=ctx,
+        client=client,
+        deployment_name=deployment_name,
+        deploy_kwargs=deploy_kwargs,
+    )
     resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
     ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name)
 
     if resolved_deployment_name != deployment_name:
+        if task_id is not None and psql_db is not None and reserved_hotkeys:
+            await _db_call_with_retry(
+                lambda: tasks_sql.release_evaluation_gpu_reservation(task_id, reserved_hotkeys, deployment_name, psql_db),
+                "release_evaluation_gpu_reservation(old-name)",
+                ctx.eval_logger,
+                ctx.repo,
+            )
+            reserved = await _db_call_with_retry(
+                lambda: tasks_sql.try_reserve_evaluation_gpus(
+                    task_id,
+                    reserved_hotkeys,
+                    resolved_deployment_name,
+                    requested_gpus,
+                    psql_db,
+                ),
+                "try_reserve_evaluation_gpus(resolved-name)",
+                ctx.eval_logger,
+                ctx.repo,
+            )
+            if not reserved:
+                await _delete_eval_deployment(ctx, client, deployment, resolved_deployment_name, "resolved_name_capacity_unavailable")
+                raise EvaluationCapacityUnavailable(
+                    f"Not enough evaluation GPU capacity for deployment {resolved_deployment_name} ({requested_gpus} GPUs)"
+                )
         await asyncio.sleep(random.uniform(0.0, 0.25))
         ctx.log_eval_step(
             "deployment_id_repersist_start",
@@ -280,7 +419,6 @@ async def _deploy_basilica_eval_repo(
                     repo_to_hotkey,
                     ctx.repo,
                     resolved_deployment_name,
-                    None,
                 ),
                 "persist_deployment_ids_for_repo(post-deploy)",
                 ctx.eval_logger,
@@ -392,6 +530,7 @@ async def _run_single_basilica_eval_repo(
         deleted_deployment_names=set(),
         log_eval_step=log_step,
     )
+    reserved_hotkeys = [repo_to_hotkey[repo]] if repo in repo_to_hotkey else []
 
     if existing_deployment_name:
         resume_deployment = await _get_healthy_existing_basilica_deployment(
@@ -410,6 +549,13 @@ async def _run_single_basilica_eval_repo(
                 timeout_cleanup_reason="resume_failed_or_timed_out",
                 retry_on_failure=False,
             )
+        await _release_reserved_gpus(
+            task_id=task_id,
+            psql_db=psql_db,
+            hotkeys=reserved_hotkeys,
+            deployment_name=existing_deployment_name,
+            ctx=ctx,
+        )
 
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
@@ -444,11 +590,30 @@ async def _run_single_basilica_eval_repo(
         except asyncio.CancelledError:
             log_step("attempt_cancelled", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             raise
+        except EvaluationRetryableError:
+            dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
+            if deployment is not None:
+                await _delete_eval_deployment(ctx, client, deployment, dep_name, "attempt_retryable")
+            await _release_reserved_gpus(
+                task_id=task_id,
+                psql_db=psql_db,
+                hotkeys=reserved_hotkeys,
+                deployment_name=dep_name,
+                ctx=ctx,
+            )
+            raise
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
             if deployment is not None:
-                dep_name = getattr(deployment, "name", None) or deployment_name
                 await _delete_eval_deployment(ctx, client, deployment, dep_name, "attempt_exception")
+            await _release_reserved_gpus(
+                task_id=task_id,
+                psql_db=psql_db,
+                hotkeys=reserved_hotkeys,
+                deployment_name=dep_name,
+                ctx=ctx,
+            )
             log_step(
                 "attempt_failed",
                 attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
@@ -528,7 +693,9 @@ async def run_basilica_eval_repos(
     )
     out: dict[str, dict | str] = {}
     for repo, result in zip(repos, task_results):
-        if isinstance(result, Exception):
+        if isinstance(result, EvaluationRetryableError):
+            raise result
+        elif isinstance(result, Exception):
             out[repo] = f"Evaluation failed: {result}"
         else:
             out[repo] = result

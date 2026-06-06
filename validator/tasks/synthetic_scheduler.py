@@ -199,22 +199,26 @@ async def _get_columns_for_instruct_dataset(
 
 
 def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
-    """Compute training hours from row count, model size, and task type."""
+    """Compute training hours from row count, model size, and task type.
+
+    All scaling factors are applied to the continuous base; the result is
+    rounded to the nearest half-hour, floored, and capped once at the end so
+    intermediate rounding never compounds.
+    """
     row_range = vcst.TRAINING_HOURS_MAX_ROWS - vcst.TRAINING_HOURS_SCALE_START_ROWS
     t = max(0.0, min(1.0, (num_rows - vcst.TRAINING_HOURS_SCALE_START_ROWS) / row_range))
-    base = vcst.TRAINING_HOURS_MIN + t * (vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN)
-    hours = max(vcst.TRAINING_HOURS_MIN, round(base * 2) / 2)
+    hours = vcst.TRAINING_HOURS_MIN + t * (vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN)
 
     if model_id is not None:
         num_params = get_model_num_params(model_id)
         if num_params is not None and num_params < vcst.FULL_HOURS_MODEL_PARAMS:
             ratio = num_params / vcst.FULL_HOURS_MODEL_PARAMS
             scale = vcst.MIN_HOURS_SCALE + ratio * (1.0 - vcst.MIN_HOURS_SCALE)
-            hours = max(vcst.TRAINING_HOURS_MIN, round(hours * scale * 2) / 2)
+            hours *= scale
 
-    type_mult = vcst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0) if task_type is not None else 1.0
-    hours = max(vcst.TRAINING_HOURS_MIN, round(hours * type_mult * 2) / 2)
+    hours *= vcst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0) if task_type is not None else 1.0
 
+    hours = max(vcst.TRAINING_HOURS_MIN, round(hours * 2) / 2)
     return min(hours, vcst.MAX_TRAINING_HOURS)
 
 
@@ -231,7 +235,9 @@ def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
     if not p95:
         return hours
     packed_len = max(p95, 2 * (p50 or p95))
-    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, (packed_len / vcst.CTX_REF_SEQ_LEN) ** 2))
+    # Linear ramp: 1.0x at the pivot (512), +1.0x per CTX_SCALE_SPAN tokens, clamped.
+    # e.g. 1024 -> 1.5x, 1536 -> 2.0x, 2048 -> 2.5x.
+    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, 1.0 + (packed_len - vcst.CTX_REF_SEQ_LEN) / vcst.CTX_SCALE_SPAN))
     scaled = max(vcst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
     return min(scaled, vcst.MAX_TRAINING_HOURS)
 

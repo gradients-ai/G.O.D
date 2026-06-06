@@ -137,6 +137,7 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
 @router.get("/v1/performance/weight-projection")
 async def get_weight_projection(
     percentage_improvement: float,
+    environment_win_pct: float = 80.0,
     config: Config = Depends(get_config),
 ) -> WeightProjectionResponse:
     text_projection = await calculate_tournament_projection(
@@ -155,12 +156,14 @@ async def get_weight_projection(
         cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
     )
 
+    # Environment tournaments are PvP: the input is a win rate (%), not a score improvement.
     environment_projection = await calculate_tournament_projection(
         config.psql_db,
         TournamentType.ENVIRONMENT,
         percentage_improvement,
         cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
         cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
+        win_pct=environment_win_pct / 100.0,
     )
 
     return WeightProjectionResponse(

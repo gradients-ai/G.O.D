@@ -19,6 +19,7 @@ from validator.db.database import PSQLDB
 from validator.evaluation.scoring import evaluate_and_score_hotkeys
 from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
 from validator.evaluation.scoring import should_use_tournament_eval
+from validator.evaluation.basilica import EvaluationRetryableError
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
 from validator.utils.logging import LogContext
@@ -27,7 +28,6 @@ from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
-_EVALUATING_ROWS_LOCK = asyncio.Lock()
 _TOURNAMENT_GROUP_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
 
 
@@ -289,9 +289,15 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
     except PvPIncompleteError as e:
         logger.info(f"PvP eval incomplete for task {task.task_id}: {e} — resetting to pending for retry")
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
+        await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
+    except EvaluationRetryableError as e:
+        logger.info(f"Evaluation retryable for task {task.task_id}: {e} — resetting to pending for retry")
+        await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
+        await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
     except Exception as e:
         logger.error(f"Error evaluating pending pairs for task {task.task_id}: {e}", exc_info=True)
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "failure", config.psql_db)
+        await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
 
 
 async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, config: Config):
@@ -319,35 +325,7 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     for hotkeys in hotkey_batches:
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
         if pending_batch:
-            async with _EVALUATING_ROWS_LOCK:
-                tournament_env_names = _tournament_environment_names()
-                group_evaluations = await tasks_sql.count_group_task_evaluations_by_status(
-                    "evaluating", tournament_env_names, config.psql_db
-                )
-                non_group_evaluating_rows = await tasks_sql.count_non_group_task_evaluation_rows_by_status(
-                    "evaluating", tournament_env_names, config.psql_db
-                )
-                total_eval_slots = group_evaluations + non_group_evaluating_rows
-                available_slots = cst.MAX_EVALUATING_ROWS - total_eval_slots
-
-                if batch_together:
-                    if group_evaluations >= cst.MAX_CONCURRENT_GROUP_EVALUATIONS or available_slots < 1:
-                        logger.info(
-                            f"Skipping grouped evaluation for task {task.task_id}; "
-                            f"group slots {group_evaluations}/{cst.MAX_CONCURRENT_GROUP_EVALUATIONS}, "
-                            f"eval slots {total_eval_slots}/{cst.MAX_EVALUATING_ROWS}"
-                        )
-                        continue
-                elif len(pending_batch) > available_slots:
-                    logger.info(
-                        f"Skipping pending evaluation rows for task {task.task_id} hotkeys {pending_batch}; "
-                        f"needs {len(pending_batch)} slots but only {available_slots} available "
-                        f"({non_group_evaluating_rows} normal rows + {group_evaluations} grouped evals/"
-                        f"{cst.MAX_EVALUATING_ROWS} eval slots)"
-                    )
-                    continue
-
-                await tasks_sql.update_task_evaluations_status(task.task_id, pending_batch, "evaluating", config.psql_db)
+            await tasks_sql.update_task_evaluations_status(task.task_id, pending_batch, "evaluating", config.psql_db)
 
         pending_evaluations.append(_evaluate_and_update_hotkeys(task, hotkeys, num_gpus, config))
 

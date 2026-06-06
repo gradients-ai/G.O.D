@@ -995,6 +995,35 @@ _model_prep_in_progress: set[str] = set()
 _MODEL_PREP_STATUS_TIMEOUT = 5.0  # seconds — fast check, don't stall the cycle
 
 
+def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
+    """True if the prepped dataset's near-duplicate rate is at/above the cutoff.
+
+    Only text tasks (instruct/dpo/grpo) carry dataset stats; env tasks and any
+    stats without a dataset are never rejected. Organic tasks are exempt: we log
+    but let them proceed.
+    """
+    dataset = getattr(baseline_stats, "dataset", None)
+    if dataset is None:
+        return False
+    rate = dataset.near_duplicate_rate
+    if rate < cst.MAX_NEAR_DUPLICATE_RATE:
+        return False
+
+    if task.is_organic:
+        logger.warning(
+            f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
+            f">= {cst.MAX_NEAR_DUPLICATE_RATE} but is organic — allowing through"
+        )
+        return False
+
+    logger.warning(
+        f"Task {task.task_id} rejected: near_duplicate_rate={rate:.3f} "
+        f">= {cst.MAX_NEAR_DUPLICATE_RATE}, marking {TaskStatus.PREP_TASK_FAILURE.value} "
+        f"for replacement"
+    )
+    return True
+
+
 async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
     """Check all trainers for an existing model prep job for this task.
 
@@ -1028,6 +1057,15 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 task.augmented_model_id = job.result.augmented_model_id
             if job.result.baseline_stats:
                 task.baseline_stats = job.result.baseline_stats
+
+            if job.result.baseline_stats and _exceeds_near_duplicate_threshold(
+                task, job.result.baseline_stats
+            ):
+                task.status = TaskStatus.PREP_TASK_FAILURE
+                await task_sql.update_task(task, config.psql_db)
+                return True
+
+            if job.result.baseline_stats:
                 new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1222,6 +1260,15 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     task.augmented_model_id = prep_result.augmented_model_id
                 if prep_result.baseline_stats:
                     task.baseline_stats = prep_result.baseline_stats
+
+                if prep_result.baseline_stats and _exceeds_near_duplicate_threshold(
+                    task, prep_result.baseline_stats
+                ):
+                    task.status = TaskStatus.PREP_TASK_FAILURE
+                    await task_sql.update_task(task, config.psql_db)
+                    return
+
+                if prep_result.baseline_stats:
                     new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)

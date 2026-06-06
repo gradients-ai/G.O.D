@@ -71,20 +71,47 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
             print("WARNING: adapter_config missing base_model_name_or_path, loading as-is", flush=True)
             return ModelPrepResult(effective_model_path=model_id)
 
-        print(f"Merging LoRA into base: {base_model_id}", flush=True)
+        # Walk the LoRA chain and merge all adapters bottom-to-top. The immediate base
+        # may itself be an adapter — loading it directly fails, and merging only the top
+        # adapter onto the foundation drops the intermediates.
+        chain: list[str] = []
+        real_base = base_model_id
+        for _ in range(10):
+            try:
+                cfg = hf_hub_download(real_base, cst.LORA_ADAPTER_CONFIG_FILE, token=hf_token)
+                with open(cfg) as f:
+                    parent_base = json.load(f).get("base_model_name_or_path")
+            except Exception:
+                break
+            if not parent_base:
+                break
+            chain.append(real_base)
+            real_base = parent_base
+
+        print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_id, torch_dtype=torch.float16, token=hf_token,
+            real_base, torch_dtype=torch.float16, token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
         )
-        base_tokenizer = AutoTokenizer.from_pretrained(base_model_id, token=hf_token)
-        lora_tokenizer = AutoTokenizer.from_pretrained(model_id, token=hf_token)
+        base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
 
-        if len(lora_tokenizer) > base_model.get_input_embeddings().weight.shape[0]:
-            base_model.resize_token_embeddings(len(lora_tokenizer))
+        def _merge_adapter(model, adapter_src):
+            try:
+                tok = AutoTokenizer.from_pretrained(adapter_src, token=hf_token)
+            except Exception:
+                tok = base_tokenizer
+            if len(tok) > model.get_input_embeddings().weight.shape[0]:
+                model.resize_token_embeddings(len(tok))
+            pm = PeftModel.from_pretrained(model, adapter_src, token=hf_token)
+            return pm.merge_and_unload(safe_merge=False), tok
 
-        merged = PeftModel.from_pretrained(base_model, model_id, token=hf_token)
-        merged = merged.merge_and_unload(safe_merge=False)
+        lora_tokenizer = base_tokenizer
+        for adapter_repo in reversed(chain):
+            base_model, lora_tokenizer = _merge_adapter(base_model, adapter_repo)
+        merged, top_tokenizer = _merge_adapter(base_model, model_id)
+        if top_tokenizer is not base_tokenizer:
+            lora_tokenizer = top_tokenizer
 
         merge_dir = "/cache/merged_model"
         os.makedirs(merge_dir, exist_ok=True)
