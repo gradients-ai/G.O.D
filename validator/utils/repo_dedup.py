@@ -16,16 +16,19 @@ import hashlib
 import itertools
 import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
 
+from core.utils import sanitize_git_text
 from validator.core import constants as cst
 from validator.utils.logging import get_logger
 from validator.utils.repo_diff_report import _clone_repo
@@ -33,6 +36,18 @@ from validator.utils.repo_diff_report import _collect_files
 
 
 logger = get_logger(__name__)
+
+# Redacted from any model-authored text we publish (defense in depth; the source clone-token in
+# .git is already removed before the agent runs).
+_GH_TOKEN_RE = re.compile(r"\b(?:gh[posru]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{20,})\b")
+
+
+def _sanitize_reason(text: str, tokens: set[str]) -> str:
+    """Strip any credential that could ride along in the model's published free-text reason."""
+    if not text:
+        return text
+    cleaned = sanitize_git_text(text, *tokens)
+    return _GH_TOKEN_RE.sub("***", cleaned)
 
 CONFIG_PATH = Path(__file__).with_name("repo_dedup_config.json")
 
@@ -245,6 +260,9 @@ async def _prepare_repos(repos: list[RepoRef], temp_root: Path) -> dict[str, Pre
         try:
             head = await asyncio.to_thread(_clone_repo, ref.repo_url, dest, ref.commit_hash, ref.github_token)
             digest, total = await asyncio.to_thread(_normalized_digest, dest)
+            # Drop .git before the T2 agent can read it: .git/config holds the source token and
+            # history holds author identity, and the agent's reason is published. head is already captured.
+            await asyncio.to_thread(shutil.rmtree, dest / ".git", ignore_errors=True)
             prepared[ref.hotkey] = PreparedRepo(
                 hotkey=ref.hotkey,
                 repo_url=ref.repo_url,
@@ -464,6 +482,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
         ok_hotkeys = sorted(p.hotkey for p in prepared.values() if p.clone_ok)
         hash_pairs, tier = _hash_dup_pairs(prepared)
         hash_set = set(hash_pairs)
+        repo_tokens = {r.github_token for r in repos if r.github_token}
 
         # Give the agent the validator's running source so it can verify whether claimed
         # differentiators are real training-time inputs (vs evasive dead code). Best-effort.
@@ -495,6 +514,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
             verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
             verdict.hotkey_a, verdict.hotkey_b = a, b
+            verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
             verdicts.append(verdict)
             if verdict.relationship == "duplicate":
                 dup_pairs.append((a, b))

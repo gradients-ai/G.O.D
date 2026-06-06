@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
+from fastapi import Query
 from loguru import logger
 from pydantic import BaseModel  # noqa
 
@@ -59,7 +60,9 @@ async def audit_latest_scores_url_endpoint(config: Config = Depends(get_config))
 
 @router.get("/auditing/dedup")
 async def audit_dedup_reviews_endpoint(
-    limit: int = 100, page: int = 1, config: Config = Depends(get_config)
+    limit: int = Query(100, ge=1, le=200),
+    page: int = Query(1, ge=1),
+    config: Config = Depends(get_config),
 ) -> list[TournamentDedupReview]:
     """Confirmed functional-duplicate eliminations, for public transparency.
 

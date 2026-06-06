@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 from typing import Optional
 
@@ -203,8 +204,11 @@ async def upload_flagged_duplicate_repository(
         return None
 
     try:
+        # Hash the full hotkey: GitHub names are case-insensitive but ss58 hotkeys aren't, so a
+        # short prefix can collide and force-push over another miner's repo.
         short = participant_hotkey[:8].lower()
-        repo_name = f"god-{tournament_type}-{tournament_id}-dedup-{short}".replace("_", "-")
+        digest = hashlib.sha256(participant_hotkey.encode()).hexdigest()[:16]
+        repo_name = f"god-{tournament_type}-{tournament_id}-dedup-{short}-{digest}".replace("_", "-")
         description = (
             f"G.O.D {tournament_type.title()} Tournament {tournament_id} - "
             f"flagged duplicate submission (hotkey {participant_hotkey})"
