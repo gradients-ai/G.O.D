@@ -1098,8 +1098,11 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
         logger.warning("Small-tournament group has no ranked matches - no winners")
         return []
 
-    # Sum 1-based ranks across matches; competitors absent from a match are ranked last for it.
-    last_rank = len(competitors)
+    # Sum 1-based ranks across matches. A competitor absent from a match (no scoreable
+    # submission) is penalised one worse than last place, so failing to show is always
+    # worse than placing last in a fully-attended match — a competitor who can't produce a
+    # scoreable model shouldn't advance over one who did and merely scored poorly.
+    absent_rank = len(competitors) + 1
     standings: dict[str, GroupMatchStanding] = {
         hotkey: GroupMatchStanding(hotkey=hotkey, total_rank=0.0, matches_counted=0) for hotkey in competitors
     }
@@ -1109,13 +1112,13 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
             standings[hotkey].total_rank += position
             standings[hotkey].matches_counted += 1
         for hotkey in competitors - ranked_in_match:
-            standings[hotkey].total_rank += last_rank
+            standings[hotkey].total_rank += absent_rank
             standings[hotkey].matches_counted += 1
 
     best_match_rank = {
         hotkey: min(
             (m.ranked_hotkeys.index(hotkey) + 1 for m in match_rankings if hotkey in m.ranked_hotkeys),
-            default=last_rank,
+            default=absent_rank,
         )
         for hotkey in competitors
     }
