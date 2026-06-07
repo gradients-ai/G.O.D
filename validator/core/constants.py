@@ -407,7 +407,7 @@ AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
     AugmentationType.GAUSSIAN_NOISE: (0.01, 0.20),
     AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
     AugmentationType.MAGNITUDE_PRUNING: (0.15, 0.40),
-    AugmentationType.LAYER_REINIT: (0.05, 0.15),
+    AugmentationType.LAYER_REINIT: (0.02, 0.10),
 }
 
 # Environment evaluation constants
