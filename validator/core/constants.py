@@ -414,7 +414,7 @@ AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.1, 0.3),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.3),
     AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
     AugmentationType.MAGNITUDE_PRUNING: (0.25, 0.50),
     AugmentationType.LAYER_REINIT: (0.05, 0.15),
