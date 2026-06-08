@@ -23,7 +23,7 @@ MODEL_COPY_ENDPOINT = "https://huggingface.co/api/models/{source_repo}/duplicate
 AUGMENTATION_ENABLED_TEXT = True
 AUGMENTATION_ENABLED_IMAGE = False
 AUGMENTATION_ENABLED_ENV = False
-AUGMENTATION_PROBABILITY = 0.9
+AUGMENTATION_PROBABILITY = 0.65
 
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
     AugmentationType.GAUSSIAN_NOISE: 0.10,
@@ -40,8 +40,8 @@ AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
 }
 
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.1, 0.3),
-    AugmentationType.WEIGHT_SCALING: (0.5, 2.5),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.3),
+    AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
     AugmentationType.MAGNITUDE_PRUNING: (0.25, 0.50),
-    AugmentationType.LAYER_REINIT: (0.10, 0.30),
+    AugmentationType.LAYER_REINIT: (0.01, 0.10),
 }

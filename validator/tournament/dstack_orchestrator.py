@@ -28,6 +28,7 @@ from validator.scoring.tasks import _get_dataset_type
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
+from validator.tasks.models import InstructTextRawTask
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement
 from validator.tournament.models import TrainingStatus
@@ -175,7 +176,11 @@ async def process_pending_organic_tasks(config: Config):
                 TrainingStatus.PENDING,
             )
             
-            organic_tasks = [t for t in pending_training_tasks if t.priority == 1 and t.task.backend is not None and t.task.backend.value == Backend.RUNPOD.value]
+            organic_tasks = [
+                t
+                for t in pending_training_tasks
+                if t.priority == 1 and t.task.backend is not None and t.task.backend.value == Backend.RUNPOD.value
+            ]
             
             logger.info(f"Fetched {len(organic_tasks)} pending organic tasks")
             
@@ -232,7 +237,7 @@ async def schedule_organic_tasks_for_dstack(pending_training_tasks: list, config
                     task, run_name, config
                 )
                 
-                submitted_run_name = await submit_dstack_run(dstack_config)
+                await submit_dstack_run(dstack_config)
 
                 await tournament_sql.update_dstack_runname(
                     task.task_id, oldest_task_training.hotkey, run_name, config.psql_db
@@ -294,8 +299,11 @@ async def _create_dstack_request(
     if not expected_repo_name:
         expected_repo_name = f"organic_{task.task_id}"
     
-    required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
-    
+    required_gpus = get_tournament_gpu_requirement(
+        task.task_type, task.model_params_count, task.model_id,
+        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+    )
+
     if task.task_type == TaskType.IMAGETASK:
         gpu_name = "H100"
         gpu_count = required_gpus.gpu_count
@@ -426,7 +434,11 @@ async def _monitor_dstack_tasks(config: Config):
     - If done, mark as success
     """
     training_tasks = await tournament_sql.get_tournament_training_tasks(config.psql_db, TrainingStatus.TRAINING)
-    organic_tasks = [t for t in training_tasks if t.priority == 1 and t.task.backend is not None and t.task.backend.value == Backend.RUNPOD.value]
+    organic_tasks = [
+        t
+        for t in training_tasks
+        if t.priority == 1 and t.task.backend is not None and t.task.backend.value == Backend.RUNPOD.value
+    ]
     
     logger.info(f"Found {len(organic_tasks)} organic tasks currently in training on dstack")
     

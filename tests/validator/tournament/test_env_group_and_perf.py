@@ -45,20 +45,20 @@ class TestEnvGroupFormation:
             round_number=1,
         )
 
-    def test_6_participants_one_group(self):
-        """6 participants → 1 group of 6 (fits in MAX)."""
+    def test_6_participants_two_small_groups(self):
+        """6 participants -> 2 round-1 small-environment groups of 3."""
         nodes = self._make_nodes(6)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 1
-        assert len(result.groups[0].member_ids) == 6
+        assert len(result.groups) == 2
+        assert all(len(group.member_ids) == t_cst.SMALL_ENVIRONMENT_GROUP_SIZE for group in result.groups)
 
-    def test_7_participants_two_groups(self):
-        """7 participants → 2 groups (ceil(7/6)=2), sizes 4+3 or 3+4."""
+    def test_7_participants_three_small_groups(self):
+        """7 participants -> 3 round-1 small-environment groups, sizes 3+2+2."""
         nodes = self._make_nodes(7)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 2
+        assert len(result.groups) == 3
         sizes = sorted([len(g.member_ids) for g in result.groups])
-        assert sizes == [3, 4]
+        assert sizes == [2, 2, 3]
 
     def test_12_participants_two_groups(self):
         """12 → 2 groups of 6."""

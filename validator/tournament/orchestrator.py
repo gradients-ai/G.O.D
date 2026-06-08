@@ -39,6 +39,7 @@ from validator.scoring.tasks import should_use_tournament_eval
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
+from validator.tasks.models import InstructTextRawTask
 from validator.tasks.synthetics.scheduler import apply_baseline_ctx_scale
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement
@@ -424,7 +425,10 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 continue
 
             # Determine required GPUs for this task
-            required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+            required_gpus = get_tournament_gpu_requirement(
+                task.task_type, task.model_params_count, task.model_id,
+                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+            )
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
             suitable_gpus_result = await _check_suitable_gpus(config, required_gpus)
@@ -643,6 +647,7 @@ async def _create_training_request(
     else:
         dataset_type = _get_dataset_type(task)
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         training_data = TrainRequestText(
             model=training_model,
             task_id=str(task.task_id),
@@ -652,6 +657,8 @@ async def _create_training_request(
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
             baseline_stats=baseline_stats,
+            use_kl=use_kl,
+            kl_coef=kl_coef,
         )
 
     return TrainerProxyRequest(
@@ -1331,6 +1338,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
 
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
+                                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
@@ -1370,7 +1378,10 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
-                    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
+                    gpu_req = get_tournament_gpu_requirement(
+                        task.task_type, task.model_params_count or 0, task.model_id,
+                        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                    )
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
                         logger.info(

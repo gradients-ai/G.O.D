@@ -143,8 +143,8 @@ async def _insert_instruct_text_task(connection: Connection, task: InstructTextR
         INSERT INTO {cst.INSTRUCT_TEXT_TASKS_TABLE}
         ({cst.TASK_ID}, {cst.FIELD_SYSTEM}, {cst.FIELD_INSTRUCTION},
         {cst.FIELD_INPUT}, {cst.FIELD_OUTPUT}, {cst.FORMAT},
-        {cst.NO_INPUT_FORMAT}, {cst.FILE_FORMAT})
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        {cst.NO_INPUT_FORMAT}, {cst.FILE_FORMAT}, {cst.USE_KL}, {cst.KL_COEF})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     """
     await connection.execute(
         query,
@@ -156,6 +156,8 @@ async def _insert_instruct_text_task(connection: Connection, task: InstructTextR
         task.format,
         task.no_input_format,
         task.file_format,
+        task.use_kl,
+        task.kl_coef,
     )
 
 
@@ -364,7 +366,8 @@ async def get_tasks_with_status(
                 specific_query = f"""
                     SELECT t.*, tt.field_system,
                            tt.field_instruction, tt.field_input, tt.field_output,
-                           tt.format, tt.no_input_format, tt.file_format
+                           tt.format, tt.no_input_format, tt.file_format,
+                           tt.use_kl, tt.kl_coef
                     FROM {cst.TASKS_TABLE} t
                     LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
@@ -913,7 +916,7 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             specific_query = f"""
                 SELECT t.*, tt.field_system,
                        tt.field_instruction, tt.field_input, tt.field_output,
-                       tt.format, tt.no_input_format
+                       tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef
                 FROM {cst.TASKS_TABLE} t
                 LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
@@ -1031,6 +1034,7 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                     tasks.*,
                     tt.field_system, tt.field_instruction, tt.field_input, tt.field_output,
                     tt.format, tt.no_input_format, tt.system_format, tt.file_format,
+                    tt.use_kl, tt.kl_coef,
                     COALESCE(tasks.training_repo_backup, victorious_repo.repo) as trained_model_repository
                 FROM {cst.TASKS_TABLE} tasks
                 LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON tasks.{cst.TASK_ID} = tt.{cst.TASK_ID}
@@ -1226,7 +1230,7 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
         return f"""
             SELECT t.*, tt.field_system,
                    tt.field_instruction, tt.field_input, tt.field_output,
-                   tt.format, tt.no_input_format
+                   tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
@@ -2174,7 +2178,7 @@ async def get_successful_matching_tasks(
             )
             SELECT t.*, tt.field_system,
                    tt.field_instruction, tt.field_input, tt.field_output,
-                   tt.format, tt.no_input_format,
+                   tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef,
                    COALESCE(t.training_repo_backup, vr.{cst.REPO}) as trained_model_repository
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}

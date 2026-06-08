@@ -60,6 +60,7 @@ from validator.scoring.tournaments import pvp_results_to_winrates
 from validator.scoring.tournaments import rank_weighted_standings
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import EnvRawTask
+from validator.tasks.models import InstructTextRawTask
 
 
 logger = get_logger(__name__)
@@ -326,6 +327,7 @@ async def _evaluate_submissions(
             eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -335,6 +337,8 @@ async def _evaluate_submissions(
             "eval_seed": eval_seed,
             "task_id": task.task_id,
             "psql_db": config.psql_db if config is not None else None,
+            "use_kl": use_kl,
+            "kl_coef": kl_coef,
         }
 
         logger.info("Starting test evaluation")

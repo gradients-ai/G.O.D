@@ -8,6 +8,10 @@ from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
 from validator.tournament.notifications import notify_organic_task_created
 from validator.tournament.notifications import notify_tournament_completed
+from validator.tournament.notifications import notify_tournament_dedup_autoremoved
+from validator.tournament.notifications import notify_tournament_dedup_error
+from validator.tournament.notifications import notify_tournament_dedup_resolved
+from validator.tournament.notifications import notify_tournament_dedup_review
 from validator.tournament.notifications import notify_tournament_started
 from validator.tournament.notifications import send_to_discord
 from validator.tournament.participants import _get_final_round_participants
@@ -61,6 +65,10 @@ __all__ = [
     "get_task_results_for_ranking",
     "notify_organic_task_created",
     "notify_tournament_completed",
+    "notify_tournament_dedup_autoremoved",
+    "notify_tournament_dedup_error",
+    "notify_tournament_dedup_resolved",
+    "notify_tournament_dedup_review",
     "notify_tournament_started",
     "parse_github_owner_repo",
     "select_best_contender_by_cumulative_boss_wins",

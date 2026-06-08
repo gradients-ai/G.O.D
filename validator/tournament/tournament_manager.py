@@ -57,6 +57,9 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.dedup_gate import apply_r1_eliminations
+from validator.tournament.dedup_gate import detect_r1_hash_duplicates
+from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
 from validator.tournament.github_validation import deduplicate_by_github_account
 from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
@@ -122,7 +125,15 @@ def organise_tournament_round(
                 f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
                 f"got {len(nodes_copy)}"
             )
-        num_groups = math.ceil(len(nodes_copy) / t_cst.MAX_ENVIRONMENT_GROUP_SIZE)
+        # A small starting field uses a smaller group size so more contenders survive round 1.
+        # Round 1 only — later rounds keep the normal size so the bracket still converges
+        # rather than re-splitting the shrinking field into ever-smaller groups.
+        max_group_size = (
+            t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
+            if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
+            else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
+        )
+        num_groups = math.ceil(len(nodes_copy) / max_group_size)
         while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             num_groups -= 1
 
@@ -136,6 +147,20 @@ def organise_tournament_round(
             groups.append(Group(member_ids=group_hotkeys, task_ids=[]))
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
+
+    # Small text/image tournament: at round 1 with 3..9 competitors, run a single
+    # group that plays multiple matches and advances only the top few, rather than
+    # a thin knockout (<=8) or a tiny group that still advances 8. Only applies to
+    # the first round so later rounds (e.g. a large group advancing 8 into a round
+    # of 8) are never mistaken for this format.
+    if (
+        round_number == 1
+        and tournament_type in (TournamentType.TEXT, TournamentType.IMAGE)
+        and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
+    ):
+        group_hotkeys = [node.hotkey for node in nodes_copy]
+        single_group = Group(member_ids=group_hotkeys, task_ids=[])
+        return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
 
     if len(nodes_copy) <= t_cst.MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND:
         hotkeys = [node.hotkey for node in nodes_copy]
@@ -645,6 +670,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
         else:
+            # R2 gate: before building round 2, check the entrants for functional duplicates.
+            # On flags this HALTS advancement (returns) until a human approves in the DB.
+            if t_cst.TOURN_DEDUP_ENABLED and completed_round.round_number == 1:
+                decision = await evaluate_r2_dedup_gate(tournament, completed_round, winners, config, psql_db)
+                if decision.halt:
+                    logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
+                    return
+                if decision.eliminate:
+                    winners = [w for w in winners if w not in decision.eliminate]
+                    logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -930,9 +965,26 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
         logger.error(f"No valid nodes found for tournament {tournament_id} participants")
         return False
 
+    # R1 pre-training de-dup: detect exact/normalized hash duplicates and exclude them from the
+    # bracket (they've already paid the entry fee — they forfeit it and don't get to train).
+    dedup_result = None
+    if t_cst.TOURN_DEDUP_ENABLED:
+        dedup_result = await detect_r1_hash_duplicates(tournament, [n.hotkey for n in participant_nodes], psql_db)
+        flagged = set(dedup_result.flagged_hotkeys)
+        if flagged:
+            participant_nodes = [n for n in participant_nodes if n.hotkey not in flagged]
+            logger.info(f"R1 dedup excluded {len(flagged)} duplicate(s) from the bracket for {tournament_id}")
+        if not participant_nodes:
+            logger.error(f"All participants for {tournament_id} were flagged as duplicates; cannot create first round")
+            return False
+
     logger.info(f"Creating first round for tournament {tournament_id} with {len(participant_nodes)} participants")
 
     await _create_first_round(tournament_id, tournament.tournament_type, participant_nodes, psql_db, config)
+
+    # Eliminate the flagged duplicates now that the R1 round row exists (FK on eliminated_in_round_id)
+    if dedup_result is not None:
+        await apply_r1_eliminations(tournament, generate_round_id(tournament_id, 1), dedup_result, config, psql_db)
 
     logger.info(f"Successfully created first round for tournament {tournament_id}")
     return True

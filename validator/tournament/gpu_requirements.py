@@ -13,6 +13,7 @@ TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100 = 12.0
 TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100 = 40.0
 TOURNAMENT_DPO_GPU_MULTIPLIER = 3
 TOURNAMENT_GRPO_GPU_MULTIPLIER = 2
+TOURNAMENT_KL_GPU_MULTIPLIER = 2
 
 
 def get_tournament_gpu_requirement(
@@ -20,8 +21,14 @@ def get_tournament_gpu_requirement(
     model_params_count: int,
     model_id: str | None = None,
     gpu_multiplier: int | None = None,
+    use_kl: bool = False,
 ) -> GpuRequirement:
-    """Compute GPU requirement based on model size, task type, and optional multiplier."""
+    """Compute GPU requirement based on model size, task type, and optional multiplier.
+
+    When ``use_kl`` is set (instruct KL tasks), the effective model size is scaled by
+    TOURNAMENT_KL_GPU_MULTIPLIER to account for the frozen reference model held resident
+    alongside the trainable model.
+    """
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X
 
@@ -48,6 +55,9 @@ def get_tournament_gpu_requirement(
             params_b *= gpu_multiplier
         else:
             return GpuRequirement.H100_4X
+
+    if use_kl:
+        params_b *= TOURNAMENT_KL_GPU_MULTIPLIER
 
     if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
         return GpuRequirement.H100_1X

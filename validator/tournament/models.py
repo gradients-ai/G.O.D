@@ -79,6 +79,20 @@ class GpuRequirement(str, Enum):
         }[self]
 
 
+class DedupTier(str, Enum):
+    """How duplicate submissions were established."""
+
+    T0 = "T0"
+    T1 = "T1"
+    T2 = "T2"
+
+
+class DupRelationship(str, Enum):
+    DUPLICATE = "duplicate"
+    DISTINCT = "distinct"
+    DROP_EVASION = "drop_evasion"
+
+
 class TrainerInfo(BaseModel):
     trainer_ip: str = Field(..., description="Trainer IP address")
     gpus: list[GPUInfo] = Field(..., description="List of GPUs available on this trainer")
@@ -199,6 +213,31 @@ class KnockoutRound(BaseRound):
 
 
 Round = GroupRound | KnockoutRound
+
+
+class MatchRanking(BaseModel):
+    """Competitors ranked best-first for one small-tournament match."""
+
+    task_id: str
+    ranked_hotkeys: list[str]
+
+
+class GroupMatchStanding(BaseModel):
+    """A competitor's standing across all matches in a small tournament group."""
+
+    hotkey: str
+    total_rank: float
+    matches_attended: int
+    total_matches: int
+    summed_loss: float
+
+    @property
+    def average_rank(self) -> float:
+        return self.total_rank / self.total_matches if self.total_matches else float("inf")
+
+    @property
+    def has_error(self) -> bool:
+        return self.matches_attended < self.total_matches
 
 
 class TournamentRound(BaseModel):
@@ -565,3 +604,94 @@ class BossBattleResponse(BaseModel):
     image_performance_differences: list[TaskPerformanceDifference]
     environment_tournament_id: str | None = None
     environment_performance_differences: list[TaskPerformanceDifference] = []
+
+
+class DedupReviewStatus(str, Enum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+    SKIPPED = "skipped"
+
+
+class DedupPairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: DedupTier
+    relationship: DupRelationship
+    confidence: float
+    reason: str
+
+
+class DedupClusterRecord(BaseModel):
+    members: list[str]
+    basis: DedupTier
+    reason: str
+
+
+class PublishedRepo(BaseModel):
+    hotkey: str
+    public_repo_url: str
+    commit_hash: str | None = None
+
+
+class TournamentDedupReview(BaseModel):
+    round_id: str
+    tournament_id: str
+    tournament_type: str
+    status: DedupReviewStatus = DedupReviewStatus.PENDING_REVIEW
+    cohort: list[str] = []
+    clusters: list[DedupClusterRecord] = []
+    pair_verdicts: list[DedupPairVerdict] = []
+    flagged_hotkeys: list[str] = []
+    approved_eliminations: list[str] = []
+    published_repos: list[PublishedRepo] = []
+    report_url: str | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class GateDecision(BaseModel):
+    halt: bool
+    eliminate: set[str] = Field(default_factory=set)
+
+
+class RepoRef(BaseModel):
+    hotkey: str
+    repo_url: str
+    commit_hash: str | None = None
+    github_token: str | None = None
+
+
+class PreparedRepo(BaseModel):
+    hotkey: str
+    repo_url: str
+    head_commit: str | None = None
+    normalized_digest: str | None = None
+    content_chars: int = 0
+    path: str | None = None
+    clone_ok: bool = False
+
+
+class PairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: DedupTier
+    relationship: DupRelationship
+    confidence: float
+    reason: str
+
+
+class DedupCluster(BaseModel):
+    members: list[str]
+    basis: DedupTier
+    reason: str
+
+
+class DedupResult(BaseModel):
+    cohort: list[str]
+    clusters: list[DedupCluster] = []
+    pair_verdicts: list[PairVerdict] = []
+    flagged_hotkeys: list[str] = []
+    evasion_hotkeys: list[str] = []
+    unclonable_hotkeys: list[str] = []

@@ -18,6 +18,8 @@ from validator.evaluation.pvp.models import GameOutcome
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.models import GroupMatchStanding
+from validator.tournament.models import MatchRanking
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentResultsWithWinners
@@ -475,6 +477,71 @@ async def get_environment_group_winners(
     logger.info(f"Environment round {completed_round.round_number}: advancing {len(all_winners)} total non-boss winners")
     return all_winners
 
+
+async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
+    """Rank competitors across the multi-match small-tournament group."""
+    match_rankings: list[MatchRanking] = []
+    match_losses: list[dict[str, float]] = []
+    competitors: set[str] = set()
+    for task in round_tasks:
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+        if not miner_results:
+            logger.warning(f"No valid results for small-tournament task {task.task_id}")
+            continue
+
+        ranked_results = calculate_miner_ranking_and_scores(miner_results)
+        scored = [
+            (result.hotkey, result.adjusted_loss)
+            for result in ranked_results
+            if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+        ]
+        if not scored:
+            logger.warning(f"Small-tournament task {task.task_id} has no valid scores")
+            continue
+
+        scored.sort(key=lambda item: item[1])
+        competitors.update(hotkey for hotkey, _loss in scored)
+        match_rankings.append(MatchRanking(task_id=task.task_id, ranked_hotkeys=[hotkey for hotkey, _loss in scored]))
+        match_losses.append({hotkey: loss for hotkey, loss in scored})
+
+    total_matches = len(match_rankings)
+    if total_matches == 0 or not competitors:
+        return []
+
+    standings: dict[str, GroupMatchStanding] = {}
+    for hotkey in competitors:
+        total_rank = 0.0
+        matches_attended = 0
+        summed_loss = 0.0
+        for ranking, losses in zip(match_rankings, match_losses, strict=True):
+            if hotkey in ranking.ranked_hotkeys:
+                total_rank += ranking.ranked_hotkeys.index(hotkey) + 1
+                matches_attended += 1
+                summed_loss += losses[hotkey]
+            else:
+                total_rank += len(ranking.ranked_hotkeys) + 1
+                summed_loss += float("inf")
+        standings[hotkey] = GroupMatchStanding(
+            hotkey=hotkey,
+            total_rank=total_rank,
+            matches_attended=matches_attended,
+            total_matches=total_matches,
+            summed_loss=summed_loss,
+        )
+
+    ordered = sorted(
+        standings.values(),
+        key=lambda standing: (standing.has_error, standing.average_rank, standing.summed_loss, standing.hotkey),
+    )
+    winners = [standing.hotkey for standing in ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]]
+    logger.info(
+        f"Small-tournament standings "
+        f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}; "
+        f"advancing top {len(winners)}: {winners}"
+    )
+    return winners
+
+
 async def get_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config = None
 ) -> list[str]:
@@ -488,6 +555,10 @@ async def get_group_winners(
 
     if is_environment:
         return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
+
+    distinct_groups = {task.group_id for task in round_tasks}
+    if completed_round.round_number == 1 and len(round_tasks) > 1 and len(distinct_groups) == 1:
+        return await _get_small_tournament_group_winners(round_tasks, psql_db)
 
     # Determine how many winners to advance
     if completed_round.is_final_round:

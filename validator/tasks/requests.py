@@ -138,6 +138,7 @@ def prepare_text_task_request(task: AnyTextTypeRawTask) -> TrainRequestText:
         )
 
     dataset = task.training_data if task.training_data else "dataset error"
+    use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
     task_request_body = TrainRequestText(
         dataset=dataset,
         model=task.model_id,
@@ -145,6 +146,8 @@ def prepare_text_task_request(task: AnyTextTypeRawTask) -> TrainRequestText:
         file_format=FileFormat.S3,
         task_id=str(task.task_id),
         hours_to_complete=task.hours_to_complete,
+        use_kl=use_kl,
+        kl_coef=kl_coef,
     )
 
     return task_request_body
