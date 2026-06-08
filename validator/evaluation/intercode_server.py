@@ -50,6 +50,11 @@ def _get_assets() -> InterCodeAssets:
     return _assets
 
 
+def _format_exception(exc: Exception) -> str:
+    message = str(exc).strip()
+    return message or type(exc).__name__
+
+
 @app.on_event("startup")
 async def startup() -> None:
     _get_assets()
@@ -97,7 +102,7 @@ async def evaluate(payload: InterCodeEvaluateRequest) -> dict:
             exc_info=True,
         )
         score = 0.0
-        error = str(exc)
+        error = _format_exception(exc)
 
     result = {
         "score": float(score),

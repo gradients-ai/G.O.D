@@ -18,7 +18,6 @@ import aiohttp
 from core.constants import EnvironmentName
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.model_prep_models import EnvStats
-from trainer.model_prep.stats import compute_weight_stats
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +35,16 @@ CONSECUTIVE_FAILURE_LIMIT = 5
 
 # --- SGLang process management (from eval_environment.py) ---
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+LOG_SGLANG_STDOUT = _env_bool("MODEL_PREP_LOG_SGLANG", False)
+
+
 def build_sglang_command(model_path: str, seed: int) -> str:
     tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
     dtype = os.getenv("SGLANG_DTYPE", "float16")
@@ -52,13 +61,30 @@ def build_sglang_command(model_path: str, seed: int) -> str:
     return f"{base} {extra}" if extra else base
 
 
-def start_process(command: str, name: str) -> subprocess.Popen:
+def start_process(command: str, name: str, *, capture_stdout: bool = False) -> subprocess.Popen:
     logger.info("Starting %s: %s", name, command)
+    stdout = subprocess.PIPE if capture_stdout else subprocess.DEVNULL
+    stderr = subprocess.STDOUT if capture_stdout else subprocess.DEVNULL
     return subprocess.Popen(
         command, shell=True,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        stdout=stdout, stderr=stderr,
         text=True, bufsize=1, preexec_fn=os.setsid,
     )
+
+
+async def stream_process_logs(proc: subprocess.Popen | None, name: str) -> None:
+    if proc is None or proc.stdout is None:
+        return
+    while True:
+        if proc.poll() is not None and proc.stdout.closed:
+            return
+        line = await asyncio.to_thread(proc.stdout.readline)
+        if not line:
+            if proc.poll() is not None:
+                return
+            await asyncio.sleep(0.2)
+            continue
+        logger.info("[%s] %s", name, line.rstrip())
 
 
 def stop_process(proc: subprocess.Popen | None, name: str) -> None:
@@ -112,6 +138,13 @@ def _sample_task_id(seed: int, task_id_min: int, task_id_max: int) -> int:
     return random.Random(seed).randint(task_id_min, task_id_max)
 
 
+def _format_episode_error(error: object) -> str:
+    if error is None:
+        return ""
+    message = str(error).strip()
+    return message or type(error).__name__
+
+
 async def _play_episodes(
     session: aiohttp.ClientSession,
     env_name: EnvironmentName,
@@ -150,6 +183,7 @@ async def _play_episodes(
             payload.update(eval_payload_extra)
 
         failed = False
+        error_message = ""
         try:
             timeout = aiohttp.ClientTimeout(total=ENV_EVAL_TASK_TIMEOUT)
             async with session.post(
@@ -159,17 +193,29 @@ async def _play_episodes(
                     data = await resp.json()
                     result = data.get("result", data)
                     score = float(result.get("score", 0.0))
+                    error_message = _format_episode_error(result.get("error"))
+                    if error_message:
+                        failed = True
                 else:
+                    raw_error = await resp.text()
+                    error_message = f"HTTP {resp.status}"
+                    if raw_error:
+                        error_message = f"{error_message}: {raw_error[:500]}"
                     score = 0.0
                     failed = True
         except Exception as e:
-            print(f"  {env_name.value} episode {i+1}: error {e}", flush=True)
+            error_message = _format_episode_error(e)
             score = 0.0
             failed = True
 
         scores.append(score)
 
         if failed:
+            print(
+                f"  {env_name.value} episode {i+1}: error task_id={task_id} seed={seed}: "
+                f"{error_message or 'unknown error'}",
+                flush=True,
+            )
             consecutive_failures += 1
             if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
                 print(
@@ -203,10 +249,13 @@ async def compute_env_stats(
         eval_payload_extra: dict | None
     """
     print("Computing weight stats...", flush=True)
+    from trainer.model_prep.stats import compute_weight_stats
+
     weight_stats = compute_weight_stats(model)
 
     sglang_cmd = build_sglang_command(model_path, seed=42)
-    sglang_proc = start_process(sglang_cmd, "sglang")
+    sglang_proc = start_process(sglang_cmd, "sglang", capture_stdout=LOG_SGLANG_STDOUT)
+    sglang_log_task = None
     sglang_port = int(os.getenv("SGLANG_PORT", "30000"))
     sglang_local_url = f"http://localhost:{sglang_port}"
     container_ip = socket.gethostbyname(socket.gethostname())
@@ -216,6 +265,9 @@ async def compute_env_stats(
     all_stats: dict[EnvironmentName, EnvStats] = {}
 
     try:
+        if LOG_SGLANG_STDOUT:
+            sglang_log_task = asyncio.create_task(stream_process_logs(sglang_proc, "sglang"))
+
         await wait_for_health(sglang_local_url, "/v1/models", SGLANG_HEALTH_TIMEOUT, service_name="sglang")
 
         print(f"SGLang ready, base_url for env servers: {sglang_base_url}", flush=True)
@@ -241,6 +293,8 @@ async def compute_env_stats(
 
     finally:
         stop_process(sglang_proc, "sglang")
+        if sglang_log_task:
+            sglang_log_task.cancel()
 
     # Fill in empty stats for any envs that weren't reached
     for env_name in env_configs:

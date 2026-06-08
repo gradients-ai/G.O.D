@@ -153,46 +153,48 @@ def _detect_and_merge_lora(model_dir: str) -> None:
         print(f"WARNING: {LORA_ADAPTER_CONFIG} missing base_model_name_or_path, skipping merge", flush=True)
         return
 
-    # Resolve LoRA chains: if base_model_id is itself a LoRA adapter, follow
-    # the chain until we find the real base model.
-    resolved_base = base_model_id
+    # Collect every adapter in the chain and merge them all, bottom-to-top. Resolving
+    # straight to the bottom base and merging only the top adapter drops the
+    # intermediate adapters' weight deltas.
+    chain: list[str] = []  # intermediate adapter repos, ordered top -> down
+    real_base = base_model_id
     for _ in range(10):  # max depth guard
         try:
-            remote_adapter = hf_hub_download(resolved_base, LORA_ADAPTER_CONFIG)
+            remote_adapter = hf_hub_download(real_base, LORA_ADAPTER_CONFIG)
             with open(remote_adapter) as f:
-                parent_config = json.load(f)
-            parent_base = parent_config.get("base_model_name_or_path")
-            if not parent_base:
-                break
-            print(f"[downloader] Chained LoRA: {resolved_base} -> {parent_base}", flush=True)
-            resolved_base = parent_base
+                parent_base = json.load(f).get("base_model_name_or_path")
         except Exception:
-            break  # Not a LoRA repo — this is the real base model
-    if resolved_base != base_model_id:
-        print(f"[downloader] Resolved LoRA chain: {base_model_id} -> {resolved_base}", flush=True)
-        base_model_id = resolved_base
+            break  # not an adapter repo -> real_base is the foundation model
+        if not parent_base:
+            break
+        print(f"[downloader] Chained LoRA: {real_base} -> {parent_base}", flush=True)
+        chain.append(real_base)
+        real_base = parent_base
 
-    print(f"[downloader] LoRA adapter detected in {model_dir}", flush=True)
-    print(f"[downloader] Base model: {base_model_id}", flush=True)
+    print(f"[downloader] LoRA chain detected in {model_dir}: base={real_base}, depth={len(chain)}", flush=True)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
-    print(f"[downloader] Merging LoRA on {device}", flush=True)
-
     base_model = AutoModelForCausalLM.from_pretrained(
-        base_model_id, torch_dtype=torch.float16, device_map=device,
+        real_base, torch_dtype=torch.float16, device_map=device,
     )
-    base_tokenizer = AutoTokenizer.from_pretrained(base_model_id)
-    try:
-        lora_tokenizer = AutoTokenizer.from_pretrained(model_dir)
-    except Exception:
-        print(f"[downloader] No tokenizer in adapter dir, using base tokenizer", flush=True)
-        lora_tokenizer = base_tokenizer
+    base_tokenizer = AutoTokenizer.from_pretrained(real_base)
 
-    if len(lora_tokenizer) > base_model.get_input_embeddings().weight.shape[0]:
-        base_model.resize_token_embeddings(len(lora_tokenizer))
+    def _merge_adapter(model, adapter_src):
+        try:
+            tok = AutoTokenizer.from_pretrained(adapter_src)
+        except Exception:
+            tok = base_tokenizer
+        if len(tok) > model.get_input_embeddings().weight.shape[0]:
+            model.resize_token_embeddings(len(tok))
+        peft_model = PeftModel.from_pretrained(model, adapter_src)
+        return peft_model.merge_and_unload(safe_merge=False), tok
 
-    merged = PeftModel.from_pretrained(base_model, model_dir)
-    merged = merged.merge_and_unload(safe_merge=False)
+    lora_tokenizer = base_tokenizer
+    for adapter_repo in reversed(chain):
+        base_model, lora_tokenizer = _merge_adapter(base_model, adapter_repo)
+    merged, top_tokenizer = _merge_adapter(base_model, model_dir)
+    if top_tokenizer is not base_tokenizer:
+        lora_tokenizer = top_tokenizer
 
     # Disable peft hooks that break save_pretrained in newer transformers
     if hasattr(merged, "_hf_peft_config_loaded"):

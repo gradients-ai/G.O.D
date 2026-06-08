@@ -1,4 +1,5 @@
 import asyncio
+import json
 import math
 import random
 import re
@@ -7,7 +8,10 @@ from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
+from huggingface_hub import hf_hub_download
+from huggingface_hub import repo_exists
 
+from core.constants import HUGGINGFACE_TOKEN
 from core.constants import RAYONLABS_HF_USERNAME
 from core.constants import TrainingStartPoint
 import validator.core.constants as cst
@@ -65,6 +69,9 @@ from validator.db.sql.transfers import deduct_tournament_participation_fee
 from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.dedup_gate import apply_r1_eliminations
+from validator.tournament.dedup_gate import detect_r1_hash_duplicates
+from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -80,6 +87,7 @@ from validator.tournament.utils import notify_tournament_completed
 from validator.tournament.utils import notify_tournament_started
 from validator.tournament.utils import send_to_discord
 from validator.tournament.utils import deduplicate_by_github_account
+from validator.tournament.utils import deduplicate_by_ip_address
 from validator.tournament.utils import validate_github_tokens
 from validator.tournament.utils import validate_repo_license
 from validator.tournament.utils import validate_repo_obfuscation
@@ -117,7 +125,15 @@ def organise_tournament_round(
                 f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
                 f"got {len(nodes_copy)}"
             )
-        num_groups = math.ceil(len(nodes_copy) / t_cst.MAX_ENVIRONMENT_GROUP_SIZE)
+        # A small starting field uses a smaller group size so more contenders survive round 1.
+        # Round 1 only — later rounds keep the normal size so the bracket still converges
+        # rather than re-splitting the shrinking field into ever-smaller groups.
+        max_group_size = (
+            t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
+            if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
+            else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
+        )
+        num_groups = math.ceil(len(nodes_copy) / max_group_size)
         while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             num_groups -= 1
 
@@ -131,6 +147,20 @@ def organise_tournament_round(
             groups.append(Group(member_ids=group_hotkeys, task_ids=[]))
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
+
+    # Small text/image tournament: at round 1 with 3..9 competitors, run a single
+    # group that plays multiple matches and advances only the top few, rather than
+    # a thin knockout (<=8) or a tiny group that still advances 8. Only applies to
+    # the first round so later rounds (e.g. a large group advancing 8 into a round
+    # of 8) are never mistaken for this format.
+    if (
+        round_number == 1
+        and tournament_type in (TournamentType.TEXT, TournamentType.IMAGE)
+        and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
+    ):
+        group_hotkeys = [node.hotkey for node in nodes_copy]
+        single_group = Group(member_ids=group_hotkeys, task_ids=[])
+        return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
 
     if len(nodes_copy) <= t_cst.MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND:
         hotkeys = [node.hotkey for node in nodes_copy]
@@ -215,6 +245,20 @@ async def _create_tournament_tasks(
     return tasks
 
 
+async def _hf_repo_exists(repo_id: str) -> bool:
+    """Whether an HF model repo exists.
+
+    A continuation model can be missing if the miner's previous round failed to
+    upload (e.g. its training errored). On a lookup error we assume it exists, so
+    we only fall back to the base model on a definitive 'not found'.
+    """
+    try:
+        return await asyncio.to_thread(repo_exists, repo_id, repo_type="model", token=HUGGINGFACE_TOKEN)
+    except Exception as e:
+        logger.warning(f"HF repo existence check failed for {repo_id}: {e}; assuming it exists")
+        return True
+
+
 async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
     """Look up a miner's output repo from the previous round for model continuation."""
     rounds = await get_tournament_rounds(tournament_id, psql_db)
@@ -231,6 +275,27 @@ async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQ
             return f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
     return None
+
+
+async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
+    """The winner model's real foundation base model.
+
+    With the trainer's merge-on-download + base-repoint-on-upload, a winner adapter's
+    base_model_name_or_path already points at the real foundation (no adapter-on-adapter
+    chains), so a single read is enough. Full merged-model winners have no adapter_config,
+    so fall back to the task's declared base model.
+    """
+    try:
+        cfg_path = await asyncio.to_thread(
+            hf_hub_download, winner_repo, "adapter_config.json", token=HUGGINGFACE_TOKEN
+        )
+        with open(cfg_path) as f:
+            base = json.load(f).get("base_model_name_or_path")
+        if base:
+            return base
+    except Exception:
+        pass  # not an adapter (full merged model) — use the task's declared base
+    return fallback_model_id
 
 
 async def _save_winner_model_repo(
@@ -257,13 +322,19 @@ async def _save_winner_model_repo(
         winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
         if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (base={t_cst.ENV_TARGET_TOURN_MODEL})")
-            await update_tournament_winner_model(tournament_id, winner_repo, t_cst.ENV_TARGET_TOURN_MODEL, psql_db)
+            # Record the winner's *actual* foundation base, not the target constant.
+            # Hardcoding ENV_TARGET_TOURN_MODEL here made next tournament's
+            # continue-vs-from-scratch check (winner_model_base == ENV_TARGET_TOURN_MODEL)
+            # always pass, so the boss kept continuing a stale-base lineage and never
+            # reset to the target when the constant changed.
+            base = await _resolve_winner_base_model(winner_repo, task_obj.model_id) or t_cst.ENV_TARGET_TOURN_MODEL
+            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (resolved base={base})")
+            await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
             return
 
         if not fallback_repo:
             fallback_repo = winner_repo
-            fallback_base_model = task_obj.model_id
+            fallback_base_model = await _resolve_winner_base_model(winner_repo, task_obj.model_id)
 
     if fallback_repo and fallback_base_model:
         await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
@@ -282,7 +353,13 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        boss_assigned = False
+        # The boss (EMISSION_BURN_HOTKEY) may already be a real member of one of the
+        # groups (e.g. it advanced into a group this round). Detect that up front so we
+        # don't greedily append it to an earlier group as well — otherwise the boss gets
+        # assigned to two tasks in the same round.
+        boss_assigned = any(
+            EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
+        )
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
@@ -323,6 +400,15 @@ async def assign_nodes_to_tournament_tasks(
 
                         if task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
                             prev_repo = await _get_previous_round_repo(tournament_id, hotkey, psql_db)
+                            # The continuation model may not exist (e.g. the miner's previous
+                            # round failed to upload). Fall back to the base model so prep and
+                            # training still run instead of blocking on a 404 forever.
+                            if prev_repo and not await _hf_repo_exists(prev_repo):
+                                logger.warning(
+                                    f"Continuation model {prev_repo} for {hotkey[:8]} not found on HF; "
+                                    f"falling back to base model {task_obj.model_id}"
+                                )
+                                prev_repo = task_obj.model_id
                             if prev_repo:
                                 await task_sql.set_starting_model_repo(
                                     tournament_task.task_id, hotkey, prev_repo, psql_db,
@@ -609,6 +695,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
         else:
+            # R2 gate: before building round 2, check the entrants for functional duplicates.
+            # On flags this HALTS advancement (returns) until a human approves in the DB.
+            if cst.TOURN_DEDUP_ENABLED and completed_round.round_number == 1:
+                decision = await evaluate_r2_dedup_gate(tournament, completed_round, winners, config, psql_db)
+                if decision.halt:
+                    logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
+                    return
+                if decision.eliminate:
+                    winners = [w for w in winners if w not in decision.eliminate]
+                    logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -711,6 +807,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         logger.info(f"Got {len(responding_nodes)} responding nodes")
 
         await validate_github_tokens(responding_nodes)
+
+        pre_dedup_ip = len(responding_nodes)
+        responding_nodes = deduplicate_by_ip_address(responding_nodes)
+        if len(responding_nodes) < pre_dedup_ip:
+            logger.info(
+                f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
+            )
 
         pre_dedup = len(responding_nodes)
         responding_nodes = deduplicate_by_github_account(responding_nodes)
@@ -887,9 +990,26 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
         logger.error(f"No valid nodes found for tournament {tournament_id} participants")
         return False
 
+    # R1 pre-training de-dup: detect exact/normalized hash duplicates and exclude them from the
+    # bracket (they've already paid the entry fee — they forfeit it and don't get to train).
+    dedup_result = None
+    if cst.TOURN_DEDUP_ENABLED:
+        dedup_result = await detect_r1_hash_duplicates(tournament, [n.hotkey for n in participant_nodes], psql_db)
+        flagged = set(dedup_result.flagged_hotkeys)
+        if flagged:
+            participant_nodes = [n for n in participant_nodes if n.hotkey not in flagged]
+            logger.info(f"R1 dedup excluded {len(flagged)} duplicate(s) from the bracket for {tournament_id}")
+        if not participant_nodes:
+            logger.error(f"All participants for {tournament_id} were flagged as duplicates; cannot create first round")
+            return False
+
     logger.info(f"Creating first round for tournament {tournament_id} with {len(participant_nodes)} participants")
 
     await _create_first_round(tournament_id, tournament.tournament_type, participant_nodes, psql_db, config)
+
+    # Eliminate the flagged duplicates now that the R1 round row exists (FK on eliminated_in_round_id)
+    if dedup_result is not None:
+        await apply_r1_eliminations(tournament, generate_round_id(tournament_id, 1), dedup_result, config, psql_db)
 
     logger.info(f"Successfully created first round for tournament {tournament_id}")
     return True

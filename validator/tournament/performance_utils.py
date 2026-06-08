@@ -9,6 +9,7 @@ from core.models.tournament_models import TournamentType
 from core.models.tournament_models import WeightProjection
 from validator.core.constants import EMISSION_BURN_HOTKEY
 from validator.core.weight_setting import calculate_emission_boost_from_perf
+from validator.core.weight_setting import calculate_env_perf_diff_from_win_pct
 from validator.core.weight_setting import calculate_hybrid_decays
 from validator.core.weight_setting import calculate_tournament_weight_with_decay
 from validator.db.sql.tournaments import count_champion_consecutive_wins
@@ -17,6 +18,7 @@ from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.db.sql.tournaments import get_tournament_where_champion_first_won
 from validator.evaluation.tournament_scoring import exponential_decline_mapping
+from validator.tournament.utils import get_progressive_threshold
 from validator.tournament.utils import get_real_tournament_winner
 
 
@@ -110,11 +112,24 @@ async def calculate_tournament_projection(
     percentage_improvement: float,
     base_weight: float,
     max_weight: float,
+    win_pct: float | None = None,
 ) -> TournamentProjection:
+    """
+    Project a challenger's emission for a tournament type.
+
+    For TEXT/IMAGE the input is a percentage score improvement over the boss.
+    For ENVIRONMENT the input is a win rate (``win_pct``, 0.0-1.0) mapped through
+    the PvP emission curve.
+
+    A challenger only becomes champion if they exceed the dethrone threshold;
+    below it the boss defends and the challenger projects as the 2nd-place
+    runner-up (base-pool share, no champion boost, no time decay).
+    """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
     current_champion = get_real_tournament_winner(latest_tournament) if latest_tournament else None
 
     current_champion_decay = 0.0
+    consecutive_wins = 0
     if current_champion and latest_tournament:
         consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament_type, current_champion)
         first_win_tournament = await get_tournament_where_champion_first_won(psql_db, tournament_type, current_champion)
@@ -126,59 +141,91 @@ async def calculate_tournament_projection(
             )
             current_champion_decay = new_decay
 
-    # Calculate the winner's share within the tournament using participant count
+    # Determine the challenger's performance diff and whether it dethrones the boss.
+    if tournament_type == TournamentType.ENVIRONMENT:
+        effective_win_pct = win_pct if win_pct is not None else percentage_improvement / 100.0
+        performance_diff = calculate_env_perf_diff_from_win_pct(effective_win_pct)
+        dethrone_threshold = cts.PVP_WIN_PCT_THRESHOLD
+        dethrones = effective_win_pct >= cts.PVP_WIN_PCT_THRESHOLD
+    else:
+        performance_diff = percentage_improvement / 100.0
+        dethrone_threshold = get_progressive_threshold(consecutive_wins, tournament_type)
+        dethrones = performance_diff > dethrone_threshold
+
+    # Tournament-internal share by rank and the participation scale factor.
     num_participants = 0
     if latest_tournament:
         participants = await get_tournament_participants(latest_tournament.tournament_id, psql_db)
         num_participants = len(participants)
     winner_share = exponential_decline_mapping(max(num_participants, 1), 1)
 
-    # Calculate participation scale factor (same as weight_setting.py)
     active_participants = await get_active_tournament_participants(psql_db)
     participation_total = len(active_participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
     scale_factor = 1.0 - participation_total if participation_total > 0 else 1.0
 
-    performance_diff = percentage_improvement / 100.0
-    emission_boost = calculate_emission_boost_from_perf(performance_diff)
+    projection_days = [7, 30, 90, 180]
 
-    raw_initial_weight = calculate_tournament_weight_with_decay(
-        tournament_type=tournament_type,
-        base_weight=base_weight,
-        emission_boost=emission_boost,
-        old_decay=0.0,
-        new_decay=0.0,
-        apply_hybrid=False,
-        max_weight=max_weight,
-    )
+    if dethrones:
+        emission_boost = calculate_emission_boost_from_perf(performance_diff)
 
-    # Winner's actual emission weight = winner_share * tournament_weight * scale_factor
-    initial_weight = winner_share * raw_initial_weight * scale_factor
-
-    projection_days = [1, 7, 30, 90]
-
-    projections = []
-    for days in projection_days:
-        new_decay = days * cts.EMISSION_DAILY_TIME_DECAY_RATE
-
-        raw_future_weight = calculate_tournament_weight_with_decay(
+        raw_initial_weight = calculate_tournament_weight_with_decay(
             tournament_type=tournament_type,
             base_weight=base_weight,
             emission_boost=emission_boost,
             old_decay=0.0,
-            new_decay=new_decay,
+            new_decay=0.0,
             apply_hybrid=False,
             max_weight=max_weight,
         )
+        # Winner's actual emission weight = winner_share * tournament_weight * scale_factor
+        initial_weight = winner_share * raw_initial_weight * scale_factor
 
-        weight = winner_share * raw_future_weight * scale_factor
-        cumulative_alpha = days * cts.DAILY_ALPHA_TO_MINERS * (initial_weight + weight) / 2.0
+        projections = []
+        for days in projection_days:
+            new_decay = days * cts.EMISSION_DAILY_TIME_DECAY_RATE
 
-        projections.append(WeightProjection(days=days, weight=weight, total_alpha=cumulative_alpha))
+            raw_future_weight = calculate_tournament_weight_with_decay(
+                tournament_type=tournament_type,
+                base_weight=base_weight,
+                emission_boost=emission_boost,
+                old_decay=0.0,
+                new_decay=new_decay,
+                apply_hybrid=False,
+                max_weight=max_weight,
+            )
+
+            weight = winner_share * raw_future_weight * scale_factor
+            cumulative_alpha = days * cts.DAILY_ALPHA_TO_MINERS * (initial_weight + weight) / 2.0
+
+            projections.append(WeightProjection(days=days, weight=weight, total_alpha=cumulative_alpha))
+
+        placement = "champion"
+    else:
+        # Below the dethrone threshold the boss defends; the challenger places 2nd
+        # and earns the runner-up share of the base pool (no champion boost, no decay).
+        emission_boost = 0.0
+        runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
+        runner_up_weight = runner_up_share * base_weight * scale_factor
+        initial_weight = runner_up_weight
+
+        projections = [
+            WeightProjection(
+                days=days,
+                weight=runner_up_weight,
+                total_alpha=days * cts.DAILY_ALPHA_TO_MINERS * runner_up_weight,
+            )
+            for days in projection_days
+        ]
+
+        placement = "runner_up"
 
     return TournamentProjection(
         tournament_type=tournament_type.value,
         current_champion_decay=current_champion_decay,
         initial_weight=initial_weight,
         projections=projections,
+        placement=placement,
+        dethrone_threshold=dethrone_threshold,
+        emission_boost=emission_boost,
     )
 

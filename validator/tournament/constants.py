@@ -15,6 +15,10 @@ PERIODIC_GPU_AVAILABILITY_UPDATE_INTERVAL = 60
 MODEL_PREP_CYCLE_INTERVAL = 30
 MODEL_PREP_GPU_RESERVE_HOURS = 1.0
 
+# Reject a task whose dataset near-duplicate rate (from baseline_stats) is at or above this
+# fraction. Only applies to text tasks (instruct/dpo/grpo); env tasks have no dataset stats.
+MAX_NEAR_DUPLICATE_RATE = 0.20
+
 TOURNAMENT_PENDING_CYCLE_INTERVAL = 15 * 60
 TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 15 * 60
 TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 15 * 60
@@ -41,11 +45,28 @@ NO_RETRY_RESULT = "No Retry"
 
 
 # Tournament structure constants
-MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 14
+MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 8
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
+
+# Small tournament (text/image) round-1 format.
+# When a tournament starts with fewer than 10 competitors we don't want a thin
+# knockout or a tiny group that still advances 8. Instead round 1 is a single
+# group that plays SMALL_TOURNAMENT_GROUP_TASKS matches, and only the best
+# SMALL_TOURNAMENT_ADVANCE advance (into the knockout that decides the boss
+# challenger). Below SMALL_TOURNAMENT_MIN_PARTICIPANTS there aren't enough
+# competitors to make this worthwhile, so we fall back to the normal knockout.
+SMALL_TOURNAMENT_MIN_PARTICIPANTS = 3
+SMALL_TOURNAMENT_MAX_PARTICIPANTS = 9  # i.e. fewer than 10 at tournament start
+SMALL_TOURNAMENT_GROUP_TASKS = 3
+SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
 MAX_ENVIRONMENT_GROUP_SIZE = 6
+# Small env tournaments collapse too fast (one big group advancing 1 contender). When the
+# field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
+# are more groups, more contenders survive each round, and the bracket plays out over more rounds.
+SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
+SMALL_ENVIRONMENT_GROUP_SIZE = 3
 
 
 # Environment tournament round structure

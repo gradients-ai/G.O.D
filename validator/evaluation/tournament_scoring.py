@@ -1,10 +1,12 @@
 
 import itertools
+from collections import defaultdict
 
 import validator.core.constants as cts
 from core.constants import EnvironmentName
 from core.models.pvp_models import PvPGroupResults
 from core.models.scoring_models import EnvironmentWeight
+from core.models.scoring_models import EnvMinerScores
 from core.models.scoring_models import GroupStagePoints
 from core.models.scoring_models import PairwiseOutcome
 from core.models.scoring_models import TournamentScore
@@ -47,6 +49,99 @@ def accumulate_points(
     standings = [GroupStagePoints(hotkey=hk, points=pts) for hk, pts in points.items()]
     standings.sort(key=lambda s: s.points, reverse=True)
     return standings
+
+
+# --- Rank-normalized environment combination ---
+
+
+def _rank_quantiles(scores: dict[str, float], hotkeys: list[str]) -> dict[str, float]:
+    """Map per-miner scores to average-rank quantiles in [0, 1] within one environment.
+
+    The lowest scorer gets 0.0, the highest 1.0, the rest spread evenly by rank.
+    Ties share their mean quantile. A single miner (or an environment where every
+    miner is tied — e.g. all failed) gets 0.5 for everyone, i.e. a neutral constant
+    that cannot change the ordering.
+    """
+    n = len(hotkeys)
+    if n <= 1:
+        return {hk: 0.5 for hk in hotkeys}
+
+    ordered = sorted(hotkeys, key=lambda hk: scores.get(hk, 0.0))
+    quantiles: dict[str, float] = {}
+    i = 0
+    while i < n:
+        j = i
+        while j + 1 < n and scores.get(ordered[j + 1], 0.0) == scores.get(ordered[i], 0.0):
+            j += 1
+        avg_rank = (i + j) / 2.0
+        for k in range(i, j + 1):
+            quantiles[ordered[k]] = avg_rank / (n - 1)
+        i = j + 1
+    return quantiles
+
+
+def rank_weighted_standings(
+    env_scores: list[EnvMinerScores],
+    hotkeys: list[str],
+    weights: list[EnvironmentWeight] | None = None,
+) -> list[GroupStagePoints]:
+    """Combine per-environment, per-miner scores into group standings via rank normalization.
+
+    Each environment contributes a continuous score per miner (PvP win-rate, or an
+    INDIVIDUAL env's raw score). Those are converted to rank-quantiles within the
+    environment before combining, which strips away scale and spread differences:
+    a tightly-clustered env (e.g. intercode at ~[0.7, 0.8]) gets exactly the same
+    configured say as a wide-spread PvP env, instead of being drowned out by it.
+
+    The combined score is the configured-weight average of each miner's per-env
+    quantiles, so it stays on a [0, 1] scale. Miners absent from an environment are
+    treated as scoring 0.0 there, which sorts them to last place in that env — a
+    bounded penalty that, unlike a raw-score combination, cannot distort the env's
+    influence on everyone else.
+    """
+    weight_map = {w.environment: w.weight for w in weights} if weights else {}
+    quantiles = {env.environment: _rank_quantiles(env.scores_by_hotkey, hotkeys) for env in env_scores}
+
+    total_weight = sum(weight_map.get(env.environment, 1.0) for env in env_scores) or 1.0
+    points: dict[str, float] = {}
+    for hk in hotkeys:
+        points[hk] = sum(
+            weight_map.get(env.environment, 1.0) * quantiles[env.environment][hk] for env in env_scores
+        ) / total_weight
+
+    standings = [GroupStagePoints(hotkey=hk, points=points[hk]) for hk in hotkeys]
+    standings.sort(key=lambda s: s.points, reverse=True)
+    return standings
+
+
+def pvp_results_to_winrates(group_results: PvPGroupResults) -> list[EnvMinerScores]:
+    """Per-environment win-rate for each hotkey across all of its round-robin games.
+
+    Win-rate (games won, counting draws as a half-win, over games played) preserves
+    margin of victory — a 200-0 sweep yields 1.0 while a 101-99 squeaker yields ~0.5 —
+    so that the rank normalization downstream orders miners by how decisively they won.
+    """
+    wins: dict[EnvironmentName, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    games: dict[EnvironmentName, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+
+    for pair in group_results.pair_results:
+        for env_name, result in pair.results.items():
+            played = result.model_a_wins + result.model_b_wins + result.draws
+            wins[env_name][pair.hotkey_a] += result.model_a_wins + 0.5 * result.draws
+            wins[env_name][pair.hotkey_b] += result.model_b_wins + 0.5 * result.draws
+            games[env_name][pair.hotkey_a] += played
+            games[env_name][pair.hotkey_b] += played
+
+    return [
+        EnvMinerScores(
+            environment=env_name,
+            scores_by_hotkey={
+                hk: (wins[env_name][hk] / env_games[hk] if env_games[hk] else 0.0)
+                for hk in group_results.hotkeys
+            },
+        )
+        for env_name, env_games in games.items()
+    ]
 
 
 # --- PvP → pairwise ---

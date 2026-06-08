@@ -1,3 +1,4 @@
+import importlib
 import sys
 import types
 
@@ -22,6 +23,28 @@ def test_model_prep_configs_include_intercode_sidecar():
         "--port",
         "8000",
     ]
+
+
+def test_intercode_sidecar_formats_empty_exceptions(monkeypatch):
+    fake_eval_intercode = types.ModuleType("validator.evaluation.eval_intercode")
+    fake_eval_intercode.DEFAULT_MAX_TOKENS_PER_CALL = 512
+    fake_eval_intercode.DEFAULT_MAX_TURNS = 10
+    fake_eval_intercode.DEFAULT_PER_TASK_TIMEOUT_SECONDS = 150
+    fake_eval_intercode.InterCodeAssets = object
+    fake_eval_intercode.load_intercode_assets = lambda: object()
+
+    async def fake_run_intercode_task(*args, **kwargs):
+        return 0.0
+
+    fake_eval_intercode.run_intercode_task = fake_run_intercode_task
+    monkeypatch.setitem(sys.modules, "validator.evaluation.eval_intercode", fake_eval_intercode)
+    sys.modules.pop("validator.evaluation.intercode_server", None)
+    try:
+        intercode_server = importlib.import_module("validator.evaluation.intercode_server")
+
+        assert intercode_server._format_exception(TimeoutError()) == "TimeoutError"
+    finally:
+        sys.modules.pop("validator.evaluation.intercode_server", None)
 
 
 def test_start_env_sidecars_passes_intercode_command(monkeypatch):

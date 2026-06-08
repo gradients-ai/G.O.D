@@ -81,7 +81,8 @@ TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.DPOTASK: 1.4,
     TaskType.GRPOTASK: 1.3,
 }
-CTX_REF_SEQ_LEN = 1024
+CTX_REF_SEQ_LEN = 512
+CTX_SCALE_SPAN = 1024
 CTX_SCALE_MIN = 0.25
 CTX_SCALE_MAX = 3.0
 MAX_TRAINING_HOURS = 6.0
@@ -173,17 +174,16 @@ FIRST_PLACE_SCORE = 3
 # processing stuff
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
-MAX_EVALUATING_ROWS = 10
-MAX_CONCURRENT_GROUP_EVALUATIONS = 5
+EVAL_MAX_GPUS = 10
 
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.7
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.75
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.15
-PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.1
+PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.20
+# GRPO is the remainder of the text split (image is selected independently)
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
     1
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
-    - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE
     - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 )
 PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
@@ -246,10 +246,10 @@ IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 # scoring stuff
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.18
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.16
 TOURNAMENT_TEXT_WEIGHT = 0.15
-TOURNAMENT_IMAGE_WEIGHT = 0.10
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.17
+TOURNAMENT_IMAGE_WEIGHT = 0.125
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.15
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
@@ -358,6 +358,16 @@ CLAUDE_REPO_DIFF_MAX_TURNS = 30
 CLAUDE_REPO_DIFF_MAX_BUDGET_USD = 2
 CLAUDE_REPO_DIFF_MAX_FOCUS_FILES = 180
 
+# Tournament submission de-duplication (anti-spam)
+# R1 (pre-training): deterministic exact-commit (T0) + normalized-content (T1) hashing auto-eliminates copies.
+# R2: Claude pairwise functional-equivalence judgement (T2), gated behind Discord ping + manual DB approval.
+TOURN_DEDUP_ENABLED = True
+TOURN_DEDUP_CLAUDE_MODEL = "claude-opus-4-8"  # best current model for the judgement
+# T2 runs the agent read-only (Read/Glob/Grep) over both cloned repos so it can inspect full
+# contents itself and see through reordering/renaming. These bound a single pairwise judgement.
+TOURN_DEDUP_CLAUDE_MAX_TURNS = 60
+TOURN_DEDUP_CLAUDE_MAX_BUDGET_USD = 15  # per-pair ceiling; typical run ~$2-3
+
 # YaRN extension constants
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]
@@ -404,10 +414,10 @@ AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.20),
-    AugmentationType.WEIGHT_SCALING: (0.3, 1.7),
-    AugmentationType.MAGNITUDE_PRUNING: (0.15, 0.40),
-    AugmentationType.LAYER_REINIT: (0.05, 0.15),
+    AugmentationType.GAUSSIAN_NOISE: (0.1, 0.3),
+    AugmentationType.WEIGHT_SCALING: (0.5, 2.5),
+    AugmentationType.MAGNITUDE_PRUNING: (0.25, 0.50),
+    AugmentationType.LAYER_REINIT: (0.10, 0.30),
 }
 
 # Environment evaluation constants
@@ -441,6 +451,7 @@ EVAL_BASILICA_MAX_RETRIES = 3
 EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
 EVAL_BASILICA_MAX_POLL_SECONDS = 16000
+EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS = 600
 EVAL_DB_MAX_CONCURRENT_WRITES = 2
 EVAL_DB_RETRY_ATTEMPTS = 4
 EVAL_DB_RETRY_BASE_DELAY_SECONDS = 1.0

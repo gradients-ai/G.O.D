@@ -1,6 +1,7 @@
 import asyncio
 import glob
 import io
+import itertools
 import json
 import logging
 import os
@@ -15,6 +16,14 @@ from huggingface_hub import snapshot_download
 
 from core import constants as cst
 from core.models.payload_models import DockerEvaluationResults
+from core.models.pvp_models import PvPEvalConfig
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPEvalResults
+from core.models.pvp_models import PvPGroupResults
+from core.models.pvp_models import PvPMatchupConfig
+from core.models.pvp_models import PvPMode
+from core.models.pvp_models import PvPModelSpec
+from core.models.pvp_models import PvPPairResult
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import EnvironmentDatasetType
@@ -68,9 +77,10 @@ async def cleanup_resources(client):
         logger.error(f"Cleanup failed: {str(e)}")
 
 
-async def get_evaluation_results(container):
-    archive_data = await asyncio.to_thread(container.get_archive, cst.CONTAINER_EVAL_RESULTS_PATH)
+async def get_json_results_from_container(container, results_path: str):
+    archive_data = await asyncio.to_thread(container.get_archive, results_path)
     tar_stream = archive_data[0]
+    results_filename = os.path.basename(results_path)
 
     file_like_object = io.BytesIO()
     for chunk in tar_stream:
@@ -82,15 +92,19 @@ async def get_evaluation_results(container):
         logger.debug(f"Tar archive members: {members}")
         eval_results_file = None
         for member_info in tar.getmembers():
-            if member_info.name.endswith(("evaluation_results.json")):
+            if member_info.name.endswith(results_filename):
                 eval_results_file = tar.extractfile(member_info)
                 break
 
         if eval_results_file is None:
-            raise Exception("Evaluation results file not found in tar archive")
+            raise Exception(f"Evaluation results file {results_filename} not found in tar archive")
 
         eval_results_content = eval_results_file.read().decode("utf-8")
         return json.loads(eval_results_content)
+
+
+async def get_evaluation_results(container):
+    return await get_json_results_from_container(container, cst.CONTAINER_EVAL_RESULTS_PATH)
 
 
 def _build_local_sglang_command(base_model: str, base_seed: int) -> str:
@@ -641,6 +655,197 @@ async def run_evaluation_local_intercode(
 
     logger.info(f"Local InterCode evaluation results: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
+
+
+def _normalize_environment_name(environment_name: cst.EnvironmentName | str) -> cst.EnvironmentName:
+    if isinstance(environment_name, cst.EnvironmentName):
+        return environment_name
+    return cst.EnvironmentName(environment_name)
+
+
+def _get_shared_pvp_eval_image(environment_names: list[cst.EnvironmentName]) -> str:
+    configs = [cst.ENVIRONMENT_CONFIGS[environment_name] for environment_name in environment_names]
+    image = configs[0].tournament_eval_image
+    if not all(config.tournament_eval_image == image for config in configs):
+        raise ValueError(
+            "All PvP environments must share a tournament_eval_image, got: "
+            f"{[(env.value, config.tournament_eval_image) for env, config in zip(environment_names, configs)]}"
+        )
+    return image
+
+
+async def run_evaluation_local_pvp_pair(
+    model_a_repo: str,
+    model_b_repo: str,
+    hotkey_a: str,
+    hotkey_b: str,
+    base_model: str,
+    environment_names: list[cst.EnvironmentName | str],
+    gpu_ids: list[int],
+    seed: int,
+    image: str | None = None,
+    temperature: float = 0.0,
+) -> PvPGroupResults:
+    """Run one PvP pair locally using the same PvP evaluator container as production."""
+    if len(gpu_ids) < 2:
+        raise ValueError("PvP local evaluation requires at least two GPU IDs, for example: --gpu_ids 0 1")
+
+    pvp_envs = [_normalize_environment_name(environment_name) for environment_name in environment_names]
+    if not pvp_envs:
+        raise ValueError("At least one PvP environment is required")
+
+    image = image or _get_shared_pvp_eval_image(pvp_envs)
+    num_games = int(os.getenv("PVP_NUM_GAMES_PER_ENV", str(vcst.PVP_NUM_GAMES_PER_ENV)))
+    matchups = {environment_name: PvPMatchupConfig(num_games=num_games) for environment_name in pvp_envs}
+    pvp_config = PvPEvalConfig(
+        mode=PvPMode.PAIR,
+        model_a=PvPModelSpec(
+            repo=model_a_repo,
+            original_model=base_model,
+            gpu_id=0,
+            port=vcst.PVP_SGLANG_PORT_A,
+        ),
+        model_b=PvPModelSpec(
+            repo=model_b_repo,
+            original_model=base_model,
+            gpu_id=1,
+            port=vcst.PVP_SGLANG_PORT_B,
+        ),
+        matchups=matchups,
+        seed=seed,
+        temperature=temperature,
+    )
+
+    logger.info(
+        "Prepared local PvP pair: hotkey_a=%s repo_a=%s hotkey_b=%s repo_b=%s envs=%s seed=%s temperature=%s image=%s GPUs=%s",
+        hotkey_a,
+        model_a_repo,
+        hotkey_b,
+        model_b_repo,
+        [env.value for env in pvp_envs],
+        seed,
+        temperature,
+        image,
+        gpu_ids[:2],
+    )
+    logger.debug("PvP config JSON: %s", pvp_config.model_dump_json())
+
+    logger.info("Running local PvP pair %s vs %s on GPUs %s", hotkey_a, hotkey_b, gpu_ids[:2])
+    client = docker.from_env()
+    container = None
+    try:
+        environment = {
+            vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
+            "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+            **vcst.HF_CONTAINER_ENV,
+        }
+        volume_bindings = {
+            os.path.expanduser(cst.CACHE_DIR_HUB): {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
+        }
+        container = await asyncio.to_thread(
+            client.containers.run,
+            image,
+            command=["python", "-m", "validator.evaluation.pvp"],
+            environment=environment,
+            volumes=volume_bindings,
+            runtime="nvidia",
+            device_requests=[
+                docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gpu_id) for gpu_id in gpu_ids[:2]])
+            ],
+            ipc_mode="host",
+            detach=True,
+        )
+        log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags()))
+        result = await asyncio.to_thread(container.wait)
+        log_task.cancel()
+
+        if result["StatusCode"] != 0:
+            raise Exception(f"PvP container for {hotkey_a}:{hotkey_b} exited with status {result['StatusCode']}")
+
+        raw_results = await get_json_results_from_container(container, vcst.PVP_RESULTS_PATH)
+        pair_eval = PvPEvalResults.model_validate(raw_results)
+        return PvPGroupResults(
+            base_model=base_model,
+            hotkeys=[hotkey_a, hotkey_b],
+            pair_results=[
+                PvPPairResult(
+                    hotkey_a=hotkey_a,
+                    hotkey_b=hotkey_b,
+                    results=pair_eval.results,
+                )
+            ],
+            metadata=pair_eval.metadata,
+        )
+    finally:
+        if container is not None:
+            try:
+                await asyncio.to_thread(container.remove, force=True)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup PvP container for {hotkey_a}:{hotkey_b}: {e}")
+        client.close()
+
+
+async def run_evaluation_local_pvp_pairs(
+    miner_repos: dict[str, str],
+    original_model: str,
+    environment_names: list[cst.EnvironmentName | str],
+    gpu_ids: list[int],
+    eval_seed: int | None = None,
+    temperature: float | None = None,
+) -> PvPGroupResults:
+    """Run local round-robin PvP evaluation for every hotkey pair in miner_repos."""
+    if len(miner_repos) < 2:
+        raise ValueError("PvP evaluation requires at least two hotkeys with repos")
+
+    pvp_envs = [_normalize_environment_name(environment_name) for environment_name in environment_names]
+    invalid_envs = [
+        environment_name
+        for environment_name in pvp_envs
+        if cst.ENVIRONMENT_CONFIGS[environment_name].eval_type != cst.EvalType.PVP
+    ]
+    if invalid_envs:
+        raise ValueError(f"Non-PvP environments cannot be run with PvP evaluation: {[env.value for env in invalid_envs]}")
+
+    seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
+    eval_temperature = (
+        temperature if temperature is not None else float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
+    )
+    image = _get_shared_pvp_eval_image(pvp_envs)
+    pair_results: list[PvPPairResult] = []
+
+    hotkeys = list(miner_repos.keys())
+    pair_count = len(list(itertools.combinations(hotkeys, 2)))
+    logger.info(
+        "Prepared local PvP evaluation: hotkeys=%s envs=%s base_model=%s seed=%s temperature=%s image=%s pair_count=%d",
+        hotkeys,
+        [env.value for env in pvp_envs],
+        original_model,
+        seed,
+        eval_temperature,
+        image,
+        pair_count,
+    )
+    for hotkey_a, hotkey_b in itertools.combinations(hotkeys, 2):
+        pair_group = await run_evaluation_local_pvp_pair(
+            model_a_repo=miner_repos[hotkey_a],
+            model_b_repo=miner_repos[hotkey_b],
+            hotkey_a=hotkey_a,
+            hotkey_b=hotkey_b,
+            base_model=original_model,
+            environment_names=pvp_envs,
+            gpu_ids=gpu_ids,
+            seed=seed,
+            image=image,
+            temperature=eval_temperature,
+        )
+        pair_results.extend(pair_group.pair_results)
+
+    return PvPGroupResults(
+        base_model=original_model,
+        hotkeys=hotkeys,
+        pair_results=pair_results,
+        metadata=PvPEvalMetadata(seed=seed, temperature=eval_temperature, wall_time_seconds=0),
+    )
 
 
 async def _run_environment_evaluation(
