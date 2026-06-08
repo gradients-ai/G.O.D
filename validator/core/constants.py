@@ -382,7 +382,7 @@ MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
 AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
 AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
-AUGMENTATION_PROBABILITY = 0.8  # Probability that a task gets any augmentation at all
+AUGMENTATION_PROBABILITY = 0.65  # Probability that a task gets any augmentation at all
 
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
