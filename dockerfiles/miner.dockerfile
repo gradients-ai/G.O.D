@@ -1,9 +1,6 @@
 FROM axolotlai/axolotl:main-py3.11-cu124-2.5.1
 
-RUN pip install mlflow
-RUN pip install textstat==0.7.7
-RUN pip install langcheck
-RUN pip install detoxify
+RUN pip install mlflow textstat==0.7.7 langcheck detoxify
 
 WORKDIR /workspace/axolotl
 RUN mkdir -p /workspace/axolotl/configs \
