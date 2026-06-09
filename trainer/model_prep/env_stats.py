@@ -21,6 +21,7 @@ from core.models.model_prep_models import EnvBaselineStats
 from core.models.model_prep_models import EnvStats
 from core.models.pvp_models import ChatCompletionConfig
 from core.pvp.baseline import run_mcts_baseline
+from core.pvp.sglang_parsers import tool_call_parser_for
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from trainer.model_prep.stats import compute_weight_stats
@@ -61,6 +62,9 @@ def build_sglang_command(model_path: str, seed: int) -> str:
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed}"
     )
+    parser = tool_call_parser_for(model_path)
+    if parser:
+        base = f"{base} --tool-call-parser {parser}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or SGLANG_EXTRA_CLI_DEFAULT).strip()
     return f"{base} {extra}" if extra else base
 

@@ -11,6 +11,7 @@ import subprocess
 import threading
 
 from core.models.pvp_models import PreparedModel
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.core import constants as vcst
 from validator.evaluation.eval_environment import _wait_for_health
 
@@ -31,6 +32,10 @@ def build_sglang_command(prepared: PreparedModel, port: int, seed: int) -> str:
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed}"
     )
+    # No parser -> SGLang won't emit structured tool_calls and every turn forfeits.
+    parser = tool_call_parser_for(prepared.sglang_model_path)
+    if parser:
+        cmd = f"{cmd} --tool-call-parser {parser}"
     if cli_extra:
         cmd = f"{cmd} {cli_extra}"
     if prepared.extra_sglang_args:

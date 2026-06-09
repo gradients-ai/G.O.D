@@ -46,10 +46,10 @@ SUPPORTED_ENV_MODELS = [
     "Qwen/Qwen2-7B-Instruct",
     "unsloth/Llama-3.2-3B-Instruct",
     "Qwen/Qwen3-4B-Instruct-2507",
+    "Qwen/Qwen2.5-1.5B-Instruct",
     "Qwen/Qwen2.5-3B-Instruct",
     "Qwen/Qwen2.5-7B-Instruct",
-    "codellama/CodeLlama-7b-Instruct-hf",
-    "NousResearch/Hermes-3-Llama-3.2-3B",
+    "Qwen/Qwen2.5-Coder-7B-Instruct",
 ]
 
 
