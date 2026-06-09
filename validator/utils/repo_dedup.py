@@ -56,6 +56,11 @@ def _sanitize_reason(text: str, tokens: set[str]) -> str:
 
 CONFIG_PATH = Path(__file__).with_name("repo_dedup_config.json")
 
+# Number of times to query Claude for a parseable verdict before failing the pair. A single
+# malformed reply must not sink the whole round's dedup gate, so we retry a few times with a
+# corrective nudge before giving up.
+VERDICT_PARSE_ATTEMPTS = 4
+
 
 @lru_cache(maxsize=1)
 def _load_config() -> dict[str, Any]:
@@ -349,18 +354,88 @@ def _import_claude_sdk():
     return ClaudeAgentOptions, ResultMessage, query
 
 
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
+_RELATIONSHIP_RE = re.compile(r'"relationship"\s*:\s*"(duplicate|distinct|drop_evasion)"', re.IGNORECASE)
+_CONFIDENCE_RE = re.compile(r'"confidence"\s*:\s*(1(?:\.0+)?|0?\.\d+|0)')
+_REASON_RE = re.compile(r'"reason"\s*:\s*"(.*)"', re.DOTALL)
+
+
+def _balanced_json_objects(text: str) -> list[str]:
+    """Return every balanced top-level ``{...}`` substring, in order of appearance.
+
+    String-aware (ignores braces inside JSON string values), so braces the model puts in
+    prose or in the ``reason`` text don't corrupt the span the way a naive first-``{`` /
+    last-``}`` slice does.
+    """
+    objects: list[str] = []
+    depth = 0
+    start = -1
+    in_str = esc = False
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                objects.append(text[start : i + 1])
+                start = -1
+    return objects
+
+
 def _parse_verdict(text: str) -> tuple[DupRelationship, float, str]:
-    """Extract the strict JSON verdict object from the model's reply."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError(f"no JSON object in verdict reply: {text[:200]!r}")
-    obj = json.loads(text[start : end + 1])
-    raw = str(obj["relationship"]).strip()
-    try:
-        relationship = DupRelationship(raw)
-    except ValueError as exc:
-        raise ValueError(f"invalid relationship {raw!r}") from exc
-    return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
+    """Extract the verdict from the model's reply, tolerating prose / fences / loose JSON.
+
+    The model is told to emit a bare JSON object, but in practice it sometimes wraps it in
+    code fences, prefaces it with prose containing braces, or emits a ``reason`` with
+    unescaped quotes/braces — any of which broke the old first-``{``/last-``}`` slice. We
+    therefore (1) try each balanced ``{...}`` candidate as strict JSON, preferring the last
+    one that carries a ``relationship`` key, then (2) fall back to regex-recovering the one
+    field that must be exact — ``relationship`` — plus best-effort confidence/reason. We
+    only fail when no relationship can be recovered at all.
+    """
+    fence = _FENCE_RE.search(text)
+    cleaned = fence.group(1) if fence else text
+
+    last_error: Exception | None = None
+    for blob in reversed(_balanced_json_objects(cleaned)):
+        try:
+            obj = json.loads(blob)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+            continue
+        if isinstance(obj, dict) and "relationship" in obj:
+            raw = str(obj["relationship"]).strip()
+            try:
+                relationship = DupRelationship(raw)
+            except ValueError as exc:
+                raise ValueError(f"invalid relationship {raw!r}") from exc
+            return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
+
+    # Loose fallback: recover the required field even when the JSON itself is malformed
+    # (e.g. an unescaped quote inside reason). relationship is the only field that must be
+    # exact; confidence/reason are best-effort.
+    rel_match = _RELATIONSHIP_RE.search(cleaned)
+    if rel_match:
+        relationship = DupRelationship(rel_match.group(1).lower())
+        conf_match = _CONFIDENCE_RE.search(cleaned)
+        confidence = float(conf_match.group(1)) if conf_match else 0.0
+        reason_match = _REASON_RE.search(cleaned)
+        reason = reason_match.group(1).strip().rstrip('"}').strip() if reason_match else ""
+        return relationship, confidence, reason
+
+    raise ValueError(f"no parseable verdict in reply: {text[:200]!r} (json error: {last_error})")
 
 
 async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runtime_context: str = "") -> PairVerdict:
@@ -389,10 +464,18 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
         system_prompt=config["system_prompt"],
     )
 
+    retry_suffix = (
+        "\n\nYour previous reply could not be parsed. Reply with ONLY a single valid JSON object "
+        'and nothing else — no prose, no code fences. Use exactly: '
+        '{{"relationship": "duplicate"|"distinct"|"drop_evasion", "confidence": <0.0-1.0>, "reason": "..."}}. '
+        "Inside reason, do not use double-quote characters or curly braces."
+    )
+
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(VERDICT_PARSE_ATTEMPTS):
+        attempt_prompt = prompt if attempt == 0 else prompt + retry_suffix
         result_text = ""
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=attempt_prompt, options=options):
             if isinstance(message, ResultMessage):
                 result_text = message.result or ""
         try:
@@ -407,7 +490,7 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
             )
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             last_error = exc
-            logger.warning(f"dedup: unparseable verdict (attempt {attempt + 1}): {exc}")
+            logger.warning(f"dedup: unparseable verdict (attempt {attempt + 1}/{VERDICT_PARSE_ATTEMPTS}): {exc}")
     raise RuntimeError(f"Claude returned no parseable verdict for {dir_a} vs {dir_b}: {last_error}")
 
 
