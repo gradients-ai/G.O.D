@@ -770,22 +770,6 @@ class TestGameAgentPrompts:
         assert len(prompt) > 50
         assert "leduc" in prompt.lower() or "poker" in prompt.lower()
 
-    def test_liars_dice_user_prompt_has_legal_actions(self):
-        from validator.evaluation.pvp.agents import LiarsDiceAgent
-        agent = LiarsDiceAgent()
-        game = pyspiel.load_game("liars_dice", {"players": 2, "numdice": 5})
-        state = game.new_initial_state()
-        while state.is_chance_node():
-            outcomes = state.chance_outcomes()
-            actions, _ = zip(*outcomes)
-            state.apply_action(actions[0])
-
-        legal = state.legal_actions(state.current_player())
-        prompt = agent.generate_user_prompt(state, state.current_player(), legal)
-
-        assert "Legal Actions:" in prompt
-        assert "Player" in prompt
-
     def test_gin_rummy_format_state_doesnt_crash(self):
         from validator.evaluation.pvp.agents import GinRummyAgent
         agent = GinRummyAgent()

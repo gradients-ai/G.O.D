@@ -334,6 +334,7 @@ def _play_game(
     bots[model_b_player_id] = bot_b
 
     state = game.new_initial_state()
+    agent.setup_initial_state(state, instance.seed)
     evaluation = _evaluate_game_with_timeout(state, bots, instance.seed)
 
     def _outcome_for(player_id: int):
