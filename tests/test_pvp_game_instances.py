@@ -231,8 +231,8 @@ class TestEpisodeForfeitLimit:
             result = _execute_matchup(
                 env_name=EnvironmentName.LEDUC_POKER,
                 instances=instances,
-                player_a=SimpleNamespace(config=SimpleNamespace(inference_model="test")),
-                player_b=SimpleNamespace(config=SimpleNamespace(inference_model="test")),
+                player_a=SimpleNamespace(config=SimpleNamespace(inference_model="test", tokenizer_repo=None)),
+                player_b=SimpleNamespace(config=SimpleNamespace(inference_model="test", tokenizer_repo=None)),
                 agent=object(),
             )
 

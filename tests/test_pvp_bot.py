@@ -159,7 +159,7 @@ class TestForfeitPropagation:
                 pass
 
             def step(self, state) -> int:
-                raise InvalidActionForfeitError(self.player_id, 3)
+                raise InvalidActionForfeitError(self.player_id)
 
         class ValidBot(pyspiel.Bot):
             def restart_at(self, state) -> None:

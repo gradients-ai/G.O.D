@@ -1,11 +1,10 @@
-"""Tests for the tool-calling LLMBot turn loop (Phase 2).
+"""Tests for the tool-calling LLMBot turn — single model call per turn.
 
-Each turn is an agentic loop: the model emits tool calls, the bot executes
-memory tools and feeds results back, and the turn ends when game_action
-commits a legal move. Driven by a scripted ChatFn — no HTTP, no SGLang.
-
-Uses real leduc_poker states (pyspiel) for realistic legal actions and
-agent state rendering; skipped if pyspiel is unavailable.
+A turn is ONE model call: the model may edit memory and must call game_action
+to commit a legal move. No multi-step loop, no nudge, no illegal-move retry —
+a response with no committable legal move forfeits the turn. Driven by a
+scripted ChatFn (no HTTP/SGLang). Real leduc_poker states give realistic legal
+actions and state rendering; skipped if pyspiel is unavailable.
 """
 
 import random
@@ -14,7 +13,6 @@ import pytest
 
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatResult
-from core.models.pvp_models import ChatRole
 from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import ToolCall
@@ -82,7 +80,7 @@ def _leduc():
     return game, state
 
 
-def _make_bot(game, chat, player_id, memories=None, max_inner_steps=5):
+def _make_bot(game, chat, player_id, memories=None):
     return LLMBot(
         game=game,
         player_id=player_id,
@@ -91,11 +89,10 @@ def _make_bot(game, chat, player_id, memories=None, max_inner_steps=5):
         agent=LeducPokerAgent(),
         rng_seed=1,
         memories=memories or _memories(),
-        max_inner_steps=max_inner_steps,
     )
 
 
-# --- Committing a move ---
+# --- Committing a move (one call) ---
 
 
 @needs_pyspiel
@@ -106,13 +103,11 @@ class TestCommitAction:
         legal = state.legal_actions(pid)
         chat = ScriptedChat(_resp(_call("game_action", action_id=legal[0])))
         assert _make_bot(game, chat, pid).step(state) == legal[0]
-        assert len(chat.calls) == 1  # one round-trip, no waffling
+        assert len(chat.calls) == 1  # exactly one model call per turn
 
     def test_empty_legal_actions_raises(self):
         game, state = _leduc()
         pid = state.current_player()
-        # A terminal-ish surrogate: monkeypatch legal_actions via a wrapper is overkill;
-        # instead drive to terminal so legal_actions is empty.
         rng = random.Random(1)
         while not state.is_terminal():
             if state.is_chance_node():
@@ -124,11 +119,11 @@ class TestCommitAction:
             _make_bot(game, chat, pid).step(state)
 
 
-# --- Memory tools in the loop ---
+# --- Memory tools in the same response as the move ---
 
 
 @needs_pyspiel
-class TestMemoryInLoop:
+class TestMemoryWithMove:
     def test_memory_write_then_action_in_one_response(self):
         game, state = _leduc()
         pid = state.current_player()
@@ -170,7 +165,23 @@ class TestMemoryInLoop:
         )
         assert _make_bot(game, chat, pid).step(state) == legal[0]
 
-    def test_updated_memory_is_rendered_on_next_step(self):
+    def test_memory_applied_even_when_action_precedes_it(self):
+        # Order-independent: memory ops are applied and the legal move committed,
+        # regardless of where game_action sits in the tool-call list.
+        game, state = _leduc()
+        pid = state.current_player()
+        legal = state.legal_actions(pid)
+        mems = _memories()
+        chat = ScriptedChat(
+            _resp(
+                _call("game_action", cid="a", action_id=legal[0]),
+                _call("working_memory_append", cid="b", slot=1, content="noted after move"),
+            )
+        )
+        assert _make_bot(game, chat, pid, memories=mems).step(state) == legal[0]
+        assert "noted after move" in mems[MemoryArea.WORKING].slots[1]
+
+    def test_updated_memory_is_rendered_on_next_turn(self):
         game, state = _leduc()
         pid = state.current_player()
         legal = state.legal_actions(pid)
@@ -183,51 +194,43 @@ class TestMemoryInLoop:
         bot = _make_bot(game, chat, pid, memories=mems)
         bot.step(state)
         bot.step(state)
-        # second step's system prompt reflects the memory written in the first
+        # the second turn's system prompt reflects the memory written on the first
         system = chat.calls[1]["messages"][0].content
         assert "my-secret-plan" in system
 
 
-# --- Robustness: retry, nudge, forfeit ---
+# --- Forfeit: strict, no retry / no nudge ---
 
 
 @needs_pyspiel
-class TestRobustness:
-    def test_illegal_action_then_legal_retry(self):
+class TestForfeit:
+    def test_illegal_action_forfeits(self):
         game, state = _leduc()
         pid = state.current_player()
         legal = state.legal_actions(pid)
         illegal = max(legal) + 999
-        chat = ScriptedChat(
-            _resp(_call("game_action", cid="a", action_id=illegal)),
-            _resp(_call("game_action", cid="b", action_id=legal[0])),
-        )
-        assert _make_bot(game, chat, pid).step(state) == legal[0]
-        # the illegal attempt fed an error tool result back before the retry
-        second_call_messages = chat.calls[1]["messages"]
-        assert any(
-            m.role == ChatRole.TOOL and "error" in (m.content or "").lower() for m in second_call_messages
-        )
-
-    def test_text_only_response_nudges_then_acts(self):
-        game, state = _leduc()
-        pid = state.current_player()
-        legal = state.legal_actions(pid)
-        chat = ScriptedChat(
-            _resp(content="hmm let me think about this hand"),  # no tool call
-            _resp(_call("game_action", cid="b", action_id=legal[0])),
-        )
-        assert _make_bot(game, chat, pid).step(state) == legal[0]
-
-    def test_forfeits_after_max_inner_steps(self):
-        game, state = _leduc()
-        pid = state.current_player()
-        illegal = 999
-        chat = ScriptedChat(*[_resp(_call("game_action", cid=str(i), action_id=illegal)) for i in range(3)])
+        chat = ScriptedChat(_resp(_call("game_action", action_id=illegal)))
         with pytest.raises(InvalidActionForfeitError) as exc:
-            _make_bot(game, chat, pid, max_inner_steps=3).step(state)
+            _make_bot(game, chat, pid).step(state)
         assert exc.value.player_id == pid
-        assert len(chat.calls) == 3  # exactly max_inner_steps round-trips
+        assert len(chat.calls) == 1  # no retry — one call, then forfeit
+
+    def test_text_only_response_forfeits(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = ScriptedChat(_resp(content="hmm let me think about this hand"))  # no tool call
+        with pytest.raises(InvalidActionForfeitError):
+            _make_bot(game, chat, pid).step(state)
+        assert len(chat.calls) == 1  # no nudge — one call, then forfeit
+
+    def test_memory_only_response_forfeits_but_applies_writes(self):
+        game, state = _leduc()
+        pid = state.current_player()
+        mems = _memories()
+        chat = ScriptedChat(_resp(_call("working_memory_append", slot=1, content="note")))  # no game_action
+        with pytest.raises(InvalidActionForfeitError):
+            _make_bot(game, chat, pid, memories=mems).step(state)
+        assert "note" in mems[MemoryArea.WORKING].slots[1]  # the write still landed
 
 
 # --- Tool wiring + prompt contents ---
@@ -246,7 +249,7 @@ class TestPromptAndTools:
         assert "game_action" in names
         assert {"working_memory_rewrite", "long_term_memory_append"} <= names
 
-    def test_game_action_tool_lists_legal_ids(self):
+    def test_game_action_tool_constrains_action_id_to_legal_set(self):
         game, state = _leduc()
         pid = state.current_player()
         legal = state.legal_actions(pid)
@@ -254,6 +257,7 @@ class TestPromptAndTools:
         _make_bot(game, chat, pid).step(state)
         ga = next(t for t in chat.calls[0]["tools"] if t.function.name == "game_action")
         assert str(legal[0]) in ga.function.description
+        assert ga.function.parameters["properties"]["action_id"]["enum"] == legal
 
     def test_system_prompt_has_rules_and_both_memories(self):
         game, state = _leduc()
@@ -277,21 +281,6 @@ class TestPromptAndTools:
         assert "only the action id" not in system
         assert "game_action" in system  # the tool-calling instruction stands instead
 
-    def test_tool_result_protocol_shape(self):
-        game, state = _leduc()
-        pid = state.current_player()
-        legal = state.legal_actions(pid)
-        chat = ScriptedChat(
-            _resp(_call("working_memory_append", cid="t1", slot=1, content="note")),  # no action -> loop
-            _resp(_call("game_action", cid="t2", action_id=legal[0])),
-        )
-        _make_bot(game, chat, pid).step(state)
-        # the second call's history carries an assistant(tool_calls) + tool(result) pair
-        msgs = chat.calls[1]["messages"]
-        assert any(m.role == ChatRole.ASSISTANT and m.tool_calls for m in msgs)
-        tool_msgs = [m for m in msgs if m.role == ChatRole.TOOL]
-        assert tool_msgs and tool_msgs[0].tool_call_id == "t1"
-
 
 # --- Memory lifetime via restart_at ---
 
@@ -310,7 +299,7 @@ class TestMemoryLifetime:
         assert mems[MemoryArea.LONG_TERM].slots[1] == "durable opponent read"
 
 
-# --- End-of-game reflection (single-shot, same memory tools, no game_action) ---
+# --- End-of-game reflection (single-shot, memory tools only, no game_action) ---
 
 
 @needs_pyspiel
