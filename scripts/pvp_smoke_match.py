@@ -69,6 +69,8 @@ class CallStat:
     completion_tokens: int | None
     had_game_action: bool
     had_any_tool: bool
+    working_writes: int = 0
+    longterm_writes: int = 0
 
 
 @dataclass
@@ -78,6 +80,8 @@ class Recorder:
     label: str
     client: object
     stats: list[CallStat] = field(default_factory=list)
+    mem_samples: list[str] = field(default_factory=list)  # (tool -> content) examples
+    last_turn_system: str | None = None  # latest rendered memory the model saw on a turn
 
     def __call__(
         self,
@@ -87,6 +91,8 @@ class Recorder:
     ) -> ChatResult:
         tool_names = {t.function.name for t in tools or []}
         kind = "turn" if "game_action" in tool_names else "reflect"
+        if kind == "turn" and messages:
+            self.last_turn_system = messages[0].content
         start = time.perf_counter()
         try:
             result = chat_completion(self.client, config, messages, tools)
@@ -97,6 +103,11 @@ class Recorder:
             raise
         calls = result.tool_calls or []
         usage = result.usage or {}
+        working = sum(1 for c in calls if c.name.startswith("working_memory"))
+        longterm = sum(1 for c in calls if c.name.startswith("long_term_memory"))
+        for c in calls:
+            if c.name != "game_action" and len(self.mem_samples) < 6:
+                self.mem_samples.append(f"{c.name}(slot={c.arguments.get('slot')}): {str(c.arguments.get('content'))[:70]}")
         self.stats.append(
             CallStat(
                 kind=kind,
@@ -104,6 +115,8 @@ class Recorder:
                 completion_tokens=usage.get("completion_tokens"),
                 had_game_action=any(c.name == "game_action" for c in calls),
                 had_any_tool=bool(calls),
+                working_writes=working,
+                longterm_writes=longterm,
             )
         )
         return result
@@ -164,6 +177,18 @@ def _report_player(label: str, model: str, recorder: Recorder) -> None:
             f"max={max(turn_tokens)}  (cap {vcst.PVP_TURN_MAX_TOKENS})"
         )
     print(f"    reflection calls     : {len(reflects)}")
+    working = sum(s.working_writes for s in recorder.stats)
+    longterm = sum(s.longterm_writes for s in recorder.stats)
+    print(f"    memory writes        : working={working}  long_term={longterm}  <- memory used iff >0")
+    if recorder.mem_samples:
+        print("    sample writes        :")
+        for s in recorder.mem_samples:
+            print(f"      - {s}")
+    if recorder.last_turn_system and "LONG_TERM" in recorder.last_turn_system:
+        block = recorder.last_turn_system.split("LONG_TERM", 1)[1].split("You get ONE response", 1)[0]
+        print("    long-term @ last turn (the opponent model it built):")
+        for line in block.strip().splitlines():
+            print(f"      {line.strip()}")
 
 
 # --- Main -----------------------------------------------------------------------
