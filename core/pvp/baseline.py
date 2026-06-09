@@ -88,7 +88,7 @@ def run_mcts_baseline(
     agent = _AGENT_REGISTRY[env_name]()
     env_config = ENVIRONMENT_CONFIGS[env_name]
     simulations = mcts_simulations if mcts_simulations is not None else _mcts_simulations_for(env_name)
-    counter = load_token_counter(config.inference_model)
+    counter = load_token_counter(config.tokenizer_repo or config.inference_model)
     long_term = SlotMemory(cst.PVP_LONGTERM_MEM_SLOTS, cst.PVP_LONGTERM_SLOT_TOKENS, counter)
 
     seed_rng = random.Random(base_seed)

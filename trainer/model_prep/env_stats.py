@@ -142,6 +142,7 @@ def _mcts_baseline_stats(
     env_name: EnvironmentName,
     sglang_base_url: str,
     model_name: str,
+    model_path: str,
     num_episodes: int,
     eval_payload_extra: dict | None,
 ) -> EnvStats:
@@ -155,6 +156,9 @@ def _mcts_baseline_stats(
 
     config = ChatCompletionConfig(
         inference_model=model_name,
+        # Local weights dir holds the tokenizer, so slot budgets use real tokens
+        # (model_name is only a basename and would fall back to word counting).
+        tokenizer_repo=model_path,
         base_url=sglang_base_url,
         temperature=ENV_EVAL_TEMPERATURE,
     )
@@ -221,6 +225,7 @@ async def compute_env_stats(
                 env_name=env_name,
                 sglang_base_url=sglang_base_url,
                 model_name=model_name,
+                model_path=model_path,
                 num_episodes=cfg["num_episodes"],
                 eval_payload_extra=cfg.get("eval_payload_extra"),
             )

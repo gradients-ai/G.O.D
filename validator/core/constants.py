@@ -457,12 +457,15 @@ PVP_EPISODE_FORFEIT_THRESHOLD = 10
 # Core PvP harness constants live in core.pvp.constants (shared with the model-prep
 # image, which ships core/ only); re-exported so validator code keeps using vcst.PVP_*.
 from core.pvp.constants import PVP_CONFIG_ID_DIVISOR  # noqa: E402,F401
+from core.pvp.constants import PVP_HTTP_MAX_RETRIES  # noqa: E402,F401
+from core.pvp.constants import PVP_HTTP_READ_TIMEOUT_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_LONGTERM_MEM_SLOTS  # noqa: E402,F401
 from core.pvp.constants import PVP_LONGTERM_SLOT_TOKENS  # noqa: E402,F401
-from core.pvp.constants import PVP_MAX_INNER_STEPS  # noqa: E402,F401
-from core.pvp.constants import PVP_PER_STEP_MAX_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_REFLECTION_MAX_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_REFLECTION_TIMEOUT_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_RETRY_BACKOFF_CAP_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_SEED_RANGE_MAX  # noqa: E402,F401
+from core.pvp.constants import PVP_TURN_MAX_TOKENS  # noqa: E402,F401
 from core.pvp.constants import PVP_TURN_TIMEOUT_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_MEM_SLOTS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_SLOT_TOKENS  # noqa: E402,F401

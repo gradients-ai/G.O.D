@@ -191,6 +191,15 @@ class ChatCompletionConfig(BaseModel):
     """Configuration for calling an OpenAI-compatible chat endpoint."""
 
     inference_model: str = Field(description="Model name as registered in the inference server")
+    tokenizer_repo: str | None = Field(
+        default=None,
+        description=(
+            "HF repo / local path for the tokenizer used to budget memory slots. "
+            "A LoRA's inference_model carries a ':lora' suffix that is not a loadable "
+            "repo, so this points at the base model (or local weights dir) instead. "
+            "Falls back to inference_model when unset."
+        ),
+    )
     base_url: str = Field(description="OpenAI-compatible API base (e.g. http://localhost:30000/v1)")
     api_key: str = Field(default="dummy", description="API key (SGLang ignores but SDK requires)")
     temperature: float | None = Field(default=None, description="Sampling temperature, None uses server default")

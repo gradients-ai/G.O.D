@@ -208,8 +208,10 @@ def _execute_matchup(
 ) -> PvPEnvironmentResult:
     """Play all game instances and tally results."""
     # Per-player tokenizer so slot budgets are real model tokens (whitespace fallback).
-    counter_a = load_token_counter(player_a.config.inference_model)
-    counter_b = load_token_counter(player_b.config.inference_model)
+    # Prefer tokenizer_repo over inference_model: a LoRA's inference_model is
+    # 'base:lora' — not a loadable repo, which would degrade budgets to word counts.
+    counter_a = load_token_counter(player_a.config.tokenizer_repo or player_a.config.inference_model)
+    counter_b = load_token_counter(player_b.config.tokenizer_repo or player_b.config.inference_model)
     # One long-term memory per player, carried across every game of the matchup
     # so each side builds an opponent model over the series.
     long_term_a = _new_long_term_memory(counter_a)

@@ -143,7 +143,7 @@ def cmd_show(args) -> None:
     seat = state.current_player()
     legal = state.legal_actions(seat)
     bot = _bot_for(game, state, bundle, seat)
-    tools = bot._memory_tools + [tool_lib.build_game_action_tool(bot._legal_hint(legal))]
+    tools = bot._memory_tools + [tool_lib.build_game_action_tool(bot._legal_hint(legal), legal)]
 
     print(f"################  TURN {bundle['turn']}  —  PLAYER {seat} TO ACT  ################\n")
     print("---------------- SYSTEM MESSAGE (input) ----------------")

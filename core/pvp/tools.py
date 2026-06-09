@@ -86,12 +86,19 @@ def build_memory_tools(configs: dict[MemoryArea, MemoryConfig]) -> list[ToolSche
     return out
 
 
-def build_game_action_tool(legal_hint: str) -> ToolSchema:
-    """Schema for the turn-terminating move tool. legal_hint surfaces current legal ids."""
+def build_game_action_tool(legal_hint: str, legal_actions: list[int] | None = None) -> ToolSchema:
+    """Schema for the turn-terminating move tool. legal_hint surfaces current legal ids.
+
+    When legal_actions is given, action_id is constrained to that exact set via a
+    JSON-Schema enum, so constrained decoding cannot emit an illegal move at all.
+    """
+    parameters = _params_schema(GameActionArgs)
+    if legal_actions is not None and "action_id" in parameters.get("properties", {}):
+        parameters["properties"]["action_id"]["enum"] = list(legal_actions)
     return _function_tool(
         GAME_ACTION_TOOL_NAME,
         f"Commit your move and end your turn. {legal_hint}",
-        _params_schema(GameActionArgs),
+        parameters,
     )
 
 

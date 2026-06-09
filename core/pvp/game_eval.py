@@ -73,9 +73,8 @@ def _evaluate_game_with_timeout(
         return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except InvalidActionForfeitError as exc:
         logger.warning(
-            "Player %d failed to produce valid actions %d times — opponent wins by forfeit",
+            "Player %d did not commit a legal move this turn — opponent wins by forfeit",
             exc.player_id,
-            exc.invalid_action_failures,
         )
         return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except EmptyLegalActionsError:
