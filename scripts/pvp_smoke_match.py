@@ -50,6 +50,7 @@ from core.models.pvp_models import ToolSchema
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from validator.core import constants as vcst
+from core.pvp.game_eval import _AGENT_REGISTRY
 from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import run_matchup
 from validator.evaluation.pvp.game_runner import warmup_player
@@ -195,7 +196,7 @@ def _report_player(label: str, model: str, recorder: Recorder) -> None:
 # --- Main -----------------------------------------------------------------------
 
 
-_ENV_CHOICES = [e.value for e in (EnvironmentName.LIARS_DICE, EnvironmentName.LEDUC_POKER, EnvironmentName.GIN_RUMMY)]
+_ENV_CHOICES = [e.value for e in _AGENT_REGISTRY]  # every registered PvP env (incl. othello)
 
 
 def main() -> int:
