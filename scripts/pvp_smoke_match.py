@@ -75,6 +75,20 @@ class CallStat:
     longterm_writes: int = 0
 
 
+def _split_mem_blocks(system: str) -> tuple[str, str]:
+    """Return (working_block, long_term_block) from a rendered system prompt."""
+    if "LONG_TERM" not in system:
+        return "", ""
+    working = system.split("WORKING", 1)[-1].split("LONG_TERM", 1)[0]
+    longterm = system.split("LONG_TERM", 1)[-1].split("You get ONE response", 1)[0]
+    return working, longterm
+
+
+def _all_slots_empty(block: str) -> bool:
+    slot_lines = [l for l in block.splitlines() if l.strip().startswith("[")]
+    return bool(slot_lines) and all("(empty)" in l for l in slot_lines)
+
+
 @dataclass
 class Recorder:
     """Wraps chat_completion to time it and record what came back. Acts as a ChatFn."""
@@ -84,6 +98,8 @@ class Recorder:
     stats: list[CallStat] = field(default_factory=list)
     mem_samples: list[str] = field(default_factory=list)  # (tool -> content) examples
     last_turn_system: str | None = None  # latest rendered memory the model saw on a turn
+    game_start_longterm: list[str] = field(default_factory=list)  # long-term seen at each game's first turn
+    turn_reasoning: list[str] = field(default_factory=list)  # model's content/reasoning on turns
 
     def __call__(
         self,
@@ -95,6 +111,11 @@ class Recorder:
         kind = "turn" if "game_action" in tool_names else "reflect"
         if kind == "turn" and messages:
             self.last_turn_system = messages[0].content
+            working_block, longterm_block = _split_mem_blocks(messages[0].content or "")
+            # Working memory resets each game, so an empty working block marks a game's
+            # first turn — snapshot the long-term it carried in.
+            if _all_slots_empty(working_block):
+                self.game_start_longterm.append(longterm_block.strip())
         start = time.perf_counter()
         try:
             result = chat_completion(self.client, config, messages, tools)
@@ -103,6 +124,8 @@ class Recorder:
             # record it as a turn that produced no move so the rate reflects reality.
             self.stats.append(CallStat(kind, time.perf_counter() - start, None, False, False))
             raise
+        if kind == "turn" and result.content and len(self.turn_reasoning) < 8:
+            self.turn_reasoning.append(" ".join(result.content.split())[:200])
         calls = result.tool_calls or []
         usage = result.usage or {}
         working = sum(1 for c in calls if c.name.startswith("working_memory"))
@@ -189,11 +212,16 @@ def _report_player(label: str, model: str, recorder: Recorder) -> None:
         print("    sample writes        :")
         for s in recorder.mem_samples:
             print(f"      - {s}")
-    if recorder.last_turn_system and "LONG_TERM" in recorder.last_turn_system:
-        block = recorder.last_turn_system.split("LONG_TERM", 1)[1].split("You get ONE response", 1)[0]
-        print("    long-term @ last turn (the opponent model it built):")
-        for line in block.strip().splitlines():
-            print(f"      {line.strip()}")
+    if recorder.game_start_longterm:
+        print("    long-term carried INTO each game's first turn (proves carryover):")
+        for i, blk in enumerate(recorder.game_start_longterm, 1):
+            filled = [l.strip() for l in blk.splitlines() if l.strip().startswith("[") and "(empty)" not in l]
+            summary = "(empty — first game)" if not filled else f"{len(filled)} slot(s) carried: {filled[0][:90]}"
+            print(f"      game {i}: {summary}")
+    if recorder.turn_reasoning:
+        print("    turn reasoning samples (usage = references opponent/notes):")
+        for r in recorder.turn_reasoning[:5]:
+            print(f"      - {r}")
 
 
 # --- Main -----------------------------------------------------------------------
