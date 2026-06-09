@@ -700,16 +700,16 @@ async def _run_env_tournament_eval(
         f"pvp_envs={[e.value for e in pvp_envs]}, individual_envs={[e.value for e in individual_envs]}"
     )
 
-    env_scores: dict[core_cst.EnvironmentName, dict[str, float]] = {}
+    env_scores: list[EnvMinerScores] = []
 
     if pvp_envs:
-        env_scores.update(await _eval_pvp_envs(
+        env_scores.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
         ))
 
     if individual_envs:
-        env_scores.update(await _eval_individual_envs(
+        env_scores.extend(await _eval_individual_envs(
             task_id=task.task_id, individual_envs=individual_envs, miners=miners,
             base_model=base_model, model_params=model_params, seed=seed, config=config,
         ))
