@@ -19,6 +19,7 @@ from core.models.utility_models import FileFormat
 from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.reward_templates import sample_template_groups
+from core.whitelisted_env_models import SUPPORTED_ENV_MODELS
 from validator.core.config import Config
 from validator.db.database import PSQLDB
 from validator.core.models import Dataset
@@ -42,15 +43,6 @@ from validator.utils.util import retry_with_backoff
 
 logger = get_logger(__name__)
 
-SUPPORTED_ENV_MODELS = [
-    "Qwen/Qwen2-7B-Instruct",
-    "unsloth/Llama-3.2-3B-Instruct",
-    "Qwen/Qwen3-4B-Instruct-2507",
-    "Qwen/Qwen2.5-1.5B-Instruct",
-    "Qwen/Qwen2.5-3B-Instruct",
-    "Qwen/Qwen2.5-7B-Instruct",
-    "Qwen/Qwen2.5-Coder-7B-Instruct",
-]
 
 
 def maybe_get_yarn_factor() -> int | None:
