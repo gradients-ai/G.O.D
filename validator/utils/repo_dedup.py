@@ -490,7 +490,11 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
             )
         except (ValueError, KeyError, json.JSONDecodeError) as exc:
             last_error = exc
-            logger.warning(f"dedup: unparseable verdict (attempt {attempt + 1}/{VERDICT_PARSE_ATTEMPTS}): {exc}")
+            snippet = _GH_TOKEN_RE.sub("***", (result_text or "").strip())
+            logger.warning(
+                f"dedup: unparseable verdict ({dir_a} vs {dir_b}, attempt {attempt + 1}/{VERDICT_PARSE_ATTEMPTS}): "
+                f"{exc} | reply was {len(result_text)} chars; raw (redacted, first 1500): {snippet[:1500]!r}"
+            )
     raise RuntimeError(f"Claude returned no parseable verdict for {dir_a} vs {dir_b}: {last_error}")
 
 
