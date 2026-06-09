@@ -108,8 +108,8 @@ class Recorder:
         working = sum(1 for c in calls if c.name.startswith("working_memory"))
         longterm = sum(1 for c in calls if c.name.startswith("long_term_memory"))
         for c in calls:
-            if c.name != "game_action" and len(self.mem_samples) < 6:
-                self.mem_samples.append(f"{c.name}(slot={c.arguments.get('slot')}): {str(c.arguments.get('content'))[:70]}")
+            if c.name != "game_action" and len(self.mem_samples) < 30:
+                self.mem_samples.append(f"[{kind}] {c.name}(slot={c.arguments.get('slot')}): {str(c.arguments.get('content'))[:90]}")
         self.stats.append(
             CallStat(
                 kind=kind,
@@ -179,9 +179,12 @@ def _report_player(label: str, model: str, recorder: Recorder) -> None:
             f"max={max(turn_tokens)}  (cap {vcst.PVP_TURN_MAX_TOKENS})"
         )
     print(f"    reflection calls     : {len(reflects)}")
-    working = sum(s.working_writes for s in recorder.stats)
-    longterm = sum(s.longterm_writes for s in recorder.stats)
-    print(f"    memory writes        : working={working}  long_term={longterm}  <- memory used iff >0")
+    t_work = sum(s.working_writes for s in turns)
+    t_long = sum(s.longterm_writes for s in turns)
+    r_work = sum(s.working_writes for s in reflects)
+    r_long = sum(s.longterm_writes for s in reflects)
+    print(f"    writes during turns  : working={t_work}  long_term={t_long}")
+    print(f"    writes in reflection : working={r_work}  long_term={r_long}  <- reflection works iff >0")
     if recorder.mem_samples:
         print("    sample writes        :")
         for s in recorder.mem_samples:
