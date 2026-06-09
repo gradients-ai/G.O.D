@@ -434,6 +434,7 @@ class NewTaskRequestImage(NewTaskRequest):
         description="A ds name. The actual dataset is provided via the image_text_pairs",
     )
     model_type: ImageModelType = ImageModelType.SDXL
+    trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
 
 
 class NewTaskRequestImageZip(NewTaskRequest):
@@ -447,6 +448,7 @@ class NewTaskRequestImageZip(NewTaskRequest):
         ),
     )
     model_type: ImageModelType = ImageModelType.SDXL
+    trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
 
 
 class NewTaskWithCustomDatasetRequest(NewTaskRequestInstructText):
@@ -587,6 +589,7 @@ class ImageTaskDetails(TaskDetails):
     ds_repo: str | None = None
     base_model_repository: str = Field(..., description="The repository for the model")
     model_type: ImageModelType = ImageModelType.SDXL
+    trigger_word: str | None = None
 
     model_config = ConfigDict(protected_namespaces=())
 
