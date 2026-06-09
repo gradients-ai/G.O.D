@@ -26,6 +26,7 @@ from validator.core import constants as vcst
 from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import create_player
 from validator.evaluation.pvp.game_runner import run_matchup
+from validator.evaluation.pvp.game_runner import warmup_player
 from validator.evaluation.pvp.server import start_sglang
 from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.utils import check_for_lora
@@ -141,6 +142,8 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
 
         player_a = create_player(config_a)
         player_b = create_player(config_b)
+        warmup_player(player_a)
+        warmup_player(player_b)
 
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():

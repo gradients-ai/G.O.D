@@ -18,6 +18,8 @@ from core.constants import ENVIRONMENT_CONFIGS
 from core.constants import EnvironmentName
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatFn
+from core.models.pvp_models import ChatMessage
+from core.models.pvp_models import ChatRole
 from core.models.pvp_models import GameInstance
 from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import GameScoringContext
@@ -60,6 +62,15 @@ def create_player(config: ChatCompletionConfig) -> Player:
     client = create_client(config)
     bound_chat: ChatFn = functools.partial(chat_completion, client)
     return Player(client=client, config=config, chat_fn=bound_chat)
+
+
+def warmup_player(player: Player) -> None:
+    """One throwaway completion so the first scored turn doesn't absorb SGLang's
+    cold-start (CUDA-graph capture), which can otherwise blow the turn timeout."""
+    try:
+        chat_completion(player.client, player.config, [ChatMessage(role=ChatRole.USER, content="warmup")])
+    except Exception as exc:
+        logger.warning("Warmup failed for %s (ignored): %s", player.config.inference_model, exc)
 
 
 def run_matchup(

@@ -52,6 +52,7 @@ from core.pvp.chat import create_client
 from validator.core import constants as vcst
 from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import run_matchup
+from validator.evaluation.pvp.game_runner import warmup_player
 from validator.evaluation.pvp.server import start_sglang
 from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.utils import stop_process
@@ -240,6 +241,8 @@ def main() -> int:
         # tokenizer_repo = served weights so memory slot budgets use real tokens.
         player_a, rec_a = _build_player(args.model_a, base_a, args.model_a, "A", args.temperature, args.seed)
         player_b, rec_b = _build_player(args.model_b, base_b, args.model_b, "B", args.temperature, args.seed)
+        warmup_player(player_a)
+        warmup_player(player_b)
 
         print(f"\n=== A={args.model_a}  vs  B={args.model_b} ===")
         wall_start = time.perf_counter()
