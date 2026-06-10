@@ -16,6 +16,9 @@ TOOL_CALL_PARSER_ENV = "SGLANG_TOOL_CALL_PARSER"
 # Ordered (family substring -> SGLang parser); first match wins, so more
 # specific families precede the generic one (qwen3-coder before qwen; hermes
 # before llama, since Hermes-3-Llama is hermes-format, not llama3).
+# NOTE: recent SGLang deprecates 'qwen25' in favour of 'qwen' (auto-mapped with
+# a warning for now); older versions only know 'qwen25'. Revisit this mapping
+# when the eval/model-prep images bump SGLang.
 _FAMILY_PARSERS: list[tuple[str, str]] = [
     ("qwen3-coder", "qwen3_coder"),
     ("hermes", "hermes"),

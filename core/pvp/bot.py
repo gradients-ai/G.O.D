@@ -10,8 +10,10 @@ across turns is the memory in SlotMemory.
 
 Two memory areas live behind the tools: working memory (reset each game) and
 long-term memory (persists across games against the same opponent). Robustness
-is layered: a per-turn SIGALRM wall-clock timeout, action_id constrained to the
-legal set by the tool grammar, and bad memory ops that no-op rather than crash.
+is layered: a per-turn SIGALRM wall-clock timeout, action_id validated against
+the legal set (the tool schema's enum is advisory — servers don't grammar-enforce
+tool arguments under tool_choice="auto"), and bad memory ops that no-op rather
+than crash.
 """
 
 import logging

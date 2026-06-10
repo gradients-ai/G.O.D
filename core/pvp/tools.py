@@ -55,8 +55,9 @@ _TOOL_TO_AREA_OP: dict[str, tuple[MemoryArea, MemoryOp]] = {
 def _params_schema(model: type[BaseModel], *, slot_bounds: tuple[int, int] | None = None) -> dict:
     """JSON Schema for a tool's arguments, stripped of Pydantic titles.
 
-    When slot_bounds is given, the integer 'slot' field is constrained to the
-    valid range so the grammar can't even emit an out-of-range slot.
+    When slot_bounds is given, the integer 'slot' field carries minimum/maximum
+    for the valid range. Advisory only (servers don't grammar-enforce tool args
+    under tool_choice="auto"); SlotMemory rejects out-of-range slots regardless.
     """
     schema = deepcopy(model.model_json_schema())
     schema.pop("title", None)
@@ -89,8 +90,10 @@ def build_memory_tools(configs: dict[MemoryArea, MemoryConfig]) -> list[ToolSche
 def build_game_action_tool(legal_hint: str, legal_actions: list[int] | None = None) -> ToolSchema:
     """Schema for the turn-terminating move tool. legal_hint surfaces current legal ids.
 
-    When legal_actions is given, action_id is constrained to that exact set via a
-    JSON-Schema enum, so constrained decoding cannot emit an illegal move at all.
+    When legal_actions is given, action_id carries a JSON-Schema enum of the legal
+    set. This is advisory: SGLang with tool_choice="auto" does not grammar-enforce
+    argument values (verified empirically — malformed/illegal output reaches the
+    wire), so the binding guard is the bot's validate-then-forfeit on the result.
     """
     parameters = _params_schema(GameActionArgs)
     if legal_actions is not None and "action_id" in parameters.get("properties", {}):
