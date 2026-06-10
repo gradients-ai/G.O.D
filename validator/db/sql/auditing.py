@@ -115,6 +115,7 @@ async def get_recent_tasks(
             itt.no_input_format,
             itt.file_format as itt_file_format,
             it.model_type,
+            it.trigger_word,
             ip.image_text_pairs,
             dt.field_prompt as dpo_field_prompt,
             dt.field_chosen,

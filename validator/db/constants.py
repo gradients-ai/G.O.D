@@ -129,6 +129,7 @@ IMAGE_URL = "image_url"
 TEXT_URL = "text_url"
 ID = "id"
 MODEL_TYPE = "model_type"
+TRIGGER_WORD = "trigger_word"
 
 # DPO Tasks Table Columns
 FIELD_PROMPT = "field_prompt"

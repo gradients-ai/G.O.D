@@ -158,10 +158,13 @@ async def main():
         if args.model_type == ImageModelType.SDXL.value
         else train_cst.DIFFUSION_FLUX_REPEATS
     )
+    instance_prompt = args.trigger_word or train_cst.DIFFUSION_DEFAULT_INSTANCE_PROMPT
+    if args.trigger_word:
+        print(f"Using trigger word for image training: {args.trigger_word}", flush=True)
     prepare_dataset(
         training_images_zip_path=train_paths.get_image_training_zip_save_path(args.task_id),
         training_images_repeat=training_images_repeat,
-        instance_prompt=train_cst.DIFFUSION_DEFAULT_INSTANCE_PROMPT,
+        instance_prompt=instance_prompt,
         class_prompt=train_cst.DIFFUSION_DEFAULT_CLASS_PROMPT,
         job_id=args.task_id,
         output_dir=train_cst.IMAGE_CONTAINER_IMAGES_PATH

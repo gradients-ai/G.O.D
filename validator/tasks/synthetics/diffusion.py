@@ -467,33 +467,33 @@ def _triggered_ds_prefix(prefix: str, trigger: str) -> str:
 
 async def _generate_independent_triggered_synthetic(
     prompt_set: TriggeredPromptSet, ds_prefix: str, category_description: str
-) -> tuple[list[ImageTextPair], str]:
+) -> tuple[list[ImageTextPair], str, str]:
     model_id = random.choice(synth_cst.FAL_IMAGE_MODELS)
     logger.info(f"Selected FAL model for {category_description} task: {model_id}")
     image_prompt_pairs = await generate_fal_images_for_prompts(model_id, prompt_set.prompts)
     logger.info(f"Persisting {len(image_prompt_pairs)} {category_description} image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} {category_description} image-text pairs")
-    return image_text_pairs, _triggered_ds_prefix(ds_prefix, prompt_set.trigger)
+    return image_text_pairs, _triggered_ds_prefix(ds_prefix, prompt_set.trigger), prompt_set.trigger
 
 
-async def generate_logo_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_logo_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     prompt_set = await generate_triggered_prompt_set(_logo_prompt_request(num_prompts), num_prompts, "logo")
     return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.LOGO_SYNTH_DS_PREFIX, "logo")
 
 
-async def generate_social_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_social_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     prompt_set = await generate_triggered_prompt_set(_social_prompt_request(num_prompts), num_prompts, "social")
     return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.SOCIAL_SYNTH_DS_PREFIX, "social")
 
 
-async def generate_design_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_design_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     design_type = random.choice(("mobile app", "web app or landing page"))
     prompt_set = await generate_triggered_prompt_set(_design_prompt_request(num_prompts, design_type), num_prompts, "design")
     return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.DESIGN_SYNTH_DS_PREFIX, f"{design_type} design")
 
 
-async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     prompt_set = await generate_product_prompt_set(num_prompts)
     logger.info(f"Generating product reference image for trigger: {prompt_set.trigger}")
     reference_image_url = await generate_fal_image(synth_cst.FAL_STYLE_MODEL_GPT_IMAGE_2, prompt_set.reference_prompt)
@@ -504,10 +504,10 @@ async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPa
     logger.info(f"Persisting {len(image_prompt_pairs)} product image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} product image-text pairs")
-    return image_text_pairs, _triggered_ds_prefix(synth_cst.PRODUCT_SYNTH_DS_PREFIX, prompt_set.trigger)
+    return image_text_pairs, _triggered_ds_prefix(synth_cst.PRODUCT_SYNTH_DS_PREFIX, prompt_set.trigger), prompt_set.trigger
 
 
-async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[list[ImageTextPair], str, str | None]:
     use_combined_styles = random.random() < synth_cst.PROBABILITY_STYLE_COMBINATION
 
     if use_combined_styles:
@@ -534,10 +534,10 @@ async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[li
     logger.info(f"Persisting {len(image_prompt_pairs)} style image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} style image-text pairs")
-    return image_text_pairs, ds_prefix
+    return image_text_pairs, ds_prefix, None
 
 
-async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str]:
+async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     logger.info("Fetching and uploading person reference image")
     face_image_url = await _get_face_reference_url()
     prompt_set = await generate_person_prompts_with_fal_vision(face_image_url, num_prompts)
@@ -545,7 +545,7 @@ async def generate_person_synthetic(num_prompts: int) -> tuple[list[ImageTextPai
     logger.info(f"Persisting {len(image_prompt_pairs)} person image-text pairs")
     image_text_pairs = await persist_image_text_pairs(image_prompt_pairs)
     logger.info(f"Persisted {len(image_text_pairs)} person image-text pairs")
-    return image_text_pairs, _triggered_ds_prefix(synth_cst.PERSON_SYNTH_DS_PREFIX, prompt_set.trigger)
+    return image_text_pairs, _triggered_ds_prefix(synth_cst.PERSON_SYNTH_DS_PREFIX, prompt_set.trigger), prompt_set.trigger
 
 
 def pick_image_synth_category() -> str:
@@ -556,7 +556,7 @@ def pick_image_synth_category() -> str:
 
 async def generate_image_synthetic_by_category(
     config: Config, num_prompts: int, category: str
-) -> tuple[list[ImageTextPair], str]:
+) -> tuple[list[ImageTextPair], str, str | None]:
     logger.info(f"Selected image synth category: {category}")
 
     if category == synth_cst.IMAGE_SYNTH_CATEGORY_STYLE:
@@ -572,12 +572,12 @@ async def generate_image_synthetic_by_category(
     if category != synth_cst.IMAGE_SYNTH_CATEGORY_PERSON:
         raise ValueError(f"Unknown image synth category: {category}")
 
-    last_result: tuple[list[ImageTextPair], str] | None = None
+    last_result: tuple[list[ImageTextPair], str, str | None] | None = None
     for attempt in range(synth_cst.PERSON_GEN_RETRIES):
-        image_text_pairs, ds_prefix = await generate_person_synthetic(num_prompts)
-        last_result = (image_text_pairs, ds_prefix)
+        image_text_pairs, ds_prefix, trigger_word = await generate_person_synthetic(num_prompts)
+        last_result = (image_text_pairs, ds_prefix, trigger_word)
         if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
-            return image_text_pairs, ds_prefix
+            return image_text_pairs, ds_prefix, trigger_word
         if attempt < synth_cst.PERSON_GEN_RETRIES - 1:
             logger.info(f"Person synth generation only produced {len(image_text_pairs)} pairs, trying again...")
         else:
@@ -607,7 +607,9 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     if is_qwen_model:
         number_of_hours = round(number_of_hours + synth_cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
-    image_text_pairs, ds_prefix = await generate_image_synthetic_by_category(config, num_prompts, pick_image_synth_category())
+    image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
+        config, num_prompts, pick_image_synth_category()
+    )
 
     # Log image and text URLs for testing
     logger.info(f"Generated {len(image_text_pairs)} image-text pairs with prefix: {ds_prefix}")
@@ -627,6 +629,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
             hours_to_complete=number_of_hours,
             account_id=NULL_ACCOUNT_ID,
             model_type=model_info.model_type,
+            trigger_word=trigger_word,
             augmentation_config=augmentation_config,
         )
 

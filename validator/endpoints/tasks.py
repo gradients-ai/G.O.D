@@ -393,6 +393,7 @@ async def create_task_image(
         task_type=TaskType.IMAGETASK,
         result_model_name=request.result_model_name,
         model_type=request.model_type,
+        trigger_word=request.trigger_word,
         backend=Backend(request.backend or Backend.RUNPOD.value),
     )
 
@@ -425,6 +426,7 @@ async def create_task_image_zip(
         task_type=TaskType.IMAGETASK,
         result_model_name=request.result_model_name,
         model_type=request.model_type,
+        trigger_word=request.trigger_word,
         backend=Backend(request.backend or Backend.RUNPOD.value),
     )
 

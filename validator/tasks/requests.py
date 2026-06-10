@@ -160,4 +160,5 @@ def prepare_image_task_request(task: ImageRawTask) -> TrainRequestImage:
         hours_to_complete=task.hours_to_complete,
         dataset_zip=task.training_data,
         model_type=task.model_type,
+        trigger_word=task.trigger_word,
     )

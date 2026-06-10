@@ -15,6 +15,7 @@ from validator.db.sql.dedup import get_resolved_dedup_reviews
 from validator.infrastructure.minio_client import async_minio_client
 from validator.tasks.models import AnyTypeTask
 from validator.tasks.models import AnyTypeTaskWithHotkeyDetails
+from validator.tournament.models import DupRelationship
 from validator.tournament.models import TournamentDedupReview
 
 
@@ -74,6 +75,7 @@ async def audit_dedup_reviews_endpoint(
     # report_url is stored as a presigned S3 URL that expires (~7 days); re-sign on read so
     # the public audit link doesn't go dead after the original signature lapses.
     for review in reviews:
+        review.pair_verdicts = [v for v in review.pair_verdicts if v.relationship != DupRelationship.DISTINCT]
         if review.report_url:
             fresh_url = await async_minio_client.get_new_presigned_url(review.report_url)
             if fresh_url:
