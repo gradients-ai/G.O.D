@@ -168,6 +168,20 @@ class GrpoBaselineStats(BaseModel):
 
 # --- Environment stats ---
 
+class EnvBaselineConfig(BaseModel):
+    """Per-environment baseline config passed into the model prep container.
+
+    url is the env server sidecar; None for envs baselined in-harness (pyspiel
+    games play MCTS in-process and never touch a sidecar).
+    """
+
+    url: str | None = None
+    task_id_min: int
+    task_id_max: int
+    num_episodes: int
+    eval_payload_extra: dict | None = None
+
+
 class EnvStats(BaseModel):
     num_episodes: int
     mean_score: float = 0.0

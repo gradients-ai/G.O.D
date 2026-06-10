@@ -13,7 +13,10 @@ import core.constants as core_cst
 import trainer.utils.training_paths as train_paths
 from core.constants import EnvironmentName
 from core.models.model_prep_models import BaselineStats
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.payload_models import EnvConfig
+from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
+from core.pvp.sglang_parsers import tool_call_parser_for
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
@@ -552,13 +555,13 @@ def run_model_prep_container(
         env_configs_with_urls = {}
         for env_name, cfg in env_configs.items():
             if env_name in env_url_map:
-                env_configs_with_urls[env_name.value] = {
-                    "url": env_url_map[env_name],
-                    "task_id_min": cfg.task_id_min,
-                    "task_id_max": cfg.task_id_max,
-                    "num_episodes": cfg.num_episodes,
-                    "eval_payload_extra": cfg.eval_payload_extra,
-                }
+                env_configs_with_urls[env_name.value] = EnvBaselineConfig(
+                    url=env_url_map[env_name],
+                    task_id_min=cfg.task_id_min,
+                    task_id_max=cfg.task_id_max,
+                    num_episodes=cfg.num_episodes,
+                    eval_payload_extra=cfg.eval_payload_extra,
+                ).model_dump()
 
     command = [
         "--model", model_cache_path,
@@ -588,6 +591,13 @@ def run_model_prep_container(
         "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
         "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
     }
+    if env_configs:
+        # The container only sees the anonymized model path (hex hash), which can
+        # never match a model family, so resolve the SGLang tool-call parser from
+        # the real model_id here and pass it through the override env var.
+        tool_call_parser = tool_call_parser_for(model_id)
+        if tool_call_parser:
+            env[TOOL_CALL_PARSER_ENV] = tool_call_parser
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None

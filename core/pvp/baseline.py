@@ -54,6 +54,11 @@ class MctsBaselineResult(BaseModel):
         return (self.wins + 0.5 * self.draws) / self.num_games
 
 
+def supports_in_harness_baseline(env_name: EnvironmentName) -> bool:
+    """True when env_name has a pyspiel agent and can be baselined in-process."""
+    return env_name in _AGENT_REGISTRY
+
+
 def _mcts_simulations_for(env_name: EnvironmentName) -> int:
     extra = ENVIRONMENT_CONFIGS[env_name].eval_payload_extra or {}
     return int(extra.get("mcts_max_simulations", _DEFAULT_MCTS_SIMULATIONS))

@@ -1,13 +1,16 @@
 """
-Environment task stats: deploy model via SGLang, play baseline games against MCTS.
-No validator imports (model-prep ships core/ only) — the in-harness MCTS baseline
-lives in core.pvp. SGLang helpers inlined from eval_environment.py.
+Environment task stats: deploy model via SGLang, play baseline episodes.
+Pyspiel game envs run in-harness against MCTS (core.pvp — same tool-calling
+format as eval); other envs (intercode) POST episodes to their env server
+sidecar, as before. No validator imports (model-prep ships core/ only).
+SGLang helpers inlined from eval_environment.py.
 """
 
 import asyncio
 import functools
 import logging
 import os
+import random
 import signal
 import socket
 import statistics
@@ -17,10 +20,12 @@ import time
 import aiohttp
 
 from core.constants import EnvironmentName
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.model_prep_models import EnvStats
 from core.models.pvp_models import ChatCompletionConfig
 from core.pvp.baseline import run_mcts_baseline
+from core.pvp.baseline import supports_in_harness_baseline
 from core.pvp.sglang_parsers import tool_call_parser_for
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
@@ -36,6 +41,8 @@ SGLANG_EXTRA_CLI_DEFAULT = (
 )
 SGLANG_HEALTH_TIMEOUT = 600
 ENV_EVAL_TEMPERATURE = 0.0
+ENV_EVAL_TASK_TIMEOUT = 150
+CONSECUTIVE_FAILURE_LIMIT = 5
 
 
 # --- SGLang process management (from eval_environment.py) ---
@@ -142,6 +149,104 @@ def _build_env_stats(scores: list[float]) -> EnvStats:
     return EnvStats(num_episodes=0)
 
 
+def _sample_task_id(seed: int, task_id_min: int, task_id_max: int) -> int:
+    return random.Random(seed).randint(task_id_min, task_id_max)
+
+
+def _format_episode_error(error: object) -> str:
+    if error is None:
+        return ""
+    message = str(error).strip()
+    return message or type(error).__name__
+
+
+async def _play_episodes(
+    session: aiohttp.ClientSession,
+    env_name: EnvironmentName,
+    env_server_url: str,
+    sglang_base_url: str,
+    model_name: str,
+    num_episodes: int,
+    task_id_min: int,
+    task_id_max: int,
+    eval_payload_extra: dict | None,
+) -> EnvStats:
+    """Play episodes against an env server sidecar and return summary stats.
+
+    Stops early if CONSECUTIVE_FAILURE_LIMIT episodes fail in a row — the
+    remaining episodes would almost certainly fail too (model hallucinating,
+    timeouts), so there's no signal in continuing.
+    """
+    seed_rng = random.Random(42)
+    scores: list[float] = []
+    consecutive_failures = 0
+
+    print(f"  {env_name.value}: playing {num_episodes} episodes...", flush=True)
+
+    for i in range(num_episodes):
+        seed = seed_rng.randint(1, 1_000_000)
+        task_id = _sample_task_id(seed, task_id_min, task_id_max)
+
+        payload: dict = {
+            "model": model_name,
+            "base_url": sglang_base_url,
+            "task_id": task_id,
+            "temperature": ENV_EVAL_TEMPERATURE,
+            "seed": seed,
+        }
+        if eval_payload_extra:
+            payload.update(eval_payload_extra)
+
+        failed = False
+        error_message = ""
+        try:
+            timeout = aiohttp.ClientTimeout(total=ENV_EVAL_TASK_TIMEOUT)
+            async with session.post(
+                f"{env_server_url}/evaluate", json=payload, timeout=timeout,
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    result = data.get("result", data)
+                    score = float(result.get("score", 0.0))
+                    error_message = _format_episode_error(result.get("error"))
+                    if error_message:
+                        failed = True
+                else:
+                    raw_error = await resp.text()
+                    error_message = f"HTTP {resp.status}"
+                    if raw_error:
+                        error_message = f"{error_message}: {raw_error[:500]}"
+                    score = 0.0
+                    failed = True
+        except Exception as e:
+            error_message = _format_episode_error(e)
+            score = 0.0
+            failed = True
+
+        scores.append(score)
+
+        if failed:
+            print(
+                f"  {env_name.value} episode {i+1}: error task_id={task_id} seed={seed}: "
+                f"{error_message or 'unknown error'}",
+                flush=True,
+            )
+            consecutive_failures += 1
+            if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
+                print(
+                    f"  {env_name.value}: {CONSECUTIVE_FAILURE_LIMIT} consecutive failures, "
+                    f"stopping early at episode {i+1}/{num_episodes}",
+                    flush=True,
+                )
+                break
+        else:
+            consecutive_failures = 0
+
+    stats = _build_env_stats(scores)
+    print(f"  {env_name.value}: {stats.num_episodes} episodes, mean={stats.mean_score:.3f}", flush=True)
+    return stats
+
+
 def _mcts_baseline_stats(
     env_name: EnvironmentName,
     sglang_base_url: str,
@@ -190,16 +295,12 @@ def _mcts_baseline_stats(
 async def compute_env_stats(
     model_path: str,
     model,
-    env_configs: dict[EnvironmentName, dict],
+    env_configs: dict[EnvironmentName, EnvBaselineConfig],
 ) -> EnvBaselineStats:
     """Compute env stats: deploy model via SGLang, play episodes against all environments.
 
-    env_configs maps EnvironmentName to a dict with keys:
-        url: str           — env server URL on bridge network
-        task_id_min: int
-        task_id_max: int
-        num_episodes: int
-        eval_payload_extra: dict | None
+    Pyspiel game envs play the in-harness MCTS baseline; other envs POST
+    episodes to their env server sidecar (cfg.url).
     """
     print("Computing weight stats...", flush=True)
     weight_stats = compute_weight_stats(model)
@@ -222,17 +323,42 @@ async def compute_env_stats(
         await wait_for_health(sglang_local_url, "/v1/models", SGLANG_HEALTH_TIMEOUT, service_name="sglang")
 
         print(f"SGLang ready at {sglang_base_url}", flush=True)
-        print(f"Evaluating {len(env_configs)} environments vs MCTS...", flush=True)
+        print(f"Evaluating {len(env_configs)} environments...", flush=True)
 
-        for env_name, cfg in env_configs.items():
-            all_stats[env_name] = _mcts_baseline_stats(
-                env_name=env_name,
-                sglang_base_url=sglang_base_url,
-                model_name=model_name,
-                model_path=model_path,
-                num_episodes=cfg["num_episodes"],
-                eval_payload_extra=cfg.get("eval_payload_extra"),
-            )
+        async with aiohttp.ClientSession() as session:
+            for env_name, cfg in env_configs.items():
+                # One env failing must not take down the others (or the container):
+                # it degrades to empty stats, mirroring the HTTP path's per-episode
+                # error handling.
+                try:
+                    if supports_in_harness_baseline(env_name):
+                        all_stats[env_name] = _mcts_baseline_stats(
+                            env_name=env_name,
+                            sglang_base_url=sglang_base_url,
+                            model_name=model_name,
+                            model_path=model_path,
+                            num_episodes=cfg.num_episodes,
+                            eval_payload_extra=cfg.eval_payload_extra,
+                        )
+                    elif cfg.url:
+                        all_stats[env_name] = await _play_episodes(
+                            session=session,
+                            env_name=env_name,
+                            env_server_url=cfg.url,
+                            sglang_base_url=sglang_base_url,
+                            model_name=model_name,
+                            num_episodes=cfg.num_episodes,
+                            task_id_min=cfg.task_id_min,
+                            task_id_max=cfg.task_id_max,
+                            eval_payload_extra=cfg.eval_payload_extra,
+                        )
+                    else:
+                        print(
+                            f"  {env_name.value}: no in-harness agent and no env server URL, skipping",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(f"  {env_name.value}: baseline failed: {exc!r}", flush=True)
 
     except TimeoutError:
         print("SGLang failed to start within timeout", flush=True)
