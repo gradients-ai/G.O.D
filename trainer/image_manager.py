@@ -451,15 +451,23 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
+def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
+    """PvP (pyspiel) envs play their baseline in-process inside the model-prep
+    container (core.pvp MCTS baseline) and need no env server sidecar."""
+    cfg = core_cst.ENVIRONMENT_CONFIGS.get(env_name)
+    return cfg is not None and cfg.eval_type == core_cst.EvalType.PVP
+
+
 def _start_env_sidecars(
     env_configs: dict[EnvironmentName, EnvConfig],
     log_labels: dict[str, str] | None,
 ) -> tuple[dict[EnvironmentName, str], list[Container]]:
     """Start one sidecar per unique env_image. Returns (env_name→url mapping, container list).
 
-    Multiple environments may share the same image (e.g. all MCTS games use mcts-api).
-    We start one container per unique image and map all environments using that image
-    to the same sidecar URL.
+    Multiple environments may share the same image. We start one container per
+    unique image and map all environments using that image to the same sidecar
+    URL. In-harness envs are skipped entirely, and a sidecar that fails to start
+    degrades its envs to empty baseline stats instead of failing the prep.
     """
     ensure_internal_network()
     loop = asyncio.new_event_loop()
@@ -469,23 +477,32 @@ def _start_env_sidecars(
 
     try:
         for env_name, cfg in env_configs.items():
+            if _env_baseline_runs_in_harness(env_name):
+                continue
             image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
             if image_key in image_to_url:
                 continue
 
-            container = loop.run_until_complete(
-                run_environment_server_container(
-                    env_name,
-                    log_labels or {},
-                    image=cfg.env_image,
-                    command=cfg.env_server_command,
+            try:
+                container = loop.run_until_complete(
+                    run_environment_server_container(
+                        env_name,
+                        log_labels or {},
+                        image=cfg.env_image,
+                        command=cfg.env_server_command,
+                    )
                 )
-            )
-            if container is None:
+                if container is None:
+                    continue
+                containers.append(container)
+                ip = loop.run_until_complete(_resolve_container_ip(container))
+            except Exception as exc:
+                logger.warning(
+                    f"Env sidecar for {cfg.env_image} failed to start ({exc}); "
+                    f"its envs will report empty baseline stats",
+                    extra=log_labels,
+                )
                 continue
-
-            containers.append(container)
-            ip = loop.run_until_complete(_resolve_container_ip(container))
             url = f"http://{ip}:8000"
             image_to_url[image_key] = url
             logger.info(f"Env sidecar for {cfg.env_image}: {url}", extra=log_labels)
@@ -554,14 +571,15 @@ def run_model_prep_container(
         env_url_map, env_containers = _start_env_sidecars(env_configs, log_labels)
         env_configs_with_urls = {}
         for env_name, cfg in env_configs.items():
-            if env_name in env_url_map:
-                env_configs_with_urls[env_name.value] = EnvBaselineConfig(
-                    url=env_url_map[env_name],
-                    task_id_min=cfg.task_id_min,
-                    task_id_max=cfg.task_id_max,
-                    num_episodes=cfg.num_episodes,
-                    eval_payload_extra=cfg.eval_payload_extra,
-                ).model_dump()
+            # url=None for in-harness envs (and failed sidecars — the container
+            # degrades those to empty stats rather than dropping them silently).
+            env_configs_with_urls[env_name.value] = EnvBaselineConfig(
+                url=env_url_map.get(env_name),
+                task_id_min=cfg.task_id_min,
+                task_id_max=cfg.task_id_max,
+                num_episodes=cfg.num_episodes,
+                eval_payload_extra=cfg.eval_payload_extra,
+            ).model_dump()
 
     command = [
         "--model", model_cache_path,
@@ -594,8 +612,10 @@ def run_model_prep_container(
     if env_configs:
         # The container only sees the anonymized model path (hex hash), which can
         # never match a model family, so resolve the SGLang tool-call parser from
-        # the real model_id here and pass it through the override env var.
-        tool_call_parser = tool_call_parser_for(model_id)
+        # the real model_id here and pass it through the override env var. Quiet
+        # on a miss: opaque continuation repos resolve inside the container via
+        # the weights' config.json instead.
+        tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
         if tool_call_parser:
             env[TOOL_CALL_PARSER_ENV] = tool_call_parser
 

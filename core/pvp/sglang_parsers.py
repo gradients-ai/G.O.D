@@ -41,6 +41,11 @@ def _parser_from_local_config(model_dir: str) -> str | None:
     Opaque model ids (anonymized cache dirs, miner repos, augmented-<hash>) carry
     no family substring, but model_type survives anonymization (the scrubber only
     strips _name_or_path) and names the architecture family directly.
+
+    Caveat: model_type is the architecture, not the finetune's tool-call format —
+    a Hermes finetune reports model_type llama/mistral but speaks hermes format.
+    Id-substring/override resolution must catch those first; this is a last
+    resort where the alternative is forfeiting every turn.
     """
     config_path = os.path.join(model_dir, "config.json")
     if not os.path.isfile(config_path):
@@ -57,13 +62,15 @@ def _parser_from_local_config(model_dir: str) -> str | None:
     return parser
 
 
-def tool_call_parser_for(model_id: str) -> str | None:
+def tool_call_parser_for(model_id: str, *, log_unmapped: bool = True) -> str | None:
     """Return the SGLang tool-call-parser for model_id, or None if unmapped.
 
     Resolution order: SGLANG_TOOL_CALL_PARSER override, family substring in
     model_id, then config.json model_type when model_id is a local weights dir.
     An unmapped model logs a loud error (its tool calls won't be parsed and it
-    will forfeit every turn) rather than silently picking a wrong parser.
+    will forfeit every turn) rather than silently picking a wrong parser; pass
+    log_unmapped=False where None is expected and another resolver (the
+    container's config.json fallback) gets the final word.
     """
     override = os.getenv(TOOL_CALL_PARSER_ENV)
     if override:
@@ -77,10 +84,11 @@ def tool_call_parser_for(model_id: str) -> str | None:
     if parser:
         return parser
 
-    logger.error(
-        "No SGLang tool-call-parser mapping for %r — tool calls will NOT be parsed "
-        "and every turn will forfeit. Add a family mapping or set %s.",
-        model_id,
-        TOOL_CALL_PARSER_ENV,
-    )
+    if log_unmapped:
+        logger.error(
+            "No SGLang tool-call-parser mapping for %r — tool calls will NOT be parsed "
+            "and every turn will forfeit. Add a family mapping or set %s.",
+            model_id,
+            TOOL_CALL_PARSER_ENV,
+        )
     return None

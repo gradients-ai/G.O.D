@@ -85,6 +85,74 @@ def test_start_env_sidecars_passes_intercode_command(monkeypatch):
     ]
 
 
+def test_start_env_sidecars_skips_in_harness_games(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
+
+    from trainer import image_manager
+
+    configs = _build_env_configs()
+    calls = []
+
+    async def fake_run_environment_server_container(env_name, log_labels, image=None, command=None):
+        calls.append(image)
+        return object()
+
+    async def fake_resolve_container_ip(container):
+        return "10.0.0.42"
+
+    monkeypatch.setattr(image_manager, "ensure_internal_network", lambda: None)
+    monkeypatch.setattr(image_manager, "run_environment_server_container", fake_run_environment_server_container)
+    monkeypatch.setattr(image_manager, "_resolve_container_ip", fake_resolve_container_ip)
+
+    env_url_map, containers = image_manager._start_env_sidecars(
+        {
+            EnvironmentName.OTHELLO: configs[EnvironmentName.OTHELLO],
+            EnvironmentName.INTERCODE: configs[EnvironmentName.INTERCODE],
+        },
+        {},
+    )
+
+    # The pyspiel game plays its baseline in-harness: no mcts-api sidecar, no URL.
+    assert calls == [VALIDATOR_DOCKER_IMAGE_INTERCODE]
+    assert env_url_map == {EnvironmentName.INTERCODE: "http://10.0.0.42:8000"}
+    assert len(containers) == 1
+
+
+def test_start_env_sidecars_failure_degrades_instead_of_raising(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
+
+    from trainer import image_manager
+
+    intercode_cfg = _build_env_configs()[EnvironmentName.INTERCODE]
+
+    async def exploding_run_environment_server_container(env_name, log_labels, image=None, command=None):
+        raise RuntimeError("image pull failed")
+
+    monkeypatch.setattr(image_manager, "ensure_internal_network", lambda: None)
+    monkeypatch.setattr(
+        image_manager, "run_environment_server_container", exploding_run_environment_server_container
+    )
+
+    env_url_map, containers = image_manager._start_env_sidecars(
+        {EnvironmentName.INTERCODE: intercode_cfg}, {}
+    )
+
+    assert env_url_map == {}
+    assert containers == []
+
+
+def test_in_harness_envs_match_agent_registry():
+    """The host-side EvalType.PVP discriminator must stay in lockstep with the
+    container-side agent registry, or envs get sidecars they don't use (or
+    worse, neither a sidecar nor an agent)."""
+    from core.constants import ENVIRONMENT_CONFIGS
+    from core.constants import EvalType
+    from core.pvp.game_eval import _AGENT_REGISTRY
+
+    pvp_envs = {name for name, cfg in ENVIRONMENT_CONFIGS.items() if cfg.eval_type == EvalType.PVP}
+    assert pvp_envs == set(_AGENT_REGISTRY)
+
+
 def test_training_env_server_selection_skips_intercode(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
 
