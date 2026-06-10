@@ -347,8 +347,15 @@ class MinerResultsText(MinerResults):
 
     @field_validator("task_type")
     def validate_task_type(cls, v):
-        if v not in {TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK}:
-            raise ValueError("Must be INSTRUCTTEXTTASK, CHATTASK, DPOTASK, GRPOTASK or ENVIRONMENTTASK")
+        if v not in {
+            TaskType.INSTRUCTTEXTTASK,
+            TaskType.DPOTASK,
+            TaskType.GRPOTASK,
+            TaskType.CHATTASK,
+            TaskType.ENVIRONMENTTASK,
+            TaskType.COMPOSITETASK,
+        }:
+            raise ValueError("Must be INSTRUCTTEXTTASK, CHATTASK, DPOTASK, GRPOTASK, ENVIRONMENTTASK or COMPOSITETASK")
         return v
 
 

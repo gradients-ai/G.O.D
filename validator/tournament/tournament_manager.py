@@ -70,6 +70,7 @@ from validator.tournament.task_creator import create_environment_tournament_task
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_boss_round_tasks
 from validator.tournament.task_creator import create_text_round_tasks
+from validator.tournament.task_creator import prev_winner_root_model
 from validator.tournament.task_creator import replace_failed_composite_subtasks
 from validator.tournament.task_creator import replace_tournament_task
 from validator.tournament.utils import determine_env_tournament_winner
@@ -252,7 +253,11 @@ async def _get_previous_round_repo(
 
 
 async def _save_winner_model_repo(
-    tournament_id: str, winner_hotkey: str, round_tasks: list[TournamentTask], psql_db: PSQLDB,
+    tournament_id: str,
+    winner_hotkey: str,
+    round_tasks: list[TournamentTask],
+    psql_db: PSQLDB,
+    tournament_type: TournamentType,
 ) -> None:
     """Save the winner's HF model repo and base model to the tournament for next tournament's PREVIOUS_WINNER task.
 
@@ -260,6 +265,7 @@ async def _save_winner_model_repo(
     Falls back to any task with a valid repo if PREVIOUS_WINNER isn't found.
     """
     logger.info(f"Saving winner model repo for {winner_hotkey[:12]} from {len(round_tasks)} boss round tasks")
+    lineage_root_model = prev_winner_root_model(tournament_type)
     fallback_repo: str | None = None
     fallback_base_model: str | None = None
 
@@ -275,8 +281,8 @@ async def _save_winner_model_repo(
         winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
 
         if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (base={t_cst.ENV_TARGET_TOURN_MODEL})")
-            await update_tournament_winner_model(tournament_id, winner_repo, t_cst.ENV_TARGET_TOURN_MODEL, psql_db)
+            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (base={lineage_root_model})")
+            await update_tournament_winner_model(tournament_id, winner_repo, lineage_root_model, psql_db)
             return
 
         if not fallback_repo:
@@ -351,7 +357,17 @@ async def assign_nodes_to_tournament_tasks(
                         await task_sql.set_expected_repo_name(tournament_task.task_id, node, psql_db, expected_repo_name)
 
                         prev_repo = None
-                        if is_text_tournament and round_structure.round_number > 1 and task_obj:
+                        # Per-track continuation for text rounds. Gated on the start point: the boss
+                        # round's FROM_SCRATCH/PREVIOUS_WINNER scenarios must train from their bare
+                        # model even when it collides with a prior round's track model.
+                        text_continues = (
+                            is_text_tournament
+                            and round_structure.round_number > 1
+                            and task_obj
+                            and task_obj.training_start_point
+                            in (TrainingStartPoint.DEFAULT, TrainingStartPoint.CONTINUATION)
+                        )
+                        if text_continues:
                             prev_repo = await _get_previous_round_repo(
                                 tournament_id, hotkey, psql_db, model_id=task_obj.model_id
                             )
@@ -623,7 +639,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             # Save winner's model repo for next tournament's PREVIOUS_WINNER task
             if tournament.tournament_type in (TournamentType.ENVIRONMENT, TournamentType.TEXT):
                 save_hotkey = winner if winner != cst.EMISSION_BURN_HOTKEY else cst.EMISSION_BURN_HOTKEY
-                await _save_winner_model_repo(tournament.tournament_id, save_hotkey, round_tasks, psql_db)
+                await _save_winner_model_repo(
+                    tournament.tournament_id, save_hotkey, round_tasks, psql_db, tournament.tournament_type
+                )
 
             if winner != cst.EMISSION_BURN_HOTKEY:
                 try:

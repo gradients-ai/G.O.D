@@ -22,17 +22,19 @@ from trainer.model_prep.stats import compute_text_stats, classify_layer
 
 MODEL_ID = "distilgpt2"
 
+# Instruct-shaped rows: completion-based stats (bits_per_byte, completion lengths, masked loss)
+# need a non-empty "output" column.
 EVAL_DATA = [
-    {"text": "The capital of France is Paris and it is known for the Eiffel Tower."},
-    {"text": "Machine learning is a subset of artificial intelligence that focuses on data."},
-    {"text": "Python is a popular programming language used for web development."},
-    {"text": "The quick brown fox jumps over the lazy dog in the garden."},
-    {"text": "Climate change is one of the biggest challenges facing humanity today."},
-    {"text": "The stock market experienced significant volatility during the pandemic."},
-    {"text": "Quantum computing promises to revolutionize cryptography and drug discovery."},
-    {"text": "The Great Wall of China is one of the most impressive structures ever built."},
-    {"text": "Neural networks learn hierarchical representations of data through backpropagation."},
-    {"text": "The Pythagorean theorem states that a squared plus b squared equals c squared."},
+    {"instruct": "What is the capital of France?", "output": "Paris, known for the Eiffel Tower."},
+    {"instruct": "Define machine learning.", "output": "A subset of artificial intelligence that focuses on data."},
+    {"instruct": "What is Python used for?", "output": "It is a popular programming language used for web development."},
+    {"instruct": "Describe the fox scene.", "output": "The quick brown fox jumps over the lazy dog in the garden."},
+    {"instruct": "Name a global challenge.", "output": "Climate change is one of the biggest challenges facing humanity."},
+    {"instruct": "What happened to the stock market?", "output": "It experienced significant volatility during the pandemic."},
+    {"instruct": "What does quantum computing promise?", "output": "To revolutionize cryptography and drug discovery."},
+    {"instruct": "Describe the Great Wall of China.", "output": "One of the most impressive structures ever built."},
+    {"instruct": "How do neural networks learn?", "output": "They learn hierarchical representations through backpropagation."},
+    {"instruct": "State the Pythagorean theorem.", "output": "A squared plus b squared equals c squared."},
 ] * 10
 
 

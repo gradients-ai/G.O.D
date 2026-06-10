@@ -15,7 +15,9 @@ from core.constants import EnvironmentName
 from core.models.model_prep_models import BaselineStats
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
+from core.models.payload_models import SubtaskSpec
 from core.models.payload_models import TrainerProxyRequest
+from core.models.payload_models import TrainRequestComposite
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.utility_models import ChatTemplateDatasetType
@@ -248,10 +250,15 @@ async def run_trainer_container_text(
     hotkey: str,
     tag: str,
     model: str,
-    dataset: str,
-    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
+    dataset: str | None,
+    dataset_type: InstructTextDatasetType
+    | DpoDatasetType
+    | GrpoDatasetType
+    | ChatTemplateDatasetType
+    | EnvironmentDatasetType
+    | None,
     task_type: TaskType,
-    file_format: FileFormat,
+    file_format: FileFormat | None,
     expected_repo_name: str,
     hours_to_complete: float,
     baseline_stats: BaselineStats | None = None,
@@ -259,6 +266,8 @@ async def run_trainer_container_text(
     gpu_ids: list[int] = [0],
     env_server_urls: str | None = None,
     miner_datasets: list[str] | None = None,
+    composite_subtasks: list[SubtaskSpec] | None = None,
+    reference_model: str | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
@@ -277,24 +286,44 @@ async def run_trainer_container_text(
         environment[cst.MINER_DATASETS_DIR_ENV] = cst.MINER_DATASETS_CACHE_DIR
         environment[cst.MINER_DATASETS_ENV] = ",".join(miner_datasets)
 
-    command: list[str] = [
-        "--task-id",
-        task_id,
-        "--model",
-        model,
-        "--dataset",
-        dataset,
-        "--dataset-type",
-        json.dumps(dataset_type.model_dump()),
-        "--task-type",
-        task_type,
-        "--file-format",
-        file_format,
-        "--expected-repo-name",
-        expected_repo_name,
-        "--hours-to-complete",
-        str(hours_to_complete),
-    ]
+    if composite_subtasks is not None:
+        command: list[str] = [
+            "--task-id",
+            task_id,
+            "--model",
+            model,
+            "--task-type",
+            task_type,
+            "--expected-repo-name",
+            expected_repo_name,
+            "--hours-to-complete",
+            str(hours_to_complete),
+            "--composite-subtasks",
+            json.dumps([subtask.model_dump() for subtask in composite_subtasks]),
+        ]
+        if reference_model:
+            command += ["--reference-model", reference_model]
+    else:
+        if dataset is None or dataset_type is None or file_format is None:
+            raise ValueError("dataset, dataset_type and file_format are required for non-composite text tasks")
+        command = [
+            "--task-id",
+            task_id,
+            "--model",
+            model,
+            "--dataset",
+            dataset,
+            "--dataset-type",
+            json.dumps(dataset_type.model_dump()),
+            "--task-type",
+            task_type,
+            "--file-format",
+            file_format,
+            "--expected-repo-name",
+            expected_repo_name,
+            "--hours-to-complete",
+            str(hours_to_complete),
+        ]
 
     container_name = f"text-trainer-{uuid.uuid4().hex}"
 
@@ -516,7 +545,7 @@ async def _resolve_container_ip(container) -> str:
 def run_model_prep_container(
     task_id: str,
     model_id: str,
-    training_data_url: str,
+    training_data_url: str | None,
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
     augmentation_config=None,
     gpu_ids: list[int] = [0],
@@ -534,6 +563,8 @@ def run_model_prep_container(
     # A composite's own training_data is a placeholder; use the first subtask's dataset for the
     # downloader + the required --training-data arg (the entrypoint loops the subtasks itself).
     primary_dataset_url = composite_subtasks[0].training_data_url if composite_subtasks else training_data_url
+    if not primary_dataset_url:
+        raise ValueError(f"Model prep for task {task_id} has no training data url and no composite subtasks")
 
     # Download model to cache volume
     download_exit, download_err = run_downloader_container(
@@ -787,27 +818,86 @@ async def upload_repo_to_hf(
                 logger.warning(f"Failed to remove upload container {container.name}: {cleanup_err}")
 
 
+def _text_task_type_from_dataset_type(
+    dataset_type: InstructTextDatasetType
+    | DpoDatasetType
+    | GrpoDatasetType
+    | ChatTemplateDatasetType
+    | EnvironmentDatasetType,
+) -> TaskType:
+    if isinstance(dataset_type, DpoDatasetType):
+        return TaskType.DPOTASK
+    elif isinstance(dataset_type, EnvironmentDatasetType):
+        return TaskType.ENVIRONMENTTASK
+    elif isinstance(dataset_type, InstructTextDatasetType):
+        return TaskType.INSTRUCTTEXTTASK
+    elif isinstance(dataset_type, ChatTemplateDatasetType):
+        return TaskType.CHATTASK
+    elif isinstance(dataset_type, GrpoDatasetType):
+        return TaskType.GRPOTASK
+    else:
+        raise ValueError(f"Unsupported dataset_type for text task: {type(dataset_type)}")
+
+
 def get_task_type(request: TrainerProxyRequest) -> TaskType:
     training_data = request.training_data
 
     if isinstance(training_data, TrainRequestImage):
         return TaskType.IMAGETASK
 
+    elif isinstance(training_data, TrainRequestComposite):
+        return TaskType.COMPOSITETASK
+
     elif isinstance(training_data, TrainRequestText):
-        if isinstance(training_data.dataset_type, DpoDatasetType):
-            return TaskType.DPOTASK
-        elif isinstance(training_data.dataset_type, EnvironmentDatasetType):
-            return TaskType.ENVIRONMENTTASK
-        elif isinstance(training_data.dataset_type, InstructTextDatasetType):
-            return TaskType.INSTRUCTTEXTTASK
-        elif isinstance(training_data.dataset_type, ChatTemplateDatasetType):
-            return TaskType.CHATTASK
-        elif isinstance(training_data.dataset_type, GrpoDatasetType):
-            return TaskType.GRPOTASK
-        else:
-            raise ValueError(f"Unsupported dataset_type for text task: {type(training_data.dataset_type)}")
+        return _text_task_type_from_dataset_type(training_data.dataset_type)
 
     raise ValueError(f"Unsupported training_data type: {type(training_data)}")
+
+
+def _download_composite_inputs(
+    training_data: TrainRequestComposite,
+    hotkey: str,
+    log_labels: dict[str, str] | None,
+    anonymize: bool,
+) -> tuple[int, Exception | None]:
+    """Cache a composite's inputs: every subtask dataset, keyed by its subtask task id so the
+    training container finds each at the standard text path, plus the reference model when it
+    differs from the training model."""
+    if not training_data.subtasks:
+        raise ValueError(f"Composite task {training_data.task_id} has no subtasks")
+
+    for subtask in training_data.subtasks:
+        status, exc = run_downloader_container(
+            task_id=subtask.subtask_task_id,
+            model=training_data.model,
+            dataset_url=subtask.dataset,
+            task_type=_text_task_type_from_dataset_type(subtask.dataset_type),
+            hotkey=hotkey,
+            file_format=subtask.file_format,
+            log_labels=log_labels,
+            anonymize=anonymize,
+        )
+        if status != 0:
+            return status, exc
+
+    reference_model = training_data.reference_model
+    if reference_model and reference_model != training_data.model:
+        # Re-runs the first subtask's dataset fetch (cache hit) purely to ride the model download.
+        first = training_data.subtasks[0]
+        status, exc = run_downloader_container(
+            task_id=first.subtask_task_id,
+            model=reference_model,
+            dataset_url=first.dataset,
+            task_type=_text_task_type_from_dataset_type(first.dataset_type),
+            hotkey=hotkey,
+            file_format=first.file_format,
+            log_labels=log_labels,
+            anonymize=anonymize,
+        )
+        if status != 0:
+            return status, exc
+
+    return 0, None
 
 
 def get_dockerfile_path(task_type: TaskType, training_data, local_repo_path: str) -> str:
@@ -845,7 +935,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             "expected_repo": training_data.expected_repo_name,
             **(
                 {"dataset_type": str(training_data.dataset_type)}
-                if getattr(training_data, "dataset_type", None) is not None
+                if isinstance(training_data, TrainRequestText)
                 else {}
             ),
         }
@@ -857,18 +947,27 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
         model_prep_ran = training_data.baseline_stats is not None
 
-        download_status, exc = await asyncio.to_thread(
-            run_downloader_container,
-            task_id=training_data.task_id,
-            model=training_data.model,
-            dataset_url=training_data.dataset_zip if task_type == TaskType.IMAGETASK else training_data.dataset,
-            task_type=task_type,
-            hotkey=task.hotkey,
-            file_format=getattr(training_data, "file_format", None),
-            model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
-            log_labels=log_labels,
-            anonymize=model_prep_ran,
-        )
+        if task_type == TaskType.COMPOSITETASK:
+            download_status, exc = await asyncio.to_thread(
+                _download_composite_inputs,
+                training_data,
+                task.hotkey,
+                log_labels,
+                model_prep_ran,
+            )
+        else:
+            download_status, exc = await asyncio.to_thread(
+                run_downloader_container,
+                task_id=training_data.task_id,
+                model=training_data.model,
+                dataset_url=training_data.dataset_zip if task_type == TaskType.IMAGETASK else training_data.dataset,
+                task_type=task_type,
+                hotkey=task.hotkey,
+                file_format=training_data.file_format if isinstance(training_data, TrainRequestText) else None,
+                model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
+                log_labels=log_labels,
+                anonymize=model_prep_ran,
+            )
 
         if download_status == 0:
             message = "Download container completed successfully"
@@ -923,6 +1022,11 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         else:
             model_for_container = training_data.model
 
+        reference_model = training_data.reference_model if isinstance(training_data, TrainRequestComposite) else None
+        reference_model_for_container = (
+            get_anonymous_model_dir(reference_model) if reference_model and model_prep_ran else reference_model
+        )
+
         if task_type == TaskType.IMAGETASK:
             container = await asyncio.wait_for(
                 run_trainer_container_image(
@@ -938,6 +1042,28 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     baseline_stats=training_data.baseline_stats,
                     log_labels=log_labels,
                     gpu_ids=task.gpu_ids,
+                ),
+                timeout=60,
+            )
+        elif isinstance(training_data, TrainRequestComposite):
+            container = await asyncio.wait_for(
+                run_trainer_container_text(
+                    task_id=training_data.task_id,
+                    hotkey=task.hotkey,
+                    tag=tag,
+                    model=model_for_container,
+                    dataset=None,
+                    dataset_type=None,
+                    task_type=task_type,
+                    file_format=None,
+                    expected_repo_name=training_data.expected_repo_name,
+                    hours_to_complete=training_data.hours_to_complete,
+                    baseline_stats=training_data.baseline_stats,
+                    log_labels=log_labels,
+                    gpu_ids=task.gpu_ids,
+                    miner_datasets=task.requested_datasets,
+                    composite_subtasks=training_data.subtasks,
+                    reference_model=reference_model_for_container,
                 ),
                 timeout=60,
             )

@@ -312,21 +312,28 @@ For GRPO tasks, reward function code is passed inside `--dataset-type`. The base
 ### Composite Trainer (Text Tournaments)
 
 Text tournament rounds are delivered as a single **`CompositeTask`** — one model trained against
-several weighted datasets at once (see [Text Tournaments](#text-tournaments)). Instead of a single
-`--dataset`/`--dataset-type`, your trainer receives a composite payload with these fields:
+several weighted datasets at once (see [Text Tournaments](#text-tournaments)). Instead of
+`--dataset`/`--dataset-type`/`--file-format`, your training container receives:
+
+```bash
+--task-id             # The composite task UUID
+--model               # Model to train from (cached path) — a base in round 1, your previous
+                      # round's checkpoint when the round continues a lineage
+--task-type           # "CompositeTask"
+--expected-repo-name  # Hugging Face repo name the uploader expects
+--hours-to-complete   # Task timeout in hours
+--composite-subtasks  # JSON list of subtask specs (below)
+--reference-model     # The fixed cold track base (cached path), shared across all competitors.
+                      # Use this as the DPO/GRPO reference, NOT your continued checkpoint, so
+                      # your score is reproducible. Omitted when it equals --model.
+```
+
+Each entry in `--composite-subtasks` carries:
 
 | Field | Meaning |
 | --- | --- |
-| `model` | The model to train from — a base model in round 1, or your previous round's checkpoint when the round continues a lineage. |
-| `reference_model` | The fixed cold track base, shared across all competitors. Use this as the DPO/GRPO reference, **not** your continued checkpoint, so your score is reproducible. |
-| `subtasks` | The list of datasets to train on (this round's plus every earlier round's). |
-| `task_id`, `expected_repo_name`, `hours_to_complete` | As for other tasks. |
-
-Each entry in `subtasks` carries:
-
-| Field | Meaning |
-| --- | --- |
-| `dataset` | The dataset URL (S3). |
+| `subtask_task_id` | The subtask's UUID. Its dataset is pre-downloaded to the standard text path, `/cache/datasets/{subtask_task_id}_train_data.json`. |
+| `dataset` | The dataset's original S3 URL (prefer the pre-downloaded cache path above). |
 | `dataset_type` | The same Pydantic schema as standalone tasks (instruct/DPO/GRPO columns, rewards, etc.). |
 | `file_format` | Always `s3` for tournament tasks. |
 | `source_round` | The round this dataset was introduced in. |

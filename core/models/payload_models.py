@@ -96,8 +96,12 @@ class SubtaskSpec(BaseModel):
     """One subtask of a composite task handed to the miner: its dataset + type/config (the
     dataset_type carries DPO columns, GRPO reward functions, etc.), plus the metadata that makes
     the round transparent — its source round, how much it weighs in this round's score, and the
-    miner's prior score on it (None if new this round)."""
+    miner's prior score on it (None if new this round).
 
+    The trainer caches each subtask's dataset at the standard text path keyed by
+    `subtask_task_id` (`/cache/datasets/{subtask_task_id}_train_data.json`)."""
+
+    subtask_task_id: str
     dataset: str
     dataset_type: TextDatasetType
     file_format: FileFormat
@@ -140,7 +144,7 @@ class TrainerTaskLog(TrainerJob):
     """Training job tracked in the trainer's task history."""
 
     job_type: Literal["training"] = "training"
-    training_data: TrainRequestImage | TrainRequestText
+    training_data: TrainRequestImage | TrainRequestText | TrainRequestComposite
     github_repo: str
     hotkey: str
     github_commit_hash: str | None = None
@@ -207,7 +211,8 @@ class CompositeSubtaskPrep(BaseModel):
 class ModelPrepRequest(BaseModel):
     task_id: str
     model_id: str
-    training_data_url: str
+    # None for composite tasks: their datasets ride in composite_subtasks and the parent has none.
+    training_data_url: str | None = None
     task_type: str = TaskType.INSTRUCTTEXTTASK.value
     augmentation_config: AugmentationConfig | None = None
     gpu_ids: list[int] = [0]

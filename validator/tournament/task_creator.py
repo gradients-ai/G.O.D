@@ -18,6 +18,7 @@ from validator.core.constants import NULL_ACCOUNT_ID
 from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.core.models import CompositeRawTask
 from validator.core.models import RawTask
+from validator.cycle.util_functions import get_model_num_params
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_composite_task_subtasks
 from validator.db.sql.tournaments import add_tournament_tasks
@@ -87,24 +88,32 @@ async def _get_tournament_base_model(tournament_id: str, config: Config) -> str 
     return task_obj.model_id if task_obj else None
 
 
-async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
+def prev_winner_root_model(tournament_type: TournamentType) -> str:
+    """The fixed root base of each tournament type's previous-winner lineage."""
+    if tournament_type == TournamentType.TEXT:
+        return t_cst.TEXT_PREV_WINNER_ROOT_MODEL
+    return t_cst.ENV_TARGET_TOURN_MODEL
+
+
+async def _get_prev_tourn_winner_model(tournament_id: str, config: Config, tournament_type: TournamentType) -> str:
     """Get the previous tournament winner's model for the PREVIOUS_WINNER boss task.
 
-    Returns the winner's HF repo if available and base-compatible, else ENV_TARGET_TOURN_MODEL.
-    """
+    Returns the winner's HF repo if available and rooted at this type's fixed base, else the
+    root base itself (the lineage restarts)."""
+    root_model = prev_winner_root_model(tournament_type)
     prev_tournament = await get_latest_completed_tournament(
-        config.psql_db, TournamentType.ENVIRONMENT, exclude_tournament_id=tournament_id,
+        config.psql_db, tournament_type, exclude_tournament_id=tournament_id,
     )
 
     if prev_tournament and prev_tournament.winner_model_repo:
-        if prev_tournament.winner_model_base == t_cst.ENV_TARGET_TOURN_MODEL:
-            logger.info(f"Final task 3: winner continuation from {prev_tournament.winner_model_repo}")
+        if prev_tournament.winner_model_base == root_model:
+            logger.info(f"Previous-winner scenario: continuation from {prev_tournament.winner_model_repo}")
             return prev_tournament.winner_model_repo
-        logger.info(f"Final task 3: base changed, from-scratch on {t_cst.ENV_TARGET_TOURN_MODEL}")
+        logger.info(f"Previous-winner scenario: base changed, from-scratch on {root_model}")
     else:
-        logger.info(f"Final task 3: no previous winner, from-scratch on {t_cst.ENV_TARGET_TOURN_MODEL}")
+        logger.info(f"Previous-winner scenario: no previous winner, from-scratch on {root_model}")
 
-    return t_cst.ENV_TARGET_TOURN_MODEL
+    return root_model
 
 
 async def _create_environment_boss_round_tasks(
@@ -129,7 +138,7 @@ async def _create_environment_boss_round_tasks(
     tasks: list[RawTask] = await _get_existing_tasks(existing_tasks, config) if existing_tasks else []
 
     tournament_base_model = await _get_tournament_base_model(tournament_id, config)
-    prev_tourn_winner_model = await _get_prev_tourn_winner_model(tournament_id, config)
+    prev_tourn_winner_model = await _get_prev_tourn_winner_model(tournament_id, config, TournamentType.ENVIRONMENT)
 
     logger.info(f"Boss round setup: tournament_base_model={tournament_base_model}, prev_winner_model={prev_tourn_winner_model}")
 
@@ -327,7 +336,9 @@ async def _create_task_by_type(
 
 
 async def get_tournament_track_models(tournament_id: str, config: Config) -> tuple[str, str]:
-    """Derive (model_a, model_b) from R1's two composites, ordered by size (small = A, large = B)."""
+    """Derive (model_a, model_b) from R1's two composites, ordered by size (small = A, large = B).
+    `created_at` tiebreaks (R1 creates track A first) so identity stays stable if the size
+    lookup failed at creation and both counts are 0."""
     rounds = await get_tournament_rounds(tournament_id, config.psql_db)
     r1 = min(rounds, key=lambda r: r.round_number)
     composites = []
@@ -335,7 +346,11 @@ async def get_tournament_track_models(tournament_id: str, config: Config) -> tup
         task_obj = await task_sql.get_task(tournament_task.task_id, config.psql_db)
         if task_obj and task_obj.task_type == TaskType.COMPOSITETASK:
             composites.append(task_obj)
-    composites.sort(key=lambda task: task.model_params_count)
+    if len(composites) < 2:
+        raise ValueError(
+            f"Tournament {tournament_id} round 1 has {len(composites)} composites; expected one per track"
+        )
+    composites.sort(key=lambda task: (task.model_params_count, task.created_at))
     return composites[0].model_id, composites[1].model_id
 
 
@@ -414,6 +429,9 @@ async def _create_text_composite(
             account_id=NULL_ACCOUNT_ID,
             training_start_point=start_point,
             augmentation_config=augmentation_config,
+            # The composite eval path never fills this in (no _evaluate_submissions), but track
+            # identity (small=A, large=B) and GPU sizing read it — set it at creation.
+            model_params_count=get_model_num_params(track_model) or 0,
         ),
         config.psql_db,
     )
@@ -431,18 +449,24 @@ async def _create_text_composite(
 
 
 async def create_text_round_tasks(round_data: Round, tournament_id: str, config: Config) -> list[str]:
-    """Create a round's per-track CompositeTask (A small, B large). Idempotent across restarts."""
+    """Create a round's per-track CompositeTask (A small, B large). Idempotent across restarts:
+    a crash between tracks leaves one composite behind, so each retry creates only the missing
+    track rather than returning the partial round."""
     round_id = round_data.round_id
     round_number = round_data.round_number
     group_id = f"{round_id}_group_001"
 
-    existing = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
-    if existing:
-        return [str(task.task_id) for task in existing]
+    existing = await _get_existing_tasks(
+        await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id), config
+    )
 
     if round_number <= 1:
-        model_a = await anext(_get_text_models(config.keypair, largest_size_b=t_cst.TEXT_TRACK_A_MAX_SIZE_B))
-        model_b = await anext(
+        # Re-derive existing tracks from the partial round so a retry doesn't sample fresh models.
+        existing_models = [task.model_id for task in existing]
+        model_a = existing_models[0] if existing_models else await anext(
+            _get_text_models(config.keypair, largest_size_b=t_cst.TEXT_TRACK_A_MAX_SIZE_B)
+        )
+        model_b = existing_models[1] if len(existing_models) > 1 else await anext(
             _get_text_models(
                 config.keypair, smallest_size_b=t_cst.TEXT_TRACK_A_MAX_SIZE_B, largest_size_b=t_cst.TEXT_TRACK_B_MAX_SIZE_B
             )
@@ -451,9 +475,13 @@ async def create_text_round_tasks(round_data: Round, tournament_id: str, config:
         model_a, model_b = await get_tournament_track_models(tournament_id, config)
 
     budget_hours = t_cst.TEXT_ROUND_HOURS[round_number]
+    existing_by_model = {task.model_id: task for task in existing}
 
     composite_ids = []
     for track_model in (model_a, model_b):
+        if track_model in existing_by_model:
+            composite_ids.append(str(existing_by_model[track_model].task_id))
+            continue
         new_subtasks = await _sample_new_subtasks(budget_hours, track_model, config)
         composite = await _create_text_composite(
             track_model, new_subtasks, budget_hours, round_number, tournament_id, round_id, group_id, config
@@ -468,18 +496,22 @@ async def create_text_boss_round_tasks(round_data: Round, tournament_id: str, co
 
       - continuation:    continue from the boss's model, evaluated over the whole accumulated history
       - from-scratch:    a fresh 3-stage {instruct, dpo, grpo} composite on any random model
-      - previous-winner: a fixed instruct-only benchmark on a placeholder model
+      - previous-winner: an instruct-only benchmark continuing the previous text champion's lineage
+                         (the fixed root model when no compatible previous winner exists)
     """
     round_id = round_data.round_id
     round_number = round_data.round_number
     group_id = f"{round_id}_group_001"
 
-    existing = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
-    if existing:
-        return [str(task.task_id) for task in existing]
+    # Scenarios are keyed by start point, so a crash mid-creation only re-creates the missing ones.
+    existing = await _get_existing_tasks(
+        await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id), config
+    )
+    existing_by_start_point = {task.training_start_point: task for task in existing}
 
     _, model_b = await get_tournament_track_models(tournament_id, config)
     random_model = await anext(_get_text_models(config.keypair))
+    prev_winner_model = await _get_prev_tourn_winner_model(tournament_id, config, TournamentType.TEXT)
     hours = t_cst.TEXT_ROUND_HOURS[max(t_cst.TEXT_ROUND_HOURS)]
 
     # (model_id, new subtask types, start point) — continuation creates no new subtasks; _create_text_composite
@@ -487,10 +519,13 @@ async def create_text_boss_round_tasks(round_data: Round, tournament_id: str, co
     scenarios = [
         (model_b, [], TrainingStartPoint.CONTINUATION),
         (random_model, [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK], TrainingStartPoint.FROM_SCRATCH),
-        (t_cst.TEXT_PREV_WINNER_PLACEHOLDER_MODEL, [TaskType.INSTRUCTTEXTTASK], TrainingStartPoint.PREVIOUS_WINNER),
+        (prev_winner_model, [TaskType.INSTRUCTTEXTTASK], TrainingStartPoint.PREVIOUS_WINNER),
     ]
     composite_ids = []
     for model_id, subtask_types, start_point in scenarios:
+        if start_point in existing_by_start_point:
+            composite_ids.append(str(existing_by_start_point[start_point].task_id))
+            continue
         new_subtasks = [await _create_subtask(subtask_type, model_id, config) for subtask_type in subtask_types]
         composite = await _create_text_composite(
             model_id, new_subtasks, hours, round_number, tournament_id, round_id, group_id, config,

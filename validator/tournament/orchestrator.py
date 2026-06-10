@@ -602,6 +602,7 @@ async def _build_composite_training_data(
         weight = next(w.weight for w in round_weights if w.source_round == subtask.source_round)
         specs.append(
             SubtaskSpec(
+                subtask_task_id=subtask.subtask_task_id,
                 dataset=subtask_task.training_data,
                 dataset_type=_get_dataset_type(subtask_task),
                 file_format=FileFormat.S3,

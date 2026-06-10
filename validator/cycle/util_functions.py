@@ -122,6 +122,9 @@ async def _prep_subtask(subtask_id: str, keypair: Keypair, psql_db: PSQLDB) -> N
     if subtask.training_data and subtask.test_data:
         return
     prepared = await run_text_task_prep(subtask, keypair, psql_db)
+    # run_text_task_prep flips status to LOOKING_FOR_NODES for standalone tasks; subtasks must stay
+    # inert (COMPOSITE_SUBTASK) or the organic cycle picks them up as trainable tasks.
+    prepared.status = TaskStatus.COMPOSITE_SUBTASK
     await tasks_sql.update_task(prepared, psql_db)
 
 

@@ -160,6 +160,18 @@ class TestHandicap:
         assert _challenger_beats_boss_on_dataset(1.0, 1.06, True, 0.05)
         assert not _challenger_beats_boss_on_dataset(1.0, 1.04, True, 0.05)
 
+    def test_negative_boss_score_still_a_handicap_higher_is_better(self):
+        # boss=-1.0, threshold=0.05 -> challenger must reach >= -0.95; a multiplicative
+        # threshold would have let -1.04 (worse than the boss) win.
+        assert _challenger_beats_boss_on_dataset(-1.0, -0.94, True, 0.05)
+        assert not _challenger_beats_boss_on_dataset(-1.0, -0.96, True, 0.05)
+        assert not _challenger_beats_boss_on_dataset(-1.0, -1.04, True, 0.05)
+
+    def test_negative_boss_score_still_a_handicap_lower_is_better(self):
+        # boss=-1.0, threshold=0.05 -> challenger must reach <= -1.05
+        assert _challenger_beats_boss_on_dataset(-1.0, -1.06, False, 0.05)
+        assert not _challenger_beats_boss_on_dataset(-1.0, -0.96, False, 0.05)
+
     def test_challenger_failure_loses(self):
         assert not _challenger_beats_boss_on_dataset(1.0, None, False, 0.05)
 

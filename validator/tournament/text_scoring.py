@@ -122,9 +122,13 @@ def _challenger_beats_boss_on_dataset(
         return False
     if not _is_present(boss_score):
         return True
+    # Margin scales with |boss_score| so it stays a handicap when the score is negative
+    # (a multiplicative threshold would flip into a challenger head start there — GRPO
+    # rewards can legitimately be negative).
+    margin = threshold * abs(boss_score)
     if higher_is_better:
-        return challenger_score >= boss_score * (1 + threshold)
-    return challenger_score <= boss_score * (1 - threshold)
+        return challenger_score >= boss_score + margin
+    return challenger_score <= boss_score - margin
 
 
 def _scenario_outcome(

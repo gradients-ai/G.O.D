@@ -211,7 +211,8 @@ def _get_dataset_type(task: AnyTypeRawTask) -> TextDatasetType | None:
             format=task.format,
             no_input_format=task.no_input_format,
         )
-    elif task.task_type == TaskType.IMAGETASK:
+    elif task.task_type in (TaskType.IMAGETASK, TaskType.COMPOSITETASK):
+        # Composites have no dataset of their own; each subtask's type is derived during eval.
         return None
     elif task.task_type == TaskType.DPOTASK:
         return DpoDatasetType(
@@ -250,7 +251,14 @@ def _get_dataset_type(task: AnyTypeRawTask) -> TextDatasetType | None:
 def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskType) -> MinerResults:
     """Create a result object for failed miner submissions with initial score of 0.0.
     The score may later be adjusted to a penalty if valid submissions exist."""
-    if task_type in [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK]:
+    if task_type in [
+        TaskType.INSTRUCTTEXTTASK,
+        TaskType.DPOTASK,
+        TaskType.GRPOTASK,
+        TaskType.CHATTASK,
+        TaskType.ENVIRONMENTTASK,
+        TaskType.COMPOSITETASK,
+    ]:
         return MinerResultsText(
             hotkey=hotkey,
             test_loss=np.nan,
