@@ -196,7 +196,7 @@ class TestEnvGroupWinnerAdvancement:
             MagicMock(hotkey="hk_2"),
         ]
         mock_results = [
-            self._mock_miner_result(EMISSION_BURN_HOTKEY, 100.0),  # Boss scores highest
+            self._mock_miner_result(EMISSION_BURN_HOTKEY, 70.0),  # Mid-pack: above hk_1, below hk_0
             self._mock_miner_result("hk_0", 80.0),
             self._mock_miner_result("hk_1", 60.0),
             self._mock_miner_result("hk_2", 40.0),
@@ -212,6 +212,36 @@ class TestEnvGroupWinnerAdvancement:
         assert EMISSION_BURN_HOTKEY not in winners
         assert len(winners) == t_cst.ENV_ADVANCE_PER_GROUP
         assert "hk_0" in winners
+
+    @pytest.mark.asyncio
+    async def test_single_group_boss_on_top_retains(self):
+        """When the boss tops the only remaining group, nobody advances — boss retains early."""
+        from validator.tournament.utils import get_environment_group_winners
+
+        round_data = TournamentRoundData(
+            round_id="r1", tournament_id="t1", round_number=1,
+            round_type="group", is_final_round=False,
+        )
+        tasks = [TournamentTask(tournament_id="t1", round_id="r1", task_id="task_1", group_id="g1")]
+
+        mock_participants = [
+            MagicMock(hotkey=EMISSION_BURN_HOTKEY),
+            MagicMock(hotkey="hk_0"),
+            MagicMock(hotkey="hk_1"),
+        ]
+        mock_results = [
+            self._mock_miner_result(EMISSION_BURN_HOTKEY, 100.0),  # Boss scores highest
+            self._mock_miner_result("hk_0", 80.0),
+            self._mock_miner_result("hk_1", 60.0),
+        ]
+
+        with (
+            patch("validator.tournament.utils.get_tournament_group_members", return_value=mock_participants),
+            patch("validator.tournament.utils.get_task_results_for_ranking", return_value=mock_results),
+        ):
+            winners = await get_environment_group_winners(round_data, tasks, MagicMock(), MagicMock())
+
+        assert winners == []
 
     @pytest.mark.asyncio
     async def test_at_least_one_eliminated(self):
@@ -420,8 +450,8 @@ class TestDetermineEnvTournamentWinner:
         assert result[0] == EMISSION_BURN_HOTKEY
 
     @pytest.mark.asyncio
-    async def test_tied_score_boss_retains(self):
-        """Contender ties boss on one task (not strictly higher) → boss retains."""
+    async def test_draws_are_acceptable_with_a_win(self):
+        """Tie on one task with wins on the rest (zero losses) → contender dethrones."""
         from validator.tournament.utils import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -435,7 +465,73 @@ class TestDetermineEnvTournamentWinner:
         ]
 
         scores_by_task = {
-            "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 5.0},  # Tie
+            "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 5.0},  # Draw
+            "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 6.0},
+            "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 7.0},
+        }
+
+        async def mock_get_scores(task_id, psql_db):
+            return scores_by_task[task_id]
+
+        with (
+            patch("validator.tournament.utils.get_tournament_rounds", return_value=mock_rounds),
+            patch("validator.tournament.utils.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.utils._get_scores_for_task", side_effect=mock_get_scores),
+        ):
+            result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
+
+        assert result[0] == "contender"
+
+    @pytest.mark.asyncio
+    async def test_all_draws_boss_retains(self):
+        """Ties on every task (no outright win) → boss retains."""
+        from validator.tournament.utils import determine_env_tournament_winner
+
+        tournament = MagicMock(spec=TournamentData)
+        tournament.tournament_id = "t1"
+
+        mock_rounds = [MagicMock(is_final_round=True, round_id="r_final")]
+        mock_tasks = [
+            MagicMock(task_id="task_1"),
+            MagicMock(task_id="task_2"),
+            MagicMock(task_id="task_3"),
+        ]
+
+        scores_by_task = {
+            "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 5.0},
+            "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 3.0},
+            "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 2.0},
+        }
+
+        async def mock_get_scores(task_id, psql_db):
+            return scores_by_task[task_id]
+
+        with (
+            patch("validator.tournament.utils.get_tournament_rounds", return_value=mock_rounds),
+            patch("validator.tournament.utils.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.utils._get_scores_for_task", side_effect=mock_get_scores),
+        ):
+            result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
+
+        assert result[0] == EMISSION_BURN_HOTKEY
+
+    @pytest.mark.asyncio
+    async def test_single_loss_boss_retains(self):
+        """One loss is enough for the boss to retain, regardless of other wins."""
+        from validator.tournament.utils import determine_env_tournament_winner
+
+        tournament = MagicMock(spec=TournamentData)
+        tournament.tournament_id = "t1"
+
+        mock_rounds = [MagicMock(is_final_round=True, round_id="r_final")]
+        mock_tasks = [
+            MagicMock(task_id="task_1"),
+            MagicMock(task_id="task_2"),
+            MagicMock(task_id="task_3"),
+        ]
+
+        scores_by_task = {
+            "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 4.0},  # Loss
             "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 6.0},
             "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 7.0},
         }
