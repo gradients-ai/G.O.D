@@ -327,32 +327,38 @@ async def compute_env_stats(
 
         async with aiohttp.ClientSession() as session:
             for env_name, cfg in env_configs.items():
-                if supports_in_harness_baseline(env_name):
-                    all_stats[env_name] = _mcts_baseline_stats(
-                        env_name=env_name,
-                        sglang_base_url=sglang_base_url,
-                        model_name=model_name,
-                        model_path=model_path,
-                        num_episodes=cfg.num_episodes,
-                        eval_payload_extra=cfg.eval_payload_extra,
-                    )
-                elif cfg.url:
-                    all_stats[env_name] = await _play_episodes(
-                        session=session,
-                        env_name=env_name,
-                        env_server_url=cfg.url,
-                        sglang_base_url=sglang_base_url,
-                        model_name=model_name,
-                        num_episodes=cfg.num_episodes,
-                        task_id_min=cfg.task_id_min,
-                        task_id_max=cfg.task_id_max,
-                        eval_payload_extra=cfg.eval_payload_extra,
-                    )
-                else:
-                    print(
-                        f"  {env_name.value}: no in-harness agent and no env server URL, skipping",
-                        flush=True,
-                    )
+                # One env failing must not take down the others (or the container):
+                # it degrades to empty stats, mirroring the HTTP path's per-episode
+                # error handling.
+                try:
+                    if supports_in_harness_baseline(env_name):
+                        all_stats[env_name] = _mcts_baseline_stats(
+                            env_name=env_name,
+                            sglang_base_url=sglang_base_url,
+                            model_name=model_name,
+                            model_path=model_path,
+                            num_episodes=cfg.num_episodes,
+                            eval_payload_extra=cfg.eval_payload_extra,
+                        )
+                    elif cfg.url:
+                        all_stats[env_name] = await _play_episodes(
+                            session=session,
+                            env_name=env_name,
+                            env_server_url=cfg.url,
+                            sglang_base_url=sglang_base_url,
+                            model_name=model_name,
+                            num_episodes=cfg.num_episodes,
+                            task_id_min=cfg.task_id_min,
+                            task_id_max=cfg.task_id_max,
+                            eval_payload_extra=cfg.eval_payload_extra,
+                        )
+                    else:
+                        print(
+                            f"  {env_name.value}: no in-harness agent and no env server URL, skipping",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(f"  {env_name.value}: baseline failed: {exc!r}", flush=True)
 
     except TimeoutError:
         print("SGLang failed to start within timeout", flush=True)
