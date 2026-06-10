@@ -43,9 +43,10 @@ SGLANG_HEALTH_TIMEOUT = 600
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_TASK_TIMEOUT = 150
 CONSECUTIVE_FAILURE_LIMIT = 5
-# Per-env wall-clock budget for the in-harness baseline. The dispatch timeout is
-# 3600s: 4 games x 540s + intercode worst case (7 x 150s) + sglang startup stays
-# under it with margin. Overrun returns a partial tally, not a blown dispatch.
+# Per-env wall-clock budget for the in-harness baseline (soft cap: checked
+# between games, so an in-flight game can overshoot). Overrun returns a partial
+# tally instead of blowing the validator's dispatch timeout — keep
+# (num envs x budget) + startup costs under MODEL_PREP_TIMEOUT_SECONDS.
 ENV_BASELINE_TIME_BUDGET_SECONDS = float(os.getenv("MODEL_PREP_ENV_TIME_BUDGET_SECONDS", "540"))
 
 

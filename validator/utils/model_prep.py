@@ -18,9 +18,8 @@ from validator.utils.logging import get_logger
 logger = get_logger(__name__)
 
 # Pure httpx client timeout — the trainer waits on the container indefinitely.
-# Sized above the worst-case env baseline sweep: 4 games x 540s budget (soft cap,
-# can overshoot by one in-flight game) + intercode (7 x 150s) + SGLang startup
-# (up to 600s) + LoRA merge on continuation tasks.
+# Must comfortably exceed the summed per-env baseline budgets (soft caps; see
+# ENV_BASELINE_TIME_BUDGET_SECONDS) plus SGLang startup and any LoRA merge.
 MODEL_PREP_TIMEOUT_SECONDS = 5400
 
 
