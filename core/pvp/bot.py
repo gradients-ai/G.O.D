@@ -221,7 +221,7 @@ class LLMBot(pyspiel.Bot):
     @staticmethod
     def _validate_action(call: ToolCall, legal_set: set[int]) -> int | None:
         raw = call.arguments.get("action_id")
-        if not isinstance(raw, (int, str)):
+        if isinstance(raw, bool) or not isinstance(raw, (int, str)):
             return None
         try:
             action = int(raw)

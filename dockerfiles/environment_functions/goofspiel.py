@@ -99,7 +99,14 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 print(f"Env Reset. Observation: {current_observation}", flush=True)
 
         except Exception as e:
+            # The trainer expects one entry per prompt; pad with a plain
+            # zero-reward completion instead of skipping, or the batch misaligns.
             print(f"Failed to reset environment (Game {game_id}): {e}")
+            fallback = generate_rollout_completions(trainer, prompts=[prompt])[0]
+            all_episode_prompt_ids.append(fallback.get("prompt_ids", []))
+            all_episode_completion_ids.append(fallback.get("completion_ids", []))
+            all_episode_logprobs.append(fallback.get("logprobs", []))
+            all_episode_rewards.append(0.0)
             continue
 
         # --- Build Conversation History ---
@@ -124,9 +131,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
             messages.append({"role": "assistant", "content": completion_text})
 
             # --- Parse Action ---
-            action_to_send = completion_text
-            if action_to_send.endswith("</s>"):
-                action_to_send = action_to_send[:-5]
+            action_to_send = completion_text.removesuffix("</s>")
 
             # Parse ReAct format
             if "Action:" in action_to_send:

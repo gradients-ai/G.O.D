@@ -33,7 +33,7 @@ def build_sglang_command(prepared: PreparedModel, port: int, seed: int) -> str:
         f"--enable-deterministic-inference --random-seed {seed}"
     )
     # No parser -> SGLang won't emit structured tool_calls and every turn forfeits.
-    parser = tool_call_parser_for(prepared.sglang_model_path)
+    parser = prepared.tool_call_parser or tool_call_parser_for(prepared.sglang_model_path)
     if parser:
         cmd = f"{cmd} --tool-call-parser {parser}"
     if cli_extra:

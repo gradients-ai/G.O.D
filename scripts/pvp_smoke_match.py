@@ -15,21 +15,20 @@ a per-environment scoreline plus per-player instrumentation.
 
   # self-play, the recommended harness-validation run
   python scripts/pvp_smoke_match.py \
-      --model-a Qwen/Qwen2.5-7B-Instruct --model-b Qwen/Qwen2.5-7B-Instruct \
-      --tool-call-parser qwen25 --num-games 5
+      --model-a Qwen/Qwen2.5-7B-Instruct --model-b Qwen/Qwen2.5-7B-Instruct --num-games 5
 
   # asymmetric / breakage probe (strong vs the tournament weight class)
   python scripts/pvp_smoke_match.py \
-      --model-a Qwen/Qwen2.5-7B-Instruct --model-b Qwen/Qwen2.5-1.5B-Instruct \
-      --tool-call-parser qwen25 --num-games 5
+      --model-a Qwen/Qwen2.5-7B-Instruct --model-b Qwen/Qwen2.5-1.5B-Instruct --num-games 5
 
   # point at already-running servers instead of launching them
   python scripts/pvp_smoke_match.py \
       --base-url-a http://localhost:30000/v1 --base-url-b http://localhost:30001/v1
 
-NOTE: --tool-call-parser MUST match the model family (qwen25 for Qwen2.5,
-llama3 for Llama-3.x, mistral for Mistral, …). Without it SGLang returns tool
-calls as plain text, the bot sees no move, and every turn forfeits.
+The SGLang tool-call parser is auto-resolved from the model family (see
+core/pvp/sglang_parsers.py); pass --tool-call-parser only to override it.
+Without a parser SGLang returns tool calls as plain text, the bot sees no
+move, and every turn forfeits.
 """
 
 import argparse
@@ -49,6 +48,7 @@ from core.models.pvp_models import PvPMatchupConfig
 from core.models.pvp_models import ToolSchema
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
+from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
 from validator.core import constants as vcst
 from core.pvp.game_eval import _AGENT_REGISTRY
 from validator.evaluation.pvp.game_runner import Player
@@ -234,7 +234,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model-a", default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--model-b", default="Qwen/Qwen2.5-7B-Instruct")
-    parser.add_argument("--tool-call-parser", default="qwen25", help="SGLang parser matching the model family")
+    parser.add_argument(
+        "--tool-call-parser",
+        default=None,
+        help="Override the SGLang parser; auto-resolved from the model family when omitted",
+    )
     parser.add_argument("--envs", nargs="+", default=_ENV_CHOICES, choices=_ENV_CHOICES)
     parser.add_argument("--num-games", type=int, default=5, help="seeds per env; each played twice (position swap)")
     parser.add_argument("--seed", type=int, default=42)
@@ -255,10 +259,11 @@ def main() -> int:
     procs: list = []
     try:
         if launching:
-            # Flow the tool-call parser through build_sglang_command via the env override.
-            os.environ["SGLANG_ENV_EVAL_EXTRA_CLI"] = (
-                f"{vcst.SGLANG_ENV_EVAL_EXTRA_CLI} --tool-call-parser {args.tool_call_parser}"
-            )
+            # build_sglang_command auto-resolves the parser from the model path;
+            # an explicit --tool-call-parser flows through the env override so it
+            # wins (and doesn't duplicate the auto-resolved flag).
+            if args.tool_call_parser:
+                os.environ[TOOL_CALL_PARSER_ENV] = args.tool_call_parser
             prepared_a = PreparedModel(sglang_model_path=args.model_a, inference_name=args.model_a)
             prepared_b = PreparedModel(sglang_model_path=args.model_b, inference_name=args.model_b)
             print(f"Launching SGLang: A={args.model_a} (gpu {args.gpu_a}), B={args.model_b} (gpu {args.gpu_b})")

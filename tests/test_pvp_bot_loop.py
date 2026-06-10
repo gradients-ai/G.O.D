@@ -223,6 +223,14 @@ class TestForfeit:
             _make_bot(game, chat, pid).step(state)
         assert len(chat.calls) == 1  # no nudge — one call, then forfeit
 
+    def test_boolean_action_id_forfeits(self):
+        """action_id=true must not coerce to action 1; it is no committed move."""
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = ScriptedChat(_resp(_call("game_action", action_id=True)))
+        with pytest.raises(InvalidActionForfeitError):
+            _make_bot(game, chat, pid).step(state)
+
     def test_memory_only_response_forfeits_but_applies_writes(self):
         game, state = _leduc()
         pid = state.current_player()

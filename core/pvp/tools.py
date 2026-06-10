@@ -114,7 +114,7 @@ def execute_memory_tool(memories: dict[MemoryArea, SlotMemory], name: str, args:
         return f"error: memory area {area.value} not configured"
 
     raw_slot = args.get("slot")
-    if not isinstance(raw_slot, (int, str)):
+    if isinstance(raw_slot, bool) or not isinstance(raw_slot, (int, str)):
         return f"error: tool {name} requires an integer 'slot'"
     try:
         slot = int(raw_slot)

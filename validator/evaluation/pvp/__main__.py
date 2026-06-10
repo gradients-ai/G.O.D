@@ -22,6 +22,7 @@ from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalMetadata
 from core.models.pvp_models import PvPEvalResults
 from core.models.pvp_models import PvPModelSpec
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.core import constants as vcst
 from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import create_player
@@ -88,9 +89,15 @@ def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
             extra_sglang_args=f"--enable-lora --lora-paths {lora_name}={spec.repo} --lora-backend triton",
         )
 
+    # A full-weight miner repo id is often opaque (no family substring), and the
+    # config.json fallback can't run here — SGLang downloads the repo itself, so
+    # there is no local weights dir at command-build time. Resolve from the base
+    # model instead; without a parser every turn forfeits.
+    parser = tool_call_parser_for(spec.repo, log_unmapped=False) or tool_call_parser_for(spec.original_model)
     return PreparedModel(
         sglang_model_path=spec.repo,
         inference_name=spec.repo,
+        tool_call_parser=parser,
     )
 
 

@@ -157,7 +157,10 @@ def run_mcts_baseline(
             result.draws += 1
         result.num_games += 1
 
-        model_bot.reflect(state, outcome)
+        # Mirror game_runner: a forfeiting bot is broken/slow, so reflection
+        # would just hit the same wall — skip it.
+        if evaluation.forfeiting_player_id != model_seat:
+            model_bot.reflect(state, outcome)
 
     logger.info(
         "%s MCTS baseline: %d games, %d-%d-%d (W-D-L), score=%.3f",

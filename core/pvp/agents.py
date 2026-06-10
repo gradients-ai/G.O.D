@@ -253,6 +253,16 @@ class OthelloAgent(BaseGameAgent):
     def generate_params(self, config_id: int) -> dict[str, int]:
         return {}
 
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        """Prefix the board with the player's colour.
+
+        The observation only says whose turn it is ("Black (x) to play"), so
+        without this line the model must infer its own colour — small models
+        get it wrong and play for the opponent.
+        """
+        colour = "x (Black)" if player_id == 0 else "o (White)"
+        return f"You play {colour}.\n{state.observation_string(player_id)}"
+
     def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
         """Apply a seeded number of uniformly-random legal opening moves.
 

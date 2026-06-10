@@ -141,6 +141,12 @@ class TestOthelloOpeningPlies:
     def test_same_seed_same_opening(self):
         assert self._opened_board(42) == self._opened_board(42)
 
+    def test_format_state_names_the_players_colour(self):
+        agent = OthelloAgent()
+        state = pyspiel.load_game("othello").new_initial_state()
+        assert "You play x (Black)" in agent.format_state(state, 0)
+        assert "You play o (White)" in agent.format_state(state, 1)
+
     def test_different_seed_different_opening(self):
         """Across a spread of seeds, openings should diverge (not all identical)."""
         boards = {self._opened_board(seed) for seed in range(20)}

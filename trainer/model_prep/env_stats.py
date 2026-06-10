@@ -24,6 +24,7 @@ from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.model_prep_models import EnvStats
 from core.models.pvp_models import ChatCompletionConfig
+from core.pvp import constants as pvp_cst
 from core.pvp.baseline import run_mcts_baseline
 from core.pvp.baseline import supports_in_harness_baseline
 from core.pvp.sglang_parsers import tool_call_parser_for
@@ -275,6 +276,10 @@ def _mcts_baseline_stats(
         tokenizer_repo=model_path,
         base_url=sglang_base_url,
         temperature=ENV_EVAL_TEMPERATURE,
+        # Keep HTTP failure detection under the turn wall-clock alarm, as in eval —
+        # the model defaults (30s/10 retries) could never fit a 15s turn.
+        read_timeout=pvp_cst.PVP_HTTP_READ_TIMEOUT_SECONDS,
+        max_retries=pvp_cst.PVP_HTTP_MAX_RETRIES,
     )
     client = create_client(config)
     chat_fn = functools.partial(chat_completion, client)

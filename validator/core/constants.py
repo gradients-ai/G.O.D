@@ -450,8 +450,6 @@ PVP_RESULTS_PATH = "/app/pvp_results.json"
 PVP_CONFIG_PATH = "/config/pvp_eval.json"
 PVP_CONFIG_ENV_VAR = "PVP_EVAL_CONFIG"
 PVP_LOG_INTERVAL_GAMES = 100
-PVP_BOT_MAX_PARSING_RETRIES = 0
-PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
 PVP_EPISODE_FORFEIT_THRESHOLD = 10
 
 # Core PvP harness constants live in core.pvp.constants (shared with the model-prep

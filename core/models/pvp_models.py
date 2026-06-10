@@ -68,6 +68,14 @@ class PreparedModel(BaseModel):
     sglang_model_path: str = Field(description="HF repo ID passed to SGLang --model-path")
     inference_name: str = Field(description="Model name used in chat completion requests")
     extra_sglang_args: str = Field(default="", description="Additional SGLang CLI flags (e.g. LoRA)")
+    tool_call_parser: str | None = Field(
+        default=None,
+        description=(
+            "SGLang --tool-call-parser resolved by the caller, for repos whose id "
+            "carries no family substring (opaque full-weight miner repos). When unset "
+            "the server resolves from sglang_model_path."
+        ),
+    )
 
 
 class PvPModelSpec(PvPBaseModel):

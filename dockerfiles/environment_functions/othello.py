@@ -19,28 +19,22 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
 
     selected_game = "othello"
 
-    # --- 1. Static Initialization (Once per Rank) ---
-    # We check if the function has already established a connection for this worker
+    # One-time init per worker, memoized on the function: pick this rank's env
+    # server and prime it with a reset.
     if not getattr(rollout_first_prompt_and_completion, "initialized", False):
-        # Get local rank
         rank = int(os.environ.get("LOCAL_RANK", "0"))
 
-        # Get env server for that local rank
         raw_urls = os.environ.get("ENVIRONMENT_SERVER_URLS", "")
         server_list = [url.strip() for url in raw_urls.split(",") if url.strip()]
 
-        # Determine endpoint
         if not server_list:
-            # Fallback (though likely fatal for the task)
             base_url = ""
             print("Warning: No ENVIRONMENT_SERVER_URLS found.")
         else:
             base_url = server_list[rank % len(server_list)]
 
-        # Store endpoint on the function to avoid re-parsing
         rollout_first_prompt_and_completion.base_url = base_url
 
-        # Create environment (POST /create) - ONLY ONCE
         try:
             print(f"Initializing environment on rank {rank} at {base_url}...")
             payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
@@ -52,10 +46,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
             print(f"CRITICAL: Failed to create environment on rank {rank}: {e}")
             raise e
 
-    # Retrieve static variables
     env_endpoint = rollout_first_prompt_and_completion.base_url
 
-    # --- 2. Rollout Setup ---
     all_episode_prompt_ids: list[list[int]] = []
     all_episode_completion_ids: list[list[int]] = []
     all_episode_logprobs: list[list[float]] = []
@@ -64,8 +56,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
     tokenizer = trainer.processing_class
     TIMEOUT = 2400
 
-    # --- 3. Batch Loop ---
-    # We use a random game_id for the batch, or you could sample per item if preferred
+    # One game_id shared across the batch so episodes are comparable.
     game_id = random.randint(games_to_task_id_range[selected_game][0], games_to_task_id_range[selected_game][1])
 
     for i, prompt in enumerate(prompts):
@@ -77,8 +68,6 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         train_reward = 0
         turn_number = 0
 
-        # --- Reset Environment (POST /reset) ---
-        # Reuse existing env_id, just change the game
         payload = {"task_id": game_id, "seed": game_id, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
 
         try:
@@ -87,10 +76,8 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
             reset_data = reset_res.json()
             result_block = reset_data["result"]
 
-            # Get episode id for rest of interactions
             episode_id = result_block.get("episode_id", "")
 
-            # Construct Initial Observation
             current_observation = result_block.get("observation", "")
             format_instructions = 'Your output must strictly follow this format: "Thought:\nyour thoughts ONLY in text.\n\nAction:\nONLY your action ID (a single number)."'
             current_observation += format_instructions
@@ -99,23 +86,28 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 print(f"Env Reset. Observation: {current_observation}", flush=True)
 
         except Exception as e:
+            # The trainer expects one entry per prompt; pad with a plain
+            # zero-reward completion instead of skipping, or the batch misaligns.
             print(f"Failed to reset environment (Game {game_id}): {e}")
+            fallback = generate_rollout_completions(trainer, prompts=[prompt])[0]
+            all_episode_prompt_ids.append(fallback.get("prompt_ids", []))
+            all_episode_completion_ids.append(fallback.get("completion_ids", []))
+            all_episode_logprobs.append(fallback.get("logprobs", []))
+            all_episode_rewards.append(0.0)
             continue
 
-        # --- Build Conversation History ---
         messages = []
 
         messages.append({"role": "user", "content": current_observation})
 
-        # --- Interaction Loop ---
         while not done and (turn_number < max_turns):
-            # Generate Rollout Completion
             rollout_outputs = generate_rollout_completions(trainer, prompts=[messages], as_chat=True)[0]
             prompt_ids = rollout_outputs.get("prompt_ids", [])
             completion_ids = rollout_outputs.get("completion_ids", [])
             logprobs = rollout_outputs.get("logprobs", [])
             completion_text = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
 
+            # GRPO trains on the first turn only; later turns just play the game out.
             if turn_number == 0:
                 episode_prompt_ids = prompt_ids
                 episode_completion_ids = completion_ids
@@ -123,16 +115,11 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
 
             messages.append({"role": "assistant", "content": completion_text})
 
-            # --- Parse Action ---
-            action_to_send = completion_text
-            if action_to_send.endswith("</s>"):
-                action_to_send = action_to_send[:-5]
+            action_to_send = completion_text.removesuffix("</s>")
 
-            # Parse ReAct format
             if "Action:" in action_to_send:
                 action_to_send = action_to_send.split("Action:")[-1].strip()
 
-            # --- Step Environment (POST /step) ---
             if DEBUG:
                 print(f"Sending Action to Env: {action_to_send}", flush=True)
 
@@ -147,12 +134,10 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
                 if DEBUG:
                     print(f"Env Step Response: {step_data}", flush=True)
 
-                # Extract response data
                 step_state = step_block.get("observation", "")
                 step_reward = step_block.get("reward", 0)
                 done = step_block.get("done", False)
 
-                # Format next observation
                 formatted_observation = step_state
 
             except Exception as e:
@@ -173,8 +158,6 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         all_episode_completion_ids.append(episode_completion_ids)
         all_episode_logprobs.append(episode_logprobs)
         all_episode_rewards.append(train_reward)
-
-
 
     return {
         "prompt_ids": all_episode_prompt_ids,

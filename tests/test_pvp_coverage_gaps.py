@@ -231,6 +231,29 @@ class TestBuildSglangCommand:
 
         assert "--enable-lora" not in cmd
 
+    def test_caller_resolved_tool_call_parser_wins(self):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        prepared = PreparedModel(
+            sglang_model_path="org/opaque-weights",
+            inference_name="org/opaque-weights",
+            tool_call_parser="qwen25",
+        )
+        cmd = build_sglang_command(prepared, port=30000, seed=1)
+
+        assert "--tool-call-parser qwen25" in cmd
+
+    def test_parser_falls_back_to_model_path_family(self):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        prepared = PreparedModel(
+            sglang_model_path="Qwen/Qwen2.5-3B-Instruct",
+            inference_name="Qwen/Qwen2.5-3B-Instruct",
+        )
+        cmd = build_sglang_command(prepared, port=30000, seed=1)
+
+        assert "--tool-call-parser qwen25" in cmd
+
 
 # =============================================================================
 # 4. Chat client retry logic
@@ -411,6 +434,26 @@ class TestPrepareModel:
         assert result.sglang_model_path == "org/full-weights"
         assert result.inference_name == "org/full-weights"
         assert result.extra_sglang_args == ""
+
+    def test_full_weight_opaque_repo_resolves_parser_from_base_model(self):
+        from validator.evaluation.pvp.__main__ import _prepare_model
+
+        spec = PvPModelSpec(repo="miner/tourn-a3f9c2e1", original_model="Qwen/Qwen2.5-3B-Instruct")
+
+        with patch("validator.evaluation.pvp.__main__.check_for_lora", return_value=False):
+            result = _prepare_model(spec, "a")
+
+        assert result.tool_call_parser == "qwen25"
+
+    def test_full_weight_repo_with_family_substring_uses_own_family(self):
+        from validator.evaluation.pvp.__main__ import _prepare_model
+
+        spec = PvPModelSpec(repo="miner/llama-3.2-ft", original_model="Qwen/Qwen2.5-3B-Instruct")
+
+        with patch("validator.evaluation.pvp.__main__.check_for_lora", return_value=False):
+            result = _prepare_model(spec, "a")
+
+        assert result.tool_call_parser == "llama3"
 
 
 # =============================================================================

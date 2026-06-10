@@ -116,6 +116,7 @@ def cmd_new(args) -> None:
     params = agent.generate_params(args.seed)
     game = pyspiel.load_game(agent.game_name, params)
     state = game.new_initial_state()
+    agent.setup_initial_state(state, args.seed)  # seeded opening plies, as in eval
     rng = random.Random(args.seed)
     _resolve_chance(state, rng)
     bundle = {

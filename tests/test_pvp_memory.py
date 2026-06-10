@@ -239,3 +239,9 @@ class TestExecuteMemoryTool:
         mems = self._mems()
         tools.execute_memory_tool(mems, "working_memory_rewrite", {"slot": 1, "content": 42})
         assert mems[MemoryArea.WORKING].slots[1] == "42"
+
+    def test_bool_slot_is_rejected_not_coerced_to_one(self):
+        mems = self._mems()
+        res = tools.execute_memory_tool(mems, "working_memory_rewrite", {"slot": True, "content": "x"})
+        assert "error" in res.lower()
+        assert mems[MemoryArea.WORKING].slots[1] == ""

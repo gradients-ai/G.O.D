@@ -99,3 +99,25 @@ class TestRunMctsBaseline:
             time_budget_seconds=600.0,
         )
         assert result.num_games == 2
+
+    def test_forfeiting_model_skips_reflection(self):
+        """A bot that commits no move forfeits; reflection (a memory-tools-only
+        call) must then be skipped, mirroring game_runner."""
+        calls = {"turn": 0, "reflect": 0}
+
+        def no_move_chat(config, messages, tools=None) -> ChatResult:
+            tool_names = {t.function.name for t in tools or []}
+            calls["turn" if "game_action" in tool_names else "reflect"] += 1
+            return ChatResult()  # never calls game_action -> forfeit
+
+        result = run_mcts_baseline(
+            EnvironmentName.LEDUC_POKER,
+            no_move_chat,
+            _config(),
+            num_games=2,
+            mcts_simulations=8,
+            base_seed=1,
+        )
+        assert result.losses == 2  # forfeits score as losses
+        assert calls["turn"] > 0
+        assert calls["reflect"] == 0
