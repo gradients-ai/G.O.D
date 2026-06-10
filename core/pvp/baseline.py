@@ -10,6 +10,7 @@ Used by model prep to gauge how well a base model plays before training.
 
 import logging
 import random
+import time
 
 import numpy as np
 import pyspiel
@@ -82,6 +83,7 @@ def run_mcts_baseline(
     num_games: int,
     mcts_simulations: int | None = None,
     base_seed: int = 0,
+    time_budget_seconds: float | None = None,
 ) -> MctsBaselineResult:
     """Play num_games of env_name as the model (LLMBot) vs MCTS; return outcome counts.
 
@@ -89,6 +91,11 @@ def run_mcts_baseline(
     the games (it builds a read on the MCTS opponent, exactly as in a real matchup).
     A model-side forfeit (timeout, repeated illegal moves, context overflow) scores
     as a loss, mirroring eval.
+
+    time_budget_seconds bounds wall-clock: no new game starts past the deadline
+    and the partial tally is returned — a baseline over fewer games beats blowing
+    the caller's dispatch timeout. The turn alarm bounds a single turn, not a
+    game, so slow models need this outer guard.
     """
     agent = _AGENT_REGISTRY[env_name]()
     env_config = ENVIRONMENT_CONFIGS[env_name]
@@ -98,8 +105,15 @@ def run_mcts_baseline(
 
     seed_rng = random.Random(base_seed)
     result = MctsBaselineResult()
+    started = time.monotonic()
 
     for i in range(num_games):
+        if time_budget_seconds is not None and time.monotonic() - started >= time_budget_seconds:
+            logger.warning(
+                "%s baseline time budget (%.0fs) exhausted after %d/%d games; returning partial tally",
+                env_name.value, time_budget_seconds, result.num_games, num_games,
+            )
+            break
         seed = seed_rng.randint(1, cst.PVP_SEED_RANGE_MAX)
         task_rng = random.Random(seed)
         task_id = task_rng.randint(env_config.task_id_min, env_config.task_id_max)

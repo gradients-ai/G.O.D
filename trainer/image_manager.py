@@ -618,6 +618,9 @@ def run_model_prep_container(
         tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
         if tool_call_parser:
             env[TOOL_CALL_PARSER_ENV] = tool_call_parser
+        # Forward the baseline time-budget override; env_stats reads it in-container.
+        if os.environ.get("MODEL_PREP_ENV_TIME_BUDGET_SECONDS"):
+            env["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"] = os.environ["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"]
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None

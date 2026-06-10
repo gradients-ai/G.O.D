@@ -43,6 +43,10 @@ SGLANG_HEALTH_TIMEOUT = 600
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_TASK_TIMEOUT = 150
 CONSECUTIVE_FAILURE_LIMIT = 5
+# Per-env wall-clock budget for the in-harness baseline. The dispatch timeout is
+# 3600s: 4 games x 540s + intercode worst case (7 x 150s) + sglang startup stays
+# under it with margin. Overrun returns a partial tally, not a blown dispatch.
+ENV_BASELINE_TIME_BUDGET_SECONDS = float(os.getenv("MODEL_PREP_ENV_TIME_BUDGET_SECONDS", "540"))
 
 
 # --- SGLang process management (from eval_environment.py) ---
@@ -281,6 +285,7 @@ def _mcts_baseline_stats(
         config=config,
         num_games=num_episodes,
         mcts_simulations=mcts_simulations,
+        time_budget_seconds=ENV_BASELINE_TIME_BUDGET_SECONDS,
     )
 
     # Per-game scores (win=1, draw=0.5, loss=0) -> the usual EnvStats summary.

@@ -74,3 +74,28 @@ class TestRunMctsBaseline:
             base_seed=3,
         )
         assert result.num_games == 1
+
+    def test_exhausted_time_budget_returns_partial_tally(self):
+        result = run_mcts_baseline(
+            EnvironmentName.LEDUC_POKER,
+            _first_legal_chat,
+            _config(),
+            num_games=5,
+            mcts_simulations=8,
+            base_seed=1,
+            time_budget_seconds=0.0,
+        )
+        assert result.num_games == 0
+        assert result.mean_score == 0.0
+
+    def test_generous_time_budget_plays_all_games(self):
+        result = run_mcts_baseline(
+            EnvironmentName.LEDUC_POKER,
+            _first_legal_chat,
+            _config(),
+            num_games=2,
+            mcts_simulations=8,
+            base_seed=1,
+            time_budget_seconds=600.0,
+        )
+        assert result.num_games == 2
