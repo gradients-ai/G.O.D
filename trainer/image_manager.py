@@ -15,8 +15,6 @@ from core.constants import EnvironmentName
 from core.models.model_prep_models import BaselineStats
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.payload_models import EnvConfig
-from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
-from core.pvp.sglang_parsers import tool_call_parser_for
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
@@ -29,6 +27,8 @@ from core.models.utility_models import GrpoDatasetType
 from core.models.utility_models import ImageModelType
 from core.models.utility_models import InstructTextDatasetType
 from core.models.utility_models import TaskType
+from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
+from core.pvp.sglang_parsers import tool_call_parser_for
 from trainer import constants as cst
 from trainer.tasks import complete_task
 from trainer.tasks import log_task

@@ -4,6 +4,7 @@ No parser (or 'auto', which forfeits for Qwen2.5) -> SGLang returns tool calls a
 plain text and every PvP turn forfeits. Override with SGLANG_TOOL_CALL_PARSER.
 """
 
+import json
 import logging
 import os
 
@@ -27,21 +28,54 @@ _FAMILY_PARSERS: list[tuple[str, str]] = [
 ]
 
 
+def _parser_for_family(needle: str) -> str | None:
+    for substring, parser in _FAMILY_PARSERS:
+        if substring in needle:
+            return parser
+    return None
+
+
+def _parser_from_local_config(model_dir: str) -> str | None:
+    """Resolve the parser from config.json's model_type for a local weights dir.
+
+    Opaque model ids (anonymized cache dirs, miner repos, augmented-<hash>) carry
+    no family substring, but model_type survives anonymization (the scrubber only
+    strips _name_or_path) and names the architecture family directly.
+    """
+    config_path = os.path.join(model_dir, "config.json")
+    if not os.path.isfile(config_path):
+        return None
+    try:
+        with open(config_path) as f:
+            model_type = json.load(f).get("model_type", "")
+    except Exception as exc:
+        logger.warning("Could not read model_type from %s: %s", config_path, exc)
+        return None
+    parser = _parser_for_family(str(model_type).lower())
+    if parser:
+        logger.info("Resolved tool-call parser %r from config.json model_type=%r", parser, model_type)
+    return parser
+
+
 def tool_call_parser_for(model_id: str) -> str | None:
     """Return the SGLang tool-call-parser for model_id, or None if unmapped.
 
-    SGLANG_TOOL_CALL_PARSER overrides the family map. An unmapped model logs a
-    loud error (its tool calls won't be parsed and it will forfeit every turn)
-    rather than silently picking a wrong parser.
+    Resolution order: SGLANG_TOOL_CALL_PARSER override, family substring in
+    model_id, then config.json model_type when model_id is a local weights dir.
+    An unmapped model logs a loud error (its tool calls won't be parsed and it
+    will forfeit every turn) rather than silently picking a wrong parser.
     """
     override = os.getenv(TOOL_CALL_PARSER_ENV)
     if override:
         return override.strip()
 
-    needle = model_id.lower()
-    for substring, parser in _FAMILY_PARSERS:
-        if substring in needle:
-            return parser
+    parser = _parser_for_family(model_id.lower())
+    if parser:
+        return parser
+
+    parser = _parser_from_local_config(model_id)
+    if parser:
+        return parser
 
     logger.error(
         "No SGLang tool-call-parser mapping for %r — tool calls will NOT be parsed "
