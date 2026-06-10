@@ -25,6 +25,7 @@ from core.constants import EnvironmentName
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.utility_models import TaskType
 from core.utils import download_s3_file
@@ -281,7 +282,10 @@ def main():
     try:
         if args.env_configs:
             raw_configs: dict[str, dict] = json.loads(args.env_configs)
-            env_configs = {EnvironmentName(k): v for k, v in raw_configs.items()}
+            env_configs = {
+                EnvironmentName(k): EnvBaselineConfig.model_validate(v)
+                for k, v in raw_configs.items()
+            }
             stats = asyncio.run(compute_env_stats(
                 model_path=args.model,
                 model=model,

@@ -13,6 +13,7 @@ import core.constants as core_cst
 import trainer.utils.training_paths as train_paths
 from core.constants import EnvironmentName
 from core.models.model_prep_models import BaselineStats
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
@@ -552,13 +553,13 @@ def run_model_prep_container(
         env_configs_with_urls = {}
         for env_name, cfg in env_configs.items():
             if env_name in env_url_map:
-                env_configs_with_urls[env_name.value] = {
-                    "url": env_url_map[env_name],
-                    "task_id_min": cfg.task_id_min,
-                    "task_id_max": cfg.task_id_max,
-                    "num_episodes": cfg.num_episodes,
-                    "eval_payload_extra": cfg.eval_payload_extra,
-                }
+                env_configs_with_urls[env_name.value] = EnvBaselineConfig(
+                    url=env_url_map[env_name],
+                    task_id_min=cfg.task_id_min,
+                    task_id_max=cfg.task_id_max,
+                    num_episodes=cfg.num_episodes,
+                    eval_payload_extra=cfg.eval_payload_extra,
+                ).model_dump()
 
     command = [
         "--model", model_cache_path,
