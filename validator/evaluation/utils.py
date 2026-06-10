@@ -310,6 +310,27 @@ async def cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> No
         logger.info(f"Final cleanup removed {cleaned} lingering deployments for this evaluation batch")
 
 
+async def cleanup_all_basilica_deployments() -> None:
+    """Delete every visible Basilica deployment after the evaluation queue drains."""
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for drained evaluation cleanup: {e}")
+        return
+
+    cleaned = 0
+    for dep in deployments:
+        deployment_name = getattr(dep, "name", "unknown")
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+        except Exception as e:
+            logger.warning(f"Failed drained evaluation cleanup for deployment {deployment_name}: {e}")
+
+    logger.info(f"Drained evaluation cleanup removed {cleaned}/{len(deployments)} Basilica deployments")
+
+
 def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:
     """Create a generic eval runner source with health and result endpoints.
 
