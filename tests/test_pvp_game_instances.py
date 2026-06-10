@@ -247,3 +247,17 @@ class TestEpisodeForfeitLimit:
         assert result.model_b_wins == 15
         assert result.draws == 9
         assert result.total_games == 24
+
+
+# --- PvP env / agent registry exhaustiveness (import-time guard in game_eval) ---
+
+
+@needs_pyspiel
+class TestAgentRegistryCoversPvpEnvs:
+    def test_every_pvp_env_has_an_agent(self):
+        from core.constants import ENVIRONMENT_CONFIGS
+        from core.constants import EvalType
+        from core.pvp.game_eval import _AGENT_REGISTRY
+
+        pvp_envs = {n for n, c in ENVIRONMENT_CONFIGS.items() if c.eval_type == EvalType.PVP}
+        assert set(_AGENT_REGISTRY) == pvp_envs

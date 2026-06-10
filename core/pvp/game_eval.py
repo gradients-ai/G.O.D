@@ -6,13 +6,18 @@ core so the model-prep image (core/ only) can run it.
 """
 
 import logging
+import random
 from typing import NamedTuple
 
 import numpy as np
 import pyspiel
 from open_spiel.python.algorithms import evaluate_bots
 
+from core.constants import ENVIRONMENT_CONFIGS
+from core.constants import EnvironmentConfig
 from core.constants import EnvironmentName
+from core.constants import EvalType
+from core.pvp import constants as cst
 from core.pvp.agents import BaseGameAgent
 from core.pvp.agents import GinRummyAgent
 from core.pvp.agents import LeducPokerAgent
@@ -34,6 +39,30 @@ _AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
     EnvironmentName.GIN_RUMMY: GinRummyAgent,
     EnvironmentName.OTHELLO: OthelloAgent,
 }
+
+# Every PVP env must have an agent: image_manager skips env sidecars for PVP
+# envs on the assumption that this registry covers them, and a gap would ship
+# silently-empty baseline stats. Fail at import (in the model-prep and eval
+# containers) instead.
+_pvp_envs = {name for name, cfg in ENVIRONMENT_CONFIGS.items() if cfg.eval_type == EvalType.PVP}
+if set(_AGENT_REGISTRY) != _pvp_envs:
+    raise RuntimeError(
+        f"PvP env/agent registry drift: PVP envs without an agent: "
+        f"{sorted(e.value for e in _pvp_envs - set(_AGENT_REGISTRY))}; "
+        f"agents without a PVP env config: "
+        f"{sorted(e.value for e in set(_AGENT_REGISTRY) - _pvp_envs)}"
+    )
+
+
+def config_id_for_seed(seed: int, env_config: EnvironmentConfig) -> int:
+    """Deterministic seed -> game-config id (selects the game-variant params).
+
+    Shared by eval and the MCTS baseline so both sample game variants from the
+    same distribution (seeds themselves don't need to match across the two).
+    """
+    task_rng = random.Random(seed)
+    task_id = task_rng.randint(env_config.task_id_min, env_config.task_id_max)
+    return task_id % cst.PVP_CONFIG_ID_DIVISOR
 
 
 class GameEvaluation(NamedTuple):

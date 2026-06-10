@@ -27,6 +27,7 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.pvp import constants as pvp_cst
 from core.pvp.baseline import run_mcts_baseline
 from core.pvp.baseline import supports_in_harness_baseline
+from core.pvp.sglang_launch import build_base_command
 from core.pvp.sglang_parsers import tool_call_parser_for
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
@@ -64,17 +65,8 @@ LOG_SGLANG_STDOUT = _env_bool("MODEL_PREP_LOG_SGLANG", False)
 
 
 def build_sglang_command(model_path: str, seed: int) -> str:
-    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
-    dtype = os.getenv("SGLANG_DTYPE", "float16")
     port = os.getenv("SGLANG_PORT", "30000")
-    base = (
-        "python3 -m sglang.launch_server "
-        f"--model-path {model_path} "
-        f"--host 0.0.0.0 --port {port} "
-        f"--tensor-parallel-size {tensor_parallel} "
-        f"--dtype {dtype} "
-        f"--enable-deterministic-inference --random-seed {seed}"
-    )
+    base = build_base_command(model_path, port, seed)
     parser = tool_call_parser_for(model_path)
     if parser:
         base = f"{base} --tool-call-parser {parser}"

@@ -32,6 +32,7 @@ from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.game_eval import _evaluate_game_with_timeout
+from core.pvp.game_eval import config_id_for_seed
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import TokenCounter
 from core.pvp.scoring import determine_outcome
@@ -102,10 +103,7 @@ def _build_instances(
 
     for _ in range(num_games):
         seed = seed_rng.randint(1, vcst.PVP_SEED_RANGE_MAX)
-        task_rng = random.Random(seed)
-        task_id = task_rng.randint(env_config.task_id_min, env_config.task_id_max)
-        config_id = task_id % vcst.PVP_CONFIG_ID_DIVISOR
-        game_params = agent.generate_params(config_id)
+        game_params = agent.generate_params(config_id_for_seed(seed, env_config))
 
         game = pyspiel.load_game(agent.game_name, game_params)
         game_type = game.get_type()
@@ -316,7 +314,6 @@ def _play_game(
         chat_fn=player_a.chat_fn,
         config=player_a.config,
         agent=agent,
-        rng_seed=instance.seed + instance.model_a_player_id,
         memories=_game_memories(long_term_a, counter_a),
     )
     bot_b = LLMBot(
@@ -325,7 +322,6 @@ def _play_game(
         chat_fn=player_b.chat_fn,
         config=player_b.config,
         agent=agent,
-        rng_seed=instance.seed + model_b_player_id,
         memories=_game_memories(long_term_b, counter_b),
     )
 

@@ -136,11 +136,18 @@ def _parse_tool_calls(message: object | None) -> list[ToolCall] | None:
 
 
 def _decode_arguments(raw: str | None) -> dict[str, JsonScalar]:
-    """Decode a tool call's JSON arguments string; tolerate malformed output."""
+    """Decode a tool call's JSON arguments string; tolerate malformed output.
+
+    String values are scrubbed of think tags: reasoning models can leak
+    <think> blocks into a memory write's content, which would otherwise be
+    stored verbatim and waste slot budget.
+    """
     if not raw:
         return {}
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError:
         return {}
-    return decoded if isinstance(decoded, dict) else {}
+    if not isinstance(decoded, dict):
+        return {}
+    return {k: strip_think_tags(v) if isinstance(v, str) else v for k, v in decoded.items()}

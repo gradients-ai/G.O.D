@@ -87,7 +87,6 @@ def _make_bot(game, chat, player_id, memories=None):
         chat_fn=chat,
         config=_config(),
         agent=LeducPokerAgent(),
-        rng_seed=1,
         memories=memories or _memories(),
     )
 

@@ -30,6 +30,7 @@ from core.pvp import constants as cst
 from core.pvp.bot import LLMBot
 from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.game_eval import _evaluate_game_with_timeout
+from core.pvp.game_eval import config_id_for_seed
 from core.pvp.scoring import determine_outcome
 
 
@@ -115,9 +116,7 @@ def run_mcts_baseline(
             )
             break
         seed = seed_rng.randint(1, cst.PVP_SEED_RANGE_MAX)
-        task_rng = random.Random(seed)
-        task_id = task_rng.randint(env_config.task_id_min, env_config.task_id_max)
-        config_id = task_id % cst.PVP_CONFIG_ID_DIVISOR
+        config_id = config_id_for_seed(seed, env_config)
         game = pyspiel.load_game(agent.game_name, agent.generate_params(config_id))
         game_type = game.get_type()
 
@@ -130,7 +129,6 @@ def run_mcts_baseline(
             chat_fn=chat_fn,
             config=config,
             agent=agent,
-            rng_seed=seed + model_seat,
             memories={MemoryArea.WORKING: working, MemoryArea.LONG_TERM: long_term},
         )
         bots: list = [None, None]

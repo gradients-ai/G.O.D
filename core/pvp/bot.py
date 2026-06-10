@@ -106,7 +106,6 @@ class LLMBot(pyspiel.Bot):
         chat_fn: ChatFn,
         config: ChatCompletionConfig,
         agent: BaseGameAgent,
-        rng_seed: int,
         memories: dict[MemoryArea, SlotMemory] | None = None,
     ):
         pyspiel.Bot.__init__(self)
@@ -118,7 +117,6 @@ class LLMBot(pyspiel.Bot):
         self._config = config.model_copy(update={"max_tokens": cst.PVP_TURN_MAX_TOKENS})
         self._reflection_config = config.model_copy(update={"max_tokens": cst.PVP_REFLECTION_MAX_TOKENS})
         self._agent = agent
-        self._rng_seed = rng_seed
         self._memories = memories if memories is not None else default_memories()
         self._memory_tools = tool_lib.build_memory_tools(
             {

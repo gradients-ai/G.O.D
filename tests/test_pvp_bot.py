@@ -46,6 +46,24 @@ class TestStripThinkTags:
         assert strip_think_tags("<think>only thinking</think>") == ""
 
 
+class TestDecodeArguments:
+    def test_think_tags_scrubbed_from_string_args(self) -> None:
+        from core.pvp.chat import _decode_arguments
+
+        args = _decode_arguments('{"slot": 1, "content": "<think>reasoning</think>opp folds early"}')
+        assert args == {"slot": 1, "content": "opp folds early"}
+
+    def test_non_string_args_untouched(self) -> None:
+        from core.pvp.chat import _decode_arguments
+
+        assert _decode_arguments('{"action_id": 37}') == {"action_id": 37}
+
+    def test_malformed_json_returns_empty(self) -> None:
+        from core.pvp.chat import _decode_arguments
+
+        assert _decode_arguments('{"slot": ') == {}
+
+
 # --- Integration: per-turn timeout + forfeit (needs pyspiel) ---
 
 
@@ -102,7 +120,6 @@ def _bot(game, player_id, chat_fn, agent=None):
         chat_fn=chat_fn,
         config=_make_config(),
         agent=agent or LeducPokerAgent(),
-        rng_seed=42,
     )
 
 

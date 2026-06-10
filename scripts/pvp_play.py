@@ -105,7 +105,6 @@ def _bot_for(game, state, bundle, seat: int) -> LLMBot:
         chat_fn=lambda *a, **k: ChatResult(),  # unused: we only render prompts
         config=ChatCompletionConfig(inference_model="manual", base_url="http://localhost/v1"),
         agent=agent,
-        rng_seed=0,
         memories=_memories_for_seat(bundle, seat),
     )
 
