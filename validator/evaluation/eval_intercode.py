@@ -19,8 +19,9 @@ The differences from eval_environment.py:
     /backup) are global to the deployment, so parallel tasks would corrupt
     each other's state.
 
-The ReAct loop and prompt are inlined verbatim from the InterCode paper
-(intercode/experiments/utils/prompts.py) so token/turn counts stay comparable.
+The original ReAct examples are adapted to the same tool-calling contract used
+by PvP: every turn must call exactly one action tool instead of emitting
+free-form `Action: execute[...]` text for a regex parser.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ import logging
 import math
 import os
 import random
-import re
 import shutil
 import signal
 import subprocess
@@ -47,10 +47,17 @@ import aiohttp
 from huggingface_hub import snapshot_download
 
 from core import constants as cst
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import ChatMessage
+from core.models.pvp_models import ChatResult
+from core.models.pvp_models import ChatRole
+from core.models.pvp_models import FunctionSchema
+from core.models.pvp_models import ToolCall
+from core.models.pvp_models import ToolSchema
 from core.models.utility_models import EnvironmentDatasetType
+from core.pvp.chat import chat_completion
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.core import constants as vcst
-from validator.evaluation.utils import check_for_lora
-from validator.evaluation.utils import check_lora_has_added_tokens
 
 
 logger = logging.getLogger(__name__)
@@ -82,12 +89,14 @@ DEFAULT_ACTION_TIMEOUT_SECONDS = 30
 DEFAULT_OBS_TRUNCATE_CHARS = 350
 DEFAULT_MAX_TURNS = 10
 DEFAULT_MAX_TOKENS_PER_CALL = 512
-DEFAULT_ACTION_FALLBACK_MAX_TOKENS = 256
 DEFAULT_PER_TASK_TIMEOUT_SECONDS = vcst.ENV_EVAL_TASK_TIMEOUT
 DEFAULT_SESSION_TIMEOUT_SECONDS = vcst.ENV_EVAL_SESSION_TIMEOUT
 
 DEFAULT_SCORING_MODE = "continuous"
 VALID_SCORING_MODES = {"continuous", "binary"}
+
+INTERCODE_EXECUTE_TOOL_NAME = "execute_bash"
+INTERCODE_SUBMIT_TOOL_NAME = "submit"
 
 ALL_MANAGED_PATHS = ("/testbed", "/system", "/workspace", "/backup")
 PATHS_PER_FS: dict[int, tuple[str, ...]] = {
@@ -244,7 +253,7 @@ def _parse_environment_name() -> cst.EnvironmentName:
     return cst.EnvironmentName.INTERCODE
 
 
-def _build_sglang_command(model_path: str, seed: int) -> str:
+def _build_sglang_command(model_path: str, seed: int, *, parser_model_id: str | None = None) -> str:
     tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", DEFAULT_SGLANG_TENSOR_PARALLEL_SIZE)
     dtype = os.getenv("SGLANG_DTYPE", DEFAULT_SGLANG_DTYPE)
     port = os.getenv("SGLANG_PORT", DEFAULT_SGLANG_PORT)
@@ -256,6 +265,9 @@ def _build_sglang_command(model_path: str, seed: int) -> str:
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed}"
     )
+    parser = tool_call_parser_for(parser_model_id or model_path)
+    if parser:
+        base = f"{base} --tool-call-parser {parser}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or DEFAULT_SGLANG_EXTRA_CLI).strip()
     return f"{base} {extra}" if extra else base
 
@@ -655,151 +667,161 @@ class LocalBashEnv:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ReAct prompt + parser (inlined from princeton-nlp/intercode experiments/utils/prompts.py)
+# Tool-calling prompt + loop
 # ─────────────────────────────────────────────────────────────────────────────
 
-REACT_INIT_MSG = """Interact with a Bourne Shell system using Bash queries to answer a question.
-Use interleaving Thought, Action, Observation steps.
-Thought can reason about the current situation, and Action can be two types:
-(1) execute, which executes Bash code on the Bourne Shell system
+INTERCODE_TOOL_SYSTEM_PROMPT = """Interact with a Bourne Shell system using Bash commands to answer a question.
+You may reason briefly in normal assistant text, but every turn must call exactly one tool:
+(1) execute_bash, which executes Bash code on the Bourne Shell system
 (2) submit, which indicates that the previous observation is the answer
-Here are some examples.
-"""
+Do not write actions as plain text. Use the tools for every action.
 
-DEMO_BASH_REACT = """Question: Convert the first 16 characters in "/testbed/textfile7.txt" to a single hexadecimal value
-Thought 1: I can use the `xxd` command to get a hexdump of the /textbed/textfile7.txt file
-Action 1: execute[xxd -p -l 16 /testbed/textfile7.txt]
+Examples:
+
+Question: Convert the first 16 characters in "/testbed/textfile7.txt" to a single hexadecimal value
+Turn 1 tool: execute_bash(command="xxd -p -l 16 /testbed/textfile7.txt")
 Observation 1: /bin/bash: line 1: xxd: command not found
-Thought 2: Seems like xxd is not available. I can try to use `od` (octal dump) command to get a hexadecimal dump.
-Action 2: execute[od -A n -t x1 -N 16 /testbed/textfile7.txt]
+Turn 2 tool: execute_bash(command="od -A n -t x1 -N 16 /testbed/textfile7.txt")
 Observation 2:  54 65 78 74 20 66 69 6c 65 20 37 20 77 69 74 68
-Thought 3: This command is showing the hexadecimal representation of the first 16 bytes, but it is not a single value.
-I should try stitching together the values into one continuous string.
-Action 3: execute[od -A n -t x1 -N 16 /testbed/textfile7.txt | awk '{$1=$1;print}' | tr -d ' ']
+Turn 3 tool: execute_bash(command="od -A n -t x1 -N 16 /testbed/textfile7.txt | awk '{$1=$1;print}' | tr -d ' '")
 Observation 3: 546578742066696c6520372077697468
-Thought 4: I've configured
-Action 4: submit
-Question: Calculate a list of duplicate md5 sum hashes for all the ".java" files in the /testbed directory
-Thought 1: Find all files with the `.java` extension in `testbed/`, then calculate the md5hash, sort them,
-filter out duplicates, and only pick the first line of the hash.
-Action 1: execute[find /testbed -name "*.java" -type f -exec md5sum {} + | sort | uniq -d | cut -d' ' -f1]
-Observation 1:
-Thought 2: Seems like this did not produce any results. I may have to use another command instead of cut
-to pick out the hashes from the output string
-Action 2: execute[find /testbed -name "*.java" -type f -exec md5sum {} + | sort | uniq -Dw 32]
-Observation 2: f32a3a97638afeb2ee2a15cfe335ab72  /testbed/Hello.java
-f32a3a97638afeb2ee2a15cfe335ab72  /testbed/Hello1.java
-f32a3a97638afeb2ee2a15cfe335ab72  /testbed/dir1/AnotherHello.java
-Thought 3: This shows the output hashes and they have the same values, indicating that these files are duplicates.
-However, the file names are also shown, which are not needed.
-Action 3: execute[find /testbed -name "*.java" -type f -exec md5sum {} + | sort | uniq -D -w 32 | cut -c 35-]
-Observation 3: /testbed/Hello.java
-/testbed/Hello1.java
-/testbed/dir1/AnotherHello.java
-Thought 4: This shows the file names exclusively, and no longer shows the hashes. It seems that the cut
-command argument may not be the best choice for selecting file names.
-Action 4: execute[find /testbed -name "*.java" -type f -exec md5sum {} + | sort | uniq -D -w 32 | awk '{print $2}']
-Observation 4: /testbed/Hello.java
-/testbed/Hello1.java
-/testbed/dir1/AnotherHello.java
-Thought 5: I use the awk command instead, but instead of printing out the hashes, it still prints out the file
-names. I should select a different part of the output string instead of `$2`
-Action 5: execute[find /testbed -name "*.java" -type f -exec md5sum {} + | sort | uniq -D -w 32 | awk '{print $1}']
-Observation 5: f32a3a97638afeb2ee2a15cfe335ab72
-f32a3a97638afeb2ee2a15cfe335ab72
-f32a3a97638afeb2ee2a15cfe335ab72
-Thought 6: This prints out identical hashes, and based on previous observations, I know that these are hashes of
-duplicates `.java` files from the `testbed/` directory. This should be correct. I will submit.
-Action 6: submit
+Turn 4 tool: submit()
+
 Question: print disk usage in human readable format of files or folders in /workspace
-Thought 1: The `du` command is useful for printing out disk usage of a specific directory. I can use this to
-display this information for the `workspace` directory
-Action 1: execute[du /workspace]
+Turn 1 tool: execute_bash(command="du /workspace")
 Observation 1: 48\t/workspace/dir1
 8\t/workspace/dir2/mysql
 24\t/workspace/dir2
 100\t/workspace
-Thought 2: The default `du` command gives storage in a non-human readble font. I can use the -h option
-of the du command to print storage size with bytes.
-Action 2: execute[du -h /workspace]
+Turn 2 tool: execute_bash(command="du -h /workspace")
 Observation 2: 48K\t/workspace/dir1
 8.0K\t/workspace/dir2/mysql
 24K\t/workspace/dir2
 100K\t/workspace
-Thought 3: This gives me storage information for every folder under the workspace directory, but
-I only need the storage for just the `workspace/` directory. The `-s` option should help with this.
-Action 3: execute[du -sh /workspace]
+Turn 3 tool: execute_bash(command="du -sh /workspace")
 Observation 3: 100K\t/workspace
-Thought 4: This shows data usage in human readable format for the `workspace` directory. I am finished.
-Action 4: submit
+Turn 4 tool: submit()
+
 Question: Count all the lines of all php files in the /testbed directory recursively
-Thought 1: I should find the paths to all php files in the testbed directory, then apply the word
-count command to each path.
-Action 1: execute[find /testbed -name "*.php" | xargs wc -l]
+Turn 1 tool: execute_bash(command="find /testbed -name \"*.php\" | xargs wc -l")
 Observation 1:  1 /testbed/dir1/info.php
  1 /testbed/hello.php
  2 total
-Thought 2: This shows me too much information, I only need the total number of lines. I should add up
-the lines together and output a single number.
-Action 2: execute[find /testbed -name "*.php" -exec wc -l {} + | awk '{total += $1} END{print total}']
-Observation 2: 4
-Thought 3: This total is wrong, it doesn't match the previous observation, where total is 2. I only
-need to apply the word count command.
-Action 3: execute[find /testbed -name "*.php" -type f -exec cat {} + | wc -l]
-Observation 3: 2
-Thought 4: The value is 2, which matches the initial observation that the total lines of php files in the
-testbed directory is 2. I can submit.
-Action 4: submit
-Question: Create a hello.txt file in the /testbed directory and add the text "Hello world" to it.
-Thought 1: I can first create a `hello.txt` file in the `testbed/` directory
-Action 1: touch testbed/hello.txt
-Observation 1:
-Thought 2: I should check that the file was created successfully.
-Action 2: execute[ls testbed/]
-Observation 2: dir1/
-dir2/
-dir3/
-hello.txt
-files.txt
-Thought 3: I can now add the "Hello world" text to the hello.txt file
-Action 3: execute[echo Hello world > hello.txt]
-Observation 3:
-Thought 4: I should check that the text was written successfully to the hello.txt file.
-Action 4: execute[cat testbed/hello.txt]
-Observation 4: Hello world
-Thought 5: The hello.txt file has been created successfully in the testbed/ directory, and it contains
-the Hello World text. I can submit.
-Action 5: submit
+Turn 2 tool: execute_bash(command="find /testbed -name \"*.php\" -type f -exec cat {} + | wc -l")
+Observation 2: 2
+Turn 3 tool: submit()
 """
 
-_REACT_ACTION_RE = re.compile(r"execute\[(.*)\]", re.DOTALL)
+
+def _function_tool(name: str, description: str, parameters: dict) -> ToolSchema:
+    return ToolSchema(function=FunctionSchema(name=name, description=description, parameters=parameters))
 
 
-def _parse_action(action: str) -> tuple[str, bool]:
-    if action == "submit":
-        return action, True
-    matches = _REACT_ACTION_RE.findall(action)
-    if matches:
-        return matches[0], True
-    return action, False
+def build_intercode_action_tools() -> list[ToolSchema]:
+    return [
+        _function_tool(
+            INTERCODE_EXECUTE_TOOL_NAME,
+            "Execute one Bash command in the InterCode Bourne Shell environment.",
+            {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The Bash command to execute.",
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        ),
+        _function_tool(
+            INTERCODE_SUBMIT_TOOL_NAME,
+            "Submit the previous observation as the final answer and end the task.",
+            {
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additionalProperties": False,
+            },
+        ),
+    ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ReAct loop against local SGLang
-# ─────────────────────────────────────────────────────────────────────────────
+def _format_tool_history(history: list[str]) -> str:
+    if not history:
+        return "No commands have been executed yet."
+    return "\n".join(history)
 
-def _sglang_chat(client, model_name: str, temperature: float, prompt: str, stop_seqs, max_tokens: int) -> str:
-    resp = client.chat.completions.create(
-        model=model_name,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-        stop=stop_seqs,
-        max_tokens=max_tokens,
+
+def _build_tool_messages(query: str, history: list[str], turn: int) -> list[ChatMessage]:
+    user_prompt = (
+        f"Question: {query}\n\n"
+        f"Previous steps:\n{_format_tool_history(history)}\n\n"
+        f"Turn {turn}: call exactly one tool now."
     )
-    return resp.choices[0].message.content or ""
+    return [
+        ChatMessage(role=ChatRole.SYSTEM, content=INTERCODE_TOOL_SYSTEM_PROMPT),
+        ChatMessage(role=ChatRole.USER, content=user_prompt),
+    ]
 
 
-def _run_react_episode(
+def _intercode_chat(
+    client,
+    model_name: str,
+    temperature: float,
+    messages: list[ChatMessage],
+    tools: list[ToolSchema],
+    max_tokens: int,
+) -> ChatResult:
+    config = ChatCompletionConfig(
+        inference_model=model_name,
+        base_url="",
+        temperature=temperature,
+        max_tokens=max_tokens,
+        max_retries=0,
+    )
+    return chat_completion(client, config, messages, tools)
+
+
+def _first_action_tool_call(result: ChatResult) -> ToolCall | None:
+    for call in result.tool_calls or []:
+        if call.name in {INTERCODE_EXECUTE_TOOL_NAME, INTERCODE_SUBMIT_TOOL_NAME}:
+            return call
+    return None
+
+
+def _tool_call_for_history(call: ToolCall | None) -> str:
+    if call is None:
+        return "no valid tool call"
+    if call.name == INTERCODE_SUBMIT_TOOL_NAME:
+        return "submit()"
+    command = call.arguments.get("command", "")
+    return f"{INTERCODE_EXECUTE_TOOL_NAME}(command={json.dumps(command)})"
+
+
+def _apply_intercode_tool_call(env: LocalBashEnv, call: ToolCall | None) -> tuple[str, float, bool]:
+    if call is None:
+        return (
+            "Error executing query: no valid action tool call received; call execute_bash or submit.",
+            0.0,
+            False,
+        )
+    if call.name == INTERCODE_SUBMIT_TOOL_NAME:
+        observation, reward, done, _info = env.step("submit")
+        return observation, float(reward or 0.0), done
+
+    command = call.arguments.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return (
+            "Error executing query: execute_bash requires a non-empty string command.",
+            0.0,
+            False,
+        )
+    observation, reward, done, _info = env.step(command)
+    return observation, float(reward or 0.0), done
+
+
+def _run_tool_episode(
     env: LocalBashEnv,
     query: str,
     client,
@@ -808,48 +830,29 @@ def _run_react_episode(
     max_turns: int,
     max_tokens_per_call: int,
 ) -> float:
-    prompt = REACT_INIT_MSG + DEMO_BASH_REACT + f"Question: {query}\n"
+    history: list[str] = []
+    tools = build_intercode_action_tools()
     reward = 0.0
     done = False
     for turn in range(1, max_turns + 1):
-        thought_action = _sglang_chat(
-            client, model_name, temperature,
-            prompt + f"Thought {turn}:",
-            stop_seqs=[f"\nObservation {turn}:"],
-            max_tokens=max_tokens_per_call,
+        result = _intercode_chat(
+            client,
+            model_name,
+            temperature,
+            _build_tool_messages(query, history, turn),
+            tools,
+            max_tokens_per_call,
         )
-        text = thought_action.strip()
-        try:
-            thought, action = text.split(f"\nAction {turn}: ", 1)
-        except ValueError:
-            thought = text.split("\n")[0]
-            action_text = _sglang_chat(
-                client, model_name, temperature,
-                prompt + f"Thought {turn}: {thought}\nAction {turn}:",
-                stop_seqs=["\n"],
-                max_tokens=DEFAULT_ACTION_FALLBACK_MAX_TOKENS,
-            )
-            action = action_text.strip()
-
-        action_parsed, is_code = _parse_action(action)
-        if not is_code:
-            observation = (
-                "Error executing query: Your last `execute` action did not "
-                "contain bash code"
-            )
-            reward = 0.0
-            done_step = False
-        else:
-            observation, reward, done_step, _info = env.step(action_parsed)
+        call = _first_action_tool_call(result)
+        observation, reward, done_step = _apply_intercode_tool_call(env, call)
 
         if isinstance(observation, str) and len(observation) > DEFAULT_OBS_TRUNCATE_CHARS:
             observation = observation[:DEFAULT_OBS_TRUNCATE_CHARS]
 
-        prompt += (
-            f"Thought {turn}: {thought}\n"
-            f"Action {turn}: {action}\n"
-            f"Observation {turn}: {observation}\n"
-        )
+        if result.content:
+            history.append(f"Thought {turn}: {result.content}")
+        history.append(f"Tool {turn}: {_tool_call_for_history(call)}")
+        history.append(f"Observation {turn}: {observation}")
 
         if done_step:
             done = True
@@ -883,7 +886,7 @@ async def run_intercode_task(
     )
     return await asyncio.wait_for(
         asyncio.to_thread(
-            _run_react_episode,
+            _run_tool_episode,
             env, query, client, model_name, temperature,
             max_turns, max_tokens_per_call,
         ),
@@ -932,6 +935,9 @@ async def _run() -> None:
             env_name, num_seeds, task_id_min, task_id_max, model_repo, original_model, base_seed, temperature,
         )
 
+        from validator.evaluation.utils import check_for_lora
+        from validator.evaluation.utils import check_lora_has_added_tokens
+
         # LoRA detection (matches eval_environment.py).
         is_lora = await asyncio.to_thread(check_for_lora, model_repo, False)
         should_merge_lora = False
@@ -960,7 +966,7 @@ async def _run() -> None:
                         logger.warning("Failed to remove index file: %s", exc)
                 inference_model_name = f"{original_model}:trained_lora"
                 sglang_command = (
-                    _build_sglang_command(model_path_for_sglang, base_seed)
+                    _build_sglang_command(model_path_for_sglang, base_seed, parser_model_id=original_model)
                     + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
                 )
             elif is_lora and should_merge_lora:
@@ -969,11 +975,11 @@ async def _run() -> None:
                 await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_temp_dir)
                 model_path_for_sglang = await asyncio.to_thread(_merge_base_and_lora, base_path, lora_temp_dir)
                 inference_model_name = model_repo
-                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
+                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed, parser_model_id=original_model)
             else:
                 model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, model_repo)
                 inference_model_name = model_repo
-                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
+                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed, parser_model_id=model_repo)
 
         sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", str(DEFAULT_SGLANG_HEALTH_TIMEOUT_SECONDS)))
         _min_ws = DEFAULT_FLASHINFER_WORKSPACE_MIN_BYTES
