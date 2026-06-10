@@ -287,7 +287,9 @@ def main():
                 for k, v in raw_configs.items()
             }
             stats = asyncio.run(compute_env_stats(
-                model_path=args.model,
+                # The merged path, not args.model: on round continuation the raw
+                # model can be a bare LoRA adapter dir, which SGLang can't serve.
+                model_path=model_path,
                 model=model,
                 env_configs=env_configs,
             ))
