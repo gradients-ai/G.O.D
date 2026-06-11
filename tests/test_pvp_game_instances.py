@@ -3,6 +3,7 @@ config ID variation, and tally correctness.
 """
 
 import importlib.util
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -187,8 +188,8 @@ class TestEpisodeForfeitLimit:
             result = _execute_matchup(
                 env_name=EnvironmentName.LEDUC_POKER,
                 instances=instances,
-                player_a=object(),
-                player_b=object(),
+                player_a=SimpleNamespace(config=SimpleNamespace(inference_model="test")),
+                player_b=SimpleNamespace(config=SimpleNamespace(inference_model="test")),
                 agent=object(),
             )
 

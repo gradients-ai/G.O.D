@@ -26,6 +26,7 @@ from validator.core import constants as vcst
 from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import create_player
 from validator.evaluation.pvp.game_runner import run_matchup
+from validator.evaluation.pvp.game_runner import warmup_player
 from validator.evaluation.pvp.server import start_sglang
 from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.utils import check_for_lora
@@ -93,13 +94,21 @@ def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
     )
 
 
-def _build_chat_config(port: int, eval_config: PvPEvalConfig, inference_name: str) -> ChatCompletionConfig:
-    """Construct ChatCompletionConfig from resolved port and eval settings."""
+def _build_chat_config(port: int, eval_config: PvPEvalConfig, prepared: PreparedModel) -> ChatCompletionConfig:
+    """Construct ChatCompletionConfig from resolved port and eval settings.
+
+    tokenizer_repo points at the served weights (base repo for LoRA, repo for full
+    weights) — never the ':lora'-suffixed inference name — so memory slot budgets
+    use real tokens. read_timeout/max_retries are kept under the turn wall-clock.
+    """
     return ChatCompletionConfig(
-        inference_model=inference_name,
+        inference_model=prepared.inference_name,
+        tokenizer_repo=prepared.sglang_model_path,
         base_url=f"http://{vcst.PVP_SGLANG_HOST}:{port}{vcst.PVP_SGLANG_API_PATH}",
         temperature=eval_config.temperature,
         seed=eval_config.seed,
+        read_timeout=vcst.PVP_HTTP_READ_TIMEOUT_SECONDS,
+        max_retries=vcst.PVP_HTTP_MAX_RETRIES,
     )
 
 
@@ -128,11 +137,13 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
         sglang_b = start_sglang(prepared_b, gpu_b, port_b, config.seed + 1)
         asyncio.run(wait_for_servers(port_a, port_b))
 
-        config_a = _build_chat_config(port_a, config, prepared_a.inference_name)
-        config_b = _build_chat_config(port_b, config, prepared_b.inference_name)
+        config_a = _build_chat_config(port_a, config, prepared_a)
+        config_b = _build_chat_config(port_b, config, prepared_b)
 
         player_a = create_player(config_a)
         player_b = create_player(config_b)
+        warmup_player(player_a)
+        warmup_player(player_b)
 
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():

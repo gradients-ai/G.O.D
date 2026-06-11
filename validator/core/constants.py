@@ -491,14 +491,27 @@ PVP_SGLANG_API_PATH = "/v1"
 PVP_RESULTS_PATH = "/app/pvp_results.json"
 PVP_CONFIG_PATH = "/config/pvp_eval.json"
 PVP_CONFIG_ENV_VAR = "PVP_EVAL_CONFIG"
-PVP_SEED_RANGE_MAX = 1_000_000
-PVP_CONFIG_ID_DIVISOR = 100_000_000
 PVP_LOG_INTERVAL_GAMES = 100
 PVP_BOT_MAX_PARSING_RETRIES = 0
 PVP_BOT_INVALID_ACTION_FORFEIT_THRESHOLD = 3
-PVP_TURN_TIMEOUT_SECONDS = 5
-PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 PVP_EPISODE_FORFEIT_THRESHOLD = 10
+
+# Core PvP harness constants live in core.pvp.constants (shared with the model-prep
+# image, which ships core/ only); re-exported so validator code keeps using vcst.PVP_*.
+from core.pvp.constants import PVP_CONFIG_ID_DIVISOR  # noqa: E402,F401
+from core.pvp.constants import PVP_HTTP_MAX_RETRIES  # noqa: E402,F401
+from core.pvp.constants import PVP_HTTP_READ_TIMEOUT_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_LONGTERM_MEM_SLOTS  # noqa: E402,F401
+from core.pvp.constants import PVP_LONGTERM_SLOT_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_REFLECTION_MAX_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_REFLECTION_TIMEOUT_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_RETRY_BACKOFF_CAP_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_SEED_RANGE_MAX  # noqa: E402,F401
+from core.pvp.constants import PVP_TURN_MAX_TOKENS  # noqa: E402,F401
+from core.pvp.constants import PVP_TURN_TIMEOUT_SECONDS  # noqa: E402,F401
+from core.pvp.constants import PVP_WORKING_MEM_SLOTS  # noqa: E402,F401
+from core.pvp.constants import PVP_WORKING_SLOT_TOKENS  # noqa: E402,F401
+
 INDIVIDUAL_WIN_MARGIN = 0.015
 
 # PvP tournament scoring

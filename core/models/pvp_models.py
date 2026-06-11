@@ -3,7 +3,9 @@ Pydantic models for PvP (Player-vs-Player) environment evaluation.
 Defines input configuration and output result contracts.
 """
 
+import json
 from enum import Enum
+from typing import Literal
 from typing import Protocol
 
 from pydantic import BaseModel
@@ -138,19 +140,66 @@ class ChatRole(str, Enum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+# A single JSON scalar — the value type of tool-call arguments.
+JsonScalar = str | int | float | bool | None
+
+
+class ToolCall(BaseModel):
+    """A tool/function call parsed from a model response.
+
+    arguments is the decoded JSON object the model passed to the tool.
+    """
+
+    id: str = Field(description="Provider-assigned id, echoed back in the matching tool result.")
+    name: str = Field(description="Tool/function name.")
+    arguments: dict[str, JsonScalar] = Field(default_factory=dict, description="Decoded JSON arguments.")
+
+    def to_openai(self) -> dict:
+        """Wire form for an assistant message's tool_calls (arguments JSON-encoded)."""
+        return {
+            "id": self.id,
+            "type": "function",
+            "function": {"name": self.name, "arguments": json.dumps(self.arguments)},
+        }
 
 
 class ChatMessage(BaseModel):
-    """A single message in an OpenAI-compatible conversation."""
+    """A single message in an OpenAI-compatible conversation.
+
+    Covers system/user text, assistant turns carrying tool_calls, and tool
+    results (role=tool, with tool_call_id). to_openai() renders the wire form.
+    """
 
     role: ChatRole
-    content: str
+    content: str | None = None
+    tool_calls: list[ToolCall] | None = Field(default=None, description="Set on assistant turns that call tools.")
+    tool_call_id: str | None = Field(default=None, description="Set on tool-result messages.")
+
+    def to_openai(self) -> dict:
+        out: dict = {"role": self.role.value, "content": self.content}
+        if self.tool_calls is not None:
+            out["tool_calls"] = [tc.to_openai() for tc in self.tool_calls]
+        if self.tool_call_id is not None:
+            out["tool_call_id"] = self.tool_call_id
+        return out
 
 
 class ChatCompletionConfig(BaseModel):
     """Configuration for calling an OpenAI-compatible chat endpoint."""
 
     inference_model: str = Field(description="Model name as registered in the inference server")
+    tokenizer_repo: str | None = Field(
+        default=None,
+        description=(
+            "HF repo / local path for the tokenizer used to budget memory slots. "
+            "A LoRA's inference_model carries a ':lora' suffix that is not a loadable "
+            "repo, so this points at the base model (or local weights dir) instead. "
+            "Falls back to inference_model when unset."
+        ),
+    )
     base_url: str = Field(description="OpenAI-compatible API base (e.g. http://localhost:30000/v1)")
     api_key: str = Field(default="dummy", description="API key (SGLang ignores but SDK requires)")
     temperature: float | None = Field(default=None, description="Sampling temperature, None uses server default")
@@ -164,13 +213,37 @@ class ChatResult(BaseModel):
     """Result from an LLM chat completion."""
 
     content: str | None = None
+    tool_calls: list[ToolCall] | None = None
     usage: dict[str, int | None] | None = None
+
+
+class FunctionSchema(BaseModel):
+    """One function-tool exposed to the model. parameters is a JSON Schema document."""
+
+    name: str
+    description: str
+    parameters: dict
+
+
+class ToolSchema(BaseModel):
+    """OpenAI function-tool envelope."""
+
+    type: Literal["function"] = "function"
+    function: FunctionSchema
+
+    def to_openai(self) -> dict:
+        return self.model_dump()
 
 
 class ChatFn(Protocol):
     """Protocol for the chat completion callable, enabling DI for testing."""
 
-    def __call__(self, config: ChatCompletionConfig, messages: list[ChatMessage]) -> ChatResult: ...
+    def __call__(
+        self,
+        config: ChatCompletionConfig,
+        messages: list[ChatMessage],
+        tools: list[ToolSchema] | None = None,
+    ) -> ChatResult: ...
 
 
 class PvPEvalMetadata(BaseModel):
@@ -273,3 +346,53 @@ class PvPGroupResults(PvPBaseModel):
         description="Present if any contestants were excluded due to full-weight submissions",
     )
     metadata: PvPEvalMetadata
+
+
+# --- Tool-calling memory models ---
+
+
+class MemoryArea(str, Enum):
+    """An area of model-managed memory in the tool-calling harness.
+
+    Add a member here (plus its SlotMemory instance and presentation metadata)
+    to introduce a new memory area; the tool layer expands automatically.
+    """
+
+    WORKING = "working_memory"
+    LONG_TERM = "long_term_memory"
+
+    @property
+    def persists_across_games(self) -> bool:
+        """Long-term memory survives between games (opponent model); working resets."""
+        return self is MemoryArea.LONG_TERM
+
+
+class MemoryOp(str, Enum):
+    """An edit operation on a memory slot.
+
+    The value equals the SlotMemory method name, so dispatch needs no lookup
+    table: getattr(slot_memory, op.value)(...).
+    """
+
+    REWRITE = "rewrite"
+    APPEND = "append"
+
+
+class MemoryConfig(BaseModel):
+    """Sizing for one memory area: a fixed number of fixed-size slots."""
+
+    n_slots: int = Field(gt=0, description="Number of addressable slots.")
+    slot_token_budget: int = Field(gt=0, description="Max tokens retained per slot.")
+
+
+class MemorySlotEdit(BaseModel):
+    """Arguments accepted by a memory edit tool (rewrite/append)."""
+
+    slot: int = Field(description="Target slot number.")
+    content: str = Field(description="Text content for the slot.")
+
+
+class GameActionArgs(BaseModel):
+    """Arguments accepted by the game_action tool."""
+
+    action_id: int = Field(description="A legal action id for the current state.")
