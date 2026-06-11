@@ -517,7 +517,7 @@ async def get_node_weights_from_tournament_audit_data(
     netuid: int,
     tournament_audit_data: TournamentAuditData,
 ) -> NodeWeightsResult:
-    all_nodes: list[Node] = fetch_nodes.get_nodes_for_netuid(substrate, netuid)
+    all_nodes: list[Node] = fetch_nodes._get_nodes_for_uid(substrate, netuid)
     hotkey_to_node_id: dict[str, int] = {node.hotkey: node.node_id for node in all_nodes}
 
     all_node_ids: list[int] = [node.node_id for node in all_nodes]
@@ -741,7 +741,7 @@ async def _get_and_set_weights(config: Config, validator_node_id: int) -> bool:
 
 
 async def _set_metagraph_weights(config: Config) -> None:
-    nodes: list[Node] = fetch_nodes.get_nodes_for_netuid(config.substrate, config.netuid)
+    nodes: list[Node] = fetch_nodes._get_nodes_for_uid(config.substrate, config.netuid)
     node_ids = [node.node_id for node in nodes]
     node_weights = [node.incentive for node in nodes]
     validator_node_id = await get_vali_node_id(config.substrate, config.keypair.ss58_address)
