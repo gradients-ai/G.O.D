@@ -17,6 +17,7 @@ from core.pvp.agents import BaseGameAgent
 from core.pvp.agents import GinRummyAgent
 from core.pvp.agents import LeducPokerAgent
 from core.pvp.agents import LiarsDiceAgent
+from core.pvp.agents import OthelloAgent
 from core.pvp.bot import ContextOverflowError
 from core.pvp.bot import EmptyLegalActionsError
 from core.pvp.bot import InvalidActionForfeitError
@@ -31,6 +32,7 @@ _AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
     EnvironmentName.LIARS_DICE: LiarsDiceAgent,
     EnvironmentName.LEDUC_POKER: LeducPokerAgent,
     EnvironmentName.GIN_RUMMY: GinRummyAgent,
+    EnvironmentName.OTHELLO: OthelloAgent,
 }
 
 

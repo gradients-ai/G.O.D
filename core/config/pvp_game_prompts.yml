@@ -76,3 +76,25 @@ gin_rummy_rules: >
   Card Values: A=1, 2-10=face value, J=10, Q=10, K=10
 
   IMPORTANT: Always respond with the action ID number ONLY, never card names.
+
+othello_rules: >
+  OTHELLO (REVERSI) RULES:
+
+  Board: 8x8 grid. Columns are labelled a-h (left to right), rows 1-8 (top to bottom).
+  Discs are two-sided: x = Black, o = White. Empty squares show as '-'. Black (x) moves first.
+
+  Goal: Have more of your discs on the board than your opponent when the game ends.
+
+  Making a move: Place one disc of your colour on an EMPTY square so that it
+  brackets one or more of the opponent's discs in a straight line (horizontal,
+  vertical, or diagonal) between the disc you place and another of your own discs.
+  Every opponent disc in each bracketed line is flipped to your colour. A move is
+  only legal if it flips at least one opponent disc. A single placement may flip
+  discs in several directions at once.
+
+  Passing: If you have no legal move, you must pass (a pass action will be the
+  only legal action offered).
+
+  Game end: The game ends when neither player can move (the board is full or no
+  legal moves remain for either side). The player with more discs wins; an equal
+  count is a draw.

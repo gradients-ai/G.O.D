@@ -27,7 +27,8 @@ from core.config.config_handler import update_flash_attention
 from core.dataset_utils import adapt_columns_for_dpo_dataset
 from core.dataset_utils import adapt_columns_for_grpo_dataset
 from core.dataset_utils import adapt_columns_for_environment_dataset
-from core.constants import EnvironmentName
+from core.constants import ENVIRONMENT_CONFIGS
+from core.constants import EvalType
 from core.models.utility_models import ChatTemplateDatasetType
 from core.models.utility_models import DpoDatasetType
 from core.models.utility_models import FileFormat
@@ -114,7 +115,7 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
         config["trl"]["reward_weights"] = [reward_function.reward_weight for reward_function in dataset_type.reward_functions]
     elif isinstance(dataset_type, EnvironmentDatasetType):
         env = (dataset_type.environment_names or [None])[0]
-        if env in (EnvironmentName.GIN_RUMMY, EnvironmentName.LIARS_DICE, EnvironmentName.LEDUC_POKER):
+        if env is not None and ENVIRONMENT_CONFIGS[env].eval_type == EvalType.PVP:
             config["trl"]["rollout_func"] = f"{env.value}.rollout_first_prompt_and_completion"
             config["trl"]["reward_funcs"] = [f"{env.value}.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]

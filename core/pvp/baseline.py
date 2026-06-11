@@ -119,6 +119,7 @@ def run_mcts_baseline(
         bots[mcts_seat] = _make_mcts_bot(game, simulations, seed + mcts_seat)
 
         state = game.new_initial_state()
+        agent.setup_initial_state(state, seed)
         evaluation = _evaluate_game_with_timeout(state, bots, seed)
         outcome = determine_outcome(
             GameScoringContext(

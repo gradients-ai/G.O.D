@@ -5,6 +5,7 @@ Rules text is loaded from core/config/pvp_game_prompts.yml.
 """
 
 import functools
+import random
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -40,6 +41,16 @@ class BaseGameAgent(ABC):
         """Generate pyspiel game parameters from a config variant ID."""
         ...
 
+    def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
+        """Advance the fresh state before the models take over. Default: no-op.
+
+        Games with chance nodes (dice, card deals) get their per-game variety for
+        free from the seed passed to evaluate_bots. Deterministic games with no
+        chance nodes (e.g. othello) override this to inject seeded variety so the
+        same seed reproduces the same start while different seeds diverge.
+        """
+        return None
+
     def get_rules(self) -> str:
         return load_prompts()[self.rules_key]
 
@@ -61,28 +72,6 @@ class BaseGameAgent(ABC):
         prompts = load_prompts()
         return prompts["system_prompt_template"].format(
             game_name=self.game_name, rules=self.get_rules()
-        )
-
-    def generate_user_prompt(
-        self,
-        state: pyspiel.State,
-        player_id: int,
-        legal_actions: list[int],
-    ) -> str:
-        state_desc = self.format_state(state, player_id)
-        actions_desc = []
-        for action in legal_actions:
-            try:
-                action_str = state.action_to_string(player_id, action)
-                actions_desc.append(f"{action} -> {action_str}")
-            except (RuntimeError, AttributeError):
-                actions_desc.append(str(action))
-
-        return (
-            f"Current State:\n{state_desc}\n\n"
-            f"You are Player {player_id}.\n"
-            f"Legal Actions:\n" + "\n".join(actions_desc) + "\n\n"
-            "Your choice (ID only):"
         )
 
 
@@ -243,3 +232,41 @@ class GinRummyAgent(BaseGameAgent):
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         return state.observation_string(player_id)
+
+
+# Number of seeded random opening plies applied to an othello game, sampled from
+# this inclusive range. Enough to diverge the opening tree for variety, few
+# enough that positions stay balanced and game-like.
+_OTHELLO_OPENING_PLIES = (2, 6)
+
+
+class OthelloAgent(BaseGameAgent):
+
+    @property
+    def game_name(self) -> str:
+        return "othello"
+
+    @property
+    def rules_key(self) -> str:
+        return "othello_rules"
+
+    def generate_params(self, config_id: int) -> dict[str, int]:
+        return {}
+
+    def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
+        """Apply a seeded number of uniformly-random legal opening moves.
+
+        Othello is deterministic with no chance nodes, so every game would start
+        from the identical board. Deriving the opening plies from the instance
+        seed keeps games reproducible (same seed -> same start) while giving each
+        seed a distinct mid-game position to play from.
+        """
+        rng = random.Random(seed)
+        num_plies = rng.randint(*_OTHELLO_OPENING_PLIES)
+        for _ in range(num_plies):
+            if state.is_terminal():
+                break
+            legal_actions = state.legal_actions()
+            if not legal_actions:
+                break
+            state.apply_action(rng.choice(legal_actions))
