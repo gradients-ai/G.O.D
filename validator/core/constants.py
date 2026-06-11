@@ -129,7 +129,7 @@ MIN_SUCCESSFUL_SCORES_FOR_HISTORICAL_TASK = 2
 
 # Tournament Start Requirements
 MIN_MINERS_FOR_ENV_TOURN = 5
-MIN_MINERS_FOR_TOURN = 8
+MIN_MINERS_FOR_TOURN = 4  # within the small-tournament band (3..9): round 1 is a single group, top 2 advance to a knockout
 
 
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001  # Weight given to active participants
