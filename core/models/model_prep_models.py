@@ -77,17 +77,14 @@ class WeightStats(BaseModel):
     by_group: dict[str, LayerGroupWeightStats]
 
 
-class LayerGradStats(BaseModel):
-    frobenius_norm: float
-    rms: float
-    max_abs: float
-    top_singular_values: list[float]
-
-
 # --- Per-type dataset stats ---
 
 class DatasetStatsBase(BaseModel):
+    # Full-dataset token estimate (mean tokens/record from a sample * num_records).
+    # num_records == 0 marks legacy rows where total_tokens covered only a
+    # 100-record sample — don't use those for time budgeting.
     total_tokens: int
+    num_records: int = 0
     seq_length_distribution: SeqLengthDistribution
     near_duplicate_rate: float
     bits_per_byte: float | None = None
@@ -121,10 +118,7 @@ class GrpoDatasetStats(DatasetStatsBase):
 class TrainingDynamicsBase(BaseModel):
     init_loss: float
     init_loss_std: float = 0.0
-    grad_norms: dict[str, float]
-    gradient_noise_scale: float
     activation_rms: dict[str, float]
-    grad_stats: dict[str, LayerGradStats]
     output_entropy: float
     output_entropy_std: float = 0.0
 
@@ -143,6 +137,17 @@ class GrpoTrainingDynamics(TrainingDynamicsBase):
     baseline_reward_scores: dict[str, float]
 
 
+# --- Throughput probe ---
+
+class ThroughputStats(BaseModel):
+    """Timed fwd+bwd on the loaded model in the prep container."""
+    tokens_per_sec: float
+    seq_len: int
+    micro_batch_size: int
+    n_gpus: int
+    gpu_name: str = ""
+
+
 # --- Per-type baseline stats ---
 
 class InstructBaselineStats(BaseModel):
@@ -150,6 +155,7 @@ class InstructBaselineStats(BaseModel):
     dataset: InstructDatasetStats
     weights: WeightStats
     training: InstructTrainingDynamics
+    throughput: ThroughputStats | None = None
 
 
 class DpoBaselineStats(BaseModel):
@@ -157,6 +163,7 @@ class DpoBaselineStats(BaseModel):
     dataset: DpoDatasetStats
     weights: WeightStats
     training: DpoTrainingDynamics
+    throughput: ThroughputStats | None = None
 
 
 class GrpoBaselineStats(BaseModel):
@@ -164,6 +171,7 @@ class GrpoBaselineStats(BaseModel):
     dataset: GrpoDatasetStats
     weights: WeightStats
     training: GrpoTrainingDynamics
+    throughput: ThroughputStats | None = None
 
 
 # --- Environment stats ---

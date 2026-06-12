@@ -4,6 +4,7 @@ Per-type stats for instruct, DPO, GRPO, and chat tasks.
 """
 
 import math
+import random
 import re
 import time
 from collections import defaultdict
@@ -26,13 +27,30 @@ from core.models.model_prep_models import (
     InstructBaselineStats,
     InstructDatasetStats,
     InstructTrainingDynamics,
-    LayerGradStats,
     LayerGroupWeightStats,
     SeqLengthDistribution,
+    ThroughputStats,
     WeightStats,
 )
 
 BPB_REFERENCE_MODEL = "gpt2"
+
+# Token-length stats are computed on a random sample of this many records and
+# scaled to the full record count; tokenizing every record of a 175k-row
+# dataset would dominate prep time for no accuracy gain. Model forward passes
+# (init loss, entropy, masked loss) run on the same random sample.
+LENGTH_SAMPLE_SIZE = 2_000
+# Bits-per-byte runs the GPT-2 reference model on CPU per text — cap it
+# separately, the mean converges long before the model passes would.
+BPB_SAMPLE_SIZE = 200
+LENGTH_SAMPLE_SEED = 42
+
+# Throughput probe settings
+THROUGHPUT_TARGET_BATCH_TOKENS = 8_192
+THROUGHPUT_WARMUP_STEPS = 1
+THROUGHPUT_TIMED_STEPS = 3
+THROUGHPUT_MIN_SEQ_LEN = 256
+THROUGHPUT_MAX_SEQ_LEN = 2_048
 
 
 # --- Text extraction per task type ---
@@ -124,6 +142,82 @@ def _make_seq_dist(lengths: list[int]) -> SeqLengthDistribution:
 
 def _token_lengths(texts: list[str], tokenizer) -> list[int]:
     return [len(tokenizer(t, truncation=False)["input_ids"]) for t in texts]
+
+
+def _sample_for_lengths(records: list[dict]) -> tuple[list[dict], float]:
+    """Random sample for token-length stats plus the sample->full scale factor."""
+    if len(records) <= LENGTH_SAMPLE_SIZE:
+        return records, 1.0
+    sample = random.Random(LENGTH_SAMPLE_SEED).sample(records, LENGTH_SAMPLE_SIZE)
+    return sample, len(records) / LENGTH_SAMPLE_SIZE
+
+
+def measure_training_throughput(model, device, seq_len: int, vocab_size: int) -> ThroughputStats | None:
+    """Time fwd+bwd steps on synthetic batches to estimate training tokens/sec.
+
+    Uses gradient checkpointing like real training runs; halves the micro-batch
+    on OOM down to 1.
+    """
+    seq_len = int(min(max(seq_len, THROUGHPUT_MIN_SEQ_LEN), THROUGHPUT_MAX_SEQ_LEN))
+    micro_batch = max(1, THROUGHPUT_TARGET_BATCH_TOKENS // seq_len)
+    was_training = model.training
+    model.train()
+    if hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+
+    def _step(batch_size: int) -> None:
+        input_ids = torch.randint(0, vocab_size, (batch_size, seq_len), device=device)
+        attention_mask = torch.ones_like(input_ids)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=input_ids)
+        outputs.loss.backward()
+        model.zero_grad(set_to_none=True)
+
+    result = None
+    try:
+        while micro_batch >= 1:
+            try:
+                for _ in range(THROUGHPUT_WARMUP_STEPS):
+                    _step(micro_batch)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                t0 = time.time()
+                for _ in range(THROUGHPUT_TIMED_STEPS):
+                    _step(micro_batch)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                elapsed = time.time() - t0
+                tokens_per_sec = micro_batch * seq_len * THROUGHPUT_TIMED_STEPS / max(elapsed, 1e-6)
+                result = ThroughputStats(
+                    tokens_per_sec=tokens_per_sec,
+                    seq_len=seq_len,
+                    micro_batch_size=micro_batch,
+                    n_gpus=torch.cuda.device_count() if torch.cuda.is_available() else 0,
+                    gpu_name=torch.cuda.get_device_name(0) if torch.cuda.is_available() else "",
+                )
+                print(
+                    f"[stats] Throughput probe: {tokens_per_sec:.0f} tok/s "
+                    f"(seq_len={seq_len}, micro_batch={micro_batch})",
+                    flush=True,
+                )
+                break
+            except torch.cuda.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if micro_batch == 1:
+                    print("[stats] Throughput probe OOM at micro_batch=1, skipping", flush=True)
+                    break
+                micro_batch //= 2
+                print(f"[stats] Throughput probe OOM, retrying with micro_batch={micro_batch}", flush=True)
+    except Exception as exc:
+        print(f"[stats] Throughput probe failed: {exc}", flush=True)
+    finally:
+        model.zero_grad(set_to_none=True)
+        if hasattr(model, "gradient_checkpointing_disable"):
+            model.gradient_checkpointing_disable()
+        if not was_training:
+            model.eval()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return result
 
 
 def _count_unique_tokens(texts: list[str], tokenizer) -> int:
@@ -260,9 +354,9 @@ def _get_model_device(model) -> torch.device:
 
 
 def _compute_base_training_dynamics(
-    model, tokenizer, texts: list[str], device, n_subbatches: int = 10, max_length: int = 512,
+    model, tokenizer, texts: list[str], device, max_length: int = 512,
 ) -> dict:
-    """Compute shared training dynamics (loss, grads, activations, SVD, entropy, noise scale)."""
+    """Compute shared training dynamics (loss, activations, entropy) — forward passes only."""
     t_start = time.time()
     dataset = SimpleTextDataset(texts, tokenizer, max_length=max_length)
     loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -310,7 +404,6 @@ def _compute_base_training_dynamics(
     output_entropy = float(np.mean(entropy_arr))
     output_entropy_std = float(np.std(entropy_arr))
 
-    # Remove hooks before grad pass so we don't mix train-mode activations in
     for h in hooks:
         h.remove()
     activation_rms = {n: float(np.mean(v)) for n, v in activation_rms_accum.items()}
@@ -319,124 +412,14 @@ def _compute_base_training_dynamics(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    # Forward+backward for grads (with gradient checkpointing for large models)
-    t_grad = time.time()
-    model.train()
-    if hasattr(model, "gradient_checkpointing_enable"):
-        model.gradient_checkpointing_enable()
-    model.zero_grad()
-    batch = next(iter(loader))
-    outputs = model(
-        input_ids=batch["input_ids"].to(device),
-        attention_mask=batch["attention_mask"].to(device),
-        labels=batch["input_ids"].to(device),
-    )
-    outputs.loss.backward()
-
-    grad_norms = {}
-    grad_stats = {}
-    for name, param in model.named_parameters():
-        if param.grad is None:
-            continue
-        grad_norms[name] = float(param.grad.norm(2).item())
-        g = param.grad.detach().float()
-        if g.dim() < 2:
-            g = g.unsqueeze(0)
-        g_2d = g.reshape(g.shape[0], -1) if g.dim() > 2 else g
-        k = min(8, min(g_2d.shape))
-        try:
-            _, s, _ = torch.svd_lowrank(g_2d, q=k)
-            top_sv = s.tolist()
-        except Exception:
-            top_sv = []
-        grad_stats[name] = LayerGradStats(
-            frobenius_norm=float(torch.norm(g_2d).item()),
-            rms=float(torch.sqrt(torch.mean(g_2d ** 2)).item()),
-            max_abs=float(torch.max(torch.abs(g_2d)).item()),
-            top_singular_values=top_sv,
-        )
-        del g, g_2d
-
-    model.zero_grad()
-    print(f"[stats] Gradient pass done in {time.time() - t_grad:.1f}s ({len(grad_norms)} params with grads)", flush=True)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-    t_noise = time.time()
-    noise_scale = _compute_gradient_noise_scale(model, loader, device, n_subbatches)
-    print(f"[stats] Gradient noise scale done in {time.time() - t_noise:.1f}s (scale={noise_scale:.4f})", flush=True)
-
-    if hasattr(model, "gradient_checkpointing_disable"):
-        model.gradient_checkpointing_disable()
-    model.eval()
-    model.zero_grad()
-
     print(f"[stats] Training dynamics total: {time.time() - t_start:.1f}s", flush=True)
     return {
         "init_loss": init_loss,
         "init_loss_std": init_loss_std,
-        "grad_norms": grad_norms,
-        "gradient_noise_scale": noise_scale,
         "activation_rms": activation_rms,
-        "grad_stats": grad_stats,
         "output_entropy": output_entropy if not math.isnan(output_entropy) else 0.0,
         "output_entropy_std": output_entropy_std if not math.isnan(output_entropy_std) else 0.0,
     }
-
-
-def _compute_gradient_noise_scale(model, loader, device, n_subbatches: int) -> float:
-    """Gradient noise scale via one-pass variance estimation per parameter.
-
-    Computes Var(g) / ||E[g]||² across sub-batch gradient estimates using the
-    naive sum/sum_sq formula with Bessel's correction. Accumulates in fp32 to
-    avoid precision loss from fp16 squaring.
-    """
-    all_batches = list(loader)
-    if len(all_batches) < n_subbatches:
-        return 0.0
-    chunk_size = len(all_batches) // n_subbatches
-    n = n_subbatches
-
-    grad_sum: dict[str, torch.Tensor] = {}
-    grad_sum_sq: dict[str, torch.Tensor] = {}
-
-    for i in range(n):
-        chunk = all_batches[i * chunk_size:(i + 1) * chunk_size]
-        model.zero_grad()
-        total_loss = torch.tensor(0.0, device=device)
-        for batch in chunk:
-            outputs = model(
-                input_ids=batch["input_ids"].to(device),
-                attention_mask=batch["attention_mask"].to(device),
-                labels=batch["input_ids"].to(device),
-            )
-            total_loss = total_loss + outputs.loss
-        (total_loss / len(chunk)).backward()
-
-        for name, param in model.named_parameters():
-            if param.grad is None:
-                continue
-            g = param.grad.detach().to(device="cpu", dtype=torch.float32)
-            if name not in grad_sum:
-                grad_sum[name] = torch.zeros_like(g)
-                grad_sum_sq[name] = torch.zeros_like(g)
-            grad_sum[name] += g
-            grad_sum_sq[name] += g ** 2
-
-    total_var = 0.0
-    total_mean_norm_sq = 0.0
-    for name in grad_sum:
-        mean = grad_sum[name] / n
-        # Bessel's correction (n-1) to match torch.var(dim=0)
-        var = (grad_sum_sq[name] - grad_sum[name] ** 2 / n) / (n - 1)
-        total_var += var.sum().item()
-        total_mean_norm_sq += mean.norm(2).item() ** 2
-
-    del grad_sum, grad_sum_sq
-
-    if total_mean_norm_sq < 1e-12:
-        return 0.0
-    return total_var / total_mean_norm_sq
 
 
 def _tokenize_prompt_completion(
@@ -513,15 +496,16 @@ def _compute_instruct_stats(
     t_total = time.time()
     extractor = text_extractor or _extract_instruct_texts
 
-    # Compute lengths on ALL records for accurate seq_length_distribution.
-    # Model forward passes (grad norms, loss) use max_samples subset.
-    all_texts_full = extractor(records)
-    all_prompts_full, all_completions_full = zip(*all_texts_full) if all_texts_full else ([], [])
-    prompt_lengths = _token_lengths(list(all_prompts_full), tokenizer)
-    completion_lengths = _token_lengths(list(all_completions_full), tokenizer)
+    # Token-length stats on a random sample, scaled to the full record count.
+    # Model forward passes (loss, entropy) use max_samples subset.
+    length_records, length_scale = _sample_for_lengths(records)
+    length_texts = extractor(length_records)
+    length_prompts, length_completions = zip(*length_texts) if length_texts else ([], [])
+    prompt_lengths = _token_lengths(list(length_prompts), tokenizer)
+    completion_lengths = _token_lengths(list(length_completions), tokenizer)
 
-    # Subset for model forward passes
-    texts = all_texts_full[:max_samples]
+    # Random subset for model forward passes (length_records is already a seeded sample)
+    texts = length_texts[:max_samples]
     prompts, completions = zip(*texts) if texts else ([], [])
     all_texts = [p + " " + c for p, c in texts]
     print(f"[stats] Instruct: {len(records)} records, {len(texts)} samples for forward passes", flush=True)
@@ -530,15 +514,16 @@ def _compute_instruct_stats(
     unique_tokens = _count_unique_tokens(all_texts, tokenizer)
     vocab_size = len(tokenizer)
     dataset_stats = InstructDatasetStats(
-        total_tokens=sum(prompt_lengths) + sum(completion_lengths),
+        total_tokens=int((sum(prompt_lengths) + sum(completion_lengths)) * length_scale),
+        num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, completion_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(all_texts),
-        bits_per_byte=_compute_bits_per_byte(list(completions)),
+        bits_per_byte=_compute_bits_per_byte(list(completions)[:BPB_SAMPLE_SIZE]),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
-        prompt_tokens=sum(prompt_lengths),
-        completion_tokens=sum(completion_lengths),
+        prompt_tokens=int(sum(prompt_lengths) * length_scale),
+        completion_tokens=int(sum(completion_lengths) * length_scale),
         completion_length_distribution=_make_seq_dist(completion_lengths),
     )
     print(f"[stats] Dataset stats done in {time.time() - t0:.1f}s", flush=True)
@@ -565,17 +550,18 @@ def _compute_instruct_stats(
 def _compute_dpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
 ) -> DpoBaselineStats:
-    # Compute lengths on ALL records for accurate distributions
-    all_texts_full = _extract_dpo_texts(records)
-    all_p, all_c, all_r = zip(*all_texts_full) if all_texts_full else ([], [], [])
+    # Token-length stats on a random sample, scaled to the full record count
+    length_records, length_scale = _sample_for_lengths(records)
+    length_texts = _extract_dpo_texts(length_records)
+    all_p, all_c, all_r = zip(*length_texts) if length_texts else ([], [], [])
     prompt_lengths = _token_lengths(list(all_p), tokenizer)
     chosen_lengths = _token_lengths(list(all_c), tokenizer)
     rejected_lengths = _token_lengths(list(all_r), tokenizer)
 
     ratios = [c / r if r > 0 else 1.0 for c, r in zip(chosen_lengths, rejected_lengths)]
 
-    # Subset for model forward passes
-    texts = all_texts_full[:max_samples]
+    # Random subset for model forward passes (length sample is already seeded)
+    texts = length_texts[:max_samples]
     prompts, chosens, rejecteds = zip(*texts) if texts else ([], [], [])
     all_texts = [p + " " + c for p, c in zip(prompts, chosens)]
 
@@ -583,16 +569,17 @@ def _compute_dpo_stats(
     unique_tokens = _count_unique_tokens(all_dpo_texts, tokenizer)
     vocab_size = len(tokenizer)
     dataset_stats = DpoDatasetStats(
-        total_tokens=sum(prompt_lengths) + sum(chosen_lengths) + sum(rejected_lengths),
+        total_tokens=int((sum(prompt_lengths) + sum(chosen_lengths) + sum(rejected_lengths)) * length_scale),
+        num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, chosen_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(list(prompts)),
-        bits_per_byte=_compute_bits_per_byte(list(prompts)),
+        bits_per_byte=_compute_bits_per_byte(list(prompts)[:BPB_SAMPLE_SIZE]),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
-        prompt_tokens=sum(prompt_lengths),
-        chosen_tokens=sum(chosen_lengths),
-        rejected_tokens=sum(rejected_lengths),
+        prompt_tokens=int(sum(prompt_lengths) * length_scale),
+        chosen_tokens=int(sum(chosen_lengths) * length_scale),
+        rejected_tokens=int(sum(rejected_lengths) * length_scale),
         chosen_length_distribution=_make_seq_dist(chosen_lengths),
         rejected_length_distribution=_make_seq_dist(rejected_lengths),
         chosen_rejected_length_ratio=float(np.median(ratios)),
@@ -624,24 +611,25 @@ def _compute_grpo_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
     reward_functions=None,
 ) -> GrpoBaselineStats:
-    # Compute lengths on ALL records for accurate distributions
-    all_prompts_full = _extract_grpo_texts(records)
-    prompt_lengths = _token_lengths(all_prompts_full, tokenizer)
+    # Token-length stats on a random sample, scaled to the full record count
+    length_records, length_scale = _sample_for_lengths(records)
+    prompt_lengths = _token_lengths(_extract_grpo_texts(length_records), tokenizer)
 
-    # Subset for model forward passes
-    prompts = all_prompts_full[:max_samples]
+    # Random subset for model forward passes (length sample is already seeded)
+    prompts = _extract_grpo_texts(length_records)[:max_samples]
 
     unique_tokens = _count_unique_tokens(prompts, tokenizer)
     vocab_size = len(tokenizer)
     dataset_stats = GrpoDatasetStats(
-        total_tokens=sum(prompt_lengths),
+        total_tokens=int(sum(prompt_lengths) * length_scale),
+        num_records=len(records),
         seq_length_distribution=_make_seq_dist(prompt_lengths),
         near_duplicate_rate=_compute_near_duplicate_rate(prompts),
-        bits_per_byte=_compute_bits_per_byte(prompts),
+        bits_per_byte=_compute_bits_per_byte(prompts[:BPB_SAMPLE_SIZE]),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
-        prompt_tokens=sum(prompt_lengths),
+        prompt_tokens=int(sum(prompt_lengths) * length_scale),
         prompt_length_distribution=_make_seq_dist(prompt_lengths),
     )
 
@@ -703,7 +691,7 @@ def compute_text_stats(
     tokenizer,
     data_records: list[dict],
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
-    max_samples: int = 100,
+    max_samples: int = LENGTH_SAMPLE_SIZE,
     reward_functions=None,
 ) -> BaselineStats:
     """Compute stats for text-based tasks (instruct, DPO, GRPO, chat)."""
@@ -711,13 +699,20 @@ def compute_text_stats(
 
     if task_type == TaskType.CHATTASK:
         print("Computing chat stats...", flush=True)
-        return _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, text_extractor=_extract_chat_texts)
+        stats = _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, text_extractor=_extract_chat_texts)
     elif task_type == TaskType.DPOTASK:
         print("Computing DPO stats...", flush=True)
-        return _compute_dpo_stats(model, tokenizer, data_records, device, max_samples)
+        stats = _compute_dpo_stats(model, tokenizer, data_records, device, max_samples)
     elif task_type == TaskType.GRPOTASK:
         print("Computing GRPO stats...", flush=True)
-        return _compute_grpo_stats(model, tokenizer, data_records, device, max_samples, reward_functions)
+        stats = _compute_grpo_stats(model, tokenizer, data_records, device, max_samples, reward_functions)
     else:
         print(f"Computing instruct stats (task_type={task_type})...", flush=True)
-        return _compute_instruct_stats(model, tokenizer, data_records, device, max_samples)
+        stats = _compute_instruct_stats(model, tokenizer, data_records, device, max_samples)
+
+    # Throughput probe at the dataset's estimated packed block length — feeds
+    # the validator's training-hours budget.
+    seq_dist = stats.dataset.seq_length_distribution
+    packed_len = max(seq_dist.p95, 2 * seq_dist.p50)
+    stats.throughput = measure_training_throughput(model, device, packed_len, model.config.vocab_size)
+    return stats
