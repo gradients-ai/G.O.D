@@ -70,7 +70,7 @@ async def main() -> None:
     else:
         result = await find_hash_duplicates(repos, boss_hotkey=cst.EMISSION_BURN_HOTKEY)
 
-    report = render_report(result, args.tournament_id, "DRYRUN", cst.EMISSION_BURN_HOTKEY)
+    report = render_report(result, args.tournament_id, "DRYRUN", cst.EMISSION_BURN_HOTKEY, include_distinct_verdicts=True)
     print(report)
     if args.out:
         with open(args.out, "w") as handle:

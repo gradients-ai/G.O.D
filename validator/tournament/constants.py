@@ -50,14 +50,14 @@ EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
 
 # Small tournament (text/image) round-1 format.
-# When a tournament starts with fewer than 10 competitors we don't want a thin
+# When a tournament starts with fewer than 15 competitors we don't want a thin
 # knockout or a tiny group that still advances 8. Instead round 1 is a single
 # group that plays SMALL_TOURNAMENT_GROUP_TASKS matches, and only the best
 # SMALL_TOURNAMENT_ADVANCE advance (into the knockout that decides the boss
 # challenger). Below SMALL_TOURNAMENT_MIN_PARTICIPANTS there aren't enough
 # competitors to make this worthwhile, so we fall back to the normal knockout.
 SMALL_TOURNAMENT_MIN_PARTICIPANTS = 3
-SMALL_TOURNAMENT_MAX_PARTICIPANTS = 9  # i.e. fewer than 10 at tournament start
+SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2

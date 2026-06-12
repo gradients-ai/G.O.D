@@ -281,8 +281,31 @@ class TournamentTaskScore(BaseModel):
     participant_scores: list[dict]
 
 
+class PvPPairEnvResult(BaseModel):
+    """Head-to-head game results for one pair in one environment (hotkeys in sorted order)."""
+
+    hotkey_a: str
+    hotkey_b: str
+    environment_name: str
+    hotkey_a_wins: int
+    hotkey_b_wins: int
+    draws: int
+    total_games: int
+
+
+class PvPIndividualEnvScore(BaseModel):
+    """Per-environment aggregate score for one participant in a PvP task."""
+
+    hotkey: str
+    environment_name: str
+    score: float
+
+
 class DetailedTournamentTaskScore(TournamentTaskScore):
     task_type: TaskType | None = None
+    environment_names: list[str] | None = None
+    pvp_pair_results: list[PvPPairEnvResult] | None = None
+    pvp_individual_scores: list[PvPIndividualEnvScore] | None = None
 
 
 class TournamentRoundResult(BaseModel):
@@ -346,6 +369,7 @@ class TournamentDetailsResponse(BaseModel):
     final_scores: list[TournamentScore]
     text_tournament_weight: float
     image_tournament_weight: float
+    environment_tournament_weight: float | None = None
     boss_round_performance: list[TaskPerformanceDifference] | None = None
     sync_performance: list[TournamentPerformanceData] | None = None
 

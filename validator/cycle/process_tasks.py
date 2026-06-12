@@ -20,6 +20,7 @@ from validator.evaluation.scoring import evaluate_and_score_hotkeys
 from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
 from validator.evaluation.scoring import should_use_tournament_eval
 from validator.evaluation.basilica import EvaluationRetryableError
+from validator.evaluation.utils import cleanup_all_basilica_deployments
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
 from validator.utils.logging import LogContext
@@ -313,7 +314,9 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     pending_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "pending", config.psql_db)
     evaluating_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "evaluating", config.psql_db)
     if not pending_rows and not evaluating_rows:
-        await _finalize_task_status_from_evaluations(task, config)
+        finalized = await _finalize_task_status_from_evaluations(task, config)
+        if finalized:
+            await _cleanup_basilica_deployments_if_no_active_evaluations(config)
         return
     
     pending_hotkeys = [row["hotkey"] for row in pending_rows]
@@ -332,7 +335,19 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     if pending_evaluations:
         await asyncio.gather(*pending_evaluations)
 
-    await _finalize_task_status_from_evaluations(task, config)
+    finalized = await _finalize_task_status_from_evaluations(task, config)
+    if finalized:
+        await _cleanup_basilica_deployments_if_no_active_evaluations(config)
+
+
+async def _cleanup_basilica_deployments_if_no_active_evaluations(config: Config) -> None:
+    active_evaluations = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
+    if active_evaluations:
+        logger.info("Skipping drained Basilica cleanup; %s evaluation rows still active", active_evaluations)
+        return
+
+    logger.info("No active evaluation rows remain; deleting all Basilica deployments")
+    await cleanup_all_basilica_deployments()
 
 
 async def _move_back_to_looking_for_nodes(task: AnyTypeRawTask, config: Config):

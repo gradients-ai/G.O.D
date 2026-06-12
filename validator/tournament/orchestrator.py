@@ -38,7 +38,7 @@ from validator.core.models import AnyTypeRawTask
 from validator.core.models import InstructTextRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
+from validator.tasks.synthetic_scheduler import compute_hours_from_baseline_stats
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
 from validator.evaluation.scoring import should_use_tournament_eval
@@ -1074,7 +1074,13 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 return True
 
             if job.result.baseline_stats:
-                new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                new_hours = compute_hours_from_baseline_stats(
+                    task.hours_to_complete,
+                    task.baseline_stats,
+                    task.task_type,
+                    model_id=task.model_id,
+                    model_params_count=task.model_params_count,
+                )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 
@@ -1277,7 +1283,13 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     return
 
                 if prep_result.baseline_stats:
-                    new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                    new_hours = compute_hours_from_baseline_stats(
+                        task.hours_to_complete,
+                        task.baseline_stats,
+                        task.task_type,
+                        model_id=task.model_id,
+                        model_params_count=task.model_params_count,
+                    )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 

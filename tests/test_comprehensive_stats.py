@@ -4,7 +4,6 @@ Verifies all fields are populated, types correct, and values sensible.
 Run with: python -m pytest tests/test_comprehensive_stats.py -v -o addopts= -s
 """
 
-import json
 
 import pytest
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -104,26 +103,10 @@ class TestTrainingDynamics:
         # distilgpt2 on random text should be ~3-5
         assert 1.0 < baseline_stats.training.init_loss < 12.0
 
-    def test_grad_norms_populated(self, baseline_stats):
-        assert len(baseline_stats.training.grad_norms) > 0
-        for name, norm in baseline_stats.training.grad_norms.items():
-            assert norm >= 0, f"{name} has negative grad norm"
-
-    def test_gradient_noise_scale_positive(self, baseline_stats):
-        assert baseline_stats.training.gradient_noise_scale >= 0
-
     def test_activation_rms_populated(self, baseline_stats):
         assert len(baseline_stats.training.activation_rms) > 0
         for name, rms in baseline_stats.training.activation_rms.items():
             assert rms >= 0, f"{name} has negative activation RMS"
-
-    def test_grad_stats_have_svd(self, baseline_stats):
-        assert len(baseline_stats.training.grad_stats) > 0
-        for name, gs in baseline_stats.training.grad_stats.items():
-            assert gs.frobenius_norm >= 0
-            assert gs.rms >= 0
-            assert gs.max_abs >= 0
-            assert len(gs.top_singular_values) > 0
 
     def test_output_entropy_positive(self, baseline_stats):
         assert baseline_stats.training.output_entropy > 0
@@ -156,7 +139,6 @@ class TestJsonRoundtrip:
         restored = BaselineStats.model_validate_json(json_str)
         assert restored.dataset.total_tokens == baseline_stats.dataset.total_tokens
         assert restored.training.init_loss == baseline_stats.training.init_loss
-        assert len(restored.training.grad_stats) == len(baseline_stats.training.grad_stats)
 
 
 class TestLayerClassification:

@@ -510,8 +510,18 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-def render_report(result: DedupResult, tournament_id: str, round_id: str, boss_hotkey: str | None) -> str:
-    """Human-readable markdown report of a dedup result (uploaded for review)."""
+def render_report(
+    result: DedupResult,
+    tournament_id: str,
+    round_id: str,
+    boss_hotkey: str | None,
+    include_distinct_verdicts: bool = False,
+) -> str:
+    """Human-readable markdown report of a dedup result (uploaded for review).
+
+    The uploaded copy is publicly linked (Discord + /auditing/dedup), so by default DISTINCT
+    pair verdicts are omitted: their reasons describe how non-flagged miners' repos differ,
+    i.e. their training innovations. Full verdicts stay in the DB review row."""
     lines = [
         f"# Tournament dedup review — {tournament_id}",
         f"Guarded round: `{round_id}`",
@@ -537,8 +547,16 @@ def render_report(result: DedupResult, tournament_id: str, round_id: str, boss_h
         lines.append("\n## Could not clone (not flagged)")
         lines.extend(f"- `{h}`" for h in result.unclonable_hotkeys)
 
-    lines.append("\n## All pairwise verdicts")
-    for v in result.pair_verdicts:
+    if include_distinct_verdicts:
+        shown = result.pair_verdicts
+        lines.append("\n## All pairwise verdicts")
+    else:
+        shown = [v for v in result.pair_verdicts if v.relationship != DupRelationship.DISTINCT]
+        omitted = len(result.pair_verdicts) - len(shown)
+        lines.append("\n## Flagged pairwise verdicts")
+        if omitted:
+            lines.append(f"({omitted} distinct pair(s) omitted from the published report)")
+    for v in shown:
         lines.append(
             f"- [{v.tier.value}] `{v.hotkey_a}` vs `{v.hotkey_b}`: "
             f"**{v.relationship.value}** ({v.confidence:.2f}) — {v.reason}"
