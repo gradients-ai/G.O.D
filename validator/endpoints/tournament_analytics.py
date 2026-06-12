@@ -23,6 +23,8 @@ from core.models.tournament_models import DetailedTournamentTaskScore
 from core.models.tournament_models import LatestTournamentsDetailsResponse
 from core.models.tournament_models import NextTournamentDates
 from core.models.tournament_models import NextTournamentInfo
+from core.models.tournament_models import PvPIndividualEnvScore
+from core.models.tournament_models import PvPPairEnvResult
 from core.models.tournament_models import TournamentDetailsResponse
 from core.models.tournament_models import TournamentHistoryEntry
 from core.models.tournament_models import TournamentHistoryResponse
@@ -86,6 +88,8 @@ async def get_tournament_details(
         if not tournament:
             raise HTTPException(status_code=404, detail="Tournament not found")
 
+        is_environment_tournament = TournamentType(tournament.tournament_type) == TournamentType.ENVIRONMENT
+
         detailed_rounds = []
         for round_data in rounds:
             tasks = await tournament_sql.get_tournament_tasks(round_data.round_id, config.psql_db)
@@ -114,14 +118,55 @@ async def get_tournament_details(
                 ]
                 winners_task = tournament_sql.get_task_winners(task_ids, config.psql_db)
 
+                pvp_pairs_tasks = []
+                pvp_individual_tasks = []
+                if is_environment_tournament:
+                    pvp_pairs_tasks = [
+                        tournament_sql.get_pvp_pair_results(str(task_id), config.psql_db) for task_id in task_ids
+                    ]
+                    pvp_individual_tasks = [
+                        tournament_sql.get_individual_scores(str(task_id), config.psql_db) for task_id in task_ids
+                    ]
+
                 task_details_results = await asyncio.gather(*task_details_tasks)
                 scores_results = await asyncio.gather(*scores_tasks)
                 task_winners = await winners_task
+                pvp_pairs_results = await asyncio.gather(*pvp_pairs_tasks) if pvp_pairs_tasks else []
+                pvp_individual_results = await asyncio.gather(*pvp_individual_tasks) if pvp_individual_tasks else []
 
                 for i, task in enumerate(tasks):
                     task_details = task_details_results[i]
                     participant_scores = scores_results[i]
                     winner = task_winners.get(str(task.task_id))
+
+                    environment_names = None
+                    pvp_pair_results = None
+                    pvp_individual_scores = None
+                    if is_environment_tournament:
+                        if task_details and getattr(task_details, "environment_names", None):
+                            environment_names = [str(getattr(e, "value", e)) for e in task_details.environment_names]
+                        pvp_pair_results = [
+                            PvPPairEnvResult(
+                                hotkey_a=row.hotkey_a,
+                                hotkey_b=row.hotkey_b,
+                                environment_name=row.environment_name,
+                                hotkey_a_wins=row.model_a_wins,
+                                hotkey_b_wins=row.model_b_wins,
+                                draws=row.draws,
+                                total_games=row.total_games,
+                            )
+                            for row in pvp_pairs_results[i]
+                            if row.is_complete
+                        ] or None
+                        pvp_individual_scores = [
+                            PvPIndividualEnvScore(
+                                hotkey=row.hotkey,
+                                environment_name=row.environment_name,
+                                score=row.score,
+                            )
+                            for row in pvp_individual_results[i]
+                            if row.is_complete
+                        ] or None
 
                     detailed_task = DetailedTournamentTaskScore(
                         task_id=str(task.task_id),
@@ -130,6 +175,9 @@ async def get_tournament_details(
                         winner=winner,
                         participant_scores=participant_scores,
                         task_type=task_details.task_type if task_details else None,
+                        environment_names=environment_names,
+                        pvp_pair_results=pvp_pair_results,
+                        pvp_individual_scores=pvp_individual_scores,
                     )
                     detailed_tasks.append(detailed_task)
 
@@ -184,6 +232,7 @@ async def get_tournament_details(
             final_scores=tournament_type_result.scores,
             text_tournament_weight=cts.TOURNAMENT_TEXT_WEIGHT,
             image_tournament_weight=cts.TOURNAMENT_IMAGE_WEIGHT,
+            environment_tournament_weight=cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
             boss_round_performance=boss_round_performance,
             sync_performance=sync_performance,
         )
