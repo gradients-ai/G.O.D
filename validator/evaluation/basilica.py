@@ -557,6 +557,28 @@ async def _run_single_basilica_eval_repo(
             ctx=ctx,
         )
 
+    async def cleanup_attempt(deployment, deployment_name: str, reason: str) -> str:
+        dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
+        if deployment is not None:
+            await _delete_eval_deployment(ctx, client, deployment, dep_name, reason)
+        await _release_reserved_gpus(
+            task_id=task_id,
+            psql_db=psql_db,
+            hotkeys=reserved_hotkeys,
+            deployment_name=dep_name,
+            ctx=ctx,
+        )
+        return dep_name
+
+    async def sleep_before_retry(remaining: int, message: str) -> None:
+        eval_logger.info(message)
+        log_step(
+            "retry_sleep_start",
+            delay_seconds=vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS,
+            remaining=remaining,
+        )
+        await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
@@ -590,30 +612,35 @@ async def _run_single_basilica_eval_repo(
         except asyncio.CancelledError:
             log_step("attempt_cancelled", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             raise
-        except EvaluationRetryableError:
-            dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
-            if deployment is not None:
-                await _delete_eval_deployment(ctx, client, deployment, dep_name, "attempt_retryable")
-            await _release_reserved_gpus(
-                task_id=task_id,
-                psql_db=psql_db,
-                hotkeys=reserved_hotkeys,
-                deployment_name=dep_name,
-                ctx=ctx,
+        except DeploymentNotReadyError as e:
+            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            await cleanup_attempt(deployment, deployment_name, "attempt_not_ready")
+            log_step(
+                "attempt_not_ready",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_name,
+                remaining=remaining,
+                error=e,
             )
+            eval_logger.warning(
+                f"[{repo}] deployment was not ready on attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}: {e}",
+                exc_info=True,
+            )
+            if remaining > 0:
+                await sleep_before_retry(
+                    remaining,
+                    f"[{repo}] retrying deployment readiness in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
+                    f"({remaining} attempts remaining)",
+                )
+            else:
+                log_step("all_readiness_attempts_failed", deployment=deployment_name, error=e)
+                raise
+        except EvaluationRetryableError:
+            await cleanup_attempt(deployment, deployment_name, "attempt_retryable")
             raise
         except Exception as e:
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
-            if deployment is not None:
-                await _delete_eval_deployment(ctx, client, deployment, dep_name, "attempt_exception")
-            await _release_reserved_gpus(
-                task_id=task_id,
-                psql_db=psql_db,
-                hotkeys=reserved_hotkeys,
-                deployment_name=dep_name,
-                ctx=ctx,
-            )
+            await cleanup_attempt(deployment, deployment_name, "attempt_exception")
             log_step(
                 "attempt_failed",
                 attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
@@ -626,16 +653,11 @@ async def _run_single_basilica_eval_repo(
                 exc_info=True,
             )
             if remaining > 0:
-                eval_logger.info(
+                await sleep_before_retry(
+                    remaining,
                     f"[{repo}] retrying in {vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS // 60} minutes "
-                    f"({remaining} attempts remaining)"
+                    f"({remaining} attempts remaining)",
                 )
-                log_step(
-                    "retry_sleep_start",
-                    delay_seconds=vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS,
-                    remaining=remaining,
-                )
-                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
                 log_step("all_attempts_failed", deployment=deployment_name, error=e)
                 return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
