@@ -29,33 +29,6 @@ _BATTLESHIP_VARIANTS: tuple[dict[str, GameParamValue], ...] = (
         "allow_repeated_shots": False,
         "loss_multiplier": 1.0,
     },
-    {
-        "board_width": 4,
-        "board_height": 5,
-        "ship_sizes": "[2;3]",
-        "ship_values": "[1;2]",
-        "num_shots": 8,
-        "allow_repeated_shots": False,
-        "loss_multiplier": 1.0,
-    },
-    {
-        "board_width": 5,
-        "board_height": 5,
-        "ship_sizes": "[2;3]",
-        "ship_values": "[1;2]",
-        "num_shots": 10,
-        "allow_repeated_shots": False,
-        "loss_multiplier": 1.0,
-    },
-    {
-        "board_width": 5,
-        "board_height": 5,
-        "ship_sizes": "[2;3;3]",
-        "ship_values": "[1;1;2]",
-        "num_shots": 12,
-        "allow_repeated_shots": False,
-        "loss_multiplier": 1.0,
-    },
 )
 
 

@@ -126,8 +126,8 @@ class TestConfigIdVariation:
         agent = OthelloAgent()
         assert agent.generate_params(0) == agent.generate_params(99) == {}
 
-    def test_battleship_params_vary_and_load(self):
-        """Battleship uses typed OpenSpiel params and each variant should load."""
+    def test_battleship_params_constant_and_load(self):
+        """Battleship uses the small 4x4 setup for every config ID."""
         agent = BattleshipAgent()
         params_set = set()
 
@@ -135,6 +135,9 @@ class TestConfigIdVariation:
             params = agent.generate_params(config_id)
             params_set.add(tuple(sorted(params.items())))
 
+            assert params["board_width"] == 4
+            assert params["board_height"] == 4
+            assert params["num_shots"] == 7
             assert params["loss_multiplier"] == 1.0
             assert params["allow_repeated_shots"] is False
             assert isinstance(params["ship_sizes"], str)
@@ -148,7 +151,7 @@ class TestConfigIdVariation:
             action = state.legal_actions()[0]
             assert "place ship" in state.action_to_string(state.current_player(), action)
 
-        assert len(params_set) == 4
+        assert len(params_set) == 1
 
     def test_game_instance_accepts_non_integer_game_params(self):
         params = BattleshipAgent().generate_params(0)
