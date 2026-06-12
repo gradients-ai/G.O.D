@@ -11,7 +11,7 @@ PVP_CONFIG_ID_DIVISOR = 100_000_000
 
 # Per-turn wall-clock forfeit budget. A turn is a SINGLE model call (memory
 # edits + the move in one response); this is the "stuck/too slow" cutoff.
-PVP_TURN_TIMEOUT_SECONDS = 15
+PVP_TURN_TIMEOUT_SECONDS = 30
 # End-of-game reflection is also a single call; bound it so a hung server can't
 # stall the matchup (reflection runs after every game, for both players).
 PVP_REFLECTION_TIMEOUT_SECONDS = 10
