@@ -255,6 +255,12 @@ def calculate_tournament_type_scores_from_data(
         round_number = round_result.round_number
         is_final_round = round_result.is_final_round
 
+        # Round 1 is the entry/group round: it decides who advances but must NOT
+        # earn tournament emissions. Only results from later rounds (round_number > 1)
+        # accumulate points toward weights.
+        if round_number <= 1:
+            continue
+
         for task in round_result.tasks:
             winner = task.winner
 
