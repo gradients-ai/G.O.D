@@ -150,14 +150,15 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             perf_diff = calculate_env_perf_diff_from_win_pct(win_pct)
             challenger_won = challenger_score > boss_score
         elif is_higher_better:
-            if boss_score > 0:
-                perf_diff = (challenger_score - boss_score) / boss_score
+            # abs() so the relative margin keeps its sign for negative scores (e.g. GRPO rewards)
+            if boss_score != 0:
+                perf_diff = (challenger_score - boss_score) / abs(boss_score)
             else:
                 perf_diff = 0.0
             challenger_won = challenger_score > boss_score * (1 + threshold)
         else:
-            if challenger_score > 0:
-                perf_diff = (boss_score - challenger_score) / challenger_score
+            if challenger_score != 0:
+                perf_diff = (boss_score - challenger_score) / abs(challenger_score)
             else:
                 perf_diff = 0.0
             challenger_won = challenger_score < boss_score * (1 - threshold)
