@@ -255,6 +255,12 @@ def calculate_tournament_type_scores_from_data(
         round_number = round_result.round_number
         is_final_round = round_result.is_final_round
 
+        # Round 1 is the entry/group round: it decides who advances but must NOT
+        # earn tournament emissions. Only results from later rounds (round_number > 1)
+        # accumulate challenger points.
+        if round_number <= 1:
+            continue
+
         for task in round_result.tasks:
             winner = task.winner
 
@@ -391,9 +397,14 @@ def tournament_scores_to_weights(
 
 def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
     result = calculate_tournament_type_scores_from_data(tournament_type, data)
+    # Seed weights whenever there are challenger scores OR a tournament winner.
+    # The champion is excluded from `result.scores` (only challengers accumulate
+    # points) and is re-seeded inside tournament_scores_to_weights via
+    # prev_winner_hotkey, so bailing on empty scores would drop the champion too —
+    # which happens once round-1 challenger points are excluded.
     weights = (
         tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
-        if result.scores
+        if result.scores or result.prev_winner_hotkey
         else {}
     )
     logger.info(f"{tournament_type.value} tournament weights: {weights}")
