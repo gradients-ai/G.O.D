@@ -20,6 +20,7 @@ try:
 
     import pyspiel
 
+    from validator.evaluation.pvp.agents import BattleshipAgent
     from validator.evaluation.pvp.agents import GinRummyAgent
     from validator.evaluation.pvp.agents import LeducPokerAgent
     from validator.evaluation.pvp.agents import LiarsDiceAgent
@@ -125,6 +126,46 @@ class TestConfigIdVariation:
         agent = OthelloAgent()
         assert agent.generate_params(0) == agent.generate_params(99) == {}
 
+    def test_battleship_params_vary_and_load(self):
+        """Battleship uses typed OpenSpiel params and each variant should load."""
+        agent = BattleshipAgent()
+        params_set = set()
+
+        for config_id in range(8):
+            params = agent.generate_params(config_id)
+            params_set.add(tuple(sorted(params.items())))
+
+            assert params["loss_multiplier"] == 1.0
+            assert params["allow_repeated_shots"] is False
+            assert isinstance(params["ship_sizes"], str)
+            assert isinstance(params["ship_values"], str)
+
+            game = pyspiel.load_game(agent.game_name, params)
+            assert game.get_type().utility == pyspiel.GameType.Utility.ZERO_SUM
+            assert game.num_players() == 2
+
+            state = game.new_initial_state()
+            action = state.legal_actions()[0]
+            assert "place ship" in state.action_to_string(state.current_player(), action)
+
+        assert len(params_set) == 4
+
+    def test_game_instance_accepts_non_integer_game_params(self):
+        params = BattleshipAgent().generate_params(0)
+        instance = GameInstance(
+            game_name="battleship",
+            game_params=params,
+            model_a_player_id=0,
+            seed=42,
+            is_zero_sum=True,
+            min_utility=-2.0,
+            max_utility=2.0,
+        )
+
+        assert instance.game_params["ship_sizes"] == "[2;2]"
+        assert instance.game_params["allow_repeated_shots"] is False
+        assert instance.game_params["loss_multiplier"] == 1.0
+
 
 # --- 3c': Othello seeded opening plies (deterministic game needs injected variety) ---
 
@@ -165,6 +206,41 @@ class TestOthelloOpeningPlies:
         """At least some seeds move the board off the standard starting position."""
         fresh = pyspiel.load_game("othello").new_initial_state().observation_string(0)
         assert any(self._opened_board(seed) != fresh for seed in range(20))
+
+
+# --- 3c'': Battleship full setup phase ---
+
+
+@needs_pyspiel
+class TestBattleshipFullGame:
+    def test_format_state_names_placement_phase_and_next_ship(self):
+        agent = BattleshipAgent()
+        game = pyspiel.load_game(agent.game_name, agent.generate_params(0))
+        state = game.new_initial_state()
+
+        initial = agent.format_state(state, 0)
+        assert "Phase: ship placement" in initial
+        assert "Next ship to place: a (length 2)" in initial
+        assert "State of player's ships" in initial
+
+        state.apply_action(state.legal_actions()[0])
+        state.apply_action(state.legal_actions()[0])
+
+        second_ship = agent.format_state(state, 0)
+        assert "Next ship to place: b (length 2)" in second_ship
+
+    def test_full_game_reaches_battle_phase_after_ship_placement(self):
+        agent = BattleshipAgent()
+        game = pyspiel.load_game(agent.game_name, agent.generate_params(0))
+        state = game.new_initial_state()
+
+        while any("place ship" in state.action_to_string(state.current_player(), action) for action in state.legal_actions()):
+            state.apply_action(state.legal_actions()[0])
+
+        formatted = agent.format_state(state, state.current_player())
+        assert "Phase: battle" in formatted
+        assert "Your shots taken: 0/7" in formatted
+        assert "shoot at" in state.action_to_string(state.current_player(), state.legal_actions()[0])
 
 
 # --- 3d: _tally correctness ---

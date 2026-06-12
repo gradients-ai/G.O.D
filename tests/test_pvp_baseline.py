@@ -75,6 +75,18 @@ class TestRunMctsBaseline:
         )
         assert result.num_games == 1
 
+    def test_runs_for_battleship_full_game(self):
+        result = run_mcts_baseline(
+            EnvironmentName.BATTLESHIP,
+            _first_legal_chat,
+            _config(),
+            num_games=1,
+            mcts_simulations=2,
+            base_seed=5,
+        )
+        assert result.num_games == 1
+        assert result.wins + result.draws + result.losses == 1
+
     def test_exhausted_time_budget_returns_partial_tally(self):
         result = run_mcts_baseline(
             EnvironmentName.LEDUC_POKER,

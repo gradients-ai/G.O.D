@@ -77,6 +77,36 @@ gin_rummy_rules: >
 
   IMPORTANT: Always respond with the action ID number ONLY, never card names.
 
+battleship_rules: >
+  BATTLESHIP RULES:
+
+  Board: Each player has a hidden rectangular grid. Coordinates are zero-based
+  (row, col). Both players have the same ships and place them in the listed
+  order before shooting starts.
+
+  Ship placement phase:
+  - Players alternate placing one ship at a time, starting with Player 0.
+  - A ship occupies consecutive cells either horizontally or vertically.
+  - Ships cannot overlap your own previously placed ships.
+  - Legal placement actions show the top-left cell and orientation for the next
+    ship you must place.
+
+  Battle phase:
+  - After all ships are placed, players alternate shooting at the opponent grid,
+    starting with Player 0.
+  - Legal shot actions show the target coordinate.
+  - A shot result is water/miss, hit, or sunk. Only sunk ships score points.
+  - If repeated shots are not allowed, never shoot a coordinate already shown on
+    your shot-outcomes board.
+
+  Board legends:
+  - Own board: lowercase ship letters are unhit ship cells, uppercase letters
+    were hit by the opponent, * is an opponent shot that missed.
+  - Shot board: # is your hit, @ is your miss, blank is unshot or unknown.
+
+  Winning: With loss_multiplier 1.0, the game is zero-sum. Your return is the
+  value of enemy ships you sunk minus the value of your ships the opponent sunk.
+
 othello_rules: >
   OTHELLO (REVERSI) RULES:
 

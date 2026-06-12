@@ -50,11 +50,14 @@ class GameScoringContext(BaseModel):
     max_utility: float = Field(description="Maximum possible return value")
 
 
+GameParameterValue = bool | int | float | str
+
+
 class GameInstance(PvPBaseModel):
     """Configuration for a single game to be played."""
 
     game_name: str = Field(description="OpenSpiel game identifier (e.g. 'liars_dice')")
-    game_params: dict[str, int] = Field(description="Parameters passed to pyspiel.load_game()")
+    game_params: dict[str, GameParameterValue] = Field(description="Parameters passed to pyspiel.load_game()")
     model_a_player_id: int = Field(description="Player index assigned to model A (0 or 1)")
     seed: int = Field(description="Random seed for this game instance")
     is_zero_sum: bool = Field(description="Whether the game is zero-sum")
@@ -86,7 +89,11 @@ class PvPModelSpec(PvPBaseModel):
         description="Base model repository, used for LoRA detection"
     )
     gpu_id: int | None = Field(default=None, ge=0, description="GPU device ID. Defaults to 0 for model_a, 1 for model_b")
-    port: int | None = Field(default=None, gt=0, description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b")
+    port: int | None = Field(
+        default=None,
+        gt=0,
+        description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b",
+    )
 
 
 class PvPMatchupConfig(BaseModel):

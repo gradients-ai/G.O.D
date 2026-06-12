@@ -7,13 +7,56 @@ Rules text is loaded from core/config/pvp_game_prompts.yml.
 import functools
 import random
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from pathlib import Path
 
 import pyspiel
 import yaml
 
+
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "core" / "config" / "pvp_game_prompts.yml"
+GameParamValue = bool | int | float | str
+
+
+_BATTLESHIP_VARIANTS: tuple[dict[str, GameParamValue], ...] = (
+    {
+        "board_width": 4,
+        "board_height": 4,
+        "ship_sizes": "[2;2]",
+        "ship_values": "[1;1]",
+        "num_shots": 7,
+        "allow_repeated_shots": False,
+        "loss_multiplier": 1.0,
+    },
+    {
+        "board_width": 4,
+        "board_height": 5,
+        "ship_sizes": "[2;3]",
+        "ship_values": "[1;2]",
+        "num_shots": 8,
+        "allow_repeated_shots": False,
+        "loss_multiplier": 1.0,
+    },
+    {
+        "board_width": 5,
+        "board_height": 5,
+        "ship_sizes": "[2;3]",
+        "ship_values": "[1;2]",
+        "num_shots": 10,
+        "allow_repeated_shots": False,
+        "loss_multiplier": 1.0,
+    },
+    {
+        "board_width": 5,
+        "board_height": 5,
+        "ship_sizes": "[2;3;3]",
+        "ship_values": "[1;1;2]",
+        "num_shots": 12,
+        "allow_repeated_shots": False,
+        "loss_multiplier": 1.0,
+    },
+)
 
 
 @functools.cache
@@ -37,7 +80,7 @@ class BaseGameAgent(ABC):
         ...
 
     @abstractmethod
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
         """Generate pyspiel game parameters from a config variant ID."""
         ...
 
@@ -88,7 +131,7 @@ class LiarsDiceAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "liars_dice_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
         return {"players": 2, "numdice": 5}
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
@@ -140,7 +183,7 @@ class LeducPokerAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "leduc_poker_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
         return {"players": 2}
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
@@ -222,7 +265,7 @@ class GinRummyAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "gin_rummy_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
         hand_var = (config_id // 3) % 3
         knock_var = config_id % 3
         return {
@@ -232,6 +275,110 @@ class GinRummyAgent(BaseGameAgent):
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         return state.observation_string(player_id)
+
+
+class BattleshipAgent(BaseGameAgent):
+
+    @property
+    def game_name(self) -> str:
+        return "battleship"
+
+    @property
+    def rules_key(self) -> str:
+        return "battleship_rules"
+
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
+        return dict(_BATTLESHIP_VARIANTS[config_id % len(_BATTLESHIP_VARIANTS)])
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        params = self._game_params(state)
+        ship_sizes = self._parse_int_list(params.get("ship_sizes", "[2;2]"))
+        width = int(params.get("board_width", 0))
+        height = int(params.get("board_height", 0))
+        num_shots = int(params.get("num_shots", 0))
+        allow_repeated = bool(params.get("allow_repeated_shots", True))
+
+        action_descriptions = self._legal_action_descriptions(state, player_id)
+        placement_phase = any("place ship" in action for action in action_descriptions)
+
+        lines = [
+            f"Board: {height} rows x {width} columns. Coordinates are zero-based (row, col).",
+            f"Ships, placed in order: {self._format_ship_order(ship_sizes)}.",
+            f"Shots per player: {num_shots}. Repeated shots: {'allowed' if allow_repeated else 'not allowed'}.",
+        ]
+
+        if placement_phase:
+            placed = self._own_ship_placements_count(state, player_id)
+            if placed < len(ship_sizes):
+                ship_label = chr(ord("a") + placed)
+                lines.append(f"Phase: ship placement. Next ship to place: {ship_label} (length {ship_sizes[placed]}).")
+            else:
+                lines.append("Phase: ship placement.")
+        else:
+            shots_taken = self._own_shot_count(state, player_id)
+            lines.append(f"Phase: battle. Your shots taken: {shots_taken}/{num_shots}.")
+
+        lines.extend(
+            [
+                "Own board legend: lowercase ship letters are unhit, uppercase letters were hit, * is an opponent miss.",
+                "Shot board legend: # is your hit, @ is your miss, blank is unshot or unknown.",
+                "",
+                state.observation_string(player_id),
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _game_params(state: pyspiel.State) -> dict[str, GameParamValue]:
+        try:
+            return dict(state.get_game().get_parameters())
+        except (RuntimeError, AttributeError):
+            return {}
+
+    @staticmethod
+    def _parse_int_list(raw: object) -> list[int]:
+        if isinstance(raw, str):
+            body = raw.strip().removeprefix("[").removesuffix("]")
+            return [int(part.strip()) for part in body.split(";") if part.strip()]
+        if isinstance(raw, list):
+            return [int(part) for part in raw]
+        return []
+
+    @staticmethod
+    def _format_ship_order(ship_sizes: list[int]) -> str:
+        if not ship_sizes:
+            return "(unknown)"
+        return ", ".join(f"{chr(ord('a') + i)} length {size}" for i, size in enumerate(ship_sizes))
+
+    @staticmethod
+    def _legal_action_descriptions(state: pyspiel.State, player_id: int) -> list[str]:
+        try:
+            legal_actions = state.legal_actions(player_id)
+        except TypeError:
+            legal_actions = state.legal_actions()
+        descriptions: list[str] = []
+        for action in legal_actions:
+            try:
+                descriptions.append(state.action_to_string(player_id, action))
+            except (RuntimeError, AttributeError):
+                descriptions.append(str(action))
+        return descriptions
+
+    @staticmethod
+    def _own_ship_placements_count(state: pyspiel.State, player_id: int) -> int:
+        try:
+            info_state = state.information_state_string(player_id)
+        except (RuntimeError, AttributeError):
+            return 0
+        return len(re.findall(r"/[hv]_\d+_\d+", info_state))
+
+    @staticmethod
+    def _own_shot_count(state: pyspiel.State, player_id: int) -> int:
+        try:
+            info_state = state.information_state_string(player_id)
+        except (RuntimeError, AttributeError):
+            return 0
+        return len(re.findall(r"/shot_\d+_\d+:[WHS]", info_state))
 
 
 # Number of seeded random opening plies applied to an othello game, sampled from
@@ -250,7 +397,7 @@ class OthelloAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "othello_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> dict[str, GameParamValue]:
         return {}
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
