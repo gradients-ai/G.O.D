@@ -464,10 +464,10 @@ class TestCalculateTournamentTypeScores:
         data = self._make_tournament_data(
             rounds=[
                 TournamentRoundResult(
-                    round_id="r1", round_number=1, round_type="group", is_final_round=True,
+                    round_id="r2", round_number=2, round_type="boss", is_final_round=True,
                     tasks=[
                         TournamentTaskScore(task_id="t1", group_id=None, pair_id=None, winner=ALICE, participant_scores=[]),
-                        TournamentTaskScore(task_id="t2", group_id=None, pair_id=None, winner=ALICE, participant_scores=[]),
+                        TournamentTaskScore(task_id="t2", group_id=None, pair_id=None, winner=BOB, participant_scores=[]),
                     ],
                 ),
             ],
@@ -476,13 +476,14 @@ class TestCalculateTournamentTypeScores:
         result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
         hotkeys_with_scores = {s.hotkey for s in result.scores}
         assert ALICE not in hotkeys_with_scores
+        assert BOB in hotkeys_with_scores
 
     def test_environment_tournament_ranked_scoring(self):
         """Environment tournaments use ranked participant scoring, not just winner-takes-all."""
         data = self._make_tournament_data(
             rounds=[
                 TournamentRoundResult(
-                    round_id="r1", round_number=1, round_type="group", is_final_round=False,
+                    round_id="r2", round_number=2, round_type="group", is_final_round=False,
                     tasks=[
                         TournamentTaskScore(
                             task_id="t1", group_id="g1", pair_id=None, winner=None,
@@ -508,7 +509,7 @@ class TestCalculateTournamentTypeScores:
         data = self._make_tournament_data(
             rounds=[
                 TournamentRoundResult(
-                    round_id="r1", round_number=1, round_type="group", is_final_round=False,
+                    round_id="r2", round_number=2, round_type="group", is_final_round=False,
                     tasks=[
                         TournamentTaskScore(
                             task_id="t1", group_id="g1", pair_id=None, winner=None,
@@ -537,7 +538,7 @@ class TestCalculateTournamentTypeScores:
         data = self._make_tournament_data(
             rounds=[
                 TournamentRoundResult(
-                    round_id="r1", round_number=1, round_type="boss", is_final_round=True,
+                    round_id="r2", round_number=2, round_type="boss", is_final_round=True,
                     tasks=[
                         TournamentTaskScore(task_id="t1", group_id=None, pair_id=None, winner=ALICE, participant_scores=[]),
                     ],
@@ -548,3 +549,75 @@ class TestCalculateTournamentTypeScores:
         result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
         assert result.prev_winner_won_final is True
         assert result.prev_winner_hotkey == ALICE
+
+    def test_round_one_tasks_do_not_earn_emissions(self):
+        data = self._make_tournament_data(
+            rounds=[
+                TournamentRoundResult(
+                    round_id="r1",
+                    round_number=1,
+                    round_type="group",
+                    is_final_round=False,
+                    tasks=[
+                        TournamentTaskScore(
+                            task_id="text-r1",
+                            group_id="g1",
+                            pair_id=None,
+                            winner=BOB,
+                            participant_scores=[],
+                        ),
+                    ],
+                ),
+                TournamentRoundResult(
+                    round_id="r2",
+                    round_number=2,
+                    round_type="knockout",
+                    is_final_round=False,
+                    tasks=[
+                        TournamentTaskScore(
+                            task_id="text-r2",
+                            group_id=None,
+                            pair_id="p1",
+                            winner=CAROL,
+                            participant_scores=[],
+                        ),
+                    ],
+                ),
+            ],
+            winner_hotkey=ALICE,
+        )
+
+        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
+        scores_by_hotkey = {score.hotkey: score.score for score in result.scores}
+
+        assert BOB not in scores_by_hotkey
+        assert scores_by_hotkey[CAROL] == 2 * cts.TOURNAMENT_TEXT_WEIGHT
+
+    def test_environment_round_one_tasks_do_not_earn_emissions(self):
+        data = self._make_tournament_data(
+            rounds=[
+                TournamentRoundResult(
+                    round_id="r1",
+                    round_number=1,
+                    round_type="group",
+                    is_final_round=False,
+                    tasks=[
+                        TournamentTaskScore(
+                            task_id="env-r1",
+                            group_id="g1",
+                            pair_id=None,
+                            winner=None,
+                            participant_scores=[
+                                {"hotkey": ALICE, "test_loss": 10.0},
+                                {"hotkey": BOB, "test_loss": 5.0},
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            winner_hotkey=None,
+        )
+
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data)
+
+        assert result.scores == []

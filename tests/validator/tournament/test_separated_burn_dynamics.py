@@ -281,7 +281,7 @@ class TestSeparatedBurnDynamics:
         with patch("validator.scoring.weights.fetch_nodes") as mock_fetch_nodes:
             # Setup basic mocks for integration test
             mock_substrate = MagicMock()
-            mock_fetch_nodes.get_nodes_for_netuid.return_value = [
+            mock_fetch_nodes._get_nodes_for_uid.return_value = [
                 MagicMock(hotkey="hotkey1", node_id=0),
                 MagicMock(hotkey="hotkey2", node_id=1),
             ]

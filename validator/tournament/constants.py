@@ -15,7 +15,7 @@ TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15
 
 # Tournament start requirements
 MIN_MINERS_FOR_ENV_TOURN = 5
-MIN_MINERS_FOR_TOURN = 8
+MIN_MINERS_FOR_TOURN = 4  # within the small-tournament band (3..9): round 1 is a single group, top 2 advance
 
 # Boss round historical task selection
 BOSS_ROUND_HISTORICAL_START_DATE = date(2025, 6, 1)
