@@ -109,9 +109,9 @@ MODEL_SIZE_RANGE_MULTIPLIER_MAX = 1.2
 MODEL_PARAMS_TO_BILLIONS = 1e9
 
 # Progressive championship threshold constants
-EXPONENTIAL_BASE_THRESHOLD = 0.05  # Starting threshold for new champions
+EXPONENTIAL_BASE_THRESHOLD = 0.075  # Starting threshold for new champions
 EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
-EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
+EXPONENTIAL_DECAY_RATE = 0.85  # Decay factor per consecutive win
 EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
 
 # Obfuscation detection constants
