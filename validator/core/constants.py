@@ -96,15 +96,24 @@ MEASURED_THROUGHPUT_MINER_RATIO = 1.0
 # Guard rails on measured throughput: clamp to this band around the analytic
 # estimate so a bad measurement can't produce absurd hours.
 MEASURED_THROUGHPUT_CLAMP = (0.33, 3.0)
-# FLOPs-per-token multiplier relative to plain fwd+bwd on total_tokens.
-# DPO: ref-model forward on chosen+rejected adds ~1/3. GRPO: rollout generation
-# cost is not captured by prompt token counts; crude multiplier, tune with data.
+# FLOPs-per-token multiplier on total_tokens (token-coverage-driven types only).
+# DPO: ref-model forward on chosen+rejected adds ~1/3. GRPO is excluded — it is
+# step-budgeted, not token-proportional (see GRPO_HOURS_BY_PARAMS_B).
 TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.INSTRUCTTEXTTASK: 1.0,
     TaskType.CHATTASK: 1.0,
     TaskType.DPOTASK: 1.4,
-    TaskType.GRPOTASK: 1.5,
 }
+
+# GRPO hours: fixed per model size, independent of dataset size (RL saturates on
+# steps, not coverage). (upper_bound_billions, hours); first matching band wins.
+# Calibrate against trainer run history.
+GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
+    (4.0, 1.5),
+    (12.0, 2.5),
+    (40.0, 4.0),
+    (float("inf"), 6.0),
+]
 
 # text augmentation synth
 TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"

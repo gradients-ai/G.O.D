@@ -247,6 +247,13 @@ def compute_training_hours(
     return min(hours, vcst.MAX_TRAINING_HOURS)
 
 
+def get_grpo_training_hours(num_params: float | None) -> float:
+    """GRPO budget: fixed per model-size band, independent of dataset size."""
+    params_b = (num_params or vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS) / 1e9
+    hours = next(h for bound_b, h in vcst.GRPO_HOURS_BY_PARAMS_B if params_b <= bound_b)
+    return min(vcst.MAX_TRAINING_HOURS, max(vcst.TRAINING_HOURS_MIN, hours))
+
+
 def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
     """Pre-prep estimate: tokens are unknown, so assume ASSUMED_TOKENS_PER_ROW.
 
@@ -256,6 +263,8 @@ def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None
     num_params = get_model_num_params(model_id) if model_id is not None else None
     if not num_params:
         num_params = vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    if task_type == TaskType.GRPOTASK:
+        return get_grpo_training_hours(num_params)
     tokens_per_epoch = num_rows * vcst.ASSUMED_TOKENS_PER_ROW
     return compute_training_hours(tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK)
 
@@ -274,13 +283,18 @@ def compute_hours_from_baseline_stats(
     """
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours
-    dataset_stats = baseline_stats.dataset
-    if not dataset_stats.total_tokens or not dataset_stats.num_records:
-        return current_hours
 
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
     if not num_params:
         num_params = vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+
+    # GRPO is fixed per model size; tokens/throughput don't refine it.
+    if task_type == TaskType.GRPOTASK:
+        return get_grpo_training_hours(num_params)
+
+    dataset_stats = baseline_stats.dataset
+    if not dataset_stats.total_tokens or not dataset_stats.num_records:
+        return current_hours
 
     # Miner stacks are row-bound on short sequences (padding + per-step
     # overhead), so each record costs at least EFFECTIVE_MIN_TOKENS_PER_ROW.
