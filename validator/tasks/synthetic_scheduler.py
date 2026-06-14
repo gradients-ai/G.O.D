@@ -351,10 +351,14 @@ async def get_dataset(
     task_type: TaskType | None = None,
     keypair: Keypair | None = None,
     psql_db: PSQLDB | None = None,
+    min_rows: int | None = None,
 ) -> Dataset:
     """Get a single dataset from the generator, validating column availability."""
     while True:
         dataset = await anext(datasets_generator)
+
+        if min_rows and dataset.num_rows < min_rows:
+            continue
 
         if task_type and psql_db:
             if await _is_dataset_degenerate(dataset.dataset_id, task_type, psql_db):
@@ -468,7 +472,9 @@ async def create_synthetic_grpo_task(
 ) -> RawTask:
     model_id = await anext(models)
 
-    dataset = await get_dataset(datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair)
+    dataset = await get_dataset(
+        datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair, min_rows=vcst.GRPO_MIN_SYNTH_ROWS
+    )
 
     number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id, task_type=TaskType.GRPOTASK)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)

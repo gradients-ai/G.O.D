@@ -115,6 +115,10 @@ GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
     (float("inf"), 6.0),
 ]
 
+# GRPO time is fixed per size, so the dataset must hold enough prompts that the
+# miner's epoch cap doesn't exhaust the data before that budget is spent.
+GRPO_MIN_SYNTH_ROWS = 20_000
+
 # text augmentation synth
 TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"
 TEXT_SYNTH_MODEL_TEMPERATURE = 0.6
