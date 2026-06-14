@@ -11,8 +11,10 @@ import subprocess
 import threading
 
 import validator.evaluation.constants as vcst
+from core.models.pvp_models import PreparedModel
+from core.pvp.sglang_launch import build_base_command
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.evaluators.environment import _wait_for_health
-from validator.evaluation.pvp.models import PreparedModel
 
 
 logger = logging.getLogger(__name__)
@@ -20,18 +22,13 @@ logger = logging.getLogger(__name__)
 
 def build_sglang_command(prepared: PreparedModel, port: int, seed: int) -> str:
     """Build SGLang launch command from a PreparedModel."""
-    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
-    dtype = os.getenv("SGLANG_DTYPE", "float16")
     cli_extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or vcst.SGLANG_ENV_EVAL_EXTRA_CLI).strip()
 
-    cmd = (
-        "python3 -m sglang.launch_server "
-        f"--model-path {prepared.sglang_model_path} "
-        f"--host 0.0.0.0 --port {port} "
-        f"--tensor-parallel-size {tensor_parallel} "
-        f"--dtype {dtype} "
-        f"--enable-deterministic-inference --random-seed {seed}"
-    )
+    cmd = build_base_command(prepared.sglang_model_path, port, seed)
+    # No parser -> SGLang won't emit structured tool_calls and every turn forfeits.
+    parser = prepared.tool_call_parser or tool_call_parser_for(prepared.sglang_model_path)
+    if parser:
+        cmd = f"{cmd} --tool-call-parser {parser}"
     if cli_extra:
         cmd = f"{cmd} {cli_extra}"
     if prepared.extra_sglang_args:

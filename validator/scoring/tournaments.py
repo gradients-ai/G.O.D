@@ -380,9 +380,12 @@ def tournament_scores_to_weights(
 
 def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
     result = calculate_tournament_type_scores_from_data(tournament_type, data)
+    # Seed weights whenever there are challenger scores or a tournament winner.
+    # The champion is excluded from result.scores and is re-seeded via
+    # prev_winner_hotkey, so empty challenger scores should not drop champion weight.
     weights = (
         tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
-        if result.scores
+        if result.scores or result.prev_winner_hotkey
         else {}
     )
     logger.info(f"{tournament_type.value} tournament weights: {weights}")

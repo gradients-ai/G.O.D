@@ -35,6 +35,7 @@ from validator.evaluation.pvp.models import PvPMatchupConfig
 from validator.evaluation.pvp.models import PvPMode
 from validator.evaluation.pvp.models import PvPModelSpec
 from validator.evaluation.pvp.models import PvPPairResult
+from validator.evaluation.pvp.models import ToolCall
 
 
 try:
@@ -56,18 +57,18 @@ class TestFullGamePipeline:
     """Play actual multi-turn games through the real pipeline with scripted bots."""
 
     @staticmethod
-    def _always_first_legal(config, messages):
-        """Chat function that always picks the first legal action.
-        Parses legal actions from the last user message."""
-        last_msg = messages[-1].content if messages else ""
-        # Extract first number from "Legal Actions:" section
+    def _always_first_legal(config, messages, tools=None):
+        """Chat function that commits the first legal action via game_action."""
+        last_msg = (messages[-1].content if messages else "") or ""
+        action_id = 0
         for line in last_msg.split("\n"):
             stripped = line.strip()
             if stripped and stripped[0].isdigit():
-                action_id = stripped.split()[0]
-                if action_id.isdigit():
-                    return ChatResult(content=action_id)
-        return ChatResult(content="0")
+                token = stripped.split()[0]
+                if token.isdigit():
+                    action_id = int(token)
+                    break
+        return ChatResult(tool_calls=[ToolCall(id="c1", name="game_action", arguments={"action_id": action_id})])
 
     def test_leduc_poker_completes(self):
         """A full Leduc Poker game completes without error."""
@@ -161,7 +162,7 @@ class TestFullGamePipeline:
 @needs_pyspiel
 class TestForfeitReturns:
     def test_player_0_forfeits(self):
-        from validator.evaluation.pvp.game_runner import _forfeit_returns
+        from core.pvp.game_eval import _forfeit_returns
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
         state = game.new_initial_state()
@@ -171,7 +172,7 @@ class TestForfeitReturns:
         assert returns[1] == game.max_utility()
 
     def test_player_1_forfeits(self):
-        from validator.evaluation.pvp.game_runner import _forfeit_returns
+        from core.pvp.game_eval import _forfeit_returns
 
         game = pyspiel.load_game("leduc_poker", {"players": 2})
         state = game.new_initial_state()
@@ -229,6 +230,29 @@ class TestBuildSglangCommand:
 
         assert "--enable-lora" not in cmd
 
+    def test_caller_resolved_tool_call_parser_wins(self):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        prepared = PreparedModel(
+            sglang_model_path="org/opaque-weights",
+            inference_name="org/opaque-weights",
+            tool_call_parser="qwen25",
+        )
+        cmd = build_sglang_command(prepared, port=30000, seed=1)
+
+        assert "--tool-call-parser qwen25" in cmd
+
+    def test_parser_falls_back_to_model_path_family(self):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        prepared = PreparedModel(
+            sglang_model_path="Qwen/Qwen2.5-3B-Instruct",
+            inference_name="Qwen/Qwen2.5-3B-Instruct",
+        )
+        cmd = build_sglang_command(prepared, port=30000, seed=1)
+
+        assert "--tool-call-parser qwen25" in cmd
+
 
 # =============================================================================
 # 4. Chat client retry logic
@@ -237,7 +261,7 @@ class TestBuildSglangCommand:
 
 class TestChatRetryLogic:
     def test_succeeds_on_first_try(self):
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -260,7 +284,7 @@ class TestChatRetryLogic:
     def test_retries_on_timeout(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 
@@ -280,7 +304,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             result = _with_retries(mock_client, config, [
                 ChatMessage(role=ChatRole.USER, content="test")
             ])
@@ -291,7 +315,7 @@ class TestChatRetryLogic:
     def test_raises_after_exhausting_retries(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
         mock_client.chat.completions.create.side_effect = oai.APITimeoutError(
@@ -303,7 +327,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             with pytest.raises(RuntimeError, match="Chat failed after 3 attempts"):
                 _with_retries(mock_client, config, [
                     ChatMessage(role=ChatRole.USER, content="test")
@@ -314,7 +338,7 @@ class TestChatRetryLogic:
     def test_retries_on_server_error(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 
@@ -341,7 +365,7 @@ class TestChatRetryLogic:
             max_retries=2,
         )
 
-        with patch("validator.evaluation.pvp.chat.time.sleep"):
+        with patch("core.pvp.chat.time.sleep"):
             result = _with_retries(mock_client, config, [
                 ChatMessage(role=ChatRole.USER, content="test")
             ])
@@ -351,7 +375,7 @@ class TestChatRetryLogic:
     def test_does_not_retry_on_4xx(self):
         import openai as oai
 
-        from validator.evaluation.pvp.chat import _with_retries
+        from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
 
@@ -409,6 +433,26 @@ class TestPrepareModel:
         assert result.sglang_model_path == "org/full-weights"
         assert result.inference_name == "org/full-weights"
         assert result.extra_sglang_args == ""
+
+    def test_full_weight_opaque_repo_resolves_parser_from_base_model(self):
+        from validator.evaluation.pvp.__main__ import _prepare_model
+
+        spec = PvPModelSpec(repo="miner/tourn-a3f9c2e1", original_model="Qwen/Qwen2.5-3B-Instruct")
+
+        with patch("validator.evaluation.pvp.__main__.check_for_lora", return_value=False):
+            result = _prepare_model(spec, "a")
+
+        assert result.tool_call_parser == "qwen25"
+
+    def test_full_weight_repo_with_family_substring_uses_own_family(self):
+        from validator.evaluation.pvp.__main__ import _prepare_model
+
+        spec = PvPModelSpec(repo="miner/llama-3.2-ft", original_model="Qwen/Qwen2.5-3B-Instruct")
+
+        with patch("validator.evaluation.pvp.__main__.check_for_lora", return_value=False):
+            result = _prepare_model(spec, "a")
+
+        assert result.tool_call_parser == "llama3"
 
 
 # =============================================================================
@@ -767,22 +811,6 @@ class TestGameAgentPrompts:
         prompt = agent.generate_system_prompt()
         assert len(prompt) > 50
         assert "leduc" in prompt.lower() or "poker" in prompt.lower()
-
-    def test_liars_dice_user_prompt_has_legal_actions(self):
-        from validator.evaluation.pvp.agents import LiarsDiceAgent
-        agent = LiarsDiceAgent()
-        game = pyspiel.load_game("liars_dice", {"players": 2, "numdice": 5})
-        state = game.new_initial_state()
-        while state.is_chance_node():
-            outcomes = state.chance_outcomes()
-            actions, _ = zip(*outcomes)
-            state.apply_action(actions[0])
-
-        legal = state.legal_actions(state.current_player())
-        prompt = agent.generate_user_prompt(state, state.current_player(), legal)
-
-        assert "Legal Actions:" in prompt
-        assert "Player" in prompt
 
     def test_gin_rummy_format_state_doesnt_crash(self):
         from validator.evaluation.pvp.agents import GinRummyAgent

@@ -40,7 +40,7 @@ from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
 from validator.tasks.models import InstructTextRawTask
-from validator.tasks.synthetics.scheduler import apply_baseline_ctx_scale
+from validator.tasks.synthetics.scheduler import compute_hours_from_baseline_stats
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 from validator.tournament.models import GpuRequirement
 from validator.tournament.models import TaskTrainingAssignment
@@ -1076,7 +1076,13 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 return True
 
             if job.result.baseline_stats:
-                new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                new_hours = compute_hours_from_baseline_stats(
+                    task.hours_to_complete,
+                    task.baseline_stats,
+                    task.task_type,
+                    model_id=task.model_id,
+                    model_params_count=task.model_params_count,
+                )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 
@@ -1279,7 +1285,13 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     return
 
                 if prep_result.baseline_stats:
-                    new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                    new_hours = compute_hours_from_baseline_stats(
+                        task.hours_to_complete,
+                        task.baseline_stats,
+                        task.task_type,
+                        model_id=task.model_id,
+                        model_params_count=task.model_params_count,
+                    )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 

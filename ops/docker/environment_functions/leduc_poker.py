@@ -1,9 +1,10 @@
 def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: int = 30) -> dict[str, list]:
-    from trl.experimental.openenv import generate_rollout_completions
     import os
     import random
+
     import requests
-    import json
+    from trl.experimental.openenv import generate_rollout_completions
+
     DEBUG = False
 
     games_to_task_id_range = {
@@ -43,7 +44,13 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         # Create environment (POST /create) - ONLY ONCE
         try:
             print(f"Initializing environment on rank {rank} at {base_url}...")
-            payload = {"task_id": games_to_task_id_range[selected_game][0], "seed": 42, "opponent": "mcts", "mcts_max_simulations": 50, "mcts_num_rollouts": 1}
+            payload = {
+                "task_id": games_to_task_id_range[selected_game][0],
+                "seed": 42,
+                "opponent": "mcts",
+                "mcts_max_simulations": 50,
+                "mcts_num_rollouts": 1,
+            }
             create_res = requests.post(f"{base_url}/reset", json=payload, timeout=300)
             create_res.raise_for_status()
             rollout_first_prompt_and_completion.initialized = True
@@ -73,13 +80,18 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
         episode_completion_ids: list[int] = []
         episode_logprobs: list[float] = []
         done = False
-        solved = False
         train_reward = 0
         turn_number = 0
         
         # --- Reset Environment (POST /reset) ---
         # Reuse existing env_id, just change the game
-        payload = {"task_id": game_id, "seed": game_id, "opponent": "mcts", "mcts_max_simulations": 25, "mcts_num_rollouts": 1}
+        payload = {
+            "task_id": game_id,
+            "seed": game_id,
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+        }
         
         try:
             reset_res = requests.post(f"{env_endpoint}/reset", json=payload, timeout=TIMEOUT)
@@ -92,14 +104,24 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
 
             # Construct Initial Observation
             current_observation = result_block.get("observation", "")
-            format_instructions = 'Your output must strictly follow this format: "Thought:\nyour thoughts ONLY in text.\n\nAction:\nONLY your action ID (a single number)."'
+            format_instructions = (
+                'Your output must strictly follow this format: "Thought:\n'
+                'your thoughts ONLY in text.\n\nAction:\nONLY your action ID (a single number)."'
+            )
             current_observation += format_instructions
 
             if DEBUG:
                 print(f"Env Reset. Observation: {current_observation}", flush=True)
 
         except Exception as e:
+            # The trainer expects one entry per prompt; pad with a plain
+            # zero-reward completion instead of skipping, or the batch misaligns.
             print(f"Failed to reset environment (Game {game_id}): {e}")
+            fallback = generate_rollout_completions(trainer, prompts=[prompt])[0]
+            all_episode_prompt_ids.append(fallback.get("prompt_ids", []))
+            all_episode_completion_ids.append(fallback.get("completion_ids", []))
+            all_episode_logprobs.append(fallback.get("logprobs", []))
+            all_episode_rewards.append(0.0)
             continue
 
         # --- Build Conversation History ---
@@ -124,9 +146,7 @@ def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: 
             messages.append({"role": "assistant", "content": completion_text})
 
             # --- Parse Action ---
-            action_to_send = completion_text
-            if action_to_send.endswith("</s>"):
-                action_to_send = action_to_send[:-5]
+            action_to_send = completion_text.removesuffix("</s>")
 
             # Parse ReAct format
             if "Action:" in action_to_send:

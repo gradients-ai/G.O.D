@@ -22,7 +22,9 @@ sys.path.append(project_root)
 
 import trainer.constants as train_cst
 import trainer.training_paths as train_paths
+from core.constants.environments import ENVIRONMENT_CONFIGS
 from core.constants.environments import EnvironmentName
+from core.constants.environments import EvalType
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
 from core.models.dataset_models import EnvironmentDatasetType
@@ -114,9 +116,10 @@ def create_config(task_id, model, dataset, dataset_type, file_format, output_dir
         config["trl"]["reward_weights"] = [reward_function.reward_weight for reward_function in dataset_type.reward_functions]
     elif isinstance(dataset_type, EnvironmentDatasetType):
         env = (dataset_type.environment_names or [None])[0]
-        if env in (EnvironmentName.GIN_RUMMY, EnvironmentName.LIARS_DICE, EnvironmentName.LEDUC_POKER):
-            config["trl"]["rollout_func"] = f"{env.value}.rollout_first_prompt_and_completion"
-            config["trl"]["reward_funcs"] = [f"{env.value}.rollout_reward_func"]
+        env_name = EnvironmentName(env) if env is not None else None
+        if env_name is not None and ENVIRONMENT_CONFIGS[env_name].eval_type == EvalType.PVP:
+            config["trl"]["rollout_func"] = f"{env_name.value}.rollout_first_prompt_and_completion"
+            config["trl"]["reward_funcs"] = [f"{env_name.value}.rollout_reward_func"]
             config["trl"]["reward_weights"] = [1.0]
 
     if file_format != FileFormat.HF.value:

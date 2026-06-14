@@ -14,6 +14,7 @@ import trainer.training_paths as train_paths
 from core.constants.docker import MCTS_API_DOCKER_IMAGE
 from core.constants.environments import ENVIRONMENT_CONFIGS
 from core.constants.environments import EnvironmentName
+from core.constants.environments import EvalType
 from core.logging import get_all_context_tags
 from core.logging import stream_container_logs
 from core.logging import stream_image_build_logs
@@ -25,12 +26,15 @@ from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.model_prep_models import BaselineStats
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskType
+from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
+from core.pvp.sglang_parsers import tool_call_parser_for
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
@@ -456,15 +460,22 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
+def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
+    """PvP envs baseline in-process inside model prep and need no sidecar."""
+    cfg = ENVIRONMENT_CONFIGS.get(env_name)
+    return cfg is not None and cfg.eval_type == EvalType.PVP
+
+
 def _start_env_sidecars(
     env_configs: dict[EnvironmentName, EnvConfig],
     log_labels: dict[str, str] | None,
 ) -> tuple[dict[EnvironmentName, str], list[Container]]:
     """Start one sidecar per unique env_image. Returns (env_name→url mapping, container list).
 
-    Multiple environments may share the same image (e.g. all MCTS games use mcts-api).
-    We start one container per unique image and map all environments using that image
-    to the same sidecar URL.
+    Multiple environments may share the same image. We start one container per
+    unique image and map all environments using that image to the same sidecar
+    URL. In-harness envs are skipped entirely, and a sidecar that fails to start
+    degrades its envs to empty baseline stats instead of failing prep.
     """
     ensure_internal_network()
     loop = asyncio.new_event_loop()
@@ -474,23 +485,32 @@ def _start_env_sidecars(
 
     try:
         for env_name, cfg in env_configs.items():
+            if _env_baseline_runs_in_harness(env_name):
+                continue
             image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
             if image_key in image_to_url:
                 continue
 
-            container = loop.run_until_complete(
-                run_environment_server_container(
-                    env_name,
-                    log_labels or {},
-                    image=cfg.env_image,
-                    command=cfg.env_server_command,
+            try:
+                container = loop.run_until_complete(
+                    run_environment_server_container(
+                        env_name,
+                        log_labels or {},
+                        image=cfg.env_image,
+                        command=cfg.env_server_command,
+                    )
                 )
-            )
-            if container is None:
+                if container is None:
+                    continue
+                containers.append(container)
+                ip = loop.run_until_complete(_resolve_container_ip(container))
+            except Exception as exc:
+                logger.warning(
+                    f"Env sidecar for {cfg.env_image} failed to start ({exc}); "
+                    f"its envs will report empty baseline stats",
+                    extra=log_labels,
+                )
                 continue
-
-            containers.append(container)
-            ip = loop.run_until_complete(_resolve_container_ip(container))
             url = f"http://{ip}:8000"
             image_to_url[image_key] = url
             logger.info(f"Env sidecar for {cfg.env_image}: {url}", extra=log_labels)
@@ -559,14 +579,13 @@ def run_model_prep_container(
         env_url_map, env_containers = _start_env_sidecars(env_configs, log_labels)
         env_configs_with_urls = {}
         for env_name, cfg in env_configs.items():
-            if env_name in env_url_map:
-                env_configs_with_urls[env_name.value] = {
-                    "url": env_url_map[env_name],
-                    "task_id_min": cfg.task_id_min,
-                    "task_id_max": cfg.task_id_max,
-                    "num_episodes": cfg.num_episodes,
-                    "eval_payload_extra": cfg.eval_payload_extra,
-                }
+            env_configs_with_urls[env_name.value] = EnvBaselineConfig(
+                url=env_url_map.get(env_name),
+                task_id_min=cfg.task_id_min,
+                task_id_max=cfg.task_id_max,
+                num_episodes=cfg.num_episodes,
+                eval_payload_extra=cfg.eval_payload_extra,
+            ).model_dump()
 
     command = [
         "--model", model_cache_path,
@@ -596,6 +615,12 @@ def run_model_prep_container(
         "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
         "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
     }
+    if env_configs:
+        tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
+        if tool_call_parser:
+            env[TOOL_CALL_PARSER_ENV] = tool_call_parser
+        if os.environ.get("MODEL_PREP_ENV_TIME_BUDGET_SECONDS"):
+            env["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"] = os.environ["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"]
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None
@@ -656,6 +681,7 @@ FALLBACK_ENV_IMAGES: dict[EnvironmentName, str] = {
     EnvironmentName.GIN_RUMMY: MCTS_API_DOCKER_IMAGE,
     EnvironmentName.LIARS_DICE: MCTS_API_DOCKER_IMAGE,
     EnvironmentName.LEDUC_POKER: MCTS_API_DOCKER_IMAGE,
+    EnvironmentName.OTHELLO: MCTS_API_DOCKER_IMAGE,
 }
 
 

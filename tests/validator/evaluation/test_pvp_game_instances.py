@@ -3,6 +3,7 @@ config ID variation, and tally correctness.
 """
 
 import importlib.util
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -17,9 +18,12 @@ try:
     if importlib.util.find_spec("pyspiel") is None:
         raise ImportError
 
+    import pyspiel
+
     from validator.evaluation.pvp.agents import GinRummyAgent
     from validator.evaluation.pvp.agents import LeducPokerAgent
     from validator.evaluation.pvp.agents import LiarsDiceAgent
+    from validator.evaluation.pvp.agents import OthelloAgent
     from validator.evaluation.pvp.game_runner import PlayedGame
     from validator.evaluation.pvp.game_runner import _build_instances
     from validator.evaluation.pvp.game_runner import _execute_matchup
@@ -116,6 +120,52 @@ class TestConfigIdVariation:
         p1 = agent.generate_params(99)
         assert p0 == p1 == {"players": 2}
 
+    def test_othello_params_empty(self):
+        """Othello takes no pyspiel parameters regardless of config_id."""
+        agent = OthelloAgent()
+        assert agent.generate_params(0) == agent.generate_params(99) == {}
+
+
+# --- 3c': Othello seeded opening plies ---
+
+
+@needs_pyspiel
+class TestOthelloOpeningPlies:
+    def _opened_board(self, seed: int) -> str:
+        """Fresh othello state advanced by the agent's seeded opening plies."""
+        agent = OthelloAgent()
+        state = pyspiel.load_game("othello").new_initial_state()
+        agent.setup_initial_state(state, seed)
+        return state.observation_string(0)
+
+    def test_same_seed_same_opening(self):
+        assert self._opened_board(42) == self._opened_board(42)
+
+    def test_format_state_names_the_players_colour(self):
+        agent = OthelloAgent()
+        state = pyspiel.load_game("othello").new_initial_state()
+        assert "You play x (Black)" in agent.format_state(state, 0)
+        assert "You play o (White)" in agent.format_state(state, 1)
+
+    def test_different_seed_different_opening(self):
+        """Across a spread of seeds, openings should diverge."""
+        boards = {self._opened_board(seed) for seed in range(20)}
+        assert len(boards) > 1, "All seeds produced the identical opening board"
+
+    def test_opening_leaves_playable_nonterminal_state(self):
+        agent = OthelloAgent()
+        for seed in range(20):
+            state = pyspiel.load_game("othello").new_initial_state()
+            agent.setup_initial_state(state, seed)
+            assert not state.is_terminal()
+            assert state.current_player() in (0, 1)
+            assert state.legal_actions()
+
+    def test_opening_diverges_from_fresh_board(self):
+        """At least some seeds move the board off the standard starting position."""
+        fresh = pyspiel.load_game("othello").new_initial_state().observation_string(0)
+        assert any(self._opened_board(seed) != fresh for seed in range(20))
+
 
 # --- 3d: _tally correctness ---
 
@@ -187,8 +237,8 @@ class TestEpisodeForfeitLimit:
             result = _execute_matchup(
                 env_name=EnvironmentName.LEDUC_POKER,
                 instances=instances,
-                player_a=object(),
-                player_b=object(),
+                player_a=SimpleNamespace(config=SimpleNamespace(inference_model="test", tokenizer_repo=None)),
+                player_b=SimpleNamespace(config=SimpleNamespace(inference_model="test", tokenizer_repo=None)),
                 agent=object(),
             )
 
@@ -197,3 +247,17 @@ class TestEpisodeForfeitLimit:
         assert result.model_b_wins == 15
         assert result.draws == 9
         assert result.total_games == 24
+
+
+# --- PvP env / agent registry exhaustiveness ---
+
+
+@needs_pyspiel
+class TestAgentRegistryCoversPvpEnvs:
+    def test_every_pvp_env_has_an_agent(self):
+        from core.constants.environments import ENVIRONMENT_CONFIGS
+        from core.constants.environments import EvalType
+        from core.pvp.game_eval import _AGENT_REGISTRY
+
+        pvp_envs = {name for name, config in ENVIRONMENT_CONFIGS.items() if config.eval_type == EvalType.PVP}
+        assert set(_AGENT_REGISTRY) == pvp_envs

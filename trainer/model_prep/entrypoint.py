@@ -26,6 +26,7 @@ from core.downloads import download_s3_file
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
+from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
 from trainer.model_prep.augmentation import augment_model
@@ -177,8 +178,12 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
     return f"{hf_username}/augmented-{repo_hash}"
 
 
-def load_training_data(path: str, max_records: int = 100) -> list[dict]:
-    """Load training data from a JSON file."""
+def load_training_data(path: str) -> list[dict]:
+    """Load all training data records from a JSON file.
+
+    Stats functions subsample internally for expensive operations, but need the
+    full record count for total-token estimates.
+    """
     if path.startswith("http"):
         local_path = asyncio.run(download_s3_file(path))
     else:
@@ -188,7 +193,7 @@ def load_training_data(path: str, max_records: int = 100) -> list[dict]:
         data = json.load(f)
 
     if isinstance(data, list):
-        return data[:max_records]
+        return data
     return []
 
 
@@ -280,9 +285,14 @@ def main():
     try:
         if args.env_configs:
             raw_configs: dict[str, dict] = json.loads(args.env_configs)
-            env_configs = {EnvironmentName(k): v for k, v in raw_configs.items()}
+            env_configs = {
+                EnvironmentName(k): EnvBaselineConfig.model_validate(v)
+                for k, v in raw_configs.items()
+            }
             stats = asyncio.run(compute_env_stats(
-                model_path=args.model,
+                # Use the merged path for LoRA continuation; a bare adapter dir
+                # cannot be served directly by SGLang.
+                model_path=model_path,
                 model=model,
                 env_configs=env_configs,
             ))

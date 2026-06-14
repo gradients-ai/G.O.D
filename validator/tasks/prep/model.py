@@ -17,7 +17,9 @@ from validator.infrastructure.service_constants import MODEL_PREP_ENDPOINT
 
 logger = get_logger(__name__)
 
-MODEL_PREP_TIMEOUT_SECONDS = 3600
+# Must comfortably exceed summed per-env baseline budgets plus SGLang startup
+# and any LoRA merge.
+MODEL_PREP_TIMEOUT_SECONDS = 5400
 
 
 def _build_env_configs() -> dict[EnvironmentName, EnvConfig]:

@@ -6,8 +6,6 @@ runs all matchups, writes results JSON.
 Usage: python -m validator.evaluation.pvp
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os
@@ -18,15 +16,22 @@ from pathlib import Path
 
 import validator.evaluation.constants as vcst
 from core.constants.environments import EnvironmentName
+from core.models.pvp_models import ChatCompletionConfig
+from core.models.pvp_models import PreparedModel
+from core.models.pvp_models import PvPEnvironmentResult
+from core.models.pvp_models import PvPEvalConfig
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPEvalResults
+from core.models.pvp_models import PvPModelSpec
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
-from validator.evaluation.pvp.models import ChatCompletionConfig
-from validator.evaluation.pvp.models import PreparedModel
-from validator.evaluation.pvp.models import PvPEnvironmentResult
-from validator.evaluation.pvp.models import PvPEvalConfig
-from validator.evaluation.pvp.models import PvPEvalMetadata
-from validator.evaluation.pvp.models import PvPEvalResults
-from validator.evaluation.pvp.models import PvPModelSpec
+from validator.evaluation.pvp.game_runner import Player
+from validator.evaluation.pvp.game_runner import create_player
+from validator.evaluation.pvp.game_runner import run_matchup
+from validator.evaluation.pvp.game_runner import warmup_player
+from validator.evaluation.pvp.server import start_sglang
+from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.runtime import stop_process
 
 
@@ -84,29 +89,38 @@ def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
             extra_sglang_args=f"--enable-lora --lora-paths {lora_name}={spec.repo} --lora-backend triton",
         )
 
+    # A full-weight miner repo id is often opaque (no family substring), and the
+    # config.json fallback can't run here — SGLang downloads the repo itself, so
+    # there is no local weights dir at command-build time. Resolve from the base
+    # model instead; without a parser every turn forfeits.
+    parser = tool_call_parser_for(spec.repo, log_unmapped=False) or tool_call_parser_for(spec.original_model)
     return PreparedModel(
         sglang_model_path=spec.repo,
         inference_name=spec.repo,
+        tool_call_parser=parser,
     )
 
 
-def _build_chat_config(port: int, eval_config: PvPEvalConfig, inference_name: str) -> ChatCompletionConfig:
-    """Construct ChatCompletionConfig from resolved port and eval settings."""
+def _build_chat_config(port: int, eval_config: PvPEvalConfig, prepared: PreparedModel) -> ChatCompletionConfig:
+    """Construct ChatCompletionConfig from resolved port and eval settings.
+
+    tokenizer_repo points at the served weights (base repo for LoRA, repo for full
+    weights) — never the ':lora'-suffixed inference name — so memory slot budgets
+    use real tokens. read_timeout/max_retries are kept under the turn wall-clock.
+    """
     return ChatCompletionConfig(
-        inference_model=inference_name,
+        inference_model=prepared.inference_name,
+        tokenizer_repo=prepared.sglang_model_path,
         base_url=f"http://{vcst.PVP_SGLANG_HOST}:{port}{vcst.PVP_SGLANG_API_PATH}",
         temperature=eval_config.temperature,
         seed=eval_config.seed,
+        read_timeout=vcst.PVP_HTTP_READ_TIMEOUT_SECONDS,
+        max_retries=vcst.PVP_HTTP_MAX_RETRIES,
     )
 
 
 def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
     """Start servers, run pair matchups, return results."""
-    from validator.evaluation.pvp.game_runner import create_player
-    from validator.evaluation.pvp.game_runner import run_matchup
-    from validator.evaluation.pvp.server import start_sglang
-    from validator.evaluation.pvp.server import wait_for_servers
-
     if config.model_a is None or config.model_b is None:
         raise ValueError("Pair mode requires model_a and model_b")
 
@@ -122,19 +136,21 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
 
     sglang_a: subprocess.Popen | None = None
     sglang_b: subprocess.Popen | None = None
-    player_a = None
-    player_b = None
+    player_a: Player | None = None
+    player_b: Player | None = None
 
     try:
         sglang_a = start_sglang(prepared_a, gpu_a, port_a, config.seed)
         sglang_b = start_sglang(prepared_b, gpu_b, port_b, config.seed + 1)
         asyncio.run(wait_for_servers(port_a, port_b))
 
-        config_a = _build_chat_config(port_a, config, prepared_a.inference_name)
-        config_b = _build_chat_config(port_b, config, prepared_b.inference_name)
+        config_a = _build_chat_config(port_a, config, prepared_a)
+        config_b = _build_chat_config(port_b, config, prepared_b)
 
         player_a = create_player(config_a)
         player_b = create_player(config_b)
+        warmup_player(player_a)
+        warmup_player(player_b)
 
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():

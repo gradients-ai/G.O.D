@@ -16,6 +16,7 @@ from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
+from core.models.model_prep_models import EnvBaselineStats
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
@@ -40,6 +41,7 @@ from validator.tasks.prep.augmentation import maybe_get_augmentation_config
 from validator.tasks.requests import get_model_num_params
 from validator.tasks.rewards.templates import sample_template_groups
 from validator.tournament import constants as t_cst
+from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 
 
 logger = get_logger(__name__)
@@ -136,6 +138,10 @@ async def _get_datasets_for_bin(min_rows: int, max_rows: int, keypair: Keypair, 
                     logger.warning(f"[DATASET_BIN] Failed to validate dataset {idx + 1}: {exc}")
 
             logger.info(f"[DATASET_BIN] Successfully validated {len(datasets)} datasets")
+            # The content service ignores row-range params, so enforce bins
+            # client-side to keep task durations bounded.
+            datasets = [ds for ds in datasets if min_rows <= ds.num_rows <= max_rows]
+            logger.info(f"[DATASET_BIN] {len(datasets)} datasets within bin {min_rows}-{max_rows} rows")
             random.shuffle(datasets)
 
             for dataset in datasets:
@@ -213,51 +219,73 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
-    """Compute training hours from row count, model size, and task type.
+def _analytic_tokens_per_sec_per_gpu(num_params: float) -> float:
+    """Expected miner full-FT throughput per H100: peak_flops * MFU / (6N flops/token)."""
+    return data_cst.H100_BF16_TFLOPS * 1e12 * data_cst.ASSUMED_TRAINING_MFU / (6.0 * num_params)
 
-    All scaling factors are applied to the continuous base; the result is
-    rounded to the nearest half-hour, floored, and capped once at the end so
-    intermediate rounding never compounds.
-    """
-    row_range = data_cst.TRAINING_HOURS_MAX_ROWS - data_cst.TRAINING_HOURS_SCALE_START_ROWS
-    t = max(0.0, min(1.0, (num_rows - data_cst.TRAINING_HOURS_SCALE_START_ROWS) / row_range))
-    hours = data_cst.TRAINING_HOURS_MIN + t * (data_cst.TRAINING_HOURS_MAX_BASE - data_cst.TRAINING_HOURS_MIN)
 
-    if model_id is not None:
-        num_params = get_model_num_params(model_id)
-        if num_params is not None and num_params < data_cst.FULL_HOURS_MODEL_PARAMS:
-            ratio = num_params / data_cst.FULL_HOURS_MODEL_PARAMS
-            scale = data_cst.MIN_HOURS_SCALE + ratio * (1.0 - data_cst.MIN_HOURS_SCALE)
-            hours *= scale
+def compute_training_hours(
+    tokens_per_epoch: float,
+    num_params: float,
+    task_type: TaskType,
+    measured_tokens_per_sec: float | None = None,
+) -> float:
+    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput."""
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params)).gpu_count
+    analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
+    if measured_tokens_per_sec:
+        lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
+        per_gpu_tps = measured_tokens_per_sec * data_cst.MEASURED_THROUGHPUT_MINER_RATIO
+        per_gpu_tps = min(max(per_gpu_tps, analytic_tps * lo), analytic_tps * hi)
+    else:
+        per_gpu_tps = analytic_tps
 
-    hours *= data_cst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0) if task_type is not None else 1.0
+    type_mult = data_cst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0)
+    train_seconds = data_cst.TARGET_TRAINING_EPOCHS * tokens_per_epoch * type_mult / (per_gpu_tps * gpus)
+    hours = train_seconds / 3600 + data_cst.TRAINING_OVERHEAD_HOURS
 
-    hours = max(data_cst.TRAINING_HOURS_MIN, round(hours * 2) / 2)
+    hours = max(data_cst.TRAINING_HOURS_MIN, round(hours * 4) / 4)
     return min(hours, data_cst.MAX_TRAINING_HOURS)
 
 
-def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
-    """Scale training hours by estimated packed block length (max(p95, 2*p50))."""
-    if baseline_stats is None:
-        return hours
-    try:
-        seq_dist = baseline_stats.dataset.seq_length_distribution
-        p95 = seq_dist.p95
-        p50 = seq_dist.p50
-    except AttributeError:
-        return hours
-    if not p95:
-        return hours
-    packed_len = max(p95, 2 * (p50 or p95))
-    # Linear ramp: 1.0x at the pivot (512), +1.0x per CTX_SCALE_SPAN tokens, clamped.
-    # e.g. 1024 -> 1.5x, 1536 -> 2.0x, 2048 -> 2.5x.
-    ctx_scale = max(
-        data_cst.CTX_SCALE_MIN,
-        min(data_cst.CTX_SCALE_MAX, 1.0 + (packed_len - data_cst.CTX_REF_SEQ_LEN) / data_cst.CTX_SCALE_SPAN),
+def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
+    """Pre-prep estimate using ASSUMED_TOKENS_PER_ROW until measured stats arrive."""
+    num_params = get_model_num_params(model_id) if model_id is not None else None
+    if not num_params:
+        num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    tokens_per_epoch = num_rows * data_cst.ASSUMED_TOKENS_PER_ROW
+    return compute_training_hours(tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK)
+
+
+def compute_hours_from_baseline_stats(
+    current_hours: float,
+    baseline_stats,
+    task_type: TaskType,
+    model_id: str | None = None,
+    model_params_count: int | None = None,
+) -> float:
+    """Post-prep hours from real token counts plus measured fwd/bwd throughput."""
+    if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
+        return current_hours
+    dataset_stats = baseline_stats.dataset
+    if not dataset_stats.total_tokens or not dataset_stats.num_records:
+        return current_hours
+
+    num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
+    if not num_params:
+        num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+
+    effective_tokens = max(
+        dataset_stats.total_tokens,
+        dataset_stats.num_records * data_cst.EFFECTIVE_MIN_TOKENS_PER_ROW,
     )
-    scaled = max(data_cst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
-    return min(scaled, data_cst.MAX_TRAINING_HOURS)
+    measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
+    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps)
+
+
+def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
+    """Backward-compatible wrapper for callers not yet passing task metadata."""
+    return hours if baseline_stats is None else hours
 
 
 def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
