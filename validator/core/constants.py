@@ -103,7 +103,7 @@ TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.INSTRUCTTEXTTASK: 1.0,
     TaskType.CHATTASK: 1.0,
     TaskType.DPOTASK: 1.4,
-    TaskType.GRPOTASK: 1.3,
+    TaskType.GRPOTASK: 1.5,
 }
 
 # text augmentation synth
