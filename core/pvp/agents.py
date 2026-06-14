@@ -7,11 +7,13 @@ Rules text is loaded from core/config/pvp_game_prompts.yml.
 import functools
 import random
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from pathlib import Path
 
 import pyspiel
 import yaml
+
 
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "core" / "config" / "pvp_game_prompts.yml"
 
@@ -234,10 +236,29 @@ class GinRummyAgent(BaseGameAgent):
         return state.observation_string(player_id)
 
 
-# Number of seeded random opening plies applied to an othello game, sampled from
-# this inclusive range. Enough to diverge the opening tree for variety, few
-# enough that positions stay balanced and game-like.
+def _apply_seeded_random_opening(state: pyspiel.State, seed: int, opening_plies: tuple[int, int]) -> None:
+    """Apply a reproducible random prelude to deterministic perfect-information games."""
+    rng = random.Random(seed)
+    num_plies = rng.randint(*opening_plies)
+    for _ in range(num_plies):
+        if state.is_terminal():
+            break
+        legal_actions = state.legal_actions()
+        if not legal_actions:
+            break
+        state.apply_action(rng.choice(legal_actions))
+
+
+# Number of seeded random opening plies applied to deterministic board games,
+# sampled from these inclusive ranges. Enough to diverge the opening tree for
+# variety, few enough that positions stay balanced and game-like.
 _OTHELLO_OPENING_PLIES = (2, 6)
+_CLOBBER_OPENING_PLIES = (2, 6)
+_CLOBBER_BOARD_SIZES = (
+    (4, 5),
+    (5, 5),
+    (5, 6),
+)
 
 
 class OthelloAgent(BaseGameAgent):
@@ -271,12 +292,27 @@ class OthelloAgent(BaseGameAgent):
         seed keeps games reproducible (same seed -> same start) while giving each
         seed a distinct mid-game position to play from.
         """
-        rng = random.Random(seed)
-        num_plies = rng.randint(*_OTHELLO_OPENING_PLIES)
-        for _ in range(num_plies):
-            if state.is_terminal():
-                break
-            legal_actions = state.legal_actions()
-            if not legal_actions:
-                break
-            state.apply_action(rng.choice(legal_actions))
+        _apply_seeded_random_opening(state, seed, _OTHELLO_OPENING_PLIES)
+
+
+class ClobberAgent(BaseGameAgent):
+
+    @property
+    def game_name(self) -> str:
+        return "clobber"
+
+    @property
+    def rules_key(self) -> str:
+        return "clobber_rules"
+
+    def generate_params(self, config_id: int) -> dict[str, int]:
+        rows, columns = _CLOBBER_BOARD_SIZES[config_id % len(_CLOBBER_BOARD_SIZES)]
+        return {"rows": rows, "columns": columns}
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        colour = "o (White)" if player_id == 0 else "x (Black)"
+        return f"You play {colour}.\n{state.observation_string(player_id)}"
+
+    def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
+        """Apply seeded opening plies, mirroring Othello's deterministic-game treatment."""
+        _apply_seeded_random_opening(state, seed, _CLOBBER_OPENING_PLIES)

@@ -40,6 +40,7 @@ def _config() -> ChatCompletionConfig:
     return ChatCompletionConfig(inference_model="test", base_url="http://localhost/v1")
 
 
+@needs_pyspiel
 class TestMctsBaselineResult:
     def test_mean_score_weights_draws_half(self):
         r = MctsBaselineResult(wins=2, draws=2, losses=0, num_games=4)
@@ -72,6 +73,17 @@ class TestRunMctsBaseline:
             num_games=1,
             mcts_simulations=8,
             base_seed=3,
+        )
+        assert result.num_games == 1
+
+    def test_runs_for_clobber_too(self):
+        result = run_mcts_baseline(
+            EnvironmentName.CLOBBER,
+            _first_legal_chat,
+            _config(),
+            num_games=1,
+            mcts_simulations=8,
+            base_seed=7,
         )
         assert result.num_games == 1
 

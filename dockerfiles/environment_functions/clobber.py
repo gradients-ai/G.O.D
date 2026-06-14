@@ -1,0 +1,162 @@
+def rollout_first_prompt_and_completion(prompts: list[str], trainer, max_turns: int = 30) -> dict[str, list]:
+    import os
+    import random
+
+    import requests
+    from trl.experimental.openenv import generate_rollout_completions
+
+    debug = False
+    selected_game = "clobber"
+    games_to_task_id_range = {
+        "goofspiel": (0, 99999999),
+        "liars_dice": (100000000, 199999999),
+        "leduc_poker": (200000000, 299999999),
+        "gin_rummy": (300000000, 399999999),
+        "othello": (400000000, 499999999),
+        "backgammon": (500000000, 599999999),
+        "hex": (600000000, 699999999),
+        "clobber": (700000000, 799999999),
+    }
+
+    if not getattr(rollout_first_prompt_and_completion, "initialized", False):
+        rank = int(os.environ.get("LOCAL_RANK", "0"))
+        raw_urls = os.environ.get("ENVIRONMENT_SERVER_URLS", "")
+        server_list = [url.strip() for url in raw_urls.split(",") if url.strip()]
+        base_url = server_list[rank % len(server_list)] if server_list else ""
+
+        if not base_url:
+            print("Warning: No ENVIRONMENT_SERVER_URLS found.")
+
+        rollout_first_prompt_and_completion.base_url = base_url
+
+        try:
+            print(f"Initializing environment on rank {rank} at {base_url}...")
+            payload = {
+                "task_id": games_to_task_id_range[selected_game][0],
+                "seed": 42,
+                "opponent": "mcts",
+                "mcts_max_simulations": 25,
+                "mcts_num_rollouts": 1,
+            }
+            create_res = requests.post(f"{base_url}/reset", json=payload, timeout=300)
+            create_res.raise_for_status()
+            rollout_first_prompt_and_completion.initialized = True
+            print(f"Environment initialized. Rank: {rank}.")
+        except Exception as exc:
+            print(f"CRITICAL: Failed to create environment on rank {rank}: {exc}")
+            raise exc
+
+    env_endpoint = rollout_first_prompt_and_completion.base_url
+
+    all_episode_prompt_ids: list[list[int]] = []
+    all_episode_completion_ids: list[list[int]] = []
+    all_episode_logprobs: list[list[float]] = []
+    all_episode_rewards: list[float] = []
+
+    tokenizer = trainer.processing_class
+    timeout = 2400
+    game_id = random.randint(games_to_task_id_range[selected_game][0], games_to_task_id_range[selected_game][1])
+
+    for prompt in prompts:
+        episode_prompt_ids: list[int] = []
+        episode_completion_ids: list[int] = []
+        episode_logprobs: list[float] = []
+        done = False
+        train_reward = 0
+        turn_number = 0
+
+        payload = {
+            "task_id": game_id,
+            "seed": game_id,
+            "opponent": "mcts",
+            "mcts_max_simulations": 25,
+            "mcts_num_rollouts": 1,
+        }
+
+        try:
+            reset_res = requests.post(f"{env_endpoint}/reset", json=payload, timeout=timeout)
+            reset_res.raise_for_status()
+            result_block = reset_res.json()["result"]
+            episode_id = result_block.get("episode_id", "")
+            current_observation = result_block.get("observation", "")
+            current_observation += (
+                'Your output must strictly follow this format: "Thought:\n'
+                'your thoughts ONLY in text.\n\nAction:\nONLY your action ID (a single number)."'
+            )
+
+            if debug:
+                print(f"Env Reset. Observation: {current_observation}", flush=True)
+        except Exception as exc:
+            print(f"Failed to reset environment (Game {game_id}): {exc}")
+            fallback = generate_rollout_completions(trainer, prompts=[prompt])[0]
+            all_episode_prompt_ids.append(fallback.get("prompt_ids", []))
+            all_episode_completion_ids.append(fallback.get("completion_ids", []))
+            all_episode_logprobs.append(fallback.get("logprobs", []))
+            all_episode_rewards.append(0.0)
+            continue
+
+        messages = [{"role": "user", "content": current_observation}]
+
+        while not done and turn_number < max_turns:
+            rollout_outputs = generate_rollout_completions(trainer, prompts=[messages], as_chat=True)[0]
+            prompt_ids = rollout_outputs.get("prompt_ids", [])
+            completion_ids = rollout_outputs.get("completion_ids", [])
+            logprobs = rollout_outputs.get("logprobs", [])
+            completion_text = tokenizer.decode(completion_ids, skip_special_tokens=True).strip()
+
+            if turn_number == 0:
+                episode_prompt_ids = prompt_ids
+                episode_completion_ids = completion_ids
+                episode_logprobs = logprobs
+
+            messages.append({"role": "assistant", "content": completion_text})
+            action_to_send = completion_text.removesuffix("</s>")
+            if "Action:" in action_to_send:
+                action_to_send = action_to_send.split("Action:")[-1].strip()
+
+            if debug:
+                print(f"Sending Action to Env: {action_to_send}", flush=True)
+
+            try:
+                formatted_observation = ""
+                step_payload = {"action": action_to_send, "episode_id": episode_id}
+                step_res = requests.post(f"{env_endpoint}/step", json=step_payload, timeout=timeout)
+                step_res.raise_for_status()
+                step_block = step_res.json()["result"]
+
+                if debug:
+                    print(f"Env Step Response: {step_block}", flush=True)
+
+                formatted_observation = step_block.get("observation", "")
+                step_reward = step_block.get("reward", 0)
+                done = step_block.get("done", False)
+            except Exception as exc:
+                if debug:
+                    print(f"Step failed: {exc}")
+                formatted_observation = "Invalid Action.\n\n"
+                step_reward = -0.01
+                done = False
+
+            if done:
+                train_reward = step_reward
+            else:
+                messages.append({"role": "user", "content": formatted_observation})
+
+            turn_number += 1
+
+        all_episode_prompt_ids.append(episode_prompt_ids)
+        all_episode_completion_ids.append(episode_completion_ids)
+        all_episode_logprobs.append(episode_logprobs)
+        all_episode_rewards.append(train_reward)
+
+    return {
+        "prompt_ids": all_episode_prompt_ids,
+        "completion_ids": all_episode_completion_ids,
+        "logprobs": all_episode_logprobs,
+        "env_rewards": all_episode_rewards,
+    }
+
+
+def rollout_reward_func(completions, **kwargs):
+    rewards = kwargs.get("env_rewards") if kwargs else None
+    return [float(reward) for reward in rewards] if rewards is not None else [0.0] * len(completions)
