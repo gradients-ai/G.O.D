@@ -96,18 +96,16 @@ MEASURED_THROUGHPUT_MINER_RATIO = 1.0
 # Guard rails on measured throughput: clamp to this band around the analytic
 # estimate so a bad measurement can't produce absurd hours.
 MEASURED_THROUGHPUT_CLAMP = (0.33, 3.0)
-# FLOPs-per-token multiplier on total_tokens (token-coverage-driven types only).
-# DPO: ref-model forward on chosen+rejected adds ~1/3. GRPO is excluded — it is
-# step-budgeted, not token-proportional (see GRPO_HOURS_BY_PARAMS_B).
+# Per-token FLOPs multiplier (DPO adds a ref-model forward). GRPO is excluded —
+# it is step-budgeted, not token-proportional (see GRPO_HOURS_BY_PARAMS_B).
 TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.INSTRUCTTEXTTASK: 1.0,
     TaskType.CHATTASK: 1.0,
     TaskType.DPOTASK: 1.4,
 }
 
-# GRPO hours: fixed per model size, independent of dataset size (RL saturates on
-# steps, not coverage). (upper_bound_billions, hours); first matching band wins.
-# Calibrate against trainer run history.
+# GRPO hours, fixed per model size (RL saturates on steps, not dataset coverage).
+# (upper_bound_billions, hours); first matching band wins. Calibrate from runs.
 GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
     (4.0, 1.5),
     (12.0, 2.5),
@@ -115,8 +113,7 @@ GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
     (float("inf"), 6.0),
 ]
 
-# GRPO time is fixed per size, so the dataset must hold enough prompts that the
-# miner's epoch cap doesn't exhaust the data before that budget is spent.
+# Floor so the miner's epoch cap can't exhaust the data before the budget.
 GRPO_MIN_SYNTH_ROWS = 20_000
 
 # text augmentation synth
