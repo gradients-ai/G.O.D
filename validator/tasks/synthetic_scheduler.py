@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 from datetime import datetime
 from datetime import timedelta
@@ -238,7 +239,11 @@ def compute_training_hours(
     train_seconds = vcst.TARGET_TRAINING_EPOCHS * tokens_per_epoch * type_mult / (per_gpu_tps * gpus)
     hours = train_seconds / 3600 + vcst.TRAINING_OVERHEAD_HOURS
 
-    hours = max(vcst.TRAINING_HOURS_MIN, round(hours * 4) / 4)
+    # Ceil to the 0.25h grid: never grant less wall-clock than the formula
+    # computed. Rounding down used to shave up to 7.5 min, which on small tasks
+    # (where the fixed overhead is half the budget) could drop a run below 2
+    # full epochs.
+    hours = max(vcst.TRAINING_HOURS_MIN, math.ceil(hours * 4) / 4)
     return min(hours, vcst.MAX_TRAINING_HOURS)
 
 
