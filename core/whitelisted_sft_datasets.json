@@ -9,5 +9,6 @@
     "gradients-io-tournaments/ArkadiumGinrummy",
     "the-acorn-ai/textarena-player-game-traces",
     "gradients-io-tournaments/env_training_gradients",
-    "gradients-io-tournaments/intercode_bigcode_combined_12k"
+    "gradients-io-tournaments/intercode_bigcode_combined_12k",
+    "gradients-io-tournaments/pvp-tool-calling-sft"
 ]
