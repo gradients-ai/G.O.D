@@ -4,12 +4,11 @@ migrating the old nodes to history in the process
 """
 
 import asyncio
-import concurrent.futures
+import multiprocessing as mp
+import queue as queue_lib
 from datetime import datetime
 from datetime import timedelta
 
-from fiber.chain import fetch_nodes
-from fiber.chain import interface
 from fiber.chain.models import Node
 
 from validator.core.config import Config
@@ -23,21 +22,80 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
+# Hard timeout for the isolated fetch subprocess. Kept below the outer
+# asyncio.wait_for backstop in refresh_nodes_periodically so it always fires first.
+SUBSTRATE_FETCH_TIMEOUT_SECS = 120
 
-async def _fetch_nodes_from_substrate(config: Config) -> list[Node]:
-    substrate = None
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
+def _fetch_nodes_subprocess(url: str, netuid: int, result_queue: "mp.Queue") -> None:
+    """Fetch nodes inside a short-lived child process.
+
+    Substrate-interface blocking I/O cannot be cancelled by asyncio, and a hung
+    connection holds process-global locks that poison every later attempt in the
+    long-lived validator_cycle process. Running it in an isolated child process
+    means a hang can be killed cleanly via terminate()/kill() without affecting
+    the parent. Imports happen here so the spawned interpreter stays minimal.
+    """
     try:
-        loop = asyncio.get_running_loop()
-        substrate = await loop.run_in_executor(executor, interface.get_substrate, None, config.substrate.url)
-        return await loop.run_in_executor(executor, fetch_nodes._get_nodes_for_uid, substrate, config.netuid)
-    finally:
-        if substrate is not None:
+        from fiber.chain import fetch_nodes
+        from fiber.chain import interface
+
+        substrate = interface.get_substrate(subtensor_address=url)
+        try:
+            nodes = fetch_nodes._get_nodes_for_uid(substrate, netuid)
+            result_queue.put(("ok", [node.model_dump(mode="json") for node in nodes]))
+        finally:
             try:
                 substrate.close()
             except Exception:
-                logger.debug("Failed to close temporary substrate connection", exc_info=True)
-        executor.shutdown(wait=False, cancel_futures=True)
+                pass
+    except Exception as e:
+        result_queue.put(("error", f"{type(e).__name__}: {e}"))
+
+
+def _terminate_process(proc: "mp.Process") -> None:
+    """Ensure the child process is fully gone (escalating terminate -> kill)."""
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(10)
+        if proc.is_alive():
+            logger.error(f"Node fetch subprocess (pid={proc.pid}) did not terminate; killing")
+            proc.kill()
+            proc.join(5)
+    else:
+        proc.join(5)
+
+
+def _run_fetch_in_subprocess(url: str, netuid: int) -> list[Node]:
+    # spawn (not fork) gives a fresh interpreter with no inherited locks,
+    # event loop, or DB connections from the parent.
+    ctx = mp.get_context("spawn")
+    result_queue: "mp.Queue" = ctx.Queue()
+    proc = ctx.Process(
+        target=_fetch_nodes_subprocess,
+        args=(url, netuid, result_queue),
+        daemon=True,
+    )
+    proc.start()
+    try:
+        try:
+            status, payload = result_queue.get(timeout=SUBSTRATE_FETCH_TIMEOUT_SECS)
+        except queue_lib.Empty:
+            raise TimeoutError(f"Node fetch subprocess timed out after {SUBSTRATE_FETCH_TIMEOUT_SECS}s")
+    finally:
+        _terminate_process(proc)
+
+    if status == "error":
+        raise RuntimeError(f"Node fetch subprocess failed: {payload}")
+
+    return [Node(**node) for node in payload]
+
+
+async def _fetch_nodes_from_substrate(config: Config) -> list[Node]:
+    loop = asyncio.get_running_loop()
+    # The blocking helper has its own internal timeout and always returns,
+    # so the worker thread is never leaked.
+    return await loop.run_in_executor(None, _run_fetch_in_subprocess, config.substrate.url, config.netuid)
 
 
 async def _is_recent_update(config: Config) -> bool:
