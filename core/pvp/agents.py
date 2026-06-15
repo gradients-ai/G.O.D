@@ -13,6 +13,13 @@ from pathlib import Path
 import pyspiel
 import yaml
 
+from core.models.pvp_models import GameParams
+from core.models.pvp_models import GinRummyParams
+from core.models.pvp_models import GoofspielParams
+from core.models.pvp_models import LeducPokerParams
+from core.models.pvp_models import LiarsDiceParams
+from core.models.pvp_models import OthelloParams
+
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "core" / "config" / "pvp_game_prompts.yml"
 
 
@@ -37,7 +44,7 @@ class BaseGameAgent(ABC):
         ...
 
     @abstractmethod
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> GameParams:
         """Generate pyspiel game parameters from a config variant ID."""
         ...
 
@@ -50,6 +57,15 @@ class BaseGameAgent(ABC):
         same seed reproduces the same start while different seeds diverge.
         """
         return None
+
+    def load_game(self, params: GameParams) -> pyspiel.Game:
+        """Build the pyspiel game this agent plays.
+
+        Default: load game_name with params directly. Games whose native dynamics
+        are simultaneous (e.g. goofspiel) override this to wrap the game so the
+        sequential LLMBot/evaluate_bots harness can drive it.
+        """
+        return pyspiel.load_game(self.game_name, params.to_pyspiel())
 
     def get_rules(self) -> str:
         return load_prompts()[self.rules_key]
@@ -88,8 +104,8 @@ class LiarsDiceAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "liars_dice_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {"players": 2, "numdice": 5}
+    def generate_params(self, config_id: int) -> GameParams:
+        return LiarsDiceParams(players=2, numdice=5)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         try:
@@ -140,8 +156,8 @@ class LeducPokerAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "leduc_poker_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {"players": 2}
+    def generate_params(self, config_id: int) -> GameParams:
+        return LeducPokerParams(players=2)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         try:
@@ -222,13 +238,10 @@ class GinRummyAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "gin_rummy_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> GameParams:
         hand_var = (config_id // 3) % 3
         knock_var = config_id % 3
-        return {
-            "hand_size": 7 + hand_var,
-            "knock_card": 10 - knock_var,
-        }
+        return GinRummyParams(hand_size=7 + hand_var, knock_card=10 - knock_var)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         return state.observation_string(player_id)
@@ -250,8 +263,8 @@ class OthelloAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "othello_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {}
+    def generate_params(self, config_id: int) -> GameParams:
+        return OthelloParams()
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         """Prefix the board with the player's colour.
@@ -280,3 +293,51 @@ class OthelloAgent(BaseGameAgent):
             if not legal_actions:
                 break
             state.apply_action(rng.choice(legal_actions))
+
+
+# Deck sizes goofspiel is played with, selected per game from the config id so
+# each game varies board size (and thus length) for SFT/eval diversity. 5 is a
+# short sharp game; 13 is the full standard deck.
+_GOOFSPIEL_NUM_CARDS = (5, 8, 10, 13)
+
+
+class GoofspielAgent(BaseGameAgent):
+    """Goofspiel (a.k.a. the Game of Pure Strategy).
+
+    OpenSpiel's goofspiel is a SIMULTANEOUS-move game; the sequential harness
+    drives it via convert_to_turn_based, which hides each player's concurrent
+    bid from the other (so simultaneity and fairness are preserved). Played with
+    imp_info=True (opponent hand hidden) and returns_type=win_loss so terminal
+    returns are zero-sum {-1, 0, 1}, mapping straight to win/loss/draw.
+    """
+
+    @property
+    def game_name(self) -> str:
+        return "goofspiel"
+
+    @property
+    def rules_key(self) -> str:
+        return "goofspiel_rules"
+
+    def generate_params(self, config_id: int) -> GameParams:
+        num_cards = _GOOFSPIEL_NUM_CARDS[config_id % len(_GOOFSPIEL_NUM_CARDS)]
+        return GoofspielParams(
+            players=2,
+            num_cards=num_cards,
+            imp_info=True,
+            points_order="random",
+            returns_type="win_loss",
+        )
+
+    def load_game(self, params: GameParams) -> pyspiel.Game:
+        """Load goofspiel and wrap its simultaneous moves into sequential turns."""
+        return pyspiel.convert_to_turn_based(pyspiel.load_game(self.game_name, params.to_pyspiel()))
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        """Render the player's own view; imp_info keeps the opponent's hand hidden.
+
+        observation_string already reports the current point card, the remaining
+        point cards, both running scores, this player's hand and the win sequence.
+        Prefix the player's identity since the board labels are absolute (P0/P1).
+        """
+        return f"You are Player {player_id} (P{player_id}).\n{state.observation_string(player_id)}"

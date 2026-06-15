@@ -117,7 +117,7 @@ def run_mcts_baseline(
             break
         seed = seed_rng.randint(1, cst.PVP_SEED_RANGE_MAX)
         config_id = config_id_for_seed(seed, env_config)
-        game = pyspiel.load_game(agent.game_name, agent.generate_params(config_id))
+        game = agent.load_game(agent.generate_params(config_id))
         game_type = game.get_type()
 
         model_seat = i % 2

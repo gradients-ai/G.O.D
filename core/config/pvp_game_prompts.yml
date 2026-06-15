@@ -98,3 +98,34 @@ othello_rules: >
   Game end: The game ends when neither player can move (the board is full or no
   legal moves remain for either side). The player with more discs wins; an equal
   count is a draw.
+
+goofspiel_rules: >
+  GOOFSPIEL RULES (the Game of Pure Strategy):
+
+  Setup: Two players. Each holds an identical hand of bidding cards numbered
+  1..N. A separate deck of N point cards (also 1..N) is shuffled; one point card
+  is revealed each round.
+
+  Each round: A point card is turned face up. Both players SIMULTANEOUSLY and
+  SECRETLY choose one card from their hand to bid on it — you do not see the
+  opponent's bid before committing yours. The higher bid wins that round and
+  takes the point card's value in points; on a tie the point card is split (no
+  one scores it). Both bid cards are then discarded and cannot be reused.
+
+  Information: You see the point cards revealed so far, the running scores, your
+  own remaining hand, and which player won each past round (the win sequence) —
+  but NOT the opponent's hand or their current bid. Infer their remaining cards
+  from the rounds already played.
+
+  Goal / game end: After all N rounds every card is spent. The player with more
+  total points wins; equal points is a draw.
+
+  Strategy tips:
+  - Spend high cards to win high-value point cards; don't waste your N on a
+    low point card.
+  - Bidding one above what you expect the opponent to play wins cheaply — but
+    they reason the same way, so mix up your play.
+  - Track which high cards the opponent has already used; once their big cards
+    are gone, your remaining cards dominate.
+  - Sometimes "sacrifice" your lowest card on a point card you concede, keeping
+    stronger cards for later rounds.

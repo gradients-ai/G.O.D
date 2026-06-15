@@ -20,8 +20,6 @@ import pickle
 import random
 import sys
 
-import pyspiel
-
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import MemoryArea
@@ -83,7 +81,8 @@ def _save(bundle: dict) -> None:
 
 
 def _rehydrate(bundle: dict):
-    game = pyspiel.load_game(bundle["game_name"], bundle["params"])
+    agent = _agent_for(_env(bundle["env"]))
+    game = agent.load_game(bundle["params"])
     state = game.deserialize_state(bundle["state_str"])
     rng = random.Random()
     rng.setstate(bundle["rng_state"])
@@ -113,7 +112,7 @@ def cmd_new(args) -> None:
     env = _env(args.env)
     agent = _agent_for(env)
     params = agent.generate_params(args.seed)
-    game = pyspiel.load_game(agent.game_name, params)
+    game = agent.load_game(params)
     state = game.new_initial_state()
     agent.setup_initial_state(state, args.seed)  # seeded opening plies, as in eval
     rng = random.Random(args.seed)

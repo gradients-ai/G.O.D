@@ -9,6 +9,23 @@ from core.constants import EnvironmentName
 from validator.utils.model_prep import _build_env_configs
 
 
+def test_build_env_configs_restricts_to_task_envs():
+    """Model prep should baseline only the task's own games, not every env."""
+    only = _build_env_configs([EnvironmentName.GOOFSPIEL])
+    assert set(only) == {EnvironmentName.GOOFSPIEL}
+
+    pair = _build_env_configs([EnvironmentName.GOOFSPIEL, EnvironmentName.OTHELLO])
+    assert set(pair) == {EnvironmentName.GOOFSPIEL, EnvironmentName.OTHELLO}
+
+
+def test_build_env_configs_defaults_to_all_envs():
+    """No restriction (or empty) falls back to every configured env."""
+    from core.constants import ENVIRONMENT_CONFIGS
+
+    assert set(_build_env_configs()) == set(ENVIRONMENT_CONFIGS)
+    assert set(_build_env_configs([])) == set(ENVIRONMENT_CONFIGS)
+
+
 def test_model_prep_configs_include_intercode_sidecar():
     cfg = _build_env_configs()[EnvironmentName.INTERCODE]
 

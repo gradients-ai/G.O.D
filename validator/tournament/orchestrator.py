@@ -1221,6 +1221,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 reward_functions=reward_fns,
                 is_env_task=True,
                 hotkey=hotkey,
+                environment_names=getattr(task, "environment_names", None),
             )
             if prep_result is not None and prep_result.baseline_stats:
                 await task_sql.set_miner_baseline_stats(
@@ -1260,6 +1261,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             gpu_ids=gpu_ids,
             reward_functions=reward_fns,
             is_env_task=is_env_task,
+            environment_names=getattr(task, "environment_names", None) if is_env_task else None,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):
