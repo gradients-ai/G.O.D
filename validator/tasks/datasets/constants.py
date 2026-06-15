@@ -33,12 +33,20 @@ DEFAULT_MODEL_PARAMS_FOR_HOURS = 8e9
 TRAINING_OVERHEAD_HOURS = 0.5
 MEASURED_THROUGHPUT_MINER_RATIO = 1.0
 MEASURED_THROUGHPUT_CLAMP = (0.33, 3.0)
+# Per-token FLOPs multiplier. GRPO is excluded because it is step-budgeted,
+# not token-proportional.
 TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.INSTRUCTTEXTTASK: 1.0,
     TaskType.CHATTASK: 1.0,
     TaskType.DPOTASK: 1.4,
-    TaskType.GRPOTASK: 1.3,
 }
+GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
+    (4.0, 1.5),
+    (12.0, 2.5),
+    (40.0, 4.0),
+    (float("inf"), 6.0),
+]
+GRPO_MIN_SYNTH_ROWS = 20_000
 
 STANDARD_INSTRUCT_COLUMN = "instruct"
 STANDARD_INPUT_COLUMN = "input"
