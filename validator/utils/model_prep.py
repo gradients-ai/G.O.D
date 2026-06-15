@@ -32,7 +32,9 @@ def _build_env_configs(
     prep only baselines the games that task actually plays — not every env. Falls
     back to all envs when no names are supplied.
     """
-    selected = set(environment_names) if environment_names else None
+    # Coerce to enum members: some code paths assign environment_names as raw
+    # strings (bypassing validation), which wouldn't match the enum keys below.
+    selected = {EnvironmentName(e) for e in environment_names} if environment_names else None
     return {
         env_name: EnvConfig(
             env_image=cfg.env_image,

@@ -24,6 +24,8 @@ try:
     from core.constants import EnvironmentName
     from core.constants import EvalType
     from core.constants import ENVIRONMENT_CONFIGS
+    from core.models.pvp_models import GameInstance
+    from core.models.pvp_models import GoofspielParams
     from core.pvp.agents import GoofspielAgent
     from core.pvp.game_eval import _AGENT_REGISTRY
     from core.pvp.game_eval import config_id_for_seed
@@ -155,3 +157,34 @@ class TestGoofspielRegistration:
     def test_system_prompt_includes_rules(self):
         prompt = GoofspielAgent().generate_system_prompt()
         assert "goofspiel" in prompt.lower()
+
+
+@needs_pyspiel
+class TestGameParamsRoundTrip:
+    """The discriminated union on GameInstance.game_params must survive JSON.
+
+    GameInstance only flows in-process today, so this is a safety property — but
+    pinning it means a future rename of the `game` tag can't silently degrade a
+    GoofspielParams to the base type without a test failing.
+    """
+
+    def test_goofspiel_params_round_trip_preserves_subclass(self):
+        inst = GameInstance(
+            game_name="goofspiel",
+            game_params=GoofspielParams(num_cards=13),
+            model_a_player_id=0,
+            seed=1,
+            is_zero_sum=True,
+            min_utility=-1.0,
+            max_utility=1.0,
+        )
+        restored = GameInstance.model_validate_json(inst.model_dump_json())
+        assert isinstance(restored.game_params, GoofspielParams)
+        assert restored.game_params.num_cards == 13
+        assert restored.game_params.to_pyspiel() == {
+            "players": 2,
+            "num_cards": 13,
+            "imp_info": True,
+            "points_order": "random",
+            "returns_type": "win_loss",
+        }
