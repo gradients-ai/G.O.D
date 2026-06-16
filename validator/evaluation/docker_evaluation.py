@@ -440,6 +440,15 @@ async def _deploy_pvp_eval(
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
             )
             if isinstance(result, dict):
+                # Pair finished — free its GPU reservation now instead of waiting for the
+                # whole task's cleanup, so the slot is reusable immediately.
+                await _release_reserved_gpus(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=deployment_name,
+                    ctx=ctx,
+                )
                 return result
             eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
         await _release_reserved_gpus(
@@ -561,6 +570,15 @@ async def _deploy_pvp_eval(
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
             )
             if isinstance(result, dict):
+                # Pair finished — free its GPU reservation now instead of waiting for the
+                # whole task's cleanup, so the slot is reusable immediately.
+                await _release_reserved_gpus(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=resolved_deployment_name,
+                    ctx=ctx,
+                )
                 return result
 
             raise RuntimeError(str(result))
