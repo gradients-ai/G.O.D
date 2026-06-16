@@ -488,6 +488,14 @@ EVAL_BASILICA_MAX_RETRIES = 3
 EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
 EVAL_BASILICA_MAX_POLL_SECONDS = 16000
+# When the result poll keeps failing (deployment gone / 404 / connection refused), give
+# up after this many *consecutive* failures instead of polling a dead endpoint until the
+# overall deadline. A single transient blip won't trip it; it needs this many in a row.
+EVAL_BASILICA_MAX_CONSECUTIVE_POLL_FAILURES = 5
+# After a failed poll, re-check this soon (instead of the full interval) to confirm death
+# quickly. Lets a dead deployment be abandoned in ~minutes while live evals keep their
+# normal cadence and the overall poll deadline.
+EVAL_BASILICA_FAILED_POLL_RECHECK_SECONDS = 30
 EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS = 600
 EVAL_DB_MAX_CONCURRENT_WRITES = 2
 EVAL_DB_RETRY_ATTEMPTS = 4
