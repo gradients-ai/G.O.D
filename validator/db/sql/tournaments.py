@@ -799,7 +799,9 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
                    {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
             WHERE {cst.TRAINING_STATUS} = $1
-            ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC
+            -- task_id keeps a task/group's jobs contiguous (its hotkey rows share created_at) so the
+            -- scheduler drains one group before the next, without changing priority/created_at order.
+            ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC, {cst.TASK_ID}
         """
         results = await connection.fetch(query, status)
 

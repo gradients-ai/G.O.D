@@ -115,6 +115,7 @@ def organise_tournament_round(
     tournament_type: TournamentType | None = None,
     round_id: str = "",
     round_number: int = 1,
+    is_final_round: bool = False,
 ) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
@@ -133,7 +134,11 @@ def organise_tournament_round(
             if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
             else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
         )
-        num_groups = math.ceil(len(nodes_copy) / max_group_size)
+        # Reserve a slot for the boss injected into the smallest group (see assign_nodes_to_tournament_tasks)
+        # so that group still respects max_group_size, i.e. <= C(max,2) PvP pairs.
+        boss_will_be_injected = not is_final_round and EMISSION_BURN_HOTKEY not in {n.hotkey for n in nodes_copy}
+        effective_count = len(nodes_copy) + (1 if boss_will_be_injected else 0)
+        num_groups = math.ceil(effective_count / max_group_size)
         while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             num_groups -= 1
 
@@ -205,7 +210,9 @@ async def _create_first_round(
 ):
     round_id = generate_round_id(tournament_id, 1)
     with LogContext(round_id=round_id):
-        round_structure = organise_tournament_round(nodes, config, tournament_type, round_id=round_id, round_number=1)
+        round_structure = organise_tournament_round(
+            nodes, config, tournament_type, round_id=round_id, round_number=1, is_final_round=False
+        )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
 
@@ -342,6 +349,11 @@ async def _save_winner_model_repo(
         logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
 
 
+def select_boss_group_index(groups: list[Group]) -> int:
+    """Index of the smallest group — the boss injection target (minimises added PvP pairs, keeps the cap)."""
+    return min(range(len(groups)), key=lambda i: len(groups[i].member_ids))
+
+
 async def assign_nodes_to_tournament_tasks(
     tournament_id: str, round_structure: Round, psql_db: PSQLDB, is_final_round: bool = False
 ) -> None:
@@ -353,21 +365,18 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        # The boss (EMISSION_BURN_HOTKEY) may already be a real member of one of the
-        # groups (e.g. it advanced into a group this round). Detect that up front so we
-        # don't greedily append it to an earlier group as well — otherwise the boss gets
-        # assigned to two tasks in the same round.
-        boss_assigned = any(
-            EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
+        # The boss may already be a competing member of a group this round; only inject it
+        # (into the smallest group) when it isn't, so it never gets assigned to two tasks.
+        boss_target_idx = (
+            None
+            if not is_environment_tournament or any(EMISSION_BURN_HOTKEY in g.member_ids for g in round_structure.groups)
+            else select_boss_group_index(round_structure.groups)
         )
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
-                if EMISSION_BURN_HOTKEY in group_participants:
-                    boss_assigned = True
-                elif not boss_assigned:
+                if i == boss_target_idx and EMISSION_BURN_HOTKEY not in group_participants:
                     group_participants.append(EMISSION_BURN_HOTKEY)
-                    boss_assigned = True
                 participants_to_assign = group_participants
 
                 if is_final_round:
@@ -524,7 +533,7 @@ async def create_next_round(
         round_structure = organise_tournament_round(
             winner_nodes, config,
             tournament.tournament_type if tournament.tournament_type == TournamentType.ENVIRONMENT else None,
-            round_id=next_round_id, round_number=next_round_number,
+            round_id=next_round_id, round_number=next_round_number, is_final_round=next_round_is_final,
         )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP

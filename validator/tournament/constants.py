@@ -61,7 +61,10 @@ SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
-MAX_ENVIRONMENT_GROUP_SIZE = 6
+# Round-1 group tasks evaluate every pair of miners head-to-head (PvP), so eval cost scales
+# with C(n,2). The champion (boss) is injected into the smallest group on top of its miners,
+# so the cap is enforced *including* the boss: <= 4 members => <= C(4,2) = 6 PvP pairs/group.
+MAX_ENVIRONMENT_GROUP_SIZE = 4
 # Small env tournaments collapse too fast (one big group advancing 1 contender). When the
 # field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
 # are more groups, more contenders survive each round, and the bracket plays out over more rounds.
