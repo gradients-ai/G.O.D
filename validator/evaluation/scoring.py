@@ -50,7 +50,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
-from validator.evaluation.basilica import EvaluationRetryableError
+from validator.evaluation.basilica import EvaluationCapacityUnavailable
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
@@ -849,15 +849,19 @@ async def _get_or_run_pvp_pairs(
                     task_id=task_uuid,
                     psql_db=config.psql_db,
                 )
-            except EvaluationRetryableError as exc:
-                # Transient infra failure (e.g. no eval GPU capacity) — not the pair's
-                # fault. Do NOT consume a retry attempt; leave the pair pending so it is
-                # retried next cycle instead of exhausting and being scored as a 0-0 draw.
+            except EvaluationCapacityUnavailable as exc:
+                # No eval GPU capacity right now — purely infra, not the pair's fault. Do
+                # NOT consume a retry attempt; leave it pending to retry next cycle. Only
+                # genuine capacity exhaustion is exempt — any other retryable error (e.g.
+                # DeploymentNotReadyError, where the miner's model never loads) must still
+                # count toward attempts, or a broken model would defer forever and wedge
+                # the task. Those fall through to the generic handler below.
                 logger.info(f"Pair {pair_key} deferred, eval capacity unavailable: {exc}")
                 failed_pairs.append(pair_key)
                 return
             except Exception as exc:
-                # Genuine eval failure — count the attempt so the pair can eventually exhaust.
+                # Genuine eval failure (incl. model-won't-load) — count the attempt so the
+                # pair can eventually exhaust and be scored as a 0-0 draw.
                 await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
                 logger.error(f"Pair {pair_key} failed: {exc}", exc_info=True)
                 failed_pairs.append(pair_key)
