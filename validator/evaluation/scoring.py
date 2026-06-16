@@ -788,6 +788,12 @@ async def _eval_pvp_envs(
     return pvp_results_to_winrates(group_results)
 
 
+# Caps how many PvP pair deployments are in flight at once, across every task. Sized to
+# the eval GPU pool so it stays saturated without over-subscribing: pairs beyond the cap
+# wait here instead of being dispatched and bouncing off GPU capacity.
+_PVP_DISPATCH_SEM = asyncio.Semaphore(cts.MAX_CONCURRENT_PVP_PAIRS)
+
+
 async def _get_or_run_pvp_pairs(
     task_id: str,
     pvp_envs: list[core_cst.EnvironmentName],
@@ -836,19 +842,20 @@ async def _get_or_run_pvp_pairs(
         async def _run_and_persist(pair_key: str) -> None:
             hk_a, hk_b = pair_key.split(":")
             try:
-                pair_group = await run_evaluation_pvp_pair(
-                    model_a_repo=miners.by_hotkey[hk_a],
-                    model_b_repo=miners.by_hotkey[hk_b],
-                    hotkey_a=hk_a,
-                    hotkey_b=hk_b,
-                    base_model=base_model,
-                    environment_names=pvp_envs,
-                    seed=seed,
-                    image=image,
-                    gpu_count=gpu_count,
-                    task_id=task_uuid,
-                    psql_db=config.psql_db,
-                )
+                async with _PVP_DISPATCH_SEM:
+                    pair_group = await run_evaluation_pvp_pair(
+                        model_a_repo=miners.by_hotkey[hk_a],
+                        model_b_repo=miners.by_hotkey[hk_b],
+                        hotkey_a=hk_a,
+                        hotkey_b=hk_b,
+                        base_model=base_model,
+                        environment_names=pvp_envs,
+                        seed=seed,
+                        image=image,
+                        gpu_count=gpu_count,
+                        task_id=task_uuid,
+                        psql_db=config.psql_db,
+                    )
             except EvaluationRetryableError as exc:
                 # Transient infra failure (e.g. no eval GPU capacity) — not the pair's
                 # fault. Do NOT consume a retry attempt; leave the pair pending so it is

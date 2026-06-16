@@ -194,11 +194,6 @@ FIRST_PLACE_SCORE = 3
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
 EVAL_MAX_GPUS = 10
-# How many environment (PvP) tasks may be evaluated at once. A single env task fans out
-# all its PvP pairs in parallel, which can already saturate the eval GPU pool; running
-# multiple env tasks concurrently floods Basilica and most pair deployments bounce off
-# capacity. Keep at 1 so env tasks drain one at a time. Non-env tasks are unaffected.
-MAX_CONCURRENT_ENV_EVAL_TASKS = 1
 
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.75
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
@@ -549,6 +544,11 @@ PVP_PERF_DIFF_SLOPE = 0.125  # Linear map: 60% win rate → emission threshold, 
 PVP_BASILICA_TTL_SECONDS = 28800
 PVP_BASILICA_GPU_COUNT = 2
 INDIVIDUAL_BASILICA_GPU_COUNT = 1
+# Max PvP pair deployments in flight at once, across all tasks. Sized to the eval GPU
+# pool so it stays saturated without over-subscribing: every ready task may dispatch,
+# but only this many pairs deploy concurrently; the rest wait their turn rather than
+# flooding Basilica and bouncing off capacity.
+MAX_CONCURRENT_PVP_PAIRS = EVAL_MAX_GPUS // PVP_BASILICA_GPU_COUNT
 PVP_BASILICA_PORT = 8000
 
 # HuggingFace container env vars (shared across all eval containers)
