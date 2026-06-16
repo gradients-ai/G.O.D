@@ -552,11 +552,6 @@ PVP_PERF_DIFF_SLOPE = 0.125  # Linear map: 60% win rate → emission threshold, 
 PVP_BASILICA_TTL_SECONDS = 28800
 PVP_BASILICA_GPU_COUNT = 2
 INDIVIDUAL_BASILICA_GPU_COUNT = 1
-# Max PvP pair deployments in flight at once, across all tasks. Sized to the eval GPU
-# pool so it stays saturated without over-subscribing: every ready task may dispatch,
-# but only this many pairs deploy concurrently; the rest wait their turn rather than
-# flooding Basilica and bouncing off capacity.
-MAX_CONCURRENT_PVP_PAIRS = EVAL_MAX_GPUS // PVP_BASILICA_GPU_COUNT
 PVP_BASILICA_PORT = 8000
 
 # HuggingFace container env vars (shared across all eval containers)
