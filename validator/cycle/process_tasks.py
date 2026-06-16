@@ -471,6 +471,12 @@ async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
     return list(tasks_by_id.values())
 
 
+# Env (PvP) tasks each fan out all their pair deployments at once, which can already
+# saturate the eval GPU pool. Serialise env-task evaluation so they drain one at a time
+# instead of many tasks flooding Basilica simultaneously. Non-env tasks are unaffected.
+_ENV_EVAL_TASK_SEM = asyncio.Semaphore(cst.MAX_CONCURRENT_ENV_EVAL_TASKS)
+
+
 async def evaluate_tasks_loop(config: Config):
     processing_task_ids: set[str] = set()
 
@@ -501,7 +507,12 @@ async def _run_and_cleanup(
 ):
     try:
         num_gpus = compute_required_gpus(task)
-        await _evaluate_pending_pairs_for_task(task, num_gpus, config)
+        if task.task_type == TaskType.ENVIRONMENTTASK:
+            # One env task at a time — it fans out all its PvP pairs internally.
+            async with _ENV_EVAL_TASK_SEM:
+                await _evaluate_pending_pairs_for_task(task, num_gpus, config)
+        else:
+            await _evaluate_pending_pairs_for_task(task, num_gpus, config)
     except Exception as e:
         logger.error(f"Error evaluating task {task.task_id}: {e}", exc_info=True)
     finally:

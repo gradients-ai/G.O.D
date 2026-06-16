@@ -194,6 +194,11 @@ FIRST_PLACE_SCORE = 3
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
 EVAL_MAX_GPUS = 10
+# How many environment (PvP) tasks may be evaluated at once. A single env task fans out
+# all its PvP pairs in parallel, which can already saturate the eval GPU pool; running
+# multiple env tasks concurrently floods Basilica and most pair deployments bounce off
+# capacity. Keep at 1 so env tasks drain one at a time. Non-env tasks are unaffected.
+MAX_CONCURRENT_ENV_EVAL_TASKS = 1
 
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT = 0.75
 PERCENTAGE_OF_INSTRUCT_TASKS_THAT_SHOULD_BE_CHAT = 0.5
