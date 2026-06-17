@@ -138,7 +138,7 @@ def train_test_split_image(dataset_path: str) -> tuple[str, str]:
 
     keys = list(dataset_entries.keys())
     random.shuffle(keys)
-    split_idx = ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE)
+    split_idx = max(2, ceil(len(keys) * cst.TRAIN_TEST_SPLIT_PERCENTAGE))
     test_keys = set(keys[:split_idx])
     train_keys = set(keys[split_idx:])
 
