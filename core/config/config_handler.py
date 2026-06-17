@@ -59,7 +59,7 @@ def create_dataset_entry(
 
 def update_flash_attention(config: dict, model: str):
     # You might want to make this model-dependent
-    config["flash_attention"] = False
+    config["flash_attention"] = True
     return config
 
 
