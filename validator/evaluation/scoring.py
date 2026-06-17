@@ -637,6 +637,8 @@ async def process_miners_pool(
                 else:
                     raise ValueError(f"Unknown task type: {task.task_type}")
 
+        except EvaluationRetryableError:
+            raise
         except Exception as e:
             logger.error(f"Error during batch evaluation: {e}", exc_info=True)
             results.extend(
