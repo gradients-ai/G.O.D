@@ -154,8 +154,6 @@ class LeducPokerAgent(BaseGameAgent):
         pot = self._extract(info_str, r"\[Pot: (\d+)\]")
         money = self._extract(info_str, r"\[Money: ([\d ]+)\]")
         public_card = self._extract(info_str, r"\[Public: (-?\d+)\]")
-        round1_seq = self._extract(info_str, r"\[Round1: ([^\]]*)\]")
-        round2_seq = self._extract(info_str, r"\[Round2: ([^\]]*)\]")
 
         lines: list[str] = []
 
@@ -179,11 +177,6 @@ class LeducPokerAgent(BaseGameAgent):
                 lines.append(f"Your chips: {chips[player_id]}")
                 lines.append(f"Opponent chips: {chips[1 - player_id]}")
 
-        if round1_seq:
-            lines.append(f"Round 1 actions: {self._parse_betting(round1_seq)}")
-        if round2_seq:
-            lines.append(f"Round 2 actions: {self._parse_betting(round2_seq)}")
-
         return "\n".join(lines)
 
     @staticmethod
@@ -200,16 +193,6 @@ class LeducPokerAgent(BaseGameAgent):
         if rank_idx < len(ranks):
             return f"{ranks[rank_idx]}{suits[suit_idx]}"
         return f"Card_{card_id}"
-
-    @staticmethod
-    def _parse_betting(seq: str) -> str:
-        if not seq or not seq.strip():
-            return "(none)"
-        actions_map = {0: "Fold", 1: "Call", 2: "Raise"}
-        numbers = [int(x) for x in seq.split() if x.isdigit()]
-        if not numbers:
-            return "(none)"
-        return ", ".join(actions_map.get(a, f"Action{a}") for a in numbers)
 
 
 class GinRummyAgent(BaseGameAgent):
