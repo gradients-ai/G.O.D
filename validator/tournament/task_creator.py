@@ -13,6 +13,7 @@ from validator.core.config import Config
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
+from validator.core.models import EnvRawTask
 from validator.core.models import InstructTextRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
@@ -120,6 +121,42 @@ async def _get_tournament_base_model(tournament_id: str, config: Config) -> str 
     return task_obj.model_id if task_obj else None
 
 
+async def _get_prev_tournament_env_names(tournament_id: str, config: Config) -> set[EnvironmentName]:
+    """Environments used in ANY round of the immediately previous completed env tournament.
+
+    Used to bias R1 env selection toward games not seen last tournament. Empty set when there
+    is no previous tournament (then R1 falls back to fully random selection).
+    """
+    prev = await get_latest_completed_tournament(
+        config.psql_db, TournamentType.ENVIRONMENT, exclude_tournament_id=tournament_id,
+    )
+    if not prev:
+        return set()
+    seen: set[EnvironmentName] = set()
+    for prev_round in await get_tournament_rounds(prev.tournament_id, config.psql_db):
+        for tourn_task in await get_tournament_tasks(prev_round.round_id, config.psql_db):
+            task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
+            if isinstance(task_obj, EnvRawTask):
+                seen.update(task_obj.environment_names)
+    return seen
+
+
+def _select_r1_env_names(
+    num_envs: int, seen_last_tournament: set[EnvironmentName]
+) -> list[EnvironmentName]:
+    """Pick num_envs environments for R1, preferring games not seen in the last tournament.
+
+    Unseen games are exhausted first (in random order); the remainder is filled randomly from
+    the seen pool. With no history (or once every game has been seen) this is plain random.
+    """
+    all_envs = list(EnvironmentName)
+    unseen = [e for e in all_envs if e not in seen_last_tournament]
+    seen = [e for e in all_envs if e in seen_last_tournament]
+    random.shuffle(unseen)
+    random.shuffle(seen)
+    return (unseen + seen)[:num_envs]
+
+
 async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
     """Get the previous tournament winner's model for the PREVIOUS_WINNER boss task.
 
@@ -208,6 +245,16 @@ async def _create_environment_group_tasks(
     # R2+ must use the same base model as R1
     tournament_base_model = await _get_tournament_base_model(tournament_id, config) if round_data.round_number > 1 else None
 
+    # R1 prefers games not seen in the last tournament; R2+ inherit R1's env set via reference_task.
+    r1_env_override: list[EnvironmentName] | None = None
+    if round_data.round_number == 1:
+        seen_last_tournament = await _get_prev_tournament_env_names(tournament_id, config)
+        r1_env_override = _select_r1_env_names(num_envs, seen_last_tournament)
+        logger.info(
+            f"R1 env selection: seen_last_tournament={sorted(e.value for e in seen_last_tournament)} "
+            f"-> selected={[e.value for e in r1_env_override]}"
+        )
+
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     tasks: list[RawTask] = []
@@ -239,6 +286,7 @@ async def _create_environment_group_tasks(
                 num_environments=num_envs, round_number=round_data.round_number,
                 model_id_override=tournament_base_model,
                 training_start_point=start_point,
+                environment_names_override=r1_env_override,
             )
             reference_task = task
 
