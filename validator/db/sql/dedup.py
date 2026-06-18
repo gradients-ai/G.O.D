@@ -48,8 +48,8 @@ async def insert_dedup_review(review: TournamentDedupReview, psql_db: PSQLDB) ->
             f"""
             INSERT INTO {cst.TOURNAMENT_DEDUP_REVIEWS_TABLE}
                 (round_id, tournament_id, tournament_type, status, cohort, clusters,
-                 pair_verdicts, flagged_hotkeys, approved_eliminations, report_url)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10)
+                 pair_verdicts, flagged_hotkeys, approved_eliminations, report_url, notes)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11)
             ON CONFLICT (round_id) DO NOTHING
             """,
             review.round_id,
@@ -62,6 +62,7 @@ async def insert_dedup_review(review: TournamentDedupReview, psql_db: PSQLDB) ->
             json.dumps(review.flagged_hotkeys),
             json.dumps(review.approved_eliminations or review.flagged_hotkeys),
             review.report_url,
+            review.notes,
         )
         logger.info(f"Inserted dedup review for round {review.round_id} ({len(review.flagged_hotkeys)} flagged)")
 

@@ -171,7 +171,13 @@ async def _run_and_record_gate(
     result = await run_pairwise_dedup(refs, boss_hotkey=cst.EMISSION_BURN_HOTKEY)
     clusters, verdicts = _to_records(result)
 
-    if not result.flagged_hotkeys:
+    unresolved_note = None
+    if result.unresolved_pairs:
+        unresolved_note = "Judge returned no verdict for (skipped — manual check needed): " + ", ".join(
+            f"{a[:8]} vs {b[:8]}" for a, b in result.unresolved_pairs
+        )
+
+    if not result.flagged_hotkeys and not result.unresolved_pairs:
         review = TournamentDedupReview(
             round_id=next_round_id,
             tournament_id=tournament.tournament_id,
@@ -197,10 +203,12 @@ async def _run_and_record_gate(
         flagged_hotkeys=result.flagged_hotkeys,
         approved_eliminations=result.flagged_hotkeys,
         report_url=report_url,
+        notes=unresolved_note,
     )
     await insert_dedup_review(review, psql_db)
     logger.warning(
-        f"Dedup gate {next_round_id}: {len(result.flagged_hotkeys)} flagged — HALTING tournament pending manual review"
+        f"Dedup gate {next_round_id}: {len(result.flagged_hotkeys)} flagged, "
+        f"{len(result.unresolved_pairs)} unresolved — HALTING tournament pending manual review"
     )
     if config.discord_url:
         await notify_tournament_dedup_review(

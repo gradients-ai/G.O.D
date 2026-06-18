@@ -414,6 +414,9 @@ TOURN_DEDUP_CLAUDE_MODEL = "claude-opus-4-8"  # best current model for the judge
 # contents itself and see through reordering/renaming. These bound a single pairwise judgement.
 TOURN_DEDUP_CLAUDE_MAX_TURNS = 60
 TOURN_DEDUP_CLAUDE_MAX_BUDGET_USD = 15  # per-pair ceiling; typical run ~$2-3
+# Pairwise judgements are independent, so run them concurrently (bounded to respect Anthropic
+# rate limits). Clustering happens after all verdicts return, so concurrency doesn't change the result.
+TOURN_DEDUP_CONCURRENCY = 8
 
 # YaRN extension constants
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks

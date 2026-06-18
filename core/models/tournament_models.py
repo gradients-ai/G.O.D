@@ -720,3 +720,4 @@ class DedupResult(BaseModel):
     flagged_hotkeys: list[str] = []  # recommended eliminations (boss excluded)
     evasion_hotkeys: list[str] = []
     unclonable_hotkeys: list[str] = []
+    unresolved_pairs: list[tuple[str, str]] = []  # pairs the judge could not return a verdict for

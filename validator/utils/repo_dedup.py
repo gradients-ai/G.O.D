@@ -461,6 +461,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
 
         dup_pairs: list[tuple[str, str]] = list(hash_pairs)
         evasion: set[str] = set()
+        unresolved: list[tuple[str, str]] = []
 
         # Collapse hash-duplicate clusters to one representative each so T2 only compares
         # representatives. hash_pairs already link every member to its rep, so a duplicate
@@ -471,21 +472,46 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             f"dedup T2: {len(representatives)} representatives after hash-collapse "
             f"({len(hash_pairs)} hash-dup pairs), {len(pairs_to_judge)} pairs to judge with Claude"
         )
-        for idx, (a, b) in enumerate(pairs_to_judge, 1):
+        # Pairwise judgements are independent — run them concurrently (bounded by a semaphore to
+        # respect Anthropic rate limits). Results are folded back in input order below, so the
+        # clustering stays deterministic regardless of completion order.
+        total = len(pairs_to_judge)
+        sem = asyncio.Semaphore(cst.TOURN_DEDUP_CONCURRENCY)
+
+        async def _judge_one(idx: int, a: str, b: str) -> tuple[str, str, PairVerdict | None]:
             pa, pb = prepared[a], prepared[b]
-            logger.info(f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} — judging…")
-            started = time.monotonic()
-            file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
-            verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
-            verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
+            async with sem:
+                logger.info(f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} — judging…")
+                started = time.monotonic()
+                file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
+                try:
+                    verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
+                except Exception as exc:
+                    # One unresolvable pair (e.g. the judge never returns parseable JSON) must not
+                    # abort the whole gate. Skip it and record it so the gate halts for a human.
+                    logger.error(
+                        f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} → "
+                        f"UNRESOLVED ({exc}); skipping pair and flagging for manual review"
+                    )
+                    return (a, b, None)
+                verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
+                logger.info(
+                    f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} → "
+                    f"{verdict.relationship.value} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
+                )
+                return (a, b, verdict)
+
+        judged = await asyncio.gather(*(_judge_one(i, a, b) for i, (a, b) in enumerate(pairs_to_judge, 1)))
+
+        for a, b, verdict in judged:
+            if verdict is None:
+                unresolved.append((a, b))
+                continue
             verdicts.append(verdict)
-            logger.info(
-                f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} → "
-                f"{verdict.relationship.value} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
-            )
             if verdict.relationship == DupRelationship.DUPLICATE:
                 dup_pairs.append((a, b))
             elif verdict.relationship == DupRelationship.DROP_EVASION:
+                pa, pb = prepared[a], prepared[b]
                 evasion.add(a if pa.content_chars >= pb.content_chars else b)
 
         clusters = []
@@ -505,6 +531,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             flagged_hotkeys=sorted(flagged),
             evasion_hotkeys=sorted(evasion),
             unclonable_hotkeys=sorted(h for h, p in prepared.items() if not p.clone_ok),
+            unresolved_pairs=sorted(unresolved),
         )
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
