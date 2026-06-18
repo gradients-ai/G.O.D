@@ -239,6 +239,7 @@ class TestEnvironmentGroupTasks:
             patch("validator.tournament.task_creator._get_text_models", return_value=["model1"]),
             patch("validator.tournament.task_creator._get_instruct_text_datasets", return_value=["ds1"]),
             patch("validator.tournament.task_creator._get_tournament_base_model", return_value="Qwen/Qwen2.5-7B-Instruct"),
+            patch("validator.tournament.task_creator._get_prev_tournament_env_names", return_value=set()),
             patch("validator.tournament.task_creator.create_synthetic_env_task", side_effect=mock_create_env_task),
             patch("validator.tournament.task_creator._create_and_register_tournament_task", new_callable=AsyncMock),
         ):
@@ -279,6 +280,12 @@ class TestEnvironmentGroupTasks:
         """R1 should not force a model (lets the task creator pick randomly)."""
         calls = await self._run_group_task_creation(round_number=1)
         assert calls[0].get("model_id_override") is None
+
+    @pytest.mark.asyncio
+    async def test_round_1_passes_selected_env_override(self):
+        calls = await self._run_group_task_creation(round_number=1)
+        assert calls[0].get("environment_names_override") is not None
+        assert len(calls[0]["environment_names_override"]) == t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER
 
     @pytest.mark.asyncio
     async def test_one_task_per_group(self):

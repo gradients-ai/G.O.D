@@ -39,6 +39,7 @@ from validator.scoring.tasks import should_use_tournament_eval
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
+from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.synthetics.scheduler import compute_hours_from_baseline_stats
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
@@ -1223,6 +1224,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 reward_functions=reward_fns,
                 is_env_task=True,
                 hotkey=hotkey,
+                environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
             )
             if prep_result is not None and prep_result.baseline_stats:
                 await task_sql.set_miner_baseline_stats(
@@ -1262,6 +1264,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             gpu_ids=gpu_ids,
             reward_functions=reward_fns,
             is_env_task=is_env_task,
+            environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):

@@ -9,6 +9,21 @@ from core.constants.environments import EnvironmentName
 from validator.tasks.prep.model import _build_env_configs
 
 
+def test_build_env_configs_restricts_to_task_envs():
+    only = _build_env_configs([EnvironmentName.GOOFSPIEL])
+    assert set(only) == {EnvironmentName.GOOFSPIEL}
+
+    pair = _build_env_configs([EnvironmentName.GOOFSPIEL, EnvironmentName.OTHELLO])
+    assert set(pair) == {EnvironmentName.GOOFSPIEL, EnvironmentName.OTHELLO}
+
+
+def test_build_env_configs_defaults_to_all_envs():
+    from core.constants.environments import ENVIRONMENT_CONFIGS
+
+    assert set(_build_env_configs()) == set(ENVIRONMENT_CONFIGS)
+    assert set(_build_env_configs([])) == set(ENVIRONMENT_CONFIGS)
+
+
 def test_model_prep_configs_include_intercode_sidecar():
     cfg = _build_env_configs()[EnvironmentName.INTERCODE]
 

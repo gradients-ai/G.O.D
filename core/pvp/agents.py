@@ -15,6 +15,13 @@ from pathlib import Path
 import pyspiel
 import yaml
 
+from core.models.pvp_models import GameParams
+from core.models.pvp_models import GinRummyParams
+from core.models.pvp_models import GoofspielParams
+from core.models.pvp_models import LeducPokerParams
+from core.models.pvp_models import LiarsDiceParams
+from core.models.pvp_models import OthelloParams
+
 
 _PROMPTS_PATHS = (
     Path(__file__).resolve().parents[2] / "validator" / "evaluation" / "pvp" / "game_prompts.yml",
@@ -47,9 +54,12 @@ class BaseGameAgent(ABC):
         ...
 
     @abstractmethod
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> GameParams:
         """Generate pyspiel game parameters from a config variant ID."""
         ...
+
+    def load_game(self, params: GameParams) -> pyspiel.Game:
+        return pyspiel.load_game(self.game_name, params.to_pyspiel())
 
     def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
         """Advance the fresh state before the models take over. Default: no-op.
@@ -98,8 +108,8 @@ class LiarsDiceAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "liars_dice_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {"players": 2, "numdice": 5}
+    def generate_params(self, config_id: int) -> GameParams:
+        return LiarsDiceParams(players=2, numdice=5)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         try:
@@ -150,8 +160,8 @@ class LeducPokerAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "leduc_poker_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {"players": 2}
+    def generate_params(self, config_id: int) -> GameParams:
+        return LeducPokerParams(players=2)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         try:
@@ -164,9 +174,6 @@ class LeducPokerAgent(BaseGameAgent):
         pot = self._extract(info_str, r"\[Pot: (\d+)\]")
         money = self._extract(info_str, r"\[Money: ([\d ]+)\]")
         public_card = self._extract(info_str, r"\[Public: (-?\d+)\]")
-        round1_seq = self._extract(info_str, r"\[Round1: ([^\]]*)\]")
-        round2_seq = self._extract(info_str, r"\[Round2: ([^\]]*)\]")
-
         lines: list[str] = []
 
         if private_card and private_card != "-10000":
@@ -189,11 +196,6 @@ class LeducPokerAgent(BaseGameAgent):
                 lines.append(f"Your chips: {chips[player_id]}")
                 lines.append(f"Opponent chips: {chips[1 - player_id]}")
 
-        if round1_seq:
-            lines.append(f"Round 1 actions: {self._parse_betting(round1_seq)}")
-        if round2_seq:
-            lines.append(f"Round 2 actions: {self._parse_betting(round2_seq)}")
-
         return "\n".join(lines)
 
     @staticmethod
@@ -211,16 +213,6 @@ class LeducPokerAgent(BaseGameAgent):
             return f"{ranks[rank_idx]}{suits[suit_idx]}"
         return f"Card_{card_id}"
 
-    @staticmethod
-    def _parse_betting(seq: str) -> str:
-        if not seq or not seq.strip():
-            return "(none)"
-        actions_map = {0: "Fold", 1: "Call", 2: "Raise"}
-        numbers = [int(x) for x in seq.split() if x.isdigit()]
-        if not numbers:
-            return "(none)"
-        return ", ".join(actions_map.get(a, f"Action{a}") for a in numbers)
-
 
 class GinRummyAgent(BaseGameAgent):
 
@@ -232,13 +224,10 @@ class GinRummyAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "gin_rummy_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
+    def generate_params(self, config_id: int) -> GameParams:
         hand_var = (config_id // 3) % 3
         knock_var = config_id % 3
-        return {
-            "hand_size": 7 + hand_var,
-            "knock_card": 10 - knock_var,
-        }
+        return GinRummyParams(hand_size=7 + hand_var, knock_card=10 - knock_var)
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         return state.observation_string(player_id)
@@ -260,8 +249,8 @@ class OthelloAgent(BaseGameAgent):
     def rules_key(self) -> str:
         return "othello_rules"
 
-    def generate_params(self, config_id: int) -> dict[str, int]:
-        return {}
+    def generate_params(self, config_id: int) -> GameParams:
+        return OthelloParams()
 
     def format_state(self, state: pyspiel.State, player_id: int) -> str:
         """Prefix the board with the player's colour.
@@ -290,3 +279,34 @@ class OthelloAgent(BaseGameAgent):
             if not legal_actions:
                 break
             state.apply_action(rng.choice(legal_actions))
+
+
+_GOOFSPIEL_NUM_CARDS = (5, 8, 10, 13)
+
+
+class GoofspielAgent(BaseGameAgent):
+    """Goofspiel, wrapped from simultaneous moves into sequential turns."""
+
+    @property
+    def game_name(self) -> str:
+        return "goofspiel"
+
+    @property
+    def rules_key(self) -> str:
+        return "goofspiel_rules"
+
+    def generate_params(self, config_id: int) -> GameParams:
+        num_cards = _GOOFSPIEL_NUM_CARDS[config_id % len(_GOOFSPIEL_NUM_CARDS)]
+        return GoofspielParams(
+            players=2,
+            num_cards=num_cards,
+            imp_info=True,
+            points_order="random",
+            returns_type="win_loss",
+        )
+
+    def load_game(self, params: GameParams) -> pyspiel.Game:
+        return pyspiel.convert_to_turn_based(pyspiel.load_game(self.game_name, params.to_pyspiel()))
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        return f"You are Player {player_id} (P{player_id}).\n{state.observation_string(player_id)}"

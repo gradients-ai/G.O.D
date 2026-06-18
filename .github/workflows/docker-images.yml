@@ -121,6 +121,7 @@ jobs:
                   "dockerfile": "ops/docker/pvp-eval.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
+                      "core/pvp/**",
                       "ops/docker/pvp-eval.dockerfile",
                       ".dockerignore",
                   ],

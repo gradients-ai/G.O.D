@@ -33,6 +33,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
@@ -837,7 +838,6 @@ async def _get_or_run_pvp_pairs(
 
         async def _run_and_persist(pair_key: str) -> None:
             hk_a, hk_b = pair_key.split(":")
-            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
             try:
                 pair_group = await run_evaluation_pvp_pair(
                     model_a_repo=miners.by_hotkey[hk_a],
@@ -852,19 +852,27 @@ async def _get_or_run_pvp_pairs(
                     task_id=task_uuid,
                     psql_db=config.psql_db,
                 )
-                for pair_result in pair_group.pair_results:
-                    for env_name, env_result in pair_result.results.items():
-                        await tournament_sql.save_pvp_pair_result(
-                            task_id=task_id,
-                            result=pair_result,
-                            environment_name=env_name.value,
-                            env_result=env_result,
-                            psql_db=config.psql_db,
-                        )
-                logger.info(f"Pair {pair_key} completed and persisted")
+            except EvaluationRetryableError as exc:
+                logger.info(f"Pair {pair_key} deferred by retryable eval infrastructure failure: {exc}")
+                failed_pairs.append(pair_key)
+                return
             except Exception as exc:
+                await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
                 logger.error(f"Pair {pair_key} failed: {exc}", exc_info=True)
                 failed_pairs.append(pair_key)
+                return
+
+            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
+            for pair_result in pair_group.pair_results:
+                for env_name, env_result in pair_result.results.items():
+                    await tournament_sql.save_pvp_pair_result(
+                        task_id=task_id,
+                        result=pair_result,
+                        environment_name=env_name.value,
+                        env_result=env_result,
+                        psql_db=config.psql_db,
+                    )
+            logger.info(f"Pair {pair_key} completed and persisted")
 
         logger.info(f"Dispatching {len(remaining_keys)} PvP pairs in parallel")
         await asyncio.gather(*[_run_and_persist(pair_key) for pair_key in remaining_keys])

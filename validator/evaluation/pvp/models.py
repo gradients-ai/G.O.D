@@ -10,12 +10,18 @@ from core.models.pvp_models import FunctionSchema
 from core.models.pvp_models import GameActionArgs
 from core.models.pvp_models import GameInstance
 from core.models.pvp_models import GameOutcome
+from core.models.pvp_models import GameParams
 from core.models.pvp_models import GameScoringContext
+from core.models.pvp_models import GinRummyParams
+from core.models.pvp_models import GoofspielParams
 from core.models.pvp_models import JsonScalar
+from core.models.pvp_models import LeducPokerParams
+from core.models.pvp_models import LiarsDiceParams
 from core.models.pvp_models import MemoryArea
 from core.models.pvp_models import MemoryConfig
 from core.models.pvp_models import MemoryOp
 from core.models.pvp_models import MemorySlotEdit
+from core.models.pvp_models import OthelloParams
 from core.models.pvp_models import PreparedModel
 from core.models.pvp_models import PvPBaseModel
 from core.models.pvp_models import PvPEnvironmentResult
@@ -48,12 +54,18 @@ __all__ = [
     "GameActionArgs",
     "GameInstance",
     "GameOutcome",
+    "GameParams",
     "GameScoringContext",
+    "GinRummyParams",
+    "GoofspielParams",
     "JsonScalar",
+    "LeducPokerParams",
+    "LiarsDiceParams",
     "MemoryArea",
     "MemoryConfig",
     "MemoryOp",
     "MemorySlotEdit",
+    "OthelloParams",
     "PreparedModel",
     "PvPBaseModel",
     "PvPEvalConfig",

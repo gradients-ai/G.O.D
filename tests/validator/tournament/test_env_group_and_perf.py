@@ -45,34 +45,35 @@ class TestEnvGroupFormation:
             round_number=1,
         )
 
-    def test_6_participants_two_small_groups(self):
-        """6 participants -> 2 round-1 small-environment groups of 3."""
+    def test_6_participants_small_field(self):
+        """6 plus reserved boss slot -> 3 round-1 groups of 2."""
         nodes = self._make_nodes(6)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 2
-        assert all(len(group.member_ids) == t_cst.SMALL_ENVIRONMENT_GROUP_SIZE for group in result.groups)
+        assert len(result.groups) == 3
+        assert sorted(len(group.member_ids) for group in result.groups) == [2, 2, 2]
 
     def test_7_participants_three_small_groups(self):
-        """7 participants -> 3 round-1 small-environment groups, sizes 3+2+2."""
+        """7 plus reserved boss slot -> 3 round-1 groups sized 3+2+2."""
         nodes = self._make_nodes(7)
         result = self._form_groups(nodes)
         assert len(result.groups) == 3
         sizes = sorted([len(g.member_ids) for g in result.groups])
         assert sizes == [2, 2, 3]
 
-    def test_12_participants_two_groups(self):
-        """12 → 2 groups of 6."""
+    def test_12_participants_four_groups(self):
+        """12 plus reserved boss slot -> 4 groups of 3."""
         nodes = self._make_nodes(12)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 2
-        assert all(len(g.member_ids) == 6 for g in result.groups)
+        assert len(result.groups) == 4
+        assert all(len(g.member_ids) == 3 for g in result.groups)
 
-    def test_13_participants_three_groups(self):
-        """13 → 3 groups (ceil(13/6)=3), roughly balanced."""
+    def test_13_participants_four_groups(self):
+        """13 plus reserved boss slot -> 4 roughly balanced groups."""
         nodes = self._make_nodes(13)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 3
-        sizes = [len(g.member_ids) for g in result.groups]
+        assert len(result.groups) == 4
+        sizes = sorted(len(g.member_ids) for g in result.groups)
+        assert sizes == [3, 3, 3, 4]
         assert sum(sizes) == 13
         assert min(sizes) >= t_cst.MIN_ENVIRONMENT_GROUP_SIZE
 
@@ -108,6 +109,13 @@ class TestEnvGroupFormation:
                 assert len(g.member_ids) <= t_cst.MAX_ENVIRONMENT_GROUP_SIZE, (
                     f"n={n}: group has {len(g.member_ids)} > max {t_cst.MAX_ENVIRONMENT_GROUP_SIZE}"
                 )
+
+    def test_smallest_group_fits_boss(self):
+        for n in [2, 4, 5, 6, 7, 8, 11, 12, 13, 16, 18, 24, 30]:
+            nodes = self._make_nodes(n)
+            result = self._form_groups(nodes)
+            min_size = min(len(group.member_ids) for group in result.groups)
+            assert min_size + 1 <= t_cst.MAX_ENVIRONMENT_GROUP_SIZE
 
     def test_no_group_below_min(self):
         for n in [2, 3, 5, 6, 7, 11, 12, 18]:

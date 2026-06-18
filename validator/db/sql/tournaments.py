@@ -799,7 +799,7 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
                    {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
             WHERE {cst.TRAINING_STATUS} = $1
-            ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC
+            ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC, {cst.TASK_ID}
         """
         results = await connection.fetch(query, status)
 

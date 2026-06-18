@@ -11,6 +11,7 @@ import pytest
 from core.constants.environments import EnvironmentName
 from validator.evaluation.pvp.models import GameInstance
 from validator.evaluation.pvp.models import GameOutcome
+from validator.evaluation.pvp.models import LeducPokerParams
 from validator.evaluation.pvp.models import PvPEnvironmentResult
 
 
@@ -21,6 +22,7 @@ try:
     import pyspiel
 
     from validator.evaluation.pvp.agents import GinRummyAgent
+    from validator.evaluation.pvp.agents import GoofspielAgent
     from validator.evaluation.pvp.agents import LeducPokerAgent
     from validator.evaluation.pvp.agents import LiarsDiceAgent
     from validator.evaluation.pvp.agents import OthelloAgent
@@ -96,7 +98,7 @@ class TestConfigIdVariation:
         params_set = set()
         for config_id in range(9):  # 3×3 = 9 unique combos from the formula
             p = agent.generate_params(config_id)
-            params_set.add((p["hand_size"], p["knock_card"]))
+            params_set.add((p.hand_size, p.knock_card))
 
         assert len(params_set) > 1, "All config_ids produced identical params"
 
@@ -104,26 +106,34 @@ class TestConfigIdVariation:
         agent = GinRummyAgent()
         for config_id in range(100):
             p = agent.generate_params(config_id)
-            assert 7 <= p["hand_size"] <= 9
-            assert 8 <= p["knock_card"] <= 10
+            assert 7 <= p.hand_size <= 9
+            assert 8 <= p.knock_card <= 10
 
     def test_liars_dice_params_constant(self):
         """Liar's dice has fixed params regardless of config_id."""
         agent = LiarsDiceAgent()
         p0 = agent.generate_params(0)
         p1 = agent.generate_params(99)
-        assert p0 == p1 == {"players": 2, "numdice": 5}
+        assert p0 == p1
+        assert p0.to_pyspiel() == {"players": 2, "numdice": 5}
 
     def test_leduc_poker_params_constant(self):
         agent = LeducPokerAgent()
         p0 = agent.generate_params(0)
         p1 = agent.generate_params(99)
-        assert p0 == p1 == {"players": 2}
+        assert p0 == p1
+        assert p0.to_pyspiel() == {"players": 2}
 
     def test_othello_params_empty(self):
         """Othello takes no pyspiel parameters regardless of config_id."""
         agent = OthelloAgent()
-        assert agent.generate_params(0) == agent.generate_params(99) == {}
+        assert agent.generate_params(0) == agent.generate_params(99)
+        assert agent.generate_params(0).to_pyspiel() == {}
+
+    def test_goofspiel_params_vary_by_config(self):
+        agent = GoofspielAgent()
+        sizes = {agent.generate_params(config_id).num_cards for config_id in range(50)}
+        assert len(sizes) > 1
 
 
 # --- 3c': Othello seeded opening plies ---
@@ -212,7 +222,7 @@ def _make_test_instances(count: int) -> list[GameInstance]:
     return [
         GameInstance(
             game_name="leduc_poker",
-            game_params={"players": 2},
+            game_params=LeducPokerParams(players=2),
             model_a_player_id=i % 2,
             seed=i,
             is_zero_sum=True,

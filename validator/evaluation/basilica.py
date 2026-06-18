@@ -78,10 +78,12 @@ async def _poll_basilica_result(
     deadline = started_monotonic + max_poll_seconds
     next_poll_at = started_monotonic
     deployment_name = getattr(deployment, "name", "unknown")
+    consecutive_failures = 0
     while time.monotonic() < deadline:
         now = time.monotonic()
         if now < next_poll_at:
             await asyncio.sleep(next_poll_at - now)
+        poll_failed = False
         try:
             await asyncio.to_thread(log_basilica_logs_block, eval_logger, repo, deployment_name, deployment)
             response = await asyncio.to_thread(
@@ -101,10 +103,24 @@ async def _poll_basilica_result(
                 if status == "failed":
                     return payload.get("error", "Basilica eval reported failure")
                 eval_logger.info(f"[{repo}] Poll ping: status={status}.")
+            else:
+                poll_failed = True
+                eval_logger.warning(f"[{repo}] poll got HTTP {response.status_code} from {deployment_name}")
         except Exception as e:
+            poll_failed = True
             eval_logger.error(f"[{repo}] error polling Basilica result: {e}", exc_info=True)
-            pass
 
+        if poll_failed:
+            consecutive_failures += 1
+            if consecutive_failures >= vcst.EVAL_BASILICA_MAX_CONSECUTIVE_POLL_FAILURES:
+                return (
+                    f"Deployment {deployment_name} appears dead: "
+                    f"{consecutive_failures} consecutive failed polls"
+                )
+            next_poll_at += vcst.EVAL_BASILICA_FAILED_POLL_RECHECK_SECONDS
+            continue
+
+        consecutive_failures = 0
         eval_logger.info(
             f"[{repo}] result not ready yet (status may be running/in_progress), "
             f"polling again in {poll_interval_seconds}s..."

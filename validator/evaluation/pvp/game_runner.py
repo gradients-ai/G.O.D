@@ -105,7 +105,7 @@ def _build_instances(
         seed = seed_rng.randint(1, vcst.PVP_SEED_RANGE_MAX)
         game_params = agent.generate_params(config_id_for_seed(seed, env_config))
 
-        game = pyspiel.load_game(agent.game_name, game_params)
+        game = agent.load_game(game_params)
         game_type = game.get_type()
 
         base = GameInstance(
@@ -305,7 +305,7 @@ def _play_game(
     Each bot gets fresh working memory plus the player's persistent long-term
     memory; after the game both surviving bots reflect to consolidate it.
     """
-    game = pyspiel.load_game(instance.game_name, instance.game_params)
+    game = agent.load_game(instance.game_params)
     model_b_player_id = 1 - instance.model_a_player_id
 
     bot_a = LLMBot(

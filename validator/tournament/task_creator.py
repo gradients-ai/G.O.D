@@ -11,6 +11,7 @@ from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
+from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
@@ -120,6 +121,34 @@ async def _get_tournament_base_model(tournament_id: str, config: Config) -> str 
     return task_obj.model_id if task_obj else None
 
 
+async def _get_prev_tournament_env_names(tournament_id: str, config: Config) -> set[EnvironmentName]:
+    prev = await get_latest_completed_tournament(
+        config.psql_db, TournamentType.ENVIRONMENT, exclude_tournament_id=tournament_id,
+    )
+    if not prev:
+        return set()
+
+    seen: set[EnvironmentName] = set()
+    for prev_round in await get_tournament_rounds(prev.tournament_id, config.psql_db):
+        for tourn_task in await get_tournament_tasks(prev_round.round_id, config.psql_db):
+            task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
+            if isinstance(task_obj, EnvRawTask):
+                seen.update(task_obj.environment_names)
+    return seen
+
+
+def _select_r1_env_names(
+    num_envs: int,
+    seen_last_tournament: set[EnvironmentName],
+) -> list[EnvironmentName]:
+    all_envs = list(EnvironmentName)
+    unseen = [env for env in all_envs if env not in seen_last_tournament]
+    seen = [env for env in all_envs if env in seen_last_tournament]
+    random.shuffle(unseen)
+    random.shuffle(seen)
+    return (unseen + seen)[:num_envs]
+
+
 async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
     """Get the previous tournament winner's model for the PREVIOUS_WINNER boss task.
 
@@ -211,6 +240,15 @@ async def _create_environment_group_tasks(
     # R2+ must use the same base model as R1
     tournament_base_model = await _get_tournament_base_model(tournament_id, config) if round_data.round_number > 1 else None
 
+    r1_env_override: list[EnvironmentName] | None = None
+    if round_data.round_number == 1:
+        seen_last_tournament = await _get_prev_tournament_env_names(tournament_id, config)
+        r1_env_override = _select_r1_env_names(num_envs, seen_last_tournament)
+        logger.info(
+            f"R1 env selection: seen_last_tournament={sorted(env.value for env in seen_last_tournament)} "
+            f"-> selected={[env.value for env in r1_env_override]}"
+        )
+
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     tasks: list[RawTask] = []
@@ -242,6 +280,7 @@ async def _create_environment_group_tasks(
                 num_environments=num_envs, round_number=round_data.round_number,
                 model_id_override=tournament_base_model,
                 training_start_point=start_point,
+                environment_names_override=r1_env_override,
             )
             reference_task = task
 
