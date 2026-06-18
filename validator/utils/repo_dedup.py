@@ -390,7 +390,7 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
     )
 
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(4):
         result_text = ""
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, ResultMessage):
