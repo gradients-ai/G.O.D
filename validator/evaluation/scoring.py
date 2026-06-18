@@ -50,6 +50,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
@@ -636,6 +637,11 @@ async def process_miners_pool(
                 else:
                     raise ValueError(f"Unknown task type: {task.task_type}")
 
+        except EvaluationRetryableError:
+            # Transient infra failure (e.g. no eval GPU capacity). Propagate so the
+            # task is reset to pending and retried WITHOUT consuming an eval attempt,
+            # rather than being recorded as a permanent per-miner failure.
+            raise
         except Exception as e:
             logger.error(f"Error during batch evaluation: {e}", exc_info=True)
             results.extend(
