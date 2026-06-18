@@ -350,17 +350,46 @@ def _import_claude_sdk():
 
 
 def _parse_verdict(text: str) -> tuple[DupRelationship, float, str]:
-    """Extract the strict JSON verdict object from the model's reply."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError(f"no JSON object in verdict reply: {text[:200]!r}")
-    obj = json.loads(text[start : end + 1])
-    raw = str(obj["relationship"]).strip()
+    """Extract the verdict from the model's reply.
+
+    The judge is asked for a bare JSON object, but occasionally wraps it (code fence,
+    prose) or emits Python-style single quotes, which strict json.loads rejects. Parse
+    defensively: strip fences and try JSON first, then fall back to regex-extracting the
+    three fields (the relationship is anchored to its key so prose mentions don't match).
+    """
+    # 1. Strip markdown code fences, then try strict JSON on the outermost {...}.
+    cleaned = re.sub(r"```(?:json)?", "", text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(cleaned[start : end + 1])
+            if isinstance(obj, dict) and "relationship" in obj:
+                return (
+                    _to_relationship(str(obj["relationship"]).strip()),
+                    float(obj.get("confidence", 0.0)),
+                    str(obj.get("reason", "")),
+                )
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 2. Fallback: pull the fields out by regex (tolerates single quotes / minor malformations).
+    rel_m = re.search(r"""["']?relationship["']?\s*:\s*["']?(duplicate|distinct|drop_evasion)""", text, re.IGNORECASE)
+    if not rel_m:
+        raise ValueError(f"no relationship in verdict reply: {text[:200]!r}")
+    conf_m = re.search(r"""["']?confidence["']?\s*:\s*([0-9]*\.?[0-9]+)""", text)
+    reason_m = re.search(r"""["']?reason["']?\s*:\s*["'](.*?)["']\s*[,}\n]""", text, re.DOTALL)
+    return (
+        _to_relationship(rel_m.group(1).lower()),
+        float(conf_m.group(1)) if conf_m else 0.0,
+        reason_m.group(1) if reason_m else "",
+    )
+
+
+def _to_relationship(raw: str) -> DupRelationship:
     try:
-        relationship = DupRelationship(raw)
+        return DupRelationship(raw)
     except ValueError as exc:
         raise ValueError(f"invalid relationship {raw!r}") from exc
-    return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
 
 
 async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runtime_context: str = "") -> PairVerdict:
