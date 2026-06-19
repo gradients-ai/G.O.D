@@ -111,11 +111,14 @@ MODEL_SIZE_RANGE_MULTIPLIER_MAX = 1.2
 # Model parameter conversion
 MODEL_PARAMS_TO_BILLIONS = 1e9
 
-# Progressive championship threshold constants
-EXPONENTIAL_BASE_THRESHOLD = 0.05  # Starting threshold for new champions
+# Progressive championship threshold constants.
+# Thresholds are disabled: dethroning is decided purely by head-to-head task wins
+# (text/image: lose at most one of the boss-round tasks; environment: zero losses).
+# Kept at 0.0 so all per-task boss comparisons are straight score comparisons.
+EXPONENTIAL_BASE_THRESHOLD = 0.0  # No boss edge — strict score comparison
 EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
-EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
-EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
+EXPONENTIAL_DECAY_RATE = 0.8  # Unused while thresholds are disabled
+EXPONENTIAL_MIN_THRESHOLD = 0.0  # No threshold floor
 
 # Obfuscation detection constants
 OBFUSCATION_DETECTION_PATH = "./validator/obfuscation_detection/anti_obfuscation"
@@ -124,6 +127,6 @@ OBFUSCATION_DETECTION_PATH = "./validator/obfuscation_detection/anti_obfuscation
 PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS = 0.5
 
 # Tournament participation fees (in RAO)
-TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 200_000_000  # 0.2 TAO = 200,000,000 RAO
-TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO = 200_000_000  # 0.20 TAO = 200,000,000 RAO
-TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 150_000_000  # 0.15 TAO = 150,000,000 RAO
+TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 250_000_000  # 0.25 TAO = 250,000,000 RAO
+TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO = 250_000_000  # 0.25 TAO = 250,000,000 RAO
+TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 200_000_000  # 0.2 TAO = 200,000,000 RAO

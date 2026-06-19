@@ -790,12 +790,13 @@ def determine_boss_round_winner(task_winners: list[str], boss_hotkey: str, tourn
 
     opponent_wins = win_counts.get(opponent_hotkey, 0) if opponent_hotkey else 0
 
-    # Apply different winning requirements based on tournament type
-    # Both IMAGE and TEXT tournaments: Challenger must win more than half (majority) of tasks to become new boss
-    required_wins = (total_tasks // 2) + 1
-    if opponent_hotkey and opponent_wins > total_tasks // 2:
+    # Both IMAGE and TEXT tournaments: a comprehensive victory is required to dethrone
+    # the boss — the challenger may lose at most one boss-round task (e.g. 5/6). There is
+    # no per-task threshold; each task is a straight score comparison.
+    required_wins = max(1, total_tasks - 1)
+    if opponent_hotkey and opponent_wins >= required_wins:
         logger.info(
-            f"{tournament_type.value} tournament: Challenger wins boss round with majority: "
+            f"{tournament_type.value} tournament: Challenger wins boss round comprehensively: "
             f"{opponent_wins}/{total_tasks} tasks won (required {required_wins})"
         )
         return opponent_hotkey
