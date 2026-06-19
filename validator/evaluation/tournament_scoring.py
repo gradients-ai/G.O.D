@@ -312,15 +312,24 @@ def calculate_tournament_type_scores_from_data(
 
 
 def exponential_decline_mapping(total_participants: int, rank: float) -> float:
-    """Exponential weight decay based on rank."""
+    """Exponential weight decay based on rank.
+
+    Only the top ``TOURNAMENT_PAID_RANKS`` placements earn; everyone below gets 0.
+    Within the paid ranks the share decays geometrically (base
+    ``TOURNAMENT_SIMPLE_DECAY_BASE``), normalized to sum to 1. With base 0.25 and
+    2 paid ranks this gives an 80% / 20% split between 1st and 2nd.
+    """
     if total_participants <= 1:
         return 1.0
 
-    # Calculate all weights for normalization
-    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, total_participants + 1)]
+    paid_ranks = min(total_participants, cts.TOURNAMENT_PAID_RANKS)
+    if rank > paid_ranks:
+        return 0.0
+
+    # Normalize only over the paid ranks so their shares sum to 1.
+    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, paid_ranks + 1)]
     total_sum = sum(all_weights)
 
-    # Return normalized weight to ensure sum = 1
     raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1)
     return raw_weight / total_sum
 

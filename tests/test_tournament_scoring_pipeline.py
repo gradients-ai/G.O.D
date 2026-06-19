@@ -307,16 +307,23 @@ class TestExponentialDeclineMapping:
         w2 = exponential_decline_mapping(5, 2)
         assert w1 > w2
 
-    def test_monotonic_decrease(self):
+    def test_non_increasing_by_rank(self):
         weights = [exponential_decline_mapping(5, r) for r in range(1, 6)]
         for i in range(len(weights) - 1):
-            assert weights[i] > weights[i + 1]
+            assert weights[i] >= weights[i + 1]
+
+    def test_only_top_two_ranks_paid(self):
+        """Only the top TOURNAMENT_PAID_RANKS (2) earn; the rest get exactly 0."""
+        assert exponential_decline_mapping(5, 1) == pytest.approx(0.8)
+        assert exponential_decline_mapping(5, 2) == pytest.approx(0.2)
+        assert exponential_decline_mapping(5, 3) == 0.0
+        assert exponential_decline_mapping(5, 5) == 0.0
 
     def test_single_participant(self):
         assert exponential_decline_mapping(1, 1) == 1.0
 
     def test_weights_sum_to_one(self):
-        """All ranks' weights should sum to approximately 1.0 (normalization)."""
+        """Paid ranks' weights should sum to approximately 1.0 (normalization)."""
         n = 10
         total = sum(exponential_decline_mapping(n, r) for r in range(1, n + 1))
         assert abs(total - 1.0) < 1e-9
