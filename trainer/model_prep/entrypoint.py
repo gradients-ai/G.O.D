@@ -93,7 +93,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            real_base, torch_dtype=torch.float16, token=hf_token,
+            real_base, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
         )
         base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
@@ -261,18 +261,20 @@ def main():
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
     model_config = _load_config_with_yarn_fix(model_path, hf_token)
+    # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
+    # fp16: bf16-native models (e.g. Qwen3) overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype=torch.float16, token=hf_token, device_map="auto",
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype=torch.float16, token=hf_token,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, torch_dtype="auto", token=hf_token)
     tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
