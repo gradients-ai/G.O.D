@@ -700,10 +700,16 @@ async def run_evaluation_pvp_pair(
     temperature: float = 0.0,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
+    base_chain_a: list[str] | None = None,
+    base_chain_b: list[str] | None = None,
 ) -> PvPGroupResults:
     """Run PvP 1v1 pair evaluation via Basilica.
 
     Returns PvPGroupResults (single pair) for consistent downstream processing.
+
+    base_chain_a/base_chain_b carry each miner's continuation lineage (adapter repos
+    to merge onto base_model before applying the miner's own adapter). Empty/None for
+    round-1 models — the eval then serves base_model + adapter as before.
     """
     matchups = {
         env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
@@ -711,8 +717,8 @@ async def run_evaluation_pvp_pair(
     }
     pvp_config = PvPEvalConfig(
         mode=PvPMode.PAIR,
-        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model),
-        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model),
+        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model, base_chain=base_chain_a or []),
+        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model, base_chain=base_chain_b or []),
         matchups=matchups,
         seed=seed,
         temperature=temperature,

@@ -134,7 +134,19 @@ class PvPModelSpec(PvPBaseModel):
 
     repo: str = Field(description="HuggingFace model repository (e.g. 'org/model-name')")
     original_model: str = Field(
-        description="Base model repository, used for LoRA detection"
+        description="Foundation model repository (the root base), used for LoRA detection"
+    )
+    base_chain: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Continuation-round lineage: adapter repos to merge onto `original_model`, "
+            "bottom-to-top, to reconstruct the base the trainer actually trained `repo` "
+            "on. Empty for round-1 / from-scratch models. In practice this holds the "
+            "single previous-round repo (starting_model_repo): the trainer's upload patch "
+            "flattens adapter base pointers to the foundation, so round N's trainer merges "
+            "only R_{N-1} onto the foundation. Typed as a list so eval stays correct if "
+            "true multi-adapter chains are ever uploaded."
+        ),
     )
     gpu_id: int | None = Field(default=None, ge=0, description="GPU device ID. Defaults to 0 for model_a, 1 for model_b")
     port: int | None = Field(default=None, gt=0, description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b")

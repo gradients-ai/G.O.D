@@ -49,6 +49,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
+from validator.db.sql.tasks import get_starting_model_repo
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -709,9 +710,11 @@ async def _run_env_tournament_eval(
     env_scores: list[EnvMinerScores] = []
 
     if pvp_envs:
+        base_chains = await _get_continuation_base_chains(task, miners, base_model, config)
         env_scores.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
+            base_chains=base_chains,
         ))
 
     if individual_envs:
@@ -772,6 +775,32 @@ def _get_shared_env_config(envs: list[core_cst.EnvironmentName]) -> core_cst.Env
     return configs[0]
 
 
+async def _get_continuation_base_chains(
+    task: AnyTypeRawTask,
+    miners: MinerRepos,
+    base_model: str,
+    config: Config,
+) -> dict[str, list[str]]:
+    """Per-miner adapter lineage needed to reconstruct the base each miner trained on.
+
+    A CONTINUATION miner trains from `starting_model_repo` (their previous-round
+    output) merged into the foundation — so their uploaded adapter is relative to
+    that merged base, not the bare foundation. We return {hotkey: [starting_repo]}
+    so eval rebuilds it; the merge is single-step because the trainer's upload patch
+    flattens adapter base pointers (round N merges only R_{N-1}). Round-1 miners
+    (no starting repo, or starting repo == foundation) map to an empty chain and are
+    served as before.
+    """
+    base_chains: dict[str, list[str]] = {}
+    for hotkey in miners.hotkeys:
+        starting_repo = await get_starting_model_repo(str(task.task_id), hotkey, config.psql_db)
+        if starting_repo and starting_repo != base_model:
+            base_chains[hotkey] = [starting_repo]
+    if base_chains:
+        logger.info(f"Continuation base chains for {len(base_chains)} miners on task {task.task_id}")
+    return base_chains
+
+
 async def _eval_pvp_envs(
     task_id: str,
     pvp_envs: list[core_cst.EnvironmentName],
@@ -779,6 +808,7 @@ async def _eval_pvp_envs(
     base_model: str,
     seed: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> list[EnvMinerScores]:
     """Run pairwise PvP eval for PVP-type environments, return per-env win-rates."""
     env_config = _get_shared_env_config(pvp_envs)
@@ -788,6 +818,7 @@ async def _eval_pvp_envs(
         base_model=base_model, seed=seed,
         image=env_config.tournament_eval_image,
         gpu_count=cts.PVP_BASILICA_GPU_COUNT, config=config,
+        base_chains=base_chains,
     )
 
     return pvp_results_to_winrates(group_results)
@@ -802,12 +833,15 @@ async def _get_or_run_pvp_pairs(
     image: str,
     gpu_count: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> PvPGroupResults:
     """Check DB for complete pair results; if missing, run missing 1v1 pairs."""
     env_name_strs = [e.value for e in pvp_envs]
     max_pair_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
     task_uuid = UUID(task_id)
     all_hotkeys = miners.hotkeys
+
+    base_chains = base_chains or {}
 
     db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
     rows_by_pair = _group_db_rows_by_pair(db_rows)
@@ -853,6 +887,8 @@ async def _get_or_run_pvp_pairs(
                     gpu_count=gpu_count,
                     task_id=task_uuid,
                     psql_db=config.psql_db,
+                    base_chain_a=base_chains.get(hk_a, []),
+                    base_chain_b=base_chains.get(hk_b, []),
                 )
             except EvaluationRetryableError as exc:
                 # Transient infra failure (e.g. no eval GPU capacity) — not the pair's
