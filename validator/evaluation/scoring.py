@@ -50,6 +50,7 @@ from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_starting_model_repo
+from validator.evaluation.utils import check_for_lora
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -785,14 +786,21 @@ async def _get_continuation_base_chains(
 
     A continuation miner trains from `starting_model_repo` merged into the
     foundation, so eval must serve their adapter on that same base. Returns
-    {hotkey: [starting_repo]}; round-1 miners (no starting repo, or starting repo ==
-    foundation) map to no chain and are served on the foundation as before.
+    {hotkey: [starting_repo]} only when the starting repo is a real LoRA adapter
+    distinct from the foundation. A miner whose previous round was missing falls
+    back to the foundation itself (a full model) as starting_model_repo — that, and
+    any full-finetune output, must NOT enter a chain (it can't be LoRA-merged), so
+    we compare against both the augmented and raw foundation ids and require LoRA.
     """
     base_chains: dict[str, list[str]] = {}
     for hotkey in miners.hotkeys:
         starting_repo = await get_starting_model_repo(str(task.task_id), hotkey, config.psql_db)
-        if starting_repo and starting_repo != base_model:
-            base_chains[hotkey] = [starting_repo]
+        if not starting_repo or starting_repo in (base_model, task.model_id):
+            continue
+        if not await asyncio.to_thread(check_for_lora, starting_repo, False):
+            logger.info(f"Miner {hotkey}: starting repo {starting_repo} is not a LoRA adapter; serving on foundation")
+            continue
+        base_chains[hotkey] = [starting_repo]
     if base_chains:
         logger.info(f"Continuation base chains for {len(base_chains)} miners on task {task.task_id}")
     return base_chains

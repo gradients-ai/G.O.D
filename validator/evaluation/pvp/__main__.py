@@ -74,7 +74,7 @@ def _resolve_spec(spec: PvPModelSpec, default_gpu: int, default_port: int) -> tu
     return gpu, port
 
 
-def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
+def _prepare_model(spec: PvPModelSpec, label: str, gpu_id: int | None = None) -> PreparedModel:
     """Detect LoRA and build SGLang flags.
 
     Passes HF repo IDs to SGLang which handles downloads internally.
@@ -85,7 +85,10 @@ def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
     if is_lora:
         # Serve the adapter on the base it trained on: foundation for round 1, or
         # foundation + previous adapter(s) for a continuation miner (base_chain).
-        base_path = materialize_base_model(spec.original_model, spec.base_chain)
+        # `label` keeps each model's merge scratch dir distinct; merge on this
+        # model's own GPU so the two preparations don't pile onto one device.
+        device = f"cuda:{gpu_id}" if gpu_id is not None else None
+        base_path = materialize_base_model(spec.original_model, spec.base_chain, label=label, device=device)
         lora_name = f"{label}_trained_lora"
         return PreparedModel(
             sglang_model_path=base_path,
@@ -138,8 +141,8 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
     gpu_a, port_a = _resolve_spec(model_a, default_gpu=0, default_port=vcst.PVP_SGLANG_PORT_A)
     gpu_b, port_b = _resolve_spec(model_b, default_gpu=1, default_port=vcst.PVP_SGLANG_PORT_B)
 
-    prepared_a = _prepare_model(model_a, "a")
-    prepared_b = _prepare_model(model_b, "b")
+    prepared_a = _prepare_model(model_a, "a", gpu_id=gpu_a)
+    prepared_b = _prepare_model(model_b, "b", gpu_id=gpu_b)
 
     sglang_a: subprocess.Popen | None = None
     sglang_b: subprocess.Popen | None = None

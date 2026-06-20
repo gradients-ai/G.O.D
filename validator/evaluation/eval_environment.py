@@ -78,7 +78,9 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3
                 raise
 
 
-def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = "/tmp/merged_model") -> str:
+def _merge_base_and_lora(
+    base_model_path: str, lora_dir: str, output_dir: str = "/tmp/merged_model", device: str | None = None
+) -> str:
     needs_install = (
         importlib.util.find_spec("peft") is None
         or importlib.util.find_spec("accelerate") is None
@@ -113,7 +115,7 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         base_model_path,
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
-        device_map="cuda:0" if torch.cuda.is_available() else "auto",
+        device_map=(device or "cuda:0") if torch.cuda.is_available() else "auto",
         trust_remote_code=True,
     )
     logger.info("eval_setup merge: base weights in memory in %.1fs", time.time() - t0)
@@ -152,6 +154,12 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         time.time() - t3,
         time.time() - merge_t0,
     )
+
+    # Free the merged model before the caller launches SGLang on the same GPU.
+    del base, model, merged
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
     return output_dir
 
 

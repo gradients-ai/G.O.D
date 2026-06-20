@@ -29,27 +29,32 @@ def _run(coro):
 
 
 def test_get_continuation_base_chains_only_for_real_continuations(monkeypatch):
-    foundation = "org/foundation"
+    raw_foundation = "org/foundation"          # task.model_id
+    augmented_foundation = "org/foundation-aug"  # base_model (post-prep)
     starting = {
-        "hk_cont": "org/hk_cont-round1",   # genuine continuation -> chain
-        "hk_round1": None,                 # no starting repo -> no chain
-        "hk_foundation": foundation,       # starting repo IS foundation -> no chain
+        "hk_cont": "org/hk_cont-round1",       # genuine LoRA continuation -> chain
+        "hk_round1": None,                     # no starting repo -> no chain
+        "hk_augmented": augmented_foundation,  # starting repo == augmented base -> no chain
+        "hk_fallback": raw_foundation,         # missing-prev fallback to raw model_id -> no chain
+        "hk_fullmodel": "org/hk-full-ft",      # starting repo is a full model (not LoRA) -> no chain
     }
+    non_lora = {"org/hk-full-ft"}
 
     async def fake_get_starting_model_repo(task_id, hotkey, psql_db):
         return starting[hotkey]
 
     monkeypatch.setattr(scoring, "get_starting_model_repo", fake_get_starting_model_repo)
+    monkeypatch.setattr(scoring, "check_for_lora", lambda repo, local_files_only=False: repo not in non_lora)
 
-    task = SimpleNamespace(task_id="task-1")
+    task = SimpleNamespace(task_id="task-1", model_id=raw_foundation)
     miners = MinerRepos(by_hotkey={hk: f"org/{hk}-out" for hk in starting})
     config = SimpleNamespace(psql_db=None)
 
-    chains = _run(scoring._get_continuation_base_chains(task, miners, foundation, config))
+    chains = _run(scoring._get_continuation_base_chains(task, miners, augmented_foundation, config))
 
     assert chains == {"hk_cont": ["org/hk_cont-round1"]}, (
-        "only a miner whose starting repo differs from the foundation should get a "
-        "reconstruction chain"
+        "only a miner whose starting repo is a real LoRA adapter distinct from both the "
+        "raw and augmented foundation should get a reconstruction chain"
     )
 
 
@@ -60,25 +65,25 @@ def test_get_continuation_base_chains_only_for_real_continuations(monkeypatch):
 
 def test_prepare_model_continuation_serves_reconstructed_base(monkeypatch):
     foundation = "org/foundation"
-    materialized = "/tmp/base_chain_merged_0"
+    materialized = "/tmp/base_chain_a_merged_0"
     calls = {}
 
     monkeypatch.setattr(pvp_main, "check_for_lora", lambda repo, local_files_only=False: True)
     monkeypatch.setattr(pvp_main, "tool_call_parser_for", lambda path, **kw: "qwen25")
 
-    def fake_materialize(foundation_repo, base_chain):
-        calls["args"] = (foundation_repo, list(base_chain))
-        return materialized if base_chain else foundation_repo
+    def fake_materialize(foundation_repo, base_chain, label="", device=None):
+        calls["args"] = (foundation_repo, list(base_chain), label)
+        return f"/tmp/base_chain_{label}_merged_0" if base_chain else foundation_repo
 
     monkeypatch.setattr(pvp_main, "materialize_base_model", fake_materialize)
 
     spec = PvPModelSpec(repo="org/miner-round2", original_model=foundation, base_chain=["org/miner-round1"])
-    prepared = pvp_main._prepare_model(spec, "a")
+    prepared = pvp_main._prepare_model(spec, "a", gpu_id=0)
 
     # Served on the reconstructed base, not the bare foundation.
     assert prepared.sglang_model_path == materialized
     assert prepared.sglang_model_path != foundation
-    assert calls["args"] == (foundation, ["org/miner-round1"])
+    assert calls["args"] == (foundation, ["org/miner-round1"], "a")
     # The miner's own adapter is still applied on top of the reconstructed base.
     assert "org/miner-round2" in prepared.extra_sglang_args
     assert "--enable-lora" in prepared.extra_sglang_args
@@ -98,6 +103,22 @@ def test_prepare_model_round1_unchanged(monkeypatch):
     assert "org/miner-round1" in prepared.extra_sglang_args
     # No explicit parser override; the server resolves it from the foundation repo id.
     assert prepared.tool_call_parser is None
+
+
+def test_materialize_uses_distinct_dirs_per_label(monkeypatch):
+    """Two models are prepared before either server starts, so their merge scratch
+    dirs must differ — otherwise the second clobbers the first's reconstructed base."""
+    import validator.evaluation.pvp.materialize as mat
+
+    monkeypatch.setattr(mat, "_download_lora_with_retry", lambda repo, d, **kw: d)
+    monkeypatch.setattr(mat, "_download_model_with_retry", lambda repo, **kw: f"/base/{repo}")
+    monkeypatch.setattr(mat, "_merge_base_and_lora", lambda base, lora, output_dir, device=None: output_dir)
+
+    path_a = mat.materialize_base_model("org/foundation", ["org/minerA-round1"], label="a")
+    path_b = mat.materialize_base_model("org/foundation", ["org/minerB-round1"], label="b")
+
+    assert path_a != path_b, "two models must materialize to distinct dirs (no /tmp clobber)"
+    assert (path_a, path_b) == ("/tmp/base_chain_a_merged_0", "/tmp/base_chain_b_merged_0")
 
 
 # --------------------------------------------------------------------------- #
