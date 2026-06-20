@@ -110,6 +110,7 @@ def test_materialize_uses_distinct_dirs_per_label(monkeypatch):
     dirs must differ — otherwise the second clobbers the first's reconstructed base."""
     import validator.evaluation.pvp.materialize as mat
 
+    monkeypatch.setattr(mat, "_declared_base", lambda repo: None)  # treat each starting repo as foundation-relative
     monkeypatch.setattr(mat, "_download_lora_with_retry", lambda repo, d, **kw: d)
     monkeypatch.setattr(mat, "_download_model_with_retry", lambda repo, **kw: f"/base/{repo}")
     monkeypatch.setattr(mat, "_merge_base_and_lora", lambda base, lora, output_dir, device=None: output_dir)
@@ -119,6 +120,42 @@ def test_materialize_uses_distinct_dirs_per_label(monkeypatch):
 
     assert path_a != path_b, "two models must materialize to distinct dirs (no /tmp clobber)"
     assert (path_a, path_b) == ("/tmp/base_chain_a_merged_0", "/tmp/base_chain_b_merged_0")
+
+
+def test_resolve_chain_walks_unflattened_lineage(monkeypatch):
+    """When an adapter's base pointer wasn't flattened, eval must still walk down to
+    the real foundation and merge every adapter — matching the trainer, not crash
+    trying to load an intermediate adapter as a full model."""
+    import validator.evaluation.pvp.materialize as mat
+
+    # R3 -> R2 -> R1 -> foundation (none flattened).
+    declared = {
+        "org/R3": "org/R2",
+        "org/R2": "org/R1",
+        "org/R1": "org/foundation",
+        "org/foundation": None,
+    }
+    monkeypatch.setattr(mat, "_declared_base", lambda repo: declared[repo])
+
+    foundation, adapters = mat._resolve_chain("org/R3", "org/wrong-fallback")
+
+    assert foundation == "org/foundation"
+    # bottom-to-top merge order, exactly what the trainer merges.
+    assert adapters == ["org/R1", "org/R2", "org/R3"]
+
+
+def test_resolve_chain_flattened_is_single_hop(monkeypatch):
+    """The normal (flattened) case: the starting adapter points straight at the
+    foundation, so only it is merged."""
+    import validator.evaluation.pvp.materialize as mat
+
+    declared = {"org/R2": "org/foundation", "org/foundation": None}
+    monkeypatch.setattr(mat, "_declared_base", lambda repo: declared[repo])
+
+    foundation, adapters = mat._resolve_chain("org/R2", "org/foundation")
+
+    assert foundation == "org/foundation"
+    assert adapters == ["org/R2"]
 
 
 # --------------------------------------------------------------------------- #
