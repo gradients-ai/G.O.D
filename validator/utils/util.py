@@ -72,11 +72,35 @@ async def save_json_to_temp_file(data: list[dict], prefix: str, dump_json: bool 
     return temp_file.name, file_size
 
 
-async def upload_file_to_minio(file_path: str, bucket_name: str, object_name: str) -> str | None:
+async def upload_file_to_minio(
+    file_path: str,
+    bucket_name: str,
+    object_name: str,
+    content_type: str | None = None,
+    metadata: dict[str, str] | None = None,
+) -> str | None:
     """
     Uploads a file to MinIO and returns the presigned URL for the uploaded file.
+    
+    Enhanced with integrity checking and metadata support.
+    
+    Args:
+        file_path: Local file path to upload
+        bucket_name: Name of the bucket
+        object_name: Name of the object in the bucket
+        content_type: Optional MIME type of the file
+        metadata: Optional metadata tags
+    
+    Returns:
+        Presigned URL string or None if upload failed
     """
-    result = await async_minio_client.upload_file(bucket_name, object_name, file_path)
+    result = await async_minio_client.upload_file(
+        bucket_name,
+        object_name,
+        file_path,
+        content_type=content_type,
+        metadata=metadata,
+    )
     if result:
         return await async_minio_client.get_presigned_url(bucket_name, object_name)
     else:

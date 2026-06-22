@@ -25,6 +25,7 @@ from validator.endpoints.tournament_analytics import factory_router as tournamen
 from validator.endpoints.tournament_orchestrator import factory_router as tournament_orchestrator_router
 from validator.endpoints.transfer_balances import factory_router as transfer_balances_router
 from validator.utils.logging import get_logger
+from validator.utils.minio import get_minio_client
 
 
 logger = get_logger(__name__)
@@ -36,7 +37,12 @@ async def lifespan(app: FastAPI):
     config = load_config()
     await try_db_connections(config)
 
+    # Initialize MinIO client with Redis caching
+    minio_client = get_minio_client(redis_client=config.redis_db)
+    logger.info("MinIO client initialized with Redis caching")
+
     app.state.config = config
+    app.state.minio_client = minio_client
 
     logger.info("Starting up...")
 
