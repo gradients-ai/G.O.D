@@ -18,5 +18,6 @@ def build_base_command(model_path: str, port: int | str, seed: int) -> str:
         f"--host 0.0.0.0 --port {port} "
         f"--tensor-parallel-size {tensor_parallel} "
         f"--dtype {dtype} "
-        f"--enable-deterministic-inference --random-seed {seed}"
+        f"--enable-deterministic-inference --random-seed {seed} "
+        "--log-level warning --decode-log-interval 10000"
     )
