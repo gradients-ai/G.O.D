@@ -240,10 +240,24 @@ def _execute_matchup(
     for base_instance, swapped_instance in seed_stream:
         # Play both positions for this seed before checking the deadline,
         # so results always have a position-balanced pair.
+        pair_start = time.monotonic()
         for instance in (base_instance, swapped_instance):
+            game_start = time.monotonic()
+            logger.info(
+                "%s: game %d start — seed=%d model_a_plays_as=%d",
+                env_name.value, games_played + 1, instance.seed, instance.model_a_player_id,
+            )
             played = play(instance)
+            game_elapsed = time.monotonic() - game_start
             _tally(result, played.outcome)
             games_played += 1
+
+            forfeit_note = f" (forfeit: model_{played.forfeiting_model})" if played.forfeiting_model else ""
+            logger.info(
+                "%s: game %d done — outcome=%s%s elapsed=%.1fs | a=%d b=%d draws=%d",
+                env_name.value, games_played, played.outcome.value, forfeit_note, game_elapsed,
+                result.model_a_wins, result.model_b_wins, result.draws,
+            )
 
             if played.outcome == GameOutcome.LOSS:
                 consec_a_losses += 1
@@ -260,6 +274,14 @@ def _execute_matchup(
             elif played.forfeiting_model == "b":
                 model_b_forfeits += 1
 
+        pair_elapsed = time.monotonic() - pair_start
+        elapsed_total = time.monotonic() - start
+        logger.info(
+            "%s: pair done — seed=%d pair_elapsed=%.1fs total_elapsed=%.0fs budget_remaining=%.0fs",
+            env_name.value, base_instance.seed, pair_elapsed,
+            elapsed_total, max(0.0, deadline - time.monotonic()),
+        )
+
         if _check_episode_forfeit_limit(
             result, model_a_forfeits, model_b_forfeits, 0, env_name.value, games_played
         ):
@@ -269,14 +291,6 @@ def _execute_matchup(
             result, consec_a_losses, consec_b_losses, 0, env_name.value, games_played
         ):
             break
-
-        if games_played % vcst.PVP_LOG_INTERVAL_GAMES == 0:
-            elapsed = time.monotonic() - start
-            logger.info(
-                "%s: %d games in %.0fs, a=%d b=%d draws=%d",
-                env_name.value, games_played, elapsed,
-                result.model_a_wins, result.model_b_wins, result.draws,
-            )
 
         if time.monotonic() >= deadline:
             logger.info("%s: time budget exhausted after %d games", env_name.value, games_played)
