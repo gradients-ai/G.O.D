@@ -164,7 +164,7 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
 
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():
-            logger.info("Starting matchup: %s (%d seeds)", env_name.value, matchup_config.num_games)
+            logger.info("Starting matchup: %s (%.0fs budget)", env_name.value, matchup_config.time_budget_seconds)
             env_results[env_name] = run_matchup(
                 env_name=env_name,
                 matchup_config=matchup_config,

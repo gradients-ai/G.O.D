@@ -711,7 +711,7 @@ async def run_evaluation_pvp_pair(
     merge onto base_model before the miner's own adapter); empty for round-1 models.
     """
     matchups = {
-        env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
+        env: PvPMatchupConfig(time_budget_seconds=vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS)
         for env in environment_names
     }
     pvp_config = PvPEvalConfig(

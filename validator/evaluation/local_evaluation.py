@@ -695,8 +695,8 @@ async def run_evaluation_local_pvp_pair(
         raise ValueError("At least one PvP environment is required")
 
     image = image or _get_shared_pvp_eval_image(pvp_envs)
-    num_games = int(os.getenv("PVP_NUM_GAMES_PER_ENV", str(vcst.PVP_NUM_GAMES_PER_ENV)))
-    matchups = {environment_name: PvPMatchupConfig(num_games=num_games) for environment_name in pvp_envs}
+    time_budget = float(os.getenv("PVP_MATCHUP_TIME_BUDGET_SECONDS", str(vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS)))
+    matchups = {environment_name: PvPMatchupConfig(time_budget_seconds=time_budget) for environment_name in pvp_envs}
     pvp_config = PvPEvalConfig(
         mode=PvPMode.PAIR,
         model_a=PvPModelSpec(
