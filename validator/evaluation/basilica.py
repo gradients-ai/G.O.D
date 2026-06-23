@@ -20,10 +20,15 @@ from validator.evaluation.utils import deployment_is_healthy
 from validator.evaluation.utils import log_basilica_logs_block
 from validator.utils.logging import get_environment_logger
 from validator.utils.logging import get_logger
+from validator.utils.logging import update_environment_logger_labels
 
 
 logger = get_logger(__name__)
 _EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
+
+
+def _deployment_url(deployment) -> str | None:
+    return getattr(deployment, "url", None)
 
 
 class EvaluationRetryableError(RuntimeError):
@@ -397,6 +402,11 @@ async def _deploy_basilica_eval_repo(
         deploy_kwargs=deploy_kwargs,
     )
     resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+    update_environment_logger_labels(
+        ctx.eval_logger,
+        deployment_id=resolved_deployment_name,
+        deployment_url=_deployment_url(deployment),
+    )
     ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name)
 
     if resolved_deployment_name != deployment_name:
@@ -536,6 +546,7 @@ async def _run_single_basilica_eval_repo(
             task_type=task_type,
             task_id=task_id_str,
             hotkey=hotkey_str,
+            deployment_id=existing_deployment_name,
         )
     else:
         eval_logger = get_logger(f"{__name__}.basilica.{repo.split('/')[-1]}.{eval_id[:8]}")
@@ -558,6 +569,11 @@ async def _run_single_basilica_eval_repo(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=deployment_name,
+                deployment_url=_deployment_url(deployment),
+            )
             return await _poll_eval_deployment(
                 ctx=ctx,
                 client=client,
@@ -580,6 +596,7 @@ async def _run_single_basilica_eval_repo(
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
+            update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
             client, deployment, resolved_deployment_name = await _deploy_basilica_eval_repo(
@@ -595,6 +612,11 @@ async def _run_single_basilica_eval_repo(
                 task_id=task_id,
                 psql_db=psql_db,
                 repo_to_hotkey=repo_to_hotkey,
+            )
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=resolved_deployment_name,
+                deployment_url=_deployment_url(deployment),
             )
             return await _poll_eval_deployment(
                 ctx=ctx,

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import random
 import re
 import tempfile
@@ -584,22 +585,28 @@ async def generate_image_synthetic_by_category(
     raise ValueError("PERSON_GEN_RETRIES must be greater than zero")
 
 
-def _random_image_competition_hours() -> float:
-    """Pick competition length in 15-minute (0.25h) steps between min and max."""
-    min_q = int(round(cst.MIN_IMAGE_COMPETITION_HOURS * 4))
-    max_q = int(round(cst.MAX_IMAGE_COMPETITION_HOURS * 4))
-    return random.randint(min_q, max_q) / 4.0
+def _image_competition_hours_for_dataset_size(num_images: int) -> float:
+    """Scale competition length by dataset size in 15-minute (0.25h) steps."""
+    min_images = cst.MIN_IMAGE_SYNTH_PAIRS
+    max_images = cst.MAX_IMAGE_SYNTH_PAIRS
+    min_hours = cst.MIN_IMAGE_COMPETITION_HOURS
+    max_hours = cst.MAX_IMAGE_COMPETITION_HOURS
+
+    if max_images <= min_images:
+        return min_hours
+
+    clamped_images = min(max(num_images, min_images), max_images)
+    scale = (clamped_images - min_images) / (max_images - min_images)
+    hours = min_hours + scale * (max_hours - min_hours)
+    return math.ceil(hours * 4) / 4.0
 
 
 async def create_synthetic_image_task(config: Config, models: AsyncGenerator[ImageModelInfo, None]) -> RawTask:
     """Create a synthetic image task with a random image dataset category."""
     logger.info("Creating synthetic image task")
-    number_of_hours = _random_image_competition_hours()
     num_prompts = random.randint(cst.MIN_IMAGE_SYNTH_PAIRS, cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
     is_qwen_model = model_info.model_type == ImageModelType.QWEN_IMAGE
-    if is_qwen_model:
-        number_of_hours = round(number_of_hours + cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
         config, num_prompts, pick_image_synth_category()
@@ -610,7 +617,11 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     for i, pair in enumerate(image_text_pairs):
         logger.info(f"Pair {i+1} - Image URL: {pair.image_url}, Text URL: {pair.text_url}")
 
-    if len(image_text_pairs) >= 10:
+    if len(image_text_pairs) >= cst.MIN_IMAGE_SYNTH_PAIRS:
+        number_of_hours = _image_competition_hours_for_dataset_size(len(image_text_pairs))
+        if is_qwen_model:
+            number_of_hours = round(number_of_hours + cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
+
         augmentation_config = maybe_get_augmentation_config(TaskType.IMAGETASK)
         task = ImageRawTask(
             model_id=model_info.model_id,

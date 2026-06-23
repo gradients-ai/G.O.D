@@ -25,6 +25,7 @@ from core.models.utility_models import TaskType
 from validator.core import constants as vcst
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
+from validator.db.sql import tournaments as tournament_sql
 from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import EvaluationCapacityUnavailable
 from validator.evaluation.basilica import EvaluationRetryableError
@@ -45,6 +46,7 @@ from validator.evaluation.utils import normalize_rewards_and_compute_loss
 from validator.evaluation.utils import process_evaluation_results
 from validator.utils.logging import get_environment_logger
 from validator.utils.logging import get_logger
+from validator.utils.logging import update_environment_logger_labels
 
 
 try:
@@ -54,6 +56,10 @@ except ImportError:
 
 
 logger = get_logger(__name__)
+
+
+def _deployment_url(deployment) -> str | None:
+    return getattr(deployment, "url", None)
 
 
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.EnvironmentName | None:
@@ -369,6 +375,19 @@ async def _persist_pvp_deployment_id(
         ctx.eval_logger,
         ctx.repo,
     )
+    if len(hotkeys) == 2:
+        await _db_call_with_retry(
+            lambda: tournament_sql.set_pvp_pair_deployment_id(
+                str(task_id),
+                hotkeys[0],
+                hotkeys[1],
+                deployment_name,
+                psql_db,
+            ),
+            "set_pvp_pair_deployment_id",
+            ctx.eval_logger,
+            ctx.repo,
+        )
     ctx.log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
 
 
@@ -396,6 +415,10 @@ async def _deploy_pvp_eval(
     command = ["python", "-m", "validator.evaluation.pvp"]
     source = create_basilica_eval_runner_source(command, vcst.PVP_RESULTS_PATH)
 
+    existing_deployment_name = await _db_read_with_retry(
+        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
+        "load_shared_eval_deployment_id",
+    )
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
         name=f"pvp-{label}-{eval_id[:8]}",
@@ -404,6 +427,9 @@ async def _deploy_pvp_eval(
         model=pvp_config.base_model or "",
         task_type=TaskType.ENVIRONMENTTASK.value,
         task_id=str(task_id) if task_id else "unknown",
+        hotkey_a=hotkeys[0] if len(hotkeys) > 0 else None,
+        hotkey_b=hotkeys[1] if len(hotkeys) > 1 else None,
+        deployment_id=existing_deployment_name,
     )
 
     def log_step(step: str, **fields) -> None:
@@ -416,10 +442,6 @@ async def _deploy_pvp_eval(
         log_eval_step=log_step,
     )
 
-    existing_deployment_name = await _db_read_with_retry(
-        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
-        "load_shared_eval_deployment_id",
-    )
     if existing_deployment_name:
         resume_deployment = await _get_healthy_existing_basilica_deployment(
             existing_deployment_name=existing_deployment_name,
@@ -427,6 +449,11 @@ async def _deploy_pvp_eval(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=deployment_name,
+                deployment_url=_deployment_url(deployment),
+            )
             result = await _poll_eval_deployment(
                 ctx=ctx,
                 client=client,
@@ -463,6 +490,7 @@ async def _deploy_pvp_eval(
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
+            update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
             client = basilica.BasilicaClient()
@@ -517,6 +545,11 @@ async def _deploy_pvp_eval(
                     "gpu_models": vcst.BASILICA_GPU_MODELS,
                     "min_gpu_memory_gb": vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
                 },
+            )
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=resolved_deployment_name,
+                deployment_url=_deployment_url(deployment),
             )
             log_step("deploy_complete", deployment=resolved_deployment_name)
             if resolved_deployment_name != deployment_name:

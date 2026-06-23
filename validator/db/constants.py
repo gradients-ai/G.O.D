@@ -51,6 +51,7 @@ PVP_MODEL_B_WINS = "model_b_wins"
 PVP_DRAWS = "draws"
 PVP_TOTAL_GAMES = "total_games"
 PVP_N_ATTEMPTS = "n_attempts"
+PVP_DEPLOYMENT_ID = "deployment_id"
 PVP_STATUS_PENDING = PvPStatus.PENDING
 PVP_STATUS_COMPLETE = PvPStatus.COMPLETE
 

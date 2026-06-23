@@ -36,18 +36,26 @@ if lvl != null && lvl != "" {
 # Direct fields from payload
 repo, _ = to_string(.repo_id)
 eid, _ = to_string(.eval_id)
+dep_id, _ = to_string(.deployment_id)
+dep_url, _ = to_string(.deployment_url)
 mdl, _ = to_string(.model)
 tt, _ = to_string(.task_type)
 tid, _ = to_string(.task_id)
 hk, _ = to_string(.hotkey)
+hk_a, _ = to_string(.hotkey_a)
+hk_b, _ = to_string(.hotkey_b)
 srv, _ = to_string(.server)
 
 .repo_id = if repo != null && repo != "" { repo } else { "unknown" }
 .eval_id = if eid != null && eid != "" { eid } else { "unknown" }
+.deployment_id = if dep_id != null && dep_id != "" { dep_id } else { "unknown" }
+.deployment_url = if dep_url != null && dep_url != "" { dep_url } else { "unknown" }
 .model = if mdl != null && mdl != "" { mdl } else { "unknown" }
 .task_type = if tt != null && tt != "" { tt } else { "environment" }
 .task_id = if tid != null && tid != "" { tid } else { "unknown" }
 .hotkey = if hk != null && hk != "" { hk } else { "unknown" }
+.hotkey_a = if hk_a != null && hk_a != "" { hk_a } else { "unknown" }
+.hotkey_b = if hk_b != null && hk_b != "" { hk_b } else { "unknown" }
 .server = if srv != null && srv != "" { srv } else { "validator" }
 
 # Timestamp handling
@@ -76,10 +84,14 @@ request.retry_initial_backoff_secs = 1
 labels.job = "environment-evaluation"
 labels.repo_id = "{{ repo_id }}"
 labels.eval_id = "{{ eval_id }}"
+labels.deployment_id = "{{ deployment_id }}"
+labels.deployment_url = "{{ deployment_url }}"
 labels.model = "{{ model }}"
 labels.task_type = "{{ task_type }}"
 labels.task_id = "{{ task_id }}"
 labels.hotkey = "{{ hotkey }}"
+labels.hotkey_a = "{{ hotkey_a }}"
+labels.hotkey_b = "{{ hotkey_b }}"
 labels.server = "{{ server }}"
 labels.level = "{{ level }}"
 

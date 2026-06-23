@@ -1504,6 +1504,35 @@ async def save_pvp_pair_result(
             )
 
 
+async def set_pvp_pair_deployment_id(
+    task_id: str,
+    hotkey_a: str,
+    hotkey_b: str,
+    deployment_id: str | None,
+    psql_db: PSQLDB,
+) -> None:
+    """Store the Basilica deployment ID for all env rows belonging to a PvP pair."""
+    hk_a, hk_b = sorted([hotkey_a, hotkey_b])
+    async with await psql_db.connection() as connection:
+        db_result = await connection.execute(f"""
+            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+            SET {cst.PVP_DEPLOYMENT_ID} = $4,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1
+                AND {cst.PVP_HOTKEY_A} = $2
+                AND {cst.PVP_HOTKEY_B} = $3
+        """, task_id, hk_a, hk_b, deployment_id)
+        updated_rows = _row_count(db_result)
+        if updated_rows == 0:
+            logger.warning(
+                "PvP pair deployment id update touched 0 rows task_id=%s pair=%s:%s deployment_id=%s",
+                task_id,
+                hk_a,
+                hk_b,
+                deployment_id,
+            )
+
+
 async def increment_pvp_pair_attempts(
     task_id: str, hotkey_a: str, hotkey_b: str, psql_db: PSQLDB,
 ) -> None:
@@ -1525,7 +1554,7 @@ async def get_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> list[PvPPairDbR
         rows = await connection.fetch(f"""
             SELECT {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}, {cst.PVP_ENVIRONMENT_NAME},
                    {cst.PVP_MODEL_A_WINS}, {cst.PVP_MODEL_B_WINS}, {cst.PVP_DRAWS},
-                   {cst.PVP_TOTAL_GAMES}, {cst.STATUS}, {cst.PVP_N_ATTEMPTS}
+                   {cst.PVP_TOTAL_GAMES}, {cst.STATUS}, {cst.PVP_N_ATTEMPTS}, {cst.PVP_DEPLOYMENT_ID}
             FROM {cst.PVP_PAIR_RESULTS_TABLE}
             WHERE {cst.TASK_ID} = $1
         """, task_id)
