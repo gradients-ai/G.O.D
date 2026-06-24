@@ -27,9 +27,9 @@ from validator.core import constants as vcst
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import EvaluationCapacityUnavailable
 from validator.evaluation.basilica import EvaluationRetryableError
+from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import _db_call_with_retry
 from validator.evaluation.basilica import _delete_eval_deployment
 from validator.evaluation.basilica import _deploy_with_readiness_timeout
@@ -65,7 +65,25 @@ def _deployment_url(deployment) -> str | None:
 
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
-    return environment_names[0] if environment_names else None
+    if not environment_names:
+        return None
+    return cst.EnvironmentName(environment_names[0])
+
+
+def _environment_eval_image_and_command(dataset_type: EnvironmentDatasetType) -> tuple[cst.EnvironmentName, str, list[str]]:
+    env_name = _first_environment_name(dataset_type)
+    if env_name is None or env_name not in cst.ENVIRONMENT_CONFIGS:
+        raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
+
+    env_config = cst.ENVIRONMENT_CONFIGS[env_name]
+    if env_config.eval_type == cst.EvalType.PVP:
+        raise ValueError(
+            f"Direct EnvironmentDatasetType evaluation does not support PvP env {env_name.value}; "
+            "use tournament/PvP evaluation instead."
+        )
+    if not env_config.tournament_eval_command:
+        raise ValueError(f"No tournament_eval_command configured for {env_name.value}")
+    return env_name, env_config.tournament_eval_image, env_config.tournament_eval_command
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -140,13 +158,10 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo.setdefault(repo, dep_info)
     task_type = type(dataset_type).__name__
     is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
-    environment_name = _first_environment_name(dataset_type) if is_environment_eval else None
-    environment_name_value = getattr(environment_name, "value", environment_name)
-    is_intercode_eval = is_environment_eval and environment_name_value == cst.EnvironmentName.INTERCODE.value
-    if is_intercode_eval:
-        basilica_image = cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
-    elif is_environment_eval:
-        basilica_image = cst.VALIDATOR_DOCKER_IMAGE_ENV
+    environment_name: cst.EnvironmentName | None = None
+    environment_eval_command: list[str] | None = None
+    if is_environment_eval:
+        environment_name, basilica_image, environment_eval_command = _environment_eval_image_and_command(dataset_type)
     else:
         basilica_image = cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
@@ -161,10 +176,9 @@ async def run_evaluation_basilica_text(
             deployment_ids_by_repo=deployment_ids_by_repo,
         )
     elif isinstance(dataset_type, EnvironmentDatasetType):
-        if is_intercode_eval:
-            command = ["python", "-m", "validator.evaluation.eval_intercode"]
-        else:
-            command = ["python", "-m", "validator.evaluation.eval_environment"]
+        if environment_eval_command is None:
+            raise ValueError("Environment eval command was not resolved")
+        command = environment_eval_command
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
     if not is_environment_eval and not dataset.startswith("http://") and not dataset.startswith("https://"):
@@ -187,15 +201,17 @@ async def run_evaluation_basilica_text(
         if kl_coef is not None:
             base_env[cst.KL_COEF_ENV] = str(kl_coef)
     if is_environment_eval:
-        env_name = cst.EnvironmentName(environment_name_value) if environment_name_value else None
-        if env_name not in cst.ENVIRONMENT_CONFIGS:
-            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
+        env_name = environment_name
+        if env_name is None:
+            raise ValueError("EnvironmentDatasetType must include an environment name")
+        env_config = cst.ENVIRONMENT_CONFIGS[env_name]
         base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
         base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
-        # InterCode runs bash actions in-process, so only generic envs get ENV_SERVER_CMD.
-        if not is_intercode_eval:
+        # Individual OpenSpiel/InterCode evaluators run in-process; legacy generic
+        # env evals are the only ones that need a sidecar command.
+        if env_config.eval_type != cst.EvalType.INDIVIDUAL:
             base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
 
     logger.debug(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")

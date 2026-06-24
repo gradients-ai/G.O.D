@@ -5,6 +5,7 @@ tournament eval gate, environment ranking direction, batching.
 import importlib.util
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -43,10 +44,12 @@ _preload_tournament_gpu_module()
 from core.constants import ENVIRONMENT_CONFIGS
 from core.constants import EnvironmentName
 from core.constants import EvalType
+from core.models.scoring_models import EnvMinerScores
 from core.models.scoring_models import IndividualEvalResult
 from core.models.scoring_models import IndividualScoresByEnv
 from core.models.scoring_models import MinerRepos
 from core.models.utility_models import TaskType
+from validator.core.models import EnvRawTask
 from validator.core.models import MinerResultsText
 from validator.evaluation import scoring
 from validator.evaluation.scoring import calculate_miner_ranking_and_scores
@@ -207,3 +210,64 @@ def test_tournament_group_slot_envs_include_individual_envs():
 
     assert EnvironmentName.INTERCODE.value in names
     assert EnvironmentName.LIARS_DICE.value in names
+
+
+@pytest.mark.asyncio
+async def test_mixed_env_tournament_partitions_pvp_and_2048(monkeypatch):
+    task = EnvRawTask(
+        is_organic=False,
+        task_id=uuid4(),
+        status="ready",
+        model_id="Qwen/Qwen2.5-7B-Instruct",
+        ds="environment-task",
+        account_id=uuid4(),
+        hours_to_complete=1,
+        created_at=datetime.now(),
+        environment_names=[EnvironmentName.TWENTY_FORTY_EIGHT, EnvironmentName.LIARS_DICE],
+        model_params_count=7_000_000_000,
+    )
+    captured = {}
+
+    async def fake_training_statuses(task_id, psql_db):
+        return {}
+
+    async def fake_eval_seed(task_id, psql_db):
+        return 42
+
+    async def fake_base_chains(task, miners, base_model, config):
+        return {}
+
+    async def fake_eval_pvp_envs(**kwargs):
+        captured["pvp_envs"] = kwargs["pvp_envs"]
+        return [
+            EnvMinerScores(
+                environment=EnvironmentName.LIARS_DICE,
+                scores_by_hotkey={"hk_a": 0.25, "hk_b": 0.75},
+            )
+        ]
+
+    async def fake_eval_individual_envs(**kwargs):
+        captured["individual_envs"] = kwargs["individual_envs"]
+        return [
+            EnvMinerScores(
+                environment=EnvironmentName.TWENTY_FORTY_EIGHT,
+                scores_by_hotkey={"hk_a": 3000.0, "hk_b": 500.0},
+            )
+        ]
+
+    monkeypatch.setattr(scoring.tournament_sql, "get_training_status_for_task", fake_training_statuses)
+    monkeypatch.setattr(scoring, "get_env_task_eval_seed", fake_eval_seed)
+    monkeypatch.setattr(scoring, "_get_continuation_base_chains", fake_base_chains)
+    monkeypatch.setattr(scoring, "_eval_pvp_envs", fake_eval_pvp_envs)
+    monkeypatch.setattr(scoring, "_eval_individual_envs", fake_eval_individual_envs)
+
+    results = await scoring._run_env_tournament_eval(
+        task,
+        {"hk_a": "org/repo-a", "hk_b": "org/repo-b"},
+        SimpleNamespace(psql_db=object()),
+    )
+
+    assert captured["pvp_envs"] == [EnvironmentName.LIARS_DICE]
+    assert captured["individual_envs"] == [EnvironmentName.TWENTY_FORTY_EIGHT]
+    assert {result.hotkey for result in results} == {"hk_a", "hk_b"}
+    assert all(result.task_type == TaskType.ENVIRONMENTTASK for result in results)

@@ -179,7 +179,7 @@ def test_in_harness_envs_match_agent_registry():
     assert set(_INDIVIDUAL_AGENT_REGISTRY) == {EnvironmentName.TWENTY_FORTY_EIGHT}
 
 
-def test_training_env_server_selection_skips_intercode(monkeypatch):
+def test_training_env_server_selection_uses_pvp_envs_only(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
 
     from trainer import image_manager
@@ -187,6 +187,12 @@ def test_training_env_server_selection_skips_intercode(monkeypatch):
     assert image_manager._select_training_env_server_name(
         [EnvironmentName.INTERCODE, EnvironmentName.LIARS_DICE]
     ) == EnvironmentName.LIARS_DICE
+    assert image_manager._select_training_env_server_name(
+        [EnvironmentName.TWENTY_FORTY_EIGHT, EnvironmentName.LIARS_DICE]
+    ) == EnvironmentName.LIARS_DICE
+    assert image_manager._select_training_env_server_name(
+        [EnvironmentName.TWENTY_FORTY_EIGHT]
+    ) is None
     assert image_manager._select_training_env_server_name(
         [EnvironmentName.INTERCODE]
     ) is None

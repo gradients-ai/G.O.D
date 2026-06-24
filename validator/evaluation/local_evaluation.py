@@ -55,7 +55,16 @@ logger = get_logger(__name__)
 
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
-    return environment_names[0] if environment_names else None
+    if not environment_names:
+        return None
+    return cst.EnvironmentName(environment_names[0])
+
+
+def _environment_config_for(dataset_type: EnvironmentDatasetType) -> tuple[cst.EnvironmentName, cst.EnvironmentConfig]:
+    env_name = _first_environment_name(dataset_type)
+    if env_name is None or env_name not in cst.ENVIRONMENT_CONFIGS:
+        raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in cst.EnvironmentName]}")
+    return env_name, cst.ENVIRONMENT_CONFIGS[env_name]
 
 
 def _is_intercode_environment(dataset_type: EnvironmentDatasetType) -> bool:
@@ -145,12 +154,26 @@ async def run_evaluation_docker_text(
         return await run_evaluation_docker_grpo(dataset, models, original_model, dataset_type, file_format, gpu_ids)
     elif isinstance(dataset_type, EnvironmentDatasetType):
         gpu_id = gpu_ids[0] if gpu_ids else 0
-        if _is_intercode_environment(dataset_type):
+        env_name, env_config = _environment_config_for(dataset_type)
+        if env_config.eval_type == cst.EvalType.PVP:
+            raise ValueError(
+                f"Direct local EnvironmentDatasetType evaluation does not support PvP env {env_name.value}; "
+                "use run_evaluation_local_pvp_pair(s) instead."
+            )
+        if env_name == cst.EnvironmentName.INTERCODE:
             return await run_evaluation_local_intercode(
                 models,
                 original_model,
                 dataset_type,
                 file_format=file_format,
+                gpu_id=gpu_id,
+                eval_seed=eval_seed,
+            )
+        if env_config.eval_type == cst.EvalType.INDIVIDUAL:
+            return await run_evaluation_local_individual_open_spiel(
+                models,
+                original_model,
+                dataset_type,
                 gpu_id=gpu_id,
                 eval_seed=eval_seed,
             )
@@ -557,6 +580,99 @@ async def run_evaluation_local_environment(
 
     docker_client.close()
     logger.info(f"Local environment evaluation results: {evaluation_results}")
+    return process_evaluation_results(evaluation_results, is_image=False)
+
+
+async def run_evaluation_local_individual_open_spiel(
+    models: list[str],
+    original_model: str,
+    dataset_type: EnvironmentDatasetType,
+    gpu_id: int = 0,
+    eval_seed: int | None = None,
+) -> DockerEvaluationResults:
+    env_name, env_config = _environment_config_for(dataset_type)
+    if env_config.eval_type != cst.EvalType.INDIVIDUAL or env_name == cst.EnvironmentName.INTERCODE:
+        raise ValueError(
+            f"run_evaluation_local_individual_open_spiel requires a non-InterCode INDIVIDUAL env, got {env_name.value}"
+        )
+    if not env_config.tournament_eval_command:
+        raise ValueError(f"No tournament_eval_command configured for {env_name.value}")
+
+    base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
+    temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
+    cache_dir = os.path.expanduser(cst.CACHE_DIR_HUB)
+    volume_bindings = {
+        cache_dir: {"bind": "/root/.cache/huggingface/hub", "mode": "rw"},
+    }
+    base_environment = {
+        "ORIGINAL_MODEL": original_model,
+        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "HF_HOME": "/root/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
+        "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
+        "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+        "HF_HUB_ENABLE_HF_TRANSFER": "1",
+        "ENVIRONMENT_NAME": env_name.value,
+        "EVAL_SEED": str(base_seed),
+        "ENV_EVAL_TEMPERATURE": str(temperature),
+    }
+
+    client = docker.from_env()
+    evaluation_results: dict[str, dict | str | int] = {}
+    try:
+        for repo in models:
+            container = None
+            environment = dict(base_environment)
+            environment["MODELS"] = repo
+            try:
+                logger.info(f"Running local {env_name.value} individual evaluation for repo: {repo}")
+                container = await asyncio.to_thread(
+                    client.containers.run,
+                    env_config.tournament_eval_image,
+                    entrypoint=env_config.tournament_eval_command,
+                    environment=environment,
+                    volumes=volume_bindings,
+                    runtime="nvidia",
+                    device_requests=[
+                        docker.types.DeviceRequest(capabilities=[["gpu"]], device_ids=[str(gpu_id)])
+                    ],
+                    ipc_mode="host",
+                    detach=True,
+                )
+                log_task = asyncio.create_task(
+                    asyncio.to_thread(stream_container_logs, container, None, get_all_context_tags())
+                )
+                result = await asyncio.to_thread(container.wait)
+                log_task.cancel()
+
+                if result["StatusCode"] != 0:
+                    status_code = result["StatusCode"]
+                    raise Exception(f"{env_name.value} container for {repo} exited with non-zero status: {status_code}")
+
+                eval_results = await get_evaluation_results(container)
+                raw_result = eval_results.get(repo)
+                if raw_result is None:
+                    raise Exception(f"{env_name.value} results missing repo key {repo!r}: {eval_results}")
+                evaluation_results[repo] = raw_result
+                if "model_params_count" in eval_results and "model_params_count" not in evaluation_results:
+                    evaluation_results["model_params_count"] = eval_results["model_params_count"]
+            except Exception as e:
+                logger.error(f"Failed to evaluate {env_name.value} repo {repo}: {str(e)}", exc_info=True)
+                evaluation_results[repo] = f"Evaluation failed: {str(e)}"
+            finally:
+                if container is not None:
+                    try:
+                        await asyncio.to_thread(container.remove, force=True)
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup {env_name.value} container for {repo}: {e}")
+    finally:
+        try:
+            await cleanup_resources(client)
+        except Exception as e:
+            logger.info(f"A problem with cleaning up {e}")
+        client.close()
+
+    logger.info(f"Local {env_name.value} individual evaluation results: {evaluation_results}")
     return process_evaluation_results(evaluation_results, is_image=False)
 
 

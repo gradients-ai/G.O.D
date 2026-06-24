@@ -699,7 +699,8 @@ def _select_training_env_server_name(
 ) -> core_cst.EnvironmentName | None:
     for env_name in environment_names or []:
         resolved = core_cst.EnvironmentName(env_name)
-        if resolved != core_cst.EnvironmentName.INTERCODE:
+        cfg = core_cst.ENVIRONMENT_CONFIGS.get(resolved)
+        if cfg and cfg.eval_type == core_cst.EvalType.PVP:
             return resolved
     return None
 
