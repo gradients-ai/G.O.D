@@ -118,3 +118,36 @@ class TestTwentyFortyEightAgent:
         assert tool_names_by_call
         assert all(tool_names == ["game_action"] for tool_names in tool_names_by_call)
         assert all("memory" not in (prompt or "").lower() for prompt in system_prompts)
+
+    def test_individual_runner_truncates_episode_at_action_cap(self):
+        calls = 0
+
+        def counting_chat(config, messages, tools=None) -> ChatResult:
+            nonlocal calls
+            calls += 1
+            return _first_legal_chat(config, messages, tools)
+
+        result = run_individual_open_spiel_eval(
+            env_name=EnvironmentName.TWENTY_FORTY_EIGHT,
+            chat_fn=counting_chat,
+            config=_config(),
+            num_games=1,
+            base_seed=1,
+            max_player_actions_per_episode=1,
+        )
+
+        assert result.num_games == 1
+        assert calls == 1
+        assert result.mean_score >= 0.0
+
+    def test_individual_runner_honors_total_time_budget(self):
+        result = run_individual_open_spiel_eval(
+            env_name=EnvironmentName.TWENTY_FORTY_EIGHT,
+            chat_fn=_first_legal_chat,
+            config=_config(),
+            num_games=3,
+            base_seed=1,
+            time_budget_seconds=0.0,
+        )
+
+        assert result.num_games == 0

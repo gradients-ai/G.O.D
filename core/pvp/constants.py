@@ -40,3 +40,10 @@ PVP_WORKING_MEM_SLOTS = 4
 PVP_WORKING_SLOT_TOKENS = 128
 PVP_LONGTERM_MEM_SLOTS = 8
 PVP_LONGTERM_SLOT_TOKENS = 128
+
+# Single-player OpenSpiel guardrails. 2048 is finite, but a weak policy can
+# still burn thousands of legal moves; truncate long episodes with current score
+# instead of letting one episode consume the whole eval container.
+INDIVIDUAL_OPEN_SPIEL_EPISODE_TIMEOUT_SECONDS = 600
+INDIVIDUAL_OPEN_SPIEL_EVAL_TIMEOUT_SECONDS = 3 * 60 * 60
+INDIVIDUAL_OPEN_SPIEL_MAX_PLAYER_ACTIONS_PER_EPISODE = 4096

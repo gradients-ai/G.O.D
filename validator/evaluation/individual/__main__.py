@@ -83,6 +83,21 @@ def _run() -> None:
     num_games = int(
         os.getenv("INDIVIDUAL_OPEN_SPIEL_NUM_GAMES_PER_ENV", str(vcst.INDIVIDUAL_OPEN_SPIEL_NUM_GAMES_PER_ENV))
     )
+    eval_timeout_seconds = float(
+        os.getenv("INDIVIDUAL_OPEN_SPIEL_EVAL_TIMEOUT_SECONDS", str(vcst.INDIVIDUAL_OPEN_SPIEL_EVAL_TIMEOUT_SECONDS))
+    )
+    episode_timeout_seconds = float(
+        os.getenv(
+            "INDIVIDUAL_OPEN_SPIEL_EPISODE_TIMEOUT_SECONDS",
+            str(vcst.INDIVIDUAL_OPEN_SPIEL_EPISODE_TIMEOUT_SECONDS),
+        )
+    )
+    max_player_actions = int(
+        os.getenv(
+            "INDIVIDUAL_OPEN_SPIEL_MAX_PLAYER_ACTIONS_PER_EPISODE",
+            str(vcst.INDIVIDUAL_OPEN_SPIEL_MAX_PLAYER_ACTIONS_PER_EPISODE),
+        )
+    )
 
     prepared = _prepare_model(
         PvPModelSpec(repo=model_repo, original_model=original_model, base_chain=_base_chain()),
@@ -116,6 +131,9 @@ def _run() -> None:
             config=config,
             num_games=num_games,
             base_seed=seed,
+            time_budget_seconds=eval_timeout_seconds,
+            episode_timeout_seconds=episode_timeout_seconds,
+            max_player_actions_per_episode=max_player_actions,
         )
 
         output = {model_repo: {"is_finetune": True, core_cst.CONTAINER_EVAL_SCORE_KEY: result.mean_score}}

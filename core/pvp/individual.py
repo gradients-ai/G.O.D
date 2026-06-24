@@ -9,7 +9,9 @@ import random
 import signal
 import time
 from contextlib import contextmanager
+from typing import NamedTuple
 
+import numpy as np
 import openai
 import pyspiel
 from pydantic import BaseModel
@@ -29,7 +31,6 @@ from core.pvp.bot import ContextOverflowError
 from core.pvp.bot import EmptyLegalActionsError
 from core.pvp.bot import InvalidActionForfeitError
 from core.pvp.bot import TurnTimeoutError
-from core.pvp.game_eval import _evaluate_game_with_timeout
 from core.pvp.game_eval import agent_class_for
 from core.pvp.game_eval import config_id_for_seed
 
@@ -164,6 +165,90 @@ class IndividualOpenSpielResult(BaseModel):
         return sum(self.scores) / len(self.scores)
 
 
+class IndividualEpisodeEvaluation(NamedTuple):
+    returns: list[float]
+    truncated_reason: str | None = None
+    player_actions: int = 0
+
+
+def _single_player_forfeit_returns(state: pyspiel.State, player_id: int) -> list[float]:
+    returns = list(state.returns())
+    returns[player_id] = state.get_game().min_utility()
+    return returns
+
+
+def _evaluate_individual_episode_with_limits(
+    state: pyspiel.State,
+    bot: IndividualActionBot,
+    seed: int,
+    episode_timeout_seconds: float | None,
+    max_player_actions: int | None,
+) -> IndividualEpisodeEvaluation:
+    """Drive one single-player OpenSpiel episode with wall-clock and move caps."""
+    rng = np.random.RandomState(seed)
+    bot.restart_at(state)
+    started = time.monotonic()
+    player_actions = 0
+
+    while not state.is_terminal():
+        if episode_timeout_seconds is not None and time.monotonic() - started >= episode_timeout_seconds:
+            logger.warning(
+                "Individual episode timed out after %.0fs and %d player actions; truncating with current return %.3f",
+                episode_timeout_seconds, player_actions, state.returns()[0],
+            )
+            return IndividualEpisodeEvaluation(list(state.returns()), "episode_timeout", player_actions)
+
+        if max_player_actions is not None and player_actions >= max_player_actions:
+            logger.warning(
+                "Individual episode exceeded %d player actions; truncating with current return %.3f",
+                max_player_actions, state.returns()[0],
+            )
+            return IndividualEpisodeEvaluation(list(state.returns()), "max_player_actions", player_actions)
+
+        if state.is_chance_node():
+            outcomes, probs = zip(*state.chance_outcomes())
+            action = rng.choice(outcomes, p=probs)
+            bot.inform_action(state, pyspiel.PlayerId.CHANCE, int(action))
+            state.apply_action(int(action))
+            continue
+
+        if state.is_simultaneous_node():
+            raise ValueError("Individual OpenSpiel runner does not support simultaneous-move states")
+
+        current_player = state.current_player()
+        if current_player != 0:
+            raise ValueError(f"Individual OpenSpiel runner expected player 0, got {current_player}")
+
+        try:
+            action = bot.step(state)
+        except TurnTimeoutError as exc:
+            logger.warning("Player %d timed out on turn — individual game scores min utility by forfeit", exc.player_id)
+            return IndividualEpisodeEvaluation(
+                _single_player_forfeit_returns(state, exc.player_id), "turn_timeout", player_actions
+            )
+        except ContextOverflowError as exc:
+            logger.warning("Player %d exceeded context length — individual game scores min utility by forfeit", exc.player_id)
+            return IndividualEpisodeEvaluation(
+                _single_player_forfeit_returns(state, exc.player_id), "context_overflow", player_actions
+            )
+        except InvalidActionForfeitError as exc:
+            logger.warning(
+                "Player %d did not commit a legal move this turn — individual game scores min utility by forfeit",
+                exc.player_id,
+            )
+            return IndividualEpisodeEvaluation(
+                _single_player_forfeit_returns(state, exc.player_id), "invalid_action", player_actions
+            )
+        except EmptyLegalActionsError:
+            logger.warning("Individual game stuck with no legal actions; returning current score")
+            return IndividualEpisodeEvaluation(list(state.returns()), "empty_legal_actions", player_actions)
+
+        state.apply_action(action)
+        player_actions += 1
+
+    return IndividualEpisodeEvaluation(list(state.returns()), None, player_actions)
+
+
 def run_individual_open_spiel_eval(
     env_name: EnvironmentName,
     chat_fn: ChatFn,
@@ -171,6 +256,8 @@ def run_individual_open_spiel_eval(
     num_games: int,
     base_seed: int = 0,
     time_budget_seconds: float | None = None,
+    episode_timeout_seconds: float | None = cst.INDIVIDUAL_OPEN_SPIEL_EPISODE_TIMEOUT_SECONDS,
+    max_player_actions_per_episode: int | None = cst.INDIVIDUAL_OPEN_SPIEL_MAX_PLAYER_ACTIONS_PER_EPISODE,
 ) -> IndividualOpenSpielResult:
     """Run num_games single-player OpenSpiel episodes and return raw scores."""
     agent = agent_class_for(env_name)()
@@ -204,7 +291,13 @@ def run_individual_open_spiel_eval(
 
         state = game.new_initial_state()
         agent.setup_initial_state(state, seed)
-        evaluation = _evaluate_game_with_timeout(state, [bot], seed)
+        evaluation = _evaluate_individual_episode_with_limits(
+            state=state,
+            bot=bot,
+            seed=seed,
+            episode_timeout_seconds=episode_timeout_seconds,
+            max_player_actions=max_player_actions_per_episode,
+        )
         result.scores.append(float(evaluation.returns[0]))
 
         if (i + 1) % 10 == 0:
