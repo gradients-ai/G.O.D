@@ -4,10 +4,12 @@ migrating the old nodes to history in the process
 """
 
 import asyncio
+import concurrent.futures
 from datetime import datetime
 from datetime import timedelta
 
 from fiber.chain import fetch_nodes
+from fiber.chain import interface
 from fiber.chain.models import Node
 
 from validator.core.config import Config
@@ -23,8 +25,19 @@ logger = get_logger(__name__)
 
 
 async def _fetch_nodes_from_substrate(config: Config) -> list[Node]:
-    # It won't cause issues with substrate, as it creates a new connection.
-    return await asyncio.to_thread(fetch_nodes.get_nodes_for_netuid, config.substrate, config.netuid)
+    substrate = None
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        loop = asyncio.get_running_loop()
+        substrate = await loop.run_in_executor(executor, interface.get_substrate, None, config.substrate.url)
+        return await loop.run_in_executor(executor, fetch_nodes._get_nodes_for_uid, substrate, config.netuid)
+    finally:
+        if substrate is not None:
+            try:
+                substrate.close()
+            except Exception:
+                logger.debug("Failed to close temporary substrate connection", exc_info=True)
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 async def _is_recent_update(config: Config) -> bool:

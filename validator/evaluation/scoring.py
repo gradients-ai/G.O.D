@@ -37,6 +37,7 @@ from core.models.utility_models import TextDatasetType
 from validator.core.config import Config
 from validator.core.models import AnyTypeRawTask
 from validator.core.models import EnvRawTask
+from validator.core.models import InstructTextRawTask
 from validator.core.models import MinerResults
 from validator.core.models import MinerResultsImage
 from validator.core.models import MinerResultsText
@@ -48,7 +49,10 @@ from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
+from validator.db.sql.tasks import get_starting_model_repo
+from validator.evaluation.utils import check_for_lora
 from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
 from validator.evaluation.docker_evaluation import run_evaluation_individual
@@ -323,6 +327,7 @@ async def _evaluate_submissions(
             eval_seed = await get_env_task_eval_seed(task.task_id, config.psql_db)
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -332,6 +337,8 @@ async def _evaluate_submissions(
             "eval_seed": eval_seed,
             "task_id": task.task_id,
             "psql_db": config.psql_db if config is not None else None,
+            "use_kl": use_kl,
+            "kl_coef": kl_coef,
         }
 
         logger.info("Starting test evaluation")
@@ -632,6 +639,11 @@ async def process_miners_pool(
                 else:
                     raise ValueError(f"Unknown task type: {task.task_type}")
 
+        except EvaluationRetryableError:
+            # Transient infra failure (e.g. no eval GPU capacity). Propagate so the
+            # task is reset to pending and retried WITHOUT consuming an eval attempt,
+            # rather than being recorded as a permanent per-miner failure.
+            raise
         except Exception as e:
             logger.error(f"Error during batch evaluation: {e}", exc_info=True)
             results.extend(
@@ -696,18 +708,23 @@ async def _run_env_tournament_eval(
         f"pvp_envs={[e.value for e in pvp_envs]}, individual_envs={[e.value for e in individual_envs]}"
     )
 
-    env_scores: dict[core_cst.EnvironmentName, dict[str, float]] = {}
+    env_scores: list[EnvMinerScores] = []
+
+    # Shared by PvP and individual envs; empty for round-1 tasks.
+    base_chains = await _get_continuation_base_chains(task, miners, base_model, config)
 
     if pvp_envs:
-        env_scores.update(await _eval_pvp_envs(
+        env_scores.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
+            base_chains=base_chains,
         ))
 
     if individual_envs:
-        env_scores.update(await _eval_individual_envs(
+        env_scores.extend(await _eval_individual_envs(
             task_id=task.task_id, individual_envs=individual_envs, miners=miners,
             base_model=base_model, model_params=model_params, seed=seed, config=config,
+            base_chains=base_chains,
         ))
 
     standings = rank_weighted_standings(env_scores, miners.hotkeys, weights=task.environment_weights or None)
@@ -762,6 +779,36 @@ def _get_shared_env_config(envs: list[core_cst.EnvironmentName]) -> core_cst.Env
     return configs[0]
 
 
+async def _get_continuation_base_chains(
+    task: AnyTypeRawTask,
+    miners: MinerRepos,
+    base_model: str,
+    config: Config,
+) -> dict[str, list[str]]:
+    """Per-miner adapter lineage to reconstruct the base each miner trained on.
+
+    A continuation miner trains from `starting_model_repo` merged into the
+    foundation, so eval must serve their adapter on that same base. Returns
+    {hotkey: [starting_repo]} only when the starting repo is a real LoRA adapter
+    distinct from the foundation. A miner whose previous round was missing falls
+    back to the foundation itself (a full model) as starting_model_repo — that, and
+    any full-finetune output, must NOT enter a chain (it can't be LoRA-merged), so
+    we compare against both the augmented and raw foundation ids and require LoRA.
+    """
+    base_chains: dict[str, list[str]] = {}
+    for hotkey in miners.hotkeys:
+        starting_repo = await get_starting_model_repo(str(task.task_id), hotkey, config.psql_db)
+        if not starting_repo or starting_repo in (base_model, task.model_id):
+            continue
+        if not await asyncio.to_thread(check_for_lora, starting_repo, False):
+            logger.info(f"Miner {hotkey}: starting repo {starting_repo} is not a LoRA adapter; serving on foundation")
+            continue
+        base_chains[hotkey] = [starting_repo]
+    if base_chains:
+        logger.info(f"Continuation base chains for {len(base_chains)} miners on task {task.task_id}")
+    return base_chains
+
+
 async def _eval_pvp_envs(
     task_id: str,
     pvp_envs: list[core_cst.EnvironmentName],
@@ -769,6 +816,7 @@ async def _eval_pvp_envs(
     base_model: str,
     seed: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> list[EnvMinerScores]:
     """Run pairwise PvP eval for PVP-type environments, return per-env win-rates."""
     env_config = _get_shared_env_config(pvp_envs)
@@ -778,6 +826,7 @@ async def _eval_pvp_envs(
         base_model=base_model, seed=seed,
         image=env_config.tournament_eval_image,
         gpu_count=cts.PVP_BASILICA_GPU_COUNT, config=config,
+        base_chains=base_chains,
     )
 
     return pvp_results_to_winrates(group_results)
@@ -792,12 +841,15 @@ async def _get_or_run_pvp_pairs(
     image: str,
     gpu_count: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> PvPGroupResults:
     """Check DB for complete pair results; if missing, run missing 1v1 pairs."""
     env_name_strs = [e.value for e in pvp_envs]
     max_pair_attempts = cts.MAX_TOURNAMENT_EVAL_ATTEMPTS
     task_uuid = UUID(task_id)
     all_hotkeys = miners.hotkeys
+
+    base_chains = base_chains or {}
 
     db_rows = await tournament_sql.get_pvp_pair_results(task_id, config.psql_db)
     rows_by_pair = _group_db_rows_by_pair(db_rows)
@@ -830,7 +882,6 @@ async def _get_or_run_pvp_pairs(
 
         async def _run_and_persist(pair_key: str) -> None:
             hk_a, hk_b = pair_key.split(":")
-            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
             try:
                 pair_group = await run_evaluation_pvp_pair(
                     model_a_repo=miners.by_hotkey[hk_a],
@@ -844,20 +895,34 @@ async def _get_or_run_pvp_pairs(
                     gpu_count=gpu_count,
                     task_id=task_uuid,
                     psql_db=config.psql_db,
+                    base_chain_a=base_chains.get(hk_a, []),
+                    base_chain_b=base_chains.get(hk_b, []),
                 )
-                for pair_result in pair_group.pair_results:
-                    for env_name, env_result in pair_result.results.items():
-                        await tournament_sql.save_pvp_pair_result(
-                            task_id=task_id,
-                            result=pair_result,
-                            environment_name=env_name.value,
-                            env_result=env_result,
-                            psql_db=config.psql_db,
-                        )
-                logger.info(f"Pair {pair_key} completed and persisted")
+            except EvaluationRetryableError as exc:
+                # Transient infra failure (e.g. no eval GPU capacity) — not the pair's
+                # fault. Do NOT consume a retry attempt; leave the pair pending so it is
+                # retried next cycle instead of exhausting and being scored as a 0-0 draw.
+                logger.info(f"Pair {pair_key} deferred, eval capacity unavailable: {exc}")
+                failed_pairs.append(pair_key)
+                return
             except Exception as exc:
+                # Genuine eval failure — count the attempt so the pair can eventually exhaust.
+                await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
                 logger.error(f"Pair {pair_key} failed: {exc}", exc_info=True)
                 failed_pairs.append(pair_key)
+                return
+
+            await tournament_sql.increment_pvp_pair_attempts(task_id, hk_a, hk_b, config.psql_db)
+            for pair_result in pair_group.pair_results:
+                for env_name, env_result in pair_result.results.items():
+                    await tournament_sql.save_pvp_pair_result(
+                        task_id=task_id,
+                        result=pair_result,
+                        environment_name=env_name.value,
+                        env_result=env_result,
+                        psql_db=config.psql_db,
+                    )
+            logger.info(f"Pair {pair_key} completed and persisted")
 
         logger.info(f"Dispatching {len(remaining_keys)} PvP pairs in parallel")
         await asyncio.gather(*[_run_and_persist(pair_key) for pair_key in remaining_keys])
@@ -900,6 +965,7 @@ async def _eval_individual_envs(
     model_params: int,
     seed: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> list[EnvMinerScores]:
     """Run per-miner containers for INDIVIDUAL-type envs, return per-env raw scores."""
     task_id_str = str(task_id)
@@ -917,6 +983,7 @@ async def _eval_individual_envs(
             env=env, task_id=task_id, task_id_str=task_id_str,
             miners=miners, base_model=base_model, model_params=model_params,
             seed=seed, config=config, scores=scores, db_scores=db_scores,
+            base_chains=base_chains,
         )
 
     # Re-fetch to get accurate n_attempts after dispatches
@@ -980,6 +1047,7 @@ async def _dispatch_missing_individual(
     config: Config,
     scores: IndividualScoresByEnv,
     db_scores: list[PvPIndividualScoreDbRow],
+    base_chains: dict[str, list[str]] | None = None,
 ) -> IndividualScoresByEnv:
     """Deploy containers for missing individual scores on a single env."""
     env_config = core_cst.ENVIRONMENT_CONFIGS[env]
@@ -1006,6 +1074,7 @@ async def _dispatch_missing_individual(
         gpu_count=individual_gpu_count,
         task_id=task_id,
         psql_db=config.psql_db,
+        base_chains=base_chains,
     )
 
     # Persist scores for hotkeys that succeeded

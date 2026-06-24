@@ -11,6 +11,7 @@ import pytest
 from core.constants import EnvironmentName
 from core.models.pvp_models import GameInstance
 from core.models.pvp_models import GameOutcome
+from core.models.pvp_models import LeducPokerParams
 from core.models.pvp_models import PvPEnvironmentResult
 
 
@@ -97,7 +98,7 @@ class TestConfigIdVariation:
         params_set = set()
         for config_id in range(9):  # 3×3 = 9 unique combos from the formula
             p = agent.generate_params(config_id)
-            params_set.add((p["hand_size"], p["knock_card"]))
+            params_set.add((p.hand_size, p.knock_card))
 
         assert len(params_set) > 1, "All config_ids produced identical params"
 
@@ -105,36 +106,40 @@ class TestConfigIdVariation:
         agent = GinRummyAgent()
         for config_id in range(100):
             p = agent.generate_params(config_id)
-            assert 7 <= p["hand_size"] <= 9
-            assert 8 <= p["knock_card"] <= 10
+            assert 7 <= p.hand_size <= 9
+            assert 8 <= p.knock_card <= 10
 
     def test_liars_dice_params_constant(self):
         """Liar's dice has fixed params regardless of config_id."""
         agent = LiarsDiceAgent()
         p0 = agent.generate_params(0)
         p1 = agent.generate_params(99)
-        assert p0 == p1 == {"players": 2, "numdice": 5}
+        assert p0 == p1
+        assert p0.to_pyspiel() == {"players": 2, "numdice": 5}
 
     def test_leduc_poker_params_constant(self):
         agent = LeducPokerAgent()
         p0 = agent.generate_params(0)
         p1 = agent.generate_params(99)
-        assert p0 == p1 == {"players": 2}
+        assert p0 == p1
+        assert p0.to_pyspiel() == {"players": 2}
 
     def test_othello_params_empty(self):
         """Othello takes no pyspiel parameters regardless of config_id."""
         agent = OthelloAgent()
-        assert agent.generate_params(0) == agent.generate_params(99) == {}
+        assert agent.generate_params(0) == agent.generate_params(99)
+        assert agent.generate_params(0).to_pyspiel() == {}
 
     def test_clobber_params_vary_by_config(self):
         """Clobber samples small board-size variants around OpenSpiel's default."""
         agent = ClobberAgent()
         params_set = {
-            (agent.generate_params(config_id)["rows"], agent.generate_params(config_id)["columns"])
+            (agent.generate_params(config_id).rows, agent.generate_params(config_id).columns)
             for config_id in range(9)
         }
 
         assert params_set == {(4, 5), (5, 5), (5, 6)}
+        assert agent.generate_params(0).to_pyspiel() == {"rows": 4, "columns": 5}
 
 
 # --- 3c': Othello seeded opening plies (deterministic game needs injected variety) ---
@@ -185,7 +190,7 @@ class TestOthelloOpeningPlies:
 class TestClobberOpeningPlies:
     def _opened_board(self, seed: int) -> str:
         agent = ClobberAgent()
-        game = pyspiel.load_game("clobber", agent.generate_params(0))
+        game = agent.load_game(agent.generate_params(0))
         state = game.new_initial_state()
         agent.setup_initial_state(state, seed)
         return f"{state.current_player()}\n{state.observation_string(0)}"
@@ -195,7 +200,7 @@ class TestClobberOpeningPlies:
 
     def test_format_state_names_the_players_colour(self):
         agent = ClobberAgent()
-        state = pyspiel.load_game("clobber", agent.generate_params(0)).new_initial_state()
+        state = agent.load_game(agent.generate_params(0)).new_initial_state()
         assert "You play o (White)" in agent.format_state(state, 0)
         assert "You play x (Black)" in agent.format_state(state, 1)
 
@@ -207,7 +212,7 @@ class TestClobberOpeningPlies:
         agent = ClobberAgent()
         for config_id in range(3):
             for seed in range(20):
-                game = pyspiel.load_game("clobber", agent.generate_params(config_id))
+                game = agent.load_game(agent.generate_params(config_id))
                 state = game.new_initial_state()
                 agent.setup_initial_state(state, seed)
                 assert not state.is_terminal()
@@ -216,8 +221,9 @@ class TestClobberOpeningPlies:
 
     def test_opening_diverges_from_fresh_board(self):
         agent = ClobberAgent()
-        game = pyspiel.load_game("clobber", agent.generate_params(0))
-        fresh = f"{game.new_initial_state().current_player()}\n{game.new_initial_state().observation_string(0)}"
+        game = agent.load_game(agent.generate_params(0))
+        state = game.new_initial_state()
+        fresh = f"{state.current_player()}\n{state.observation_string(0)}"
         assert any(self._opened_board(seed) != fresh for seed in range(20))
 
 
@@ -266,7 +272,7 @@ def _make_test_instances(count: int) -> list[GameInstance]:
     return [
         GameInstance(
             game_name="leduc_poker",
-            game_params={"players": 2},
+            game_params=LeducPokerParams(players=2),
             model_a_player_id=i % 2,
             seed=i,
             is_zero_sum=True,

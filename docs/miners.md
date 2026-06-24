@@ -95,9 +95,9 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 
 | Tournament type | Fee |
 | --- | --- |
-| Text | 0.20 TAO |
-| Image | 0.15 TAO |
-| Environment | 0.20 TAO |
+| Text | 0.25 TAO |
+| Image | 0.20 TAO |
+| Environment | 0.25 TAO |
 
 Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
 
@@ -336,6 +336,8 @@ Your container may receive:
 | `ENVIRONMENT_SERVER_URLS` | Environment | Comma-separated URLs for environment sidecars when the task needs live environment servers. |
 | `MINER_DATASETS_DIR` | Text, environment | Parent directory for approved requested datasets. |
 | `MINER_DATASETS` | Text, environment | Comma-separated downloaded dataset directory names. |
+| `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
+| `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
 
 For `intercode`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started.
 
@@ -533,6 +535,21 @@ python -m utils.run_evaluation --task_id TASK_ID --models MODEL_REPO
 python -m utils.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
 ```
 
+### Checking For Duplicate Submissions
+
+Tournament submissions are de-duplicated to stop one entry being submitted many times under different identities. The check runs in three tiers: identical commit (T0), identical source after stripping whitespace/comments/ordering (T1), and a Claude pairwise review of the code deltas (T2). Cosmetic or evasive disguises — renaming, reordering, reformatting, dead code, noise hyperparameters, single-scalar tweaks, or "differences" that only trigger on inputs that are not provided at training time (an unset env var, an absent baseline-stats field, a config key the pinned library ignores) — are all treated as duplicates. Confirmed duplicates are eliminated.
+
+You can run the exact same pairwise check locally on two repos before you submit, to confirm your work reads as genuinely distinct. It writes nothing and uploads nothing. The Claude step needs `ANTHROPIC_API_KEY`, and you should run it from a checkout of this repo (the reviewer is given this source to verify whether your claimed differentiators are real training-time inputs):
+
+```bash
+export ANTHROPIC_API_KEY=...
+python -m validator.tournament.scripts.dedup_check <repo_a_url> <repo_b_url> \
+    --hash-a <commit_a> --hash-b <commit_b> \
+    [--token-a <gh_token>] [--token-b <gh_token>] [--out report.md]
+```
+
+It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the reasoning. If you come back `DUPLICATE` against an existing submission, change the actual training behaviour — not just the surface.
+
 ## Common Failure Modes
 
 - Returning a branch name instead of a full commit SHA.
@@ -542,6 +559,7 @@ python -m utils.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_
 - Writing outputs into `/cache`, which is read-only during training.
 - Depending on public internet access from the training container.
 - Bundling hidden datasets, weights, compiled code, or obfuscated code.
+- Submitting a lightly-disguised copy of another entry — duplicates are detected and eliminated (see [Checking For Duplicate Submissions](#checking-for-duplicate-submissions)).
 - Ignoring `hours_to_complete` and getting killed before a usable checkpoint exists.
 - Not handling every model type in the tournament you enter.
 - Assuming `--dataset` or `--dataset-zip` can be downloaded directly by your script instead of using the pre-downloaded cache path.

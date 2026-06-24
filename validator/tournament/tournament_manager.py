@@ -69,6 +69,9 @@ from validator.db.sql.transfers import deduct_tournament_participation_fee
 from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.dedup_gate import apply_r1_eliminations
+from validator.tournament.dedup_gate import detect_r1_hash_duplicates
+from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -112,6 +115,7 @@ def organise_tournament_round(
     tournament_type: TournamentType | None = None,
     round_id: str = "",
     round_number: int = 1,
+    is_final_round: bool = False,
 ) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
@@ -122,7 +126,19 @@ def organise_tournament_round(
                 f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
                 f"got {len(nodes_copy)}"
             )
-        num_groups = math.ceil(len(nodes_copy) / t_cst.MAX_ENVIRONMENT_GROUP_SIZE)
+        # A small starting field uses a smaller group size so more contenders survive round 1.
+        # Round 1 only — later rounds keep the normal size so the bracket still converges
+        # rather than re-splitting the shrinking field into ever-smaller groups.
+        max_group_size = (
+            t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
+            if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
+            else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
+        )
+        # Reserve a slot for the boss injected into the smallest group (see assign_nodes_to_tournament_tasks)
+        # so that group still respects max_group_size, i.e. <= C(max,2) PvP pairs.
+        boss_will_be_injected = not is_final_round and EMISSION_BURN_HOTKEY not in {n.hotkey for n in nodes_copy}
+        effective_count = len(nodes_copy) + (1 if boss_will_be_injected else 0)
+        num_groups = math.ceil(effective_count / max_group_size)
         while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
             num_groups -= 1
 
@@ -136,6 +152,20 @@ def organise_tournament_round(
             groups.append(Group(member_ids=group_hotkeys, task_ids=[]))
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
+
+    # Small text/image tournament: at round 1 with 3..9 competitors, run a single
+    # group that plays multiple matches and advances only the top few, rather than
+    # a thin knockout (<=8) or a tiny group that still advances 8. Only applies to
+    # the first round so later rounds (e.g. a large group advancing 8 into a round
+    # of 8) are never mistaken for this format.
+    if (
+        round_number == 1
+        and tournament_type in (TournamentType.TEXT, TournamentType.IMAGE)
+        and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
+    ):
+        group_hotkeys = [node.hotkey for node in nodes_copy]
+        single_group = Group(member_ids=group_hotkeys, task_ids=[])
+        return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
 
     if len(nodes_copy) <= t_cst.MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND:
         hotkeys = [node.hotkey for node in nodes_copy]
@@ -180,7 +210,9 @@ async def _create_first_round(
 ):
     round_id = generate_round_id(tournament_id, 1)
     with LogContext(round_id=round_id):
-        round_structure = organise_tournament_round(nodes, config, tournament_type, round_id=round_id, round_number=1)
+        round_structure = organise_tournament_round(
+            nodes, config, tournament_type, round_id=round_id, round_number=1, is_final_round=False
+        )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
 
@@ -317,6 +349,11 @@ async def _save_winner_model_repo(
         logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
 
 
+def select_boss_group_index(groups: list[Group]) -> int:
+    """Index of the smallest group — the boss injection target (minimises added PvP pairs, keeps the cap)."""
+    return min(range(len(groups)), key=lambda i: len(groups[i].member_ids))
+
+
 async def assign_nodes_to_tournament_tasks(
     tournament_id: str, round_structure: Round, psql_db: PSQLDB, is_final_round: bool = False
 ) -> None:
@@ -328,21 +365,18 @@ async def assign_nodes_to_tournament_tasks(
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        # The boss (EMISSION_BURN_HOTKEY) may already be a real member of one of the
-        # groups (e.g. it advanced into a group this round). Detect that up front so we
-        # don't greedily append it to an earlier group as well — otherwise the boss gets
-        # assigned to two tasks in the same round.
-        boss_assigned = any(
-            EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups
+        # The boss may already be a competing member of a group this round; only inject it
+        # (into the smallest group) when it isn't, so it never gets assigned to two tasks.
+        boss_target_idx = (
+            None
+            if not is_environment_tournament or any(EMISSION_BURN_HOTKEY in g.member_ids for g in round_structure.groups)
+            else select_boss_group_index(round_structure.groups)
         )
         for i, group in enumerate(round_structure.groups):
             if is_environment_tournament:
                 group_participants = list(group.member_ids)
-                if EMISSION_BURN_HOTKEY in group_participants:
-                    boss_assigned = True
-                elif not boss_assigned:
+                if i == boss_target_idx and EMISSION_BURN_HOTKEY not in group_participants:
                     group_participants.append(EMISSION_BURN_HOTKEY)
-                    boss_assigned = True
                 participants_to_assign = group_participants
 
                 if is_final_round:
@@ -499,7 +533,7 @@ async def create_next_round(
         round_structure = organise_tournament_round(
             winner_nodes, config,
             tournament.tournament_type if tournament.tournament_type == TournamentType.ENVIRONMENT else None,
-            round_id=next_round_id, round_number=next_round_number,
+            round_id=next_round_id, round_number=next_round_number, is_final_round=next_round_is_final,
         )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
@@ -670,6 +704,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
         else:
+            # R2 gate: before building round 2, check the entrants for functional duplicates.
+            # On flags this HALTS advancement (returns) until a human approves in the DB.
+            if cst.TOURN_DEDUP_ENABLED and completed_round.round_number == 1:
+                decision = await evaluate_r2_dedup_gate(tournament, completed_round, winners, config, psql_db)
+                if decision.halt:
+                    logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
+                    return
+                if decision.eliminate:
+                    winners = [w for w in winners if w not in decision.eliminate]
+                    logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -955,9 +999,26 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
         logger.error(f"No valid nodes found for tournament {tournament_id} participants")
         return False
 
+    # R1 pre-training de-dup: detect exact/normalized hash duplicates and exclude them from the
+    # bracket (they've already paid the entry fee — they forfeit it and don't get to train).
+    dedup_result = None
+    if cst.TOURN_DEDUP_ENABLED:
+        dedup_result = await detect_r1_hash_duplicates(tournament, [n.hotkey for n in participant_nodes], psql_db)
+        flagged = set(dedup_result.flagged_hotkeys)
+        if flagged:
+            participant_nodes = [n for n in participant_nodes if n.hotkey not in flagged]
+            logger.info(f"R1 dedup excluded {len(flagged)} duplicate(s) from the bracket for {tournament_id}")
+        if not participant_nodes:
+            logger.error(f"All participants for {tournament_id} were flagged as duplicates; cannot create first round")
+            return False
+
     logger.info(f"Creating first round for tournament {tournament_id} with {len(participant_nodes)} participants")
 
     await _create_first_round(tournament_id, tournament.tournament_type, participant_nodes, psql_db, config)
+
+    # Eliminate the flagged duplicates now that the R1 round row exists (FK on eliminated_in_round_id)
+    if dedup_result is not None:
+        await apply_r1_eliminations(tournament, generate_round_id(tournament_id, 1), dedup_result, config, psql_db)
 
     logger.info(f"Successfully created first round for tournament {tournament_id}")
     return True

@@ -607,4 +607,8 @@ def check_ds_num_rows(num_rows: int) -> int:
         error_msg = f"Dataset has only {num_rows} rows, minimum required is {cst.MINIMUM_DATASET_ROWS}"
         logger.error(error_msg)
         raise ValueError(error_msg)
+    if num_rows > cst.MAXIMUM_DATASET_ROWS:
+        error_msg = f"Dataset has {num_rows} rows, maximum allowed is {cst.MAXIMUM_DATASET_ROWS}"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
     return num_rows

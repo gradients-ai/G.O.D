@@ -35,9 +35,11 @@ from validator.core.constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.core.constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.core.constants import TASK_DETAILS_ENDPOINT
 from validator.core.models import AnyTypeRawTask
+from validator.core.models import EnvRawTask
+from validator.core.models import InstructTextRawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.tasks.synthetic_scheduler import apply_baseline_ctx_scale
+from validator.tasks.synthetic_scheduler import compute_hours_from_baseline_stats
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
 from validator.evaluation.scoring import _get_dataset_type
 from validator.evaluation.scoring import should_use_tournament_eval
@@ -422,7 +424,10 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 continue
 
             # Determine required GPUs for this task
-            required_gpus = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+            required_gpus = get_tournament_gpu_requirement(
+                task.task_type, task.model_params_count, task.model_id,
+                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+            )
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
             suitable_gpus_result = await _check_suitable_gpus(config, required_gpus)
@@ -636,11 +641,13 @@ async def _create_training_request(
             expected_repo_name=expected_repo_name,
             dataset_zip=task.training_data,
             model_type=task.model_type,
+            trigger_word=task.trigger_word,
             baseline_stats=baseline_stats,
         )
     else:
         dataset_type = _get_dataset_type(task)
 
+        use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         training_data = TrainRequestText(
             model=training_model,
             task_id=str(task.task_id),
@@ -650,6 +657,8 @@ async def _create_training_request(
             dataset_type=dataset_type,
             file_format=FileFormat.S3,  # always an S3 since we task prep
             baseline_stats=baseline_stats,
+            use_kl=use_kl,
+            kl_coef=kl_coef,
         )
 
     return TrainerProxyRequest(
@@ -1066,7 +1075,13 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 return True
 
             if job.result.baseline_stats:
-                new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                new_hours = compute_hours_from_baseline_stats(
+                    task.hours_to_complete,
+                    task.baseline_stats,
+                    task.task_type,
+                    model_id=task.model_id,
+                    model_params_count=task.model_params_count,
+                )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 
@@ -1207,6 +1222,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 reward_functions=reward_fns,
                 is_env_task=True,
                 hotkey=hotkey,
+                environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
             )
             if prep_result is not None and prep_result.baseline_stats:
                 await task_sql.set_miner_baseline_stats(
@@ -1246,6 +1262,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             gpu_ids=gpu_ids,
             reward_functions=reward_fns,
             is_env_task=is_env_task,
+            environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):
@@ -1269,7 +1286,13 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     return
 
                 if prep_result.baseline_stats:
-                    new_hours = apply_baseline_ctx_scale(task.hours_to_complete, task.baseline_stats)
+                    new_hours = compute_hours_from_baseline_stats(
+                        task.hours_to_complete,
+                        task.baseline_stats,
+                        task.task_type,
+                        model_id=task.model_id,
+                        model_params_count=task.model_params_count,
+                    )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
 
@@ -1329,6 +1352,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
 
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
+                                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
@@ -1368,7 +1392,10 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     if await _try_reuse_sibling_model_prep(task, config):
                         continue
 
-                    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count or 0, task.model_id)
+                    gpu_req = get_tournament_gpu_requirement(
+                        task.task_type, task.model_params_count or 0, task.model_id,
+                        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                    )
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
                         logger.info(

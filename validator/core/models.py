@@ -198,6 +198,8 @@ class InstructTextRawTask(RawTask):
     file_format: FileFormat = FileFormat.HF
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK
     synthetic_data: str | None = None
+    use_kl: bool = False
+    kl_coef: float | None = None
 
 
 class ChatRawTask(RawTask):
@@ -224,6 +226,7 @@ class ImageRawTask(RawTask):
     image_text_pairs: list[ImageTextPair] | None = None
     task_type: TaskType = TaskType.IMAGETASK
     model_type: ImageModelType = ImageModelType.SDXL
+    trigger_word: str | None = None
 
 
 # NOTE: As time goes on we will expand this class to be more of a 'submitted task'?

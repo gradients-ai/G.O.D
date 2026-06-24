@@ -11,16 +11,21 @@ PVP_CONFIG_ID_DIVISOR = 100_000_000
 
 # Per-turn wall-clock forfeit budget. A turn is a SINGLE model call (memory
 # edits + the move in one response); this is the "stuck/too slow" cutoff.
-PVP_TURN_TIMEOUT_SECONDS = 15
+# Raised 15 -> 30: a full PVP_TURN_MAX_TOKENS (512) turn at the observed
+# sustained ~29 tok/s is ~18-20s, so 15s forfeited legitimate long turns.
+PVP_TURN_TIMEOUT_SECONDS = 30
 # End-of-game reflection is also a single call; bound it so a hung server can't
 # stall the matchup (reflection runs after every game, for both players).
-PVP_REFLECTION_TIMEOUT_SECONDS = 10
+# Raised 10 -> 20: PVP_REFLECTION_MAX_TOKENS (384) is ~13-19s of generation.
+PVP_REFLECTION_TIMEOUT_SECONDS = 20
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 
 # HTTP read timeout + retries for in-turn/reflection calls. Kept under the turn
 # budget so a hung connection is caught (and at most one retry attempted) before
 # the wall-clock alarm forfeits — the old 30s/10-retry defaults could never fit.
-PVP_HTTP_READ_TIMEOUT_SECONDS = 12
+# Raised 12 -> 24: must cover a full ~18-20s generation so a slow-but-valid turn
+# isn't aborted mid-stream (12s aborted before 512 tokens could finish).
+PVP_HTTP_READ_TIMEOUT_SECONDS = 24
 PVP_HTTP_MAX_RETRIES = 1
 
 # Tool-calling memory harness.

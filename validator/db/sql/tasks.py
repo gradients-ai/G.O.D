@@ -143,8 +143,8 @@ async def _insert_instruct_text_task(connection: Connection, task: InstructTextR
         INSERT INTO {cst.INSTRUCT_TEXT_TASKS_TABLE}
         ({cst.TASK_ID}, {cst.FIELD_SYSTEM}, {cst.FIELD_INSTRUCTION},
         {cst.FIELD_INPUT}, {cst.FIELD_OUTPUT}, {cst.FORMAT},
-        {cst.NO_INPUT_FORMAT}, {cst.FILE_FORMAT})
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        {cst.NO_INPUT_FORMAT}, {cst.FILE_FORMAT}, {cst.USE_KL}, {cst.KL_COEF})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     """
     await connection.execute(
         query,
@@ -156,6 +156,8 @@ async def _insert_instruct_text_task(connection: Connection, task: InstructTextR
         task.format,
         task.no_input_format,
         task.file_format,
+        task.use_kl,
+        task.kl_coef,
     )
 
 
@@ -183,10 +185,10 @@ async def _insert_chat_task(connection: Connection, task: ChatRawTask, task_reco
 async def _insert_image_task(connection: Connection, task: ImageRawTask, task_record: dict) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TASKS_TABLE}
-        ({cst.TASK_ID}, {cst.MODEL_TYPE})
-        VALUES ($1, $2)
+        ({cst.TASK_ID}, {cst.MODEL_TYPE}, {cst.TRIGGER_WORD})
+        VALUES ($1, $2, $3)
     """
-    await connection.execute(query, task_record[cst.TASK_ID], task.model_type.value)
+    await connection.execute(query, task_record[cst.TASK_ID], task.model_type.value, task.trigger_word)
 
     if task.image_text_pairs:
         query_pairs = f"""
@@ -364,14 +366,15 @@ async def get_tasks_with_status(
                 specific_query = f"""
                     SELECT t.*, tt.field_system,
                            tt.field_instruction, tt.field_input, tt.field_output,
-                           tt.format, tt.no_input_format, tt.file_format
+                           tt.format, tt.no_input_format, tt.file_format,
+                           tt.use_kl, tt.kl_coef
                     FROM {cst.TASKS_TABLE} t
                     LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
                 """
             elif task_type == TaskType.IMAGETASK.value:
                 specific_query = f"""
-                    SELECT t.*, it.model_type
+                    SELECT t.*, it.model_type, it.trigger_word
                     FROM {cst.TASKS_TABLE} t
                     LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
@@ -653,6 +656,22 @@ async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeR
                     await connection.execute(query, updated_task.task_id, *specific_values)
 
             elif updated_task.task_type == TaskType.IMAGETASK:
+                image_task_fields = await get_table_fields(cst.IMAGE_TASKS_TABLE, connection)
+                image_specific_fields = [f for f in image_task_fields if f != cst.TASK_ID]
+                specific_updates = {k: v for k, v in updates.items() if k in image_specific_fields}
+                if cst.MODEL_TYPE in specific_updates and specific_updates[cst.MODEL_TYPE] is not None:
+                    model_type = specific_updates[cst.MODEL_TYPE]
+                    specific_updates[cst.MODEL_TYPE] = model_type.value if hasattr(model_type, "value") else model_type
+                if specific_updates:
+                    specific_clause = ", ".join([f"{column} = ${i + 2}" for i, column in enumerate(specific_updates.keys())])
+                    specific_values = list(specific_updates.values())
+                    query = f"""
+                        UPDATE {cst.IMAGE_TASKS_TABLE}
+                        SET {specific_clause}
+                        WHERE {cst.TASK_ID} = $1
+                    """
+                    await connection.execute(query, updated_task.task_id, *specific_values)
+
                 if "image_text_pairs" in updates:
                     await delete_image_text_pairs(updated_task.task_id, psql_db)
                     pairs = [ImageTextPair(**pair) for pair in updates["image_text_pairs"]]
@@ -913,14 +932,14 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             specific_query = f"""
                 SELECT t.*, tt.field_system,
                        tt.field_instruction, tt.field_input, tt.field_output,
-                       tt.format, tt.no_input_format
+                       tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef
                 FROM {cst.TASKS_TABLE} t
                 LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
             """
         elif task_type == TaskType.IMAGETASK.value:
             specific_query = f"""
-                SELECT t.*, it.model_type
+                SELECT t.*, it.model_type, it.trigger_word
                 FROM {cst.TASKS_TABLE} t
                 LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
@@ -1031,6 +1050,7 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                     tasks.*,
                     tt.field_system, tt.field_instruction, tt.field_input, tt.field_output,
                     tt.format, tt.no_input_format, tt.system_format, tt.file_format,
+                    tt.use_kl, tt.kl_coef,
                     COALESCE(tasks.training_repo_backup, victorious_repo.repo) as trained_model_repository
                 FROM {cst.TASKS_TABLE} tasks
                 LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON tasks.{cst.TASK_ID} = tt.{cst.TASK_ID}
@@ -1226,7 +1246,7 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
         return f"""
             SELECT t.*, tt.field_system,
                    tt.field_instruction, tt.field_input, tt.field_output,
-                   tt.format, tt.no_input_format
+                   tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
@@ -1242,7 +1262,7 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
         """
     elif task_type == TaskType.IMAGETASK.value:
         return f"""
-            SELECT t.*, it.model_type
+            SELECT t.*, it.model_type, it.trigger_word
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
@@ -2168,7 +2188,7 @@ async def get_successful_matching_tasks(
             )
             SELECT t.*, tt.field_system,
                    tt.field_instruction, tt.field_input, tt.field_output,
-                   tt.format, tt.no_input_format,
+                   tt.format, tt.no_input_format, tt.use_kl, tt.kl_coef,
                    COALESCE(t.training_repo_backup, vr.{cst.REPO}) as trained_model_repository
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.INSTRUCT_TEXT_TASKS_TABLE} tt ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}

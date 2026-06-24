@@ -20,18 +20,16 @@ import pickle
 import random
 import sys
 
-import pyspiel
-
+from core.constants import EnvironmentName
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import MemoryArea
 from core.pvp import tools as tool_lib
+from core.pvp.bot import LLMBot
+from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import WhitespaceTokenCounter
 from validator.core import constants as vcst
-from core.pvp.bot import LLMBot
-from core.pvp.game_eval import _AGENT_REGISTRY
-from core.constants import EnvironmentName
 
 
 STATE_PATH = "/tmp/pvp_play.pkl"
@@ -83,7 +81,8 @@ def _save(bundle: dict) -> None:
 
 
 def _rehydrate(bundle: dict):
-    game = pyspiel.load_game(bundle["game_name"], bundle["params"])
+    agent = _agent_for(_env(bundle["env"]))
+    game = agent.load_game(bundle["params"])
     state = game.deserialize_state(bundle["state_str"])
     rng = random.Random()
     rng.setstate(bundle["rng_state"])
@@ -113,7 +112,7 @@ def cmd_new(args) -> None:
     env = _env(args.env)
     agent = _agent_for(env)
     params = agent.generate_params(args.seed)
-    game = pyspiel.load_game(agent.game_name, params)
+    game = agent.load_game(params)
     state = game.new_initial_state()
     agent.setup_initial_state(state, args.seed)  # seeded opening plies, as in eval
     rng = random.Random(args.seed)
@@ -204,7 +203,10 @@ def cmd_reflect(args) -> None:
 
     outcome = GameOutcome.DRAW
     if state.is_terminal():
-        outcome = GameOutcome.WIN if returns[args.seat] > 0 else (GameOutcome.LOSS if returns[args.seat] < 0 else GameOutcome.DRAW)
+        if returns[args.seat] > 0:
+            outcome = GameOutcome.WIN
+        elif returns[args.seat] < 0:
+            outcome = GameOutcome.LOSS
     print(bot._reflection_user_prompt(state, outcome))
     print("\n(Apply consolidation with: act-reflect --seat N --mem <tool> <slot> <text> ...)")
 

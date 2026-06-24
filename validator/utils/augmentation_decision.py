@@ -4,6 +4,7 @@ No heavy dependencies — only stdlib, core models, and validator constants.
 """
 
 import random
+from typing import TypeVar
 
 import validator.core.constants as vcst
 from core.models.model_prep_models import AugmentationConfig
@@ -12,10 +13,10 @@ from core.models.model_prep_models import AugmentationType
 from core.models.utility_models import TaskType
 
 
-def weighted_choice(
-    weights: dict[AugmentationType, float] | dict[AugmentationScope, float],
-    rng: random.Random,
-) -> AugmentationType | AugmentationScope:
+T = TypeVar("T", AugmentationType, AugmentationScope)
+
+
+def weighted_choice(weights: dict[T, float], rng: random.Random) -> T:
     """Pick an enum member from a weighted dict, normalising weights at runtime."""
     keys = list(weights.keys())
     vals = list(weights.values())
@@ -51,6 +52,10 @@ def maybe_get_augmentation_config(task_type: TaskType) -> AugmentationConfig | N
 
     aug_type: AugmentationType = weighted_choice(vcst.AUGMENTATION_TYPE_WEIGHTS, rng)
     scope: AugmentationScope = weighted_choice(vcst.AUGMENTATION_SCOPE_WEIGHTS, rng)
+    # LAYER_REINIT and WEIGHT_SCALING are the most damaging ops; constrain them to
+    # MULTI_LAYER scope so they never hit a single isolated layer or every layer at once.
+    if aug_type in (AugmentationType.LAYER_REINIT, AugmentationType.WEIGHT_SCALING):
+        scope = AugmentationScope.MULTI_LAYER
     intensity = seeded_intensity(aug_type, rng)
 
     return AugmentationConfig(

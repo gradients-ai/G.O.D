@@ -307,16 +307,23 @@ class TestExponentialDeclineMapping:
         w2 = exponential_decline_mapping(5, 2)
         assert w1 > w2
 
-    def test_monotonic_decrease(self):
+    def test_non_increasing_by_rank(self):
         weights = [exponential_decline_mapping(5, r) for r in range(1, 6)]
         for i in range(len(weights) - 1):
-            assert weights[i] > weights[i + 1]
+            assert weights[i] >= weights[i + 1]
+
+    def test_only_top_two_ranks_paid(self):
+        """Only the top TOURNAMENT_PAID_RANKS (2) earn; the rest get exactly 0."""
+        assert exponential_decline_mapping(5, 1) == pytest.approx(0.8)
+        assert exponential_decline_mapping(5, 2) == pytest.approx(0.2)
+        assert exponential_decline_mapping(5, 3) == 0.0
+        assert exponential_decline_mapping(5, 5) == 0.0
 
     def test_single_participant(self):
         assert exponential_decline_mapping(1, 1) == 1.0
 
     def test_weights_sum_to_one(self):
-        """All ranks' weights should sum to approximately 1.0 (normalization)."""
+        """Paid ranks' weights should sum to approximately 1.0 (normalization)."""
         n = 10
         total = sum(exponential_decline_mapping(n, r) for r in range(1, n + 1))
         assert abs(total - 1.0) < 1e-9
@@ -384,31 +391,37 @@ class TestTournamentScoresToWeights:
 
 class TestDetermineBossRoundWinnerEnv:
     """Environment tournaments handled separately in determine_env_tournament_winner,
-    which requires DB access. But determine_boss_round_winner uses majority rule for
-    TEXT/IMAGE. We test the TEXT/IMAGE path here and note that ENV uses a different path.
+    which requires DB access. TEXT/IMAGE go through determine_boss_round_winner, which
+    now requires a comprehensive victory: the challenger may lose at most one boss-round
+    task (e.g. 5/6). ENV uses a different path.
     """
 
     def test_empty_task_winners_boss_retains(self):
         assert determine_boss_round_winner([], "boss", TournamentType.TEXT) == "boss"
 
-    def test_challenger_majority_wins_text(self):
-        """Text: 2/3 tasks → challenger wins."""
+    def test_challenger_loses_at_most_one_wins_text(self):
+        """Text: 5/6 tasks (one loss) → challenger wins."""
+        winners = ["challenger"] * 5 + ["boss"]
+        assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "challenger"
+
+    def test_challenger_two_losses_boss_retains_text(self):
+        """Text: 4/6 tasks (two losses) is no longer enough → boss retains."""
+        winners = ["challenger"] * 4 + ["boss", "boss"]
+        assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "boss"
+
+    def test_two_of_three_one_loss_wins_text(self):
+        """Text: 2/3 tasks is exactly one loss → challenger wins (lose-at-most-one)."""
         winners = ["challenger", "boss", "challenger"]
         assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "challenger"
 
-    def test_challenger_minority_boss_retains_text(self):
-        """Text: 1/3 tasks → boss retains."""
+    def test_one_of_three_two_losses_boss_retains_text(self):
+        """Text: 1/3 tasks (two losses) → boss retains."""
         winners = ["challenger", "boss", "boss"]
         assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "boss"
 
-    def test_exact_half_boss_retains(self):
-        """2/4 tasks (exactly half, not majority) → boss retains."""
-        winners = ["challenger", "challenger", "boss", "boss"]
-        assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "boss"
-
     def test_image_same_rules_as_text(self):
-        """Image uses same majority rule as text."""
-        winners = ["challenger", "boss", "challenger"]
+        """Image uses the same lose-at-most-one rule as text."""
+        winners = ["challenger"] * 5 + ["boss"]
         assert determine_boss_round_winner(winners, "boss", TournamentType.IMAGE) == "challenger"
 
     def test_all_boss_wins(self):

@@ -47,6 +47,7 @@ class EnvironmentName(str, Enum):
     LEDUC_POKER = "leduc_poker"
     OTHELLO = "othello"
     CLOBBER = "clobber"
+    GOOFSPIEL = "goofspiel"
     INTERCODE = "intercode"
 
 
@@ -152,6 +153,22 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
             "api_key": "dummy-key",
         },
     ),
+    EnvironmentName.GOOFSPIEL: EnvironmentConfig(
+        task_id_min=0,
+        task_id_max=99_999_999,
+        num_seeds=10_000,
+        num_baseline_episodes=25,
+        eval_type=EvalType.PVP,
+        env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
+        eval_payload_extra={
+            "opponent": "mcts",
+            "mcts_max_simulations": 50,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    ),
     EnvironmentName.INTERCODE: EnvironmentConfig(
         task_id_min=1,
         task_id_max=200,
@@ -218,6 +235,10 @@ DPO_DEFAULT_FIELD_CHOSEN = "chosen"
 DPO_DEFAULT_FIELD_REJECTED = "rejected"
 
 GRPO_DEFAULT_FIELD_PROMPT = "prompt"
+
+# Env vars used to signal KL-regularised instruct training to miner containers and the evaluator.
+USE_KL_ENV = "USE_KL"
+KL_COEF_ENV = "KL_COEF"
 
 # YaRN extension HuggingFace credentials (separate from main HF credentials)
 YARN_HUGGINGFACE_USERNAME = os.getenv("YARN_HUGGINGFACE_USERNAME", "gradients-io")

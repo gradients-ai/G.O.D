@@ -76,6 +76,21 @@ class GpuRequirement(str, Enum):
         }[self]
 
 
+class DedupTier(str, Enum):
+    """How a duplicate was established: identical commit (T0), identical normalized source (T1),
+    or Claude pairwise judgement (T2)."""
+
+    T0 = "T0"
+    T1 = "T1"
+    T2 = "T2"
+
+
+class DupRelationship(str, Enum):
+    DUPLICATE = "duplicate"
+    DISTINCT = "distinct"
+    DROP_EVASION = "drop_evasion"
+
+
 def generate_tournament_id() -> str:
     hash_part = secrets.token_hex(8)
     date_part = datetime.now().strftime("%Y%m%d")
@@ -187,6 +202,41 @@ class KnockoutRound(BaseRound):
 Round = GroupRound | KnockoutRound
 
 
+class MatchRanking(BaseModel):
+    """Competitors ranked best-first (rank 1 = lowest adjusted loss) for a single match."""
+
+    task_id: str
+    ranked_hotkeys: list[str]
+
+
+class GroupMatchStanding(BaseModel):
+    """A competitor's standing across a small tournament's matches.
+
+    Each match is ranked independently (rank 1 = lowest adjusted loss = best); a
+    competitor absent from a match (no scoreable model) is penalised one slot worse
+    than last for it. average_rank is the mean penalised rank across every match in
+    the round. A competitor that errored out of any match (matches_attended <
+    total_matches) is flagged via has_error and only advances if there aren't enough
+    error-free competitors to fill the advancing slots; summed_loss is the
+    tiebreaker among equally-clean, rank-tied competitors (smallest total wins).
+    """
+
+    hotkey: str
+    total_rank: float
+    matches_attended: int
+    total_matches: int
+    summed_loss: float
+
+    @property
+    def average_rank(self) -> float:
+        return self.total_rank / self.total_matches if self.total_matches else float("inf")
+
+    @property
+    def has_error(self) -> bool:
+        """True if the competitor failed to produce a scoreable model in some match."""
+        return self.matches_attended < self.total_matches
+
+
 class TournamentRound(BaseModel):
     round_structure: Round
     tasks: list[str] = Field(default_factory=list)
@@ -231,8 +281,31 @@ class TournamentTaskScore(BaseModel):
     participant_scores: list[dict]
 
 
+class PvPPairEnvResult(BaseModel):
+    """Head-to-head game results for one pair in one environment (hotkeys in sorted order)."""
+
+    hotkey_a: str
+    hotkey_b: str
+    environment_name: str
+    hotkey_a_wins: int
+    hotkey_b_wins: int
+    draws: int
+    total_games: int
+
+
+class PvPIndividualEnvScore(BaseModel):
+    """Per-environment aggregate score for one participant in a PvP task."""
+
+    hotkey: str
+    environment_name: str
+    score: float
+
+
 class DetailedTournamentTaskScore(TournamentTaskScore):
     task_type: TaskType | None = None
+    environment_names: list[str] | None = None
+    pvp_pair_results: list[PvPPairEnvResult] | None = None
+    pvp_individual_scores: list[PvPIndividualEnvScore] | None = None
 
 
 class TournamentRoundResult(BaseModel):
@@ -296,6 +369,7 @@ class TournamentDetailsResponse(BaseModel):
     final_scores: list[TournamentScore]
     text_tournament_weight: float
     image_tournament_weight: float
+    environment_tournament_weight: float | None = None
     boss_round_performance: list[TaskPerformanceDifference] | None = None
     sync_performance: list[TournamentPerformanceData] | None = None
 
@@ -551,3 +625,99 @@ class BossBattleResponse(BaseModel):
     image_performance_differences: list[TaskPerformanceDifference]
     environment_tournament_id: str | None = None
     environment_performance_differences: list[TaskPerformanceDifference] = []
+
+
+class DedupReviewStatus(str, Enum):
+    PENDING_REVIEW = "pending_review"  # gate active, tournament advancement halted
+    APPROVED = "approved"  # eliminate approved_eliminations, then advance
+    SKIPPED = "skipped"  # advance with no eliminations
+
+
+class DedupPairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: DedupTier
+    relationship: DupRelationship
+    confidence: float
+    reason: str
+
+
+class DedupClusterRecord(BaseModel):
+    members: list[str]
+    basis: DedupTier
+    reason: str
+
+
+class PublishedRepo(BaseModel):
+    """A confirmed-duplicate repo re-uploaded to the public gradients-opensource org."""
+
+    hotkey: str
+    public_repo_url: str
+    commit_hash: str | None = None
+
+
+class TournamentDedupReview(BaseModel):
+    round_id: str  # the R2 round this gate guards
+    tournament_id: str
+    tournament_type: str
+    status: DedupReviewStatus = DedupReviewStatus.PENDING_REVIEW
+    cohort: list[str] = []
+    clusters: list[DedupClusterRecord] = []
+    pair_verdicts: list[DedupPairVerdict] = []
+    flagged_hotkeys: list[str] = []
+    approved_eliminations: list[str] = []
+    published_repos: list[PublishedRepo] = []
+    report_url: str | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
+    reviewed_at: datetime | None = None
+    resolved_at: datetime | None = None
+
+
+class GateDecision(BaseModel):
+    """Result of the R2 dedup gate: whether to halt advancement and which hotkeys to drop."""
+
+    halt: bool
+    eliminate: set[str] = Field(default_factory=set)
+
+
+class RepoRef(BaseModel):
+    hotkey: str
+    repo_url: str
+    commit_hash: str | None = None
+    github_token: str | None = None
+
+
+class PreparedRepo(BaseModel):
+    hotkey: str
+    repo_url: str
+    head_commit: str | None = None
+    normalized_digest: str | None = None
+    content_chars: int = 0
+    path: str | None = None
+    clone_ok: bool = False
+
+
+class PairVerdict(BaseModel):
+    hotkey_a: str
+    hotkey_b: str
+    tier: DedupTier
+    relationship: DupRelationship
+    confidence: float
+    reason: str
+
+
+class DedupCluster(BaseModel):
+    members: list[str]
+    basis: DedupTier
+    reason: str
+
+
+class DedupResult(BaseModel):
+    cohort: list[str]
+    clusters: list[DedupCluster] = []
+    pair_verdicts: list[PairVerdict] = []
+    flagged_hotkeys: list[str] = []  # recommended eliminations (boss excluded)
+    evasion_hotkeys: list[str] = []
+    unclonable_hotkeys: list[str] = []
+    unresolved_pairs: list[tuple[str, str]] = []  # pairs the judge could not return a verdict for

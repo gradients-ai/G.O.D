@@ -1,3 +1,4 @@
+import hashlib
 import tempfile
 from typing import Optional
 
@@ -180,4 +181,55 @@ async def upload_tournament_participant_repository(
 
     except Exception as e:
         logger.error(f"Error uploading tournament participant repository {training_repo}: {e}")
+        return None
+
+
+async def upload_flagged_duplicate_repository(
+    tournament_id: str,
+    tournament_type: str,
+    participant_hotkey: str,
+    training_repo: str,
+    commit_hash: Optional[str],
+    config: Config,
+    participant_github_token: Optional[str] = None,
+) -> Optional[str]:
+    """Re-upload a confirmed-duplicate repo to the public gradients-opensource org.
+
+    Published for transparency so anyone can clone the offending code and re-run the
+    de-duplication check themselves. Returns the public repo URL (or None on failure)."""
+    github_token = config.github_token
+    github_username = config.github_username
+    if not github_token or not github_username:
+        logger.warning("GitHub token/username not available, skipping duplicate repository upload")
+        return None
+
+    try:
+        # Hash the full hotkey: GitHub names are case-insensitive but ss58 hotkeys aren't, so a
+        # short prefix can collide and force-push over another miner's repo.
+        short = participant_hotkey[:8].lower()
+        digest = hashlib.sha256(participant_hotkey.encode()).hexdigest()[:16]
+        repo_name = f"god-{tournament_type}-{tournament_id}-dedup-{short}-{digest}".replace("_", "-")
+        description = (
+            f"G.O.D {tournament_type.title()} Tournament {tournament_id} - "
+            f"flagged duplicate submission (hotkey {participant_hotkey})"
+        )
+
+        if await repository_exists(repo_name, github_token, github_username):
+            new_repo_url = f"https://github.com/{github_username}/{repo_name}.git"
+            await update_repository_description(repo_name, description, github_token, github_username)
+        else:
+            new_repo = await create_github_repository(repo_name, description, github_token, github_username)
+            new_repo_url = new_repo["clone_url"]
+
+        clone_and_push_repository(
+            training_repo,
+            new_repo_url,
+            github_token,
+            commit_hash,
+            source_github_token=participant_github_token,
+        )
+        logger.info(f"Published flagged duplicate {participant_hotkey} to {new_repo_url}")
+        return new_repo_url
+    except Exception as e:
+        logger.error(f"Error publishing flagged duplicate repository for {participant_hotkey}: {e}")
         return None

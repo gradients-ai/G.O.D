@@ -56,36 +56,65 @@ IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
-MINIMUM_DATASET_ROWS = 4_000  # Minimum number of rows required in a dataset
+MINIMUM_DATASET_ROWS = 8_000  # Minimum number of rows required in a dataset
+MAXIMUM_DATASET_ROWS = 175_000  # Above this, 2 epochs can't fit the training-hours cap
 EXAMPLE_PROMPTS_PATH = "validator/tasks/example_prompts.json"
 
 CONTAINER_EVAL_RESULTS_PATH = "/aplp/evaluation_results.json"
 
 # we sample datasets with these num_rows ranges equally
 DATASET_BINS_TO_SAMPLE = [
-    (20_000, 50_000),
-    (50_000, 100_000),
-    (100_000, 500_000),
+    (MINIMUM_DATASET_ROWS, 40_000),
+    (40_000, 90_000),
+    (90_000, MAXIMUM_DATASET_ROWS),
 ]
 
-# Training hours
-TRAINING_HOURS_SCALE_START_ROWS = 75_000
-TRAINING_HOURS_MAX_ROWS = 500_000
-TRAINING_HOURS_MIN = 1.0
-TRAINING_HOURS_MAX_BASE = 6.0
-FULL_HOURS_MODEL_PARAMS = 14e9
-MIN_HOURS_SCALE = 0.5
+# Training hours — throughput-based budget targeting TARGET_TRAINING_EPOCHS.
+# hours = epochs * tokens_per_epoch * type_mult / (gpus * tok/s/gpu) + overhead
+TRAINING_HOURS_MIN = 0.75
+MAX_TRAINING_HOURS = 6.0
+TARGET_TRAINING_EPOCHS = 2.0
+H100_BF16_TFLOPS = 989.0
+# Effective MFU a typical miner achieves on full FT (calibrated against an
+# observed 8B run: ~3k tok/s per H100).
+ASSUMED_TRAINING_MFU = 0.15
+# Pre-prep estimate only; replaced by measured token counts after model prep.
+ASSUMED_TOKENS_PER_ROW = 400
+# Each row costs at least this many token-equivalents. Calibrated to a
+# packing miner (Prodv1-style: 128-token FA-packed blocks, ~90% density,
+# >=64 blocks/step): covers block-density loss + per-step overhead with
+# margin. Deliberately does NOT subsidize non-packing stacks, which burn
+# 10-25x compute padding short rows — that inefficiency is theirs to fix.
+EFFECTIVE_MIN_TOKENS_PER_ROW = 64
+DEFAULT_MODEL_PARAMS_FOR_HOURS = 8e9
+# Fixed wall-clock overhead miners pay regardless of dataset: container
+# startup, model download, checkpoint upload.
+TRAINING_OVERHEAD_HOURS = 0.5
+# Measured prep-container tok/s -> assumed miner per-GPU tok/s. Prep measures
+# fwd+bwd on the actual model; miners batch/pack differently, this tunes the gap.
+MEASURED_THROUGHPUT_MINER_RATIO = 1.0
+# Guard rails on measured throughput: clamp to this band around the analytic
+# estimate so a bad measurement can't produce absurd hours.
+MEASURED_THROUGHPUT_CLAMP = (0.33, 3.0)
+# Per-token FLOPs multiplier (DPO adds a ref-model forward). GRPO is excluded —
+# it is step-budgeted, not token-proportional (see GRPO_HOURS_BY_PARAMS_B).
 TASK_TYPE_HOURS_MULTIPLIER: dict[TaskType, float] = {
     TaskType.INSTRUCTTEXTTASK: 1.0,
     TaskType.CHATTASK: 1.0,
     TaskType.DPOTASK: 1.4,
-    TaskType.GRPOTASK: 1.3,
 }
-CTX_REF_SEQ_LEN = 512
-CTX_SCALE_SPAN = 1024
-CTX_SCALE_MIN = 0.25
-CTX_SCALE_MAX = 3.0
-MAX_TRAINING_HOURS = 6.0
+
+# GRPO hours, fixed per model size (RL saturates on steps, not dataset coverage).
+# (upper_bound_billions, hours); first matching band wins. Calibrate from runs.
+GRPO_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
+    (4.0, 1.5),
+    (12.0, 2.5),
+    (40.0, 4.0),
+    (float("inf"), 6.0),
+]
+
+# Floor so the miner's epoch cap can't exhaust the data before the budget.
+GRPO_MIN_SYNTH_ROWS = 20_000
 
 # text augmentation synth
 TEXT_SYNTH_MODEL = "Qwen/Qwen3-32B"
@@ -110,7 +139,7 @@ FAL_TEXT_PROMPT_LLM = "google/gemini-2.5-flash"
 FAL_AVATAR_MODEL = "fal-ai/nano-banana-2/edit"
 FAL_STYLE_MODEL_NANO_BANANA_2 = "fal-ai/nano-banana-2"
 FAL_STYLE_MODEL_GPT_IMAGE_2 = "openai/gpt-image-2"
-FAL_STYLE_MODELS = (FAL_STYLE_MODEL_NANO_BANANA_2, FAL_STYLE_MODEL_GPT_IMAGE_2)
+FAL_IMAGE_MODELS = (FAL_STYLE_MODEL_NANO_BANANA_2, FAL_STYLE_MODEL_GPT_IMAGE_2)
 FAL_GPT_IMAGE_2_QUALITY = "medium"
 FAL_NANO_BANANA_RESOLUTION = "1K"
 FAL_IMAGE_OUTPUT_FORMAT = "png"
@@ -129,13 +158,16 @@ MIN_SUCCESSFUL_SCORES_FOR_HISTORICAL_TASK = 2
 
 # Tournament Start Requirements
 MIN_MINERS_FOR_ENV_TOURN = 5
-MIN_MINERS_FOR_TOURN = 8
+MIN_MINERS_FOR_TOURN = 4  # within the small-tournament band (3..9): round 1 is a single group, top 2 advance to a knockout
 
 
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001  # Weight given to active participants
 
 # Tournament weight distribution
-TOURNAMENT_SIMPLE_DECAY_BASE = 0.3  # Base for simple exponential decay (1st=1.0, 2nd=0.2, 3rd=0.04, etc.)
+# Only the top TOURNAMENT_PAID_RANKS placements earn; within them the share decays
+# geometrically by TOURNAMENT_SIMPLE_DECAY_BASE. base 0.25 over 2 paid ranks -> 80% / 20%.
+TOURNAMENT_PAID_RANKS = 2
+TOURNAMENT_SIMPLE_DECAY_BASE = 0.25  # 1st/2nd share = 80% / 20%; ranks beyond TOURNAMENT_PAID_RANKS get 0
 
 
 # General miner pool sizes
@@ -160,6 +192,10 @@ TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100 = 40.0
 # Tournament task type GPU multipliers
 TOURNAMENT_DPO_GPU_MULTIPLIER = 3
 TOURNAMENT_GRPO_GPU_MULTIPLIER = 2
+# Instruct KL tasks keep a frozen reference (base) model resident alongside the
+# trainable model, so they need extra VRAM headroom — same class of overhead as
+# the GRPO reference policy.
+TOURNAMENT_KL_GPU_MULTIPLIER = 2
 MODEL_SIZE_REQUIRING_3_GPUS = 70 * 10**9
 MODEL_SIZE_REQUIRING_4_GPUS = 100 * 10**9
 
@@ -186,7 +222,25 @@ PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
     0.5  # person synth chance is 1 minus this for every image model type
 )
 PROBABILITY_STYLE_COMBINATION = 0.5
+IMAGE_SYNTH_CATEGORY_STYLE = "style"
+IMAGE_SYNTH_CATEGORY_PERSON = "person"
+IMAGE_SYNTH_CATEGORY_LOGO = "logo"
+IMAGE_SYNTH_CATEGORY_SOCIAL = "social"
+IMAGE_SYNTH_CATEGORY_DESIGN = "design"
+IMAGE_SYNTH_CATEGORY_PRODUCT = "product"
+IMAGE_SYNTH_CATEGORY_WEIGHTS = {
+    IMAGE_SYNTH_CATEGORY_STYLE: 0.25,
+    IMAGE_SYNTH_CATEGORY_PERSON: 0.25,
+    IMAGE_SYNTH_CATEGORY_LOGO: 0.15,
+    IMAGE_SYNTH_CATEGORY_SOCIAL: 0.15,
+    IMAGE_SYNTH_CATEGORY_DESIGN: 0.10,
+    IMAGE_SYNTH_CATEGORY_PRODUCT: 0.10,
+}
 PERSON_SYNTH_DS_PREFIX = "person"
+LOGO_SYNTH_DS_PREFIX = "logo"
+SOCIAL_SYNTH_DS_PREFIX = "social"
+DESIGN_SYNTH_DS_PREFIX = "design"
+PRODUCT_SYNTH_DS_PREFIX = "product"
 
 # grpo synth
 
@@ -243,22 +297,22 @@ IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
 MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.16
-TOURNAMENT_TEXT_WEIGHT = 0.15
-TOURNAMENT_IMAGE_WEIGHT = 0.125
+TOURNAMENT_TEXT_WEIGHT = 0.20
+TOURNAMENT_IMAGE_WEIGHT = 0.15
 TOURNAMENT_ENVIRONMENT_WEIGHT = 0.15
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
-# Tournaments start every week on these days and hours (UTC)
-# Environment tournaments: Monday at 14:00 UTC
+# Tournaments start every week on Monday, staggered by 2 hours (UTC)
+# Environment tournaments: Monday at 11:00 UTC
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
-TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 11  # 0-23 (UTC time)
 
-# Text tournaments: Thursday at 14:00 UTC
-TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_TEXT_HOUR = 14  # 0-23 (UTC time)
-# Image tournaments: Thursday at 15:00 UTC
-TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 3  # 3=Thursday
+# Text tournaments: Monday at 13:00 UTC
+TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 0  # 0=Monday
+TOURNAMENT_SCHEDULE_TEXT_HOUR = 13  # 0-23 (UTC time)
+# Image tournaments: Monday at 15:00 UTC
+TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0  # 0=Monday
 TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15  # 0-23 (UTC time)
 
 TOURNAMENT_INTERVAL_HOURS = (
@@ -267,11 +321,11 @@ TOURNAMENT_INTERVAL_HOURS = (
 
 BURN_REDUCTION_RATE = 5.0
 MAX_BURN_REDUCTION = 0.8
-EMISSION_MULTIPLIER_THRESHOLD = 0.05
+EMISSION_MULTIPLIER_THRESHOLD = 0.10  # High bar: a champion must beat the boss by 10%+ to earn above the base floor (reduce burn)
 EMISSION_MULTIPLIER_RATE = 2.0
 EMISSION_BOOST_DECAY_PER_WIN = 0.01  # Deprecated - kept for backwards compatibility
 # Time-based decay settings (replaces consecutive wins decay)
-EMISSION_DAILY_TIME_DECAY_RATE = 0.0033  # 0.33%/day
+EMISSION_DAILY_TIME_DECAY_RATE = 0.00165  # 0.165%/day
 EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0
 
@@ -303,6 +357,16 @@ TRL_GRPO_FIELD_PROMPT = GRPO_DEFAULT_FIELD_PROMPT
 # Default, fixed Hyperparameters
 BETA_DPO = 0.1
 BETA_GRPO = 0.5
+
+# Instruct KL regularisation
+# Probability that a tournament instruct task asks miners to train with a KL term.
+INSTRUCT_KL_TASK_PROBABILITY = 0.2
+# Coefficient (beta) applied to KL(finetuned || base) when weighting the eval loss.
+# Sampled uniformly per task in [MIN, MAX], stored per-task (kl_coef) and sent to
+# miners so they can match the eval weighting. Range spans a light nudge up to an
+# aggressive pull (~half of tasks land in the aggressive upper half).
+INSTRUCT_KL_COEFFICIENT_MIN = 0.1
+INSTRUCT_KL_COEFFICIENT_MAX = 1.5
 
 # GRPO evaluation
 GRPO_INITIAL_BATCH_SIZE = 16
@@ -344,6 +408,19 @@ CLAUDE_REPO_DIFF_MAX_TURNS = 30
 CLAUDE_REPO_DIFF_MAX_BUDGET_USD = 2
 CLAUDE_REPO_DIFF_MAX_FOCUS_FILES = 180
 
+# Tournament submission de-duplication (anti-spam)
+# R1 (pre-training): deterministic exact-commit (T0) + normalized-content (T1) hashing auto-eliminates copies.
+# R2: Claude pairwise functional-equivalence judgement (T2), gated behind Discord ping + manual DB approval.
+TOURN_DEDUP_ENABLED = True
+TOURN_DEDUP_CLAUDE_MODEL = "claude-opus-4-8"  # best current model for the judgement
+# T2 runs the agent read-only (Read/Glob/Grep) over both cloned repos so it can inspect full
+# contents itself and see through reordering/renaming. These bound a single pairwise judgement.
+TOURN_DEDUP_CLAUDE_MAX_TURNS = 60
+TOURN_DEDUP_CLAUDE_MAX_BUDGET_USD = 15  # per-pair ceiling; typical run ~$2-3
+# Pairwise judgements are independent, so run them concurrently (bounded to respect Anthropic
+# rate limits). Clustering happens after all verdicts return, so concurrency doesn't change the result.
+TOURN_DEDUP_CONCURRENCY = 8
+
 # YaRN extension constants
 YARN_EXTENSION_PROBABILITY = 0.0  # Probability of applying YaRN extension to tournament tasks
 YARN_TOURNAMENT_FACTORS = [2, 4]
@@ -368,13 +445,13 @@ MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
 AUGMENTATION_ENABLED_TEXT = True  # Enable augmentations for text tasks
 AUGMENTATION_ENABLED_IMAGE = False  # Enable augmentations for image tasks
 AUGMENTATION_ENABLED_ENV = False  # Enable augmentations for environment tasks
-AUGMENTATION_PROBABILITY = 0.9  # Probability that a task gets any augmentation at all
+AUGMENTATION_PROBABILITY = 0.5  # Probability that a task gets any augmentation at all
 
 # Weighted distribution over augmentation types (normalised at runtime)
 # When an augmentation is applied, one type is chosen according to these weights
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
-    AugmentationType.GAUSSIAN_NOISE: 0.10,
-    AugmentationType.WEIGHT_SCALING: 0.50,
+    AugmentationType.GAUSSIAN_NOISE: 0.20,
+    AugmentationType.WEIGHT_SCALING: 0.40,
     AugmentationType.MAGNITUDE_PRUNING: 0.25,
     AugmentationType.LAYER_REINIT: 0.15,
 }
@@ -390,10 +467,10 @@ AUGMENTATION_SCOPE_WEIGHTS: dict[AugmentationScope, float] = {
 
 # Intensity ranges per augmentation type (min, max) — sampled uniformly
 AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
-    AugmentationType.GAUSSIAN_NOISE: (0.1, 0.3),
-    AugmentationType.WEIGHT_SCALING: (0.5, 2.5),
+    AugmentationType.GAUSSIAN_NOISE: (0.01, 0.3),
+    AugmentationType.WEIGHT_SCALING: (0.5, 1.5),
     AugmentationType.MAGNITUDE_PRUNING: (0.25, 0.50),
-    AugmentationType.LAYER_REINIT: (0.10, 0.30),
+    AugmentationType.LAYER_REINIT: (0.05, 0.15),
 }
 
 # Environment evaluation constants
@@ -427,6 +504,14 @@ EVAL_BASILICA_MAX_RETRIES = 3
 EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
 EVAL_BASILICA_MAX_POLL_SECONDS = 16000
+# When the result poll keeps failing (deployment gone / 404 / connection refused), give
+# up after this many *consecutive* failures instead of polling a dead endpoint until the
+# overall deadline. A single transient blip won't trip it; it needs this many in a row.
+EVAL_BASILICA_MAX_CONSECUTIVE_POLL_FAILURES = 5
+# After a failed poll, re-check this soon (instead of the full interval) to confirm death
+# quickly. Lets a dead deployment be abandoned in ~minutes while live evals keep their
+# normal cadence and the overall poll deadline.
+EVAL_BASILICA_FAILED_POLL_RECHECK_SECONDS = 30
 EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS = 600
 EVAL_DB_MAX_CONCURRENT_WRITES = 2
 EVAL_DB_RETRY_ATTEMPTS = 4
@@ -467,6 +552,7 @@ from core.pvp.constants import PVP_TURN_MAX_TOKENS  # noqa: E402,F401
 from core.pvp.constants import PVP_TURN_TIMEOUT_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_MEM_SLOTS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_SLOT_TOKENS  # noqa: E402,F401
+
 
 INDIVIDUAL_WIN_MARGIN = 0.015
 

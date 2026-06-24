@@ -28,6 +28,7 @@ from validator.evaluation.pvp.game_runner import Player
 from validator.evaluation.pvp.game_runner import create_player
 from validator.evaluation.pvp.game_runner import run_matchup
 from validator.evaluation.pvp.game_runner import warmup_player
+from validator.evaluation.pvp.materialize import materialize_base_model
 from validator.evaluation.pvp.server import start_sglang
 from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.utils import check_for_lora
@@ -73,20 +74,29 @@ def _resolve_spec(spec: PvPModelSpec, default_gpu: int, default_port: int) -> tu
     return gpu, port
 
 
-def _prepare_model(spec: PvPModelSpec, label: str) -> PreparedModel:
+def _prepare_model(spec: PvPModelSpec, label: str, gpu_id: int | None = None) -> PreparedModel:
     """Detect LoRA and build SGLang flags.
 
     Passes HF repo IDs to SGLang which handles downloads internally.
     """
     is_lora = check_for_lora(spec.repo, local_files_only=False)
-    logger.info("Model %s: repo=%s is_lora=%s", label, spec.repo, is_lora)
+    logger.info("Model %s: repo=%s is_lora=%s base_chain=%s", label, spec.repo, is_lora, spec.base_chain)
 
     if is_lora:
+        # Serve the adapter on the base it trained on: foundation for round 1, or
+        # foundation + previous adapter(s) for a continuation miner (base_chain).
+        # `label` keeps each model's merge scratch dir distinct; merge on this
+        # model's own GPU so the two preparations don't pile onto one device.
+        device = f"cuda:{gpu_id}" if gpu_id is not None else None
+        base_path = materialize_base_model(spec.original_model, spec.base_chain, label=label, device=device)
         lora_name = f"{label}_trained_lora"
         return PreparedModel(
-            sglang_model_path=spec.original_model,
-            inference_name=f"{spec.original_model}:{lora_name}",
+            sglang_model_path=base_path,
+            inference_name=f"{base_path}:{lora_name}",
             extra_sglang_args=f"--enable-lora --lora-paths {lora_name}={spec.repo} --lora-backend triton",
+            # A materialized base is a local dir with no family substring, so resolve
+            # its parser from config.json; for a plain repo the server resolves it.
+            tool_call_parser=tool_call_parser_for(base_path) if spec.base_chain else None,
         )
 
     # A full-weight miner repo id is often opaque (no family substring), and the
@@ -131,8 +141,8 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
     gpu_a, port_a = _resolve_spec(model_a, default_gpu=0, default_port=vcst.PVP_SGLANG_PORT_A)
     gpu_b, port_b = _resolve_spec(model_b, default_gpu=1, default_port=vcst.PVP_SGLANG_PORT_B)
 
-    prepared_a = _prepare_model(model_a, "a")
-    prepared_b = _prepare_model(model_b, "b")
+    prepared_a = _prepare_model(model_a, "a", gpu_id=gpu_a)
+    prepared_b = _prepare_model(model_b, "b", gpu_id=gpu_b)
 
     sglang_a: subprocess.Popen | None = None
     sglang_b: subprocess.Popen | None = None

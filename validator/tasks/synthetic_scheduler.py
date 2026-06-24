@@ -1,4 +1,5 @@
 import asyncio
+import math
 import random
 from datetime import datetime
 from datetime import timedelta
@@ -9,6 +10,7 @@ from uuid import UUID
 from substrateinterface import Keypair
 
 import validator.core.constants as vcst
+from core.models.model_prep_models import EnvBaselineStats
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
@@ -33,11 +35,11 @@ from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.tasks import add_task
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.tournament import constants as t_cst
+from validator.tournament.gpu import get_tournament_gpu_requirement
 from validator.utils.augmentation_decision import maybe_get_augmentation_config
 from validator.utils.call_endpoint import call_content_service
 from validator.utils.logging import get_logger
 from validator.cycle.util_functions import get_model_num_params
-from validator.utils.reward_functions import validate_reward_function
 from validator.utils.util import retry_with_backoff
 
 
@@ -52,6 +54,19 @@ def maybe_get_yarn_factor() -> int | None:
     if random.random() < vcst.YARN_EXTENSION_PROBABILITY:
         return random.choice(vcst.YARN_TOURNAMENT_FACTORS)
     return None
+
+
+def maybe_get_kl_config() -> tuple[bool, float | None]:
+    """
+    Randomly decide whether this instruct task should ask miners to train with a KL term.
+
+    Returns (use_kl, kl_coef). When enabled, kl_coef is the coefficient the evaluator
+    will use to weight KL(finetuned || base) into the loss, and which we send to miners.
+    """
+    if random.random() < vcst.INSTRUCT_KL_TASK_PROBABILITY:
+        kl_coef = random.uniform(vcst.INSTRUCT_KL_COEFFICIENT_MIN, vcst.INSTRUCT_KL_COEFFICIENT_MAX)
+        return True, kl_coef
+    return False, None
 
 
 async def _get_text_models(
@@ -113,6 +128,10 @@ async def _get_datasets_for_bin(min_rows: int, max_rows: int, keypair: Keypair, 
                     logger.warning(f"[DATASET_BIN] Failed to validate dataset {idx + 1}: {exc}")
 
             logger.info(f"[DATASET_BIN] Successfully validated {len(datasets)} datasets")
+            # The content service ignores row-range params, so enforce the bin
+            # client-side — this is also what keeps task durations bounded.
+            datasets = [ds for ds in datasets if min_rows <= ds.num_rows <= max_rows]
+            logger.info(f"[DATASET_BIN] {len(datasets)} datasets within bin {min_rows}-{max_rows} rows")
             random.shuffle(datasets)
 
             for dataset in datasets:
@@ -190,48 +209,98 @@ async def _get_columns_for_instruct_dataset(
     return columns
 
 
-def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
-    """Compute training hours from row count, model size, and task type.
+def _analytic_tokens_per_sec_per_gpu(num_params: float) -> float:
+    """Expected miner full-FT throughput per H100: peak_flops * MFU / (6N flops/token)."""
+    return vcst.H100_BF16_TFLOPS * 1e12 * vcst.ASSUMED_TRAINING_MFU / (6.0 * num_params)
 
-    All scaling factors are applied to the continuous base; the result is
-    rounded to the nearest half-hour, floored, and capped once at the end so
-    intermediate rounding never compounds.
+
+def compute_training_hours(
+    tokens_per_epoch: float,
+    num_params: float,
+    task_type: TaskType,
+    measured_tokens_per_sec: float | None = None,
+) -> float:
+    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
+
+    Throughput comes from the model-prep timing probe when available (clamped
+    to a band around the analytic FLOPs estimate), otherwise the analytic
+    estimate alone. GPU count matches what the task will actually be allocated.
     """
-    row_range = vcst.TRAINING_HOURS_MAX_ROWS - vcst.TRAINING_HOURS_SCALE_START_ROWS
-    t = max(0.0, min(1.0, (num_rows - vcst.TRAINING_HOURS_SCALE_START_ROWS) / row_range))
-    hours = vcst.TRAINING_HOURS_MIN + t * (vcst.TRAINING_HOURS_MAX_BASE - vcst.TRAINING_HOURS_MIN)
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params)).gpu_count
+    analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
+    if measured_tokens_per_sec:
+        lo, hi = vcst.MEASURED_THROUGHPUT_CLAMP
+        per_gpu_tps = measured_tokens_per_sec * vcst.MEASURED_THROUGHPUT_MINER_RATIO
+        per_gpu_tps = min(max(per_gpu_tps, analytic_tps * lo), analytic_tps * hi)
+    else:
+        per_gpu_tps = analytic_tps
 
-    if model_id is not None:
-        num_params = get_model_num_params(model_id)
-        if num_params is not None and num_params < vcst.FULL_HOURS_MODEL_PARAMS:
-            ratio = num_params / vcst.FULL_HOURS_MODEL_PARAMS
-            scale = vcst.MIN_HOURS_SCALE + ratio * (1.0 - vcst.MIN_HOURS_SCALE)
-            hours *= scale
+    type_mult = vcst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0)
+    train_seconds = vcst.TARGET_TRAINING_EPOCHS * tokens_per_epoch * type_mult / (per_gpu_tps * gpus)
+    hours = train_seconds / 3600 + vcst.TRAINING_OVERHEAD_HOURS
 
-    hours *= vcst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0) if task_type is not None else 1.0
-
-    hours = max(vcst.TRAINING_HOURS_MIN, round(hours * 2) / 2)
+    # Ceil to the 0.25h grid so we never grant less than the computed budget.
+    hours = max(vcst.TRAINING_HOURS_MIN, math.ceil(hours * 4) / 4)
     return min(hours, vcst.MAX_TRAINING_HOURS)
 
 
-def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
-    """Scale training hours by estimated packed block length (max(p95, 2*p50))."""
-    if baseline_stats is None:
-        return hours
-    try:
-        seq_dist = baseline_stats.dataset.seq_length_distribution
-        p95 = seq_dist.p95
-        p50 = seq_dist.p50
-    except AttributeError:
-        return hours
-    if not p95:
-        return hours
-    packed_len = max(p95, 2 * (p50 or p95))
-    # Linear ramp: 1.0x at the pivot (512), +1.0x per CTX_SCALE_SPAN tokens, clamped.
-    # e.g. 1024 -> 1.5x, 1536 -> 2.0x, 2048 -> 2.5x.
-    ctx_scale = max(vcst.CTX_SCALE_MIN, min(vcst.CTX_SCALE_MAX, 1.0 + (packed_len - vcst.CTX_REF_SEQ_LEN) / vcst.CTX_SCALE_SPAN))
-    scaled = max(vcst.TRAINING_HOURS_MIN, round(hours * ctx_scale * 2) / 2)
-    return min(scaled, vcst.MAX_TRAINING_HOURS)
+def get_grpo_training_hours(num_params: float | None) -> float:
+    """GRPO budget: fixed per model-size band, independent of dataset size."""
+    params_b = (num_params or vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS) / 1e9
+    hours = next(h for bound_b, h in vcst.GRPO_HOURS_BY_PARAMS_B if params_b <= bound_b)
+    return min(vcst.MAX_TRAINING_HOURS, max(vcst.TRAINING_HOURS_MIN, hours))
+
+
+def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
+    """Pre-prep estimate: tokens are unknown, so assume ASSUMED_TOKENS_PER_ROW.
+
+    Refined after model prep by compute_hours_from_baseline_stats, which has
+    real token counts and a measured throughput probe.
+    """
+    num_params = get_model_num_params(model_id) if model_id is not None else None
+    if not num_params:
+        num_params = vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    if task_type == TaskType.GRPOTASK:
+        return get_grpo_training_hours(num_params)
+    tokens_per_epoch = num_rows * vcst.ASSUMED_TOKENS_PER_ROW
+    return compute_training_hours(tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK)
+
+
+def compute_hours_from_baseline_stats(
+    current_hours: float,
+    baseline_stats,
+    task_type: TaskType,
+    model_id: str | None = None,
+    model_params_count: int | None = None,
+) -> float:
+    """Post-prep hours: real dataset token counts + measured fwd/bwd throughput.
+
+    Falls back to current_hours when stats are missing or predate the
+    num_records field (older rows where total_tokens was a 100-record sample).
+    """
+    if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
+        return current_hours
+
+    num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
+    if not num_params:
+        num_params = vcst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+
+    # GRPO is fixed per model size; tokens/throughput don't refine it.
+    if task_type == TaskType.GRPOTASK:
+        return get_grpo_training_hours(num_params)
+
+    dataset_stats = baseline_stats.dataset
+    if not dataset_stats.total_tokens or not dataset_stats.num_records:
+        return current_hours
+
+    # Miner stacks are row-bound on short sequences (padding + per-step
+    # overhead), so each record costs at least EFFECTIVE_MIN_TOKENS_PER_ROW.
+    effective_tokens = max(
+        dataset_stats.total_tokens,
+        dataset_stats.num_records * vcst.EFFECTIVE_MIN_TOKENS_PER_ROW,
+    )
+    measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
+    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps)
 
 
 def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
@@ -279,10 +348,14 @@ async def get_dataset(
     task_type: TaskType | None = None,
     keypair: Keypair | None = None,
     psql_db: PSQLDB | None = None,
+    min_rows: int | None = None,
 ) -> Dataset:
     """Get a single dataset from the generator, validating column availability."""
     while True:
         dataset = await anext(datasets_generator)
+
+        if min_rows and dataset.num_rows < min_rows:
+            continue
 
         if task_type and psql_db:
             if await _is_dataset_degenerate(dataset.dataset_id, task_type, psql_db):
@@ -396,7 +469,9 @@ async def create_synthetic_grpo_task(
 ) -> RawTask:
     model_id = await anext(models)
 
-    dataset = await get_dataset(datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair)
+    dataset = await get_dataset(
+        datasets, task_type=TaskType.GRPOTASK, keypair=config.keypair, min_rows=vcst.GRPO_MIN_SYNTH_ROWS
+    )
 
     number_of_hours = _get_training_hours_from_num_rows(dataset.num_rows, model_id, task_type=TaskType.GRPOTASK)
     columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
@@ -582,6 +657,7 @@ async def create_synthetic_instruct_text_task(
     config: Config,
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
+    enable_kl: bool = False,
 ) -> RawTask:
     model_id = await anext(models)
 
@@ -597,6 +673,7 @@ async def create_synthetic_instruct_text_task(
 
     yarn_factor = maybe_get_yarn_factor()
     augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
+    use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -612,8 +689,13 @@ async def create_synthetic_instruct_text_task(
         account_id=vcst.NULL_ACCOUNT_ID,
         yarn_factor=yarn_factor,
         augmentation_config=augmentation_config,
+        use_kl=use_kl,
+        kl_coef=kl_coef,
     )
-    logger.info(f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
+    logger.info(
+        f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, "
+        f"augmented={augmentation_config is not None}, use_kl={use_kl}"
+    )
 
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")

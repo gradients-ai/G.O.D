@@ -255,6 +255,12 @@ def calculate_tournament_type_scores_from_data(
         round_number = round_result.round_number
         is_final_round = round_result.is_final_round
 
+        # Round 1 is the entry/group round: it decides who advances but must NOT
+        # earn tournament emissions. Only results from later rounds (round_number > 1)
+        # accumulate challenger points.
+        if round_number <= 1:
+            continue
+
         for task in round_result.tasks:
             winner = task.winner
 
@@ -306,15 +312,24 @@ def calculate_tournament_type_scores_from_data(
 
 
 def exponential_decline_mapping(total_participants: int, rank: float) -> float:
-    """Exponential weight decay based on rank."""
+    """Exponential weight decay based on rank.
+
+    Only the top ``TOURNAMENT_PAID_RANKS`` placements earn; everyone below gets 0.
+    Within the paid ranks the share decays geometrically (base
+    ``TOURNAMENT_SIMPLE_DECAY_BASE``), normalized to sum to 1. With base 0.25 and
+    2 paid ranks this gives an 80% / 20% split between 1st and 2nd.
+    """
     if total_participants <= 1:
         return 1.0
 
-    # Calculate all weights for normalization
-    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, total_participants + 1)]
+    paid_ranks = min(total_participants, cts.TOURNAMENT_PAID_RANKS)
+    if rank > paid_ranks:
+        return 0.0
+
+    # Normalize only over the paid ranks so their shares sum to 1.
+    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, paid_ranks + 1)]
     total_sum = sum(all_weights)
 
-    # Return normalized weight to ensure sum = 1
     raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1)
     return raw_weight / total_sum
 
@@ -391,9 +406,14 @@ def tournament_scores_to_weights(
 
 def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
     result = calculate_tournament_type_scores_from_data(tournament_type, data)
+    # Seed weights whenever there are challenger scores OR a tournament winner.
+    # The champion is excluded from `result.scores` (only challengers accumulate
+    # points) and is re-seeded inside tournament_scores_to_weights via
+    # prev_winner_hotkey, so bailing on empty scores would drop the champion too —
+    # which happens once round-1 challenger points are excluded.
     weights = (
         tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
-        if result.scores
+        if result.scores or result.prev_winner_hotkey
         else {}
     )
     logger.info(f"{tournament_type.value} tournament weights: {weights}")

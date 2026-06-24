@@ -226,6 +226,10 @@ def get_environment_logger(
     task_type: str = "environment",
     task_id: str = None,
     hotkey: str = None,
+    hotkey_a: str = None,
+    hotkey_b: str = None,
+    deployment_id: str = None,
+    deployment_url: str = None,
     enable_console_output: bool = False,
 ) -> Logger:
     """Get a logger configured to send environment evaluation logs to Vector/Loki.
@@ -253,6 +257,10 @@ def get_environment_logger(
         "task_type": task_type,
         "task_id": task_id or "unknown",
         "hotkey": hotkey or "unknown",
+        "hotkey_a": hotkey_a or "unknown",
+        "hotkey_b": hotkey_b or "unknown",
+        "deployment_id": deployment_id or "unknown",
+        "deployment_url": deployment_url or "unknown",
     }
     logger.addHandler(VectorHandler(default_labels=labels))
     logger.propagate = False
@@ -265,4 +273,15 @@ def get_environment_logger(
         logger.addHandler(console)
     
     return logger
+
+
+def update_environment_logger_labels(logger: Logger, **labels: str | None) -> None:
+    """Update Vector/Loki default labels for an existing environment logger."""
+    clean_labels = {key: value for key, value in labels.items() if value}
+    if not clean_labels:
+        return
+
+    for handler in logger.handlers:
+        if isinstance(handler, VectorHandler):
+            handler.default_labels.update(clean_labels)
 

@@ -14,6 +14,8 @@ import numpy as np
 
 from core.models.tournament_models import GitHubOwnerRepo
 from core.models.tournament_models import GpuRequirement
+from core.models.tournament_models import GroupMatchStanding
+from core.models.tournament_models import MatchRanking
 from core.models.tournament_models import RespondingNode
 from core.models.tournament_models import RoundType
 from core.models.tournament_models import TournamentData
@@ -788,12 +790,13 @@ def determine_boss_round_winner(task_winners: list[str], boss_hotkey: str, tourn
 
     opponent_wins = win_counts.get(opponent_hotkey, 0) if opponent_hotkey else 0
 
-    # Apply different winning requirements based on tournament type
-    # Both IMAGE and TEXT tournaments: Challenger must win more than half (majority) of tasks to become new boss
-    required_wins = (total_tasks // 2) + 1
-    if opponent_hotkey and opponent_wins > total_tasks // 2:
+    # Both IMAGE and TEXT tournaments: a comprehensive victory is required to dethrone
+    # the boss — the challenger may lose at most one boss-round task (e.g. 5/6). There is
+    # no per-task threshold; each task is a straight score comparison.
+    required_wins = max(1, total_tasks - 1)
+    if opponent_hotkey and opponent_wins >= required_wins:
         logger.info(
-            f"{tournament_type.value} tournament: Challenger wins boss round with majority: "
+            f"{tournament_type.value} tournament: Challenger wins boss round comprehensively: "
             f"{opponent_wins}/{total_tasks} tasks won (required {required_wins})"
         )
         return opponent_hotkey
@@ -1061,6 +1064,87 @@ async def get_environment_group_winners(
     return all_winners
 
 
+async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
+    """Winners for the small-tournament single group: average each competitor's rank across matches.
+
+    Each match is ranked independently (rank 1 = lowest adjusted loss = best); a competitor
+    absent from a match (no scoreable model) is penalised one slot worse than last for it.
+    A competitor that errored out of any match cannot advance over an error-free one — they
+    only fill a slot if there aren't SMALL_TOURNAMENT_ADVANCE clean competitors. Among
+    competitors in the same error tier, the lowest average rank advances; ties on average
+    rank are broken by smallest summed adjusted loss, then hotkey, for determinism.
+    """
+    # Gather each match's loss-ranking (rank 1 = lowest adjusted loss) and the per-match
+    # losses (kept for the summed-loss tiebreak).
+    match_rankings: list[MatchRanking] = []
+    match_losses: list[dict[str, float]] = []
+    competitors: set[str] = set()
+    for task in round_tasks:
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+        if not miner_results:
+            logger.warning(f"No valid results for small-tournament task {task.task_id}")
+            continue
+
+        ranked_results = calculate_miner_ranking_and_scores(miner_results)
+        scored = [
+            (r.hotkey, r.adjusted_loss)
+            for r in ranked_results
+            if r.adjusted_loss is not None and not np.isnan(r.adjusted_loss)
+        ]
+        if not scored:
+            logger.warning(f"Small-tournament task {task.task_id} has no valid scores")
+            continue
+
+        scored.sort(key=lambda x: x[1])  # lowest loss is best
+        match_rankings.append(MatchRanking(task_id=task.task_id, ranked_hotkeys=[hk for hk, _ in scored]))
+        match_losses.append({hk: loss for hk, loss in scored})
+        competitors.update(hk for hk, _ in scored)
+
+    if not match_rankings:
+        logger.warning("Small-tournament group has no ranked matches - no winners")
+        return []
+
+    # Sum 1-based ranks across matches. A competitor absent from a match (no scoreable
+    # submission) is penalised one worse than last place, so failing to show is always
+    # worse than placing last in a fully-attended match. Beyond that, any competitor that
+    # missed a match (has_error) is sorted strictly below every fully-attending one, so an
+    # error-free competitor always advances over one that couldn't produce a model — the
+    # errored competitor only fills a slot if there aren't enough clean ones.
+    total_matches = len(match_rankings)
+    absent_rank = len(competitors) + 1
+    standings: dict[str, GroupMatchStanding] = {}
+    for hotkey in competitors:
+        total_rank = 0.0
+        summed_loss = 0.0
+        matches_attended = 0
+        for match, losses in zip(match_rankings, match_losses):
+            if hotkey in losses:
+                total_rank += match.ranked_hotkeys.index(hotkey) + 1
+                summed_loss += losses[hotkey]
+                matches_attended += 1
+            else:
+                total_rank += absent_rank
+        standings[hotkey] = GroupMatchStanding(
+            hotkey=hotkey,
+            total_rank=total_rank,
+            matches_attended=matches_attended,
+            total_matches=total_matches,
+            summed_loss=summed_loss,
+        )
+
+    ordered = sorted(
+        standings.values(),
+        key=lambda s: (s.has_error, s.average_rank, s.summed_loss, s.hotkey),
+    )
+    winners = [s.hotkey for s in ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]]
+    logger.info(
+        f"Small-tournament standings "
+        f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}; "
+        f"advancing top {len(winners)}: {winners}"
+    )
+    return winners
+
+
 async def get_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config = None
 ) -> list[str]:
@@ -1074,6 +1158,15 @@ async def get_group_winners(
 
     if is_environment:
         return await get_environment_group_winners(completed_round, round_tasks, psql_db, config)
+
+    # Small-tournament round 1 is a single group that plays multiple matches (normal
+    # groups have exactly one task each). Rank each match, combine the ranks, and
+    # advance only the best few into the knockout that decides the boss challenger.
+    # Gated to round 1 — the small format is only created there — so a normal large
+    # tournament that narrows to a single group in a later round is never misclassified.
+    distinct_groups = {task.group_id for task in round_tasks}
+    if completed_round.round_number == 1 and len(round_tasks) > 1 and len(distinct_groups) == 1:
+        return await _get_small_tournament_group_winners(round_tasks, psql_db)
 
     # Determine how many winners to advance
     if completed_round.is_final_round:
@@ -1186,6 +1279,93 @@ async def notify_tournament_completed(
         await send_to_discord(discord_url, message)
     except Exception as e:
         logger.error(f"Failed to send Discord notification for tournament completion: {e}")
+
+
+async def notify_tournament_dedup_autoremoved(
+    tournament_id: str, tournament_type: str, clusters, flagged: list[str], discord_url: str
+):
+    """R1 info ping: deterministic hash duplicates auto-removed before training (no halt)."""
+    try:
+        lines = [
+            "🧹 Dedup (R1, pre-training): auto-removed exact/normalized duplicate submissions.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Removed {len(flagged)} duplicate(s) across {len(clusters)} cluster(s); boss protected.",
+        ]
+        for i, c in enumerate(clusters, 1):
+            lines.append(f"  Cluster {i} [{c.basis}]: {', '.join(c.members)}")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R1 dedup: {e}")
+
+
+async def notify_tournament_dedup_review(
+    tournament_id: str, tournament_type: str, round_id: str, clusters, flagged: list[str], report_url: str | None, discord_url: str
+):
+    """R2 ping: duplicates flagged by Claude — tournament HALTED pending manual approval."""
+    try:
+        lines = [
+            "⚠️ Dedup (R2): functional duplicates flagged — TOURNAMENT HALTED pending manual review.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Guarded round: {round_id}",
+            f"Flagged for removal ({len(flagged)}): {', '.join(flagged)}",
+        ]
+        for i, c in enumerate(clusters, 1):
+            lines.append(f"  Cluster {i} [{c.basis}]: {', '.join(c.members)} — {c.reason}")
+        if report_url:
+            lines.append(f"Full report: {report_url}")
+        lines.append("")
+        lines.append("Review the report + code, then in the DB:")
+        lines.append(f"  approve:  UPDATE tournament_dedup_reviews SET status='approved', reviewed_at=now() WHERE round_id='{round_id}';")
+        lines.append(f"  (edit first if needed: SET approved_eliminations='[\"hk\", ...]'::jsonb ...)")
+        lines.append(f"  skip/none: UPDATE tournament_dedup_reviews SET status='skipped', reviewed_at=now() WHERE round_id='{round_id}';")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup review: {e}")
+
+
+async def notify_tournament_dedup_error(
+    tournament_id: str, tournament_type: str, round_id: str, error: str, discord_url: str
+):
+    """R2 ping: the dedup gate failed to evaluate (clone/API/parse) — tournament HALTED.
+
+    Fired once per failure: the gate is then held without re-running (T2 is expensive) until the
+    validator is restarted or a skip row is inserted, so it won't re-bill Anthropic on a loop."""
+    try:
+        lines = [
+            "🛑 Dedup (R2): gate FAILED to evaluate — TOURNAMENT HALTED (no eliminations applied).",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Guarded round: {round_id}",
+            f"Error: {error}",
+            "",
+            "Held without re-running until you act. To resume:",
+            "  - Fix the underlying cause (e.g. ANTHROPIC_API_KEY unset, repo clone access, "
+            "model budget/parse failure), then RESTART the validator — the gate retries once on restart.",
+            "  - OR bypass the dedup check for this round (advance with NO eliminations) by inserting a skip row:",
+            (
+                f"      INSERT INTO tournament_dedup_reviews (round_id, tournament_id, tournament_type, status) "
+                f"VALUES ('{round_id}', '{tournament_id}', '{tournament_type}', 'skipped');"
+            ),
+        ]
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup gate error: {e}")
+
+
+async def notify_tournament_dedup_resolved(
+    tournament_id: str, tournament_type: str, eliminated: list[str], published, discord_url: str
+):
+    """R2 ping: review approved — duplicates eliminated, offending repos published."""
+    try:
+        lines = [
+            "✅ Dedup (R2): review approved — duplicates knocked out, tournament resuming.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Eliminated ({len(eliminated)}): {', '.join(eliminated) if eliminated else 'none'}",
+        ]
+        for p in published:
+            lines.append(f"  Published: {p.public_repo_url}")
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for R2 dedup resolution: {e}")
 
 
 async def notify_organic_task_created(task_id: str, task_type: str, discord_url: str, is_benchmark: bool = False):

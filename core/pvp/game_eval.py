@@ -21,6 +21,7 @@ from core.pvp import constants as cst
 from core.pvp.agents import BaseGameAgent
 from core.pvp.agents import ClobberAgent
 from core.pvp.agents import GinRummyAgent
+from core.pvp.agents import GoofspielAgent
 from core.pvp.agents import LeducPokerAgent
 from core.pvp.agents import LiarsDiceAgent
 from core.pvp.agents import OthelloAgent
@@ -40,6 +41,7 @@ _AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
     EnvironmentName.GIN_RUMMY: GinRummyAgent,
     EnvironmentName.OTHELLO: OthelloAgent,
     EnvironmentName.CLOBBER: ClobberAgent,
+    EnvironmentName.GOOFSPIEL: GoofspielAgent,
 }
 
 # Every PVP env must have an agent: image_manager skips env sidecars for PVP

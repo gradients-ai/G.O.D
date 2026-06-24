@@ -10,6 +10,7 @@ CREATE TABLE pvp_pair_results (
     draws INT NOT NULL DEFAULT 0,
     total_games INT NOT NULL DEFAULT 0,
     n_attempts INT NOT NULL DEFAULT 0,
+    deployment_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
@@ -17,6 +18,7 @@ CREATE TABLE pvp_pair_results (
 );
 
 CREATE INDEX idx_pvp_pair_results_task_status ON pvp_pair_results(task_id, status);
+CREATE INDEX idx_pvp_pair_results_deployment_id ON pvp_pair_results(deployment_id);
 
 -- migrate:down
 DROP TABLE IF EXISTS pvp_pair_results;

@@ -17,6 +17,7 @@ from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
 from huggingface_hub import repo_exists
 from peft import PeftModel
+from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
@@ -92,7 +93,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            real_base, torch_dtype=torch.float16, token=hf_token,
+            real_base, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
         )
         base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
@@ -179,8 +180,12 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
     return f"{hf_username}/augmented-{repo_hash}"
 
 
-def load_training_data(path: str, max_records: int = 100) -> list[dict]:
-    """Load training data from a JSON file."""
+def load_training_data(path: str) -> list[dict]:
+    """Load all training data records from a JSON file.
+
+    The full record list is needed for an accurate total-token estimate;
+    stats functions subsample internally for anything expensive.
+    """
     if path.startswith("http"):
         local_path = asyncio.run(download_s3_file(path))
     else:
@@ -190,7 +195,7 @@ def load_training_data(path: str, max_records: int = 100) -> list[dict]:
         data = json.load(f)
 
     if isinstance(data, list):
-        return data[:max_records]
+        return data
     return []
 
 
@@ -222,6 +227,23 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
     print(f"Upload complete: {repo_id}")
 
 
+def _load_config_with_yarn_fix(model_path: str, hf_token: str):
+    """Load the model config, working around a transformers crash on YaRN models.
+
+    transformers' `_compute_yarn_parameters` resolves head_dim with a getattr fallback,
+    but some configs (e.g. Mistral) set `head_dim` to None, so the fallback never fires
+    and `None * partial_rotary_factor` raises TypeError. Only the YaRN rope path reads
+    head_dim, so non-YaRN models are unaffected. Set it to the value transformers itself
+    would derive (hidden_size // num_attention_heads).
+    """
+    config = AutoConfig.from_pretrained(model_path, token=hf_token)
+    head_dim = config.head_dim if hasattr(config, "head_dim") else None
+    if head_dim is None and hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
+        config.head_dim = config.hidden_size // config.num_attention_heads
+        print(f"[model_prep] set head_dim={config.head_dim} (was None) to avoid YaRN rope crash", flush=True)
+    return config
+
+
 def main():
     t_total = time.time()
     args = parse_args()
@@ -238,18 +260,21 @@ def main():
     t0 = time.time()
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
+    model_config = _load_config_with_yarn_fix(model_path, hf_token)
+    # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
+    # fp16: bf16-native models (e.g. Qwen3) overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype=torch.float16, token=hf_token, device_map="auto",
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype=torch.float16, token=hf_token,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_path, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, torch_dtype="auto", token=hf_token)
     tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)

@@ -48,8 +48,28 @@ NO_RETRY_RESULT = "No Retry"
 MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 8
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
+
+# Small tournament (text/image) round-1 format.
+# When a tournament starts with fewer than 15 competitors we don't want a thin
+# knockout or a tiny group that still advances 8. Instead round 1 is a single
+# group that plays SMALL_TOURNAMENT_GROUP_TASKS matches, and only the best
+# SMALL_TOURNAMENT_ADVANCE advance (into the knockout that decides the boss
+# challenger). Below SMALL_TOURNAMENT_MIN_PARTICIPANTS there aren't enough
+# competitors to make this worthwhile, so we fall back to the normal knockout.
+SMALL_TOURNAMENT_MIN_PARTICIPANTS = 3
+SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start
+SMALL_TOURNAMENT_GROUP_TASKS = 3
+SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
-MAX_ENVIRONMENT_GROUP_SIZE = 6
+# Round-1 group tasks evaluate every pair of miners head-to-head (PvP), so eval cost scales
+# with C(n,2). The champion (boss) is injected into the smallest group on top of its miners,
+# so the cap is enforced *including* the boss: <= 4 members => <= C(4,2) = 6 PvP pairs/group.
+MAX_ENVIRONMENT_GROUP_SIZE = 4
+# Small env tournaments collapse too fast (one big group advancing 1 contender). When the
+# field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
+# are more groups, more contenders survive each round, and the bracket plays out over more rounds.
+SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
+SMALL_ENVIRONMENT_GROUP_SIZE = 3
 
 
 # Environment tournament round structure
@@ -91,11 +111,14 @@ MODEL_SIZE_RANGE_MULTIPLIER_MAX = 1.2
 # Model parameter conversion
 MODEL_PARAMS_TO_BILLIONS = 1e9
 
-# Progressive championship threshold constants
-EXPONENTIAL_BASE_THRESHOLD = 0.05  # Starting threshold for new champions
+# Progressive championship threshold constants.
+# Thresholds are disabled: dethroning is decided purely by head-to-head task wins
+# (text/image: lose at most one of the boss-round tasks; environment: zero losses).
+# Kept at 0.0 so all per-task boss comparisons are straight score comparisons.
+EXPONENTIAL_BASE_THRESHOLD = 0.0  # No boss edge — strict score comparison
 EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
-EXPONENTIAL_DECAY_RATE = 0.8  # Decay factor per consecutive win
-EXPONENTIAL_MIN_THRESHOLD = 0.03  # Minimum threshold floor
+EXPONENTIAL_DECAY_RATE = 0.8  # Unused while thresholds are disabled
+EXPONENTIAL_MIN_THRESHOLD = 0.0  # No threshold floor
 
 # Obfuscation detection constants
 OBFUSCATION_DETECTION_PATH = "./validator/obfuscation_detection/anti_obfuscation"
@@ -104,6 +127,6 @@ OBFUSCATION_DETECTION_PATH = "./validator/obfuscation_detection/anti_obfuscation
 PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS = 0.5
 
 # Tournament participation fees (in RAO)
-TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 200_000_000  # 0.2 TAO = 200,000,000 RAO
-TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO = 200_000_000  # 0.20 TAO = 200,000,000 RAO
-TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 150_000_000  # 0.15 TAO = 150,000,000 RAO
+TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 250_000_000  # 0.25 TAO = 250,000,000 RAO
+TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO = 250_000_000  # 0.25 TAO = 250,000,000 RAO
+TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 200_000_000  # 0.2 TAO = 200,000,000 RAO

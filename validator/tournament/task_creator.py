@@ -13,6 +13,8 @@ from validator.core.config import Config
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.core.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
+from validator.core.models import EnvRawTask
+from validator.core.models import InstructTextRawTask
 from validator.core.models import RawTask
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.tournaments import add_tournament_tasks
@@ -34,6 +36,21 @@ from validator.utils.logging import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def is_small_tournament_group(round_data: GroupRound) -> bool:
+    """Whether a group round is the small text/image tournament round-1 format.
+
+    Identified by round 1 (the only round the small format is ever created in — see
+    organise_tournament_round) plus a single group whose membership is in the
+    small-tournament band (3..9). The round-1 guard is load-bearing: a normal large
+    tournament can narrow to a single group of 9 in a *later* round (a reduced group can
+    be 9..19 members), which would otherwise match the structural check.
+    """
+    if round_data.round_number != 1 or len(round_data.groups) != 1:
+        return False
+    size = len(round_data.groups[0].member_ids)
+    return t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= size <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
 
 
 async def create_text_tournament_tasks(
@@ -102,6 +119,42 @@ async def _get_tournament_base_model(tournament_id: str, config: Config) -> str 
         return None
     task_obj = await task_sql.get_task(r1_tasks[0].task_id, config.psql_db)
     return task_obj.model_id if task_obj else None
+
+
+async def _get_prev_tournament_env_names(tournament_id: str, config: Config) -> set[EnvironmentName]:
+    """Environments used in ANY round of the immediately previous completed env tournament.
+
+    Used to bias R1 env selection toward games not seen last tournament. Empty set when there
+    is no previous tournament (then R1 falls back to fully random selection).
+    """
+    prev = await get_latest_completed_tournament(
+        config.psql_db, TournamentType.ENVIRONMENT, exclude_tournament_id=tournament_id,
+    )
+    if not prev:
+        return set()
+    seen: set[EnvironmentName] = set()
+    for prev_round in await get_tournament_rounds(prev.tournament_id, config.psql_db):
+        for tourn_task in await get_tournament_tasks(prev_round.round_id, config.psql_db):
+            task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
+            if isinstance(task_obj, EnvRawTask):
+                seen.update(task_obj.environment_names)
+    return seen
+
+
+def _select_r1_env_names(
+    num_envs: int, seen_last_tournament: set[EnvironmentName]
+) -> list[EnvironmentName]:
+    """Pick num_envs environments for R1, preferring games not seen in the last tournament.
+
+    Unseen games are exhausted first (in random order); the remainder is filled randomly from
+    the seen pool. With no history (or once every game has been seen) this is plain random.
+    """
+    all_envs = list(EnvironmentName)
+    unseen = [e for e in all_envs if e not in seen_last_tournament]
+    seen = [e for e in all_envs if e in seen_last_tournament]
+    random.shuffle(unseen)
+    random.shuffle(seen)
+    return (unseen + seen)[:num_envs]
 
 
 async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
@@ -192,6 +245,16 @@ async def _create_environment_group_tasks(
     # R2+ must use the same base model as R1
     tournament_base_model = await _get_tournament_base_model(tournament_id, config) if round_data.round_number > 1 else None
 
+    # R1 prefers games not seen in the last tournament; R2+ inherit R1's env set via reference_task.
+    r1_env_override: list[EnvironmentName] | None = None
+    if round_data.round_number == 1:
+        seen_last_tournament = await _get_prev_tournament_env_names(tournament_id, config)
+        r1_env_override = _select_r1_env_names(num_envs, seen_last_tournament)
+        logger.info(
+            f"R1 env selection: seen_last_tournament={sorted(e.value for e in seen_last_tournament)} "
+            f"-> selected={[e.value for e in r1_env_override]}"
+        )
+
     models = _get_text_models(config.keypair)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     tasks: list[RawTask] = []
@@ -223,6 +286,7 @@ async def _create_environment_group_tasks(
                 num_environments=num_envs, round_number=round_data.round_number,
                 model_id_override=tournament_base_model,
                 training_start_point=start_point,
+                environment_names_override=r1_env_override,
             )
             reference_task = task
 
@@ -236,19 +300,25 @@ async def _create_environment_group_tasks(
 async def _create_group_image_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, image_models: list
 ) -> list[RawTask]:
+    # Small image tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS matches.
+    is_small = is_small_tournament_group(round_data)
+    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.IMAGE_TASKS_PER_GROUP
+
     num_groups = len(round_data.groups)
-    logger.info(f"Creating image tournament for {num_groups} groups ({t_cst.IMAGE_TASKS_PER_GROUP} per group)")
+    logger.info(f"Creating image tournament for {num_groups} groups ({tasks_per_group} per group)")
     tasks = []
 
     for i, group in enumerate(round_data.groups):
-        group_tasks = await _create_single_group_image_tasks(group, i, tournament_id, round_data.round_id, config, image_models)
+        group_tasks = await _create_single_group_image_tasks(
+            group, i, tournament_id, round_data.round_id, config, image_models, tasks_per_group
+        )
         tasks.extend(group_tasks)
 
     return tasks
 
 
 async def _create_single_group_image_tasks(
-    group, group_index: int, tournament_id: str, round_id: str, config: Config, image_models: list
+    group, group_index: int, tournament_id: str, round_id: str, config: Config, image_models: list, tasks_per_group: int
 ) -> list[RawTask]:
     group_id = f"{round_id}_group_{group_index + 1:03d}"
     logger.info(f"  Group {group_index + 1} ({len(group.member_ids)} members):")
@@ -256,19 +326,18 @@ async def _create_single_group_image_tasks(
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
     existing_count = len(existing_tasks)
 
-    assert t_cst.IMAGE_TASKS_PER_GROUP == 1, "Only 1 image task per group is supported"
-    if existing_count >= t_cst.IMAGE_TASKS_PER_GROUP:
+    if existing_count >= tasks_per_group:
         logger.info(f"    Group {group_index + 1} already has {existing_count} task(s), skipping task creation")
         return await _get_existing_tasks(existing_tasks, config)
 
-    logger.info(f"    Group {group_index + 1} has {existing_count}/{t_cst.IMAGE_TASKS_PER_GROUP} task, creating 1 more")
+    created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
+    for _ in range(tasks_per_group - existing_count):
+        logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
+        task = await _create_single_image_task_with_retry(config, image_models, 0, group_index)
+        await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+        created.append(task)
 
-    task = await _create_single_image_task_with_retry(config, image_models, 0, group_index)
-    await _create_and_register_tournament_task(
-        task, tournament_id, round_id, config, group_id=group_id
-    )
-
-    return [task]
+    return created
 
 
 async def _create_knockout_image_tasks(
@@ -330,7 +399,7 @@ async def _create_task_by_type(
     if task_type == TaskType.IMAGETASK:
         return await create_synthetic_image_task(config, models)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
     elif task_type == TaskType.DPOTASK:
         return await create_synthetic_dpo_task(config, models, dpo_datasets)
     elif task_type == TaskType.GRPOTASK:
@@ -339,7 +408,7 @@ async def _create_task_by_type(
         return await create_synthetic_env_task(config, models, instruct_datasets)
     else:
         # Default to instruct text task
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
 
 async def _get_existing_tasks(existing_tournament_tasks: list, config: Config) -> list[RawTask]:
@@ -380,7 +449,10 @@ async def _create_and_register_tournament_task(
         pair_id=pair_id,
     )
     await add_tournament_tasks([tournament_task], config.psql_db)
-    gpu_req = get_tournament_gpu_requirement(task.task_type, task.model_params_count, task.model_id)
+    gpu_req = get_tournament_gpu_requirement(
+        task.task_type, task.model_params_count, task.model_id,
+        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+    )
 
     # Format log message based on task type
     if task.task_type == TaskType.IMAGETASK:
@@ -399,15 +471,25 @@ async def _create_and_register_tournament_task(
 async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
+    # Small text tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS instruct
+    # matches (rather than one). It deliberately skips the round-1 restrictions (small models +
+    # small datasets) so the few competitors are tested across the full model/dataset range.
+    is_small = is_small_tournament_group(round_data)
+    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.TEXT_TASKS_PER_GROUP
+
+    if is_small:
+        models = _get_text_models(config.keypair)
+        instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=False)
+    else:
+        models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
+        instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
     tasks = []
     for i, group in enumerate(round_data.groups):
-        logger.info(f"  Group {i + 1} ({len(group.member_ids)} members): creating 1 instruct task")
+        logger.info(f"  Group {i + 1} ({len(group.member_ids)} members): creating {tasks_per_group} instruct task(s)")
         group_tasks = await _create_single_group_text_tasks(
-            group, i, tournament_id, round_data.round_id, config, models, instruct_datasets, dpo_datasets
+            group, i, tournament_id, round_data.round_id, config, models, instruct_datasets, dpo_datasets, tasks_per_group
         )
         tasks.extend(group_tasks)
 
@@ -423,25 +505,25 @@ async def _create_single_group_text_tasks(
     models: list,
     instruct_datasets: list,
     dpo_datasets: list,
+    tasks_per_group: int,
 ) -> list[RawTask]:
     group_id = f"{round_id}_group_{group_index + 1:03d}"
 
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
     existing_count = len(existing_tasks)
 
-    if existing_count >= t_cst.TEXT_TASKS_PER_GROUP:
+    if existing_count >= tasks_per_group:
         logger.info(f"    Group {group_index + 1} already has {existing_count} task(s), skipping task creation")
         return await _get_existing_tasks(existing_tasks, config)
 
-    logger.info(f"    Group {group_index + 1} has {existing_count}/{t_cst.TEXT_TASKS_PER_GROUP} task, creating 1 more")
-    assert t_cst.TEXT_TASKS_PER_GROUP == 1, "Only 1 text task per group is supported"
-    task = await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+    created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
+    for _ in range(tasks_per_group - existing_count):
+        logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
+        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
+        await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+        created.append(task)
 
-    await _create_and_register_tournament_task(
-        task, tournament_id, round_id, config, group_id=group_id
-    )
-
-    return [task]
+    return created
 
 
 async def _create_probability_based_text_tasks(
@@ -494,7 +576,7 @@ async def _create_single_probability_task(
 ) -> RawTask:
     rand_val = random.random()
     if rand_val < instruct_prob:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
     elif rand_val < (instruct_prob + dpo_prob):
         return await create_synthetic_dpo_task(config, models, dpo_datasets)
     else:
@@ -543,11 +625,11 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
 async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
     """
     Create a replacement task that matches round-1 group text constraints:
-    - small text model pool (0.1B-4.0B)
+    - small text model pool (0.1B-3.0B)
     """
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    return await create_synthetic_instruct_text_task(config, models, instruct_datasets)
+    return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:

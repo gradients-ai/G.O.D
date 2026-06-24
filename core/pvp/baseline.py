@@ -24,14 +24,14 @@ from core.models.pvp_models import ChatFn
 from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import GameScoringContext
 from core.models.pvp_models import MemoryArea
-from core.pvp.memory import SlotMemory
-from core.pvp.tokenizer_counter import load_token_counter
 from core.pvp import constants as cst
 from core.pvp.bot import LLMBot
 from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.game_eval import _evaluate_game_with_timeout
 from core.pvp.game_eval import config_id_for_seed
+from core.pvp.memory import SlotMemory
 from core.pvp.scoring import determine_outcome
+from core.pvp.tokenizer_counter import load_token_counter
 
 
 logger = logging.getLogger(__name__)
@@ -117,7 +117,7 @@ def run_mcts_baseline(
             break
         seed = seed_rng.randint(1, cst.PVP_SEED_RANGE_MAX)
         config_id = config_id_for_seed(seed, env_config)
-        game = pyspiel.load_game(agent.game_name, agent.generate_params(config_id))
+        game = agent.load_game(agent.generate_params(config_id))
         game_type = game.get_type()
 
         model_seat = i % 2

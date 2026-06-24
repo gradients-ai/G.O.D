@@ -5,6 +5,7 @@ Defines input configuration and output result contracts.
 
 import json
 from enum import Enum
+from typing import Annotated
 from typing import Literal
 from typing import Protocol
 
@@ -50,11 +51,67 @@ class GameScoringContext(BaseModel):
     max_utility: float = Field(description="Maximum possible return value")
 
 
+class GameParams(BaseModel):
+    """Base for a game's pyspiel.load_game() parameters.
+
+    Each game has its own subclass with just the fields it accepts; the `game`
+    discriminator makes them a tagged union so a GameInstance round-trips to the
+    right subclass. to_pyspiel() renders the kwargs dict, dropping the tag (which
+    is ours, not a pyspiel parameter). Subclasses declare the `game` tag; the
+    base omits it so each subclass owns its literal.
+    """
+
+    def to_pyspiel(self) -> dict[str, int | str | bool]:
+        return self.model_dump(exclude={"game"})
+
+
+class LiarsDiceParams(GameParams):
+    game: Literal["liars_dice"] = "liars_dice"
+    players: int = 2
+    numdice: int = 5
+
+
+class LeducPokerParams(GameParams):
+    game: Literal["leduc_poker"] = "leduc_poker"
+    players: int = 2
+
+
+class GinRummyParams(GameParams):
+    game: Literal["gin_rummy"] = "gin_rummy"
+    hand_size: int
+    knock_card: int
+
+
+class OthelloParams(GameParams):
+    game: Literal["othello"] = "othello"
+
+
+class GoofspielParams(GameParams):
+    game: Literal["goofspiel"] = "goofspiel"
+    players: int = 2
+    num_cards: int
+    imp_info: bool = True
+    points_order: Literal["random", "ascending", "descending"] = "random"
+    returns_type: Literal["win_loss", "total_points", "point_difference"] = "win_loss"
+
+
+class ClobberParams(GameParams):
+    game: Literal["clobber"] = "clobber"
+    rows: int
+    columns: int
+
+
+AnyGameParams = Annotated[
+    LiarsDiceParams | LeducPokerParams | GinRummyParams | OthelloParams | GoofspielParams | ClobberParams,
+    Field(discriminator="game"),
+]
+
+
 class GameInstance(PvPBaseModel):
     """Configuration for a single game to be played."""
 
     game_name: str = Field(description="OpenSpiel game identifier (e.g. 'liars_dice')")
-    game_params: dict[str, int] = Field(description="Parameters passed to pyspiel.load_game()")
+    game_params: AnyGameParams = Field(description="Parameters passed to pyspiel.load_game()")
     model_a_player_id: int = Field(description="Player index assigned to model A (0 or 1)")
     seed: int = Field(description="Random seed for this game instance")
     is_zero_sum: bool = Field(description="Whether the game is zero-sum")
@@ -83,10 +140,22 @@ class PvPModelSpec(PvPBaseModel):
 
     repo: str = Field(description="HuggingFace model repository (e.g. 'org/model-name')")
     original_model: str = Field(
-        description="Base model repository, used for LoRA detection"
+        description="Foundation model repository (the root base), used for LoRA detection"
+    )
+    base_chain: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Adapter repos to merge onto `original_model` before applying `repo`, so a "
+            "continuation miner is served on the base it actually trained on. Empty for "
+            "round-1 models. A list (not a single repo) to support deeper chains."
+        ),
     )
     gpu_id: int | None = Field(default=None, ge=0, description="GPU device ID. Defaults to 0 for model_a, 1 for model_b")
-    port: int | None = Field(default=None, gt=0, description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b")
+    port: int | None = Field(
+        default=None,
+        gt=0,
+        description="SGLang server port. Defaults to 30000 for model_a, 30001 for model_b",
+    )
 
 
 class PvPMatchupConfig(BaseModel):
@@ -306,6 +375,7 @@ class PvPPairDbRow(BaseModel):
     draws: int = 0
     total_games: int = 0
     n_attempts: int = 0
+    deployment_id: str | None = None
     status: PvPStatus = PvPStatus.PENDING
 
     @property

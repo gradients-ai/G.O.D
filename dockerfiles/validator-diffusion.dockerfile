@@ -53,6 +53,8 @@ WORKDIR /app
 COPY validator/requirements.txt validator/requirements.txt
 RUN pip install -r validator/requirements.txt
 
+RUN pip install --force-reinstall torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1
+
 COPY . .
 
 RUN echo '#!/bin/bash\n\

@@ -23,8 +23,18 @@ logger = get_logger(__name__)
 MODEL_PREP_TIMEOUT_SECONDS = 5400
 
 
-def _build_env_configs() -> dict[EnvironmentName, EnvConfig]:
-    """Build env_configs payload from the canonical ENVIRONMENT_CONFIGS."""
+def _build_env_configs(
+    environment_names: list[EnvironmentName] | None = None,
+) -> dict[EnvironmentName, EnvConfig]:
+    """Build the env_configs payload from the canonical ENVIRONMENT_CONFIGS.
+
+    Restricted to environment_names when given (the task's own games) so model
+    prep only baselines the games that task actually plays — not every env. Falls
+    back to all envs when no names are supplied.
+    """
+    # Coerce to enum members: some code paths assign environment_names as raw
+    # strings (bypassing validation), which wouldn't match the enum keys below.
+    selected = {EnvironmentName(e) for e in environment_names} if environment_names else None
     return {
         env_name: EnvConfig(
             env_image=cfg.env_image,
@@ -35,6 +45,7 @@ def _build_env_configs() -> dict[EnvironmentName, EnvConfig]:
             eval_payload_extra=cfg.eval_payload_extra,
         )
         for env_name, cfg in ENVIRONMENT_CONFIGS.items()
+        if selected is None or env_name in selected
     }
 
 
@@ -49,6 +60,7 @@ async def dispatch_augmentation_and_stats(
     reward_functions=None,
     is_env_task: bool = False,
     hotkey: str | None = None,
+    environment_names: list[EnvironmentName] | None = None,
 ) -> ModelPrepResponse | None:
     """Dispatch augmentation and stats collection to a trainer with GPU.
 
@@ -70,7 +82,7 @@ async def dispatch_augmentation_and_stats(
         augmentation_config=augmentation_config,
         gpu_ids=gpu_ids,
         reward_functions=reward_functions,
-        env_configs=_build_env_configs() if is_env_task else None,
+        env_configs=_build_env_configs(environment_names) if is_env_task else None,
         hotkey=hotkey,
     )
 
