@@ -47,6 +47,7 @@ class EnvironmentName(str, Enum):
     LEDUC_POKER = "leduc_poker"
     OTHELLO = "othello"
     GOOFSPIEL = "goofspiel"
+    TWENTY_FORTY_EIGHT = "2048"
     INTERCODE = "intercode"
 
 
@@ -151,6 +152,17 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
             "mcts_num_rollouts": 1,
             "api_key": "dummy-key",
         },
+    ),
+    EnvironmentName.TWENTY_FORTY_EIGHT: EnvironmentConfig(
+        task_id_min=500_000_000,
+        task_id_max=599_999_999,
+        num_seeds=10_000,
+        num_baseline_episodes=25,
+        eval_type=EvalType.INDIVIDUAL,
+        env_image=VALIDATOR_DOCKER_IMAGE_ENV,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_ENV,
+        tournament_eval_command=["python", "-m", "validator.evaluation.individual"],
+        gpu_multiplier=4,
     ),
     EnvironmentName.INTERCODE: EnvironmentConfig(
         task_id_min=1,

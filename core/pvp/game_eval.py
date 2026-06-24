@@ -24,6 +24,7 @@ from core.pvp.agents import GoofspielAgent
 from core.pvp.agents import LeducPokerAgent
 from core.pvp.agents import LiarsDiceAgent
 from core.pvp.agents import OthelloAgent
+from core.pvp.agents import TwentyFortyEightAgent
 from core.pvp.bot import ContextOverflowError
 from core.pvp.bot import EmptyLegalActionsError
 from core.pvp.bot import InvalidActionForfeitError
@@ -41,6 +42,13 @@ _AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
     EnvironmentName.OTHELLO: OthelloAgent,
     EnvironmentName.GOOFSPIEL: GoofspielAgent,
 }
+_INDIVIDUAL_AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
+    EnvironmentName.TWENTY_FORTY_EIGHT: TwentyFortyEightAgent,
+}
+_OPEN_SPIEL_AGENT_REGISTRY: dict[EnvironmentName, type[BaseGameAgent]] = {
+    **_AGENT_REGISTRY,
+    **_INDIVIDUAL_AGENT_REGISTRY,
+}
 
 # Every PVP env must have an agent: image_manager skips env sidecars for PVP
 # envs on the assumption that this registry covers them, and a gap would ship
@@ -54,6 +62,23 @@ if set(_AGENT_REGISTRY) != _pvp_envs:
         f"agents without a PVP env config: "
         f"{sorted(e.value for e in set(_AGENT_REGISTRY) - _pvp_envs)}"
     )
+
+_non_pvp_agent_envs = set(_INDIVIDUAL_AGENT_REGISTRY)
+_individual_envs = {name for name, cfg in ENVIRONMENT_CONFIGS.items() if cfg.eval_type == EvalType.INDIVIDUAL}
+if not _non_pvp_agent_envs <= _individual_envs:
+    raise RuntimeError(
+        "OpenSpiel individual env/agent registry drift: "
+        f"agents without an INDIVIDUAL env config: "
+        f"{sorted(e.value for e in _non_pvp_agent_envs - _individual_envs)}"
+    )
+
+
+def agent_class_for(env_name: EnvironmentName) -> type[BaseGameAgent]:
+    return _OPEN_SPIEL_AGENT_REGISTRY[env_name]
+
+
+def supports_open_spiel_agent(env_name: EnvironmentName) -> bool:
+    return env_name in _OPEN_SPIEL_AGENT_REGISTRY
 
 
 def config_id_for_seed(seed: int, env_config: EnvironmentConfig) -> int:

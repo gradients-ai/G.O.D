@@ -129,3 +129,27 @@ goofspiel_rules: >
     are gone, your remaining cards dominate.
   - Sometimes "sacrifice" your lowest card on a point card you concede, keeping
     stronger cards for later rounds.
+
+twenty_forty_eight_rules: >
+  2048 RULES:
+
+  Board: 4x4 grid. Empty cells are shown as 0. Numbered tiles slide in the
+  direction you choose: Up, Right, Down, or Left.
+
+  Each move: All tiles slide as far as possible in the chosen direction. When
+  two tiles with the same value collide, they merge into one tile with double
+  the value. A tile can merge only once per move.
+
+  Chance: After a move changes the board, a new tile appears in an empty cell.
+  It is usually a 2 and sometimes a 4.
+
+  Score: Your score increases by the value of every merged tile. The evaluator
+  uses your final accumulated score, so higher is better.
+
+  Game end: The game ends when a 2048 tile is created, when no legal moves
+  remain, or when OpenSpiel's maximum game length is reached.
+
+  Strategy tips:
+  - Keep your largest tile in a corner when possible.
+  - Preserve empty cells and avoid moves that scatter large tiles.
+  - Build monotonic rows or columns so similar tiles can merge cleanly.

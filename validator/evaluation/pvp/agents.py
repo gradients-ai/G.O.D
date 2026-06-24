@@ -6,4 +6,5 @@ from core.pvp.agents import GoofspielAgent as GoofspielAgent
 from core.pvp.agents import LeducPokerAgent as LeducPokerAgent
 from core.pvp.agents import LiarsDiceAgent as LiarsDiceAgent
 from core.pvp.agents import OthelloAgent as OthelloAgent
+from core.pvp.agents import TwentyFortyEightAgent as TwentyFortyEightAgent
 from core.pvp.agents import load_prompts as load_prompts

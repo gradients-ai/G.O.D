@@ -7,7 +7,8 @@ Rules text is loaded from core/config/pvp_game_prompts.yml.
 import functools
 import random
 import re
-from abc import ABC, abstractmethod
+from abc import ABC
+from abc import abstractmethod
 from pathlib import Path
 
 import pyspiel
@@ -19,6 +20,8 @@ from core.models.pvp_models import GoofspielParams
 from core.models.pvp_models import LeducPokerParams
 from core.models.pvp_models import LiarsDiceParams
 from core.models.pvp_models import OthelloParams
+from core.models.pvp_models import TwentyFortyEightParams
+
 
 _PROMPTS_PATH = Path(__file__).resolve().parents[2] / "core" / "config" / "pvp_game_prompts.yml"
 
@@ -324,3 +327,30 @@ class GoofspielAgent(BaseGameAgent):
         Prefix the player's identity since the board labels are absolute (P0/P1).
         """
         return f"You are Player {player_id} (P{player_id}).\n{state.observation_string(player_id)}"
+
+
+class TwentyFortyEightAgent(BaseGameAgent):
+    """2048 as implemented by OpenSpiel.
+
+    The OpenSpiel short name is literally "2048". It is a single-player,
+    stochastic game: chance places tiles after each player move, and the sole
+    player's terminal return is the accumulated merge score.
+    """
+
+    @property
+    def game_name(self) -> str:
+        return "2048"
+
+    @property
+    def rules_key(self) -> str:
+        return "twenty_forty_eight_rules"
+
+    def generate_params(self, config_id: int) -> GameParams:
+        return TwentyFortyEightParams(max_tile=2048)
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        return (
+            "Board values are shown as a 4x4 grid. Empty cells are 0.\n"
+            f"Current score: {state.returns()[0]:.0f}\n"
+            f"{state.observation_string(player_id)}"
+        )

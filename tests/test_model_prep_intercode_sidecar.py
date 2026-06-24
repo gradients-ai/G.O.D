@@ -4,6 +4,7 @@ import types
 
 import pytest
 
+from core.constants import VALIDATOR_DOCKER_IMAGE_ENV
 from core.constants import VALIDATOR_DOCKER_IMAGE_INTERCODE
 from core.constants import EnvironmentName
 from validator.utils.model_prep import _build_env_configs
@@ -40,6 +41,13 @@ def test_model_prep_configs_include_intercode_sidecar():
         "--port",
         "8000",
     ]
+
+
+def test_model_prep_configs_include_2048_individual_open_spiel_image():
+    cfg = _build_env_configs()[EnvironmentName.TWENTY_FORTY_EIGHT]
+
+    assert cfg.env_image == VALIDATOR_DOCKER_IMAGE_ENV
+    assert cfg.env_server_command is None
 
 
 def test_intercode_sidecar_formats_empty_exceptions(monkeypatch):
@@ -124,12 +132,13 @@ def test_start_env_sidecars_skips_in_harness_games(monkeypatch):
     env_url_map, containers = image_manager._start_env_sidecars(
         {
             EnvironmentName.OTHELLO: configs[EnvironmentName.OTHELLO],
+            EnvironmentName.TWENTY_FORTY_EIGHT: configs[EnvironmentName.TWENTY_FORTY_EIGHT],
             EnvironmentName.INTERCODE: configs[EnvironmentName.INTERCODE],
         },
         {},
     )
 
-    # The pyspiel game plays its baseline in-harness: no mcts-api sidecar, no URL.
+    # Pyspiel games play their baselines in-harness: no sidecar, no URL.
     assert calls == [VALIDATOR_DOCKER_IMAGE_INTERCODE]
     assert env_url_map == {EnvironmentName.INTERCODE: "http://10.0.0.42:8000"}
     assert len(containers) == 1
@@ -159,15 +168,15 @@ def test_start_env_sidecars_failure_degrades_instead_of_raising(monkeypatch):
 
 
 def test_in_harness_envs_match_agent_registry():
-    """The host-side EvalType.PVP discriminator must stay in lockstep with the
-    container-side agent registry, or envs get sidecars they don't use (or
-    worse, neither a sidecar nor an agent)."""
+    """PvP envs must stay in lockstep with the PvP agent registry."""
     from core.constants import ENVIRONMENT_CONFIGS
     from core.constants import EvalType
     from core.pvp.game_eval import _AGENT_REGISTRY
+    from core.pvp.game_eval import _INDIVIDUAL_AGENT_REGISTRY
 
     pvp_envs = {name for name, cfg in ENVIRONMENT_CONFIGS.items() if cfg.eval_type == EvalType.PVP}
     assert pvp_envs == set(_AGENT_REGISTRY)
+    assert set(_INDIVIDUAL_AGENT_REGISTRY) == {EnvironmentName.TWENTY_FORTY_EIGHT}
 
 
 def test_training_env_server_selection_skips_intercode(monkeypatch):

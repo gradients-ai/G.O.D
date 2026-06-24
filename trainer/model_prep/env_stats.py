@@ -27,10 +27,12 @@ from core.models.pvp_models import ChatCompletionConfig
 from core.pvp import constants as pvp_cst
 from core.pvp.baseline import run_mcts_baseline
 from core.pvp.baseline import supports_in_harness_baseline
-from core.pvp.sglang_launch import build_base_command
-from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.baseline import supports_mcts_baseline
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
+from core.pvp.individual import run_individual_open_spiel_eval
+from core.pvp.sglang_launch import build_base_command
+from core.pvp.sglang_parsers import tool_call_parser_for
 from trainer.model_prep.stats import compute_weight_stats
 
 
@@ -293,6 +295,41 @@ def _mcts_baseline_stats(
     return stats
 
 
+def _individual_open_spiel_stats(
+    env_name: EnvironmentName,
+    sglang_base_url: str,
+    model_name: str,
+    model_path: str,
+    num_episodes: int,
+) -> EnvStats:
+    """Play num_episodes single-player OpenSpiel games and summarize raw scores."""
+    config = ChatCompletionConfig(
+        inference_model=model_name,
+        tokenizer_repo=model_path,
+        base_url=sglang_base_url,
+        temperature=ENV_EVAL_TEMPERATURE,
+        read_timeout=pvp_cst.PVP_HTTP_READ_TIMEOUT_SECONDS,
+        max_retries=pvp_cst.PVP_HTTP_MAX_RETRIES,
+    )
+    client = create_client(config)
+    chat_fn = functools.partial(chat_completion, client)
+
+    try:
+        print(f"  {env_name.value}: playing {num_episodes} individual games...", flush=True)
+        result = run_individual_open_spiel_eval(
+            env_name=env_name,
+            chat_fn=chat_fn,
+            config=config,
+            num_games=num_episodes,
+            time_budget_seconds=ENV_BASELINE_TIME_BUDGET_SECONDS,
+        )
+        stats = _build_env_stats(result.scores)
+        print(f"  {env_name.value}: {result.num_games} games, mean={stats.mean_score:.3f}", flush=True)
+        return stats
+    finally:
+        client.close()
+
+
 # --- Main entry point ---
 
 async def compute_env_stats(
@@ -335,14 +372,23 @@ async def compute_env_stats(
                 # error handling.
                 try:
                     if supports_in_harness_baseline(env_name):
-                        all_stats[env_name] = _mcts_baseline_stats(
-                            env_name=env_name,
-                            sglang_base_url=sglang_base_url,
-                            model_name=model_name,
-                            model_path=model_path,
-                            num_episodes=cfg.num_episodes,
-                            eval_payload_extra=cfg.eval_payload_extra,
-                        )
+                        if supports_mcts_baseline(env_name):
+                            all_stats[env_name] = _mcts_baseline_stats(
+                                env_name=env_name,
+                                sglang_base_url=sglang_base_url,
+                                model_name=model_name,
+                                model_path=model_path,
+                                num_episodes=cfg.num_episodes,
+                                eval_payload_extra=cfg.eval_payload_extra,
+                            )
+                        else:
+                            all_stats[env_name] = _individual_open_spiel_stats(
+                                env_name=env_name,
+                                sglang_base_url=sglang_base_url,
+                                model_name=model_name,
+                                model_path=model_path,
+                                num_episodes=cfg.num_episodes,
+                            )
                     elif cfg.url:
                         all_stats[env_name] = await _play_episodes(
                             session=session,

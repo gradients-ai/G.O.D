@@ -458,10 +458,12 @@ def run_downloader_container(
 
 
 def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
-    """PvP (pyspiel) envs play their baseline in-process inside the model-prep
-    container (core.pvp MCTS baseline) and need no env server sidecar."""
+    """Pyspiel envs play their baseline in-process inside model-prep."""
     cfg = core_cst.ENVIRONMENT_CONFIGS.get(env_name)
-    return cfg is not None and cfg.eval_type == core_cst.EvalType.PVP
+    return cfg is not None and (
+        cfg.eval_type == core_cst.EvalType.PVP
+        or env_name == core_cst.EnvironmentName.TWENTY_FORTY_EIGHT
+    )
 
 
 def _start_env_sidecars(

@@ -24,14 +24,15 @@ from core.models.pvp_models import ChatFn
 from core.models.pvp_models import GameOutcome
 from core.models.pvp_models import GameScoringContext
 from core.models.pvp_models import MemoryArea
-from core.pvp.memory import SlotMemory
-from core.pvp.tokenizer_counter import load_token_counter
 from core.pvp import constants as cst
 from core.pvp.bot import LLMBot
 from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.game_eval import _evaluate_game_with_timeout
 from core.pvp.game_eval import config_id_for_seed
+from core.pvp.game_eval import supports_open_spiel_agent
+from core.pvp.memory import SlotMemory
 from core.pvp.scoring import determine_outcome
+from core.pvp.tokenizer_counter import load_token_counter
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,11 @@ class MctsBaselineResult(BaseModel):
 
 def supports_in_harness_baseline(env_name: EnvironmentName) -> bool:
     """True when env_name has a pyspiel agent and can be baselined in-process."""
+    return supports_open_spiel_agent(env_name)
+
+
+def supports_mcts_baseline(env_name: EnvironmentName) -> bool:
+    """True for two-player PvP games that can use the model-vs-MCTS baseline."""
     return env_name in _AGENT_REGISTRY
 
 
