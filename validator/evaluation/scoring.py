@@ -710,8 +710,10 @@ async def _run_env_tournament_eval(
 
     env_scores: list[EnvMinerScores] = []
 
+    # Shared by PvP and individual envs; empty for round-1 tasks.
+    base_chains = await _get_continuation_base_chains(task, miners, base_model, config)
+
     if pvp_envs:
-        base_chains = await _get_continuation_base_chains(task, miners, base_model, config)
         env_scores.extend(await _eval_pvp_envs(
             task_id=str(task.task_id), pvp_envs=pvp_envs, miners=miners,
             base_model=base_model, seed=seed, config=config,
@@ -722,6 +724,7 @@ async def _run_env_tournament_eval(
         env_scores.extend(await _eval_individual_envs(
             task_id=task.task_id, individual_envs=individual_envs, miners=miners,
             base_model=base_model, model_params=model_params, seed=seed, config=config,
+            base_chains=base_chains,
         ))
 
     standings = rank_weighted_standings(env_scores, miners.hotkeys, weights=task.environment_weights or None)
@@ -962,6 +965,7 @@ async def _eval_individual_envs(
     model_params: int,
     seed: int,
     config: Config,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> list[EnvMinerScores]:
     """Run per-miner containers for INDIVIDUAL-type envs, return per-env raw scores."""
     task_id_str = str(task_id)
@@ -979,6 +983,7 @@ async def _eval_individual_envs(
             env=env, task_id=task_id, task_id_str=task_id_str,
             miners=miners, base_model=base_model, model_params=model_params,
             seed=seed, config=config, scores=scores, db_scores=db_scores,
+            base_chains=base_chains,
         )
 
     # Re-fetch to get accurate n_attempts after dispatches
@@ -1042,6 +1047,7 @@ async def _dispatch_missing_individual(
     config: Config,
     scores: IndividualScoresByEnv,
     db_scores: list[PvPIndividualScoreDbRow],
+    base_chains: dict[str, list[str]] | None = None,
 ) -> IndividualScoresByEnv:
     """Deploy containers for missing individual scores on a single env."""
     env_config = core_cst.ENVIRONMENT_CONFIGS[env]
@@ -1068,6 +1074,7 @@ async def _dispatch_missing_individual(
         gpu_count=individual_gpu_count,
         task_id=task_id,
         psql_db=config.psql_db,
+        base_chains=base_chains,
     )
 
     # Persist scores for hotkeys that succeeded

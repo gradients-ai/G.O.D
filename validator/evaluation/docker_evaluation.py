@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 import uuid
 from uuid import UUID
@@ -659,11 +660,14 @@ async def run_evaluation_individual(
     gpu_count: int,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> IndividualEvalResult:
     """Run individual (per-miner) eval containers for a single environment.
 
     Each miner gets its own container. The container runs one model and returns
     a score via the standard eval_loss result format.
+
+    base_chains maps hotkey -> base_chain, piped to the container as BASE_CHAIN.
     """
     env_config = cst.ENVIRONMENT_CONFIGS[environment_name]
     if not env_config.tournament_eval_command:
@@ -681,10 +685,14 @@ async def run_evaluation_individual(
     }
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
+    base_chains = base_chains or {}
 
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
+        chain = base_chains.get(repo_to_hotkey.get(repo, repo))
+        if chain:
+            repo_env["BASE_CHAIN"] = json.dumps(chain)
         return repo_env
 
     repo_results = await run_basilica_eval_repos(
