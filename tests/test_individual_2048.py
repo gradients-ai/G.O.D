@@ -91,3 +91,30 @@ class TestTwentyFortyEightAgent:
 
         assert result.num_games == 1
         assert result.mean_score >= 0.0
+
+    def test_individual_runner_exposes_only_game_action_tool(self, monkeypatch):
+        monkeypatch.setattr(
+            TwentyFortyEightAgent,
+            "generate_params",
+            lambda self, config_id: TwentyFortyEightParams(max_tile=8),
+        )
+        tool_names_by_call = []
+        system_prompts = []
+
+        def recording_chat(config, messages, tools=None) -> ChatResult:
+            tool_names_by_call.append([tool.function.name for tool in tools or []])
+            system_prompts.append(messages[0].content)
+            return _first_legal_chat(config, messages, tools)
+
+        result = run_individual_open_spiel_eval(
+            env_name=EnvironmentName.TWENTY_FORTY_EIGHT,
+            chat_fn=recording_chat,
+            config=_config(),
+            num_games=1,
+            base_seed=1,
+        )
+
+        assert result.num_games == 1
+        assert tool_names_by_call
+        assert all(tool_names == ["game_action"] for tool_names in tool_names_by_call)
+        assert all("memory" not in (prompt or "").lower() for prompt in system_prompts)
