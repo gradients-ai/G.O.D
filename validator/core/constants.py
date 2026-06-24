@@ -303,16 +303,16 @@ TOURNAMENT_ENVIRONMENT_WEIGHT = 0.15
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
-# Tournaments start every week on these days and hours (UTC)
-# Environment tournaments: Monday at 14:00 UTC
+# Tournaments start every week on Monday, staggered by 2 hours (UTC)
+# Environment tournaments: Monday at 11:00 UTC
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0  # 0=Monday
-TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 14  # 0-23 (UTC time)
+TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 11  # 0-23 (UTC time)
 
-# Text tournaments: Thursday at 14:00 UTC
-TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 3  # 3=Thursday
-TOURNAMENT_SCHEDULE_TEXT_HOUR = 14  # 0-23 (UTC time)
-# Image tournaments: Thursday at 15:00 UTC
-TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 3  # 3=Thursday
+# Text tournaments: Monday at 13:00 UTC
+TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 0  # 0=Monday
+TOURNAMENT_SCHEDULE_TEXT_HOUR = 13  # 0-23 (UTC time)
+# Image tournaments: Monday at 15:00 UTC
+TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0  # 0=Monday
 TOURNAMENT_SCHEDULE_IMAGE_HOUR = 15  # 0-23 (UTC time)
 
 TOURNAMENT_INTERVAL_HOURS = (
@@ -552,6 +552,7 @@ from core.pvp.constants import PVP_TURN_MAX_TOKENS  # noqa: E402,F401
 from core.pvp.constants import PVP_TURN_TIMEOUT_SECONDS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_MEM_SLOTS  # noqa: E402,F401
 from core.pvp.constants import PVP_WORKING_SLOT_TOKENS  # noqa: E402,F401
+
 
 INDIVIDUAL_WIN_MARGIN = 0.015
 
