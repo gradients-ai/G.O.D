@@ -214,13 +214,9 @@ PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_IMAGE = 0.15
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO = 0.20
 # GRPO is the remainder of the text split (image is selected independently)
 PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO = (
-    1
-    - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
-    - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
+    1 - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT - PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 )
-PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = (
-    0.5  # person synth chance is 1 minus this for every image model type
-)
+PERCENTAGE_OF_IMAGE_SYNTHS_SHOULD_BE_STYLE = 0.5  # person synth chance is 1 minus this for every image model type
 PROBABILITY_STYLE_COMBINATION = 0.5
 IMAGE_SYNTH_CATEGORY_STYLE = "style"
 IMAGE_SYNTH_CATEGORY_PERSON = "person"
@@ -297,9 +293,9 @@ IMAGE_RESOLUTION_STEP = 64  # Ensures we get resolutions divisible by 64
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
 MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.16
-TOURNAMENT_TEXT_WEIGHT = 0.20
-TOURNAMENT_IMAGE_WEIGHT = 0.15
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.15
+TOURNAMENT_TEXT_WEIGHT = 0.35
+TOURNAMENT_IMAGE_WEIGHT = 0.2
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.2
 TOURNAMENT_INTERVAL_HOURS = 72
 
 # Tournament scheduling settings
@@ -488,11 +484,10 @@ ENV_EVAL_DEPLOYMENT_RETRY_DELAY = 1200
 ENV_EVAL_TASK_RETRY_DELAY = 10
 ENV_EVAL_TASK_MAX_RETRIES = 2
 ENV_EVAL_TASK_TIMEOUT = 150
-ENV_EVAL_SESSION_TIMEOUT = 4 * 60 * 60 # 4 hours
+ENV_EVAL_SESSION_TIMEOUT = 4 * 60 * 60  # 4 hours
 
 SGLANG_ENV_EVAL_EXTRA_CLI = (
-    "--attention-backend triton --prefill-attention-backend triton "
-    "--decode-attention-backend triton --sampling-backend pytorch"
+    "--attention-backend triton --prefill-attention-backend triton --decode-attention-backend triton --sampling-backend pytorch"
 )
 SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
 
