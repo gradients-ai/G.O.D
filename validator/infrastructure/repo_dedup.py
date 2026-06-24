@@ -350,17 +350,42 @@ def _import_claude_sdk():
 
 
 def _parse_verdict(text: str) -> tuple[DupRelationship, float, str]:
-    """Extract the strict JSON verdict object from the model's reply."""
-    start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError(f"no JSON object in verdict reply: {text[:200]!r}")
-    obj = json.loads(text[start : end + 1])
-    raw = str(obj["relationship"]).strip()
+    """Extract a verdict from the model's reply.
+
+    The judge is asked for a bare JSON object, but can wrap it in code fences or
+    emit small JSON-like malformations. Try strict JSON first, then regex fields.
+    """
+    cleaned = re.sub(r"```(?:json)?", "", text)
+    start, end = cleaned.find("{"), cleaned.rfind("}")
+    if start != -1 and end > start:
+        try:
+            obj = json.loads(cleaned[start : end + 1])
+            if isinstance(obj, dict) and "relationship" in obj:
+                return (
+                    _to_relationship(str(obj["relationship"]).strip()),
+                    float(obj.get("confidence", 0.0)),
+                    str(obj.get("reason", "")),
+                )
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    rel_m = re.search(r"""["']?relationship["']?\s*:\s*["']?(duplicate|distinct|drop_evasion)""", text, re.IGNORECASE)
+    if not rel_m:
+        raise ValueError(f"no relationship in verdict reply: {text[:200]!r}")
+    conf_m = re.search(r"""["']?confidence["']?\s*:\s*([0-9]*\.?[0-9]+)""", text)
+    reason_m = re.search(r"""["']?reason["']?\s*:\s*["'](.*?)["']\s*[,}\n]""", text, re.DOTALL)
+    return (
+        _to_relationship(rel_m.group(1).lower()),
+        float(conf_m.group(1)) if conf_m else 0.0,
+        reason_m.group(1) if reason_m else "",
+    )
+
+
+def _to_relationship(raw: str) -> DupRelationship:
     try:
-        relationship = DupRelationship(raw)
+        return DupRelationship(raw)
     except ValueError as exc:
         raise ValueError(f"invalid relationship {raw!r}") from exc
-    return relationship, float(obj.get("confidence", 0.0)), str(obj.get("reason", ""))
 
 
 async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runtime_context: str = "") -> PairVerdict:
@@ -390,7 +415,7 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
     )
 
     last_error: Exception | None = None
-    for attempt in range(2):
+    for attempt in range(4):
         result_text = ""
         async for message in query(prompt=prompt, options=options):
             if isinstance(message, ResultMessage):
@@ -461,6 +486,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
 
         dup_pairs: list[tuple[str, str]] = list(hash_pairs)
         evasion: set[str] = set()
+        unresolved: list[tuple[str, str]] = []
 
         # Collapse hash-duplicate clusters to one representative each so T2 only compares
         # representatives. hash_pairs already link every member to its rep, so a duplicate
@@ -471,21 +497,41 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             f"dedup T2: {len(representatives)} representatives after hash-collapse "
             f"({len(hash_pairs)} hash-dup pairs), {len(pairs_to_judge)} pairs to judge with Claude"
         )
-        for idx, (a, b) in enumerate(pairs_to_judge, 1):
+        total = len(pairs_to_judge)
+        sem = asyncio.Semaphore(t_cst.TOURN_DEDUP_CONCURRENCY)
+
+        async def _judge_one(idx: int, a: str, b: str) -> tuple[str, str, PairVerdict | None]:
             pa, pb = prepared[a], prepared[b]
-            logger.info(f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} — judging…")
-            started = time.monotonic()
-            file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
-            verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
-            verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
+            async with sem:
+                logger.info(f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} — judging...")
+                started = time.monotonic()
+                file_summary = await asyncio.to_thread(_file_summary, Path(str(pa.path)), Path(str(pb.path)))
+                try:
+                    verdict = await _judge_pair(temp_root, a, b, file_summary, runtime_context)
+                except Exception as exc:
+                    logger.error(
+                        f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} -> "
+                        f"UNRESOLVED ({exc}); skipping pair and flagging for manual review"
+                    )
+                    return (a, b, None)
+                verdict.reason = _sanitize_reason(verdict.reason, repo_tokens)
+                logger.info(
+                    f"dedup T2 pair {idx}/{total}: {a[:8]} vs {b[:8]} -> "
+                    f"{verdict.relationship.value} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
+                )
+                return (a, b, verdict)
+
+        judged = await asyncio.gather(*(_judge_one(i, a, b) for i, (a, b) in enumerate(pairs_to_judge, 1)))
+
+        for a, b, verdict in judged:
+            if verdict is None:
+                unresolved.append((a, b))
+                continue
             verdicts.append(verdict)
-            logger.info(
-                f"dedup T2 pair {idx}/{len(pairs_to_judge)}: {a[:8]} vs {b[:8]} → "
-                f"{verdict.relationship.value} (conf {verdict.confidence:.2f}) in {time.monotonic() - started:.0f}s"
-            )
             if verdict.relationship == DupRelationship.DUPLICATE:
                 dup_pairs.append((a, b))
             elif verdict.relationship == DupRelationship.DROP_EVASION:
+                pa, pb = prepared[a], prepared[b]
                 evasion.add(a if pa.content_chars >= pb.content_chars else b)
 
         clusters = []
@@ -505,6 +551,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
             flagged_hotkeys=sorted(flagged),
             evasion_hotkeys=sorted(evasion),
             unclonable_hotkeys=sorted(h for h, p in prepared.items() if not p.clone_ok),
+            unresolved_pairs=sorted(unresolved),
         )
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)

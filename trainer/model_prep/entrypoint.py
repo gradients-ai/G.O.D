@@ -17,6 +17,7 @@ from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
 from huggingface_hub import repo_exists
 from peft import PeftModel
+from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
@@ -91,7 +92,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
         base_model = AutoModelForCausalLM.from_pretrained(
-            real_base, torch_dtype=torch.float16, token=hf_token,
+            real_base, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
         )
         base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
@@ -225,6 +226,16 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
     print(f"Upload complete: {repo_id}")
 
 
+def _load_config_with_yarn_fix(model_path: str, hf_token: str):
+    """Load model config while avoiding a transformers YaRN head_dim=None crash."""
+    config = AutoConfig.from_pretrained(model_path, token=hf_token)
+    head_dim = config.head_dim if hasattr(config, "head_dim") else None
+    if head_dim is None and hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
+        config.head_dim = config.hidden_size // config.num_attention_heads
+        print(f"[model_prep] set head_dim={config.head_dim} (was None) to avoid YaRN rope crash", flush=True)
+    return config
+
+
 def main():
     t_total = time.time()
     args = parse_args()
@@ -241,18 +252,21 @@ def main():
     t0 = time.time()
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
+    model_config = _load_config_with_yarn_fix(model_path, hf_token)
+    # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
+    # fp16: bf16-native models can overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype=torch.float16, token=hf_token, device_map="auto",
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, torch_dtype=torch.float16, token=hf_token,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_path, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, torch_dtype="auto", token=hf_token)
     tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)

@@ -1,18 +1,27 @@
 #!/usr/bin/env python3
 
+import argparse
 import asyncio
 import os
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
+from typing import List
+from typing import Optional
 
 import asyncpg
-from rich.console import Console
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
 from dotenv import load_dotenv
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
 
 console = Console()
+
+TOURNAMENT_TYPES = {
+    "image": "image",
+    "text": "text",
+    "env": "environment",
+}
 
 
 #source .vali.env
@@ -38,16 +47,22 @@ class TournamentStatusSummary:
         if self.db_pool:
             await self.db_pool.close()
 
-    async def get_active_tournaments(self) -> List[Dict]:
+    async def get_active_tournaments(self, tournament_types: Optional[List[str]] = None) -> List[Dict]:
         """Get all active tournaments"""
         async with self.db_pool.acquire() as conn:
+            type_filter = ""
+            params = []
+            if tournament_types:
+                type_filter = "AND tournament_type = ANY($1::text[])"
+                params.append(tournament_types)
             query = """
                 SELECT tournament_id, tournament_type, status, created_at, updated_at
                 FROM tournaments 
                 WHERE status = 'active'
+                {type_filter}
                 ORDER BY created_at DESC
-            """
-            rows = await conn.fetch(query)
+            """.format(type_filter=type_filter)
+            rows = await conn.fetch(query, *params)
             return [dict(row) for row in rows]
 
     async def get_tournament_rounds(self, tournament_id: str) -> List[Dict]:
@@ -127,6 +142,26 @@ class TournamentStatusSummary:
             rows = await conn.fetch(query, tournament_id)
             return [dict(row) for row in rows]
 
+    async def get_pvp_pair_results(self, task_id: str) -> List[Dict]:
+        """Get PvP pair results for a tournament task"""
+        async with self.db_pool.acquire() as conn:
+            query = """
+                SELECT
+                    hotkey_a,
+                    hotkey_b,
+                    environment_name,
+                    model_a_wins,
+                    model_b_wins,
+                    draws,
+                    total_games,
+                    status
+                FROM pvp_pair_results
+                WHERE task_id = $1
+                ORDER BY environment_name, hotkey_a, hotkey_b
+            """
+            rows = await conn.fetch(query, task_id)
+            return [dict(row) for row in rows]
+
     def format_duration(self, start_time, end_time=None) -> str:
         """Format duration between two timestamps"""
         if not start_time:
@@ -176,6 +211,34 @@ class TournamentStatusSummary:
             updated = tournament["updated_at"].strftime("%Y-%m-%d %H:%M") if tournament["updated_at"] else "N/A"
 
             table.add_row(tournament["tournament_id"], tournament["tournament_type"], tournament["status"], created, updated, age)
+
+        return table
+
+    def create_pvp_results_table(self, task: Dict, pvp_results: List[Dict]) -> Table:
+        """Create a table showing PvP pair results for one environment task"""
+        table = Table(title=f"⚔️ PvP Results - Task {task['task_id']}")
+        table.add_column("Environment", style="cyan")
+        table.add_column("Hotkey A", style="magenta", no_wrap=True)
+        table.add_column("Hotkey B", style="magenta", no_wrap=True)
+        table.add_column("A Wins", style="green", justify="right")
+        table.add_column("B Wins", style="green", justify="right")
+        table.add_column("Draws", style="blue", justify="right")
+        table.add_column("Games", style="blue", justify="right")
+        table.add_column("Status", style="green")
+
+        for result in pvp_results:
+            status = result["status"]
+            status_style = "green" if status == "complete" else "yellow" if status == "pending" else "blue"
+            table.add_row(
+                result["environment_name"],
+                result["hotkey_a"],
+                result["hotkey_b"],
+                str(result["model_a_wins"]),
+                str(result["model_b_wins"]),
+                str(result["draws"]),
+                str(result["total_games"]),
+                f"[{status_style}]{status}[/{status_style}]",
+            )
 
         return table
 
@@ -231,7 +294,13 @@ class TournamentStatusSummary:
             )
 
             table.add_row(
-                task_id, task["task_type"], f"[{status_style}]{task['status']}[/{status_style}]", pair_group, created, duration, training_hours
+                task_id,
+                task["task_type"],
+                f"[{status_style}]{task['status']}[/{status_style}]",
+                pair_group,
+                created,
+                duration,
+                training_hours,
             )
 
         return table
@@ -320,13 +389,13 @@ class TournamentStatusSummary:
 
         return table
 
-    async def generate_summary(self):
+    async def generate_summary(self, tournament_types: Optional[List[str]] = None, include_pvp: bool = False):
         """Generate comprehensive tournament summary"""
         try:
             await self.connect_db()
 
             # Get active tournaments
-            tournaments = await self.get_active_tournaments()
+            tournaments = await self.get_active_tournaments(tournament_types)
 
             if not tournaments:
                 console.print("No active tournaments found.", style="yellow")
@@ -362,6 +431,16 @@ class TournamentStatusSummary:
                 if tasks:
                     console.print(self.create_tasks_table(tasks))
                     console.print()
+
+                    if include_pvp and tournament["tournament_type"] == "environment":
+                        for task in tasks:
+                            pvp_results = await self.get_pvp_pair_results(str(task["task_id"]))
+                            if pvp_results:
+                                console.print(self.create_pvp_results_table(task, pvp_results))
+                                console.print()
+                            else:
+                                console.print(f"No PvP results found for task {task['task_id']}.", style="yellow")
+                                console.print()
 
                 # Get and display training summary
                 training_data = await self.get_training_status(tournament_id)
@@ -400,13 +479,45 @@ class TournamentStatusSummary:
             await self.close_db()
 
 
+def parse_args():
+    """Parse CLI arguments"""
+    parser = argparse.ArgumentParser(description="Show active tournament status summaries.")
+    parser.add_argument("--image", action="store_true", help="Show image tournaments.")
+    parser.add_argument("--text", action="store_true", help="Show text tournaments.")
+    parser.add_argument("--env", action="store_true", help="Show environment tournaments.")
+    parser.add_argument("--all", action="store_true", help="Show all tournament types.")
+    parser.add_argument("--pvp", action="store_true", help="Show PvP result tables for environment tournament tasks.")
+    return parser.parse_args()
+
+
+def selected_tournament_types(args) -> List[str]:
+    """Resolve tournament type flags, defaulting to all."""
+    selected = [
+        tournament_type
+        for flag, tournament_type in TOURNAMENT_TYPES.items()
+        if getattr(args, flag)
+    ]
+
+    if args.all or not selected:
+        return list(TOURNAMENT_TYPES.values())
+
+    return selected
+
+
 async def main():
     """Main function"""
+    args = parse_args()
+    tournament_types = selected_tournament_types(args)
+
     console.print("🏆 Tournament Status Summary Tool", style="bold cyan")
     console.print("=" * 50, style="dim")
+    console.print(f"Types: {', '.join(tournament_types)}", style="dim")
+    if args.pvp and "environment" not in tournament_types:
+        console.print("--pvp is only applicable to environment tournaments.", style="yellow")
+    console.print()
 
     summary_tool = TournamentStatusSummary()
-    await summary_tool.generate_summary()
+    await summary_tool.generate_summary(tournament_types, args.pvp)
 
 
 if __name__ == "__main__":

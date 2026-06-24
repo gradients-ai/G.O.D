@@ -295,15 +295,17 @@ def calculate_tournament_type_scores_from_data(
 
 
 def exponential_decline_mapping(total_participants: int, rank: float) -> float:
-    """Exponential weight decay based on rank."""
+    """Exponential weight decay based on rank, paying only configured top ranks."""
     if total_participants <= 1:
         return 1.0
 
-    # Calculate all weights for normalization
-    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, total_participants + 1)]
+    paid_ranks = min(total_participants, cts.TOURNAMENT_PAID_RANKS)
+    if rank > paid_ranks:
+        return 0.0
+
+    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, paid_ranks + 1)]
     total_sum = sum(all_weights)
 
-    # Return normalized weight to ensure sum = 1
     raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1)
     return raw_weight / total_sum
 

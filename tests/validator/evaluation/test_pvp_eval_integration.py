@@ -168,6 +168,34 @@ async def test_pvp_env_eval_requests_two_h100(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_continuation_base_chains_only_for_lora(monkeypatch):
+    raw_foundation = "org/foundation"
+    augmented_foundation = "org/foundation-aug"
+    starting = {
+        "hk_cont": "org/hk_cont-round1",
+        "hk_round1": None,
+        "hk_augmented": augmented_foundation,
+        "hk_fallback": raw_foundation,
+        "hk_fullmodel": "org/hk-full-ft",
+    }
+    non_lora = {"org/hk-full-ft"}
+
+    async def fake_get_starting_model_repo(task_id, hotkey, psql_db):
+        return starting[hotkey]
+
+    monkeypatch.setattr(scoring, "get_starting_model_repo", fake_get_starting_model_repo)
+    monkeypatch.setattr(scoring, "check_for_lora", lambda repo, local_files_only=False: repo not in non_lora)
+
+    task = SimpleNamespace(task_id="task-1", model_id=raw_foundation)
+    miners = MinerRepos(by_hotkey={hk: f"org/{hk}-out" for hk in starting})
+    config = SimpleNamespace(psql_db=None)
+
+    chains = await scoring._get_continuation_base_chains(task, miners, augmented_foundation, config)
+
+    assert chains == {"hk_cont": ["org/hk_cont-round1"]}
+
+
+@pytest.mark.asyncio
 async def test_individual_env_eval_requests_one_h100(monkeypatch):
     captured_kwargs = {}
 
@@ -195,9 +223,11 @@ async def test_individual_env_eval_requests_one_h100(monkeypatch):
         config=SimpleNamespace(psql_db=object()),
         scores=IndividualScoresByEnv(),
         db_scores=[],
+        base_chains={"hk_a": ["org/hk_a-round1"]},
     )
 
     assert captured_kwargs["gpu_count"] == validator_cst.INDIVIDUAL_BASILICA_GPU_COUNT
+    assert captured_kwargs["base_chains"] == {"hk_a": ["org/hk_a-round1"]}
 
 
 def test_tournament_group_slot_envs_include_individual_envs():

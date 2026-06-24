@@ -79,7 +79,12 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3
                 raise
 
 
-def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = "/tmp/merged_model") -> str:
+def _merge_base_and_lora(
+    base_model_path: str,
+    lora_dir: str,
+    output_dir: str = "/tmp/merged_model",
+    device: str | None = None,
+) -> str:
     needs_install = (
         importlib.util.find_spec("peft") is None
         or importlib.util.find_spec("accelerate") is None
@@ -114,7 +119,7 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         base_model_path,
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
-        device_map="cuda:0" if torch.cuda.is_available() else "auto",
+        device_map=(device or "cuda:0") if torch.cuda.is_available() else "auto",
         trust_remote_code=True,
     )
     logger.info("eval_setup merge: base weights in memory in %.1fs", time.time() - t0)
@@ -153,6 +158,9 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
         time.time() - t3,
         time.time() - merge_t0,
     )
+    del base, model, merged
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return output_dir
 
 
@@ -433,6 +441,8 @@ async def _run() -> None:
             raise ValueError("MODELS is required and must contain a single repo")
 
         original_model = os.getenv("ORIGINAL_MODEL", model_repo)
+        base_chain_raw = os.getenv("BASE_CHAIN", "")
+        base_chain = json.loads(base_chain_raw) if base_chain_raw.strip() else []
         base_seed = int(os.getenv("EVAL_SEED", str(vcst.ENV_EVAL_DEFAULT_SEED)))
         temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
 
@@ -452,7 +462,7 @@ async def _run() -> None:
 
         logger.info(
             "eval_setup config: env=%s num_seeds=%s task_id_range=(%s,%s) model_repo=%s original_model=%s "
-            "eval_seed=%s temperature=%s",
+            "eval_seed=%s temperature=%s base_chain=%s",
             env_name,
             num_seeds,
             task_id_min,
@@ -461,6 +471,7 @@ async def _run() -> None:
             original_model,
             base_seed,
             temperature,
+            base_chain,
         )
 
         t_det = time.time()
@@ -487,9 +498,16 @@ async def _run() -> None:
                     original_model,
                     model_repo,
                 )
-                model_path_for_sglang = await asyncio.to_thread(
-                    _download_model_with_retry, original_model
-                )
+                if base_chain:
+                    from validator.evaluation.pvp.materialize import materialize_base_model
+
+                    model_path_for_sglang = await asyncio.to_thread(
+                        materialize_base_model, original_model, base_chain, "cand"
+                    )
+                else:
+                    model_path_for_sglang = await asyncio.to_thread(
+                        _download_model_with_retry, original_model
+                    )
                 lora_dir = "/lora/trained_lora"
                 await asyncio.to_thread(
                     _download_lora_with_retry, model_repo, lora_dir
@@ -517,9 +535,16 @@ async def _run() -> None:
                     original_model,
                     model_repo,
                 )
-                base_path = await asyncio.to_thread(
-                    _download_model_with_retry, original_model
-                )
+                if base_chain:
+                    from validator.evaluation.pvp.materialize import materialize_base_model
+
+                    base_path = await asyncio.to_thread(
+                        materialize_base_model, original_model, base_chain, "cand"
+                    )
+                else:
+                    base_path = await asyncio.to_thread(
+                        _download_model_with_retry, original_model
+                    )
                 lora_temp_dir = "/tmp/lora/trained_lora"
                 await asyncio.to_thread(
                     _download_lora_with_retry, model_repo, lora_temp_dir

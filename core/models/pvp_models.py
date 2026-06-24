@@ -127,7 +127,15 @@ class PvPModelSpec(PvPBaseModel):
 
     repo: str = Field(description="HuggingFace model repository (e.g. 'org/model-name')")
     original_model: str = Field(
-        description="Base model repository, used for LoRA detection"
+        description="Foundation model repository (the root base), used for LoRA detection"
+    )
+    base_chain: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Adapter repos to merge onto `original_model` before applying `repo`, so a "
+            "continuation miner is served on the base it actually trained on. Empty for "
+            "round-1 models. A list supports deeper chains."
+        ),
     )
     gpu_id: int | None = Field(
         default=None, ge=0, description="GPU device ID. Defaults to 0 for model_a, 1 for model_b"
@@ -354,6 +362,7 @@ class PvPPairDbRow(BaseModel):
     draws: int = 0
     total_games: int = 0
     n_attempts: int = 0
+    deployment_id: str | None = None
     status: PvPStatus = PvPStatus.PENDING
 
     @property

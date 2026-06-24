@@ -191,6 +191,7 @@ class InMemoryTournamentStore:
         model_b_wins = env_result.model_a_wins if swapped else env_result.model_b_wins
         key = (task_id, hotkey_a, hotkey_b, environment_name)
         attempts = self.pvp_rows[key].n_attempts if key in self.pvp_rows else 0
+        deployment_id = self.pvp_rows[key].deployment_id if key in self.pvp_rows else None
         self.pvp_rows[key] = PvPPairDbRow(
             task_id=task_id,
             hotkey_a=hotkey_a,
@@ -201,8 +202,22 @@ class InMemoryTournamentStore:
             draws=env_result.draws,
             total_games=env_result.total_games,
             n_attempts=attempts,
+            deployment_id=deployment_id,
             status=PvPStatus.COMPLETE,
         )
+
+    async def set_pvp_pair_deployment_id(
+        self,
+        task_id: str,
+        hotkey_a: str,
+        hotkey_b: str,
+        deployment_id: str | None,
+        psql_db: Any = None,
+    ) -> None:
+        sorted_a, sorted_b = sorted([hotkey_a, hotkey_b])
+        for key, row in list(self.pvp_rows.items()):
+            if key[0] == task_id and key[1] == sorted_a and key[2] == sorted_b:
+                self.pvp_rows[key] = row.model_copy(update={"deployment_id": deployment_id})
 
     async def increment_pvp_pair_attempts(
         self,
@@ -414,6 +429,7 @@ def install_in_memory_patches(
     scoring.tournament_sql.get_pvp_pair_results = store.get_pvp_pair_results
     scoring.tournament_sql.ensure_pvp_pairs_exist = store.ensure_pvp_pairs_exist
     scoring.tournament_sql.save_pvp_pair_result = store.save_pvp_pair_result
+    scoring.tournament_sql.set_pvp_pair_deployment_id = store.set_pvp_pair_deployment_id
     scoring.tournament_sql.increment_pvp_pair_attempts = store.increment_pvp_pair_attempts
     scoring.tournament_sql.ensure_individual_scores_exist = store.ensure_individual_scores_exist
     scoring.tournament_sql.get_individual_scores = store.get_individual_scores

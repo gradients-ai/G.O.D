@@ -77,7 +77,15 @@ jobs:
                   "patterns": [
                       "validator/evaluation/**",
                       "ops/docker/validator.dockerfile",
+                      "ops/docker/requirements/validator.txt",
                       ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
                   ],
               },
               {
@@ -88,7 +96,15 @@ jobs:
                   "patterns": [
                       "validator/evaluation/**",
                       "ops/docker/validator-diffusion.dockerfile",
+                      "ops/docker/requirements/validator.txt",
                       ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
                   ],
               },
               {
@@ -99,7 +115,15 @@ jobs:
                   "patterns": [
                       "validator/evaluation/**",
                       "ops/docker/validator-env.dockerfile",
+                      "pyproject.toml",
                       ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
                   ],
               },
               {
@@ -111,7 +135,15 @@ jobs:
                       "validator/evaluation/**",
                       "ops/docker/validator-intercode.dockerfile",
                       "ops/docker/intercode_build_fs.sh",
+                      "pyproject.toml",
                       ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
                   ],
               },
               {
@@ -123,7 +155,15 @@ jobs:
                       "validator/evaluation/**",
                       "core/pvp/**",
                       "ops/docker/pvp-eval.dockerfile",
+                      "core/pvp/game_prompts.yml",
                       ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
                   ],
               },
               {
@@ -184,14 +224,14 @@ jobs:
           selected = []
           for image in images:
               if force_all or any(
-                  is_match(path, pattern)
+                  any(is_match(path, pattern) for pattern in image["patterns"])
+                  and not any(is_match(path, pattern) for pattern in image.get("exclude_patterns", []))
                   for path in changed_files
-                  for pattern in image["patterns"]
               ):
                   selected.append({
                       key: value
                       for key, value in image.items()
-                      if key != "patterns"
+                      if key not in {"patterns", "exclude_patterns"}
                   })
 
           matrix = {"include": selected}
@@ -224,6 +264,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euxo pipefail
+          df -h
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo docker image prune -af || true
+          df -h
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

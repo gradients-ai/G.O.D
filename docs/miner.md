@@ -51,9 +51,9 @@ Tournament scheduling is weekly and independent for each tournament type. Times 
 
 | Tournament type | Scheduled start |
 | --- | --- |
-| Environment | Monday at 14:00 UTC |
-| Text | Thursday at 14:00 UTC |
-| Image | Thursday at 15:00 UTC |
+| Environment | Monday at 11:00 UTC |
+| Text | Monday at 13:00 UTC |
+| Image | Monday at 15:00 UTC |
 
 The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
 
@@ -95,9 +95,9 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 
 | Tournament type | Fee |
 | --- | --- |
-| Text | 0.20 TAO |
-| Image | 0.15 TAO |
-| Environment | 0.20 TAO |
+| Text | 0.25 TAO |
+| Image | 0.20 TAO |
+| Environment | 0.25 TAO |
 
 Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
 
@@ -455,13 +455,13 @@ Current base and cap weights in `validator/scoring/constants.py`:
 
 | Tournament type | Base weight | Max weight |
 | --- | --- | --- |
-| Text | 0.15 | 0.48 |
-| Image | 0.125 | 0.32 |
+| Text | 0.20 | 0.48 |
+| Image | 0.15 | 0.32 |
 | Environment | 0.15 | 0.16 |
 
 Active tournament participants receive `0.0001` weight each. Undistributed weight goes to the burn hotkey.
 
-Within a tournament, ranked participants are distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.3`.
+Within a tournament, only the top two ranks are paid, distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` for an 80/20 split.
 
 Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.05` performance threshold. The excess is multiplied by `2.0`, capped by tournament type, and reduced by time-based champion decay of `0.0033` per day after the configured decay start date.
 

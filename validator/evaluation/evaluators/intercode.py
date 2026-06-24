@@ -60,6 +60,7 @@ from core.pvp.chat import chat_completion
 from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
+from validator.evaluation.pvp.materialize import materialize_base_model
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
 
@@ -917,6 +918,8 @@ async def _run() -> None:
             raise ValueError("MODELS is required and must contain a single repo")
 
         original_model = os.getenv("ORIGINAL_MODEL", model_repo)
+        base_chain_raw = os.getenv("BASE_CHAIN", "")
+        base_chain = json.loads(base_chain_raw) if base_chain_raw.strip() else []
         base_seed = int(os.getenv("EVAL_SEED", str(DEFAULT_BASE_SEED)))
         temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(DEFAULT_TEMPERATURE)))
 
@@ -934,8 +937,8 @@ async def _run() -> None:
         task_ids_to_test = seed_generator.sample(range(task_id_min, task_id_max + 1), num_seeds)
         logger.info(
             "eval_setup config: env=%s num_seeds=%s task_id_range=(%s,%s) model_repo=%s original_model=%s "
-            "eval_seed=%s temperature=%s",
-            env_name, num_seeds, task_id_min, task_id_max, model_repo, original_model, base_seed, temperature,
+            "eval_seed=%s temperature=%s base_chain=%s",
+            env_name, num_seeds, task_id_min, task_id_max, model_repo, original_model, base_seed, temperature, base_chain,
         )
 
         # LoRA detection (matches eval_environment.py).
@@ -943,14 +946,19 @@ async def _run() -> None:
         should_merge_lora = False
         if is_lora:
             should_merge_lora = await asyncio.to_thread(check_lora_has_added_tokens, model_repo, False)
-        logger.info("eval_setup LoRA: is_lora=%s merge=%s", is_lora, should_merge_lora)
+        logger.info("eval_setup LoRA: is_lora=%s merge=%s base_chain=%s", is_lora, should_merge_lora, base_chain)
 
         inference_model_name = model_repo
         model_path_for_sglang = model_repo
         sglang_command = os.getenv("SGLANG_START_CMD")
         if not sglang_command:
             if is_lora and not should_merge_lora:
-                model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, original_model)
+                if base_chain:
+                    model_path_for_sglang = await asyncio.to_thread(
+                        materialize_base_model, original_model, base_chain, "cand"
+                    )
+                else:
+                    model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, original_model)
                 lora_dir = "/lora/trained_lora"
                 await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_dir)
                 for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
@@ -970,7 +978,12 @@ async def _run() -> None:
                     + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
                 )
             elif is_lora and should_merge_lora:
-                base_path = await asyncio.to_thread(_download_model_with_retry, original_model)
+                if base_chain:
+                    base_path = await asyncio.to_thread(
+                        materialize_base_model, original_model, base_chain, "cand"
+                    )
+                else:
+                    base_path = await asyncio.to_thread(_download_model_with_retry, original_model)
                 lora_temp_dir = "/tmp/lora/trained_lora"
                 await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_temp_dir)
                 model_path_for_sglang = await asyncio.to_thread(_merge_base_and_lora, base_path, lora_temp_dir)

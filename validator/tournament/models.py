@@ -719,3 +719,4 @@ class DedupResult(BaseModel):
     flagged_hotkeys: list[str] = []
     evasion_hotkeys: list[str] = []
     unclonable_hotkeys: list[str] = []
+    unresolved_pairs: list[tuple[str, str]] = []

@@ -6,6 +6,7 @@ from core.models.image_models import ImageModelType
 from core.models.task_models import TaskStatus
 from validator.tasks.models import ImageRawTask
 from validator.tasks.requests import prepare_image_task_request
+from validator.tasks.synthetics.diffusion import _image_competition_hours_for_dataset_size
 
 
 def test_prepare_image_task_request_propagates_trigger_word():
@@ -27,3 +28,9 @@ def test_prepare_image_task_request_propagates_trigger_word():
     assert request.trigger_word == "glimmerforge"
     assert request.dataset_zip == "s3://bucket/images.zip"
     assert request.model_type == ImageModelType.FLUX
+
+
+def test_image_competition_hours_scale_with_dataset_size():
+    assert _image_competition_hours_for_dataset_size(10) == 0.5
+    assert _image_competition_hours_for_dataset_size(30) == 0.75
+    assert _image_competition_hours_for_dataset_size(50) == 1.0

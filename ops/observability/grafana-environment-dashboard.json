@@ -81,7 +81,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by(model) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
+          "expr": "sum by(model) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", deployment_id=~\".*${deployment_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
           "instant": false,
           "legendFormat": "{{model}}",
           "refId": "A"
@@ -183,7 +183,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by (repo_id) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
+          "expr": "sum by (repo_id) (count_over_time({job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", deployment_id=~\".*${deployment_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" [10m]))",
           "instant": true,
           "legendFormat": "{{repo_id}}",
           "refId": "A"
@@ -228,7 +228,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"${search}\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", deployment_id=~\".*${deployment_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"${search}\"",
           "queryType": "range",
           "refId": "A"
         }
@@ -270,7 +270,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)error\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", deployment_id=~\".*${deployment_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)error\"",
           "refId": "A"
         }
       ],
@@ -311,7 +311,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", eval_id=~\".*${eval_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)(score|summary|completed|failed)\"",
+          "expr": "{job=\"environment-evaluation\", repo_id=~\".*${repo_id_search}.*\", deployment_id=~\".*${deployment_id_search}.*\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\"} !~ \"${deploy_log_exclude}\" |~ \"(?i)(score|summary|completed|failed)\"",
           "refId": "A"
         }
       ],
@@ -407,8 +407,8 @@
           "text": "",
           "value": ""
         },
-        "label": "Eval ID Search",
-        "name": "eval_id_search",
+        "label": "Deployment ID Search",
+        "name": "deployment_id_search",
         "options": [
           {
             "selected": true,

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import random
 import uuid
 from uuid import UUID
@@ -8,6 +9,7 @@ import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
 from core.logging import get_environment_logger
 from core.logging import get_logger
+from core.logging import update_environment_logger_labels
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
 from core.models.dataset_models import EnvironmentDatasetType
@@ -19,6 +21,7 @@ from core.models.payload_models import DockerEvaluationResults
 from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
+from validator.db.sql import tournaments as tournament_sql
 from validator.evaluation.basilica import EvaluationCapacityUnavailable
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.basilica import _BasilicaEvalContext
@@ -56,6 +59,10 @@ except ImportError:
 
 
 logger = get_logger(__name__)
+
+
+def _deployment_url(deployment) -> str | None:
+    return getattr(deployment, "url", None)
 
 
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
@@ -371,6 +378,19 @@ async def _persist_pvp_deployment_id(
         ctx.eval_logger,
         ctx.repo,
     )
+    if len(hotkeys) == 2:
+        await _db_call_with_retry(
+            lambda: tournament_sql.set_pvp_pair_deployment_id(
+                str(task_id),
+                hotkeys[0],
+                hotkeys[1],
+                deployment_name,
+                psql_db,
+            ),
+            "set_pvp_pair_deployment_id",
+            ctx.eval_logger,
+            ctx.repo,
+        )
     ctx.log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
 
 
@@ -398,6 +418,10 @@ async def _deploy_pvp_eval(
     command = ["python", "-m", "validator.evaluation.pvp"]
     source = create_basilica_eval_runner_source(command, vcst.PVP_RESULTS_PATH)
 
+    existing_deployment_name = await _db_read_with_retry(
+        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
+        "load_shared_eval_deployment_id",
+    )
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
         name=f"pvp-{label}-{eval_id[:8]}",
@@ -406,6 +430,9 @@ async def _deploy_pvp_eval(
         model=pvp_config.base_model or "",
         task_type=TaskType.ENVIRONMENTTASK.value,
         task_id=str(task_id) if task_id else "unknown",
+        hotkey_a=hotkeys[0] if len(hotkeys) > 0 else None,
+        hotkey_b=hotkeys[1] if len(hotkeys) > 1 else None,
+        deployment_id=existing_deployment_name,
     )
 
     def log_step(step: str, **fields) -> None:
@@ -418,10 +445,6 @@ async def _deploy_pvp_eval(
         log_eval_step=log_step,
     )
 
-    existing_deployment_name = await _db_read_with_retry(
-        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
-        "load_shared_eval_deployment_id",
-    )
     if existing_deployment_name:
         resume_deployment = await _get_healthy_existing_basilica_deployment(
             existing_deployment_name=existing_deployment_name,
@@ -429,6 +452,11 @@ async def _deploy_pvp_eval(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=deployment_name,
+                deployment_url=_deployment_url(deployment),
+            )
             result = await _poll_eval_deployment(
                 ctx=ctx,
                 client=client,
@@ -463,6 +491,7 @@ async def _deploy_pvp_eval(
         deployment = None
         deployment_name = str(uuid.uuid4())
         try:
+            update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
             client = basilica.BasilicaClient()
@@ -517,6 +546,11 @@ async def _deploy_pvp_eval(
                     "gpu_models": vcst.BASILICA_GPU_MODELS,
                     "min_gpu_memory_gb": vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
                 },
+            )
+            update_environment_logger_labels(
+                eval_logger,
+                deployment_id=resolved_deployment_name,
+                deployment_url=_deployment_url(deployment),
             )
             log_step("deploy_complete", deployment=resolved_deployment_name)
             if resolved_deployment_name != deployment_name:
@@ -624,11 +658,14 @@ async def run_evaluation_individual(
     gpu_count: int,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> IndividualEvalResult:
     """Run individual (per-miner) eval containers for a single environment.
 
     Each miner gets its own container. The container runs one model and returns
     a score via the standard eval_loss result format.
+
+    base_chains maps hotkey -> adapter lineage, piped to the container as BASE_CHAIN.
     """
     env_config = env_cst.ENVIRONMENT_CONFIGS[environment_name]
     if not env_config.tournament_eval_command:
@@ -646,10 +683,14 @@ async def run_evaluation_individual(
     }
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
+    base_chains = base_chains or {}
 
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
+        chain = base_chains.get(repo_to_hotkey.get(repo, repo))
+        if chain:
+            repo_env["BASE_CHAIN"] = json.dumps(chain)
         return repo_env
 
     repo_results = await run_basilica_eval_repos(
@@ -698,10 +739,14 @@ async def run_evaluation_pvp_pair(
     temperature: float = 0.0,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
+    base_chain_a: list[str] | None = None,
+    base_chain_b: list[str] | None = None,
 ) -> PvPGroupResults:
     """Run PvP 1v1 pair evaluation via Basilica.
 
     Returns PvPGroupResults (single pair) for consistent downstream processing.
+
+    base_chain_a/base_chain_b reconstruct continuation miners' trained bases.
     """
     matchups = {
         env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
@@ -709,8 +754,8 @@ async def run_evaluation_pvp_pair(
     }
     pvp_config = PvPEvalConfig(
         mode=PvPMode.PAIR,
-        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model),
-        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model),
+        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model, base_chain=base_chain_a or []),
+        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model, base_chain=base_chain_b or []),
         matchups=matchups,
         seed=seed,
         temperature=temperature,

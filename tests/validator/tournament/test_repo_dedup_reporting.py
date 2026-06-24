@@ -1,3 +1,4 @@
+from validator.infrastructure.repo_dedup import _parse_verdict
 from validator.infrastructure.repo_dedup import render_report
 from validator.tournament.models import DedupResult
 from validator.tournament.models import DedupTier
@@ -50,3 +51,23 @@ def test_render_report_can_include_distinct_verdicts_for_dryrun():
 
     assert "## All pairwise verdicts" in report
     assert "private checkpoint-selection strategy" in report
+
+
+def test_parse_verdict_accepts_fenced_json():
+    verdict = _parse_verdict(
+        """```json
+        {"relationship": "duplicate", "confidence": 0.93, "reason": "same training flow"}
+        ```"""
+    )
+
+    assert verdict == (DupRelationship.DUPLICATE, 0.93, "same training flow")
+
+
+def test_parse_verdict_accepts_single_quote_fallback():
+    relationship, confidence, reason = _parse_verdict(
+        "{'relationship': 'distinct', 'confidence': 0.71, 'reason': 'different optimizer'}"
+    )
+
+    assert relationship == DupRelationship.DISTINCT
+    assert confidence == 0.71
+    assert reason == "different optimizer"
