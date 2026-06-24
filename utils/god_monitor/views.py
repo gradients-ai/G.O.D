@@ -29,6 +29,20 @@ def _tag(status: str | None) -> str:
     return f"[{style}]{status}[/{style}]"
 
 
+def link(url: str | None) -> str:
+    """Render a URL as a clickable terminal hyperlink (OSC-8) when possible.
+
+    The full URL stays as the visible text so it is selectable/copyable even in
+    terminals that don't support clickable links.
+    """
+    if not url:
+        return "-"
+    text = str(url)
+    if text.startswith(("http://", "https://")):
+        return f"[link={text}]{text}[/link]"
+    return text
+
+
 def fmt_dt(value) -> str:
     if not value:
         return "N/A"
@@ -130,27 +144,30 @@ def rounds_table(rounds) -> None:
 
 
 def participants_table(participants) -> None:
+    """Line-based layout so the full repo URL is always visible / copyable.
+
+    A wide table squeezes the 48-char ss58 hotkey against the URL and truncates
+    it; printing the repo on its own line keeps the whole URL selectable and the
+    clickable hyperlink intact regardless of terminal width.
+    """
     if not participants:
         console.print("No participants.", style="yellow")
         return
-    table = Table(title="Participant Repos")
-    table.add_column("Hotkey", style="magenta", no_wrap=True)
-    table.add_column("Training Repo", style="cyan")
-    table.add_column("Commit", style="dim", no_wrap=True)
-    table.add_column("Backup Repo", style="cyan")
-    table.add_column("Eliminated In", style="yellow", no_wrap=True)
-    table.add_column("Final Pos", justify="right")
+    console.print(f"[bold]Participant Repos[/bold] ({len(participants)})\n")
     for p in participants:
-        commit = (p.training_commit_hash or "")[:10]
-        table.add_row(
-            p.hotkey,
-            p.training_repo or "-",
-            commit or "-",
-            p.backup_repo or "-",
-            p.eliminated_in_round_id or "-",
-            str(p.final_position) if p.final_position is not None else "-",
-        )
-    console.print(table)
+        meta = []
+        if p.training_commit_hash:
+            meta.append(f"commit {p.training_commit_hash[:10]}")
+        if p.final_position is not None:
+            meta.append(f"pos {p.final_position}")
+        if p.eliminated_in_round_id:
+            meta.append(f"eliminated {p.eliminated_in_round_id}")
+        meta_str = f"  [dim]({', '.join(meta)})[/dim]" if meta else ""
+        console.print(f"[magenta]{p.hotkey}[/magenta]{meta_str}")
+        console.print(f"    repo:   {link(p.training_repo)}")
+        if p.backup_repo:
+            console.print(f"    backup: {link(p.backup_repo)}")
+        console.print()
 
 
 def tasks_table(rows: list[dict], title: str = "Tasks") -> None:
@@ -205,7 +222,7 @@ def training_details_table(rows: list[dict]) -> None:
     table.add_column("Status")
     table.add_column("Attempts", justify="right")
     table.add_column("Updated", style="yellow")
-    table.add_column("Repo", style="green")
+    table.add_column("Repo", style="green", overflow="fold")
     for r in rows:
         repo = r.get("submission_repo") or r.get("expected_repo_name") or "-"
         table.add_row(
@@ -214,7 +231,7 @@ def training_details_table(rows: list[dict]) -> None:
             _tag(r["training_status"]),
             str(r["n_training_attempts"]),
             fmt_dt(r.get("updated_at")),
-            repo,
+            link(repo),
         )
     console.print(table)
 
@@ -292,14 +309,14 @@ def evaluations_table(rows: list[dict]) -> None:
         return
     table = Table(title="Evaluation Status / Deployments")
     table.add_column("Hotkey", style="magenta", no_wrap=True)
-    table.add_column("Repo", style="cyan")
+    table.add_column("Repo", style="cyan", overflow="fold")
     table.add_column("Eval Status")
     table.add_column("Deployment ID", style="dim", no_wrap=True)
     table.add_column("GPUs", justify="right")
     for r in rows:
         table.add_row(
             str(r.get("hotkey")),
-            r.get("expected_repo_name") or "-",
+            link(r.get("expected_repo_name")),
             _tag(r.get("evaluation_status")),
             r.get("deployment_id") or "-",
             str(r.get("gpu_count") or "-"),
@@ -452,5 +469,5 @@ def hf_links(training_rows: list[dict]) -> None:
     console.print("\n[bold]Hugging Face links (successful trainings):[/bold]")
     for r in successful:
         repo = r.get("submission_repo") or r.get("expected_repo_name")
-        link = repo if "/" in str(repo) and "http" not in str(repo) else repo
-        console.print(f"  - {r['hotkey']}: {HF_ORG}/{link}")
+        url = str(repo) if str(repo).startswith("http") else f"{HF_ORG}/{repo}"
+        console.print(f"  - {r['hotkey']}: {link(url)}")
