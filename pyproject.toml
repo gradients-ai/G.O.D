@@ -40,6 +40,7 @@ dependencies = [
     "claude-agent-sdk==0.1.69",
     "gitpython",
     "astor",
+    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]
