@@ -25,7 +25,11 @@ from validator.evaluation.tournament_scoring import individual_scores_to_pairwis
 from validator.evaluation.tournament_scoring import pvp_results_to_pairwise
 from validator.evaluation.tournament_scoring import tournament_scores_to_weights
 from validator.evaluation.tournament_scoring import calculate_tournament_type_scores_from_data
+from validator.evaluation.tournament_scoring import get_boss_round_pair_weights
+from validator.evaluation.tournament_scoring import get_tournament_weights_from_data
+from validator.core.weight_setting import apply_tournament_weights
 from validator.tournament.utils import determine_boss_round_winner
+from validator.tournament.utils import get_real_tournament_winner
 from validator.tournament.utils import get_real_winner_hotkey
 import validator.core.constants as cts
 
@@ -563,3 +567,225 @@ class TestCalculateTournamentTypeScores:
         result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
         assert result.prev_winner_won_final is True
         assert result.prev_winner_hotkey == ALICE
+
+
+# --- Boss-round-only emissions: get_boss_round_pair_weights ---
+
+
+BOSS = "5GBoss"
+CHALLENGER = "5GChallenger"
+DAVE = "5GDave"
+
+
+def _boss_round_tournament(
+    final_participants: list[str],
+    winner_hotkey: str | None,
+    base_winner_hotkey: str | None = None,
+    earlier_rounds: list[TournamentRoundResult] | None = None,
+    num_final_tasks: int = 1,
+) -> TournamentResultsWithWinners:
+    """Build a tournament whose final (boss) round pairs ``final_participants``.
+
+    ``num_final_tasks`` > 1 models environment boss rounds (3 tasks, same 2 players).
+    """
+    final_round = TournamentRoundResult(
+        round_id="final",
+        round_number=99,
+        round_type="knockout",
+        is_final_round=True,
+        tasks=[
+            TournamentTaskScore(
+                task_id=f"boss-task-{i}",
+                group_id=None,
+                pair_id="p1",
+                winner=None,
+                participant_scores=[{"hotkey": hk, "test_loss": 1.0} for hk in final_participants],
+            )
+            for i in range(num_final_tasks)
+        ],
+    )
+    return TournamentResultsWithWinners(
+        tournament_id="t",
+        rounds=(earlier_rounds or []) + [final_round],
+        winner_hotkey=winner_hotkey,
+        base_winner_hotkey=base_winner_hotkey,
+    )
+
+
+class TestGetBossRoundPairWeights:
+    """Only the two boss-round finalists earn emissions: champion 80%, runner-up 20%."""
+
+    def _tournament(
+        self,
+        final_participants: list[str],
+        winner_hotkey: str | None,
+        base_winner_hotkey: str | None = None,
+        earlier_rounds: list[TournamentRoundResult] | None = None,
+    ) -> TournamentResultsWithWinners:
+        return _boss_round_tournament(final_participants, winner_hotkey, base_winner_hotkey, earlier_rounds)
+
+    def test_none_data(self):
+        assert get_boss_round_pair_weights(None) == {}
+
+    def test_boss_defends(self):
+        """Defending champion holds: winner_hotkey is the burn placeholder, base is the real boss."""
+        data = self._tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER],
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=BOSS,
+        )
+        weights = get_boss_round_pair_weights(data)
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+
+    def test_challenger_dethrones_boss(self):
+        """Challenger wins: they become champion (80%); the dethroned boss is runner-up (20%)."""
+        data = self._tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER],
+            winner_hotkey=CHALLENGER,
+            base_winner_hotkey=BOSS,
+        )
+        weights = get_boss_round_pair_weights(data)
+        assert weights == {CHALLENGER: pytest.approx(0.8), BOSS: pytest.approx(0.2)}
+
+    def test_semifinalist_earns_nothing_even_when_tied_on_points(self):
+        """Regression: a semifinalist who would tie the runner-up on accumulated
+        points must NOT collapse the runner-up out of rank 2. Only the boss-round
+        pair is paid; the semifinalist earns nothing."""
+        earlier = [
+            TournamentRoundResult(
+                round_id="semi",
+                round_number=2,
+                round_type="knockout",
+                is_final_round=False,
+                tasks=[
+                    TournamentTaskScore(
+                        task_id="semi-task",
+                        group_id=None,
+                        pair_id="p0",
+                        winner=DAVE,
+                        participant_scores=[{"hotkey": DAVE, "test_loss": 1.0}, {"hotkey": "5GEli", "test_loss": 2.0}],
+                    )
+                ],
+            )
+        ]
+        data = self._tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER],
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=BOSS,
+            earlier_rounds=earlier,
+        )
+        weights = get_boss_round_pair_weights(data)
+        assert DAVE not in weights
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+
+    def test_no_final_round_pays_champion_alone(self):
+        """Tournament with no completed boss round: the champion takes the full share."""
+        data = TournamentResultsWithWinners(
+            tournament_id="t",
+            rounds=[
+                TournamentRoundResult(
+                    round_id="r1", round_number=1, round_type="group", is_final_round=False, tasks=[]
+                )
+            ],
+            winner_hotkey=BOSS,
+        )
+        assert get_boss_round_pair_weights(data) == {BOSS: pytest.approx(1.0)}
+
+    def test_burn_when_no_base_winner(self):
+        """winner is the burn placeholder with no resolvable base → champion share burns,
+        runner-up is still paid."""
+        data = self._tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER],
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=None,
+        )
+        weights = get_boss_round_pair_weights(data)
+        assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+
+
+class TestBossRoundEmissionsProductionPath:
+    """End-to-end coverage through the real entry points used by weight setting.
+
+    These guard the exact wiring in `weight_setting.get_node_weights_from_audit`:
+    the per-type weights come from `get_tournament_weights_from_data`, and the
+    champion is matched downstream via `get_real_tournament_winner`. If the champion
+    key produced here ever diverges from `get_real_tournament_winner`, the champion's
+    80% would be routed through the base pool instead of the boost pool.
+    """
+
+    @pytest.mark.parametrize("ttype", [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT])
+    def test_all_three_types_pay_only_boss_pair(self, ttype):
+        """Boss-round-only emissions apply identically to text, image, and environment."""
+        # 3 final tasks exercises the environment boss round (same 2 players across tasks).
+        num_tasks = 3 if ttype == TournamentType.ENVIRONMENT else 1
+        earlier = [
+            TournamentRoundResult(
+                round_id="semi", round_number=2, round_type="knockout", is_final_round=False,
+                tasks=[TournamentTaskScore(
+                    task_id="s", group_id=None, pair_id="ps", winner=DAVE,
+                    participant_scores=[{"hotkey": DAVE, "test_loss": 1.0}, {"hotkey": "5GEli", "test_loss": 2.0}],
+                )],
+            )
+        ]
+        data = _boss_round_tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER],
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=BOSS,
+            earlier_rounds=earlier,
+            num_final_tasks=num_tasks,
+        )
+
+        text_w, image_w, env_w = get_tournament_weights_from_data(
+            data if ttype == TournamentType.TEXT else None,
+            data if ttype == TournamentType.IMAGE else None,
+            data if ttype == TournamentType.ENVIRONMENT else None,
+        )
+        weights = {TournamentType.TEXT: text_w, TournamentType.IMAGE: image_w, TournamentType.ENVIRONMENT: env_w}[ttype]
+
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+        assert DAVE not in weights  # semifinalist earns nothing
+        assert "5GEli" not in weights
+
+    def test_champion_key_matches_get_real_tournament_winner_when_boss_defends(self):
+        """The 0.8 share must be keyed by exactly what downstream uses as the winner hotkey."""
+        data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
+        weights = get_boss_round_pair_weights(data)
+        champion_key = max(weights, key=lambda hk: weights[hk])
+        assert champion_key == get_real_tournament_winner(data) == BOSS
+        assert weights[champion_key] == pytest.approx(0.8)
+
+    def test_champion_key_matches_get_real_tournament_winner_when_dethroned(self):
+        data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], CHALLENGER, BOSS)
+        weights = get_boss_round_pair_weights(data)
+        champion_key = max(weights, key=lambda hk: weights[hk])
+        assert champion_key == get_real_tournament_winner(data) == CHALLENGER
+        assert weights[champion_key] == pytest.approx(0.8)
+
+    def test_apply_tournament_weights_routes_champion_to_boost_runner_up_to_base(self):
+        """Champion's share is multiplied by the tournament (boost) pool, runner-up's by
+        the base pool, and a semifinalist node receives nothing."""
+        data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
+        text_w, image_w, env_w = get_tournament_weights_from_data(data, None, None)
+
+        # node 0 = champion (BOSS), node 1 = runner-up (CHALLENGER), node 2 = uninvolved semifinalist
+        hotkey_to_node_id = {BOSS: 0, CHALLENGER: 1, DAVE: 2}
+        all_node_weights = [0.0, 0.0, 0.0]
+        scaled_text_tournament_weight = 0.5  # boost pool
+        scaled_text_base_weight = 0.1  # base pool — distinct so routing is observable
+
+        undistributed = apply_tournament_weights(
+            text_w, image_w, env_w,
+            hotkey_to_node_id, all_node_weights,
+            scaled_text_tournament_weight, 0.0, 0.0,
+            scaled_text_base_weight, 0.0, 0.0,
+            get_real_tournament_winner(data), None, None,
+        )
+
+        # champion: 0.8 * boost pool; runner-up: 0.2 * base pool; semifinalist: untouched.
+        assert all_node_weights[0] == pytest.approx(0.8 * scaled_text_tournament_weight)
+        assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_base_weight)
+        assert all_node_weights[2] == 0.0
+        # apply_tournament_weights credits both finalists against the boost pool and
+        # sends the remainder to burn: undistributed = boost_pool - (champion + runner_up).
+        distributed = 0.8 * scaled_text_tournament_weight + 0.2 * scaled_text_base_weight
+        assert undistributed == pytest.approx(scaled_text_tournament_weight - distributed)
