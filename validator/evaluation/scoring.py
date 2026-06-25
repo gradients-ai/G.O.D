@@ -51,6 +51,8 @@ from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_starting_model_repo
 from validator.evaluation.utils import check_for_lora
+from validator.evaluation.utils import notify_evaluation_exception
+from validator.evaluation.utils import task_deployment_ids_for_hotkeys
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
@@ -68,6 +70,14 @@ logger = get_logger(__name__)
 
 PairKey = str  # sorted "hotkey_a:hotkey_b"
 TOURNAMENT_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
+
+
+class PvPEvaluationExhaustedError(RuntimeError):
+    """Raised when a PvP pair has consumed all eval attempts without a result."""
+
+    def __init__(self, message: str, deployment_ids: list[str] | None = None):
+        super().__init__(message)
+        self.deployment_ids = deployment_ids or []
 
 def calculate_miner_ranking_and_scores(
     miner_results: list[MinerResultsText | MinerResultsImage],
@@ -556,8 +566,42 @@ async def process_miners_pool(
             results.extend(await _run_env_tournament_eval(task, miner_repos, config))
         except PvPIncompleteError:
             raise
+        except PvPEvaluationExhaustedError as e:
+            logger.error(f"PvP pairwise evaluation exhausted attempts: {e}", exc_info=True)
+            await notify_evaluation_exception(
+                config,
+                task_id=str(task.task_id),
+                task_type=task.task_type,
+                context="PvP tournament evaluation exhausted attempts",
+                error=e,
+                hotkeys=list(miner_repos.keys()),
+                repos=list(miner_repos.values()),
+                deployment_ids=e.deployment_ids,
+            )
+            results.extend(
+                _create_failed_miner_result(
+                    hotkey,
+                    score_reason=f"Evaluation failed: {str(e)[:350]}",
+                    task_type=task.task_type,
+                )
+                for hotkey in miner_repos
+            )
         except Exception as e:
             logger.error(f"PvP pairwise evaluation failed: {e}", exc_info=True)
+            await notify_evaluation_exception(
+                config,
+                task_id=str(task.task_id),
+                task_type=task.task_type,
+                context="PvP tournament evaluation exception",
+                error=e,
+                hotkeys=list(miner_repos.keys()),
+                repos=list(miner_repos.values()),
+                deployment_ids=await task_deployment_ids_for_hotkeys(
+                    task.task_id,
+                    config,
+                    list(miner_repos.keys()),
+                ),
+            )
             raise PvPIncompleteError(f"PvP eval failed, will retry: {e}") from e
     elif miner_repos:
         try:
@@ -579,6 +623,20 @@ async def process_miners_pool(
 
                     if isinstance(eval_result, Exception):
                         logger.error(f"Evaluation failed for miner {miner.hotkey}: {eval_result}")
+                        await notify_evaluation_exception(
+                            config,
+                            task_id=str(task.task_id),
+                            task_type=task.task_type,
+                            context="Miner evaluation result exception",
+                            error=eval_result,
+                            hotkeys=[miner.hotkey],
+                            repos=[repo],
+                            deployment_ids=await task_deployment_ids_for_hotkeys(
+                                task.task_id,
+                                config,
+                                [miner.hotkey],
+                            ),
+                        )
                         results.append(
                             _create_failed_miner_result(
                                 miner.hotkey,
@@ -646,6 +704,20 @@ async def process_miners_pool(
             raise
         except Exception as e:
             logger.error(f"Error during batch evaluation: {e}", exc_info=True)
+            await notify_evaluation_exception(
+                config,
+                task_id=str(task.task_id),
+                task_type=task.task_type,
+                context="Batch evaluation exception",
+                error=e,
+                hotkeys=[miner.hotkey for miner in miners],
+                repos=list(miner_repos.values()),
+                deployment_ids=await task_deployment_ids_for_hotkeys(
+                    task.task_id,
+                    config,
+                    [miner.hotkey for miner in miners],
+                ),
+            )
             results.extend(
                 [
                     _create_failed_miner_result(
@@ -901,7 +973,7 @@ async def _get_or_run_pvp_pairs(
             except EvaluationRetryableError as exc:
                 # Transient infra failure (e.g. no eval GPU capacity) — not the pair's
                 # fault. Do NOT consume a retry attempt; leave the pair pending so it is
-                # retried next cycle instead of exhausting and being scored as a 0-0 draw.
+                # retried next cycle instead of consuming an eval attempt.
                 logger.info(f"Pair {pair_key} deferred, eval capacity unavailable: {exc}")
                 failed_pairs.append(pair_key)
                 return
@@ -1086,6 +1158,21 @@ async def _dispatch_missing_individual(
 
     # Increment attempts only for hotkeys that were dispatched but didn't produce a score
     failed_hotkeys = [hk for hk in to_run if hk not in eval_result.scores_by_hotkey]
+    if failed_hotkeys:
+        await notify_evaluation_exception(
+            config,
+            task_id=task_id_str,
+            task_type=TaskType.ENVIRONMENTTASK,
+            context=f"Individual tournament evaluation failed for {env.value}",
+            error="Evaluation did not produce a score",
+            hotkeys=failed_hotkeys,
+            repos=[miners.by_hotkey[hk] for hk in failed_hotkeys if hk in miners.by_hotkey],
+            deployment_ids=await task_deployment_ids_for_hotkeys(
+                task_id,
+                config,
+                failed_hotkeys,
+            ),
+        )
     for hk in failed_hotkeys:
         await tournament_sql.increment_individual_score_attempts(task_id_str, hk, env.value, config.psql_db)
 
@@ -1119,13 +1206,17 @@ def _group_db_rows_by_pair(rows: list[PvPPairDbRow]) -> dict[PairKey, list[PvPPa
     return grouped
 
 
+def _deployment_ids_from_pvp_rows(rows: list[PvPPairDbRow]) -> list[str]:
+    return sorted({row.deployment_id for row in rows if row.deployment_id})
+
+
 def _try_build_pair_result(
     pair_key: str,
     rows: list[PvPPairDbRow],
     required_envs: list[str],
     max_attempts: int,
 ) -> PvPPairResult | None:
-    """Build a PvPPairResult if the pair is complete or exhausted retries."""
+    """Build a PvPPairResult if the pair is complete; raise if attempts are exhausted."""
     complete_rows = {r.environment_name: r for r in rows if r.is_complete}
     if set(required_envs) <= set(complete_rows.keys()):
         results = {
@@ -1143,13 +1234,11 @@ def _try_build_pair_result(
 
     # Check if exhausted — any non-complete row at max attempts
     if any(r.n_attempts >= max_attempts and not r.is_complete for r in rows):
-        logger.warning(f"Pair {pair_key} exhausted {max_attempts} attempts — scoring as 0-0 draw")
-        hk_a, hk_b = pair_key.split(":")
-        results = {
-            core_cst.EnvironmentName(env): PvPEnvironmentResult()
-            for env in required_envs
-        }
-        return PvPPairResult(hotkey_a=hk_a, hotkey_b=hk_b, results=results)
+        raise PvPEvaluationExhaustedError(
+            f"PvP pair {pair_key} exhausted {max_attempts} attempts without producing complete results "
+            f"for environments: {', '.join(required_envs)}",
+            deployment_ids=_deployment_ids_from_pvp_rows(rows),
+        )
 
     return None
 

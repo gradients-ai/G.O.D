@@ -11,8 +11,10 @@ import sys
 import tempfile
 import time
 from io import BytesIO
+from uuid import UUID
 
 import basilica
+import httpx
 import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
@@ -24,7 +26,10 @@ from transformers import AutoModelForCausalLM
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
+from core.models.utility_models import TaskType
 from validator.core import constants as vcst
+from validator.core.config import Config
+from validator.db.sql.tasks import get_task_evaluation_rows
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
 
@@ -34,6 +39,74 @@ hf_api = HfApi()
 
 EVAL_RESULT_STATUS_PATH = "/result"
 _BASILICA_LOG_LINE_OFFSETS: dict[str, int] = {}
+
+
+async def notify_evaluation_exception(
+    config: Config | None,
+    *,
+    task_id: str,
+    task_type: TaskType,
+    context: str,
+    error: Exception | str,
+    hotkeys: list[str] | None = None,
+    repos: list[str] | None = None,
+    deployment_ids: list[str] | None = None,
+) -> None:
+    if config is None or not config.discord_url:
+        return
+
+    try:
+        details = str(error)
+        if len(details) > 900:
+            details = f"{details[:900]}..."
+        task_type_value = getattr(task_type, "value", str(task_type))
+
+        def _format_items(items: list[str], limit: int = 12) -> str:
+            shown = items[:limit]
+            suffix = f", ... (+{len(items) - limit} more)" if len(items) > limit else ""
+            return f"{', '.join(shown)}{suffix}"
+
+        lines = [
+            "Evaluation exception",
+            f"Task: {task_id}",
+            f"Type: {task_type_value}",
+            f"Context: {context}",
+        ]
+        if hotkeys:
+            lines.append(f"Hotkeys: {_format_items(hotkeys)}")
+        if repos:
+            lines.append(f"Repos: {_format_items(repos)}")
+        if deployment_ids:
+            lines.append(f"Deployment IDs: {_format_items(deployment_ids)}")
+        lines.append(f"Error: {details}")
+
+        async with httpx.AsyncClient() as client:
+            await client.post(config.discord_url, json={"content": "\n".join(lines)}, timeout=10)
+    except Exception as notify_exc:
+        logger.error(f"Failed to send Discord evaluation exception notification: {notify_exc}")
+
+
+async def task_deployment_ids_for_hotkeys(
+    task_id: UUID,
+    config: Config | None,
+    hotkeys: list[str],
+) -> list[str]:
+    if config is None or config.psql_db is None or not hotkeys:
+        return []
+
+    hotkey_set = set(hotkeys)
+    try:
+        rows = await get_task_evaluation_rows(task_id, config.psql_db)
+    except Exception as exc:
+        logger.warning(f"Failed to load evaluation deployment IDs for task {task_id}: {exc}")
+        return []
+
+    deployment_ids = {
+        row.get("deployment_id")
+        for row in rows
+        if row.get("hotkey") in hotkey_set and row.get("deployment_id")
+    }
+    return sorted(deployment_ids)
 
 
 def configure_eval_logging() -> None:
