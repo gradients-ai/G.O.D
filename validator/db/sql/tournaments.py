@@ -1561,6 +1561,22 @@ async def get_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> list[PvPPairDbR
         return [PvPPairDbRow(task_id=task_id, **dict(r)) for r in rows]
 
 
+async def get_all_pvp_pair_deployment_refs(psql_db: PSQLDB) -> set[str]:
+    """Get all non-null deployment refs currently stored in PvP pair rows."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+        """)
+    refs: set[str] = set()
+    for row in rows:
+        val = row.get(cst.PVP_DEPLOYMENT_ID)
+        if val and isinstance(val, str):
+            refs.add(val)
+    return refs
+
+
 async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
     """Delete all PvP pair results for a task (for full re-eval)."""
     async with await psql_db.connection() as connection:
