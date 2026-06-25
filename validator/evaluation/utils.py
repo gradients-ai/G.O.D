@@ -404,6 +404,64 @@ async def cleanup_all_basilica_deployments() -> None:
     logger.info(f"Drained evaluation cleanup removed {cleaned}/{len(deployments)} Basilica deployments")
 
 
+def _normalized_deployment_ref(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.rstrip("/")
+
+
+def _deployment_refs(deployment) -> set[str]:
+    refs = {
+        _normalized_deployment_ref(getattr(deployment, "name", None)),
+        _normalized_deployment_ref(getattr(deployment, "url", None)),
+    }
+    return {ref for ref in refs if ref}
+
+
+async def cleanup_orphaned_basilica_deployments(tracked_deployment_refs: set[str]) -> None:
+    """Delete live Basilica deployments that are not referenced by validator DB rows."""
+    normalized_tracked_refs = {
+        normalized
+        for ref in tracked_deployment_refs
+        if (normalized := _normalized_deployment_ref(ref))
+    }
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for orphan cleanup: {e}")
+        return
+
+    orphaned = [dep for dep in deployments if _deployment_refs(dep).isdisjoint(normalized_tracked_refs)]
+    if not orphaned:
+        logger.info(
+            "Basilica orphan cleanup found no orphaned deployments "
+            "(live=%s tracked_refs=%s)",
+            len(deployments),
+            len(normalized_tracked_refs),
+        )
+        return
+
+    cleaned = 0
+    for dep in orphaned:
+        refs = _deployment_refs(dep)
+        deployment_name = getattr(dep, "name", None) or getattr(dep, "url", None) or "unknown"
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+            logger.info("Deleted orphaned Basilica deployment %s refs=%s", deployment_name, sorted(refs))
+        except Exception as e:
+            logger.warning("Failed orphan cleanup for Basilica deployment %s refs=%s: %s", deployment_name, sorted(refs), e)
+
+    logger.info(
+        "Basilica orphan cleanup removed %s/%s orphaned deployments (live=%s tracked_refs=%s)",
+        cleaned,
+        len(orphaned),
+        len(deployments),
+        len(normalized_tracked_refs),
+    )
+
+
 def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:
     """Create a generic eval runner source with health and result endpoints.
 
