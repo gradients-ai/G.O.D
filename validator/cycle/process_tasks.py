@@ -366,12 +366,12 @@ async def _cleanup_orphaned_basilica_deployments_if_due(config: Config) -> None:
     _last_basilica_orphan_cleanup_at = now
     try:
         evaluation_refs, pvp_refs = await asyncio.gather(
-            tasks_sql.get_all_evaluation_deployment_refs(config.psql_db),
-            tournament_sql.get_all_pvp_pair_deployment_refs(config.psql_db),
+            tasks_sql.get_active_evaluation_deployment_refs(config.psql_db),
+            tournament_sql.get_active_pvp_pair_deployment_refs(config.psql_db),
         )
         tracked_refs = evaluation_refs | pvp_refs
         logger.info(
-            "Running Basilica orphan cleanup with %s tracked refs (%s evaluation, %s pvp)",
+            "Running Basilica orphan cleanup with %s active tracked refs (%s evaluation, %s pvp)",
             len(tracked_refs),
             len(evaluation_refs),
             len(pvp_refs),

@@ -1976,16 +1976,18 @@ async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
     return ids
 
 
-async def get_all_evaluation_deployment_refs(psql_db: PSQLDB) -> set[str]:
-    """Get all non-null deployment refs currently stored in evaluation rows."""
+async def get_active_evaluation_deployment_refs(psql_db: PSQLDB) -> set[str]:
+    """Get deployment refs from evaluation rows that may still be active/resumable."""
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(
             f"""
             SELECT DISTINCT {cst.DEPLOYMENT_ID}
             FROM {cst.EVALUATIONS_TABLE}
             WHERE {cst.DEPLOYMENT_ID} IS NOT NULL
-              AND {cst.NETUID} = $1
+              AND {cst.EVALUATION_STATUS} = ANY($1)
+              AND {cst.NETUID} = $2
             """,
+            ["pending", "evaluating"],
             NETUID,
         )
     refs: set[str] = set()
