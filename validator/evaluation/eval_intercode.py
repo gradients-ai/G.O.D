@@ -956,12 +956,9 @@ async def _run() -> None:
         sglang_command = os.getenv("SGLANG_START_CMD")
         if not sglang_command:
             if is_lora and not should_merge_lora:
-                if base_chain:
-                    model_path_for_sglang = await asyncio.to_thread(
-                        materialize_base_model, original_model, base_chain, "cand"
-                    )
-                else:
-                    model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, original_model)
+                model_path_for_sglang = await asyncio.to_thread(
+                    materialize_base_model, original_model, base_chain, "cand"
+                )
                 lora_dir = "/lora/trained_lora"
                 await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_dir)
                 for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
@@ -981,12 +978,9 @@ async def _run() -> None:
                     + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
                 )
             elif is_lora and should_merge_lora:
-                if base_chain:
-                    base_path = await asyncio.to_thread(
-                        materialize_base_model, original_model, base_chain, "cand"
-                    )
-                else:
-                    base_path = await asyncio.to_thread(_download_model_with_retry, original_model)
+                base_path = await asyncio.to_thread(
+                    materialize_base_model, original_model, base_chain, "cand"
+                )
                 lora_temp_dir = "/tmp/lora/trained_lora"
                 await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_temp_dir)
                 model_path_for_sglang = await asyncio.to_thread(_merge_base_and_lora, base_path, lora_temp_dir)

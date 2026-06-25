@@ -63,16 +63,13 @@ def _resolve_chain(top_adapter: str, fallback_foundation: str) -> tuple[str, lis
 def materialize_base_model(
     foundation_repo: str, base_chain: list[str], label: str = "", device: str | None = None
 ) -> str:
-    """Return a local path to the base a continuation miner trained on.
-
-    Empty chain returns the foundation repo id unchanged (SGLang downloads it).
-    Otherwise the lineage is resolved from the chain's top adapter and merged
-    bottom-to-top. `label` keeps per-model scratch dirs distinct (two models are
-    prepared before either SGLang server starts, so a shared path would clobber the
-    first model's base).
-    """
+    """Return a local path to the base a continuation miner trained on."""
     if not base_chain:
-        return foundation_repo
+        if _declared_base(foundation_repo) is None:
+            return foundation_repo
+        # foundation_repo is itself a LoRA (e.g. previous_winner task base).
+        # SGLang can't load a LoRA as a base — walk and merge it.
+        base_chain = [foundation_repo]
 
     foundation, adapters = _resolve_chain(base_chain[0], foundation_repo)
     logger.info("Reconstructing base for %s: foundation=%s adapters=%s", base_chain[0], foundation, adapters)
