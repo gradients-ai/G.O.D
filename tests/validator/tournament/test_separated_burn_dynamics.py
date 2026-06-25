@@ -234,7 +234,10 @@ class TestSeparatedBurnDynamics:
             assert result.environment_performance_diff is None
             assert result.text_tournament_weight <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
             assert result.image_tournament_weight <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-            assert result.environment_tournament_weight == cts.TOURNAMENT_ENVIRONMENT_WEIGHT
+            assert result.environment_tournament_weight == min(
+                cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
+                cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
+            )
             assert result.burn_weight == pytest.approx(
                 1.0 - result.text_tournament_weight - result.image_tournament_weight - result.environment_tournament_weight
             )

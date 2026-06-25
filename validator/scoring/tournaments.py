@@ -380,16 +380,54 @@ def tournament_scores_to_weights(
     return weights
 
 
+def _resolve_burn_placeholder(hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
+    """Map the EMISSION_BURN_HOTKEY placeholder to the real defending champion when known."""
+    if hotkey == cts.EMISSION_BURN_HOTKEY and base_winner_hotkey:
+        return base_winner_hotkey
+    return hotkey
+
+
+def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | None) -> dict[str, float]:
+    """Pay emissions only to the two boss-round finalists.
+
+    The champion takes rank 1 and the other finalist takes rank 2; everyone eliminated
+    in an earlier round earns nothing. This avoids cross-round accumulated-point ties
+    that can collapse the real runner-up out of the second paid rank.
+    """
+    if not tournament_data:
+        return {}
+
+    base_winner = tournament_data.base_winner_hotkey
+    champion = _resolve_burn_placeholder(tournament_data.winner_hotkey, base_winner)
+
+    final_round = next((round_result for round_result in tournament_data.rounds if round_result.is_final_round), None)
+    if final_round is None:
+        return {champion: exponential_decline_mapping(1, 1)} if champion else {}
+
+    finalists: list[str] = []
+    for task in final_round.tasks:
+        for participant in task.participant_scores:
+            hotkey = _resolve_burn_placeholder(participant.get("hotkey"), base_winner)
+            if hotkey and hotkey not in finalists:
+                finalists.append(hotkey)
+
+    paid: list[str] = []
+    if champion:
+        paid.append(champion)
+    paid.extend(hotkey for hotkey in finalists if hotkey != champion)
+
+    if len(paid) > cts.TOURNAMENT_PAID_RANKS:
+        logger.warning(
+            f"Boss round resolved {len(paid)} paid participants {paid}; expected "
+            f"{cts.TOURNAMENT_PAID_RANKS}. Paying the top {cts.TOURNAMENT_PAID_RANKS} by placement."
+        )
+
+    total = min(len(paid), cts.TOURNAMENT_PAID_RANKS)
+    return {hotkey: exponential_decline_mapping(total, rank) for rank, hotkey in enumerate(paid, start=1)}
+
+
 def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:
-    result = calculate_tournament_type_scores_from_data(tournament_type, data)
-    # Seed weights whenever there are challenger scores or a tournament winner.
-    # The champion is excluded from result.scores and is re-seeded via
-    # prev_winner_hotkey, so empty challenger scores should not drop champion weight.
-    weights = (
-        tournament_scores_to_weights(result.scores, result.prev_winner_hotkey, result.prev_winner_won_final)
-        if result.scores or result.prev_winner_hotkey
-        else {}
-    )
+    weights = get_boss_round_pair_weights(data)
     logger.info(f"{tournament_type.value} tournament weights: {weights}")
     return weights
 
