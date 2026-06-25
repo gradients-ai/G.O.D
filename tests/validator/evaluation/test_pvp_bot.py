@@ -55,6 +55,12 @@ class TestDecodeArguments:
 
         assert _decode_arguments('{"action_id": 37}') == {"action_id": 37}
 
+    def test_nested_args_are_serialized(self) -> None:
+        from core.pvp.chat import _decode_arguments
+
+        args = _decode_arguments('{"payload": {"b": 2, "a": [1]}}')
+        assert args == {"payload": '{"a":[1],"b":2}'}
+
     def test_malformed_json_returns_empty(self) -> None:
         from core.pvp.chat import _decode_arguments
 

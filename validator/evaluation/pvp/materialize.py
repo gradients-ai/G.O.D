@@ -51,7 +51,11 @@ def materialize_base_model(
 ) -> str:
     """Return a local path to the base a continuation miner trained on."""
     if not base_chain:
-        return foundation_repo
+        if _declared_base(foundation_repo) is None:
+            return foundation_repo
+        # foundation_repo is itself a LoRA (e.g. previous_winner task base).
+        # SGLang can't load a LoRA as a base — walk and merge it.
+        base_chain = [foundation_repo]
 
     foundation, adapters = _resolve_chain(base_chain[0], foundation_repo)
     logger.info("Reconstructing base for %s: foundation=%s adapters=%s", base_chain[0], foundation, adapters)

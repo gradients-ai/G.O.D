@@ -15,6 +15,8 @@ import pytest
 import validator.evaluation.constants as validator_cst
 from validator.evaluation.pvp.models import PvPEvalMetadata
 from validator.evaluation.pvp.models import PvPGroupResults
+from validator.evaluation.pvp.models import PvPPairDbRow
+from validator.evaluation.pvp.models import PvPStatus
 
 
 def _preload_tournament_gpu_module() -> None:
@@ -237,3 +239,27 @@ def test_tournament_group_slot_envs_include_individual_envs():
 
     assert EnvironmentName.INTERCODE.value in names
     assert EnvironmentName.LIARS_DICE.value in names
+
+
+def test_exhausted_pvp_pair_raises_with_deployment_ids():
+    rows = [
+        PvPPairDbRow(
+            task_id="task-id",
+            hotkey_a="hk_a",
+            hotkey_b="hk_b",
+            environment_name=EnvironmentName.LIARS_DICE.value,
+            n_attempts=3,
+            deployment_id="dep-1",
+            status=PvPStatus.PENDING,
+        )
+    ]
+
+    with pytest.raises(scoring.PvPEvaluationExhaustedError) as exc_info:
+        scoring._try_build_pair_result(
+            "hk_a:hk_b",
+            rows,
+            [EnvironmentName.LIARS_DICE.value],
+            max_attempts=3,
+        )
+
+    assert exc_info.value.deployment_ids == ["dep-1"]

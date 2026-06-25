@@ -57,6 +57,22 @@ def test_materialize_uses_distinct_dirs_per_label(monkeypatch):
     assert (path_a, path_b) == ("/tmp/base_chain_a_merged_0", "/tmp/base_chain_b_merged_0")
 
 
+def test_materialize_empty_chain_merges_lora_foundation(monkeypatch):
+    declared = {"org/prev-winner": "org/foundation", "org/foundation": None}
+    monkeypatch.setattr(materialize, "_declared_base", lambda repo: declared[repo])
+    monkeypatch.setattr(materialize, "_download_lora_with_retry", lambda repo, directory, **kwargs: directory)
+    monkeypatch.setattr(materialize, "_download_model_with_retry", lambda repo, **kwargs: f"/base/{repo}")
+    monkeypatch.setattr(
+        materialize,
+        "_merge_base_and_lora",
+        lambda base, lora, output_dir, device=None: output_dir,
+    )
+
+    path = materialize.materialize_base_model("org/prev-winner", [], label="prev")
+
+    assert path == "/tmp/base_chain_prev_merged_0"
+
+
 def test_resolve_chain_walks_unflattened_lineage(monkeypatch):
     declared = {
         "org/R3": "org/R2",

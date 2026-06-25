@@ -43,6 +43,7 @@ dependencies = [
     "cryptography",
     "gitpython",
     "astor",
+    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]

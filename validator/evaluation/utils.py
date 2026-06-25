@@ -18,6 +18,8 @@ from validator.evaluation.image_io import read_prompt_file
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
 from validator.evaluation.model_checks import model_is_a_finetune
+from validator.evaluation.notifications import notify_evaluation_exception
+from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
 from validator.evaluation.runtime import stop_process
@@ -45,8 +47,10 @@ __all__ = [
     "log_basilica_logs_block",
     "model_is_a_finetune",
     "normalize_rewards_and_compute_loss",
+    "notify_evaluation_exception",
     "process_evaluation_results",
     "read_prompt_file",
     "stop_process",
+    "task_deployment_ids_for_hotkeys",
     "wait_for_basilica_health",
 ]
