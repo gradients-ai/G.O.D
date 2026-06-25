@@ -11,10 +11,11 @@ import sys
 import tempfile
 import time
 from io import BytesIO
+from typing import TYPE_CHECKING
+from typing import Any
 from uuid import UUID
 
 import basilica
-import httpx
 import requests
 from datasets import get_dataset_config_names
 from huggingface_hub import HfApi
@@ -26,12 +27,13 @@ from transformers import AutoModelForCausalLM
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
-from core.models.utility_models import TaskType
 from validator.core import constants as vcst
-from validator.core.config import Config
-from validator.db.sql.tasks import get_task_evaluation_rows
 from validator.utils.logging import get_logger
 from validator.utils.retry_utils import retry_on_5xx
+
+if TYPE_CHECKING:
+    from core.models.utility_models import TaskType
+    from validator.core.config import Config
 
 
 logger = get_logger(__name__)
@@ -42,10 +44,10 @@ _BASILICA_LOG_LINE_OFFSETS: dict[str, int] = {}
 
 
 async def notify_evaluation_exception(
-    config: Config | None,
+    config: "Config | None",
     *,
     task_id: str,
-    task_type: TaskType,
+    task_type: "TaskType | Any",
     context: str,
     error: Exception | str,
     hotkeys: list[str] | None = None,
@@ -56,6 +58,8 @@ async def notify_evaluation_exception(
         return
 
     try:
+        import httpx
+
         details = str(error)
         if len(details) > 900:
             details = f"{details[:900]}..."
@@ -88,7 +92,7 @@ async def notify_evaluation_exception(
 
 async def task_deployment_ids_for_hotkeys(
     task_id: UUID,
-    config: Config | None,
+    config: "Config | None",
     hotkeys: list[str],
 ) -> list[str]:
     if config is None or config.psql_db is None or not hotkeys:
@@ -96,6 +100,8 @@ async def task_deployment_ids_for_hotkeys(
 
     hotkey_set = set(hotkeys)
     try:
+        from validator.db.sql.tasks import get_task_evaluation_rows
+
         rows = await get_task_evaluation_rows(task_id, config.psql_db)
     except Exception as exc:
         logger.warning(f"Failed to load evaluation deployment IDs for task {task_id}: {exc}")

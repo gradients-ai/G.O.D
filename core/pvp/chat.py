@@ -150,4 +150,12 @@ def _decode_arguments(raw: str | None) -> dict[str, JsonScalar]:
         return {}
     if not isinstance(decoded, dict):
         return {}
-    return {k: strip_think_tags(v) if isinstance(v, str) else v for k, v in decoded.items()}
+    return {k: _coerce_argument_value(v) for k, v in decoded.items()}
+
+
+def _coerce_argument_value(value) -> JsonScalar:
+    if isinstance(value, str):
+        return strip_think_tags(value)
+    if value is None or isinstance(value, (int, float, bool)):
+        return value
+    return json.dumps(value, separators=(",", ":"), sort_keys=True)
