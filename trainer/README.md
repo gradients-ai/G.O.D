@@ -9,7 +9,6 @@ Service that receives work from the validator, clones miner repositories, builds
 - `constants.py`: trainer Docker images, volumes, resource defaults, and container paths.
 - `containers/`: downloader, uploader, cache cleanup, and miner dataset cache helpers.
 - `endpoints.py`: trainer API routes called by validators.
-- `entrypoints/`: scripts executed inside miner training images.
 - `host.py`: host/GPU inspection, repository cloning, and Docker host helpers.
 - `job_state.py`: persisted trainer task/model-prep state.
 - `dataset_adapters.py`: text dataset column adapters used by training entrypoints.
