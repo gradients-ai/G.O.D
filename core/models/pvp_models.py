@@ -79,6 +79,12 @@ class OthelloParams(GameParams):
     game: Literal["othello"] = "othello"
 
 
+class ClobberParams(GameParams):
+    game: Literal["clobber"] = "clobber"
+    rows: int
+    columns: int
+
+
 class GoofspielParams(GameParams):
     game: Literal["goofspiel"] = "goofspiel"
     players: int = 2
@@ -89,7 +95,7 @@ class GoofspielParams(GameParams):
 
 
 AnyGameParams = Annotated[
-    LiarsDiceParams | LeducPokerParams | GinRummyParams | OthelloParams | GoofspielParams,
+    LiarsDiceParams | LeducPokerParams | GinRummyParams | OthelloParams | ClobberParams | GoofspielParams,
     Field(discriminator="game"),
 ]
 
@@ -148,9 +154,12 @@ class PvPModelSpec(PvPBaseModel):
 class PvPMatchupConfig(BaseModel):
     """Configuration for a single environment matchup."""
 
-    num_games: int = Field(
+    time_budget_seconds: float = Field(
         gt=0,
-        description="Number of seeds to play. Each seed is played twice (position swap), so total games = num_games * 2",
+        description=(
+            "Wall-clock budget for this environment. Seed pairs (2 games each) are played until the budget "
+            "expires or an early forfeit fires."
+        ),
     )
 
 

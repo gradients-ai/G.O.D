@@ -6,7 +6,7 @@
 #   ./tests/e2e/pvp_remote_setup.sh <host> [-i <keyfile>]
 #
 # Usage:
-#   ./tests/e2e/run_pvp_remote.sh <host> [-i <keyfile>] [--num-games N]
+#   ./tests/e2e/run_pvp_remote.sh <host> [-i <keyfile>] [--time-budget-seconds N]
 #
 # Tests:
 #   1. Symmetric base-vs-base  (win rates should be ~50/50)
@@ -18,20 +18,20 @@ set -euo pipefail
 
 HOST=""
 SSH_KEY=""
-NUM_GAMES=5
+TIME_BUDGET_SECONDS=300
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i) SSH_KEY="$2"; shift 2 ;;
-        --num-games) NUM_GAMES="$2"; shift 2 ;;
+        --time-budget-seconds) TIME_BUDGET_SECONDS="$2"; shift 2 ;;
         -*) echo "Unknown option: $1"; exit 1 ;;
         *) HOST="$1"; shift ;;
     esac
 done
 
 if [[ -z "$HOST" ]]; then
-    echo "Usage: $0 <host> [-i <keyfile>] [--num-games N]"
+    echo "Usage: $0 <host> [-i <keyfile>] [--time-budget-seconds N]"
     exit 1
 fi
 
@@ -51,7 +51,7 @@ echo "============================================================"
 echo "PvP Remote E2E Test Suite"
 echo "============================================================"
 echo "Host:       $HOST"
-echo "Games/env:  $NUM_GAMES (x2 with position swap = $((NUM_GAMES * 2)) total)"
+echo "Budget/env: ${TIME_BUDGET_SECONDS}s"
 echo "============================================================"
 echo ""
 
@@ -98,12 +98,11 @@ docker run --rm --gpus all \
 validate_results() {
     local test_name="$1"
     local local_results="/tmp/pvp_remote_${test_name}.json"
-    local expected_total=$((NUM_GAMES * 2))
 
-    python3 - "$local_results" "$expected_total" << 'PYEOF'
+    python3 - "$local_results" << 'PYEOF'
 import json, sys
 
-results_path, expected_total = sys.argv[1], int(sys.argv[2])
+results_path = sys.argv[1]
 results = json.load(open(results_path))
 errors = []
 
@@ -112,8 +111,10 @@ if "results" not in results:
 else:
     for env, res in results["results"].items():
         total = res["total_games"]
-        if total != expected_total:
-            errors.append(f"{env}: total_games={total}, expected={expected_total}")
+        if total <= 0:
+            errors.append(f"{env}: expected at least one completed game pair")
+        if total % 2:
+            errors.append(f"{env}: total_games={total} is not position-balanced")
         accounting = res["model_a_wins"] + res["model_b_wins"] + res["draws"]
         if accounting != total:
             errors.append(f"{env}: wins+draws={accounting} != total={total}")
@@ -152,7 +153,7 @@ echo "============================================================"
 if run_pvp_test "symmetric" "{
     \"model_a\": {\"repo\": \"$BASE_MODEL\", \"original_model\": \"$BASE_MODEL\"},
     \"model_b\": {\"repo\": \"$BASE_MODEL\", \"original_model\": \"$BASE_MODEL\"},
-    \"matchups\": {\"liars_dice\": {\"num_games\": $NUM_GAMES}, \"leduc_poker\": {\"num_games\": $NUM_GAMES}},
+    \"matchups\": {\"liars_dice\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}, \"leduc_poker\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}},
     \"seed\": 42, \"temperature\": 0.0
 }" && validate_results "symmetric"; then
     PASSED=$((PASSED + 1))
@@ -171,7 +172,7 @@ echo "============================================================"
 if run_pvp_test "lora_vs_base" "{
     \"model_a\": {\"repo\": \"$LORA_A\", \"original_model\": \"$LORA_BASE\"},
     \"model_b\": {\"repo\": \"$LORA_BASE\", \"original_model\": \"$LORA_BASE\"},
-    \"matchups\": {\"liars_dice\": {\"num_games\": $NUM_GAMES}, \"leduc_poker\": {\"num_games\": $NUM_GAMES}},
+    \"matchups\": {\"liars_dice\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}, \"leduc_poker\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}},
     \"seed\": 42, \"temperature\": 0.0
 }" && validate_results "lora_vs_base"; then
     PASSED=$((PASSED + 1))
@@ -190,7 +191,7 @@ echo "============================================================"
 if run_pvp_test "lora_vs_lora" "{
     \"model_a\": {\"repo\": \"$LORA_A\", \"original_model\": \"$LORA_BASE\"},
     \"model_b\": {\"repo\": \"$LORA_B\", \"original_model\": \"$LORA_BASE\"},
-    \"matchups\": {\"liars_dice\": {\"num_games\": $NUM_GAMES}, \"leduc_poker\": {\"num_games\": $NUM_GAMES}},
+    \"matchups\": {\"liars_dice\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}, \"leduc_poker\": {\"time_budget_seconds\": $TIME_BUDGET_SECONDS}},
     \"seed\": 42, \"temperature\": 0.0
 }" && validate_results "lora_vs_lora"; then
     PASSED=$((PASSED + 1))

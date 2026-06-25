@@ -91,7 +91,7 @@ class TestFullGamePipeline:
         player_b.config = config_b
         player_b.chat_fn = chat_fn
 
-        matchup_config = PvPMatchupConfig(num_games=3)
+        matchup_config = PvPMatchupConfig(time_budget_seconds=1e-9)
         result = run_matchup(
             env_name=EnvironmentName.LEDUC_POKER,
             matchup_config=matchup_config,
@@ -100,8 +100,9 @@ class TestFullGamePipeline:
             base_seed=42,
         )
 
-        assert result.total_games == 6  # 3 seeds × 2 positions
-        assert result.model_a_wins + result.model_b_wins + result.draws == 6
+        assert result.total_games >= 2
+        assert result.total_games % 2 == 0
+        assert result.model_a_wins + result.model_b_wins + result.draws == result.total_games
         assert result.model_a_wins >= 0
         assert result.model_b_wins >= 0
 
@@ -119,14 +120,15 @@ class TestFullGamePipeline:
 
         result = run_matchup(
             env_name=EnvironmentName.LIARS_DICE,
-            matchup_config=PvPMatchupConfig(num_games=2),
+            matchup_config=PvPMatchupConfig(time_budget_seconds=1e-9),
             player_a=player_a,
             player_b=player_b,
             base_seed=99,
         )
 
-        assert result.total_games == 4
-        assert result.model_a_wins + result.model_b_wins + result.draws == 4
+        assert result.total_games >= 2
+        assert result.total_games % 2 == 0
+        assert result.model_a_wins + result.model_b_wins + result.draws == result.total_games
 
     def test_position_swap_affects_results(self):
         """Same seed played from both positions can produce different outcomes.
@@ -143,15 +145,14 @@ class TestFullGamePipeline:
 
         result = run_matchup(
             env_name=EnvironmentName.LEDUC_POKER,
-            matchup_config=PvPMatchupConfig(num_games=20),
+            matchup_config=PvPMatchupConfig(time_budget_seconds=1e-9),
             player_a=player_a,
             player_b=player_b,
             base_seed=42,
         )
 
-        # With 40 games (20 seeds × 2 positions), we should see
-        # outcomes for both models (not all one-sided)
-        assert result.total_games == 40
+        assert result.total_games >= 2
+        assert result.total_games % 2 == 0
 
 
 # =============================================================================
@@ -468,7 +469,7 @@ class TestConfigLoading:
             mode=PvPMode.PAIR,
             model_a=PvPModelSpec(repo="org/a", original_model="base/m"),
             model_b=PvPModelSpec(repo="org/b", original_model="base/m"),
-            matchups={EnvironmentName.LEDUC_POKER: PvPMatchupConfig(num_games=10)},
+            matchups={EnvironmentName.LEDUC_POKER: PvPMatchupConfig(time_budget_seconds=900)},
         )
 
         with patch.dict(os.environ, {"PVP_EVAL_CONFIG": config_data.model_dump_json()}):
@@ -484,7 +485,7 @@ class TestConfigLoading:
             mode=PvPMode.PAIR,
             model_a=PvPModelSpec(repo="org/a", original_model="base/m"),
             model_b=PvPModelSpec(repo="org/b", original_model="base/m"),
-            matchups={EnvironmentName.LIARS_DICE: PvPMatchupConfig(num_games=5)},
+            matchups={EnvironmentName.LIARS_DICE: PvPMatchupConfig(time_budget_seconds=900)},
         )
 
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:

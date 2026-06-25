@@ -9,6 +9,8 @@ forfeits rather than dragging the opponent into a draw.
 import functools
 import logging
 import random
+import time
+from collections.abc import Iterator
 from typing import NamedTuple
 
 import openai
@@ -81,27 +83,29 @@ def run_matchup(
     player_b: Player,
     base_seed: int,
 ) -> PvPEnvironmentResult:
-    """Run a full PvP matchup for one environment.
+    """Run a time-budgeted PvP matchup for one environment.
 
-    Plays matchup_config.num_games seeds, each twice (swapped positions).
+    Plays seed pairs, each seed twice with positions swapped, until the wall-clock
+    budget expires or an early forfeit fires. The deadline is checked between
+    complete pairs so every recorded game has a position-balanced counterpart.
     """
     agent = _AGENT_REGISTRY[env_name]()
-    instances = _build_instances(env_name, agent, matchup_config.num_games, base_seed)
-    return _execute_matchup(env_name, instances, player_a, player_b, agent)
+    seed_stream = _seed_stream(env_name, agent, base_seed)
+    start = time.monotonic()
+    deadline = start + matchup_config.time_budget_seconds
+    return _execute_matchup(env_name, seed_stream, start, deadline, player_a, player_b, agent)
 
 
-def _build_instances(
+def _seed_stream(
     env_name: EnvironmentName,
     agent: BaseGameAgent,
-    num_games: int,
     base_seed: int,
-) -> list[GameInstance]:
-    """Generate paired GameInstances (original + position-swapped) for each seed."""
+) -> Iterator[tuple[GameInstance, GameInstance]]:
+    """Yield paired GameInstances indefinitely from a seeded RNG."""
     env_config = ENVIRONMENT_CONFIGS[env_name]
     seed_rng = random.Random(base_seed)
-    instances: list[GameInstance] = []
 
-    for _ in range(num_games):
+    while True:
         seed = seed_rng.randint(1, vcst.PVP_SEED_RANGE_MAX)
         game_params = agent.generate_params(config_id_for_seed(seed, env_config))
 
@@ -117,11 +121,21 @@ def _build_instances(
             min_utility=game.min_utility(),
             max_utility=game.max_utility(),
         )
-        swapped = base.model_copy(update={"model_a_player_id": 1})
+        yield base, base.model_copy(update={"model_a_player_id": 1})
 
-        instances.append(base)
-        instances.append(swapped)
 
+def _build_instances(
+    env_name: EnvironmentName,
+    agent: BaseGameAgent,
+    num_games: int,
+    base_seed: int,
+) -> list[GameInstance]:
+    """Generate paired GameInstances for deterministic tests and offline tools."""
+    instances: list[GameInstance] = []
+    for base, swapped in _seed_stream(env_name, agent, base_seed):
+        instances.extend([base, swapped])
+        if len(instances) >= num_games * 2:
+            return instances
     return instances
 
 
@@ -210,19 +224,16 @@ def _game_memories(long_term: SlotMemory, counter: TokenCounter) -> dict[MemoryA
 
 def _execute_matchup(
     env_name: EnvironmentName,
-    instances: list[GameInstance],
+    seed_stream: Iterator[tuple[GameInstance, GameInstance]],
+    start: float,
+    deadline: float,
     player_a: Player,
     player_b: Player,
     agent: BaseGameAgent,
 ) -> PvPEnvironmentResult:
-    """Play all game instances and tally results."""
-    # Per-player tokenizer so slot budgets are real model tokens (whitespace fallback).
-    # Prefer tokenizer_repo over inference_model: a LoRA's inference_model is
-    # 'base:lora' — not a loadable repo, which would degrade budgets to word counts.
+    """Play seed pairs until the deadline or an early forfeit fires."""
     counter_a = load_token_counter(player_a.config.tokenizer_repo or player_a.config.inference_model)
     counter_b = load_token_counter(player_b.config.tokenizer_repo or player_b.config.inference_model)
-    # One long-term memory per player, carried across every game of the matchup
-    # so each side builds an opponent model over the series.
     long_term_a = _new_long_term_memory(counter_a)
     long_term_b = _new_long_term_memory(counter_b)
     play = functools.partial(
@@ -241,46 +252,79 @@ def _execute_matchup(
     consec_b_losses = 0
     model_a_forfeits = 0
     model_b_forfeits = 0
+    games_played = 0
 
-    for i, instance in enumerate(instances):
-        played = play(instance)
-        _tally(result, played.outcome)
+    for base_instance, swapped_instance in seed_stream:
+        pair_start = time.monotonic()
+        for instance in (base_instance, swapped_instance):
+            game_start = time.monotonic()
+            logger.info(
+                "%s: game %d start - seed=%d model_a_plays_as=%d",
+                env_name.value,
+                games_played + 1,
+                instance.seed,
+                instance.model_a_player_id,
+            )
+            played = play(instance)
+            game_elapsed = time.monotonic() - game_start
+            _tally(result, played.outcome)
+            games_played += 1
 
-        if played.outcome == GameOutcome.LOSS:
-            consec_a_losses += 1
-            consec_b_losses = 0
-        elif played.outcome == GameOutcome.WIN:
-            consec_b_losses += 1
-            consec_a_losses = 0
-        else:
-            consec_a_losses = 0
-            consec_b_losses = 0
+            forfeit_note = f" (forfeit: model_{played.forfeiting_model})" if played.forfeiting_model else ""
+            logger.info(
+                "%s: game %d done - outcome=%s%s elapsed=%.1fs | a=%d b=%d draws=%d",
+                env_name.value,
+                games_played,
+                played.outcome.value,
+                forfeit_note,
+                game_elapsed,
+                result.model_a_wins,
+                result.model_b_wins,
+                result.draws,
+            )
 
-        if played.forfeiting_model == "a":
-            model_a_forfeits += 1
-        elif played.forfeiting_model == "b":
-            model_b_forfeits += 1
+            if played.outcome == GameOutcome.LOSS:
+                consec_a_losses += 1
+                consec_b_losses = 0
+            elif played.outcome == GameOutcome.WIN:
+                consec_b_losses += 1
+                consec_a_losses = 0
+            else:
+                consec_a_losses = 0
+                consec_b_losses = 0
 
-        remaining = len(instances) - i - 1
+            if played.forfeiting_model == "a":
+                model_a_forfeits += 1
+            elif played.forfeiting_model == "b":
+                model_b_forfeits += 1
+
+        pair_elapsed = time.monotonic() - pair_start
+        elapsed_total = time.monotonic() - start
+        logger.info(
+            "%s: pair done - seed=%d pair_elapsed=%.1fs total_elapsed=%.0fs budget_remaining=%.0fs",
+            env_name.value,
+            base_instance.seed,
+            pair_elapsed,
+            elapsed_total,
+            max(0.0, deadline - time.monotonic()),
+        )
+
         if _check_episode_forfeit_limit(
             result,
             model_a_forfeits,
             model_b_forfeits,
-            remaining,
+            0,
             env_name.value,
-            i + 1,
+            games_played,
         ):
             break
 
-        if _check_early_forfeit(result, consec_a_losses, consec_b_losses, remaining, env_name.value, i + 1):
+        if _check_early_forfeit(result, consec_a_losses, consec_b_losses, 0, env_name.value, games_played):
             break
 
-        if (i + 1) % vcst.PVP_LOG_INTERVAL_GAMES == 0:
-            logger.info(
-                "%s: %d/%d games, a=%d b=%d draws=%d",
-                env_name.value, i + 1, len(instances),
-                result.model_a_wins, result.model_b_wins, result.draws,
-            )
+        if time.monotonic() >= deadline:
+            logger.info("%s: time budget exhausted after %d games", env_name.value, games_played)
+            break
 
     logger.info(
         "%s complete: %d games, a=%d b=%d draws=%d",

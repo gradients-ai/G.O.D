@@ -15,6 +15,7 @@ from pathlib import Path
 import pyspiel
 import yaml
 
+from core.models.pvp_models import ClobberParams
 from core.models.pvp_models import GameParams
 from core.models.pvp_models import GinRummyParams
 from core.models.pvp_models import GoofspielParams
@@ -174,6 +175,8 @@ class LeducPokerAgent(BaseGameAgent):
         pot = self._extract(info_str, r"\[Pot: (\d+)\]")
         money = self._extract(info_str, r"\[Money: ([\d ]+)\]")
         public_card = self._extract(info_str, r"\[Public: (-?\d+)\]")
+        round1_seq = self._extract(info_str, r"\[Round1: ([^\]]*)\]")
+        round2_seq = self._extract(info_str, r"\[Round2: ([^\]]*)\]")
         lines: list[str] = []
 
         if private_card and private_card != "-10000":
@@ -196,6 +199,11 @@ class LeducPokerAgent(BaseGameAgent):
                 lines.append(f"Your chips: {chips[player_id]}")
                 lines.append(f"Opponent chips: {chips[1 - player_id]}")
 
+        if round1_seq:
+            lines.append(f"Round 1 actions: {self._parse_betting(round1_seq)}")
+        if round2_seq:
+            lines.append(f"Round 2 actions: {self._parse_betting(round2_seq)}")
+
         return "\n".join(lines)
 
     @staticmethod
@@ -212,6 +220,16 @@ class LeducPokerAgent(BaseGameAgent):
         if rank_idx < len(ranks):
             return f"{ranks[rank_idx]}{suits[suit_idx]}"
         return f"Card_{card_id}"
+
+    @staticmethod
+    def _parse_betting(seq: str) -> str:
+        if not seq or not seq.strip():
+            return "(none)"
+        actions_map = {0: "Fold", 1: "Call", 2: "Raise"}
+        numbers = [int(x) for x in seq.split() if x.isdigit()]
+        if not numbers:
+            return "(none)"
+        return ", ".join(actions_map.get(action, f"Action{action}") for action in numbers)
 
 
 class GinRummyAgent(BaseGameAgent):
@@ -233,10 +251,30 @@ class GinRummyAgent(BaseGameAgent):
         return state.observation_string(player_id)
 
 
-# Number of seeded random opening plies applied to an othello game, sampled from
-# this inclusive range. Enough to diverge the opening tree for variety, few
-# enough that positions stay balanced and game-like.
+def _apply_seeded_random_opening(state: pyspiel.State, seed: int, opening_plies: tuple[int, int]) -> None:
+    """Apply a reproducible random prelude to deterministic perfect-information games."""
+    rng = random.Random(seed)
+    num_plies = rng.randint(*opening_plies)
+    for _ in range(num_plies):
+        if state.is_terminal():
+            break
+        legal_actions = state.legal_actions()
+        if not legal_actions:
+            break
+        state.apply_action(rng.choice(legal_actions))
+
+
+# Number of seeded random opening plies applied to deterministic board games,
+# sampled from these inclusive ranges. Enough to diverge the opening tree for
+# variety, few enough that positions stay balanced and game-like.
 _OTHELLO_OPENING_PLIES = (2, 6)
+_CLOBBER_OPENING_PLIES = (2, 6)
+_CLOBBER_BOARD_SIZES = (
+    (4, 5),
+    (5, 5),
+    (5, 6),
+)
+_GOOFSPIEL_NUM_CARDS = (5, 8, 10, 13)
 
 
 class OthelloAgent(BaseGameAgent):
@@ -270,18 +308,29 @@ class OthelloAgent(BaseGameAgent):
         seed keeps games reproducible (same seed -> same start) while giving each
         seed a distinct mid-game position to play from.
         """
-        rng = random.Random(seed)
-        num_plies = rng.randint(*_OTHELLO_OPENING_PLIES)
-        for _ in range(num_plies):
-            if state.is_terminal():
-                break
-            legal_actions = state.legal_actions()
-            if not legal_actions:
-                break
-            state.apply_action(rng.choice(legal_actions))
+        _apply_seeded_random_opening(state, seed, _OTHELLO_OPENING_PLIES)
 
 
-_GOOFSPIEL_NUM_CARDS = (5, 8, 10, 13)
+class ClobberAgent(BaseGameAgent):
+
+    @property
+    def game_name(self) -> str:
+        return "clobber"
+
+    @property
+    def rules_key(self) -> str:
+        return "clobber_rules"
+
+    def generate_params(self, config_id: int) -> GameParams:
+        rows, columns = _CLOBBER_BOARD_SIZES[config_id % len(_CLOBBER_BOARD_SIZES)]
+        return ClobberParams(rows=rows, columns=columns)
+
+    def format_state(self, state: pyspiel.State, player_id: int) -> str:
+        colour = "o (White)" if player_id == 0 else "x (Black)"
+        return f"You play {colour}.\n{state.observation_string(player_id)}"
+
+    def setup_initial_state(self, state: pyspiel.State, seed: int) -> None:
+        _apply_seeded_random_opening(state, seed, _CLOBBER_OPENING_PLIES)
 
 
 class GoofspielAgent(BaseGameAgent):

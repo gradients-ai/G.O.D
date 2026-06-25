@@ -749,7 +749,7 @@ async def run_evaluation_pvp_pair(
     base_chain_a/base_chain_b reconstruct continuation miners' trained bases.
     """
     matchups = {
-        env: PvPMatchupConfig(num_games=vcst.PVP_NUM_GAMES_PER_ENV)
+        env: PvPMatchupConfig(time_budget_seconds=vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS)
         for env in environment_names
     }
     pvp_config = PvPEvalConfig(

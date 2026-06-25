@@ -5,6 +5,7 @@ from core.models.pvp_models import ChatFn
 from core.models.pvp_models import ChatMessage
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import ChatRole
+from core.models.pvp_models import ClobberParams
 from core.models.pvp_models import FullWeightContestants
 from core.models.pvp_models import FunctionSchema
 from core.models.pvp_models import GameActionArgs
@@ -49,6 +50,7 @@ __all__ = [
     "ChatMessage",
     "ChatResult",
     "ChatRole",
+    "ClobberParams",
     "FullWeightContestants",
     "FunctionSchema",
     "GameActionArgs",

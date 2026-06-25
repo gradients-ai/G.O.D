@@ -117,7 +117,7 @@ def main() -> None:
     parser.add_argument("--model-a", default="claude-haiku-4-5")
     parser.add_argument("--model-b", default="claude-3-haiku-20240307")
     parser.add_argument("--env", default="leduc_poker")
-    parser.add_argument("--num-games", type=int, default=1, help="seeds; each is played twice")
+    parser.add_argument("--time-budget-seconds", type=float, default=900.0, help="wall-clock budget for the matchup")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args()
@@ -126,10 +126,10 @@ def main() -> None:
     player_a = _player(client, args.model_a, 30000, "A" if args.verbose else None)
     player_b = _player(client, args.model_b, 30001, "B" if args.verbose else None)
 
-    print(f"=== {args.model_a} (A) vs {args.model_b} (B) - {args.env}, {args.num_games} seed(s) ===")
+    print(f"=== {args.model_a} (A) vs {args.model_b} (B) - {args.env}, {args.time_budget_seconds:.0f}s budget ===")
     result = run_matchup(
         env_name=EnvironmentName(args.env),
-        matchup_config=PvPMatchupConfig(num_games=args.num_games),
+        matchup_config=PvPMatchupConfig(time_budget_seconds=args.time_budget_seconds),
         player_a=player_a,
         player_b=player_b,
         base_seed=args.seed,

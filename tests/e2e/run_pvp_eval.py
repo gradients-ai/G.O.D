@@ -10,7 +10,7 @@ Requires:
 
 Usage:
     python tests/e2e/run_pvp_eval.py
-    python tests/e2e/run_pvp_eval.py --model Qwen/Qwen2.5-3B-Instruct --num-games 5
+    python tests/e2e/run_pvp_eval.py --model Qwen/Qwen2.5-3B-Instruct --time-budget-seconds 60
     python tests/e2e/run_pvp_eval.py --model-a org/lora-adapter --base-model Qwen/Qwen2.5-3B-Instruct
 
 The default runs both models as the same base model (sanity check: results should
@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--full", action="store_true",
         help="Run both tests: base-vs-base then LoRA-vs-base",
     )
-    parser.add_argument("--num-games", type=int, default=3, help="Games per environment (each played twice)")
+    parser.add_argument("--time-budget-seconds", type=float, default=60.0, help="Wall-clock budget per environment")
     parser.add_argument("--seed", type=int, default=42, help="Base seed")
     parser.add_argument("--temperature", type=float, default=0.0, help="Sampling temperature")
     parser.add_argument("--gpu-a", type=int, default=0, help="GPU for model A")
@@ -85,7 +85,7 @@ def build_config(args: argparse.Namespace) -> PvPEvalConfig:
         model_b_repo = args.model_b or args.model
 
     matchups = {
-        EnvironmentName(env): PvPMatchupConfig(num_games=args.num_games)
+        EnvironmentName(env): PvPMatchupConfig(time_budget_seconds=args.time_budget_seconds)
         for env in args.envs
     }
 
@@ -122,12 +122,10 @@ def validate_results(config: PvPEvalConfig, results_json: dict) -> list[str]:
             continue
 
         env_result = results_json["results"][env_key]
-        expected_total = matchup_config.num_games * 2
-
-        if env_result["total_games"] != expected_total:
-            errors.append(
-                f"{env_key}: total_games={env_result['total_games']}, expected={expected_total}"
-            )
+        if env_result["total_games"] <= 0:
+            errors.append(f"{env_key}: expected at least one completed game pair")
+        if env_result["total_games"] % 2:
+            errors.append(f"{env_key}: total_games={env_result['total_games']} is not position-balanced")
 
         accounting = env_result["model_a_wins"] + env_result["model_b_wins"] + env_result["draws"]
         if accounting != env_result["total_games"]:
@@ -152,7 +150,7 @@ def _run_test(args: argparse.Namespace) -> int:
     print(f"Model A: {config.model_a.repo} (GPU {config.model_a.gpu_id})")
     print(f"Model B: {config.model_b.repo} (GPU {config.model_b.gpu_id})")
     print(f"Environments: {[e.value for e in config.matchups]}")
-    print(f"Games per env: {args.num_games} (x2 for position swap)")
+    print(f"Time budget per env: {args.time_budget_seconds:.0f}s")
     print(f"Seed: {config.seed}, Temperature: {config.temperature}")
     print("=" * 60)
 

@@ -195,12 +195,17 @@ class LLMBot(pyspiel.Bot):
 
         result = self._chat(messages, tools)
 
+        if result.content:
+            logger.debug("Player %d response: %s", self._player_id, result.content)
+
         # Apply every memory edit; capture the first legal move (order-independent).
         action: int | None = None
         for call in result.tool_calls or []:
             if call.name == tool_lib.GAME_ACTION_TOOL_NAME:
                 if action is None:
                     action = self._validate_action(call, legal_set)
+                    if action is not None:
+                        logger.debug("Player %d action: %d", self._player_id, action)
             else:
                 tool_lib.execute_memory_tool(self._memories, call.name, call.arguments)
 

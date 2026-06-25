@@ -154,7 +154,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trim-to-target", action="store_true")
     parser.add_argument("--max-matchups-per-env", type=int, default=40)
     parser.add_argument("--matchups-per-env", type=int, default=2)
-    parser.add_argument("--games-per-matchup", type=int, default=25)
+    parser.add_argument("--time-budget-seconds-per-matchup", type=float, default=900.0)
     parser.add_argument("--append", action="store_true")
     parser.add_argument("--keep-forfeit-truncation", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
@@ -212,7 +212,7 @@ def main() -> None:
                 collector_b.matchup = existing + matchup
                 run_matchup(
                     env_name=env,
-                    matchup_config=PvPMatchupConfig(num_games=args.games_per_matchup),
+                    matchup_config=PvPMatchupConfig(time_budget_seconds=args.time_budget_seconds_per_matchup),
                     player_a=player_a,
                     player_b=player_b,
                     base_seed=args.seed + matchup,

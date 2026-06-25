@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-NUM_GAMES=150
+TIME_BUDGET_SECONDS=900
 IMAGE="pvp-eval:test"
 OUTPUT_DIR="/tmp/pvp-suite-results"
 mkdir -p "$OUTPUT_DIR"
@@ -52,7 +52,7 @@ cat > /tmp/pvp_suite_test1.json << EOF
 {
     "model_a": {"repo": "$BASE_3B", "original_model": "$BASE_3B"},
     "model_b": {"repo": "$BASE_3B", "original_model": "$BASE_3B"},
-    "matchups": {"liars_dice": {"num_games": $NUM_GAMES}, "leduc_poker": {"num_games": $NUM_GAMES}},
+    "matchups": {"liars_dice": {"time_budget_seconds": $TIME_BUDGET_SECONDS}, "leduc_poker": {"time_budget_seconds": $TIME_BUDGET_SECONDS}},
     "seed": 42,
     "temperature": 0.0
 }
@@ -63,7 +63,7 @@ cat > /tmp/pvp_suite_test2.json << EOF
 {
     "model_a": {"repo": "$LORA_B", "original_model": "$BASE_3B"},
     "model_b": {"repo": "$BASE_3B", "original_model": "$BASE_3B"},
-    "matchups": {"liars_dice": {"num_games": $NUM_GAMES}, "leduc_poker": {"num_games": $NUM_GAMES}},
+    "matchups": {"liars_dice": {"time_budget_seconds": $TIME_BUDGET_SECONDS}, "leduc_poker": {"time_budget_seconds": $TIME_BUDGET_SECONDS}},
     "seed": 42,
     "temperature": 0.0
 }
@@ -74,7 +74,7 @@ cat > /tmp/pvp_suite_test3.json << EOF
 {
     "model_a": {"repo": "$LORA_A", "original_model": "$BASE_3B"},
     "model_b": {"repo": "$LORA_B", "original_model": "$BASE_3B"},
-    "matchups": {"liars_dice": {"num_games": $NUM_GAMES}, "leduc_poker": {"num_games": $NUM_GAMES}},
+    "matchups": {"liars_dice": {"time_budget_seconds": $TIME_BUDGET_SECONDS}, "leduc_poker": {"time_budget_seconds": $TIME_BUDGET_SECONDS}},
     "seed": 42,
     "temperature": 0.0
 }
@@ -84,7 +84,7 @@ echo ""
 echo "============================================================"
 echo "PvP Evaluation Test Suite"
 echo "============================================================"
-echo "Games per env: $NUM_GAMES (x2 for position swap = $(( NUM_GAMES * 2 )) total)"
+echo "Time budget per env: ${TIME_BUDGET_SECONDS}s"
 echo "Environments: liars_dice, leduc_poker"
 echo ""
 

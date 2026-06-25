@@ -10,16 +10,17 @@ PVP_CONFIG_ID_DIVISOR = 100_000_000
 
 # Per-turn wall-clock forfeit budget. A turn is a SINGLE model call (memory
 # edits + the move in one response); this is the "stuck/too slow" cutoff.
-PVP_TURN_TIMEOUT_SECONDS = 30
-# End-of-game reflection is also a single call; bound it so a hung server can't
-# stall the matchup (reflection runs after every game, for both players).
-PVP_REFLECTION_TIMEOUT_SECONDS = 20
+# Sustained throughput on the eval GPU is roughly 57 tok/s; 512 output tokens
+# takes about 9s. 15s gives headroom over max generation.
+PVP_TURN_TIMEOUT_SECONDS = 15
+# Reflection generates up to 384 tokens; 12s gives reasonable headroom.
+PVP_REFLECTION_TIMEOUT_SECONDS = 12
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 
 # HTTP read timeout + retries for in-turn/reflection calls. Kept under the turn
 # budget so a hung connection is caught (and at most one retry attempted) before
 # the wall-clock alarm forfeits — the old 30s/10-retry defaults could never fit.
-PVP_HTTP_READ_TIMEOUT_SECONDS = 24
+PVP_HTTP_READ_TIMEOUT_SECONDS = 12
 PVP_HTTP_MAX_RETRIES = 1
 
 # Tool-calling memory harness.
@@ -30,6 +31,7 @@ PVP_HTTP_MAX_RETRIES = 1
 PVP_TURN_MAX_TOKENS = 512
 # Reflection writes a couple of long-term slots and makes no move.
 PVP_REFLECTION_MAX_TOKENS = 384
+PVP_MATCHUP_TIME_BUDGET_SECONDS = 900
 PVP_WORKING_MEM_SLOTS = 4
 PVP_WORKING_SLOT_TOKENS = 128
 PVP_LONGTERM_MEM_SLOTS = 8

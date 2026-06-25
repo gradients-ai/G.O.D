@@ -26,6 +26,7 @@ import tempfile
 import time
 from pathlib import Path
 
+
 _IMAGE_NAME = "pvp-eval:test"
 _DOCKERFILE = "ops/docker/pvp-eval.dockerfile"
 _RESULTS_CONTAINER_PATH = "/app/pvp_results.json"
@@ -42,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lora-test", action="store_true", help="Test LoRA adapter vs base model")
     parser.add_argument("--full", action="store_true", help="Run both base-vs-base and lora-vs-base")
     parser.add_argument("--skip-build", action="store_true", help="Skip docker build (use existing image)")
-    parser.add_argument("--num-games", type=int, default=2, help="Games per environment")
+    parser.add_argument("--time-budget-seconds", type=float, default=60.0, help="Wall-clock budget per environment")
     parser.add_argument("--envs", nargs="+", default=["liars_dice", "leduc_poker"], help="Environments to test")
     parser.add_argument("--gpu-a", type=int, default=0, help="GPU for model A")
     parser.add_argument("--gpu-b", type=int, default=1, help="GPU for model B")
@@ -69,7 +70,7 @@ def build_config(
     model_a: str,
     model_b: str,
     base_model: str,
-    num_games: int,
+    time_budget_seconds: float,
     envs: list[str],
     gpu_a: int,
     gpu_b: int,
@@ -78,7 +79,7 @@ def build_config(
     return {
         "model_a": {"repo": model_a, "original_model": base_model, "gpu_id": gpu_a},
         "model_b": {"repo": model_b, "original_model": base_model, "gpu_id": gpu_b},
-        "matchups": {env: {"num_games": num_games} for env in envs},
+        "matchups": {env: {"time_budget_seconds": time_budget_seconds} for env in envs},
         "seed": 42,
         "temperature": 0.0,
     }
@@ -89,7 +90,6 @@ def run_container(config: dict, gpu_a: int, gpu_b: int) -> tuple[int, dict | Non
     with tempfile.TemporaryDirectory() as tmpdir:
         config_path = Path(tmpdir) / "pvp_eval.json"
         config_path.write_text(json.dumps(config))
-        results_path = Path(tmpdir) / "pvp_results.json"
 
         gpu_devices = f"{gpu_a},{gpu_b}"
         cmd = [
@@ -193,10 +193,10 @@ def validate_results(config: dict, results: dict) -> list[str]:
             continue
 
         env_result = results["results"][env_name]
-        expected_total = matchup["num_games"] * 2
-
-        if env_result["total_games"] != expected_total:
-            errors.append(f"{env_name}: total_games={env_result['total_games']}, expected={expected_total}")
+        if env_result["total_games"] <= 0:
+            errors.append(f"{env_name}: expected at least one completed game pair")
+        if env_result["total_games"] % 2:
+            errors.append(f"{env_name}: total_games={env_result['total_games']} is not position-balanced")
 
         accounting = env_result["model_a_wins"] + env_result["model_b_wins"] + env_result["draws"]
         if accounting != env_result["total_games"]:
@@ -219,9 +219,25 @@ def run_test(args: argparse.Namespace, is_lora: bool) -> int:
     print(f"{'=' * 60}")
 
     if is_lora:
-        config = build_config(_LORA_ADAPTER, _BASE_MODEL, _BASE_MODEL, args.num_games, args.envs, args.gpu_a, args.gpu_b)
+        config = build_config(
+            _LORA_ADAPTER,
+            _BASE_MODEL,
+            _BASE_MODEL,
+            args.time_budget_seconds,
+            args.envs,
+            args.gpu_a,
+            args.gpu_b,
+        )
     else:
-        config = build_config(_BASE_MODEL, _BASE_MODEL, _BASE_MODEL, args.num_games, args.envs, args.gpu_a, args.gpu_b)
+        config = build_config(
+            _BASE_MODEL,
+            _BASE_MODEL,
+            _BASE_MODEL,
+            args.time_budget_seconds,
+            args.envs,
+            args.gpu_a,
+            args.gpu_b,
+        )
 
     exit_code, results = run_container_v2(config, args.gpu_a, args.gpu_b)
     if exit_code != 0 or results is None:

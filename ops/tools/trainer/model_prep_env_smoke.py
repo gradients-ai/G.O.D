@@ -29,6 +29,7 @@ DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
 DUMMY_ENV_DATASET = "dummy_environment_dataset.json"
 
 _ENV_ALIASES = {
+    "clobber": EnvironmentName.CLOBBER.value,
     "liarsdice": EnvironmentName.LIARS_DICE.value,
     "liars-dice": EnvironmentName.LIARS_DICE.value,
     "liars_dice": EnvironmentName.LIARS_DICE.value,
