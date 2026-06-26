@@ -42,6 +42,7 @@ from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.db_utils import load_shared_eval_deployment_id
 from validator.evaluation.db_utils import persist_shared_eval_deployment_id
 from validator.evaluation.utils import _log_eval_step
+from validator.evaluation.utils import canonical_basilica_deployment_ref
 from validator.evaluation.utils import create_basilica_eval_runner_source
 from validator.evaluation.utils import normalize_rewards_and_compute_loss
 from validator.evaluation.utils import process_evaluation_results
@@ -474,7 +475,7 @@ async def _deploy_pvp_eval(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=deployment_name,
+                    deployment_name=existing_deployment_name,
                     ctx=ctx,
                 )
                 return result
@@ -490,6 +491,7 @@ async def _deploy_pvp_eval(
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
+        deployment_db_ref = deployment_name
         try:
             update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
@@ -547,13 +549,15 @@ async def _deploy_pvp_eval(
                     "min_gpu_memory_gb": vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
                 },
             )
+            resolved_deployment_name = getattr(deployment, "name", None) or resolved_deployment_name
+            deployment_db_ref = canonical_basilica_deployment_ref(deployment, fallback=resolved_deployment_name)
             update_environment_logger_labels(
                 eval_logger,
-                deployment_id=resolved_deployment_name,
+                deployment_id=deployment_db_ref,
                 deployment_url=_deployment_url(deployment),
             )
-            log_step("deploy_complete", deployment=resolved_deployment_name)
-            if resolved_deployment_name != deployment_name:
+            log_step("deploy_complete", deployment=resolved_deployment_name, deployment_ref=deployment_db_ref)
+            if deployment_db_ref != deployment_name:
                 await _release_reserved_gpus(
                     task_id=task_id,
                     psql_db=psql_db,
@@ -566,11 +570,11 @@ async def _deploy_pvp_eval(
                         lambda: tasks_sql.try_reserve_evaluation_gpus(
                             task_id,
                             hotkeys,
-                            resolved_deployment_name,
+                            deployment_db_ref,
                             gpu_count,
                             psql_db,
                         ),
-                        "try_reserve_evaluation_gpus(pvp-resolved-name)",
+                        "try_reserve_evaluation_gpus(pvp-canonical-ref)",
                         ctx.eval_logger,
                         ctx.repo,
                     )
@@ -579,14 +583,14 @@ async def _deploy_pvp_eval(
                             ctx, client, deployment, resolved_deployment_name, "pvp_resolved_name_capacity_unavailable"
                         )
                         raise EvaluationCapacityUnavailable(
-                            f"Not enough evaluation GPU capacity for PvP deployment {resolved_deployment_name} "
+                            f"Not enough evaluation GPU capacity for PvP deployment {deployment_db_ref} "
                             f"({gpu_count} GPUs)"
                         )
                 await _persist_pvp_deployment_id(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=resolved_deployment_name,
+                    deployment_name=deployment_db_ref,
                     ctx=ctx,
                 )
             eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
@@ -610,7 +614,7 @@ async def _deploy_pvp_eval(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=resolved_deployment_name,
+                    deployment_name=deployment_db_ref,
                     ctx=ctx,
                 )
                 return result
@@ -626,7 +630,7 @@ async def _deploy_pvp_eval(
                 task_id=task_id,
                 psql_db=psql_db,
                 hotkeys=hotkeys,
-                deployment_name=dep_name,
+                deployment_name=deployment_db_ref,
                 ctx=ctx,
             )
             log_step(

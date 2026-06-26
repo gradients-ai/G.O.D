@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import time
 
 import core.constants as core_cst
 import validator.core.constants as cst
@@ -20,7 +21,7 @@ from validator.evaluation.scoring import evaluate_and_score_hotkeys
 from validator.evaluation.scoring import finalize_task_scores_from_raw_losses
 from validator.evaluation.scoring import should_use_tournament_eval
 from validator.evaluation.basilica import EvaluationRetryableError
-from validator.evaluation.utils import cleanup_all_basilica_deployments
+from validator.evaluation.utils import cleanup_orphaned_basilica_deployments
 from validator.evaluation.utils import notify_evaluation_exception
 from validator.utils.cache_clear import clean_all_hf_datasets_cache
 from validator.utils.cache_clear import manage_models_cache
@@ -31,6 +32,8 @@ from validator.utils.logging import get_logger
 
 logger = get_logger(__name__)
 _TOURNAMENT_GROUP_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
+_BASILICA_ORPHAN_CLEANUP_INTERVAL_SECONDS = 30 * 60
+_last_basilica_orphan_cleanup_at = 0.0
 
 
 def _tournament_environment_names() -> list[str]:
@@ -331,9 +334,7 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     pending_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "pending", config.psql_db)
     evaluating_rows = await tasks_sql.get_task_evaluations_by_status(task.task_id, "evaluating", config.psql_db)
     if not pending_rows and not evaluating_rows:
-        finalized = await _finalize_task_status_from_evaluations(task, config)
-        if finalized:
-            await _cleanup_basilica_deployments_if_no_active_evaluations(config)
+        await _finalize_task_status_from_evaluations(task, config)
         return
     
     pending_hotkeys = [row["hotkey"] for row in pending_rows]
@@ -352,19 +353,32 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
     if pending_evaluations:
         await asyncio.gather(*pending_evaluations)
 
-    finalized = await _finalize_task_status_from_evaluations(task, config)
-    if finalized:
-        await _cleanup_basilica_deployments_if_no_active_evaluations(config)
+    await _finalize_task_status_from_evaluations(task, config)
 
 
-async def _cleanup_basilica_deployments_if_no_active_evaluations(config: Config) -> None:
-    active_evaluations = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
-    if active_evaluations:
-        logger.info("Skipping drained Basilica cleanup; %s evaluation rows still active", active_evaluations)
+async def _cleanup_orphaned_basilica_deployments_if_due(config: Config) -> None:
+    global _last_basilica_orphan_cleanup_at
+
+    now = time.monotonic()
+    if now - _last_basilica_orphan_cleanup_at < _BASILICA_ORPHAN_CLEANUP_INTERVAL_SECONDS:
         return
 
-    logger.info("No active evaluation rows remain; deleting all Basilica deployments")
-    await cleanup_all_basilica_deployments()
+    _last_basilica_orphan_cleanup_at = now
+    try:
+        evaluation_refs, pvp_refs = await asyncio.gather(
+            tasks_sql.get_active_evaluation_deployment_refs(config.psql_db),
+            tournament_sql.get_active_pvp_pair_deployment_refs(config.psql_db),
+        )
+        tracked_refs = evaluation_refs | pvp_refs
+        logger.info(
+            "Running Basilica orphan cleanup with %s active tracked refs (%s evaluation, %s pvp)",
+            len(tracked_refs),
+            len(evaluation_refs),
+            len(pvp_refs),
+        )
+        await cleanup_orphaned_basilica_deployments(tracked_refs)
+    except Exception as e:
+        logger.warning("Basilica orphan cleanup failed: %s", e, exc_info=True)
 
 
 async def _move_back_to_looking_for_nodes(task: AnyTypeRawTask, config: Config):
@@ -493,6 +507,7 @@ async def evaluate_tasks_loop(config: Config):
 
     while True:
         try:
+            await _cleanup_orphaned_basilica_deployments_if_due(config)
             await _seed_task_evaluations_for_evaluation(config)
 
             evaluating_tasks = await _get_tasks_ready_for_evaluation(config)

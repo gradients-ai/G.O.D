@@ -16,6 +16,9 @@ from validator.db.sql import tasks as tasks_sql
 from validator.evaluation.db_utils import persist_deployment_ids_for_repo
 from validator.evaluation.utils import EVAL_RESULT_STATUS_PATH
 from validator.evaluation.utils import _log_eval_step
+from validator.evaluation.utils import basilica_deployment_refs
+from validator.evaluation.utils import canonical_basilica_deployment_ref
+from validator.evaluation.utils import deployment_ref_variants
 from validator.evaluation.utils import deployment_is_healthy
 from validator.evaluation.utils import log_basilica_logs_block
 from validator.utils.logging import get_environment_logger
@@ -294,21 +297,25 @@ async def _get_healthy_existing_basilica_deployment(
         ctx.log_eval_step("resume_lookup_start", deployment=existing_deployment_name)
         client = basilica.BasilicaClient()
         deployments = await asyncio.to_thread(client.list)
-        by_name = {getattr(dep, "name", None): dep for dep in deployments}
-        deployment = by_name.get(existing_deployment_name)
+        existing_refs = deployment_ref_variants(existing_deployment_name)
+        deployment = next(
+            (dep for dep in deployments if not basilica_deployment_refs(dep).isdisjoint(existing_refs)),
+            None,
+        )
         if deployment is None:
             ctx.eval_logger.warning(f"[{ctx.repo}] resume: deployment {existing_deployment_name} not found, redeploying")
             ctx.log_eval_step("resume_lookup_missing", deployment=existing_deployment_name)
             return None
 
+        deployment_name = getattr(deployment, "name", None) or existing_deployment_name
         if not deployment_is_healthy(deployment):
-            ctx.eval_logger.warning(f"[{ctx.repo}] resume: deployment {existing_deployment_name} unhealthy, redeploying")
-            await _delete_eval_deployment(ctx, client, deployment, existing_deployment_name, "resume_unhealthy")
+            ctx.eval_logger.warning(f"[{ctx.repo}] resume: deployment {deployment_name} unhealthy, redeploying")
+            await _delete_eval_deployment(ctx, client, deployment, deployment_name, "resume_unhealthy")
             return None
 
-        ctx.eval_logger.info(f"[{ctx.repo}] resuming polling deployment {existing_deployment_name}")
-        ctx.log_eval_step("resume_lookup_healthy", deployment=existing_deployment_name)
-        return client, deployment, existing_deployment_name
+        ctx.eval_logger.info(f"[{ctx.repo}] resuming polling deployment {deployment_name}")
+        ctx.log_eval_step("resume_lookup_healthy", deployment=deployment_name)
+        return client, deployment, deployment_name
     except Exception as e:
         ctx.eval_logger.error(f"[{ctx.repo}] resume failed, redeploying: {e}", exc_info=True)
         ctx.log_eval_step("resume_failed_redeploying", deployment=existing_deployment_name, error=e)
@@ -402,18 +409,19 @@ async def _deploy_basilica_eval_repo(
         deploy_kwargs=deploy_kwargs,
     )
     resolved_deployment_name = getattr(deployment, "name", None) or deployment_name
+    canonical_deployment_ref = canonical_basilica_deployment_ref(deployment, fallback=resolved_deployment_name)
     update_environment_logger_labels(
         ctx.eval_logger,
-        deployment_id=resolved_deployment_name,
+        deployment_id=canonical_deployment_ref,
         deployment_url=_deployment_url(deployment),
     )
-    ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name)
+    ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name, deployment_ref=canonical_deployment_ref)
 
-    if resolved_deployment_name != deployment_name:
+    if canonical_deployment_ref != deployment_name:
         if task_id is not None and psql_db is not None and reserved_hotkeys:
             await _db_call_with_retry(
                 lambda: tasks_sql.release_evaluation_gpu_reservation(task_id, reserved_hotkeys, deployment_name, psql_db),
-                "release_evaluation_gpu_reservation(old-name)",
+                "release_evaluation_gpu_reservation(pre-deploy-ref)",
                 ctx.eval_logger,
                 ctx.repo,
             )
@@ -421,23 +429,24 @@ async def _deploy_basilica_eval_repo(
                 lambda: tasks_sql.try_reserve_evaluation_gpus(
                     task_id,
                     reserved_hotkeys,
-                    resolved_deployment_name,
+                    canonical_deployment_ref,
                     requested_gpus,
                     psql_db,
                 ),
-                "try_reserve_evaluation_gpus(resolved-name)",
+                "try_reserve_evaluation_gpus(canonical-ref)",
                 ctx.eval_logger,
                 ctx.repo,
             )
             if not reserved:
                 await _delete_eval_deployment(ctx, client, deployment, resolved_deployment_name, "resolved_name_capacity_unavailable")
                 raise EvaluationCapacityUnavailable(
-                    f"Not enough evaluation GPU capacity for deployment {resolved_deployment_name} ({requested_gpus} GPUs)"
+                    f"Not enough evaluation GPU capacity for deployment {canonical_deployment_ref} ({requested_gpus} GPUs)"
                 )
         await asyncio.sleep(random.uniform(0.0, 0.25))
         ctx.log_eval_step(
             "deployment_id_repersist_start",
             deployment=resolved_deployment_name,
+            deployment_ref=canonical_deployment_ref,
             previous_deployment=deployment_name,
         )
         async with _EVAL_DB_WRITE_SEMAPHORE:
@@ -447,16 +456,16 @@ async def _deploy_basilica_eval_repo(
                     psql_db,
                     repo_to_hotkey,
                     ctx.repo,
-                    resolved_deployment_name,
+                    canonical_deployment_ref,
                 ),
                 "persist_deployment_ids_for_repo(post-deploy)",
                 ctx.eval_logger,
                 ctx.repo,
             )
-        ctx.log_eval_step("deployment_id_repersist_complete", deployment=resolved_deployment_name)
+        ctx.log_eval_step("deployment_id_repersist_complete", deployment=resolved_deployment_name, deployment_ref=canonical_deployment_ref)
 
     ctx.eval_logger.info(f"[{ctx.repo}] deployment started: {resolved_deployment_name}")
-    return client, deployment, resolved_deployment_name
+    return client, deployment, resolved_deployment_name, canonical_deployment_ref
 
 
 async def _poll_eval_deployment(
@@ -595,11 +604,12 @@ async def _run_single_basilica_eval_repo(
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
+        deployment_db_ref = deployment_name
         try:
             update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info(f"[{repo}] starting Basilica evaluation attempt {attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}")
-            client, deployment, resolved_deployment_name = await _deploy_basilica_eval_repo(
+            client, deployment, resolved_deployment_name, deployment_db_ref = await _deploy_basilica_eval_repo(
                 ctx=ctx,
                 deployment_name=deployment_name,
                 image=image,
@@ -615,7 +625,7 @@ async def _run_single_basilica_eval_repo(
             )
             update_environment_logger_labels(
                 eval_logger,
-                deployment_id=resolved_deployment_name,
+                deployment_id=deployment_db_ref,
                 deployment_url=_deployment_url(deployment),
             )
             return await _poll_eval_deployment(
@@ -639,7 +649,7 @@ async def _run_single_basilica_eval_repo(
                 task_id=task_id,
                 psql_db=psql_db,
                 hotkeys=reserved_hotkeys,
-                deployment_name=dep_name,
+                deployment_name=deployment_db_ref,
                 ctx=ctx,
             )
             raise
@@ -652,7 +662,7 @@ async def _run_single_basilica_eval_repo(
                 task_id=task_id,
                 psql_db=psql_db,
                 hotkeys=reserved_hotkeys,
-                deployment_name=dep_name,
+                deployment_name=deployment_db_ref,
                 ctx=ctx,
             )
             log_step(

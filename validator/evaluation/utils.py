@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from io import BytesIO
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING
 from typing import Any
 from uuid import UUID
@@ -408,6 +409,84 @@ async def cleanup_all_basilica_deployments() -> None:
             logger.warning(f"Failed drained evaluation cleanup for deployment {deployment_name}: {e}")
 
     logger.info(f"Drained evaluation cleanup removed {cleaned}/{len(deployments)} Basilica deployments")
+
+
+def normalized_deployment_ref(value: str | None) -> str | None:
+    if not value:
+        return None
+    return value.strip().rstrip("/")
+
+
+def deployment_ref_variants(value: str | None) -> set[str]:
+    normalized = normalized_deployment_ref(value)
+    if not normalized:
+        return set()
+
+    refs = {normalized}
+    parsed = urlparse(normalized)
+    if parsed.path:
+        last_path_part = parsed.path.rstrip("/").split("/")[-1]
+        if last_path_part:
+            refs.add(last_path_part)
+    return refs
+
+
+def basilica_deployment_refs(deployment) -> set[str]:
+    refs = set()
+    refs.update(deployment_ref_variants(getattr(deployment, "name", None)))
+    refs.update(deployment_ref_variants(getattr(deployment, "url", None)))
+    return {ref for ref in refs if ref}
+
+
+def canonical_basilica_deployment_ref(deployment, fallback: str | None = None) -> str | None:
+    """Return the preferred DB ref for a Basilica deployment."""
+    return (
+        normalized_deployment_ref(getattr(deployment, "url", None))
+        or normalized_deployment_ref(getattr(deployment, "name", None))
+        or normalized_deployment_ref(fallback)
+    )
+
+
+async def cleanup_orphaned_basilica_deployments(tracked_deployment_refs: set[str]) -> None:
+    """Delete live Basilica deployments that are not referenced by validator DB rows."""
+    normalized_tracked_refs = set()
+    for ref in tracked_deployment_refs:
+        normalized_tracked_refs.update(deployment_ref_variants(ref))
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Failed to list deployments for orphan cleanup: {e}")
+        return
+
+    orphaned = [dep for dep in deployments if basilica_deployment_refs(dep).isdisjoint(normalized_tracked_refs)]
+    if not orphaned:
+        logger.info(
+            "Basilica orphan cleanup found no orphaned deployments "
+            "(live=%s tracked_refs=%s)",
+            len(deployments),
+            len(normalized_tracked_refs),
+        )
+        return
+
+    cleaned = 0
+    for dep in orphaned:
+        refs = basilica_deployment_refs(dep)
+        deployment_name = getattr(dep, "name", None) or getattr(dep, "url", None) or "unknown"
+        try:
+            await asyncio.to_thread(dep.delete)
+            cleaned += 1
+            logger.info("Deleted orphaned Basilica deployment %s refs=%s", deployment_name, sorted(refs))
+        except Exception as e:
+            logger.warning("Failed orphan cleanup for Basilica deployment %s refs=%s: %s", deployment_name, sorted(refs), e)
+
+    logger.info(
+        "Basilica orphan cleanup removed %s/%s orphaned deployments (live=%s tracked_refs=%s)",
+        cleaned,
+        len(orphaned),
+        len(deployments),
+        len(normalized_tracked_refs),
+    )
 
 
 def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:

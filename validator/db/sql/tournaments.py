@@ -25,6 +25,7 @@ from core.models.tournament_models import TournamentTaskTraining
 from core.models.tournament_models import TournamentType
 from core.models.tournament_models import TrainingRepoInfo
 from core.models.utility_models import GPUInfo
+from core.models.utility_models import TaskStatus
 from core.models.utility_models import TaskType
 from core.models.utility_models import TrainerInfo
 from core.models.utility_models import TrainingStatus
@@ -1559,6 +1560,25 @@ async def get_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> list[PvPPairDbR
             WHERE {cst.TASK_ID} = $1
         """, task_id)
         return [PvPPairDbRow(task_id=task_id, **dict(r)) for r in rows]
+
+
+async def get_active_pvp_pair_deployment_refs(psql_db: PSQLDB) -> set[str]:
+    """Get deployment refs for incomplete PvP pairs on active tasks."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT DISTINCT ppr.{cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_PAIR_RESULTS_TABLE} ppr
+            JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID}::text = ppr.{cst.TASK_ID}
+            WHERE ppr.{cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+              AND ppr.{cst.STATUS} != $1
+              AND t.{cst.STATUS} = ANY($2)
+        """, cst.PVP_STATUS_COMPLETE, [TaskStatus.TRAINING.value, TaskStatus.EVALUATING.value])
+    refs: set[str] = set()
+    for row in rows:
+        val = row.get(cst.PVP_DEPLOYMENT_ID)
+        if val and isinstance(val, str):
+            refs.add(val)
+    return refs
 
 
 async def delete_pvp_pair_results(task_id: str, psql_db: PSQLDB) -> None:
