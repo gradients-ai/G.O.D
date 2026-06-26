@@ -1,9 +1,22 @@
 """Back-compat shim: PvP agents moved to core.pvp.agents (shared with model-prep)."""
 
-from core.pvp.agents import BaseGameAgent as BaseGameAgent
-from core.pvp.agents import GinRummyAgent as GinRummyAgent
-from core.pvp.agents import GoofspielAgent as GoofspielAgent
-from core.pvp.agents import LeducPokerAgent as LeducPokerAgent
-from core.pvp.agents import LiarsDiceAgent as LiarsDiceAgent
-from core.pvp.agents import OthelloAgent as OthelloAgent
-from core.pvp.agents import load_prompts as load_prompts
+from core.pvp.agents import BaseGameAgent
+from core.pvp.agents import ClobberAgent
+from core.pvp.agents import GinRummyAgent
+from core.pvp.agents import GoofspielAgent
+from core.pvp.agents import LeducPokerAgent
+from core.pvp.agents import LiarsDiceAgent
+from core.pvp.agents import OthelloAgent
+from core.pvp.agents import load_prompts
+
+
+__all__ = [
+    "BaseGameAgent",
+    "ClobberAgent",
+    "GinRummyAgent",
+    "GoofspielAgent",
+    "LeducPokerAgent",
+    "LiarsDiceAgent",
+    "OthelloAgent",
+    "load_prompts",
+]

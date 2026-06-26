@@ -99,6 +99,28 @@ othello_rules: >
   legal moves remain for either side). The player with more discs wins; an equal
   count is a draw.
 
+clobber_rules: >
+  CLOBBER RULES:
+
+  Board: A rectangular grid. Columns are labelled with letters from left to right,
+  and rows are labelled with numbers. White pieces are shown as o, Black pieces
+  are shown as x, and empty cells are shown as dots.
+
+  Players: Player 0 controls o (White). Player 1 controls x (Black). White moves
+  first before any seeded opening moves.
+
+  Goal: Make the last legal move. If it is your turn and you have no legal moves,
+  you lose.
+
+  Making a move: Choose one of your pieces and move it onto an orthogonally
+  adjacent opponent piece (up, right, down, or left). The opponent piece is
+  removed and your piece occupies that destination square. Your original square
+  becomes empty.
+
+  Restrictions: You cannot move diagonally. You cannot move onto an empty square
+  or onto one of your own pieces. You can only choose from the legal action IDs
+  offered for the current position.
+
 goofspiel_rules: >
   GOOFSPIEL RULES (the Game of Pure Strategy):
 

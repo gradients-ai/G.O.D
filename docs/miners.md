@@ -305,7 +305,7 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 | `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
 | `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
 | `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
-| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, or `intercode`. |
+| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, or `intercode`. |
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
 
@@ -467,6 +467,8 @@ Supported environment names are defined in [core/constants.py](../core/constants
 - `gin_rummy`
 - `liars_dice`
 - `leduc_poker`
+- `othello`
+- `clobber`
 - `intercode`
 
 For OpenSpiel-style environments, one environment sidecar is usually started per assigned GPU. The URLs are passed through `ENVIRONMENT_SERVER_URLS`. Parse them as a comma-separated list:

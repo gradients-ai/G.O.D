@@ -150,21 +150,26 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
     player_b: Player | None = None
 
     try:
+        logger.info("Starting sglang: model_a gpu=%d port=%d repo=%s", gpu_a, port_a, model_a.repo)
+        logger.info("Starting sglang: model_b gpu=%d port=%d repo=%s", gpu_b, port_b, model_b.repo)
         sglang_a = start_sglang(prepared_a, gpu_a, port_a, config.seed)
         sglang_b = start_sglang(prepared_b, gpu_b, port_b, config.seed + 1)
         asyncio.run(wait_for_servers(port_a, port_b))
+        logger.info("Both sglang servers ready")
 
         config_a = _build_chat_config(port_a, config, prepared_a)
         config_b = _build_chat_config(port_b, config, prepared_b)
 
         player_a = create_player(config_a)
         player_b = create_player(config_b)
+        logger.info("Warming up players")
         warmup_player(player_a)
         warmup_player(player_b)
+        logger.info("Warmup complete")
 
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():
-            logger.info("Starting matchup: %s (%d seeds)", env_name.value, matchup_config.num_games)
+            logger.info("Starting matchup: %s (%.0fs budget)", env_name.value, matchup_config.time_budget_seconds)
             env_results[env_name] = run_matchup(
                 env_name=env_name,
                 matchup_config=matchup_config,

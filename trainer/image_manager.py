@@ -688,6 +688,7 @@ FALLBACK_ENV_IMAGES: dict[core_cst.EnvironmentName, str] = {
     core_cst.EnvironmentName.LIARS_DICE: core_cst.MCTS_API_DOCKER_IMAGE,
     core_cst.EnvironmentName.LEDUC_POKER: core_cst.MCTS_API_DOCKER_IMAGE,
     core_cst.EnvironmentName.OTHELLO: core_cst.MCTS_API_DOCKER_IMAGE,
+    core_cst.EnvironmentName.CLOBBER: core_cst.MCTS_API_DOCKER_IMAGE,
     core_cst.EnvironmentName.GOOFSPIEL: core_cst.MCTS_API_DOCKER_IMAGE,
 }
 

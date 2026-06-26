@@ -46,6 +46,7 @@ class EnvironmentName(str, Enum):
     LIARS_DICE = "liars_dice"
     LEDUC_POKER = "leduc_poker"
     OTHELLO = "othello"
+    CLOBBER = "clobber"
     GOOFSPIEL = "goofspiel"
     INTERCODE = "intercode"
 
@@ -123,6 +124,22 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
     EnvironmentName.OTHELLO: EnvironmentConfig(
         task_id_min=400_000_000,
         task_id_max=499_999_999,
+        num_seeds=10_000,
+        num_baseline_episodes=25,
+        eval_type=EvalType.PVP,
+        env_image=MCTS_API_DOCKER_IMAGE,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
+        gpu_multiplier=4,
+        eval_payload_extra={
+            "opponent": "mcts",
+            "mcts_max_simulations": 50,
+            "mcts_num_rollouts": 1,
+            "api_key": "dummy-key",
+        },
+    ),
+    EnvironmentName.CLOBBER: EnvironmentConfig(
+        task_id_min=700_000_000,
+        task_id_max=799_999_999,
         num_seeds=10_000,
         num_baseline_episodes=25,
         eval_type=EvalType.PVP,

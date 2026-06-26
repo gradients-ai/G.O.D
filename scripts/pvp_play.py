@@ -20,16 +20,16 @@ import pickle
 import random
 import sys
 
+from core.constants import EnvironmentName
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatResult
 from core.models.pvp_models import MemoryArea
 from core.pvp import tools as tool_lib
+from core.pvp.bot import LLMBot
+from core.pvp.game_eval import _AGENT_REGISTRY
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import WhitespaceTokenCounter
 from validator.core import constants as vcst
-from core.pvp.bot import LLMBot
-from core.pvp.game_eval import _AGENT_REGISTRY
-from core.constants import EnvironmentName
 
 
 STATE_PATH = "/tmp/pvp_play.pkl"
@@ -203,7 +203,10 @@ def cmd_reflect(args) -> None:
 
     outcome = GameOutcome.DRAW
     if state.is_terminal():
-        outcome = GameOutcome.WIN if returns[args.seat] > 0 else (GameOutcome.LOSS if returns[args.seat] < 0 else GameOutcome.DRAW)
+        if returns[args.seat] > 0:
+            outcome = GameOutcome.WIN
+        elif returns[args.seat] < 0:
+            outcome = GameOutcome.LOSS
     print(bot._reflection_user_prompt(state, outcome))
     print("\n(Apply consolidation with: act-reflect --seat N --mem <tool> <slot> <text> ...)")
 

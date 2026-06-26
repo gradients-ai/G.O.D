@@ -21,6 +21,7 @@ try:
 
     import pyspiel
 
+    from validator.evaluation.pvp.agents import ClobberAgent
     from validator.evaluation.pvp.agents import GinRummyAgent
     from validator.evaluation.pvp.agents import LeducPokerAgent
     from validator.evaluation.pvp.agents import LiarsDiceAgent
@@ -129,6 +130,17 @@ class TestConfigIdVariation:
         assert agent.generate_params(0) == agent.generate_params(99)
         assert agent.generate_params(0).to_pyspiel() == {}
 
+    def test_clobber_params_vary_by_config(self):
+        """Clobber samples small board-size variants around OpenSpiel's default."""
+        agent = ClobberAgent()
+        params_set = {
+            (agent.generate_params(config_id).rows, agent.generate_params(config_id).columns)
+            for config_id in range(9)
+        }
+
+        assert params_set == {(4, 5), (5, 5), (5, 6)}
+        assert agent.generate_params(0).to_pyspiel() == {"rows": 4, "columns": 5}
+
 
 # --- 3c': Othello seeded opening plies (deterministic game needs injected variety) ---
 
@@ -168,6 +180,50 @@ class TestOthelloOpeningPlies:
     def test_opening_diverges_from_fresh_board(self):
         """At least some seeds move the board off the standard starting position."""
         fresh = pyspiel.load_game("othello").new_initial_state().observation_string(0)
+        assert any(self._opened_board(seed) != fresh for seed in range(20))
+
+
+# --- 3c'': Clobber seeded opening plies (same deterministic-game pattern as Othello) ---
+
+
+@needs_pyspiel
+class TestClobberOpeningPlies:
+    def _opened_board(self, seed: int) -> str:
+        agent = ClobberAgent()
+        game = agent.load_game(agent.generate_params(0))
+        state = game.new_initial_state()
+        agent.setup_initial_state(state, seed)
+        return f"{state.current_player()}\n{state.observation_string(0)}"
+
+    def test_same_seed_same_opening(self):
+        assert self._opened_board(42) == self._opened_board(42)
+
+    def test_format_state_names_the_players_colour(self):
+        agent = ClobberAgent()
+        state = agent.load_game(agent.generate_params(0)).new_initial_state()
+        assert "You play o (White)" in agent.format_state(state, 0)
+        assert "You play x (Black)" in agent.format_state(state, 1)
+
+    def test_different_seed_different_opening(self):
+        boards = {self._opened_board(seed) for seed in range(20)}
+        assert len(boards) > 1, "All seeds produced the identical opening board"
+
+    def test_opening_leaves_playable_nonterminal_state(self):
+        agent = ClobberAgent()
+        for config_id in range(3):
+            for seed in range(20):
+                game = agent.load_game(agent.generate_params(config_id))
+                state = game.new_initial_state()
+                agent.setup_initial_state(state, seed)
+                assert not state.is_terminal()
+                assert state.current_player() in (0, 1)
+                assert state.legal_actions()
+
+    def test_opening_diverges_from_fresh_board(self):
+        agent = ClobberAgent()
+        game = agent.load_game(agent.generate_params(0))
+        state = game.new_initial_state()
+        fresh = f"{state.current_player()}\n{state.observation_string(0)}"
         assert any(self._opened_board(seed) != fresh for seed in range(20))
 
 
