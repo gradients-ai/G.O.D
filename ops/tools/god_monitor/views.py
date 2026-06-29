@@ -356,6 +356,7 @@ def pvp_pairs_table(rows, task_id: str) -> None:
     table.add_column("Draws", justify="right", style="blue")
     table.add_column("Games", justify="right")
     table.add_column("Status")
+    table.add_column("Deployment ID", style="dim", no_wrap=True)
     for r in rows:
         table.add_row(
             r.environment_name,
@@ -366,6 +367,7 @@ def pvp_pairs_table(rows, task_id: str) -> None:
             str(r.draws),
             str(r.total_games),
             _tag(str(r.status)),
+            r.deployment_id or "-",
         )
     console.print(table)
 
@@ -378,6 +380,7 @@ def pvp_individual_table(rows) -> None:
     table.add_column("Environment", style="cyan")
     table.add_column("Score", justify="right", style="green")
     table.add_column("Status")
+    table.add_column("Deployment ID", style="dim", no_wrap=True)
     for r in rows:
         score = getattr(r, "score", None)
         table.add_row(
@@ -385,6 +388,7 @@ def pvp_individual_table(rows) -> None:
             r.environment_name,
             f"{score:.4f}" if score is not None else "-",
             _tag(str(getattr(r, "status", ""))),
+            getattr(r, "deployment_id", None) or "-",
         )
     console.print(table)
 
@@ -392,12 +396,13 @@ def pvp_individual_table(rows) -> None:
 # --- deployments / infra ---------------------------------------------------
 
 
-def deployments_table(eval_rows: list[dict], pvp_rows: list[dict]) -> None:
-    if not eval_rows and not pvp_rows:
+def deployments_table(eval_rows: list[dict], pvp_rows: list[dict], individual_rows: list[dict] | None = None) -> None:
+    individual_rows = individual_rows or []
+    if not eval_rows and not pvp_rows and not individual_rows:
         console.print("No active deployments.", style="yellow")
         return
     if eval_rows:
-        table = Table(title="Active Evaluation Deployments")
+        table = Table(title="Active Non-Env Evaluation Deployments")
         table.add_column("Task ID", style="cyan", no_wrap=True)
         table.add_column("Hotkey", style="magenta", no_wrap=True)
         table.add_column("Type")
@@ -415,7 +420,7 @@ def deployments_table(eval_rows: list[dict], pvp_rows: list[dict]) -> None:
             )
         console.print(table)
     if pvp_rows:
-        table = Table(title="Active PvP Deployments")
+        table = Table(title="Active PvP Pair Deployments")
         table.add_column("Task ID", style="cyan", no_wrap=True)
         table.add_column("Pair", style="magenta", no_wrap=True)
         table.add_column("Environment", style="cyan")
@@ -425,6 +430,22 @@ def deployments_table(eval_rows: list[dict], pvp_rows: list[dict]) -> None:
             table.add_row(
                 str(r["task_id"]),
                 f"{r['hotkey_a'][:8]}/{r['hotkey_b'][:8]}",
+                r.get("environment_name", ""),
+                _tag(r.get("status")),
+                r.get("deployment_id") or "-",
+            )
+        console.print(table)
+    if individual_rows:
+        table = Table(title="Active Individual Env Deployments")
+        table.add_column("Task ID", style="cyan", no_wrap=True)
+        table.add_column("Hotkey", style="magenta", no_wrap=True)
+        table.add_column("Environment", style="cyan")
+        table.add_column("Status")
+        table.add_column("Deployment ID", style="dim", no_wrap=True)
+        for r in individual_rows:
+            table.add_row(
+                str(r["task_id"]),
+                str(r["hotkey"]),
                 r.get("environment_name", ""),
                 _tag(r.get("status")),
                 r.get("deployment_id") or "-",
