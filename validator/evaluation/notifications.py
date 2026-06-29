@@ -71,8 +71,10 @@ async def task_deployment_ids_for_hotkeys(
     hotkey_set = set(hotkeys)
     try:
         from validator.db.sql.tasks import get_task_evaluation_rows
+        from validator.db.sql.tournaments import get_pvp_deployment_ids_for_hotkeys
 
         rows = await get_task_evaluation_rows(task_id, config.psql_db)
+        pvp_deployment_ids = await get_pvp_deployment_ids_for_hotkeys(str(task_id), hotkeys, config.psql_db)
     except Exception as exc:
         logger.warning(f"Failed to load evaluation deployment IDs for task {task_id}: {exc}")
         return []
@@ -82,4 +84,5 @@ async def task_deployment_ids_for_hotkeys(
         for row in rows
         if row.get("hotkey") in hotkey_set and row.get("deployment_id")
     }
+    deployment_ids.update(pvp_deployment_ids)
     return sorted(deployment_ids)
