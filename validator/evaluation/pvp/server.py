@@ -68,19 +68,24 @@ def _drain_stdout(proc: subprocess.Popen, name: str) -> None:
     thread.start()
 
 
-async def wait_for_servers(port_a: int, port_b: int) -> None:
-    """Wait for both SGLang instances to become healthy."""
+async def wait_for_servers(port_a: int, port_b: int, timeout: int = vcst.PVP_SGLANG_HEALTH_TIMEOUT) -> None:
+    """Wait for both SGLang instances to become healthy.
+
+    Used both for initial startup (long timeout) and for mid-eval recovery after
+    a server goes unreachable (shorter timeout). Raises TimeoutError if either
+    server is not healthy within `timeout`.
+    """
     await asyncio.gather(
         _wait_for_health(
             f"http://{vcst.PVP_SGLANG_HOST}:{port_a}",
             vcst.PVP_SGLANG_HEALTH_PATH,
-            vcst.PVP_SGLANG_HEALTH_TIMEOUT,
+            timeout,
             service_name="sglang-a",
         ),
         _wait_for_health(
             f"http://{vcst.PVP_SGLANG_HOST}:{port_b}",
             vcst.PVP_SGLANG_HEALTH_PATH,
-            vcst.PVP_SGLANG_HEALTH_TIMEOUT,
+            timeout,
             service_name="sglang-b",
         ),
     )

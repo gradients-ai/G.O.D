@@ -211,13 +211,15 @@ tasks:
         LOKI_PASSWORD=${LOKI_PASSWORD}
         VECTOR_LOG_LEVEL=${VECTOR_LOG_LEVEL:-info}
         EOF
-      - docker compose -f ops/compose/docker-compose.trainer-server.yml --env-file .env.trainer-logs up -d
+      - |
+        docker rm -f god-node-exporter god-vector-log-shipper 2>/dev/null || true
+        docker compose -p god -f ops/compose/docker-compose.trainer-server.yml --env-file .env.trainer-logs up -d --remove-orphans
       - echo "Log shipping started to ${LOKI_ENDPOINT}"
 
   stop-trainer-logs:
     desc: "Stop log shipping on trainer node"
     cmds:
-      - docker compose -f ops/compose/docker-compose.trainer-server.yml down
+      - docker compose -p god -f ops/compose/docker-compose.trainer-server.yml down
 
   logs-observability:
     desc: "View logs from observability server"

@@ -37,10 +37,23 @@ from core.models.task_models import TaskType
 BPB_REFERENCE_MODEL = "gpt2"
 
 # Token-length stats are computed on a random sample and scaled to the full
-# record count; model forward passes use the same sample.
+# record count; model forward passes use a smaller subset of the SAME sample.
 LENGTH_SAMPLE_SIZE = 2_000
-BPB_SAMPLE_SIZE = 200
+# Model forward passes (init loss, entropy, masked loss) and the content stats
+# (unique tokens, near-duplicate rate, BPB) run on this many samples. The
+# forward-pass loops are batch_size=1, so this is the dominant cost of model
+# prep; a few hundred to ~1k samples give a stable mean. Decoupled from
+# LENGTH_SAMPLE_SIZE so the token-length distribution stays accurate.
+FORWARD_SAMPLE_SIZE = 1_000
+# Bits-per-byte runs a GPT-2 forward pass per text; 64 is plenty for a stable
+# byte-normalised cross-entropy estimate and keeps the probe cheap.
+BPB_SAMPLE_SIZE = 64
 LENGTH_SAMPLE_SEED = 42
+# Cap per-text length for the CPU-bound content stats so a handful of
+# pathologically long records (e.g. long-document datasets) can't blow up
+# model-prep time. Forward passes are separately capped at max_length=512.
+CONTENT_MAX_TOKENS = 2_048
+NEAR_DUP_MAX_WORDS = 512
 
 # Throughput probe settings.
 THROUGHPUT_TARGET_BATCH_TOKENS = 8_192
@@ -216,7 +229,7 @@ def measure_training_throughput(model, device, seq_len: int, vocab_size: int) ->
 def _count_unique_tokens(texts: list[str], tokenizer) -> int:
     unique: set[int] = set()
     for t in texts:
-        unique.update(tokenizer(t, truncation=False)["input_ids"])
+        unique.update(tokenizer(t, truncation=True, max_length=CONTENT_MAX_TOKENS)["input_ids"])
     return len(unique)
 
 
@@ -273,7 +286,7 @@ def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshol
         minhashes = []
         for i, text in enumerate(texts):
             m = MinHash(num_perm=num_perm)
-            for word in text.lower().split():
+            for word in text.lower().split()[:NEAR_DUP_MAX_WORDS]:
                 m.update(word.encode("utf-8"))
             minhashes.append(m)
             try:
@@ -287,17 +300,18 @@ def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshol
         return float("nan")
 
 
-def _compute_bits_per_byte(texts: list[str]) -> float:
+def _compute_bits_per_byte(texts: list[str], device: str = "cpu") -> float:
     """Compute bits-per-byte using GPT-2 reference model.
 
-    Always runs on CPU to avoid competing for GPU VRAM with the main model.
-    GPT-2 is small enough that CPU inference is fine here.
+    Runs on the main model's device (GPU when available). GPT-2 is tiny (~124M),
+    so the VRAM cost is negligible and GPU inference avoids the CPU-bound forward
+    loop that dominates model-prep time when several containers share a node.
     """
     t0 = time.time()
     texts = [t for t in texts if t.strip()]
     if not texts:
         return 0.0
-    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL)
+    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL).to(device)
     ref_tokenizer = AutoTokenizer.from_pretrained(BPB_REFERENCE_MODEL)
     ref_tokenizer.pad_token = ref_tokenizer.eos_token
     ref_model.eval()
@@ -306,11 +320,13 @@ def _compute_bits_per_byte(texts: list[str]) -> float:
     with torch.no_grad():
         for text in texts:
             total_bytes += len(text.encode("utf-8"))
-            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt")
+            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt").to(device)
             outputs = ref_model(**enc, labels=enc["input_ids"])
             n_predicted_tokens = enc["input_ids"].shape[1] - 1
             total_loss_nats += outputs.loss.item() * max(n_predicted_tokens, 1)
     del ref_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     result = (total_loss_nats / math.log(2)) / max(total_bytes, 1)
     print(f"[stats] BPB done in {time.time() - t0:.1f}s ({len(texts)} texts, {total_bytes} bytes, bpb={result:.4f})", flush=True)
     return result
@@ -358,14 +374,18 @@ def _compute_base_training_dynamics(
 
     # Forward hooks for activation RMS — registered before eval loop so we
     # collect across all batches in eval mode (no dropout/batchnorm noise).
-    activation_rms_accum: dict[str, list[float]] = defaultdict(list)
+    # Keep per-batch RMS as on-device scalars and sync once at the end. Calling
+    # .item() inside the hook would force a GPU->CPU sync for every module on
+    # every batch (hundreds of modules x thousands of batches), serialising the
+    # whole eval loop.
+    activation_rms_accum: dict[str, list[torch.Tensor]] = defaultdict(list)
     hooks = []
 
     def make_hook(name):
         def hook(module, _input, output):
             out = output[0] if isinstance(output, tuple) else output
             if isinstance(out, torch.Tensor):
-                activation_rms_accum[name].append(torch.sqrt(torch.mean(out.float() ** 2)).item())
+                activation_rms_accum[name].append(torch.sqrt(torch.mean(out.float() ** 2)).detach())
         return hook
 
     for name, module in model.named_modules():
@@ -400,7 +420,7 @@ def _compute_base_training_dynamics(
 
     for h in hooks:
         h.remove()
-    activation_rms = {n: float(np.mean(v)) for n, v in activation_rms_accum.items()}
+    activation_rms = {n: float(torch.stack(v).mean().item()) for n, v in activation_rms_accum.items() if v}
     print(
         f"[stats] Eval loop done in {time.time() - t_start:.1f}s "
         f"(loss={init_loss:.4f}, {len(batch_losses)} batches)",
@@ -519,7 +539,7 @@ def _compute_instruct_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, completion_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(all_texts),
-        bits_per_byte=_compute_bits_per_byte(list(completions)[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(list(completions)[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -574,7 +594,7 @@ def _compute_dpo_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, chosen_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(list(prompts)),
-        bits_per_byte=_compute_bits_per_byte(list(prompts)[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(list(prompts)[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -627,7 +647,7 @@ def _compute_grpo_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist(prompt_lengths),
         near_duplicate_rate=_compute_near_duplicate_rate(prompts),
-        bits_per_byte=_compute_bits_per_byte(prompts[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(prompts[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -696,7 +716,7 @@ def compute_text_stats(
     tokenizer,
     data_records: list[dict],
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
-    max_samples: int = LENGTH_SAMPLE_SIZE,
+    max_samples: int = FORWARD_SAMPLE_SIZE,
     reward_functions=None,
 ) -> BaselineStats:
     """Compute stats for text-based tasks (instruct, DPO, GRPO, chat)."""

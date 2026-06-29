@@ -35,6 +35,7 @@ from core.models.pvp_models import ToolSchema
 from core.pvp import constants as cst
 from core.pvp import tools as tool_lib
 from core.pvp.agents import BaseGameAgent
+from core.pvp.chat import ChatUnavailableError
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import WhitespaceTokenCounter
 
@@ -83,6 +84,31 @@ class InvalidActionForfeitError(Exception):
     def __init__(self, player_id: int):
         self.player_id = player_id
         super().__init__(f"Player {player_id} did not commit a legal action this turn and forfeits")
+
+
+class ChatTimeoutForfeitError(Exception):
+    """Raised when a player's model was too slow to respond (timed out after retries).
+
+    Treated as a forfeit: an unresponsive model is the miner's fault, mirroring
+    TurnTimeoutError. The opponent wins the game.
+    """
+
+    def __init__(self, player_id: int):
+        self.player_id = player_id
+        super().__init__(f"Player {player_id} inference timed out after retries and forfeits")
+
+
+class ModelUnreachableError(Exception):
+    """Raised when a player's inference server was unreachable (connection refused).
+
+    This is an infra failure, NOT the miner's fault, so it must not forfeit the
+    player. It propagates past the game-eval forfeit handlers up to the matchup
+    runner, which waits for the server to recover and replays the game.
+    """
+
+    def __init__(self, player_id: int):
+        self.player_id = player_id
+        super().__init__(f"Player {player_id} inference server unreachable (infra failure)")
 
 
 def default_memories() -> dict[MemoryArea, SlotMemory]:
@@ -222,6 +248,25 @@ class LLMBot(pyspiel.Bot):
             if "context length" in str(exc).lower():
                 raise ContextOverflowError(self._player_id) from exc
             raise
+        except ChatUnavailableError as exc:
+            # Check the whole retry chain: openai.APITimeoutError subclasses
+            # APIConnectionError, and a timed-out request can be followed by a
+            # connection reset after SGLang deletes the abandoned request state.
+            # Slow model = forfeit; pure unreachable server = infra replay.
+            if exc.timed_out:
+                logger.warning(
+                    "Player %d chat timed out after retries (%s) — forfeiting turn",
+                    self._player_id,
+                    exc.cause_types(),
+                )
+                raise ChatTimeoutForfeitError(self._player_id) from exc
+            logger.error(
+                "Player %d inference server unreachable after retries (%s) — infra failure, "
+                "will wait for recovery and replay",
+                self._player_id,
+                exc.cause_types(),
+            )
+            raise ModelUnreachableError(self._player_id) from exc
 
     @staticmethod
     def _validate_action(call: ToolCall, legal_set: set[int]) -> int | None:

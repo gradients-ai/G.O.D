@@ -18,11 +18,10 @@ ExecStartPre=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && 
 ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep:latest; do "$docker_cli" pull "$img"; done'
 # Start uvicorn server directly
 ExecStart=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
-# Restart on failure with exponential backoff
+# Restart on failure;
 Restart=on-failure
 RestartSec=5
-StartLimitInterval=300
-StartLimitBurst=5
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=god-trainer
