@@ -18,6 +18,7 @@ from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.basilica_deployments import cleanup_all_basilica_deployments
 from validator.evaluation.notifications import notify_evaluation_exception
+from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
 from validator.evaluation.pvp.models import PvPIncompleteError
 from validator.infrastructure.cache import clean_all_hf_datasets_cache
 from validator.infrastructure.cache import manage_models_cache
@@ -303,13 +304,6 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
         await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
     except Exception as e:
         logger.error(f"Error evaluating pending pairs for task {task.task_id}: {e}", exc_info=True)
-        evaluation_rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
-        hotkey_set = set(hotkeys)
-        deployment_ids = sorted({
-            row.get("deployment_id")
-            for row in evaluation_rows
-            if row.get("hotkey") in hotkey_set and row.get("deployment_id")
-        })
         await notify_evaluation_exception(
             config,
             task_id=str(task.task_id),
@@ -317,7 +311,7 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
             context="Task evaluation exception",
             error=e,
             hotkeys=hotkeys,
-            deployment_ids=deployment_ids,
+            deployment_ids=await task_deployment_ids_for_hotkeys(task.task_id, config, hotkeys),
         )
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "failure", config.psql_db)
         await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)

@@ -391,6 +391,7 @@ class PvPIndividualScoreDbRow(BaseModel):
     environment_name: str
     score: float = 0.0
     n_attempts: int = 0
+    deployment_id: str | None = None
     status: PvPStatus = PvPStatus.PENDING
 
     @property

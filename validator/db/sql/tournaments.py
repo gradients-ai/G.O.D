@@ -1531,6 +1531,37 @@ async def set_pvp_pair_deployment_id(
             )
 
 
+async def get_pvp_pair_deployment_id(
+    task_id: str,
+    hotkey_a: str,
+    hotkey_b: str,
+    psql_db: PSQLDB,
+) -> str | None:
+    """Return the shared Basilica deployment name stored for a PvP pair."""
+    hk_a, hk_b = sorted([hotkey_a, hotkey_b])
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+                AND {cst.PVP_HOTKEY_A} = $2
+                AND {cst.PVP_HOTKEY_B} = $3
+                AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+        """, task_id, hk_a, hk_b)
+    deployment_ids = [row[cst.PVP_DEPLOYMENT_ID] for row in rows if row[cst.PVP_DEPLOYMENT_ID]]
+    if len(deployment_ids) == 1:
+        return deployment_ids[0]
+    if len(deployment_ids) > 1:
+        logger.warning(
+            "PvP pair has multiple deployment ids task_id=%s pair=%s:%s deployment_ids=%s",
+            task_id,
+            hk_a,
+            hk_b,
+            deployment_ids,
+        )
+    return None
+
+
 async def increment_pvp_pair_attempts(
     task_id: str, hotkey_a: str, hotkey_b: str, psql_db: PSQLDB,
 ) -> None:
@@ -1607,6 +1638,90 @@ async def save_individual_score(
         """, task_id, hotkey, environment_name, score, cst.PVP_STATUS_COMPLETE)
 
 
+async def set_individual_score_deployment_id(
+    task_id: str,
+    hotkey: str,
+    environment_name: str,
+    deployment_id: str | None,
+    psql_db: PSQLDB,
+) -> None:
+    """Store the last verified Basilica deployment name for an individual env score row."""
+    async with await psql_db.connection() as connection:
+        db_result = await connection.execute(f"""
+            UPDATE {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            SET {cst.PVP_DEPLOYMENT_ID} = $4,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2
+                AND {cst.PVP_ENVIRONMENT_NAME} = $3
+        """, task_id, hotkey, environment_name, deployment_id)
+        updated_rows = _row_count(db_result)
+        if updated_rows != 1:
+            logger.warning(
+                "Individual deployment id update touched %s rows task_id=%s hotkey=%s environment=%s deployment_id=%s",
+                updated_rows,
+                task_id,
+                hotkey,
+                environment_name,
+                deployment_id,
+            )
+
+
+async def get_individual_deployment_ids(
+    task_id: str,
+    hotkeys: list[str],
+    environment_names: list[str],
+    psql_db: PSQLDB,
+) -> dict[str, str]:
+    """Return hotkey -> deployment name for individual env score rows."""
+    if not hotkeys or not environment_names:
+        return {}
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT {cst.HOTKEY}, {cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+                AND {cst.HOTKEY} = ANY($2)
+                AND {cst.PVP_ENVIRONMENT_NAME} = ANY($3)
+                AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+        """, task_id, hotkeys, environment_names)
+    return {
+        row[cst.HOTKEY]: row[cst.PVP_DEPLOYMENT_ID]
+        for row in rows
+        if row[cst.PVP_DEPLOYMENT_ID]
+    }
+
+
+async def get_pvp_deployment_ids_for_hotkeys(
+    task_id: str,
+    hotkeys: list[str],
+    psql_db: PSQLDB,
+) -> list[str]:
+    """Return deployment names owned by PvP pair and individual env result rows."""
+    if not hotkeys:
+        return []
+    async with await psql_db.connection() as connection:
+        pair_rows = await connection.fetch(f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+                AND ({cst.PVP_HOTKEY_A} = ANY($2) OR {cst.PVP_HOTKEY_B} = ANY($2))
+                AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+        """, task_id, hotkeys)
+        individual_rows = await connection.fetch(f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID}
+            FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+                AND {cst.HOTKEY} = ANY($2)
+                AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+        """, task_id, hotkeys)
+    deployment_ids = {
+        row[cst.PVP_DEPLOYMENT_ID]
+        for row in [*pair_rows, *individual_rows]
+        if row[cst.PVP_DEPLOYMENT_ID]
+    }
+    return sorted(deployment_ids)
+
+
 async def increment_individual_score_attempts(
     task_id: str,
     hotkey: str,
@@ -1629,7 +1744,8 @@ async def get_individual_scores(task_id: str, psql_db: PSQLDB) -> list[PvPIndivi
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(f"""
             SELECT {cst.HOTKEY}, {cst.PVP_ENVIRONMENT_NAME},
-                   {cst.PVP_INDIVIDUAL_SCORE}, {cst.STATUS}, {cst.PVP_N_ATTEMPTS}
+                   {cst.PVP_INDIVIDUAL_SCORE}, {cst.STATUS}, {cst.PVP_N_ATTEMPTS},
+                   {cst.PVP_DEPLOYMENT_ID}
             FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE}
             WHERE {cst.TASK_ID} = $1
         """, task_id)

@@ -35,8 +35,6 @@ from validator.evaluation.basilica import _release_reserved_gpus
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
-from validator.evaluation.db_utils import load_shared_eval_deployment_id
-from validator.evaluation.db_utils import persist_shared_eval_deployment_id
 from validator.evaluation.evaluation_logging import _log_eval_step
 from validator.evaluation.pvp.models import PvPEvalConfig
 from validator.evaluation.pvp.models import PvPEvalResults
@@ -209,7 +207,10 @@ async def run_evaluation_basilica_text(
             repo_env["DATASET_URL"] = dataset
         return repo_env
 
-    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
+    deployment_ids_str = {
+        r: v for r, v in deployment_ids_by_repo.items()
+        if isinstance(v, str) and not is_environment_eval
+    }
 
     repo_results = await run_basilica_eval_repos(
         repos=models,
@@ -227,6 +228,8 @@ async def run_evaluation_basilica_text(
         repo_to_hotkey=repo_to_hotkey,
         deployment_ids_by_repo=deployment_ids_str,
         local_logging=local_logging,
+        persist_deployment_ids=not is_environment_eval,
+        reserve_deployment_id=False,
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
@@ -372,12 +375,6 @@ async def _persist_pvp_deployment_id(
         return
 
     ctx.log_eval_step("deployment_id_persist_start", deployment=deployment_name)
-    await _db_call_with_retry(
-        lambda: persist_shared_eval_deployment_id(task_id, psql_db, hotkeys, deployment_name),
-        "persist_shared_eval_deployment_id",
-        ctx.eval_logger,
-        ctx.repo,
-    )
     if len(hotkeys) == 2:
         await _db_call_with_retry(
             lambda: tournament_sql.set_pvp_pair_deployment_id(
@@ -418,10 +415,12 @@ async def _deploy_pvp_eval(
     command = ["python", "-m", "validator.evaluation.pvp"]
     source = create_basilica_eval_runner_source(command, vcst.PVP_RESULTS_PATH)
 
-    existing_deployment_name = await _db_read_with_retry(
-        lambda: load_shared_eval_deployment_id(task_id, psql_db, hotkeys),
-        "load_shared_eval_deployment_id",
-    )
+    existing_deployment_name = None
+    if task_id is not None and psql_db is not None and len(hotkeys) == 2:
+        existing_deployment_name = await _db_read_with_retry(
+            lambda: tournament_sql.get_pvp_pair_deployment_id(str(task_id), hotkeys[0], hotkeys[1], psql_db),
+            "get_pvp_pair_deployment_id",
+        )
     eval_id = str(uuid.uuid4())
     eval_logger = get_environment_logger(
         name=f"pvp-{label}-{eval_id[:8]}",
@@ -474,16 +473,20 @@ async def _deploy_pvp_eval(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=deployment_name,
+                    deployment_name=None,
                     ctx=ctx,
                 )
                 return result
+            if deployment_name not in ctx.deleted_deployment_names:
+                raise EvaluationRetryableError(
+                    f"Failed to verify deletion for resumed PvP deployment {deployment_name}"
+                )
             eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
         await _release_reserved_gpus(
             task_id=task_id,
             psql_db=psql_db,
             hotkeys=hotkeys,
-            deployment_name=existing_deployment_name,
+            deployment_name=None,
             ctx=ctx,
         )
 
@@ -499,8 +502,8 @@ async def _deploy_pvp_eval(
                 reserved = await _db_call_with_retry(
                     lambda: tasks_sql.try_reserve_evaluation_gpus(
                         task_id,
-                        hotkeys,
-                        deployment_name,
+                        hotkeys[:1],
+                        None,
                         gpu_count,
                         psql_db,
                     ),
@@ -513,13 +516,6 @@ async def _deploy_pvp_eval(
                     raise EvaluationCapacityUnavailable(
                         f"Not enough evaluation GPU capacity for PvP deployment {deployment_name} ({gpu_count} GPUs)"
                     )
-            await _persist_pvp_deployment_id(
-                task_id=task_id,
-                psql_db=psql_db,
-                hotkeys=hotkeys,
-                deployment_name=deployment_name,
-                ctx=ctx,
-            )
             log_step(
                 "deploy_start",
                 deployment=deployment_name,
@@ -558,15 +554,15 @@ async def _deploy_pvp_eval(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=deployment_name,
+                    deployment_name=None,
                     ctx=ctx,
                 )
                 if task_id is not None and psql_db is not None and hotkeys and gpu_count > 0:
                     reserved = await _db_call_with_retry(
                         lambda: tasks_sql.try_reserve_evaluation_gpus(
                             task_id,
-                            hotkeys,
-                            resolved_deployment_name,
+                            hotkeys[:1],
+                            None,
                             gpu_count,
                             psql_db,
                         ),
@@ -575,20 +571,24 @@ async def _deploy_pvp_eval(
                         ctx.repo,
                     )
                     if not reserved:
-                        await _delete_eval_deployment(
+                        deleted = await _delete_eval_deployment(
                             ctx, client, deployment, resolved_deployment_name, "pvp_resolved_name_capacity_unavailable"
                         )
+                        if not deleted:
+                            raise EvaluationRetryableError(
+                                f"Failed to verify deletion for PvP deployment {resolved_deployment_name}"
+                            )
                         raise EvaluationCapacityUnavailable(
                             f"Not enough evaluation GPU capacity for PvP deployment {resolved_deployment_name} "
                             f"({gpu_count} GPUs)"
                         )
-                await _persist_pvp_deployment_id(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=resolved_deployment_name,
-                    ctx=ctx,
-                )
+            await _persist_pvp_deployment_id(
+                task_id=task_id,
+                psql_db=psql_db,
+                hotkeys=hotkeys,
+                deployment_name=resolved_deployment_name,
+                ctx=ctx,
+            )
             eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
 
             result = await _poll_eval_deployment(
@@ -608,7 +608,7 @@ async def _deploy_pvp_eval(
                     task_id=task_id,
                     psql_db=psql_db,
                     hotkeys=hotkeys,
-                    deployment_name=resolved_deployment_name,
+                    deployment_name=None,
                     ctx=ctx,
                 )
                 return result
@@ -619,12 +619,16 @@ async def _deploy_pvp_eval(
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
             dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
             if deployment is not None:
-                await _delete_eval_deployment(ctx, client, deployment, dep_name, "pvp_attempt_exception")
+                deleted = await _delete_eval_deployment(ctx, client, deployment, dep_name, "pvp_attempt_exception")
+                if not deleted:
+                    raise EvaluationRetryableError(
+                        f"Failed to verify deletion for PvP deployment {dep_name}"
+                    ) from exc
             await _release_reserved_gpus(
                 task_id=task_id,
                 psql_db=psql_db,
                 hotkeys=hotkeys,
-                deployment_name=dep_name,
+                deployment_name=None,
                 ctx=ctx,
             )
             log_step(
@@ -684,6 +688,32 @@ async def run_evaluation_individual(
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
     base_chains = base_chains or {}
+    existing_deployment_ids_by_hotkey = await _db_read_with_retry(
+        lambda: tournament_sql.get_individual_deployment_ids(
+            str(task_id),
+            miners.hotkeys,
+            [environment_name.value],
+            psql_db,
+        ) if task_id is not None and psql_db is not None else {},
+        "get_individual_deployment_ids",
+    )
+    deployment_ids_by_repo = {
+        repo: existing_deployment_ids_by_hotkey[hotkey]
+        for hotkey, repo in miners.by_hotkey.items()
+        if hotkey in existing_deployment_ids_by_hotkey
+    }
+
+    async def persist_individual_deployment_id(repo: str, deployment_name: str) -> None:
+        hotkey = repo_to_hotkey.get(repo)
+        if not hotkey or task_id is None or psql_db is None:
+            return
+        await tournament_sql.set_individual_score_deployment_id(
+            str(task_id),
+            hotkey,
+            environment_name.value,
+            deployment_name,
+            psql_db,
+        )
 
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
@@ -706,6 +736,10 @@ async def run_evaluation_individual(
         task_id=task_id,
         psql_db=psql_db,
         repo_to_hotkey=repo_to_hotkey,
+        deployment_ids_by_repo=deployment_ids_by_repo,
+        persist_deployment_ids=False,
+        deployment_id_persister=persist_individual_deployment_id,
+        reserve_deployment_id=False,
     )
 
     scores: dict[str, float] = {}
