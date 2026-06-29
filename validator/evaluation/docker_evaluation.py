@@ -524,6 +524,16 @@ async def _deploy_pvp_eval(
                 gpu_models=",".join(vcst.BASILICA_GPU_MODELS),
                 min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
             )
+
+            async def persist_verified_pvp_deployment(verified_deployment_name: str) -> None:
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=verified_deployment_name,
+                    ctx=ctx,
+                )
+
             deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
                 ctx=ctx,
                 client=client,
@@ -542,6 +552,7 @@ async def _deploy_pvp_eval(
                     "gpu_models": vcst.BASILICA_GPU_MODELS,
                     "min_gpu_memory_gb": vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
                 },
+                on_verified_deployment_name=persist_verified_pvp_deployment,
             )
             update_environment_logger_labels(
                 eval_logger,
@@ -582,13 +593,6 @@ async def _deploy_pvp_eval(
                             f"Not enough evaluation GPU capacity for PvP deployment {resolved_deployment_name} "
                             f"({gpu_count} GPUs)"
                         )
-            await _persist_pvp_deployment_id(
-                task_id=task_id,
-                psql_db=psql_db,
-                hotkeys=hotkeys,
-                deployment_name=resolved_deployment_name,
-                ctx=ctx,
-            )
             eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
 
             result = await _poll_eval_deployment(

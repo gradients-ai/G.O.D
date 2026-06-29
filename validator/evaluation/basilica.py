@@ -37,6 +37,11 @@ def _looks_like_url(value: str | None) -> bool:
     return bool(value and (value.startswith("http://") or value.startswith("https://")))
 
 
+def _is_deployment_not_found_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return "not found" in message and "deployment" in message
+
+
 def _deployment_value_hints(value: str | None) -> list[str]:
     if not isinstance(value, str) or not value:
         return []
@@ -219,13 +224,23 @@ async def _deploy_with_readiness_timeout(
     client,
     deployment_name: str,
     deploy_kwargs: dict,
+    on_verified_deployment_name: Callable[[str], Awaitable[None]] | None = None,
 ):
     timeout_seconds = vcst.EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS
     started_monotonic = time.monotonic()
     deployment = None
+    persisted_deployment_names: set[str] = set()
+
+    async def persist_once(verified_deployment_name: str) -> None:
+        if on_verified_deployment_name is None or verified_deployment_name in persisted_deployment_names:
+            return
+        await on_verified_deployment_name(verified_deployment_name)
+        persisted_deployment_names.add(verified_deployment_name)
+
     try:
         deployment = await asyncio.wait_for(asyncio.to_thread(client.deploy, **deploy_kwargs), timeout=timeout_seconds)
         resolved_deployment_name = await _resolve_verified_deployment_name(client, deployment, deployment_name)
+        await persist_once(resolved_deployment_name)
         remaining_seconds = max(1, int(timeout_seconds - (time.monotonic() - started_monotonic)))
         ready_deployment = await _wait_for_deployment_ready(
             client,
@@ -240,19 +255,33 @@ async def _deploy_with_readiness_timeout(
         ctx.log_eval_step("deploy_ready_timeout", deployment=deployment_name, timeout_seconds=timeout_seconds)
         existing = deployment or await _get_deployment_by_name(client, deployment_name)
         if existing is not None:
-            await _delete_eval_deployment(ctx, client, existing, deployment_name, "deploy_ready_timeout")
+            await persist_once(deployment_name)
+            deleted = await _delete_eval_deployment(ctx, client, existing, deployment_name, "deploy_ready_timeout")
+            if not deleted:
+                raise EvaluationRetryableError(
+                    f"Failed to verify deletion for not-ready deployment {deployment_name}"
+                ) from exc
         raise DeploymentNotReadyError(f"Deployment {deployment_name} was not ready within {timeout_seconds}s") from exc
     except DeploymentNotReadyError:
         existing = deployment or await _get_deployment_by_name(client, deployment_name)
         if existing is not None:
-            await _delete_eval_deployment(ctx, client, existing, deployment_name, "deploy_name_unverified")
+            deleted = await _delete_eval_deployment(ctx, client, existing, deployment_name, "deploy_name_unverified")
+            if not deleted:
+                raise EvaluationRetryableError(
+                    f"Failed to verify deletion for unverified deployment {deployment_name}"
+                )
         raise
     except Exception:
         raise
 
     existing = deployment or await _get_deployment_by_name(client, deployment_name)
     if existing is not None:
-        await _delete_eval_deployment(ctx, client, existing, deployment_name, "not_ready_timeout")
+        await persist_once(deployment_name)
+        deleted = await _delete_eval_deployment(ctx, client, existing, deployment_name, "not_ready_timeout")
+        if not deleted:
+            raise EvaluationRetryableError(
+                f"Failed to verify deletion for not-ready deployment {deployment_name}"
+            )
     raise DeploymentNotReadyError(f"Deployment {deployment_name} was not ready within {timeout_seconds}s")
 
 
@@ -292,6 +321,10 @@ async def _delete_terminal_deployment(
                 return True
             log_eval_step("delete_still_exists", deployment=deployment_name, reason=reason, attempt=attempt)
         except Exception as e:
+            if _is_deployment_not_found_error(e):
+                deleted_deployment_names.add(deployment_name)
+                log_eval_step("delete_already_gone", deployment=deployment_name, reason=reason, attempt=attempt)
+                return True
             last_error = e
             eval_logger.warning(
                 f"[{repo}] failed to delete terminal deployment {deployment_name} "
@@ -444,11 +477,29 @@ async def _deploy_basilica_eval_repo(
         deploy_kwargs["gpu_models"] = gpu_models
         deploy_kwargs["min_gpu_memory_gb"] = min_gpu_memory_gb
 
+    async def persist_verified_deployment_name(verified_deployment_name: str) -> None:
+        if deployment_id_persister is None:
+            return
+        ctx.log_eval_step(
+            "deployment_id_persist_start",
+            deployment=verified_deployment_name,
+            previous_deployment=deployment_name if verified_deployment_name != deployment_name else None,
+        )
+        async with _EVAL_DB_WRITE_SEMAPHORE:
+            await _db_call_with_retry(
+                lambda: deployment_id_persister(ctx.repo, verified_deployment_name),
+                "persist_deployment_id(post-verify)",
+                ctx.eval_logger,
+                ctx.repo,
+            )
+        ctx.log_eval_step("deployment_id_persist_complete", deployment=verified_deployment_name)
+
     deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
         ctx=ctx,
         client=client,
         deployment_name=deployment_name,
         deploy_kwargs=deploy_kwargs,
+        on_verified_deployment_name=persist_verified_deployment_name,
     )
     update_environment_logger_labels(
         ctx.eval_logger,
@@ -483,32 +534,21 @@ async def _deploy_basilica_eval_repo(
                 ctx.repo,
             )
             if not reserved:
-                await _delete_eval_deployment(
+                deleted = await _delete_eval_deployment(
                     ctx,
                     client,
                     deployment,
                     resolved_deployment_name,
                     "resolved_name_capacity_unavailable",
                 )
+                if not deleted:
+                    raise EvaluationRetryableError(
+                        f"Failed to verify deletion for deployment {resolved_deployment_name}"
+                    )
                 raise EvaluationCapacityUnavailable(
                     f"Not enough evaluation GPU capacity for deployment {resolved_deployment_name} ({requested_gpus} GPUs)"
                 )
         await asyncio.sleep(random.uniform(0.0, 0.25))
-
-    if deployment_id_persister is not None:
-        ctx.log_eval_step(
-            "deployment_id_persist_start",
-            deployment=resolved_deployment_name,
-            previous_deployment=deployment_name if resolved_deployment_name != deployment_name else None,
-        )
-        async with _EVAL_DB_WRITE_SEMAPHORE:
-            await _db_call_with_retry(
-                lambda: deployment_id_persister(ctx.repo, resolved_deployment_name),
-                "persist_deployment_id(post-verify)",
-                ctx.eval_logger,
-                ctx.repo,
-            )
-        ctx.log_eval_step("deployment_id_persist_complete", deployment=resolved_deployment_name)
 
     ctx.eval_logger.info(f"[{ctx.repo}] deployment started: {resolved_deployment_name}")
     return client, deployment, resolved_deployment_name
