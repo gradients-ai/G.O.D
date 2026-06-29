@@ -27,12 +27,14 @@ from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
+from validator.db.sql.continuous_sft import get_continuous_sft_state
 from validator.db.sql.tasks import add_task
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
 from validator.scoring.models import EnvironmentWeight
 from validator.tasks.datasets.models import Dataset
 from validator.tasks.details import retry_with_backoff
+from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
@@ -273,8 +275,13 @@ def compute_hours_from_baseline_stats(
     task_type: TaskType,
     model_id: str | None = None,
     model_params_count: int | None = None,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput."""
+    # The continuous-SFT task has a FIXED training budget; never recompute it from baseline
+    # stats (returns before the get_model_num_params fetch, which would hit the custom/gated base).
+    if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
+        return current_hours
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours
 
@@ -700,5 +707,76 @@ async def create_synthetic_instruct_text_task(
     )
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")
+
+    return task
+
+
+async def create_continuous_sft_task(config: Config, lineage: str, seed_model: str) -> RawTask:
+    """Create one lineage's continuous-SFT boss task.
+
+    A fixed chat-SFT task trained from this lineage's carried-forward winner (lowest eval loss)
+    of the previous tournament, or its seed model on the first run.
+
+    The chunk data is owned by the content service (the single source for the curated stage-1
+    chunks). We pass this lineage's monotonic train_index from continuous_sft_state; the content
+    service is stateless - it maps the index to a chunk and re-materializes train+test at fresh
+    randomized S3 URLs on every call, so miners can neither track nor derive the held-out test
+    set across tournaments. G.O.D only keeps the per-lineage train cursor + carried winner.
+
+    The lineage slug is encoded into the task ds (continuous_sft_ds) so the completion hook can
+    route the winner back to the right lineage.
+
+    Compute is fixed: 6h on 4xH100 (forced in get_tournament_gpu_requirement via
+    training_start_point==CONTINUOUS_SFT). No augmentation, so the carried-forward base is never
+    perturbed by an augmented_model_id.
+    """
+    state = await get_continuous_sft_state(lineage, config.psql_db)
+    base_model = state.last_winner_repo or seed_model
+
+    response = await call_content_service(
+        service_cst.GET_CONTINUOUS_SFT_DATA_ENDPOINT,
+        config.keypair,
+        {"train_index": state.train_index},
+    )
+    logger.info(
+        f"Retrieved continuous-SFT chunk data for lineage={lineage} train_index={state.train_index}: {response}"
+    )
+    if not isinstance(response, dict):
+        raise ValueError("Expected dict response from continuous-SFT data endpoint")
+    train_url = response.get("train_s3_url")
+    test_url = response.get("test_s3_url")
+    if not train_url or not test_url:
+        raise ValueError(f"continuous-SFT data response missing train/test url: {response}")
+    label = response.get("ds") or f"train-index-{state.train_index}"
+    ds_label = t_cst.continuous_sft_ds(lineage, label)
+
+    number_of_hours = t_cst.CONTINUOUS_SFT_TRAINING_HOURS
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=number_of_hours)
+
+    task = ChatRawTask(
+        model_id=base_model,
+        ds=ds_label,
+        status=TaskStatus.PENDING,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=number_of_hours,
+        account_id=service_cst.NULL_ACCOUNT_ID,
+        file_format=FileFormat.S3,
+        training_data=train_url,
+        test_data=test_url,
+        training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+        # Use the base's own template (tokenizer_default), not chatml: quasar ships a custom
+        # HUMAN/ASSISTANT template, qwen its own. Eval loads the base tokenizer so train+eval match.
+        chat_template="tokenizer_default",
+        # other chat_* fields keep ChatRawTask ShareGPT defaults; augmentation_config stays None.
+    )
+    logger.info(
+        f"CONTINUOUS_SFT_TASK: lineage={lineage} train_index={state.train_index} "
+        f"base_model={base_model} hours={number_of_hours} ds={ds_label}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"CONTINUOUS_SFT_TASK: saved task {task.task_id}")
 
     return task

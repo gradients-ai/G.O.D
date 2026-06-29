@@ -37,6 +37,9 @@ GET_RANDOM_DATASETS_ENDPOINT = f"{CONTENT_BASE_URL}/datasets/random"
 GET_RANDOM_MODELS_ENDPOINT = f"{CONTENT_BASE_URL}/models/random"
 GET_COLUMNS_FOR_DATASET_ENDPOINT = f"{CONTENT_BASE_URL}/dataset/{{dataset}}/columns/suggest"
 GET_IMAGE_MODELS_ENDPOINT = f"{CONTENT_BASE_URL}/images/models"
+# Continuous-SFT chunk data. Called with a `train_index` query param; the (stateless) content
+# service maps it to a stage-1 chunk and returns fresh randomized train/test S3 URLs each call.
+GET_CONTINUOUS_SFT_DATA_ENDPOINT = f"{CONTENT_BASE_URL}/continuous-sft-data"
 
 GET_ALL_MODELS_ID = "model_id"
 

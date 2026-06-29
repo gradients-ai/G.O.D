@@ -18,7 +18,12 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 
-def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalLM, local_files_only: bool = False) -> bool:
+def model_is_a_finetune(
+    original_repo: str,
+    finetuned_model: AutoModelForCausalLM,
+    local_files_only: bool = False,
+    trust_remote_code: bool = False,
+) -> bool:
     from transformers import AutoConfig
 
     max_retries = 3
@@ -43,7 +48,9 @@ def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalL
                     if os.path.exists(config_path) and os.path.getsize(config_path) > 0:
                         logger.info(f"Loading original model config from snapshot: {snapshot}")
                         try:
-                            original_config = AutoConfig.from_pretrained(snapshot_path, local_files_only=True)
+                            original_config = AutoConfig.from_pretrained(
+                                snapshot_path, local_files_only=True, trust_remote_code=trust_remote_code
+                            )
                             logger.info("Successfully loaded config from snapshot")
                             break
                         except Exception as e:
@@ -62,7 +69,7 @@ def model_is_a_finetune(original_repo: str, finetuned_model: AutoModelForCausalL
         # Standard online loading with retries
         for attempt in range(max_retries):
             try:
-                kwargs = {"token": os.environ.get("HUGGINGFACE_TOKEN")}
+                kwargs = {"token": os.environ.get("HUGGINGFACE_TOKEN"), "trust_remote_code": trust_remote_code}
 
                 original_config = AutoConfig.from_pretrained(original_repo, **kwargs)
                 break

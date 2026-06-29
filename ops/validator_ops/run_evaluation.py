@@ -242,6 +242,13 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
+    # Continuous-SFT boss task signal: load custom (quasar) base via trust_remote_code and relax
+    # the same-tokenizer-as-base requirement in the text evaluator.
+    continuous_sft = (
+        task_type == TaskType.CHATTASK
+        and getattr(task_details, "training_start_point", None) == env_cst.TrainingStartPoint.CONTINUOUS_SFT
+    )
+
     if task_type == TaskType.ENVIRONMENTTASK:
         # For environment tasks, use dummy dataset paths (not actual files)
         test_data_path = "/tmp/dummy_test_data.json"
@@ -263,6 +270,7 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            continuous_sft=continuous_sft,
         )
 
         test_data_results_dict = test_data_results.model_dump()
@@ -283,6 +291,7 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            continuous_sft=continuous_sft,
         )
 
         synth_data_results_dict = synth_data_results.model_dump()

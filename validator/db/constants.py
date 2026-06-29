@@ -43,6 +43,15 @@ PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
 TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 
+# Continuous-SFT lineage state (one row per lineage, keyed by `lineage` slug): the monotonic
+# train index (the cursor we pass to the content service, which maps it to a chunk) + the
+# carried-forward winner repo. The chunk data and chunk count itself live in the content service.
+CONTINUOUS_SFT_STATE_TABLE = "continuous_sft_state"
+CONTINUOUS_SFT_LINEAGE = "lineage"
+CONTINUOUS_SFT_TRAIN_INDEX = "train_index"
+CONTINUOUS_SFT_LAST_WINNER_REPO = "last_winner_repo"
+CONTINUOUS_SFT_UPDATED_AT = "updated_at"
+
 # PvP Pair Results Table Columns
 PVP_HOTKEY_A = "hotkey_a"
 PVP_HOTKEY_B = "hotkey_b"

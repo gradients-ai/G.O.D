@@ -296,7 +296,12 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         logger.info(f"Skipping {repo} as it's already evaluated")
         return
 
-    tokenizer = load_tokenizer(evaluation_args.original_model)
+    # Continuous-SFT: quasar base needs trust_remote_code. Tokenizer + chat template always come
+    # from the base (never the submission) so every submission is scored identically.
+    continuous_sft = os.environ.get(core_cst.CONTINUOUS_SFT_ENV) == "1"
+
+    tokenizer = load_tokenizer(evaluation_args.original_model, trust_remote_code=continuous_sft)
+
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -309,13 +314,15 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
     try:
         if check_for_lora(repo):
             logger.info("LoRA adapter detected. Loading as with Peft")
-            finetuned_model = load_finetuned_model(repo)
+            finetuned_model = load_finetuned_model(repo, trust_remote_code=continuous_sft)
             is_finetune = True
         else:
             logger.info("No LoRA adapter detected. Loading full model")
-            finetuned_model = load_model(repo, is_base_model=False)
+            finetuned_model = load_model(repo, is_base_model=False, trust_remote_code=continuous_sft)
             try:
-                is_finetune = model_is_a_finetune(evaluation_args.original_model, finetuned_model)
+                is_finetune = model_is_a_finetune(
+                    evaluation_args.original_model, finetuned_model, trust_remote_code=continuous_sft
+                )
             except Exception as e:
                 logger.info(f"Problem with detection of finetune for {repo}: {e}")
                 logger.info("Assuming False")
@@ -326,7 +333,7 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         base_model = None
         if use_kl and kl_coef:
             logger.info(f"KL weighting enabled (kl_coef={kl_coef}); loading base model {evaluation_args.original_model}")
-            base_model = load_model(evaluation_args.original_model, is_base_model=True)
+            base_model = load_model(evaluation_args.original_model, is_base_model=True, trust_remote_code=continuous_sft)
             base_model.eval()
             tokenizer = sanitize_tokenizer_for_models(tokenizer, finetuned_model, base_model)
         else:

@@ -1,6 +1,7 @@
 from datetime import date
 
 from core.constants.environments import EnvironmentName
+from core.models.task_models import TaskType
 
 
 TOURNAMENT_INTERVAL_HOURS = 120
@@ -132,9 +133,63 @@ ENVIRONMENT_TASKS_PER_GROUP = 1
 # Final round task counts
 FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS = 3
-FINAL_ROUND_TEXT_TASKS = 6
+
+# Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS (derived below) = these + continuous-SFT.
+# The two continuous-SFT lineages replace one GRPO + one DPO slot vs the original GRPO-heavy mix.
+FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
+    TaskType.INSTRUCTTEXTTASK: 2,
+    TaskType.DPOTASK: 1,
+    TaskType.GRPOTASK: 1,
+}
 
 PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
+
+# --- Continuous-SFT boss task ---------------------------------------------------------------
+# Two parallel chat-SFT lineages carried across tournaments: each tournament trains the next
+# stage-1 chunk from that lineage's previous winner (lowest eval loss), seeded the first time
+# from the lineage's seed model. The chunk data + chunk count live in the content service
+# (queried with the per-lineage monotonic train_index from continuous_sft_state); G.O.D keeps
+# only the cursor + winner per lineage.
+#
+# CONTINUOUS_SFT_LINEAGES maps lineage slug -> seed model (slug is the continuous_sft_state PK,
+# encoded into the task ds so carry-forward routes winners). Eval reads the tokenizer + chat
+# template from this base. The quasar entry is an HF mirror = teutonic king weights
+# (mastertensor/teutonic-5ek5koe5-83734321144-cp1) + silx-ai/Quasar-10B tokenizer
+# (eos <|endoftext|>=248044) + quasar HUMAN/ASSISTANT chat_template. (Quasar-Preview/157184 is a
+# different model — not this one.)
+CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
+    "quasar": "gradients-io-tournaments/continuous-sft-seed-quasar-king",
+    "qwen": "Qwen/Qwen3.5-4B-Base",
+}
+FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
+
+# Derived so the boss-round completeness gate (task_creator) always matches the real mix: the
+# round is only "complete" once every standard task AND every continuous-SFT lineage exists.
+# Keeps a content-service failure for one lineage from letting the round finish with a missing
+# task (which would silently weaken the "win all continuous-SFT tasks" dethrone rule).
+FINAL_ROUND_TEXT_TASKS = sum(FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + FINAL_ROUND_CONTINUOUS_SFT_TASKS
+
+# ds field is encoded as "{prefix}:{lineage}:{label}" so the completion hook can recover lineage.
+CONTINUOUS_SFT_DS_PREFIX = "continuous-sft"
+
+
+def continuous_sft_ds(lineage: str, label: str) -> str:
+    """Encode the lineage slug into a continuous-SFT task ds field."""
+    return f"{CONTINUOUS_SFT_DS_PREFIX}:{lineage}:{label}"
+
+
+def continuous_sft_lineage_from_ds(ds: str | None) -> str | None:
+    """Recover the lineage slug from a continuous-SFT task ds, or None if ds isn't one."""
+    if not ds:
+        return None
+    parts = ds.split(":", 2)
+    if len(parts) >= 2 and parts[0] == CONTINUOUS_SFT_DS_PREFIX:
+        return parts[1]
+    return None
+
+
+# Fixed compute: this task always trains 6h on 4xH100 (GPU forced in gpu_requirements.py).
+CONTINUOUS_SFT_TRAINING_HOURS = 6.0
 
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1

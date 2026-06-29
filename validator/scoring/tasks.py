@@ -342,6 +342,12 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
+        # Continuous-SFT boss task: signal the text evaluator to load the custom (quasar) base via
+        # trust_remote_code and relax the same-tokenizer-as-base requirement. We never apply KL here.
+        continuous_sft = (
+            task.task_type == TaskType.CHATTASK
+            and getattr(task, "training_start_point", None) == core_cst.TrainingStartPoint.CONTINUOUS_SFT
+        )
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -353,6 +359,7 @@ async def _evaluate_submissions(
             "psql_db": config.psql_db if config is not None else None,
             "use_kl": use_kl,
             "kl_coef": kl_coef,
+            "continuous_sft": continuous_sft,
         }
 
         logger.info("Starting test evaluation")

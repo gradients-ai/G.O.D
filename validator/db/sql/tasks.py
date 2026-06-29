@@ -53,6 +53,40 @@ async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
         return [float(row[cst.TEST_LOSS]) for row in rows]
 
 
+async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str | None:
+    """Return the submission repo with the strictly lowest eval (test) loss for a task, or None.
+
+    Used by the continuous-SFT carry-forward to pick the genuinely best model on the task,
+    independent of the threshold/handicap-adjusted boss-round winner (which can have a higher
+    raw loss). Restricted to this validator's NETUID and to submissions with a positive
+    quality_score, so a penalized cheat / non-finetune with a low raw test_loss can never be
+    carried forward as the next lineage base (mirrors get_task_winner's guards). Returns None
+    when no eligible submission has a scored test_loss.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT submissions.{cst.REPO}
+            FROM {cst.SUBMISSIONS_TABLE} submissions
+            JOIN {cst.TASK_NODES_TABLE} task_nodes
+              ON submissions.{cst.TASK_ID} = task_nodes.{cst.TASK_ID}
+              AND submissions.{cst.HOTKEY} = task_nodes.{cst.HOTKEY}
+              AND submissions.{cst.NETUID} = task_nodes.{cst.NETUID}
+            WHERE submissions.{cst.TASK_ID} = $1
+              AND task_nodes.{cst.NETUID} = $2
+              AND task_nodes.{cst.TEST_LOSS} IS NOT NULL
+              AND task_nodes.{cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL
+              AND task_nodes.{cst.TASK_NODE_QUALITY_SCORE} > 0
+            ORDER BY task_nodes.{cst.TEST_LOSS} ASC
+            LIMIT 1
+            """,
+            task_id,
+            NETUID,
+        )
+        return row[cst.REPO] if row else None
+
+
 def _row_count(command_tag: str) -> int:
     try:
         return int(command_tag.split()[-1])

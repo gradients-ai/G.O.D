@@ -325,6 +325,7 @@ async def get_tournament_gpu_requirements(
             gpu_req = get_tournament_gpu_requirement(
                 task.task_type, task.model_params_count, task.model_id,
                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                training_start_point=task.training_start_point,
             )
             gpu_type = gpu_req.value
 

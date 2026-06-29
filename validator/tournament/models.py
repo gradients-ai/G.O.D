@@ -720,3 +720,20 @@ class DedupResult(BaseModel):
     evasion_hotkeys: list[str] = []
     unclonable_hotkeys: list[str] = []
     unresolved_pairs: list[tuple[str, str]] = []
+
+
+class ContinuousSftState(BaseModel):
+    """Per-lineage state for the continuous-SFT boss-round task (one per lineage slug).
+
+    lineage: the lineage slug (e.g. "quasar" / "qwen") this row tracks.
+    train_index: monotonic cursor passed to the (stateless) content service, which maps it to a
+        stage-1 chunk and returns fresh randomized train/test URLs. Advanced by one per task.
+    last_winner_repo: HF repo of the lowest-eval-loss winner from the previous
+        continuous-SFT task for this lineage (carried forward as the next base model); None on
+        first run.
+    """
+
+    lineage: str
+    train_index: int = 0
+    last_winner_repo: str | None = None
+    updated_at: datetime | None = None

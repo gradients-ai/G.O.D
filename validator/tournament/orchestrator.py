@@ -20,6 +20,7 @@ from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
+from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
@@ -429,6 +430,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             required_gpus = get_tournament_gpu_requirement(
                 task.task_type, task.model_params_count, task.model_id,
                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                training_start_point=task.training_start_point,
             )
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
@@ -1020,6 +1022,15 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
     if rate < cst.MAX_NEAR_DUPLICATE_RATE:
         return False
 
+    # Continuous-SFT uses a fixed, curated SFT chunk that we control and reuse every week.
+    # Its near-duplicate rate is expected and intentional, so never reject it for replacement.
+    if task.task_type == TaskType.CHATTASK and task.training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
+        logger.warning(
+            f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
+            f">= {cst.MAX_NEAR_DUPLICATE_RATE} but is the continuous-SFT curated chunk — allowing through"
+        )
+        return False
+
     if task.is_organic:
         logger.warning(
             f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
@@ -1083,6 +1094,7 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                     task.task_type,
                     model_id=task.model_id,
                     model_params_count=task.model_params_count,
+                    training_start_point=task.training_start_point,
                 )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1294,6 +1306,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         task.task_type,
                         model_id=task.model_id,
                         model_params_count=task.model_params_count,
+                        training_start_point=task.training_start_point,
                     )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1355,6 +1368,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
                                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                                training_start_point=task.training_start_point,
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
@@ -1397,6 +1411,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     gpu_req = get_tournament_gpu_requirement(
                         task.task_type, task.model_params_count or 0, task.model_id,
                         use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                        training_start_point=task.training_start_point,
                     )
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:
