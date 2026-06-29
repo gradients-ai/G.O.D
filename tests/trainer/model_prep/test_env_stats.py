@@ -2,10 +2,15 @@ import asyncio
 
 import pytest
 
+
+pytest.importorskip("pyspiel")
+pytest.importorskip("open_spiel")
+
 from core.constants.environments import EnvironmentName
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import EnvStats
 from core.models.model_prep_models import WeightStats
+from core.pvp.baseline import MctsBaselineResult
 from trainer.model_prep import env_stats
 
 
@@ -60,14 +65,18 @@ class _FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_play_episodes_reports_sidecar_result_errors(capsys):
+async def test_play_episodes_reports_sidecar_result_errors(monkeypatch, capsys):
+    ticks = iter([0.0, 0.0, 2.0])
+
+    monkeypatch.setattr(env_stats.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(env_stats, "ENV_BASELINE_TIME_BUDGET_SECONDS", 1.0)
+
     stats = await env_stats._play_episodes(
         session=_FakeSession(),
         env_name=EnvironmentName.INTERCODE,
         env_server_url="http://env-server",
         sglang_base_url="http://sglang/v1",
         model_name="model",
-        num_episodes=1,
         task_id_min=1,
         task_id_max=1,
         eval_payload_extra=None,
@@ -81,18 +90,46 @@ async def test_play_episodes_reports_sidecar_result_errors(capsys):
     assert "TimeoutError" in captured.out
 
 
+def test_mcts_baseline_stats_uses_time_budget_instead_of_episode_count(monkeypatch):
+    captured = {}
+
+    def fake_run_mcts_baseline(**kwargs):
+        captured.update(kwargs)
+        return MctsBaselineResult(wins=2, draws=1, losses=1, num_games=4)
+
+    monkeypatch.setattr(env_stats, "create_client", lambda config: object())
+    monkeypatch.setattr(env_stats, "run_mcts_baseline", fake_run_mcts_baseline)
+    monkeypatch.setattr(env_stats, "ENV_BASELINE_TIME_BUDGET_SECONDS", 420.0)
+
+    stats = env_stats._mcts_baseline_stats(
+        env_name=EnvironmentName.LIARS_DICE,
+        sglang_base_url="http://sglang/v1",
+        model_name="model",
+        model_path="/cache/models/model",
+        eval_payload_extra={"mcts_max_simulations": 225},
+    )
+
+    assert captured["num_games"] is None
+    assert captured["time_budget_seconds"] == 420.0
+    assert captured["mcts_simulations"] == 225
+    assert stats.num_episodes == 4
+    assert stats.mean_score == 0.625
+
+
 def test_compute_env_stats_routes_games_in_harness_and_others_to_sidecar(monkeypatch):
     """Pyspiel games use in-harness MCTS; intercode uses its env sidecar."""
     calls: dict[str, list[EnvironmentName]] = {"mcts": [], "http": []}
 
     def fake_mcts_baseline_stats(*, env_name, **kwargs):
+        assert "num_episodes" not in kwargs
         calls["mcts"].append(env_name)
-        return EnvStats(num_episodes=kwargs["num_episodes"], mean_score=1.0)
+        return EnvStats(num_episodes=11, mean_score=1.0)
 
     async def fake_play_episodes(*, env_name, env_server_url, **kwargs):
         assert env_server_url == "http://10.0.0.42:8000"
+        assert "num_episodes" not in kwargs
         calls["http"].append(env_name)
-        return EnvStats(num_episodes=kwargs["num_episodes"], mean_score=0.5)
+        return EnvStats(num_episodes=13, mean_score=0.5)
 
     async def fake_wait_for_health(*args, **kwargs):
         return None
@@ -116,8 +153,8 @@ def test_compute_env_stats_routes_games_in_harness_and_others_to_sidecar(monkeyp
 
     assert calls["mcts"] == [EnvironmentName.OTHELLO]
     assert calls["http"] == [EnvironmentName.INTERCODE]
-    assert result.env_stats[EnvironmentName.OTHELLO].num_episodes == 3
-    assert result.env_stats[EnvironmentName.INTERCODE].num_episodes == 7
+    assert result.env_stats[EnvironmentName.OTHELLO].num_episodes == 11
+    assert result.env_stats[EnvironmentName.INTERCODE].num_episodes == 13
 
 
 def test_compute_env_stats_one_env_failing_degrades_to_empty_stats(monkeypatch):
@@ -127,7 +164,8 @@ def test_compute_env_stats_one_env_failing_degrades_to_empty_stats(monkeypatch):
         raise RuntimeError("sglang returned 400")
 
     async def fake_play_episodes(*, env_name, **kwargs):
-        return EnvStats(num_episodes=kwargs["num_episodes"], mean_score=0.5)
+        assert "num_episodes" not in kwargs
+        return EnvStats(num_episodes=13, mean_score=0.5)
 
     async def fake_wait_for_health(*args, **kwargs):
         return None
@@ -150,4 +188,4 @@ def test_compute_env_stats_one_env_failing_degrades_to_empty_stats(monkeypatch):
     result = asyncio.run(env_stats.compute_env_stats("/cache/models/m", model=object(), env_configs=env_configs))
 
     assert result.env_stats[EnvironmentName.OTHELLO].num_episodes == 0
-    assert result.env_stats[EnvironmentName.INTERCODE].num_episodes == 7
+    assert result.env_stats[EnvironmentName.INTERCODE].num_episodes == 13

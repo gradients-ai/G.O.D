@@ -154,7 +154,8 @@ def parse_args():
         default=None,
         help=(
             "JSON dict of {env_name: {url, task_id_min, task_id_max, "
-            "num_episodes, eval_payload_extra}}"
+            "num_episodes, eval_payload_extra}}. num_episodes is retained for compatibility; "
+            "environment baselines are time-budgeted."
         ),
     )
     return parser.parse_args()

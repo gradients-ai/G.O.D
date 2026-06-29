@@ -35,6 +35,8 @@ class EnvironmentConfig:
     task_id_min: int
     task_id_max: int
     num_seeds: int
+    # Retained for payload compatibility. Model-prep environment baselines run
+    # until the per-environment time budget expires.
     num_baseline_episodes: int
     eval_type: EvalType
     env_image: str = ""
@@ -54,7 +56,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=200_000_000,
         task_id_max=299_999_999,
         num_seeds=2000,
-        num_baseline_episodes=50,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -70,7 +72,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=100_000_000,
         task_id_max=199_999_999,
         num_seeds=10_000,
-        num_baseline_episodes=50,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -86,7 +88,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=300_000_000,
         task_id_max=399_999_999,
         num_seeds=1000,
-        num_baseline_episodes=25,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -102,7 +104,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=400_000_000,
         task_id_max=499_999_999,
         num_seeds=10_000,
-        num_baseline_episodes=25,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -118,7 +120,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=700_000_000,
         task_id_max=799_999_999,
         num_seeds=10_000,
-        num_baseline_episodes=25,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -134,7 +136,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=0,
         task_id_max=99_999_999,
         num_seeds=10_000,
-        num_baseline_episodes=25,
+        num_baseline_episodes=0,
         eval_type=EvalType.PVP,
         env_image=MCTS_API_DOCKER_IMAGE,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
@@ -150,7 +152,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         task_id_min=1,
         task_id_max=200,
         num_seeds=20,
-        num_baseline_episodes=7,
+        num_baseline_episodes=0,
         eval_type=EvalType.INDIVIDUAL,
         env_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
         env_server_command=[
