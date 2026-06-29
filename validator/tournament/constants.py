@@ -1,6 +1,7 @@
 from datetime import date
 
 from core.constants.environments import EnvironmentName
+from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskType
 
 
@@ -186,6 +187,30 @@ def continuous_sft_lineage_from_ds(ds: str | None) -> str | None:
     if len(parts) >= 2 and parts[0] == CONTINUOUS_SFT_DS_PREFIX:
         return parts[1]
     return None
+
+
+def is_continuous_sft_task(task) -> bool:
+    """True if a task is a continuous-SFT boss task (CHATTASK + CONTINUOUS_SFT start point)."""
+    return task.task_type == TaskType.CHATTASK and task.training_start_point == TrainingStartPoint.CONTINUOUS_SFT
+
+
+# Lineages whose model ships custom architecture code (needs trust_remote_code to load). For these
+# the evaluator pins the modeling *.py to the audited seed mirror, so a miner-supplied repo's code
+# is never executed. Standard-arch lineages (e.g. qwen) load with trust_remote_code=False.
+CONTINUOUS_SFT_REMOTE_CODE_LINEAGES: set[str] = {"quasar"}
+
+
+def continuous_sft_remote_code_repo(lineage: str | None) -> str | None:
+    """The audited custom-code source for a lineage (its fixed seed mirror), or None if the lineage
+    is a standard architecture that should load without remote code."""
+    if lineage in CONTINUOUS_SFT_REMOTE_CODE_LINEAGES:
+        return CONTINUOUS_SFT_LINEAGES.get(lineage)
+    return None
+
+
+def continuous_sft_remote_code_repo_for_ds(ds: str | None) -> str | None:
+    """Audited custom-code mirror for a task's ds: None for standard-arch or non-continuous tasks."""
+    return continuous_sft_remote_code_repo(continuous_sft_lineage_from_ds(ds))
 
 
 # Fixed compute: this task always trains 6h on 4xH100 (GPU forced in gpu_requirements.py).

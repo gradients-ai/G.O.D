@@ -2,7 +2,6 @@ from collections import Counter
 
 import numpy as np
 
-from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.app.config import Config
@@ -286,11 +285,7 @@ async def get_knockout_winners(
         num_continuous_sft_tasks = 0
 
         def _is_continuous_sft(task_obj) -> bool:
-            return (
-                task_obj is not None
-                and task_obj.task_type == TaskType.CHATTASK
-                and task_obj.training_start_point == TrainingStartPoint.CONTINUOUS_SFT
-            )
+            return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
 
         def _award(winner: str | None, task_obj) -> None:
             task_winners.append(winner)

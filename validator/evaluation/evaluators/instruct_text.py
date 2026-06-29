@@ -31,6 +31,7 @@ from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
+from validator.evaluation.common import continuous_sft_trust_remote_code
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
 from validator.evaluation.common import load_results_dict
@@ -296,11 +297,13 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         logger.info(f"Skipping {repo} as it's already evaluated")
         return
 
-    # Continuous-SFT: quasar base needs trust_remote_code. Tokenizer + chat template always come
-    # from the base (never the submission) so every submission is scored identically.
-    continuous_sft = os.environ.get(core_cst.CONTINUOUS_SFT_ENV) == "1"
+    # Continuous-SFT: only lineages whose model ships custom code need trust_remote_code, gated by
+    # the audited-mirror env var (set for quasar, absent for qwen). For those the loaders pin the
+    # *.py to our audited mirror so miner code never runs. Tokenizer + chat template always come
+    # from the base (never the submission), and our tokenizer is a plain fast one needing no code.
+    trust_remote_code = continuous_sft_trust_remote_code()
 
-    tokenizer = load_tokenizer(evaluation_args.original_model, trust_remote_code=continuous_sft)
+    tokenizer = load_tokenizer(evaluation_args.original_model)
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -314,14 +317,14 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
     try:
         if check_for_lora(repo):
             logger.info("LoRA adapter detected. Loading as with Peft")
-            finetuned_model = load_finetuned_model(repo, trust_remote_code=continuous_sft)
+            finetuned_model = load_finetuned_model(repo, trust_remote_code=trust_remote_code)
             is_finetune = True
         else:
             logger.info("No LoRA adapter detected. Loading full model")
-            finetuned_model = load_model(repo, is_base_model=False, trust_remote_code=continuous_sft)
+            finetuned_model = load_model(repo, is_base_model=False, trust_remote_code=trust_remote_code)
             try:
                 is_finetune = model_is_a_finetune(
-                    evaluation_args.original_model, finetuned_model, trust_remote_code=continuous_sft
+                    evaluation_args.original_model, finetuned_model, trust_remote_code=trust_remote_code
                 )
             except Exception as e:
                 logger.info(f"Problem with detection of finetune for {repo}: {e}")
@@ -333,7 +336,7 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         base_model = None
         if use_kl and kl_coef:
             logger.info(f"KL weighting enabled (kl_coef={kl_coef}); loading base model {evaluation_args.original_model}")
-            base_model = load_model(evaluation_args.original_model, is_base_model=True, trust_remote_code=continuous_sft)
+            base_model = load_model(evaluation_args.original_model, is_base_model=True, trust_remote_code=trust_remote_code)
             base_model.eval()
             tokenizer = sanitize_tokenizer_for_models(tokenizer, finetuned_model, base_model)
         else:

@@ -9,7 +9,8 @@ MCTS_API_DOCKER_IMAGE = "gradientsio/mcts-api:latest"
 USE_KL_ENV = "USE_KL"
 KL_COEF_ENV = "KL_COEF"
 
-# Signals to the text evaluator that this is the continuous-SFT boss task: load the custom
-# (quasar) base/winner via trust_remote_code and use the submission's own tokenizer rather than
-# forcing the base model's (the carried-forward lineage updates the tokenizer).
-CONTINUOUS_SFT_ENV = "CONTINUOUS_SFT"
+# Set ONLY for continuous-SFT lineages whose model ships custom architecture code (e.g. quasar):
+# value is the audited seed mirror. Its presence is the per-lineage gate that turns on
+# trust_remote_code, and the evaluator pins the custom *.py to this repo so a miner-supplied repo's
+# code is never executed (RCE guard). Absent for standard-arch lineages (e.g. qwen) → no remote code.
+CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV = "CONTINUOUS_SFT_REMOTE_CODE_REPO"

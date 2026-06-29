@@ -19,7 +19,6 @@ from core.logging import LogContext
 from core.logging import get_logger
 from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskStatus
-from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
@@ -365,7 +364,7 @@ async def _carry_forward_continuous_sft(round_tasks: list[TournamentTask], psql_
         task_obj = await task_sql.get_task(round_task.task_id, psql_db)
         if not task_obj:
             continue
-        if not (task_obj.task_type == TaskType.CHATTASK and task_obj.training_start_point == TrainingStartPoint.CONTINUOUS_SFT):
+        if not t_cst.is_continuous_sft_task(task_obj):
             continue
         lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
         if not lineage:

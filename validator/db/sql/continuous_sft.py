@@ -32,7 +32,7 @@ async def get_continuous_sft_state(lineage: str, psql_db: PSQLDB) -> ContinuousS
     )
 
 
-async def advance_continuous_sft_state(lineage: str, winner_repo: str | None, psql_db: PSQLDB) -> ContinuousSftState:
+async def advance_continuous_sft_state(lineage: str, winner_repo: str | None, psql_db: PSQLDB) -> None:
     """Record a lineage's just-finished continuous-SFT winner and advance its train cursor.
 
     train_index -> train_index + 1 (monotonic; the content service does the chunk wrap, so we
@@ -56,7 +56,7 @@ async def advance_continuous_sft_state(lineage: str, winner_repo: str | None, ps
                     {cst.CONTINUOUS_SFT_LAST_WINNER_REPO} =
                         COALESCE($2, {cst.CONTINUOUS_SFT_STATE_TABLE}.{cst.CONTINUOUS_SFT_LAST_WINNER_REPO}),
                     {cst.CONTINUOUS_SFT_UPDATED_AT} = CURRENT_TIMESTAMP
-                RETURNING {cst.CONTINUOUS_SFT_TRAIN_INDEX}, {cst.CONTINUOUS_SFT_LAST_WINNER_REPO}, {cst.CONTINUOUS_SFT_UPDATED_AT}
+                RETURNING {cst.CONTINUOUS_SFT_TRAIN_INDEX}, {cst.CONTINUOUS_SFT_LAST_WINNER_REPO}
                 """,
                 lineage,
                 winner_repo,
@@ -64,10 +64,4 @@ async def advance_continuous_sft_state(lineage: str, winner_repo: str | None, ps
     logger.info(
         f"Advanced continuous_sft_state[{lineage}] -> train_index={row[cst.CONTINUOUS_SFT_TRAIN_INDEX]}, "
         f"last_winner_repo={row[cst.CONTINUOUS_SFT_LAST_WINNER_REPO]}"
-    )
-    return ContinuousSftState(
-        lineage=lineage,
-        train_index=row[cst.CONTINUOUS_SFT_TRAIN_INDEX],
-        last_winner_repo=row[cst.CONTINUOUS_SFT_LAST_WINNER_REPO],
-        updated_at=row[cst.CONTINUOUS_SFT_UPDATED_AT],
     )

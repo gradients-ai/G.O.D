@@ -11,6 +11,7 @@ import core.constants.environments as core_cst
 import validator.evaluation.constants as eval_cst
 import validator.infrastructure.service_constants as service_cst
 import validator.scoring.constants as scoring_cst
+import validator.tournament.constants as t_cst
 from core.logging import LogContext
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
@@ -342,12 +343,10 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
-        # Continuous-SFT boss task: signal the text evaluator to load the custom (quasar) base via
-        # trust_remote_code and relax the same-tokenizer-as-base requirement. We never apply KL here.
-        continuous_sft = (
-            task.task_type == TaskType.CHATTASK
-            and getattr(task, "training_start_point", None) == core_cst.TrainingStartPoint.CONTINUOUS_SFT
-        )
+        # Continuous-SFT lineages whose model ships custom architecture code (e.g. quasar) pass the
+        # audited seed mirror so the evaluator pins remote code to it (RCE guard) and loads with
+        # trust_remote_code. None for standard-arch lineages (qwen) and all non-continuous tasks.
+        continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task.ds)
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -359,7 +358,7 @@ async def _evaluate_submissions(
             "psql_db": config.psql_db if config is not None else None,
             "use_kl": use_kl,
             "kl_coef": kl_coef,
-            "continuous_sft": continuous_sft,
+            "continuous_sft_remote_code_repo": continuous_sft_remote_code_repo,
         }
 
         logger.info("Starting test evaluation")

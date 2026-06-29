@@ -656,7 +656,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
         task_obj = await task_sql.get_task(task.task_id, config.psql_db)
         if not task_obj:
             continue
-        if task_obj.task_type == TaskType.CHATTASK and task_obj.training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
+        if t_cst.is_continuous_sft_task(task_obj):
             lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
             if lineage:
                 existing_continuous_sft_lineages.add(lineage)

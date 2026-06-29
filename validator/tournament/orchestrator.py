@@ -20,7 +20,6 @@ from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
-from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
@@ -1024,7 +1023,7 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
 
     # Continuous-SFT uses a fixed, curated SFT chunk that we control and reuse every week.
     # Its near-duplicate rate is expected and intentional, so never reject it for replacement.
-    if task.task_type == TaskType.CHATTASK and task.training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
+    if cst.is_continuous_sft_task(task):
         logger.warning(
             f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
             f">= {cst.MAX_NEAR_DUPLICATE_RATE} but is the continuous-SFT curated chunk — allowing through"

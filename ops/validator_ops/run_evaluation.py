@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import core.constants.environments as env_cst
+import validator.tournament.constants as t_cst
 from core.downloads import download_s3_file
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
@@ -242,12 +243,9 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    # Continuous-SFT boss task signal: load custom (quasar) base via trust_remote_code and relax
-    # the same-tokenizer-as-base requirement in the text evaluator.
-    continuous_sft = (
-        task_type == TaskType.CHATTASK
-        and getattr(task_details, "training_start_point", None) == env_cst.TrainingStartPoint.CONTINUOUS_SFT
-    )
+    # Custom-arch continuous-SFT lineages (quasar) pass their audited mirror so the evaluator pins
+    # remote code to it (loaded with trust_remote_code); None for standard-arch / non-continuous tasks.
+    continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task_details.ds)
 
     if task_type == TaskType.ENVIRONMENTTASK:
         # For environment tasks, use dummy dataset paths (not actual files)
@@ -270,7 +268,7 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
-            continuous_sft=continuous_sft,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
         )
 
         test_data_results_dict = test_data_results.model_dump()
@@ -291,7 +289,7 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
-            continuous_sft=continuous_sft,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
         )
 
         synth_data_results_dict = synth_data_results.model_dump()
