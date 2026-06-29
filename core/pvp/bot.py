@@ -34,8 +34,8 @@ from core.models.pvp_models import ToolCall
 from core.models.pvp_models import ToolSchema
 from core.pvp import constants as cst
 from core.pvp import tools as tool_lib
-from core.pvp.chat import ChatUnavailableError
 from core.pvp.agents import BaseGameAgent
+from core.pvp.chat import ChatUnavailableError
 from core.pvp.memory import SlotMemory
 from core.pvp.memory import WhitespaceTokenCounter
 
@@ -249,19 +249,22 @@ class LLMBot(pyspiel.Bot):
                 raise ContextOverflowError(self._player_id) from exc
             raise
         except ChatUnavailableError as exc:
-            # Check timeout first: openai.APITimeoutError subclasses APIConnectionError.
-            # Slow model = the miner's fault (forfeit); unreachable server = infra
-            # (wait-and-replay upstream).
-            if isinstance(exc.cause, (openai.APITimeoutError, TimeoutError)):
+            # Check the whole retry chain: openai.APITimeoutError subclasses
+            # APIConnectionError, and a timed-out request can be followed by a
+            # connection reset after SGLang deletes the abandoned request state.
+            # Slow model = forfeit; pure unreachable server = infra replay.
+            if exc.timed_out:
                 logger.warning(
                     "Player %d chat timed out after retries (%s) — forfeiting turn",
-                    self._player_id, type(exc.cause).__name__,
+                    self._player_id,
+                    exc.cause_types(),
                 )
                 raise ChatTimeoutForfeitError(self._player_id) from exc
             logger.error(
                 "Player %d inference server unreachable after retries (%s) — infra failure, "
                 "will wait for recovery and replay",
-                self._player_id, type(exc.cause).__name__,
+                self._player_id,
+                exc.cause_types(),
             )
             raise ModelUnreachableError(self._player_id) from exc
 

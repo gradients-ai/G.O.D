@@ -316,6 +316,7 @@ class TestChatRetryLogic:
     def test_raises_after_exhausting_retries(self):
         import openai as oai
 
+        from core.pvp.chat import ChatUnavailableError
         from core.pvp.chat import _with_retries
 
         mock_client = MagicMock()
@@ -329,12 +330,41 @@ class TestChatRetryLogic:
         )
 
         with patch("core.pvp.chat.time.sleep"):
-            with pytest.raises(RuntimeError, match="Chat failed after 3 attempts"):
+            with pytest.raises(ChatUnavailableError, match="Chat failed after 3 attempts") as exc:
                 _with_retries(mock_client, config, [
                     ChatMessage(role=ChatRole.USER, content="test")
                 ])
 
+        assert exc.value.timed_out is True
+        assert exc.value.cause_types() == "APITimeoutError, APITimeoutError, APITimeoutError"
         assert mock_client.chat.completions.create.call_count == 3
+
+    def test_timeout_then_connection_error_remembers_timeout(self):
+        import openai as oai
+
+        from core.pvp.chat import ChatUnavailableError
+        from core.pvp.chat import _with_retries
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = [
+            oai.APITimeoutError(request=MagicMock()),
+            oai.APIConnectionError(request=MagicMock()),
+        ]
+
+        config = ChatCompletionConfig(
+            inference_model="test",
+            base_url="http://localhost:30000/v1",
+            max_retries=1,
+        )
+
+        with patch("core.pvp.chat.time.sleep"):
+            with pytest.raises(ChatUnavailableError) as exc:
+                _with_retries(mock_client, config, [
+                    ChatMessage(role=ChatRole.USER, content="test")
+                ])
+
+        assert exc.value.timed_out is True
+        assert exc.value.cause_types() == "APITimeoutError, APIConnectionError"
 
     def test_retries_on_server_error(self):
         import openai as oai
@@ -402,6 +432,18 @@ class TestChatRetryLogic:
 
         # Should NOT retry on 4xx
         assert mock_client.chat.completions.create.call_count == 1
+
+
+class TestPvpTimeoutConstants:
+    def test_validator_timeout_constants_follow_core(self):
+        import core.pvp.constants as core_cst
+        import validator.evaluation.constants as validator_cst
+
+        assert validator_cst.PVP_TURN_TIMEOUT_SECONDS == core_cst.PVP_TURN_TIMEOUT_SECONDS == 30
+        assert validator_cst.PVP_REFLECTION_TIMEOUT_SECONDS == core_cst.PVP_REFLECTION_TIMEOUT_SECONDS == 30
+        assert validator_cst.PVP_HTTP_READ_TIMEOUT_SECONDS == core_cst.PVP_HTTP_READ_TIMEOUT_SECONDS
+        assert validator_cst.PVP_HTTP_READ_TIMEOUT_SECONDS > validator_cst.PVP_TURN_TIMEOUT_SECONDS
+        assert validator_cst.PVP_HTTP_MAX_RETRIES == core_cst.PVP_HTTP_MAX_RETRIES
 
 
 # =============================================================================

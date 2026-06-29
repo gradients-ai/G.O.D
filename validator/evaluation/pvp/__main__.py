@@ -110,7 +110,9 @@ def _build_chat_config(port: int, eval_config: PvPEvalConfig, prepared: Prepared
 
     tokenizer_repo points at the served weights (base repo for LoRA, repo for full
     weights) — never the ':lora'-suffixed inference name — so memory slot budgets
-    use real tokens. read_timeout/max_retries are kept under the turn wall-clock.
+    use real tokens. read_timeout is intentionally above the bot wall-clock alarm:
+    slow turns should be classified by TurnTimeoutError and become forfeits before
+    the HTTP client abandons an in-flight SGLang request.
     """
     return ChatCompletionConfig(
         inference_model=prepared.inference_name,

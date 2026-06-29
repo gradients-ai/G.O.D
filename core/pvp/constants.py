@@ -10,21 +10,19 @@ PVP_CONFIG_ID_DIVISOR = 100_000_000
 
 # Per-turn wall-clock forfeit budget. A turn is a SINGLE model call (memory
 # edits + the move in one response); this is the "stuck/too slow" cutoff.
-# Sustained throughput on the eval GPU is roughly 57 tok/s; 512 output tokens
-# takes about 9s. 15s gives headroom over max generation.
-PVP_TURN_TIMEOUT_SECONDS = 15
-# Reflection generates up to 384 tokens; 12s gives reasonable headroom.
-PVP_REFLECTION_TIMEOUT_SECONDS = 12
+# Qwen3-family tool calls can run into the low tens of seconds on busy eval GPUs,
+# so keep this high enough for healthy generations but still bounded.
+PVP_TURN_TIMEOUT_SECONDS = 30
+# Reflection is best-effort and non-scoring, but it uses the same slow tool-call
+# path as turns. Keep it bounded to avoid wedged post-game memory consolidation.
+PVP_REFLECTION_TIMEOUT_SECONDS = 30
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 
-# HTTP read timeout + retries for in-turn/reflection calls. Matches the turn
-# wall-clock budget: a full PVP_TURN_MAX_TOKENS turn can legitimately take into
-# the low-teens of seconds, so a tighter read timeout spuriously timed out
-# healthy models. When a call still exhausts retries it raises ChatUnavailableError,
-# which the bot layer turns into a graceful, attributed outcome (slow model
-# forfeits; unreachable server triggers wait-and-replay) instead of crashing
-# the whole matchup.
-PVP_HTTP_READ_TIMEOUT_SECONDS = 15
+# HTTP read timeout + retries for in-turn/reflection calls. This intentionally
+# sits above the bot wall-clock alarm, so slow scored turns are classified by
+# TurnTimeoutError and become forfeits before the transport layer abandons the
+# in-flight SGLang request.
+PVP_HTTP_READ_TIMEOUT_SECONDS = 35
 PVP_HTTP_MAX_RETRIES = 1
 
 # Tool-calling memory harness.
