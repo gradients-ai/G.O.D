@@ -330,34 +330,13 @@ async def _save_winner_model_repo(
         logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
 
 
-async def _resolve_flat_full_repo(repo: str) -> str | None:
-    """Ensure the carried-forward repo is a full, loadable base model.
-
-    The continuous-SFT lineage must stay a FLAT full model so the trainer, the text
-    evaluator, and model-prep can all load it directly and the LoRA chain never deepens.
-    If the winning repo is a LoRA adapter it must be merged into a full model and uploaded
-    before it can serve as next week's base (see flat-merge component).
-    """
-    base = await _resolve_winner_base_model(repo, None)
-    if base is None:
-        return repo  # already a full model
-    # TODO(continuous-sft flat-merge): merge the adapter chain into a full model, upload it to
-    # the gradients-io-tournaments org, and return that repo. Until that GPU merge+upload path
-    # is wired, do NOT carry an adapter forward (it would break the text eval base load and
-    # grow the chain); preserve the prior lineage instead.
-    logger.warning(f"Continuous-SFT winner {repo} is a LoRA adapter (base={base}); flat-merge not yet wired - preserving prior lineage")
-    return None
-
-
-async def _carry_forward_continuous_sft(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> None:
-    """After a TEXT boss round completes, carry each continuous-SFT lineage's winner forward.
-
-    Each lineage (quasar, qwen) has its own continuous-SFT task in the round, with the lineage
-    encoded in the task ds. For each, pick the strictly lowest eval-loss submission as that
-    lineage's next base (resolved to a flat full model) and advance that lineage's
-    continuous_sft_state (train_index + 1, winner recorded). A failed/empty week (no winner)
-    preserves the prior lineage via the COALESCE in advance. Runs exactly once per tournament
-    thanks to the winner_hotkey idempotency guard upstream.
+async def _carry_forward_continuous_sft(
+    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB
+) -> None:
+    """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
+    and advance continuous_sft_state. The winner is carried AS-IS: a LoRA winner is flattened by next
+    round's model-prep (no merge here). A failed/empty week preserves the prior lineage (COALESCE).
+    Advance is idempotent on source_round_id, so reprocessing the round can't double-advance.
     """
     found = False
     for round_task in round_tasks:
@@ -374,14 +353,15 @@ async def _carry_forward_continuous_sft(round_tasks: list[TournamentTask], psql_
             continue
         found = True
 
+        # Carry the lowest-loss winner forward as-is; a LoRA winner is flattened by next round's
+        # model-prep. None only when the week had no scored winner (advance preserves prior).
         winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
-        carried_repo = await _resolve_flat_full_repo(winner_repo) if winner_repo else None
         logger.info(
             f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
-            f"lowest_loss_repo={winner_repo} carried={carried_repo}"
+            f"carried_winner={winner_repo}"
         )
         try:
-            await advance_continuous_sft_state(lineage, carried_repo, psql_db)
+            await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
         except Exception as e:
             logger.error(
                 f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
@@ -689,12 +669,11 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            # Carry the continuous-SFT winners forward (advance each lineage to next week's chunk)
-            # BEFORE marking the tournament winner: winner_hotkey is the idempotency guard at the
-            # top of advance_tournament, so setting it first and then crashing would skip this
-            # forever and freeze the lineages (train_index / last_winner_repo never advance).
+            # Carry continuous-SFT winners forward BEFORE setting winner_hotkey (the re-entry guard):
+            # set-first-then-crash would freeze the lineages. Advance is idempotent on round_id, so a
+            # crash in the gap before winner-set just reprocesses harmlessly.
             if tournament.tournament_type == TournamentType.TEXT:
-                await _carry_forward_continuous_sft(round_tasks, psql_db)
+                await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
 
             await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)

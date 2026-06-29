@@ -179,6 +179,13 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
     return f"{hf_username}/augmented-{repo_hash}"
 
 
+def generate_merged_repo_name(model_id: str) -> str:
+    """Opaque, deterministic repo name for a published LoRA-merge; namespaced apart from augmented-*."""
+    hf_username = os.environ.get("HUGGINGFACE_USERNAME", "gradients-io")
+    repo_hash = hashlib.sha256(f"{model_id}:lora-merge".encode()).hexdigest()[:16]
+    return f"{hf_username}/merged-{repo_hash}"
+
+
 def load_training_data(path: str) -> list[dict]:
     """Load all training data records from a JSON file.
 
@@ -288,6 +295,20 @@ def main():
             upload_augmented_model(model, tokenizer, repo_id, hf_token)
             print(f"[model_prep] Upload done in {time.time() - t0:.1f}s", flush=True)
             augmented_model_id = repo_id
+
+    # No-augmentation continuation (e.g. continuous-SFT) merged the LoRA only locally above. Publish
+    # it so eval — on another box, loading augmented_model_id or model_id — gets a flat base, not the
+    # raw adapter. `model` here is already the merged model.
+    if augmented_model_id is None and prep_result.was_lora:
+        repo_id = generate_merged_repo_name(args.model)
+        if repo_exists(repo_id, token=hf_token):
+            print(f"[model_prep] Merged LoRA base already published at {repo_id}, skipping upload", flush=True)
+        else:
+            t0 = time.time()
+            print(f"[model_prep] Publishing merged LoRA base to {repo_id}...", flush=True)
+            upload_augmented_model(model, tokenizer, repo_id, hf_token)
+            print(f"[model_prep] Merged-base upload done in {time.time() - t0:.1f}s", flush=True)
+        augmented_model_id = repo_id
 
     # --- Baseline stats ---
     print("[model_prep] Computing baseline stats...", flush=True)

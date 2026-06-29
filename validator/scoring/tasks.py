@@ -343,10 +343,11 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
-        # Continuous-SFT lineages whose model ships custom architecture code (e.g. quasar) pass the
-        # audited seed mirror so the evaluator pins remote code to it (RCE guard) and loads with
-        # trust_remote_code. None for standard-arch lineages (qwen) and all non-continuous tasks.
+        # Custom-arch lineages (quasar) pass their audited mirror so the evaluator pins remote code to
+        # it; None for standard-arch (qwen) and non-continuous tasks.
         continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task.ds)
+        # Pin the eval tokenizer + chat template to the lineage seed, not the carried winner. None otherwise.
+        continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -359,6 +360,7 @@ async def _evaluate_submissions(
             "use_kl": use_kl,
             "kl_coef": kl_coef,
             "continuous_sft_remote_code_repo": continuous_sft_remote_code_repo,
+            "continuous_sft_tokenizer_repo": continuous_sft_tokenizer_repo,
         }
 
         logger.info("Starting test evaluation")

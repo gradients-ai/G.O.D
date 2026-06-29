@@ -297,13 +297,14 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         logger.info(f"Skipping {repo} as it's already evaluated")
         return
 
-    # Continuous-SFT: only lineages whose model ships custom code need trust_remote_code, gated by
-    # the audited-mirror env var (set for quasar, absent for qwen). For those the loaders pin the
-    # *.py to our audited mirror so miner code never runs. Tokenizer + chat template always come
-    # from the base (never the submission), and our tokenizer is a plain fast one needing no code.
+    # Continuous-SFT: trust_remote_code only for custom-arch lineages (gated by the audited-mirror
+    # env var); the loaders pin those *.py to our mirror so miner code never runs.
     trust_remote_code = continuous_sft_trust_remote_code()
 
-    tokenizer = load_tokenizer(evaluation_args.original_model)
+    # Pin the tokenizer + chat template to the lineage seed when set (continuous-SFT); the carried
+    # base is the previous winner. Non-continuous tasks fall back to original_model.
+    tokenizer_source = os.environ.get(core_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV) or evaluation_args.original_model
+    tokenizer = load_tokenizer(tokenizer_source)
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token

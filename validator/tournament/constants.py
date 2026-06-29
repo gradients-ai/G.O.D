@@ -213,6 +213,16 @@ def continuous_sft_remote_code_repo_for_ds(ds: str | None) -> str | None:
     return continuous_sft_remote_code_repo(continuous_sft_lineage_from_ds(ds))
 
 
+def continuous_sft_seed_repo(lineage: str | None) -> str | None:
+    """The lineage's immutable seed model; eval pins the tokenizer/chat template here. None otherwise."""
+    return CONTINUOUS_SFT_LINEAGES.get(lineage) if lineage else None
+
+
+def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
+    """Seed model for a task's ds (pins the eval tokenizer); None for non-continuous tasks."""
+    return continuous_sft_seed_repo(continuous_sft_lineage_from_ds(ds))
+
+
 # Fixed compute: this task always trains 6h on 4xH100 (GPU forced in gpu_requirements.py).
 CONTINUOUS_SFT_TRAINING_HOURS = 6.0
 

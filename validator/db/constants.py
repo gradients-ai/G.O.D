@@ -50,6 +50,7 @@ CONTINUOUS_SFT_STATE_TABLE = "continuous_sft_state"
 CONTINUOUS_SFT_LINEAGE = "lineage"
 CONTINUOUS_SFT_TRAIN_INDEX = "train_index"
 CONTINUOUS_SFT_LAST_WINNER_REPO = "last_winner_repo"
+CONTINUOUS_SFT_LAST_SOURCE_ROUND_ID = "last_source_round_id"
 CONTINUOUS_SFT_UPDATED_AT = "updated_at"
 
 # PvP Pair Results Table Columns

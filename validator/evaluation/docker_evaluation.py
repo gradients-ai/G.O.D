@@ -133,6 +133,7 @@ async def run_evaluation_basilica_text(
     use_kl: bool = False,
     kl_coef: float | None = None,
     continuous_sft_remote_code_repo: str | None = None,
+    continuous_sft_tokenizer_repo: str | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = {}
     db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
@@ -191,6 +192,8 @@ async def run_evaluation_basilica_text(
             base_env[docker_cst.KL_COEF_ENV] = str(kl_coef)
     if continuous_sft_remote_code_repo:
         base_env[docker_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV] = continuous_sft_remote_code_repo
+    if continuous_sft_tokenizer_repo:
+        base_env[docker_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV] = continuous_sft_tokenizer_repo
     if is_environment_eval:
         env_name = env_cst.EnvironmentName(environment_name_value) if environment_name_value else None
         if env_name not in env_cst.ENVIRONMENT_CONFIGS:

@@ -7,6 +7,7 @@ from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
+from validator.db.sql.continuous_sft import warn_orphaned_continuous_sft_state
 from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
@@ -682,6 +683,9 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
             )
             if task:
                 tasks.append(task)
+
+    # Surface any state row whose lineage was renamed/removed (its accumulated chain is now orphaned).
+    await warn_orphaned_continuous_sft_state(set(t_cst.CONTINUOUS_SFT_LINEAGES), config.psql_db)
 
     # One continuous-SFT task per lineage (quasar + qwen); skip lineages already created.
     for lineage, seed_model in t_cst.CONTINUOUS_SFT_LINEAGES.items():

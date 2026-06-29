@@ -246,6 +246,8 @@ async def run_evaluation_from_task_id(
     # Custom-arch continuous-SFT lineages (quasar) pass their audited mirror so the evaluator pins
     # remote code to it (loaded with trust_remote_code); None for standard-arch / non-continuous tasks.
     continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task_details.ds)
+    # Pin the eval tokenizer + chat template to the lineage seed (not the carried winner); None otherwise.
+    continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
 
     if task_type == TaskType.ENVIRONMENTTASK:
         # For environment tasks, use dummy dataset paths (not actual files)
@@ -269,6 +271,7 @@ async def run_evaluation_from_task_id(
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
             continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
+            continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
         test_data_results_dict = test_data_results.model_dump()
@@ -290,6 +293,7 @@ async def run_evaluation_from_task_id(
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
             continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
+            continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
         synth_data_results_dict = synth_data_results.model_dump()

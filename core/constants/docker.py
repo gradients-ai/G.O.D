@@ -14,3 +14,7 @@ KL_COEF_ENV = "KL_COEF"
 # trust_remote_code, and the evaluator pins the custom *.py to this repo so a miner-supplied repo's
 # code is never executed (RCE guard). Absent for standard-arch lineages (e.g. qwen) → no remote code.
 CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV = "CONTINUOUS_SFT_REMOTE_CODE_REPO"
+
+# Set for every continuous-SFT lineage: the immutable lineage seed. Eval pins the tokenizer + chat
+# template to this, not original_model (the carried winner). Absent for non-continuous tasks.
+CONTINUOUS_SFT_TOKENIZER_REPO_ENV = "CONTINUOUS_SFT_TOKENIZER_REPO"
