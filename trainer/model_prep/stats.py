@@ -37,10 +37,21 @@ from core.models.task_models import TaskType
 BPB_REFERENCE_MODEL = "gpt2"
 
 # Token-length stats are computed on a random sample and scaled to the full
-# record count; model forward passes use the same sample.
+# record count; model forward passes use a smaller subset of the SAME sample.
 LENGTH_SAMPLE_SIZE = 2_000
+# Model forward passes (init loss, entropy, masked loss) and the content stats
+# (unique tokens, near-duplicate rate, BPB) run on this many samples. The
+# forward-pass loops are batch_size=1, so this is the dominant cost of model
+# prep; a few hundred to ~1k samples give a stable mean. Decoupled from
+# LENGTH_SAMPLE_SIZE so the token-length distribution stays accurate.
+FORWARD_SAMPLE_SIZE = 1_000
 BPB_SAMPLE_SIZE = 200
 LENGTH_SAMPLE_SEED = 42
+# Cap per-text length for the CPU-bound content stats so a handful of
+# pathologically long records (e.g. long-document datasets) can't blow up
+# model-prep time. Forward passes are separately capped at max_length=512.
+CONTENT_MAX_TOKENS = 2_048
+NEAR_DUP_MAX_WORDS = 512
 
 # Throughput probe settings.
 THROUGHPUT_TARGET_BATCH_TOKENS = 8_192
@@ -216,7 +227,7 @@ def measure_training_throughput(model, device, seq_len: int, vocab_size: int) ->
 def _count_unique_tokens(texts: list[str], tokenizer) -> int:
     unique: set[int] = set()
     for t in texts:
-        unique.update(tokenizer(t, truncation=False)["input_ids"])
+        unique.update(tokenizer(t, truncation=True, max_length=CONTENT_MAX_TOKENS)["input_ids"])
     return len(unique)
 
 
@@ -273,7 +284,7 @@ def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshol
         minhashes = []
         for i, text in enumerate(texts):
             m = MinHash(num_perm=num_perm)
-            for word in text.lower().split():
+            for word in text.lower().split()[:NEAR_DUP_MAX_WORDS]:
                 m.update(word.encode("utf-8"))
             minhashes.append(m)
             try:
@@ -358,14 +369,18 @@ def _compute_base_training_dynamics(
 
     # Forward hooks for activation RMS — registered before eval loop so we
     # collect across all batches in eval mode (no dropout/batchnorm noise).
-    activation_rms_accum: dict[str, list[float]] = defaultdict(list)
+    # Keep per-batch RMS as on-device scalars and sync once at the end. Calling
+    # .item() inside the hook would force a GPU->CPU sync for every module on
+    # every batch (hundreds of modules x thousands of batches), serialising the
+    # whole eval loop.
+    activation_rms_accum: dict[str, list[torch.Tensor]] = defaultdict(list)
     hooks = []
 
     def make_hook(name):
         def hook(module, _input, output):
             out = output[0] if isinstance(output, tuple) else output
             if isinstance(out, torch.Tensor):
-                activation_rms_accum[name].append(torch.sqrt(torch.mean(out.float() ** 2)).item())
+                activation_rms_accum[name].append(torch.sqrt(torch.mean(out.float() ** 2)).detach())
         return hook
 
     for name, module in model.named_modules():
@@ -400,7 +415,7 @@ def _compute_base_training_dynamics(
 
     for h in hooks:
         h.remove()
-    activation_rms = {n: float(np.mean(v)) for n, v in activation_rms_accum.items()}
+    activation_rms = {n: float(torch.stack(v).mean().item()) for n, v in activation_rms_accum.items() if v}
     print(
         f"[stats] Eval loop done in {time.time() - t_start:.1f}s "
         f"(loss={init_loss:.4f}, {len(batch_losses)} batches)",
@@ -696,7 +711,7 @@ def compute_text_stats(
     tokenizer,
     data_records: list[dict],
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
-    max_samples: int = LENGTH_SAMPLE_SIZE,
+    max_samples: int = FORWARD_SAMPLE_SIZE,
     reward_functions=None,
 ) -> BaselineStats:
     """Compute stats for text-based tasks (instruct, DPO, GRPO, chat)."""
