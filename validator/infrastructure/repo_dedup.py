@@ -29,6 +29,7 @@ from typing import Any
 import validator.tournament.constants as t_cst
 from core.git import sanitize_git_text
 from core.logging import get_logger
+from core.models.tournament_models import TournamentType
 from validator.tournament.models import DedupCluster
 from validator.tournament.models import DedupResult
 from validator.tournament.models import DedupTier
@@ -294,17 +295,59 @@ def _snapshot_god_source(dest: Path) -> bool:
             pass
 
 
-def _build_runtime_context(has_source: bool) -> str:
-    """Instruction block telling the agent how to verify differentiators against the real contract."""
+# Each tournament runs exactly ONE family of task types, so only that family's training code path
+# executes. A submission can fake a differentiator by diverging only in code reachable under SOME OTHER
+# tournament type's tasks (e.g. an image-only or env-only branch in a TEXT tournament) — that branch is
+# dead here and must not make a pair distinct. The scope line below names the live path for the agent.
+_TOURNAMENT_SCOPE: dict[TournamentType, str] = {
+    TournamentType.TEXT: (
+        "This is a TEXT tournament. The only task types that run are InstructText, Chat, DPO and GRPO, all via "
+        "the text training entrypoint (./_god_source/trainer/runtime.py run_trainer_container_text). Reward "
+        "functions exist ONLY for GRPO tasks and are delivered via --reward-functions, so reward logic IS live. "
+        "Image training (run_trainer_container_image, image dataset/model_type handling, diffusion/LoRA image "
+        "scripts) and environment-task code (EnvTask env configs / env servers) NEVER execute in this tournament."
+    ),
+    TournamentType.IMAGE: (
+        "This is an IMAGE tournament. The only task type that runs is ImageTask, via the image training entrypoint "
+        "(./_god_source/trainer/runtime.py run_trainer_container_image). Text training (InstructText/Chat/DPO/GRPO), "
+        "reward functions, and environment-task code NEVER execute in this tournament."
+    ),
+    TournamentType.ENVIRONMENT: (
+        "This is an ENVIRONMENT tournament. The only task type that runs is EnvTask (environment configs / env "
+        "servers, see ./_god_source/core). Image training (run_trainer_container_image) and plain text training "
+        "(InstructText/Chat/DPO) NEVER execute in this tournament."
+    ),
+}
+
+
+def _tournament_scope_line(tournament_type: TournamentType) -> str:
+    scope = _TOURNAMENT_SCOPE.get(tournament_type)
+    if scope is None:
+        return ""
+    return (
+        "TOURNAMENT SCOPE — APPLY BEFORE ANYTHING ELSE. " + scope + " Any delta that only changes behaviour on a "
+        "code path which does NOT execute for this tournament type's tasks is DEAD CODE: it cannot make the pair "
+        "distinct. If the only differences between the two submissions live in such out-of-scope paths, return "
+        "'duplicate' and name the dead path.\n\n"
+    )
+
+
+def _build_runtime_context(has_source: bool, tournament_type: TournamentType) -> str:
+    """Instruction block telling the agent how to verify differentiators against the real contract.
+
+    Prefixed with a tournament-scope line so the agent only treats the live task-type code path as real;
+    differentiators that only fire under another tournament type's tasks are dead code.
+    """
+    scope = _tournament_scope_line(tournament_type)
     if not has_source:
-        return (
+        return scope + (
             "(The validator source snapshot is unavailable this run. Still apply the runtime-contract "
             "rules from your instructions: treat any divergence that only triggers under conditions which "
-            "do NOT hold during tournament training — unset env vars, absent baseline-stats fields, "
-            "reward-function inputs that are not provided, hostnames, missing files, dates, untouched CLI "
-            "flags — as dead code, and the submissions as duplicate.)"
+            "do NOT hold during tournament training — out-of-scope task-type code paths, unset env vars, "
+            "absent baseline-stats fields, reward-function inputs that are not provided, hostnames, missing "
+            "files, dates, untouched CLI flags — as dead code, and the submissions as duplicate.)"
         )
-    return (
+    return scope + (
         "AUTHORITATIVE SOURCE FOR VERIFICATION. The validator's exact running code (git HEAD, no secrets) "
         "is checked out read-only at ./_god_source. Use Read/Glob/Grep on it to establish what is ACTUALLY "
         "provided to training code, then verify every input the two repos rely on to differentiate themselves:\n"
@@ -465,8 +508,14 @@ async def find_hash_duplicates(repos: list[RepoRef], boss_hotkey: str | None = N
         shutil.rmtree(temp_root, ignore_errors=True)
 
 
-async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = None) -> DedupResult:
-    """Full T0+T1+T2 de-dup with Claude pairwise judgement. Used at the R1->R2 gate."""
+async def run_pairwise_dedup(
+    repos: list[RepoRef], tournament_type: TournamentType, boss_hotkey: str | None = None
+) -> DedupResult:
+    """Full T0+T1+T2 de-dup with Claude pairwise judgement. Used at the R1->R2 gate.
+
+    ``tournament_type`` scopes the T2 judge to the live training path: a differentiator that only fires
+    under another tournament type's tasks (e.g. env-only code in a TEXT tournament) is dead code here.
+    """
     if not os.environ.get("ANTHROPIC_API_KEY"):
         raise RuntimeError("ANTHROPIC_API_KEY is not set; cannot run pairwise dedup")
 
@@ -482,7 +531,7 @@ async def run_pairwise_dedup(repos: list[RepoRef], boss_hotkey: str | None = Non
         # Give the agent the validator's running source so it can verify whether claimed
         # differentiators are real training-time inputs (vs evasive dead code). Best-effort.
         has_source = await asyncio.to_thread(_snapshot_god_source, temp_root / "_god_source")
-        runtime_context = _build_runtime_context(has_source)
+        runtime_context = _build_runtime_context(has_source, tournament_type)
 
         dup_pairs: list[tuple[str, str]] = list(hash_pairs)
         evasion: set[str] = set()
