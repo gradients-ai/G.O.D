@@ -45,7 +45,9 @@ LENGTH_SAMPLE_SIZE = 2_000
 # prep; a few hundred to ~1k samples give a stable mean. Decoupled from
 # LENGTH_SAMPLE_SIZE so the token-length distribution stays accurate.
 FORWARD_SAMPLE_SIZE = 1_000
-BPB_SAMPLE_SIZE = 200
+# Bits-per-byte runs a GPT-2 forward pass per text; 64 is plenty for a stable
+# byte-normalised cross-entropy estimate and keeps the probe cheap.
+BPB_SAMPLE_SIZE = 64
 LENGTH_SAMPLE_SEED = 42
 # Cap per-text length for the CPU-bound content stats so a handful of
 # pathologically long records (e.g. long-document datasets) can't blow up
@@ -298,17 +300,18 @@ def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshol
         return float("nan")
 
 
-def _compute_bits_per_byte(texts: list[str]) -> float:
+def _compute_bits_per_byte(texts: list[str], device: str = "cpu") -> float:
     """Compute bits-per-byte using GPT-2 reference model.
 
-    Always runs on CPU to avoid competing for GPU VRAM with the main model.
-    GPT-2 is small enough that CPU inference is fine here.
+    Runs on the main model's device (GPU when available). GPT-2 is tiny (~124M),
+    so the VRAM cost is negligible and GPU inference avoids the CPU-bound forward
+    loop that dominates model-prep time when several containers share a node.
     """
     t0 = time.time()
     texts = [t for t in texts if t.strip()]
     if not texts:
         return 0.0
-    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL)
+    ref_model = AutoModelForCausalLM.from_pretrained(BPB_REFERENCE_MODEL).to(device)
     ref_tokenizer = AutoTokenizer.from_pretrained(BPB_REFERENCE_MODEL)
     ref_tokenizer.pad_token = ref_tokenizer.eos_token
     ref_model.eval()
@@ -317,11 +320,13 @@ def _compute_bits_per_byte(texts: list[str]) -> float:
     with torch.no_grad():
         for text in texts:
             total_bytes += len(text.encode("utf-8"))
-            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt")
+            enc = ref_tokenizer(text, truncation=True, max_length=512, return_tensors="pt").to(device)
             outputs = ref_model(**enc, labels=enc["input_ids"])
             n_predicted_tokens = enc["input_ids"].shape[1] - 1
             total_loss_nats += outputs.loss.item() * max(n_predicted_tokens, 1)
     del ref_model
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     result = (total_loss_nats / math.log(2)) / max(total_bytes, 1)
     print(f"[stats] BPB done in {time.time() - t0:.1f}s ({len(texts)} texts, {total_bytes} bytes, bpb={result:.4f})", flush=True)
     return result
@@ -534,7 +539,7 @@ def _compute_instruct_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, completion_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(all_texts),
-        bits_per_byte=_compute_bits_per_byte(list(completions)[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(list(completions)[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -589,7 +594,7 @@ def _compute_dpo_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist([p + c for p, c in zip(prompt_lengths, chosen_lengths)]),
         near_duplicate_rate=_compute_near_duplicate_rate(list(prompts)),
-        bits_per_byte=_compute_bits_per_byte(list(prompts)[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(list(prompts)[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
@@ -642,7 +647,7 @@ def _compute_grpo_stats(
         num_records=len(records),
         seq_length_distribution=_make_seq_dist(prompt_lengths),
         near_duplicate_rate=_compute_near_duplicate_rate(prompts),
-        bits_per_byte=_compute_bits_per_byte(prompts[:BPB_SAMPLE_SIZE]),
+        bits_per_byte=_compute_bits_per_byte(prompts[:BPB_SAMPLE_SIZE], device),
         vocab_size=vocab_size,
         unique_tokens_in_data=unique_tokens,
         vocab_coverage_ratio=unique_tokens / max(vocab_size, 1),
