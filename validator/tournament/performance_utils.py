@@ -137,6 +137,7 @@ async def calculate_tournament_projection(
             _, new_decay, _ = calculate_hybrid_decays(
                 first_win_tournament.updated_at,
                 consecutive_wins,
+                base_weight,
                 datetime.now(timezone.utc),
             )
             current_champion_decay = new_decay
@@ -181,8 +182,9 @@ async def calculate_tournament_projection(
         initial_weight = winner_share * raw_initial_weight * scale_factor
 
         projections = []
+        daily_time_decay_rate = base_weight / cts.TOURNAMENT_DECAY_PERIOD_DAYS
         for days in projection_days:
-            new_decay = days * cts.EMISSION_DAILY_TIME_DECAY_RATE
+            new_decay = days * daily_time_decay_rate
 
             raw_future_weight = calculate_tournament_weight_with_decay(
                 tournament_type=tournament_type,

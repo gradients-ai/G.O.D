@@ -39,7 +39,10 @@ MAX_BURN_REDUCTION = 0.8
 EMISSION_MULTIPLIER_THRESHOLD = 0.10
 EMISSION_MULTIPLIER_RATE = 2.0
 EMISSION_BOOST_DECAY_PER_WIN = 0.01
-EMISSION_DAILY_TIME_DECAY_RATE = 0.00165
+# Champions decay linearly to zero over this many days. The per-day decay is
+# derived from each tournament's actual base weight (base_weight / period) so
+# every tournament drains over the same horizon regardless of its base weight.
+TOURNAMENT_DECAY_PERIOD_DAYS = 35
 EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0
 

@@ -143,15 +143,20 @@ def calculate_tournament_weight_with_decay(
 
 
 def calculate_hybrid_decays(
-    first_championship_time: datetime, consecutive_wins: int, current_time: datetime | None = None
+    first_championship_time: datetime, consecutive_wins: int, base_weight: float, current_time: datetime | None = None
 ) -> tuple[float, float, bool]:
     """
     Calculate time-based decay & previous consecutive wins decay for backwards compatibility.
     Returns a tuple of (old_decay, new_decay, apply_hybrid).
+
+    The time-based decay rate is derived from the tournament's actual base weight so the
+    base drains to zero over TOURNAMENT_DECAY_PERIOD_DAYS regardless of how large it is.
     """
     if first_championship_time is None:
         logger.error("First championship time is None, cannot calculate time-based decay.")
         return (1.0, 1.0, False)
+
+    daily_time_decay_rate = base_weight / cts.TOURNAMENT_DECAY_PERIOD_DAYS
 
     # timezone alignment
     current_time_utc = current_time if current_time else datetime.now(timezone.utc)
@@ -171,7 +176,7 @@ def calculate_hybrid_decays(
     if first_championship_time_utc < cutoff_date:
         old_decay = max(0, consecutive_wins - 1) * cts.EMISSION_BOOST_DECAY_PER_WIN
         days_since_cutoff = (current_time_utc - cutoff_date).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = days_since_cutoff * cts.EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = days_since_cutoff * daily_time_decay_rate
 
         logger.debug(
             f"Pre-cutoff champion: old_decay={old_decay:.4f}, new_decay={new_decay:.4f}, will apply hybrid logic downstream"
@@ -180,7 +185,7 @@ def calculate_hybrid_decays(
     else:
         # Champion won AFTER cutoff - only new time-based decay
         days_as_champion = (current_time_utc - first_championship_time_utc).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = days_as_champion * cts.EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = days_as_champion * daily_time_decay_rate
         logger.debug(f"Post-cutoff champion: new_decay={new_decay:.4f} (reign={days_as_champion:.1f} days)")
         return (0.0, new_decay, False)
 
@@ -322,7 +327,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.TEXT, text_champion_hotkey)
 
         text_old_decay, text_new_decay, apply_hybrid_to_text = calculate_hybrid_decays(
-            first_win_tournament.updated_at, text_consecutive_wins
+            first_win_tournament.updated_at, text_consecutive_wins, cts.TOURNAMENT_TEXT_WEIGHT
         )
         logger.info(
             f"Text champion {text_champion_hotkey[:8]}... has {text_consecutive_wins} consecutive wins, "
@@ -338,7 +343,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.IMAGE, image_champion_hotkey)
 
         image_old_decay, image_new_decay, apply_hybrid_to_image = calculate_hybrid_decays(
-            first_win_tournament.updated_at, image_consecutive_wins
+            first_win_tournament.updated_at, image_consecutive_wins, cts.TOURNAMENT_IMAGE_WEIGHT
         )
         logger.info(
             f"Image champion {image_champion_hotkey[:8]}... has {image_consecutive_wins} consecutive wins, "
@@ -378,7 +383,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         )
 
         environment_old_decay, environment_new_decay, apply_hybrid_to_environment = calculate_hybrid_decays(
-            first_win_tournament.updated_at, environment_consecutive_wins
+            first_win_tournament.updated_at, environment_consecutive_wins, cts.TOURNAMENT_ENVIRONMENT_WEIGHT
         )
         logger.info(
             f"Environment champion {environment_champion_hotkey[:8]}... has {environment_consecutive_wins} consecutive wins, "
