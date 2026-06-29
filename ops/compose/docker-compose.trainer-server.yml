@@ -1,5 +1,5 @@
 # Deploy this on your trainer server(s)
-version: '3.8'
+name: god
 
 services:
   # Vector log shipper - collects and ships logs to remote Loki
