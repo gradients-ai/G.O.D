@@ -221,17 +221,12 @@ def training_details_table(rows: list[dict]) -> None:
     table.add_column("Hotkey", style="magenta", no_wrap=True)
     table.add_column("Status")
     table.add_column("Attempts", justify="right")
-    table.add_column("Updated", style="yellow")
-    table.add_column("Repo", style="green", overflow="fold")
     for r in rows:
-        repo = r.get("submission_repo") or r.get("expected_repo_name") or "-"
         table.add_row(
             str(r["task_id"]),
             str(r["hotkey"]),
             _tag(r["training_status"]),
             str(r["n_training_attempts"]),
-            fmt_dt(r.get("updated_at")),
-            link(repo),
         )
     console.print(table)
 
