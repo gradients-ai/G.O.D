@@ -7,6 +7,7 @@ that span tables the helpers don't expose directly.
 
 from uuid import UUID
 
+from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.db.sql import submissions_and_scoring as scoring_sql
 from validator.db.sql import tasks as tasks_sql
@@ -153,9 +154,10 @@ class Queries:
             JOIN tasks t ON e.task_id = t.task_id
             WHERE e.deployment_id IS NOT NULL
               AND e.evaluation_status = ANY($1)
+              AND t.task_type != $2
             ORDER BY e.evaluation_status, t.task_type, e.task_id
         """
-        return await self.db.fetchall(query, ACTIVE_EVAL_STATUSES)
+        return await self.db.fetchall(query, ACTIVE_EVAL_STATUSES, TaskType.ENVIRONMENTTASK.value)
 
     async def pvp_deployments(self) -> list[dict]:
         query = """
@@ -163,6 +165,15 @@ class Queries:
             FROM pvp_pair_results
             WHERE deployment_id IS NOT NULL AND status != 'complete'
             ORDER BY task_id, environment_name
+        """
+        return await self.db.fetchall(query)
+
+    async def individual_deployments(self) -> list[dict]:
+        query = """
+            SELECT task_id, hotkey, environment_name, status, deployment_id
+            FROM pvp_individual_scores
+            WHERE deployment_id IS NOT NULL AND status != 'complete'
+            ORDER BY task_id, environment_name, hotkey
         """
         return await self.db.fetchall(query)
 

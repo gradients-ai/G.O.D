@@ -44,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     tlist.add_argument("--active", action="store_true")
     tlist.add_argument("--completed", action="store_true")
 
-    sub.add_parser("deployments", help="Show active eval + PvP deployments.")
+    sub.add_parser("deployments", help="Show active non-env, PvP pair, and individual env deployments.")
     sub.add_parser("trainers", help="Show trainers / GPU capacity.")
     return parser
 
@@ -72,7 +72,11 @@ async def _run(args) -> None:
         elif args.command == "tournaments":
             await _list_tournaments(q, args)
         elif args.command == "deployments":
-            v.deployments_table(await q.active_deployments(), await q.pvp_deployments())
+            v.deployments_table(
+                await q.active_deployments(),
+                await q.pvp_deployments(),
+                await q.individual_deployments(),
+            )
         elif args.command == "trainers":
             v.trainers_table(await q.trainers())
         else:
