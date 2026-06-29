@@ -25,6 +25,7 @@ from core.pvp.agents import GoofspielAgent
 from core.pvp.agents import LeducPokerAgent
 from core.pvp.agents import LiarsDiceAgent
 from core.pvp.agents import OthelloAgent
+from core.pvp.bot import ChatTimeoutForfeitError
 from core.pvp.bot import ContextOverflowError
 from core.pvp.bot import EmptyLegalActionsError
 from core.pvp.bot import InvalidActionForfeitError
@@ -93,15 +94,24 @@ def _evaluate_game_with_timeout(
 ) -> GameEvaluation:
     """Run evaluate_bots, catching bot-level forfeits.
 
-    Per-turn timeouts are enforced inside LLMBot.step() via SIGALRM. Timeout,
-    context overflow, and invalid-action strikeouts propagate up through
-    evaluate_bots and are caught here as forfeits.
+    Per-turn timeouts are enforced inside LLMBot.step() via SIGALRM. Wall-clock
+    timeout, chat timeout (slow model), context overflow, and invalid-action
+    strikeouts propagate up through evaluate_bots and are caught here as forfeits.
+
+    A ModelUnreachableError (the player's inference *server* is down — infra, not
+    the model's fault) is deliberately NOT caught: it propagates to the matchup
+    runner, which waits for the server to recover and replays the game.
     """
     try:
         returns = evaluate_bots.evaluate_bots(state, bots, np.random.RandomState(seed))
         return GameEvaluation(returns=list(returns))
     except TurnTimeoutError as exc:
         logger.warning("Player %d timed out on turn — opponent wins by forfeit", exc.player_id)
+        return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
+    except ChatTimeoutForfeitError as exc:
+        logger.warning(
+            "Player %d inference timed out after retries — opponent wins by forfeit", exc.player_id
+        )
         return GameEvaluation(returns=_forfeit_returns(state, exc.player_id), forfeiting_player_id=exc.player_id)
     except ContextOverflowError as exc:
         logger.warning("Player %d exceeded context length — opponent wins by forfeit", exc.player_id)

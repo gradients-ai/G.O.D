@@ -161,6 +161,18 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
         warmup_player(player_b)
         logger.info("Warmup complete")
 
+        def _recover_servers() -> None:
+            """Wait for both SGLang servers to become healthy again after a mid-eval
+            outage, so the matchup runner can replay the failed game."""
+            logger.warning(
+                "Recovering: waiting up to %ds for SGLang servers on ports %d/%d to come back",
+                vcst.PVP_SERVER_RECOVERY_HEALTH_TIMEOUT,
+                port_a,
+                port_b,
+            )
+            asyncio.run(wait_for_servers(port_a, port_b, timeout=vcst.PVP_SERVER_RECOVERY_HEALTH_TIMEOUT))
+            logger.info("Recovery complete: SGLang servers on ports %d/%d are healthy", port_a, port_b)
+
         env_results: dict[EnvironmentName, PvPEnvironmentResult] = {}
         for env_name, matchup_config in config.matchups.items():
             logger.info("Starting matchup: %s (%.0fs budget)", env_name.value, matchup_config.time_budget_seconds)
@@ -170,6 +182,7 @@ def _run_evaluation(config: PvPEvalConfig) -> PvPEvalResults:
                 player_a=player_a,
                 player_b=player_b,
                 base_seed=config.seed,
+                recover_fn=_recover_servers,
             )
 
         return PvPEvalResults(

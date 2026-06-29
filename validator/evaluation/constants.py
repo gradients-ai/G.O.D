@@ -92,6 +92,13 @@ PVP_SGLANG_PORT_A = 30000
 PVP_SGLANG_PORT_B = 30001
 PVP_SGLANG_HEALTH_TIMEOUT = 1800
 PVP_SGLANG_HEALTH_PATH = "/v1/models"
+# Mid-eval recovery: if a model's SGLang server becomes unreachable DURING a
+# matchup (infra blip / crash), wait for it to come back and replay the game
+# rather than penalizing the miner. Shorter than the 30-min setup timeout —
+# a server that doesn't recover in this window is treated as a hard failure
+# and the eval is re-run by the orchestrator. Retries bound a flapping server.
+PVP_SERVER_RECOVERY_HEALTH_TIMEOUT = 300
+PVP_SERVER_RECOVERY_MAX_RETRIES = 2
 PVP_SGLANG_API_PATH = "/v1"
 PVP_RESULTS_PATH = "/app/pvp_results.json"
 PVP_CONFIG_PATH = "/config/pvp_eval.json"

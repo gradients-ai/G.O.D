@@ -10,6 +10,7 @@ import functools
 import logging
 import random
 import time
+from collections.abc import Callable
 from collections.abc import Iterator
 from typing import NamedTuple
 
@@ -31,6 +32,7 @@ from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPMatchupConfig
 from core.pvp.agents import BaseGameAgent
 from core.pvp.bot import LLMBot
+from core.pvp.bot import ModelUnreachableError
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from core.pvp.game_eval import _AGENT_REGISTRY
@@ -82,18 +84,22 @@ def run_matchup(
     player_a: Player,
     player_b: Player,
     base_seed: int,
+    recover_fn: Callable[[], None] | None = None,
 ) -> PvPEnvironmentResult:
     """Run a time-budgeted PvP matchup for one environment.
 
     Plays seed pairs, each seed twice with positions swapped, until the wall-clock
     budget expires or an early forfeit fires. The deadline is checked between
     complete pairs so every recorded game has a position-balanced counterpart.
+
+    recover_fn, when supplied, is called to wait for the inference servers to come
+    back if one goes unreachable mid-game; the failed game is then replayed.
     """
     agent = _AGENT_REGISTRY[env_name]()
     seed_stream = _seed_stream(env_name, agent, base_seed)
     start = time.monotonic()
     deadline = start + matchup_config.time_budget_seconds
-    return _execute_matchup(env_name, seed_stream, start, deadline, player_a, player_b, agent)
+    return _execute_matchup(env_name, seed_stream, start, deadline, player_a, player_b, agent, recover_fn)
 
 
 def _seed_stream(
@@ -230,6 +236,7 @@ def _execute_matchup(
     player_a: Player,
     player_b: Player,
     agent: BaseGameAgent,
+    recover_fn: Callable[[], None] | None = None,
 ) -> PvPEnvironmentResult:
     """Play seed pairs until the deadline or an early forfeit fires."""
     counter_a = load_token_counter(player_a.config.tokenizer_repo or player_a.config.inference_model)
@@ -265,8 +272,19 @@ def _execute_matchup(
                 instance.seed,
                 instance.model_a_player_id,
             )
-            played = play(instance)
-            game_elapsed = time.monotonic() - game_start
+            played, recovery_wait = _play_with_recovery(
+                play, instance, env_name, games_played + 1, recover_fn
+            )
+            if recovery_wait:
+                # An infra wait isn't game time — credit it back so a server blip
+                # doesn't eat into the matchup budget.
+                deadline += recovery_wait
+                logger.info(
+                    "%s: credited %.0fs of server-recovery wait back to the matchup deadline",
+                    env_name.value,
+                    recovery_wait,
+                )
+            game_elapsed = time.monotonic() - game_start - recovery_wait
             _tally(result, played.outcome)
             games_played += 1
 
@@ -332,6 +350,66 @@ def _execute_matchup(
         result.model_a_wins, result.model_b_wins, result.draws,
     )
     return result
+
+
+def _play_with_recovery(
+    play: Callable[[GameInstance], PlayedGame],
+    instance: GameInstance,
+    env_name: EnvironmentName,
+    game_number: int,
+    recover_fn: Callable[[], None] | None,
+) -> tuple[PlayedGame, float]:
+    """Play one game, recovering from inference-server (infra) failures.
+
+    A slow or broken model already forfeits inside the game. This handles the
+    distinct case where a model's SGLang *server* goes unreachable mid-game
+    (crash/restart/blip): wait for both servers to come back and replay the game
+    from scratch so an infra hiccup never penalizes a miner. Returns the played
+    game plus the seconds spent waiting (credited back to the matchup deadline).
+
+    Replaying is safe — long-term memory is only mutated by reflect() after a
+    completed game, so a game that died mid-play left it untouched.
+
+    With no recover_fn, or once recovery is exhausted, the error propagates and
+    the eval fails loudly so the orchestrator re-runs it.
+    """
+    total_wait = 0.0
+    for attempt in range(vcst.PVP_SERVER_RECOVERY_MAX_RETRIES + 1):
+        try:
+            return play(instance), total_wait
+        except ModelUnreachableError as exc:
+            attempts_left = vcst.PVP_SERVER_RECOVERY_MAX_RETRIES - attempt
+            if recover_fn is None or attempts_left <= 0:
+                logger.error(
+                    "%s: game %d — player %d inference server still unreachable after %d "
+                    "recovery attempt(s); failing the eval for re-run",
+                    env_name.value,
+                    game_number,
+                    exc.player_id,
+                    vcst.PVP_SERVER_RECOVERY_MAX_RETRIES,
+                )
+                raise
+            logger.error(
+                "%s: game %d — player %d inference server unreachable (infra). Waiting up to "
+                "%ds for both servers to recover, then replaying (%d attempt(s) left)",
+                env_name.value,
+                game_number,
+                exc.player_id,
+                vcst.PVP_SERVER_RECOVERY_HEALTH_TIMEOUT,
+                attempts_left,
+            )
+            wait_start = time.monotonic()
+            recover_fn()  # blocks until both servers healthy; raises TimeoutError if not
+            waited = time.monotonic() - wait_start
+            total_wait += waited
+            logger.info(
+                "%s: game %d — servers healthy again after %.0fs wait; replaying game",
+                env_name.value,
+                game_number,
+                waited,
+            )
+    # Unreachable: the loop either returns a PlayedGame or raises above.
+    raise AssertionError("unreachable: recovery loop exited without returning or raising")
 
 
 def _play_game(

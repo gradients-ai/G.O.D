@@ -22,6 +22,21 @@ from core.pvp import constants as cst
 
 logger = logging.getLogger(__name__)
 
+
+class ChatUnavailableError(Exception):
+    """Inference endpoint failed after exhausting retries.
+
+    Carries the underlying cause so callers can distinguish a slow model
+    (openai.APITimeoutError) from an unreachable server (openai.APIConnectionError).
+    A bare RuntimeError here used to crash the whole matchup; this typed error
+    lets the bot layer convert it into a player-attributed forfeit instead.
+    """
+
+    def __init__(self, cause: BaseException | None, attempts: int):
+        self.cause = cause
+        super().__init__(f"Chat failed after {attempts} attempts: {cause}")
+
+
 _THINK_COMPLETE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 _THINK_UNCLOSED = re.compile(r"<think(?:ing)?>.*", re.DOTALL | re.IGNORECASE)
 
@@ -87,7 +102,7 @@ def _with_retries(
                 continue
             raise
 
-    raise RuntimeError(f"Chat failed after {attempts} attempts: {last_exc}")
+    raise ChatUnavailableError(last_exc, attempts)
 
 
 def _call(

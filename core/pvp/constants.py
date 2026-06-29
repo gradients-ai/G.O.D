@@ -17,10 +17,14 @@ PVP_TURN_TIMEOUT_SECONDS = 15
 PVP_REFLECTION_TIMEOUT_SECONDS = 12
 PVP_RETRY_BACKOFF_CAP_SECONDS = 32
 
-# HTTP read timeout + retries for in-turn/reflection calls. Kept under the turn
-# budget so a hung connection is caught (and at most one retry attempted) before
-# the wall-clock alarm forfeits — the old 30s/10-retry defaults could never fit.
-PVP_HTTP_READ_TIMEOUT_SECONDS = 12
+# HTTP read timeout + retries for in-turn/reflection calls. Matches the turn
+# wall-clock budget: a full PVP_TURN_MAX_TOKENS turn can legitimately take into
+# the low-teens of seconds, so a tighter read timeout spuriously timed out
+# healthy models. When a call still exhausts retries it raises ChatUnavailableError,
+# which the bot layer turns into a graceful, attributed outcome (slow model
+# forfeits; unreachable server triggers wait-and-replay) instead of crashing
+# the whole matchup.
+PVP_HTTP_READ_TIMEOUT_SECONDS = 15
 PVP_HTTP_MAX_RETRIES = 1
 
 # Tool-calling memory harness.
