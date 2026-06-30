@@ -117,7 +117,7 @@ def calculate_tournament_weight_with_decay(
         # Pre-cutoff: old_decay only affects emission_boost (emission doesn't go below base), then apply cumulative/max logic
         boost_after_old = max(0.0, emission_boost - old_decay)
         if boost_after_old == 0.0:
-            final_weight = max(0.0, base_weight - new_decay)
+            final_weight = max(0.0, base_weight * (1.0 - new_decay))
         else:
             final_weight = max(0.0, base_weight + boost_after_old)
     else:
@@ -127,7 +127,7 @@ def calculate_tournament_weight_with_decay(
             final_weight = max(0.0, base_weight + boost_after_old)
         # New regime purely, we will default to this after a while or if both winners change after cutoff
         elif new_decay > 0.0:
-            final_weight = max(0.0, base_weight + emission_boost - new_decay)
+            final_weight = max(0.0, (base_weight + emission_boost) * (1.0 - new_decay))
         else:
             final_weight = base_weight + emission_boost
 
@@ -142,12 +142,41 @@ def calculate_tournament_weight_with_decay(
     return final_weight
 
 
+def emission_time_retention(days_as_champion: float) -> float:
+    """
+    Piecewise-linear retention multiplier for a champion's emission weight.
+
+    Decays fast at first, plateaus, then drops to zero on a cliff. Anchored on
+    EMISSION_TIME_DECAY_CURVE (100% at day 0 -> 0% at day 40). Returns a value in
+    [0, 1] applied multiplicatively to the champion's full day-0 emission weight.
+    """
+    curve = cts.EMISSION_TIME_DECAY_CURVE
+    if days_as_champion <= curve[0][0]:
+        return curve[0][1]
+    if days_as_champion >= curve[-1][0]:
+        return curve[-1][1]
+    for (d0, r0), (d1, r1) in zip(curve, curve[1:]):
+        if d0 <= days_as_champion <= d1:
+            frac = (days_as_champion - d0) / (d1 - d0)
+            return r0 + frac * (r1 - r0)
+    return curve[-1][1]  # unreachable; guarded by the bounds checks above
+
+
+def emission_time_decay_fraction(days_as_champion: float) -> float:
+    """Fraction of the champion's emission weight removed by time decay (1 - retention)."""
+    return 1.0 - emission_time_retention(days_as_champion)
+
+
 def calculate_hybrid_decays(
     first_championship_time: datetime, consecutive_wins: int, current_time: datetime | None = None
 ) -> tuple[float, float, bool]:
     """
     Calculate time-based decay & previous consecutive wins decay for backwards compatibility.
-    Returns a tuple of (old_decay, new_decay, apply_hybrid).
+
+    Returns (old_decay, new_decay, apply_hybrid). `new_decay` is the *fraction* of the
+    champion's emission weight removed by time decay (0.0 = full weight, 1.0 = fully
+    burned), applied multiplicatively downstream. `old_decay` stays an absolute
+    boost reduction (legacy consecutive-wins regime).
     """
     if first_championship_time is None:
         logger.error("First championship time is None, cannot calculate time-based decay.")
@@ -171,7 +200,7 @@ def calculate_hybrid_decays(
     if first_championship_time_utc < cutoff_date:
         old_decay = max(0, consecutive_wins - 1) * cts.EMISSION_BOOST_DECAY_PER_WIN
         days_since_cutoff = (current_time_utc - cutoff_date).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = days_since_cutoff * cts.EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = emission_time_decay_fraction(days_since_cutoff)
 
         logger.debug(
             f"Pre-cutoff champion: old_decay={old_decay:.4f}, new_decay={new_decay:.4f}, will apply hybrid logic downstream"
@@ -180,7 +209,7 @@ def calculate_hybrid_decays(
     else:
         # Champion won AFTER cutoff - only new time-based decay
         days_as_champion = (current_time_utc - first_championship_time_utc).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = days_as_champion * cts.EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = emission_time_decay_fraction(days_as_champion)
         logger.debug(f"Post-cutoff champion: new_decay={new_decay:.4f} (reign={days_as_champion:.1f} days)")
         return (0.0, new_decay, False)
 
