@@ -16,13 +16,38 @@ from datetime import timezone
 
 # Constants matching validator/scoring/constants.py
 EMISSION_BOOST_DECAY_PER_WIN = 0.01  # 1% per win (old system)
-EMISSION_DAILY_TIME_DECAY_RATE = 0.0033  # 0.33% per day (new system)
+# Piecewise-linear retention curve (multiplier on full day-0 emission weight):
+# fast early drop, a glide, then a cliff to zero at 40 days. (days, retention).
+EMISSION_TIME_DECAY_CURVE = (
+    (0.0, 1.00),
+    (7.0, 0.50),
+    (30.0, 0.30),
+    (40.0, 0.00),
+)
 EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0
-TOURNAMENT_TEXT_WEIGHT = 0.20
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.6
-EMISSION_MULTIPLIER_THRESHOLD = 0.05
+TOURNAMENT_TEXT_WEIGHT = 0.40
+MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
+EMISSION_MULTIPLIER_THRESHOLD = 0.10
 EMISSION_MULTIPLIER_RATE = 2.0
+
+
+def emission_time_retention(days_as_champion: float) -> float:
+    """Piecewise-linear retention multiplier in [0, 1] (see EMISSION_TIME_DECAY_CURVE)."""
+    curve = EMISSION_TIME_DECAY_CURVE
+    if days_as_champion <= curve[0][0]:
+        return curve[0][1]
+    if days_as_champion >= curve[-1][0]:
+        return curve[-1][1]
+    for (d0, r0), (d1, r1) in zip(curve, curve[1:]):
+        if d0 <= days_as_champion <= d1:
+            return r0 + (days_as_champion - d0) / (d1 - d0) * (r1 - r0)
+    return curve[-1][1]
+
+
+def emission_time_decay_fraction(days_as_champion: float) -> float:
+    """Fraction of emission weight removed by time decay (1 - retention)."""
+    return 1.0 - emission_time_retention(days_as_champion)
 
 
 def calculate_emission_boost_from_perf(performance_diff: float) -> float:
@@ -59,12 +84,12 @@ def calculate_hybrid_decays(
     if first_championship_time_utc < cutoff_date:
         old_decay = max(0, consecutive_wins - 1) * EMISSION_BOOST_DECAY_PER_WIN
         days_since_cutoff = (current_time_utc - cutoff_date).total_seconds() / SECONDS_PER_DAY
-        new_decay = days_since_cutoff * EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = emission_time_decay_fraction(days_since_cutoff)
         return (old_decay, new_decay, True)
     else:
         # Champion won after cutoff: new system only
         days_as_champion = (current_time_utc - first_championship_time_utc).total_seconds() / SECONDS_PER_DAY
-        new_decay = days_as_champion * EMISSION_DAILY_TIME_DECAY_RATE
+        new_decay = emission_time_decay_fraction(days_as_champion)
         return (0.0, new_decay, False)
 
 
@@ -81,8 +106,8 @@ def calculate_tournament_weight_with_decay(
         # Pre-cutoff champion after cutoff: hybrid logic
         boost_after_old = max(0.0, emission_boost - old_decay)
         if boost_after_old == 0.0:
-            # Boost completely wiped out, now decay from base
-            final_weight = max(0.0, base_weight - new_decay)
+            # Boost completely wiped out, now decay the base weight along the curve
+            final_weight = max(0.0, base_weight * (1.0 - new_decay))
         else:
             # Boost still exists, don't apply new_decay
             final_weight = max(0.0, base_weight + boost_after_old)
@@ -93,7 +118,7 @@ def calculate_tournament_weight_with_decay(
             final_weight = max(0.0, base_weight + boost_after_old)
         # New regime purely (after cutoff, champion won after cutoff)
         elif new_decay > 0.0:
-            final_weight = max(0.0, base_weight + emission_boost - new_decay)
+            final_weight = max(0.0, (base_weight + emission_boost) * (1.0 - new_decay))
         else:
             final_weight = base_weight + emission_boost
 
@@ -147,7 +172,7 @@ def main():
     print("=" * 100)
     print(f"\nCutoff date: {EMISSION_TIME_DECAY_START_DATE}")
     print(f"Old decay rate: {EMISSION_BOOST_DECAY_PER_WIN * 100:.1f}% per win")
-    print(f"New decay rate: {EMISSION_DAILY_TIME_DECAY_RATE * 100:.2f}% per day")
+    print(f"New decay curve (retention): {EMISSION_TIME_DECAY_CURVE}")
     print(f"Base text weight: {TOURNAMENT_TEXT_WEIGHT:.4f}")
     print(f"Max text weight: {MAX_TEXT_TOURNAMENT_WEIGHT:.4f}")
 
@@ -242,25 +267,25 @@ def main():
     print("   → Calculate new_decay from days since cutoff")
     print("   → Apply old_decay to boost first")
     print("   → IF boost completely wiped out (boost - old_decay ≤ 0):")
-    print("      • THEN apply new_decay to base weight")
-    print("      • final_weight = max(0, base - new_decay)")
+    print("      • THEN decay base weight along the retention curve")
+    print("      • final_weight = max(0, base × retention(days))")
     print("   → ELSE boost still exists:")
-    print("      • DON'T apply new_decay")
+    print("      • DON'T apply time decay")
     print("      • final_weight = base + (boost - old_decay)")
     print()
     print("2. Champion won AFTER cutoff (apply_hybrid=False, new_decay > 0):")
-    print("   → Only new time-based decay")
-    print("   → new_decay = days_as_champion × 0.33%")
-    print("   → final_weight = base + boost - new_decay")
+    print("   → Only new time-based decay (multiplicative on full weight)")
+    print("   → retention: 100%@0d → 50%@7d → 30%@30d → 0%@40d (piecewise-linear)")
+    print("   → final_weight = (base + boost) × retention(days)")
     print()
     print("3. No champion or before cutoff (apply_hybrid=False, old_decay > 0):")
     print("   → Only old consecutive wins decay")
     print("   → final_weight = base + max(0, boost - old_decay)")
     print()
     print("CRITICAL OBSERVATION:")
-    print("  ✓ For pre-cutoff champions, new_decay ONLY applies if boost is wiped out")
-    print("  ✓ This creates a 'cliff' effect once old_decay exceeds emission_boost")
-    print("  ✓ After the cliff, base weight starts decaying with new_decay")
+    print("  ✓ Time decay is a MULTIPLIER on the champion's full day-0 weight")
+    print("  ✓ Every tournament type now reaches zero at exactly 40 days, regardless of base")
+    print("  ✓ Fast early drop (100%→50% in 7d), glide to 30% by 30d, then cliff to 0 by 40d")
     print()
     print("=" * 100 + "\n")
 

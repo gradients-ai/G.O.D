@@ -13,6 +13,7 @@ from validator.scoring.weights import calculate_emission_boost_from_perf
 from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
 from validator.scoring.weights import calculate_hybrid_decays
 from validator.scoring.weights import calculate_tournament_weight_with_decay
+from validator.scoring.weights import emission_time_decay_fraction
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentProjection
@@ -182,7 +183,7 @@ async def calculate_tournament_projection(
 
         projections = []
         for days in projection_days:
-            new_decay = days * cts.EMISSION_DAILY_TIME_DECAY_RATE
+            new_decay = emission_time_decay_fraction(days)
 
             raw_future_weight = calculate_tournament_weight_with_decay(
                 tournament_type=tournament_type,
