@@ -21,6 +21,7 @@ from core.models.dataset_models import FileFormat
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 from trainer import constants as cst
+from trainer.generation_config import reset_invalid_generation_config
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.model_artifacts import scrub_model_identity
 
@@ -203,6 +204,7 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     # Save merged model to a temp dir, then swap into model_dir
     merge_tmp = model_dir + ".merged_tmp"
     os.makedirs(merge_tmp, exist_ok=True)
+    reset_invalid_generation_config(merged, "downloader LoRA merge save")
     merged.save_pretrained(merge_tmp, safe_serialization=True)
     target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
     target_tokenizer.save_pretrained(merge_tmp)

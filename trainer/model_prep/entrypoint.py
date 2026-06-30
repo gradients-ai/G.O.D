@@ -30,6 +30,7 @@ from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
+from trainer.generation_config import reset_invalid_generation_config
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
@@ -116,6 +117,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
 
         merge_dir = "/cache/merged_model"
         os.makedirs(merge_dir, exist_ok=True)
+        reset_invalid_generation_config(merged, "model prep LoRA merge save")
         merged.save_pretrained(merge_dir, safe_serialization=True)
         target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
         target_tokenizer.save_pretrained(merge_dir)
@@ -204,6 +206,7 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
     print(f"Uploading augmented model to {repo_id}")
 
     model.config._name_or_path = repo_id
+    reset_invalid_generation_config(model, "augmented model upload")
     model.push_to_hub(repo_id, token=hf_token, private=False)
     tokenizer.push_to_hub(repo_id, token=hf_token, private=False)
 
