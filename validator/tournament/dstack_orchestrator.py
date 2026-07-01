@@ -16,7 +16,6 @@ from core.logging import get_logger
 from core.models.payload_models import DstackRunStatus
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from trainer.model_artifacts import get_anonymous_model_dir
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import tasks as task_sql
@@ -317,7 +316,7 @@ async def _create_dstack_request(
     
     task_env = {
         "TASK_ID": str(task.task_id),
-        "MODEL": get_anonymous_model_dir(task.augmented_model_id or task.model_id),
+        "MODEL": task.model_id,
         "TASK_TYPE": task.task_type.value if hasattr(task.task_type, 'value') else str(task.task_type),
         "EXPECTED_REPO_NAME": expected_repo_name,
         "HOURS_TO_COMPLETE": str(task.hours_to_complete),
