@@ -265,8 +265,8 @@ class TestEnvironmentGroupTasks:
         assert calls[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
 
     @pytest.mark.asyncio
-    async def test_round_3_envs_capped_at_total(self):
-        calls = await self._run_group_task_creation(round_number=3)
+    async def test_late_round_envs_capped_at_total(self):
+        calls = await self._run_group_task_creation(round_number=99)
         assert calls[0]["num_environments"] == len(EnvironmentName)
         assert calls[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
 

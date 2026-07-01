@@ -23,3 +23,7 @@ Evaluation runtimes and helpers used after miner training completes.
 - `result_processing.py`: conversion of raw eval output into persisted results.
 - `runtime.py`: evaluation runtime helpers.
 - `utils.py`: evaluation utility helpers.
+
+SWE Infinite evaluation runs as an individual environment tournament eval. The
+candidate model is served by SGLang inside Basilica, and the evaluator calls an
+external Affinetes SWE Infinite server configured by `SWE_INFINITE_SERVER_BASE_URL`.

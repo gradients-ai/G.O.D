@@ -337,6 +337,7 @@ Tournament system overview
 - Miners expose GET /training_repo/{task_type} from their miner.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
 - Tournament types include text, image, and environment.
+- Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
 - Typical cadence:
   - environment tournaments start Mondays
   - text/image tournaments start Thursdays

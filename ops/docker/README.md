@@ -22,3 +22,4 @@ Dockerfiles and container support files for miner, trainer, validator, evaluatio
 - `validator-diffusion.dockerfile`: image evaluation validator image.
 - `validator-env.dockerfile`: environment evaluation validator image.
 - `validator-intercode.dockerfile`: InterCode evaluation image.
+- `validator-swe-infinite.dockerfile`: SWE Infinite model-serving evaluation image.

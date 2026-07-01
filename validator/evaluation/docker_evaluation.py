@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import random
 import uuid
 from uuid import UUID
@@ -34,6 +35,7 @@ from validator.evaluation.basilica import _poll_eval_deployment
 from validator.evaluation.basilica import _release_reserved_gpus
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
+from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.evaluation_logging import _log_eval_step
 from validator.evaluation.pvp.models import PvPEvalConfig
@@ -66,6 +68,44 @@ def _deployment_url(deployment) -> str | None:
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
     return environment_names[0] if environment_names else None
+
+
+SWE_INFINITE_CONTAINER_ENV_VARS = (
+    "SWE_INFINITE_SERVER_BASE_URL",
+    "SWE_INFINITE_TASK_IDS",
+    "SWE_INFINITE_METADATA_URL",
+    "SWE_INFINITE_TASK_ID_MIN",
+    "SWE_INFINITE_TASK_ID_MAX",
+    "SWE_INFINITE_NUM_SEEDS",
+    "SWE_INFINITE_TASK_TIMEOUT_SECONDS",
+    "SWE_INFINITE_SESSION_TIMEOUT",
+    "SWE_INFINITE_MAX_CONCURRENT_REQUESTS",
+    "SWE_INFINITE_AFFINETES_CALL_PATH",
+    "SWE_INFINITE_AGENT",
+    "SWE_INFINITE_MAX_ITERATIONS",
+    "SWE_INFINITE_COLLECT_LOGPROBS",
+    "SWE_INFINITE_MODEL_BASE_URL",
+    "SWE_INFINITE_MODEL_API_KEY",
+)
+
+
+def _is_environment_name(environment_name, expected: env_cst.EnvironmentName) -> bool:
+    return getattr(environment_name, "value", environment_name) == expected.value
+
+
+def _is_swe_infinite_name(environment_name) -> bool:
+    return _is_environment_name(environment_name, env_cst.EnvironmentName.SWE_INFINITE)
+
+
+def _swe_infinite_container_env() -> dict[str, str]:
+    env = {
+        name: value
+        for name in SWE_INFINITE_CONTAINER_ENV_VARS
+        if (value := os.getenv(name)) is not None and value != ""
+    }
+    if "SWE_INFINITE_SERVER_BASE_URL" not in env:
+        raise ValueError("SWE_INFINITE_SERVER_BASE_URL is required for SWE Infinite evaluation")
+    return env
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -143,8 +183,11 @@ async def run_evaluation_basilica_text(
     environment_name = _first_environment_name(dataset_type) if is_environment_eval else None
     environment_name_value = getattr(environment_name, "value", environment_name)
     is_intercode_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.INTERCODE.value
+    is_swe_infinite_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.SWE_INFINITE.value
     if is_intercode_eval:
         basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
+    elif is_swe_infinite_eval:
+        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_SWE_INFINITE
     elif is_environment_eval:
         basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_ENV
     else:
@@ -163,6 +206,8 @@ async def run_evaluation_basilica_text(
     elif isinstance(dataset_type, EnvironmentDatasetType):
         if is_intercode_eval:
             command = ["python", "-m", "validator.evaluation.evaluators.intercode"]
+        elif is_swe_infinite_eval:
+            command = ["python", "-m", "validator.evaluation.evaluators.swe"]
         else:
             command = ["python", "-m", "validator.evaluation.evaluators.environment"]
     else:
@@ -173,7 +218,10 @@ async def run_evaluation_basilica_text(
             "Use validator.evaluation.local_evaluation.run_evaluation_docker_text for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
-    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    if is_swe_infinite_eval:
+        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    else:
+        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": original_model,
@@ -194,8 +242,10 @@ async def run_evaluation_basilica_text(
         base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
+        if is_swe_infinite_eval:
+            base_env.update(_swe_infinite_container_env())
         # InterCode runs bash actions in-process, so only generic envs get ENV_SERVER_CMD.
-        if not is_intercode_eval:
+        if not is_intercode_eval and not is_swe_infinite_eval:
             base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
 
     logger.debug(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
@@ -679,7 +729,10 @@ async def run_evaluation_individual(
     if not env_config.tournament_eval_command:
         raise ValueError(f"No tournament_eval_command configured for {environment_name.value}")
     command = env_config.tournament_eval_command
-    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    if _is_swe_infinite_name(environment_name):
+        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    else:
+        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": base_model,
@@ -689,6 +742,8 @@ async def run_evaluation_individual(
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         **vcst.HF_CONTAINER_ENV,
     }
+    if _is_swe_infinite_name(environment_name):
+        base_env.update(_swe_infinite_container_env())
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
     base_chains = base_chains or {}

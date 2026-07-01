@@ -466,6 +466,10 @@ def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
     return cfg is not None and cfg.eval_type == EvalType.PVP
 
 
+def _env_config_uses_sidecar(cfg: EnvConfig) -> bool:
+    return bool(cfg.env_image)
+
+
 def _start_env_sidecars(
     env_configs: dict[EnvironmentName, EnvConfig],
     log_labels: dict[str, str] | None,
@@ -486,6 +490,8 @@ def _start_env_sidecars(
     try:
         for env_name, cfg in env_configs.items():
             if _env_baseline_runs_in_harness(env_name):
+                continue
+            if not _env_config_uses_sidecar(cfg):
                 continue
             image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
             if image_key in image_to_url:
@@ -692,7 +698,8 @@ def _select_training_env_server_name(
 ) -> EnvironmentName | None:
     for env_name in environment_names or []:
         resolved = EnvironmentName(env_name)
-        if resolved != EnvironmentName.INTERCODE:
+        cfg = ENVIRONMENT_CONFIGS.get(resolved)
+        if cfg is not None and cfg.eval_type == EvalType.PVP and cfg.env_image:
             return resolved
     return None
 
@@ -935,7 +942,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         if task_type == TaskType.ENVIRONMENTTASK:
             env_name = _select_training_env_server_name(task.training_data.dataset_type.environment_names)
             if env_name is None:
-                logger.info("Skipping env server containers; only InterCode environments configured", extra=log_labels)
+                logger.info("Skipping env server containers; no training sidecar environments configured", extra=log_labels)
                 await log_task(training_data.task_id, task.hotkey, "Skipping Environment Servers.")
             else:
                 logger.info("Running Environment Server Containers", extra=log_labels)

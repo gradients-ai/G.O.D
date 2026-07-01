@@ -69,6 +69,14 @@ def _is_intercode_environment(dataset_type: EnvironmentDatasetType) -> bool:
     )
 
 
+def _is_swe_infinite_environment(dataset_type: EnvironmentDatasetType) -> bool:
+    env_name = _first_environment_name(dataset_type)
+    return (
+        env_name == env_cst.EnvironmentName.SWE_INFINITE
+        or getattr(env_name, "value", env_name) == env_cst.EnvironmentName.SWE_INFINITE.value
+    )
+
+
 async def cleanup_resources(client):
     """Clean up Docker resources including containers, images, and volumes."""
     try:
@@ -156,6 +164,11 @@ async def run_evaluation_docker_text(
                 file_format=file_format,
                 gpu_id=gpu_id,
                 eval_seed=eval_seed,
+            )
+        if _is_swe_infinite_environment(dataset_type):
+            raise ValueError(
+                "Local SWE Infinite evaluation needs a public model proxy for the external Affinetes server. "
+                "Use the Basilica tournament evaluation path or provide a custom local setup."
             )
         return await run_evaluation_local_environment(models, original_model, dataset_type, gpu_id=gpu_id, eval_seed=eval_seed)
     else:

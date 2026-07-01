@@ -318,7 +318,7 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 | `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
 | `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
 | `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
-| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, or `intercode`. |
+| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, `goofspiel`, `intercode`, or `swe_infinite`. |
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
 
@@ -352,7 +352,7 @@ Your container may receive:
 | `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
 | `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
 
-For `intercode`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started.
+For `intercode`-only or `swe_infinite`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started during miner training.
 
 ## Cache And Output Paths
 
@@ -482,7 +482,9 @@ Supported environment names are defined in `core/constants/environments.py`:
 - `leduc_poker`
 - `othello`
 - `clobber`
+- `goofspiel`
 - `intercode`
+- `swe_infinite`
 
 For OpenSpiel-style environments, one environment sidecar is usually started per assigned GPU. The URLs are passed through `ENVIRONMENT_SERVER_URLS`. Parse them as a comma-separated list:
 

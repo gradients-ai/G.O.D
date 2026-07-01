@@ -34,6 +34,8 @@ _ENV_ALIASES = {
     "liars-dice": EnvironmentName.LIARS_DICE.value,
     "liars_dice": EnvironmentName.LIARS_DICE.value,
     "intercode": EnvironmentName.INTERCODE.value,
+    "swe-infinite": EnvironmentName.SWE_INFINITE.value,
+    "swe_infinite": EnvironmentName.SWE_INFINITE.value,
 }
 
 

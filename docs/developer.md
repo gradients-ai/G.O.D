@@ -104,6 +104,12 @@ For local/dev validator features that call the content service, add:
 echo "NINETEEN_API_KEY=<your-nineteen-api-key>" >> .vali.env
 ```
 
+For SWE Infinite environment tournament evaluation, configure the external Affinetes server. The validator config generator prompts for this optional URL; for an existing `.vali.env`, add:
+
+```bash
+echo "SWE_INFINITE_SERVER_BASE_URL=<https://your-affinetes-swe-server>" >> .vali.env
+```
+
 Trainer config needs at least:
 
 ```bash

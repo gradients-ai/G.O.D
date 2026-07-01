@@ -41,6 +41,7 @@ class ValidatorConfig(BaseConfig):
     database_url: str | None = None
     postgres_profile: str = "default"
     discord_webhook: str | None = None
+    swe_infinite_server_base_url: str | None = None
 
 
 @dataclass
