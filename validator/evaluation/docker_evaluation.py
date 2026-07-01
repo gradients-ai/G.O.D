@@ -747,15 +747,17 @@ async def run_evaluation_individual(
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
     base_chains = base_chains or {}
-    existing_deployment_ids_by_hotkey = await _db_read_with_retry(
-        lambda: tournament_sql.get_individual_deployment_ids(
-            str(task_id),
-            miners.hotkeys,
-            [environment_name.value],
-            psql_db,
-        ) if task_id is not None and psql_db is not None else {},
-        "get_individual_deployment_ids",
-    )
+    existing_deployment_ids_by_hotkey = {}
+    if task_id is not None and psql_db is not None:
+        existing_deployment_ids_by_hotkey = await _db_read_with_retry(
+            lambda: tournament_sql.get_individual_deployment_ids(
+                str(task_id),
+                miners.hotkeys,
+                [environment_name.value],
+                psql_db,
+            ),
+            "get_individual_deployment_ids",
+        )
     deployment_ids_by_repo = {
         repo: existing_deployment_ids_by_hotkey[hotkey]
         for hotkey, repo in miners.by_hotkey.items()

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Live Basilica smoke test for SWE Infinite individual evaluation.
 
-This exercises the tournament individual-eval path without requiring seeded DB
-rows. It deploys one model to Basilica, exposes the public SGLang proxy, and
-calls the external Affinetes SWE Infinite server configured by URL.
+This exercises the tournament individual-eval path without requiring validator
+DB access. It deploys one model to Basilica, exposes the public SGLang proxy,
+and calls the external Affinetes SWE Infinite server configured by URL.
 
 Example:
     BASILICA_API_KEY=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
@@ -21,7 +21,6 @@ import json
 import os
 import time
 from collections.abc import Sequence
-from uuid import uuid4
 
 from dotenv import load_dotenv
 
@@ -172,7 +171,7 @@ async def run(args: argparse.Namespace) -> None:
         seed=args.seed,
         image=args.image,
         gpu_count=args.gpu_count,
-        task_id=uuid4(),
+        task_id=None,
         psql_db=None,
         base_chains=base_chains,
     )

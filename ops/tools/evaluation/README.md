@@ -32,3 +32,7 @@ BASILICA_API_KEY=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
 
 Use `--dry-run` to print the resolved Basilica image, model, and SWE env vars
 without deploying.
+
+This smoke test does not require validator database access. Basilica returns the
+deployment URL used by the evaluator; the database is only used by production
+validator flows for deployment resume/persistence bookkeeping.

@@ -90,6 +90,8 @@ async def test_run_uses_individual_swe_eval_path(monkeypatch, tmp_path):
     assert captured["miners"].by_hotkey == {"hk_test": "org/model"}
     assert captured["base_model"] == "org/base"
     assert captured["environment_name"] == EnvironmentName.SWE_INFINITE
+    assert captured["task_id"] is None
+    assert captured["psql_db"] is None
     assert captured["base_chains"] == {"hk_test": ["org/previous-base"]}
     assert os.environ["SWE_INFINITE_SERVER_BASE_URL"] == "https://swe.example"
     assert os.environ["SWE_INFINITE_NUM_SEEDS"] == "1"

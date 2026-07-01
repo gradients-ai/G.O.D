@@ -221,6 +221,41 @@ async def test_individual_env_eval_uses_individual_score_deployment_owner(monkey
     assert persisted == [(str(task_id), "hk_a", EnvironmentName.INTERCODE.value, "verified-new-deployment", captured["psql_db"])]
 
 
+@pytest.mark.asyncio
+async def test_individual_env_eval_without_db_skips_deployment_lookup(monkeypatch):
+    captured = {}
+
+    async def exploding_get_individual_deployment_ids(*_args, **_kwargs):
+        raise AssertionError("DB deployment lookup should not run without psql_db")
+
+    async def fake_run_basilica_eval_repos(**kwargs):
+        captured.update(kwargs)
+        return {"org/repo-a": {"org/repo-a": {"eval_loss": 0.25}}}
+
+    monkeypatch.setattr(
+        docker_evaluation.tournament_sql,
+        "get_individual_deployment_ids",
+        exploding_get_individual_deployment_ids,
+    )
+    monkeypatch.setattr(docker_evaluation, "run_basilica_eval_repos", fake_run_basilica_eval_repos)
+
+    result = await docker_evaluation.run_evaluation_individual(
+        miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a"}),
+        base_model="org/base",
+        environment_name=EnvironmentName.INTERCODE,
+        seed=1,
+        image="validator-image",
+        gpu_count=1,
+        task_id=None,
+        psql_db=None,
+    )
+
+    assert result.scores_by_hotkey == {"hk_a": 0.25}
+    assert captured["deployment_ids_by_repo"] == {}
+    assert captured["task_id"] is None
+    assert captured["psql_db"] is None
+
+
 def test_public_sglang_runner_source_compiles_and_exposes_proxy():
     source = create_basilica_public_sglang_eval_runner_source(
         ["python", "-m", "validator.evaluation.evaluators.swe"],
