@@ -24,8 +24,6 @@ def test_build_swe_env_overrides_includes_only_configured_values():
             "7",
             "83",
             "45",
-            "--agent",
-            "miniswe",
             "--collect-logprobs",
             "--model-api-key",
             "secret",
@@ -42,7 +40,6 @@ def test_build_swe_env_overrides_includes_only_configured_values():
         "SWE_INFINITE_NUM_SEEDS": "2",
         "SWE_INFINITE_TASK_TIMEOUT_SECONDS": "60",
         "SWE_INFINITE_SESSION_TIMEOUT": "120",
-        "SWE_INFINITE_AGENT": "miniswe",
         "SWE_INFINITE_MODEL_API_KEY": "secret",
         "SWE_INFINITE_COLLECT_LOGPROBS": "true",
     }

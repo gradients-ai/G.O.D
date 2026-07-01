@@ -51,6 +51,21 @@ def test_unwrap_affinetes_response_rejects_failed_envelope():
         swe._unwrap_affinetes_response({"status": "failed", "result": {"error": "boom"}})
 
 
+def test_build_swe_payload_always_uses_miniswe(monkeypatch):
+    monkeypatch.setenv("SWE_INFINITE_AGENT", "codex")
+
+    payload = swe._build_swe_payload(
+        model="org/model",
+        model_base_url="https://model.example/v1",
+        task_id=7,
+        seed=101,
+        temperature=0.0,
+        task_timeout=60,
+    )
+
+    assert payload["agent"] == "miniswe"
+
+
 @pytest.mark.asyncio
 async def test_resolve_task_range_prefers_public_metadata(monkeypatch):
     async def fake_fetch(_url):

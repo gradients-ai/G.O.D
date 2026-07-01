@@ -3,7 +3,8 @@
 
 This exercises the tournament individual-eval path without requiring validator
 DB access. It deploys one model to Basilica, exposes the public SGLang proxy,
-and calls the external Affinetes SWE Infinite server configured by URL.
+and calls the external Affinetes SWE Infinite server configured by URL. The
+SWE agent is fixed to MiniSWE by the evaluator.
 
 Example:
     BASILICA_API_KEY=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
@@ -31,6 +32,7 @@ from validator.scoring.models import MinerRepos
 
 DEFAULT_BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 DEFAULT_HOTKEY = "swe-infinite-smoke-hotkey"
+FIXED_SWE_AGENT = "miniswe"
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -68,7 +70,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--session-timeout-seconds", type=int, default=None, help="Override total SWE session timeout.")
     parser.add_argument("--max-concurrent-requests", type=int, default=None, help="Override Affinetes request concurrency.")
     parser.add_argument("--affinetes-call-path", default=None, help="Affinetes call path, usually /call or /evaluate.")
-    parser.add_argument("--agent", default=None, help="SWE agent override, for example miniswe, affent, or codex.")
     parser.add_argument("--max-iterations", type=int, default=None, help="Agent iteration budget.")
     parser.add_argument("--collect-logprobs", action="store_true", help="Ask Affinetes to collect logprobs when supported.")
     parser.add_argument("--model-api-key", default=None, help="Static API key for the public SGLang proxy.")
@@ -95,7 +96,6 @@ def build_swe_env_overrides(args: argparse.Namespace, swe_server_url: str) -> di
         "SWE_INFINITE_SESSION_TIMEOUT": args.session_timeout_seconds,
         "SWE_INFINITE_MAX_CONCURRENT_REQUESTS": args.max_concurrent_requests,
         "SWE_INFINITE_AFFINETES_CALL_PATH": args.affinetes_call_path,
-        "SWE_INFINITE_AGENT": args.agent,
         "SWE_INFINITE_MAX_ITERATIONS": args.max_iterations,
         "SWE_INFINITE_MODEL_API_KEY": args.model_api_key,
         "SWE_INFINITE_MODEL_BASE_URL": args.model_base_url,
@@ -152,6 +152,7 @@ async def run(args: argparse.Namespace) -> None:
         "gpu_count": args.gpu_count,
         "seed": args.seed,
         "task_ids": args.task_id or [],
+        "agent": FIXED_SWE_AGENT,
         "hotkey": args.hotkey,
         "base_chain": base_chain or [],
         "env_overrides": _masked_overrides(overrides),

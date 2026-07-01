@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_METADATA_URL = "https://pub-7882418a56434a479bf9a7febd660b36.r2.dev/bugs/metadata.json"
 DEFAULT_AFFINETES_CALL_PATH = "/call"
 DEFAULT_MODEL_API_KEY = "x"
+MINISWE_AGENT_NAME = "miniswe"
 DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_TASK_TIMEOUT_SECONDS = 1800
 DEFAULT_SESSION_TIMEOUT_SECONDS = vcst.ENV_EVAL_SESSION_TIMEOUT
@@ -203,11 +204,9 @@ def _build_swe_payload(
         "timeout": task_timeout,
         "temperature": temperature,
         "seed": seed,
+        "agent": MINISWE_AGENT_NAME,
         "max_iterations": _env_int("SWE_INFINITE_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS),
     }
-    agent = os.getenv("SWE_INFINITE_AGENT", "").strip()
-    if agent:
-        payload["agent"] = agent
     if _env_bool("SWE_INFINITE_COLLECT_LOGPROBS", False):
         payload["collect_logprobs"] = True
     return payload

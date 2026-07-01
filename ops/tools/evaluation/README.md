@@ -36,3 +36,6 @@ without deploying.
 This smoke test does not require validator database access. Basilica returns the
 deployment URL used by the evaluator; the database is only used by production
 validator flows for deployment resume/persistence bookkeeping.
+
+SWE Infinite evaluation always requests Affinetes' MiniSWE agent; the smoke test
+does not expose an agent selector.
