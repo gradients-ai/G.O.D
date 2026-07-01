@@ -148,13 +148,12 @@ MODEL_SIZE_RANGE_MULTIPLIER_MAX = 1.2
 # Model parameter conversion
 MODEL_PARAMS_TO_BILLIONS = 1e9
 
-# Progressive championship threshold constants.
-# Thresholds are disabled: dethroning is decided by head-to-head task wins
-# (text/image: lose at most one boss-round task; environment: zero losses).
-EXPONENTIAL_BASE_THRESHOLD = 0.0
-EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT = EXPONENTIAL_BASE_THRESHOLD
-EXPONENTIAL_DECAY_RATE = 0.8
-EXPONENTIAL_MIN_THRESHOLD = 0.0
+# Margin a challenger must beat the boss by to win a boss-round task (text/image
+# only; env uses PVP_WIN_PCT_THRESHOLD). Applied additively on the boss score's
+# magnitude (see challenger_beats_boss) so it stays correct for negative/zero GRPO
+# rewards. Also used by the emission projection and boss-round analytics so they
+# agree with crowning. See challenger_beats_boss in thresholds.py.
+BOSS_ROUND_WIN_MARGIN = 0.01
 
 # Obfuscation detection constants
 OBFUSCATION_DETECTION_PATH = "./validator/tournament/obfuscation_detection/anti_obfuscation"

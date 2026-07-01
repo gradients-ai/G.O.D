@@ -1202,51 +1202,6 @@ async def count_champion_consecutive_wins(psql_db: PSQLDB, tournament_type: Tour
         return consecutive_wins
 
 
-async def count_champion_consecutive_wins_at_tournament(
-    psql_db: PSQLDB, tournament_type: TournamentType, champion_hotkey: str, tournament_id: str
-) -> int:
-    """Count consecutive tournament wins for a champion at the time a specific tournament started."""
-    async with await psql_db.connection() as connection:
-        # First get the created_at time of the target tournament
-        target_query = f"""
-            SELECT {cst.CREATED_AT}
-            FROM {cst.TOURNAMENTS_TABLE}
-            WHERE {cst.TOURNAMENT_ID} = $1
-        """
-        target_result = await connection.fetchval(target_query, tournament_id)
-
-        if not target_result:
-            return 0
-
-        # Get all completed tournaments of the same type that finished before this tournament started
-        # Include base_winner_hotkey to handle EMISSION_BURN_HOTKEY wins correctly
-        query = f"""
-            SELECT {cst.WINNER_HOTKEY}, {cst.BASE_WINNER_HOTKEY}, {cst.CREATED_AT}
-            FROM {cst.TOURNAMENTS_TABLE}
-            WHERE {cst.TOURNAMENT_TYPE} = $1
-              AND {cst.TOURNAMENT_STATUS} = 'completed'
-              AND {cst.CREATED_AT} < $2
-            ORDER BY {cst.CREATED_AT} DESC
-        """
-        results = await connection.fetch(query, tournament_type.value, target_result)
-
-        if not results:
-            return 0
-
-        consecutive_wins = 0
-        for row in results:
-            winner = row[cst.WINNER_HOTKEY]
-            base_winner = row[cst.BASE_WINNER_HOTKEY]
-
-            if is_champion_winner(winner, base_winner, champion_hotkey):
-                consecutive_wins += 1
-            else:
-                # Stop counting when we hit a tournament won by someone else
-                break
-
-        return consecutive_wins
-
-
 async def get_tournament_id_by_task_id(task_id: str, psql_db: PSQLDB) -> str | None:
     """Get the tournament ID for a given task ID."""
     async with await psql_db.connection() as connection:
