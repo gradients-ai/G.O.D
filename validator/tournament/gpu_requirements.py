@@ -31,8 +31,8 @@ def get_tournament_gpu_requirement(
     TOURNAMENT_KL_GPU_MULTIPLIER to account for the frozen reference model held resident
     alongside the trainable model.
 
-    The continuous-SFT boss task gets a FIXED 4xH100 allocation regardless of model size.
-    This is checked first so we never hit the (gated/custom-arch) HuggingFace param fetch below.
+    Continuous-SFT gets a FIXED 4xH100, checked first so we never hit the (gated/custom-arch)
+    HuggingFace param fetch below.
     """
     if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
         return GpuRequirement.H100_4X

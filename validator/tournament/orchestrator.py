@@ -1021,8 +1021,7 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
     if rate < cst.MAX_NEAR_DUPLICATE_RATE:
         return False
 
-    # Continuous-SFT uses a fixed, curated SFT chunk that we control and reuse every week.
-    # Its near-duplicate rate is expected and intentional, so never reject it for replacement.
+    # Continuous-SFT reuses a fixed curated chunk, so its near-duplicate rate is expected — never reject.
     if cst.is_continuous_sft_task(task):
         logger.warning(
             f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
@@ -1265,6 +1264,9 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run one model prep for a given model_id and return the result."""
         reward_fns = getattr(task, "reward_functions", None)
         is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+        # Custom-arch continuous-SFT lineages (quasar) need the prep container to pin remote code
+        # to the audited mirror and load with trust_remote_code; None for standard-arch tasks.
+        continuous_sft_remote_code_repo = cst.continuous_sft_remote_code_repo_for_ds(task.ds)
         return await dispatch_augmentation_and_stats(
             task_id=task_id_str,
             model_id=model_id,
@@ -1276,6 +1278,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             reward_functions=reward_fns,
             is_env_task=is_env_task,
             environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):

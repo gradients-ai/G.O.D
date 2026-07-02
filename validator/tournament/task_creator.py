@@ -692,20 +692,21 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
         if lineage in existing_continuous_sft_lineages:
             continue
         task = await _create_continuous_sft_boss_task(tournament_id, round_id, pair_id, config, lineage, seed_model)
-        if task:
-            tasks.append(task)
+        tasks.append(task)
 
     return tasks
 
 
 async def _create_continuous_sft_boss_task(
     tournament_id: str, round_id: str, pair_id: str, config: Config, lineage: str, seed_model: str
-) -> RawTask | None:
-    """Create + register one lineage's continuous-SFT boss task (fixed chat-SFT on the next chunk).
-
-    The builder reads this lineage's continuous_sft_state, resolves the carried-forward base
-    model, and fetches the chunk's fresh train/test URLs from the content service. Kept out of
+) -> RawTask:
+    """Create + register one lineage's continuous-SFT boss task. Kept out of
     _create_single_new_text_task because it uses no random model/dataset pool.
+
+    Raises on failure rather than swallowing: a dropped lineage silently weakens the boss-round
+    dethrone gate (challenger must win ALL continuous-SFT tasks). Propagating keeps the round PENDING
+    so the next cycle retries, and boss-round creation is idempotent (already-created lineages skip).
+    create_continuous_sft_task already retries transient content-service failures via retry_with_backoff.
     """
     try:
         task = await create_continuous_sft_task(config, lineage, seed_model)
@@ -713,7 +714,7 @@ async def _create_continuous_sft_boss_task(
         return task
     except Exception as e:
         logger.error(f"Failed to create continuous-SFT boss task for lineage {lineage}: {e}", exc_info=True)
-        return None
+        raise
 
 
 async def _create_single_new_text_task(

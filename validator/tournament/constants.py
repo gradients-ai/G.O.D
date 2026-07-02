@@ -135,8 +135,8 @@ ENVIRONMENT_TASKS_PER_GROUP = 1
 FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS = 3
 
-# Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS (derived below) = these + continuous-SFT.
-# The two continuous-SFT lineages replace one GRPO + one DPO slot vs the original GRPO-heavy mix.
+# Explicit text boss-round mix (the two continuous-SFT lineages replace one GRPO + one DPO slot);
+# FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
 FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
     TaskType.INSTRUCTTEXTTASK: 2,
     TaskType.DPOTASK: 1,
@@ -146,28 +146,21 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 
 # --- Continuous-SFT boss task ---------------------------------------------------------------
-# Two parallel chat-SFT lineages carried across tournaments: each tournament trains the next
-# stage-1 chunk from that lineage's previous winner (lowest eval loss), seeded the first time
-# from the lineage's seed model. The chunk data + chunk count live in the content service
-# (queried with the per-lineage monotonic train_index from continuous_sft_state); G.O.D keeps
-# only the cursor + winner per lineage.
+# Two parallel chat-SFT lineages carried across tournaments; each round trains the next stage-1
+# chunk from the lineage's previous winner (or seed on first run).
 #
-# CONTINUOUS_SFT_LINEAGES maps lineage slug -> seed model (slug is the continuous_sft_state PK,
-# encoded into the task ds so carry-forward routes winners). Eval reads the tokenizer + chat
-# template from this base. The quasar entry is an HF mirror = teutonic king weights
-# (mastertensor/teutonic-5ek5koe5-83734321144-cp1) + silx-ai/Quasar-10B tokenizer
-# (eos <|endoftext|>=248044) + quasar HUMAN/ASSISTANT chat_template. (Quasar-Preview/157184 is a
-# different model — not this one.)
+# CONTINUOUS_SFT_LINEAGES maps lineage slug (the continuous_sft_state PK, encoded into the task ds
+# for carry-forward routing) -> seed model, from which eval reads the tokenizer + chat template.
+# The quasar seed is an HF mirror = teutonic king weights + silx-ai/Quasar-10B tokenizer
+# (eos <|endoftext|>=248044) + quasar HUMAN/ASSISTANT template — NOT Quasar-Preview/157184.
 CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
     "quasar": "gradients-io-tournaments/continuous-sft-seed-quasar-king",
     "qwen": "Qwen/Qwen3.5-4B-Base",
 }
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
 
-# Derived so the boss-round completeness gate (task_creator) always matches the real mix: the
-# round is only "complete" once every standard task AND every continuous-SFT lineage exists.
-# Keeps a content-service failure for one lineage from letting the round finish with a missing
-# task (which would silently weaken the "win all continuous-SFT tasks" dethrone rule).
+# Derived so the boss-round completeness gate (task_creator) matches the real mix: a content-service
+# failure dropping one lineage would otherwise weaken the "win all continuous-SFT tasks" dethrone rule.
 FINAL_ROUND_TEXT_TASKS = sum(FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + FINAL_ROUND_CONTINUOUS_SFT_TASKS
 
 # ds field is encoded as "{prefix}:{lineage}:{label}" so the completion hook can recover lineage.
@@ -194,9 +187,8 @@ def is_continuous_sft_task(task) -> bool:
     return task.task_type == TaskType.CHATTASK and task.training_start_point == TrainingStartPoint.CONTINUOUS_SFT
 
 
-# Lineages whose model ships custom architecture code (needs trust_remote_code to load). For these
-# the evaluator pins the modeling *.py to the audited seed mirror, so a miner-supplied repo's code
-# is never executed. Standard-arch lineages (e.g. qwen) load with trust_remote_code=False.
+# Lineages whose model ships custom-arch code (needs trust_remote_code); eval pins the modeling *.py
+# to the audited seed mirror so miner code never runs. Standard-arch lineages (qwen) don't.
 CONTINUOUS_SFT_REMOTE_CODE_LINEAGES: set[str] = {"quasar"}
 
 

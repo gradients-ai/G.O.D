@@ -297,14 +297,13 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
         logger.info(f"Skipping {repo} as it's already evaluated")
         return
 
-    # Continuous-SFT: trust_remote_code only for custom-arch lineages (gated by the audited-mirror
-    # env var); the loaders pin those *.py to our mirror so miner code never runs.
+    # trust_remote_code only for custom-arch lineages; loaders pin those *.py so miner code never runs.
     trust_remote_code = continuous_sft_trust_remote_code()
 
-    # Pin the tokenizer + chat template to the lineage seed when set (continuous-SFT); the carried
-    # base is the previous winner. Non-continuous tasks fall back to original_model.
+    # Continuous-SFT pins tokenizer + chat template to the lineage seed (the carried base is the
+    # previous winner); non-continuous tasks fall back to original_model.
     tokenizer_source = os.environ.get(core_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV) or evaluation_args.original_model
-    tokenizer = load_tokenizer(tokenizer_source)
+    tokenizer = load_tokenizer(tokenizer_source, trust_remote_code=trust_remote_code)
 
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -318,7 +317,9 @@ def evaluate_repo(evaluation_args: EvaluationArgs) -> None:
     try:
         if check_for_lora(repo):
             logger.info("LoRA adapter detected. Loading as with Peft")
-            finetuned_model = load_finetuned_model(repo, trust_remote_code=trust_remote_code)
+            finetuned_model = load_finetuned_model(
+                repo, trust_remote_code=trust_remote_code, expected_base_model=evaluation_args.original_model
+            )
             is_finetune = True
         else:
             logger.info("No LoRA adapter detected. Loading full model")

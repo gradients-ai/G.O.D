@@ -723,14 +723,10 @@ class DedupResult(BaseModel):
 
 
 class ContinuousSftState(BaseModel):
-    """Per-lineage state for the continuous-SFT boss-round task (one per lineage slug).
+    """Per-lineage state for the continuous-SFT boss task (one row per lineage slug).
 
-    lineage: the lineage slug (e.g. "quasar" / "qwen") this row tracks.
-    train_index: monotonic cursor passed to the (stateless) content service, which maps it to a
-        stage-1 chunk and returns fresh randomized train/test URLs. Advanced by one per task.
-    last_winner_repo: HF repo of the lowest-eval-loss winner from the previous
-        continuous-SFT task for this lineage (carried forward as the next base model); None on
-        first run.
+    train_index: monotonic cursor passed to the stateless content service (advanced by one per task).
+    last_winner_repo: previous lowest-eval-loss winner, carried forward as the next base; None first run.
     """
 
     lineage: str

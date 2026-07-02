@@ -18,10 +18,8 @@ class TrainingStartPoint(str, Enum):
     CONTINUATION = "continuation"
     FROM_SCRATCH = "from_scratch"
     PREVIOUS_WINNER = "previous_winner"
-    # Marks the continuous-SFT boss-round task: a fixed chat-SFT task whose base model
-    # is carried forward (lowest-eval-loss winner) from the previous tournament. The
-    # trainer does not branch on training_start_point, so this is purely a lineage tag
-    # the validator uses to locate the task and advance continuous_sft_state.
+    # Lineage tag for the continuous-SFT boss task; the trainer ignores it, the validator uses it
+    # to locate the task and advance continuous_sft_state.
     CONTINUOUS_SFT = "continuous_sft"
 
 

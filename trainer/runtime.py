@@ -551,6 +551,7 @@ def run_model_prep_container(
     reward_functions=None,
     env_configs: dict[EnvironmentName, EnvConfig] | None = None,
     log_labels: dict[str, str] | None = None,
+    continuous_sft_remote_code_repo: str | None = None,
 ) -> ModelPrepResponse:
     """Run model prep container: augment model + compute baseline stats.
     Downloads model to cache via downloader first. For env tasks, starts env server sidecars."""
@@ -615,6 +616,10 @@ def run_model_prep_container(
         "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
         "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
     }
+    if continuous_sft_remote_code_repo:
+        # Signals the entrypoint to pin the model's custom-arch code to this audited mirror and load
+        # with trust_remote_code (custom-arch continuous-SFT lineages, e.g. quasar).
+        env[core_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV] = continuous_sft_remote_code_repo
     if env_configs:
         tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
         if tool_call_parser:
@@ -626,11 +631,17 @@ def run_model_prep_container(
     container = None
     memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
 
+    # Env tasks need sglang (transformers v4); text tasks (incl. continuous-SFT custom-arch) need the
+    # transformers-v5 image. sglang and v5 can't coexist, so they're split into two images.
+    model_prep_image = (
+        cst.MODEL_PREP_ENV_DOCKER_IMAGE if task_type == TaskType.ENVIRONMENTTASK else cst.MODEL_PREP_TEXT_DOCKER_IMAGE
+    )
+
     try:
-        logger.info(f"Starting model prep container: {container_name}", extra=log_labels)
+        logger.info(f"Starting model prep container: {container_name} (image={model_prep_image})", extra=log_labels)
         network = cst.INTERNAL_BRIDGE_NAME if env_configs else None
         container = client.containers.run(
-            image=cst.MODEL_PREP_DOCKER_IMAGE,
+            image=model_prep_image,
             name=container_name,
             command=command,
             labels=log_labels,

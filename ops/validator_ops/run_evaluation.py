@@ -243,10 +243,9 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    # Custom-arch continuous-SFT lineages (quasar) pass their audited mirror so the evaluator pins
-    # remote code to it (loaded with trust_remote_code); None for standard-arch / non-continuous tasks.
+    # Custom-arch lineages (quasar) pass their audited mirror so eval pins remote code to it; None
+    # otherwise. Tokenizer/chat-template pinned to the lineage seed, not the carried winner.
     continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task_details.ds)
-    # Pin the eval tokenizer + chat template to the lineage seed (not the carried winner); None otherwise.
     continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
 
     if task_type == TaskType.ENVIRONMENTTASK:

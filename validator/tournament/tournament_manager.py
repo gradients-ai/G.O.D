@@ -334,9 +334,7 @@ async def _carry_forward_continuous_sft(
     round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB
 ) -> None:
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
-    and advance continuous_sft_state. The winner is carried AS-IS: a LoRA winner is flattened by next
-    round's model-prep (no merge here). A failed/empty week preserves the prior lineage (COALESCE).
-    Advance is idempotent on source_round_id, so reprocessing the round can't double-advance.
+    and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
     """
     found = False
     for round_task in round_tasks:
@@ -353,8 +351,8 @@ async def _carry_forward_continuous_sft(
             continue
         found = True
 
-        # Carry the lowest-loss winner forward as-is; a LoRA winner is flattened by next round's
-        # model-prep. None only when the week had no scored winner (advance preserves prior).
+        # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
+        # had no scored winner, in which case advance preserves the prior repo.
         winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
         logger.info(
             f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
@@ -669,9 +667,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            # Carry continuous-SFT winners forward BEFORE setting winner_hotkey (the re-entry guard):
-            # set-first-then-crash would freeze the lineages. Advance is idempotent on round_id, so a
-            # crash in the gap before winner-set just reprocesses harmlessly.
+            # BEFORE setting winner_hotkey (the re-entry guard): set-first-then-crash would freeze the
+            # lineages; carry-forward is idempotent so a crash before winner-set just reprocesses.
             if tournament.tournament_type == TournamentType.TEXT:
                 await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
 

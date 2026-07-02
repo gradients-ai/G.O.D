@@ -1,12 +1,14 @@
 git+https://github.com/besimray/fiber.git@v2.6.0
-datasets==2.21.0
-peft>=0.17.0
+# transformers / datasets / peft come from the axolotl base venv (v5 set) — do NOT pin here
+# (pinning downgrades them and breaks axolotl, which hard-pins the v5 trio).
 docker
 toml
 debugpy
 textstat==0.7.7
 langcheck==0.9.0
 detoxify
-transformers>=4.55.0,<5.0.0
 astor
 basilica-sdk==0.17.0
+# NB: causal-conv1d (quasar hybrid-arch dep) is built separately in the dockerfile with
+# --no-build-isolation so it links against the base torch's ABI. flash-linear-attention is
+# already in the axolotl base.

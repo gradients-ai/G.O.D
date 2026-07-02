@@ -343,10 +343,9 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
-        # Custom-arch lineages (quasar) pass their audited mirror so the evaluator pins remote code to
-        # it; None for standard-arch (qwen) and non-continuous tasks.
+        # Custom-arch lineages (quasar) pass their audited mirror so eval pins remote code to it; None
+        # otherwise. Tokenizer/chat-template pinned to the lineage seed, not the carried winner.
         continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task.ds)
-        # Pin the eval tokenizer + chat template to the lineage seed, not the carried winner. None otherwise.
         continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
         evaluation_params = {
             "file_format": FileFormat.JSON,

@@ -149,6 +149,7 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             gpu_ids=req.gpu_ids,
             reward_functions=req.reward_functions,
             env_configs=req.env_configs,
+            continuous_sft_remote_code_repo=req.continuous_sft_remote_code_repo,
         )
         await complete_model_prep(req.task_id, success=True, result=result, hotkey=req.hotkey)
         return result

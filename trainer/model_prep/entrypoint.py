@@ -30,9 +30,21 @@ from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
+from core.remote_code import continuous_sft_trust_remote_code
+from core.remote_code import pin_trusted_remote_code
 from trainer.model_prep.augmentation import augment_model
-from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
+# compute_env_stats is imported lazily inside main(): its core.pvp import chain (open-spiel, openai,
+# sglang launch) is env-task only, and pulling it at module load would force those deps into the
+# text-task model-prep image, which deliberately omits them (see ops/docker/model-prep-text.dockerfile).
+
+
+def _pin_and_trust(model_ref: str) -> tuple[str, bool]:
+    """For custom-arch continuous-SFT lineages (quasar): force the modeling *.py to the audited seed
+    mirror and enable trust_remote_code, so model-prep never runs miner code while merging/loading a
+    custom arch. No-op (ref unchanged, trust=False) when no audited-mirror env is set."""
+    trust = continuous_sft_trust_remote_code()
+    return (pin_trusted_remote_code(model_ref) if trust else model_ref), trust
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -91,11 +103,13 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
 
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
+        base_src, trust = _pin_and_trust(real_base)
         base_model = AutoModelForCausalLM.from_pretrained(
-            real_base, torch_dtype="auto", token=hf_token,
+            base_src, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
+            trust_remote_code=trust,
         )
-        base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
+        base_tokenizer = AutoTokenizer.from_pretrained(base_src, token=hf_token, trust_remote_code=trust)
 
         def _merge_adapter(model, adapter_src):
             try:
@@ -233,9 +247,28 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
     print(f"Upload complete: {repo_id}")
 
 
-def _load_config_with_yarn_fix(model_path: str, hf_token: str):
+def _published_repo_is_complete(repo_id: str, hf_token: str) -> bool:
+    """A repo counts as already-published only if it holds a config AND real weight shards.
+
+    push_to_hub is non-atomic (create_repo, then weight commit, then a tokenizer commit): a run that
+    crashed mid-upload leaves a repo that exists but has no/partial weights. A bare repo_exists check
+    would treat that as done forever and pin the lineage to a broken base, so re-upload unless complete.
+    """
+    if not repo_exists(repo_id, token=hf_token):
+        return False
+    try:
+        files = HfApi(token=hf_token).list_repo_files(repo_id, token=hf_token)
+    except Exception as exc:
+        print(f"[model_prep] Could not list {repo_id} ({exc}); treating as incomplete", flush=True)
+        return False
+    has_config = "config.json" in files
+    has_weights = any(f.endswith((".safetensors", ".bin")) for f in files)
+    return has_config and has_weights
+
+
+def _load_config_with_yarn_fix(model_path: str, hf_token: str, trust_remote_code: bool = False):
     """Load model config while avoiding a transformers YaRN head_dim=None crash."""
-    config = AutoConfig.from_pretrained(model_path, token=hf_token)
+    config = AutoConfig.from_pretrained(model_path, token=hf_token, trust_remote_code=trust_remote_code)
     head_dim = config.head_dim if hasattr(config, "head_dim") else None
     if head_dim is None and hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
         config.head_dim = config.hidden_size // config.num_attention_heads
@@ -259,22 +292,27 @@ def main():
     t0 = time.time()
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
-    model_config = _load_config_with_yarn_fix(model_path, hf_token)
+    # Custom-arch continuous-SFT (quasar): pin the modeling code to the audited mirror + trust it.
+    model_load_path, trust = _pin_and_trust(model_path)
+    model_config = _load_config_with_yarn_fix(model_load_path, hf_token, trust_remote_code=trust)
     # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
     # fp16: bf16-native models can overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
+            trust_remote_code=trust,
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype="auto", token=hf_token,
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, torch_dtype="auto", token=hf_token)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
+        )
+    tokenizer = AutoTokenizer.from_pretrained(model_load_path, token=hf_token, trust_remote_code=trust)
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
 
@@ -283,7 +321,7 @@ def main():
     if aug_config is not None:
         repo_id = generate_anonymous_repo_name(args.model, aug_config.seed)
 
-        if repo_exists(repo_id, token=hf_token):
+        if _published_repo_is_complete(repo_id, hf_token):
             print(f"[model_prep] Augmented model already exists at {repo_id}, skipping", flush=True)
             augmented_model_id = repo_id
         else:
@@ -296,12 +334,11 @@ def main():
             print(f"[model_prep] Upload done in {time.time() - t0:.1f}s", flush=True)
             augmented_model_id = repo_id
 
-    # No-augmentation continuation (e.g. continuous-SFT) merged the LoRA only locally above. Publish
-    # it so eval — on another box, loading augmented_model_id or model_id — gets a flat base, not the
-    # raw adapter. `model` here is already the merged model.
+    # No-augmentation continuation (e.g. continuous-SFT) merged the LoRA only locally. Publish it so
+    # eval (on another box) gets a flat base, not the raw adapter. `model` is already the merged model.
     if augmented_model_id is None and prep_result.was_lora:
         repo_id = generate_merged_repo_name(args.model)
-        if repo_exists(repo_id, token=hf_token):
+        if _published_repo_is_complete(repo_id, hf_token):
             print(f"[model_prep] Merged LoRA base already published at {repo_id}, skipping upload", flush=True)
         else:
             t0 = time.time()
@@ -319,6 +356,10 @@ def main():
     t0 = time.time()
     try:
         if args.env_configs:
+            # Lazy import: env-only core.pvp deps are absent from the text-task image (see the
+            # import block at the top of this file).
+            from trainer.model_prep.env_stats import compute_env_stats
+
             raw_configs: dict[str, dict] = json.loads(args.env_configs)
             env_configs = {
                 EnvironmentName(k): EnvBaselineConfig.model_validate(v)

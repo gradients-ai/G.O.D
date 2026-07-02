@@ -61,12 +61,11 @@ async def warn_orphaned_continuous_sft_state(known_lineages: set[str], psql_db: 
 async def advance_continuous_sft_state(
     lineage: str, winner_repo: str | None, source_round_id: str, psql_db: PSQLDB
 ) -> None:
-    """Record a lineage's winner and advance its train cursor (upsert; creates the row on first run).
+    """Advance a lineage's train cursor and record its winner (upsert; creates the row on first run).
 
-    train_index += 1. last_winner_repo <- winner_repo, or PRESERVED via COALESCE when None (a
-    failed/empty week doesn't discard the chain). Idempotent per source_round_id: the ON CONFLICT
-    WHERE no-ops a repeat call for the same round, so a crash between carry-forward and the
-    winner_hotkey guard can't double-advance train_index.
+    winner_repo=None is preserved via COALESCE (a failed/empty week doesn't discard the chain).
+    Idempotent per source_round_id (the ON CONFLICT WHERE no-ops a repeat), so a crash between
+    carry-forward and the winner_hotkey guard can't double-advance train_index.
     """
     async with await psql_db.connection() as connection:
         connection: Connection

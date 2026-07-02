@@ -202,12 +202,24 @@ jobs:
                   ],
               },
               {
-                  "id": "model-prep",
-                  "image": "gradientsio/model-prep",
+                  "id": "model-prep-env",
+                  "image": "gradientsio/model-prep-env",
                   "channel_tag": "latest",
-                  "dockerfile": "ops/docker/model-prep.dockerfile",
+                  "dockerfile": "ops/docker/model-prep-env.dockerfile",
                   "patterns": [
-                      "ops/docker/model-prep.dockerfile",
+                      "ops/docker/model-prep-env.dockerfile",
+                      "trainer/model_prep/**",
+                      "core/**",
+                      ".dockerignore",
+                  ],
+              },
+              {
+                  "id": "model-prep-text",
+                  "image": "gradientsio/model-prep-text",
+                  "channel_tag": "latest",
+                  "dockerfile": "ops/docker/model-prep-text.dockerfile",
+                  "patterns": [
+                      "ops/docker/model-prep-text.dockerfile",
                       "trainer/model_prep/**",
                       "core/**",
                       ".dockerignore",

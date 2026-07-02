@@ -56,12 +56,9 @@ async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
 async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str | None:
     """Return the submission repo with the strictly lowest eval (test) loss for a task, or None.
 
-    Used by the continuous-SFT carry-forward to pick the genuinely best model on the task,
-    independent of the threshold/handicap-adjusted boss-round winner (which can have a higher
-    raw loss). Restricted to this validator's NETUID and to submissions with a positive
-    quality_score, so a penalized cheat / non-finetune with a low raw test_loss can never be
-    carried forward as the next lineage base (mirrors get_task_winner's guards). Returns None
-    when no eligible submission has a scored test_loss.
+    Continuous-SFT carry-forward wants the genuinely best model, not the handicap-adjusted boss-round
+    winner (which can have higher raw loss). Guarded to this NETUID + positive quality_score (mirrors
+    get_task_winner) so a penalized cheat with low raw test_loss can't become the next lineage base.
     """
     async with await psql_db.connection() as connection:
         connection: Connection

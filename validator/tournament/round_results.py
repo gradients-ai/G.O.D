@@ -191,12 +191,10 @@ def determine_boss_round_winner(
         task_winners: List of hotkeys that won each task in the boss round
         boss_hotkey: The defending champion's hotkey
         tournament_type: Type of tournament (TEXT or IMAGE)
-        continuous_sft_winners: Hotkeys that won each *decided* continuous-SFT task in the round.
-        num_continuous_sft_tasks: Total continuous-SFT tasks in the round (decided or not). When
-            >0 (text boss round), the challenger must win EVERY continuous-SFT task to dethrone, on
-            top of the overall threshold — winning 5/6 alone is not enough, and a continuous-SFT
-            task with no clear challenger win (failed/skipped) blocks the dethrone. 0 (image rounds)
-            leaves the rule untouched.
+        continuous_sft_winners: Hotkeys that won each *decided* continuous-SFT task.
+        num_continuous_sft_tasks: Total continuous-SFT tasks (decided or not). When >0 (text boss
+            round), the challenger must win EVERY one to dethrone, on top of the overall threshold —
+            so a failed/skipped continuous-SFT task blocks the dethrone. 0 (image) leaves the rule off.
 
     Returns:
         Hotkey of the boss round winner
@@ -223,8 +221,7 @@ def determine_boss_round_winner(
     # boss-round task. Each task is a straight score comparison.
     required_wins = max(1, total_tasks - 1)
 
-    # Continuous-SFT gate (text boss round): on top of the overall threshold, the challenger must
-    # win EVERY continuous-SFT task. Only enforced when the round has continuous-SFT tasks.
+    # Continuous-SFT gate: challenger must win EVERY continuous-SFT task; only enforced when >0.
     challenger_continuous_wins = (
         (continuous_sft_winners or []).count(opponent_hotkey) if opponent_hotkey else 0
     )
@@ -278,9 +275,8 @@ async def get_knockout_winners(
         boss_hotkey = EMISSION_BURN_HOTKEY
         opponent_hotkey = None
         task_winners = []
-        # Winners of the *decided* continuous-SFT tasks + the total count of continuous-SFT tasks.
-        # To dethrone in the text boss round the challenger must win EVERY continuous-SFT task (on
-        # top of the overall threshold), so we compare challenger continuous wins against the total.
+        # Decided continuous-SFT winners + total count, fed to determine_boss_round_winner's
+        # "challenger must win ALL continuous-SFT tasks" dethrone gate.
         continuous_sft_winners: list[str] = []
         num_continuous_sft_tasks = 0
 
@@ -314,8 +310,7 @@ async def get_knockout_winners(
 
             task_object = await get_task(task.task_id, psql_db)
 
-            # Count every continuous-SFT task (decided or not) so a failed/skipped one still
-            # counts against the challenger's "win ALL continuous tasks" requirement.
+            # Count even undecided ones, so a failed/skipped continuous-SFT task still blocks the dethrone.
             if _is_continuous_sft(task_object):
                 num_continuous_sft_tasks += 1
 

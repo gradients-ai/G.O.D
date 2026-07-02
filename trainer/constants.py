@@ -23,7 +23,10 @@ VOLUME_NAMES = [CHECKPOINTS_VOLUME_NAME, CACHE_VOLUME_NAME]
 HF_UPLOAD_DOCKER_IMAGE = "gradientsio/trainer-uploader:latest"
 TRAINER_DOWNLOADER_DOCKER_IMAGE = "gradientsio/trainer-downloader:latest"
 CACHE_CLEANER_DOCKER_IMAGE = "gradientsio/trainer-cacher-cleaner:latest"
-MODEL_PREP_DOCKER_IMAGE = "gradientsio/model-prep:latest"
+# Env tasks: v4 + sglang (ops/docker/model-prep-env.dockerfile). Text tasks (instruct/dpo/grpo/chat
+# incl. continuous-SFT custom-arch): transformers-v5 image without sglang (model-prep-text.dockerfile).
+MODEL_PREP_ENV_DOCKER_IMAGE = "gradientsio/model-prep-env:latest"
+MODEL_PREP_TEXT_DOCKER_IMAGE = "gradientsio/model-prep-text:latest"
 INTERNAL_BRIDGE_NAME = "internal_bridge"
 
 # Resource allocation

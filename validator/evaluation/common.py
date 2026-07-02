@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import time
 from math import ceil
@@ -24,6 +25,8 @@ from transformers import TrainerCallback
 import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
+from core.remote_code import continuous_sft_trust_remote_code
+from core.remote_code import pin_trusted_remote_code
 from core.training_config import create_dataset_entry
 from validator.evaluation.models import EvaluationArgs
 from validator.infrastructure.retries import retry_on_5xx
@@ -211,77 +214,9 @@ def patch_base_model_config_if_needed(base_model_name: str, cache_dir: str, cont
         return False
 
 
-def continuous_sft_trust_remote_code() -> bool:
-    """Whether eval should load models with trust_remote_code: true only for continuous-SFT lineages
-    whose model ships custom architecture code (signalled by the audited-mirror env var)."""
-    return bool(os.environ.get(core_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV))
-
-
-_AUDITED_CODE_DIRS: dict[str, str] = {}
-
-
-def _audited_code_dir(audited_repo: str) -> str:
-    """Download (once per process) the audited custom-arch code: *.py + config.json (for auto_map)."""
-    if audited_repo not in _AUDITED_CODE_DIRS:
-        _AUDITED_CODE_DIRS[audited_repo] = snapshot_download(
-            audited_repo, allow_patterns=["*.py", "config.json"], token=os.environ.get("HUGGINGFACE_TOKEN")
-        )
-    return _AUDITED_CODE_DIRS[audited_repo]
-
-
-def pin_trusted_remote_code(model_name_or_path: str, local_files_only: bool = False) -> str:
-    """Return a local model dir whose custom-architecture *.py are forced to our audited copies.
-
-    Continuous-SFT lineages whose model ships custom code load with trust_remote_code=True, but the
-    submission (and carried-forward base) repos are miner-controlled — their *.py would otherwise
-    execute arbitrary code in the eval container (which holds HF + S3 creds). We materialize the
-    model with the miner's *.py dropped, copy in the audited config+modeling files from the pinned
-    seed mirror (CONTINUOUS_SFT_REMOTE_CODE_REPO), and reset config.json's auto_map to point at them,
-    so trust_remote_code only ever runs reviewed code. Weights/tokenizer are symlinked (no big copy).
-    Returns the input unchanged when no audited repo is configured.
-    """
-    audited_repo = os.environ.get(core_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV)
-    if not audited_repo:
-        return model_name_or_path
-
-    if os.path.isdir(model_name_or_path):
-        model_dir = model_name_or_path
-    else:
-        model_dir = snapshot_download(
-            model_name_or_path,
-            ignore_patterns=["*.py"],  # never even fetch miner code
-            token=None if local_files_only else os.environ.get("HUGGINGFACE_TOKEN"),
-            local_files_only=local_files_only,
-        )
-
-    audited_dir = _audited_code_dir(audited_repo)
-    audited_auto_map = {}
-    audited_cfg = os.path.join(audited_dir, "config.json")
-    if os.path.exists(audited_cfg):
-        with open(audited_cfg) as f:
-            audited_auto_map = json.load(f).get("auto_map", {})
-
-    work = tempfile.mkdtemp(prefix="pinned_remote_code_")
-    for name in os.listdir(model_dir):
-        if name.endswith(".py"):
-            continue  # drop every miner-supplied module
-        src = os.path.join(model_dir, name)
-        if os.path.isdir(src):
-            continue
-        dst = os.path.join(work, name)
-        if name == "config.json":
-            with open(src) as f:
-                cfg = json.load(f)
-            if audited_auto_map:
-                cfg["auto_map"] = audited_auto_map  # miner cannot redirect the loader
-            with open(dst, "w") as f:
-                json.dump(cfg, f)
-        else:
-            os.symlink(os.path.realpath(src), dst)  # weights/tokenizer: link, not copy
-    for py in glob.glob(os.path.join(audited_dir, "*.py")):
-        shutil.copy2(py, os.path.join(work, os.path.basename(py)))
-    logger.info(f"Pinned remote code for {model_name_or_path} to audited {audited_repo}")
-    return work
+# pin_trusted_remote_code / _audited_code_dir / continuous_sft_trust_remote_code now live in
+# core.remote_code (imported above) so the model-prep container — which can't import validator.* —
+# shares one audited-RCE-guard implementation. Re-exported here for existing call sites.
 
 
 @retry_on_5xx()
@@ -411,14 +346,17 @@ def load_tokenizer(
 
 @retry_on_5xx()
 def load_finetuned_model(
-    repo: str, local_files_only: bool = False, trust_remote_code: bool = False
+    repo: str,
+    local_files_only: bool = False,
+    trust_remote_code: bool = False,
+    expected_base_model: str | None = None,
 ) -> AutoPeftModelForCausalLM:
     try:
         if trust_remote_code:
-            # Pin the adapter repo's custom code. NOTE: for a LoRA submission peft resolves the
-            # base from adapter_config separately; continuous-SFT carry-forward merges winners to
-            # flat full models, so the primary submission path is load_model (fully pinned).
-            repo = pin_trusted_remote_code(repo, local_files_only)
+            # Pin the adapter's *.py AND force its peft base to expected_base_model (also pinned),
+            # so a miner-controlled adapter_config base_model_name_or_path can't redirect the base
+            # load — which peft performs with trust_remote_code=True — to arbitrary code.
+            repo = pin_trusted_remote_code(repo, local_files_only, expected_base_model=expected_base_model)
             local_files_only = True
         # For local files, try to use the snapshot path directly
         if local_files_only:

@@ -27,14 +27,12 @@ def model_is_a_finetune(
     from transformers import AutoConfig
 
     if trust_remote_code:
-        # Inner import: model_checks is imported by orchestration (scoring/tasks.py); common pulls
-        # axolotl/peft at module load, which aren't installed there. Import lazily so model_checks
-        # stays importable without container deps. Pin custom code to our audited copy, then load
-        # via the online path (which loads a local dir fine).
+        # Lazy import: common pulls axolotl/peft at module load, absent in orchestration
+        # (scoring/tasks.py imports model_checks), so keep model_checks importable without those deps.
         from validator.evaluation.common import pin_trusted_remote_code
 
         original_repo = pin_trusted_remote_code(original_repo, local_files_only)
-        local_files_only = False
+        local_files_only = False  # pinned dir loads via the online path
 
     max_retries = 3
     base_delay = 2

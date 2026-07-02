@@ -278,8 +278,8 @@ def compute_hours_from_baseline_stats(
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput."""
-    # The continuous-SFT task has a FIXED training budget; never recompute it from baseline
-    # stats (returns before the get_model_num_params fetch, which would hit the custom/gated base).
+    # Continuous-SFT has a FIXED budget; return before the get_model_num_params fetch below, which
+    # would hit the custom/gated base.
     if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
         return current_hours
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
@@ -711,24 +711,15 @@ async def create_synthetic_instruct_text_task(
     return task
 
 
+@retry_with_backoff
 async def create_continuous_sft_task(config: Config, lineage: str, seed_model: str) -> RawTask:
-    """Create one lineage's continuous-SFT boss task.
+    """Create one lineage's continuous-SFT boss task: fixed chat-SFT from the carried-forward winner
+    (or seed_model on first run), on this lineage's next stage-1 chunk.
 
-    A fixed chat-SFT task trained from this lineage's carried-forward winner (lowest eval loss)
-    of the previous tournament, or its seed model on the first run.
-
-    The chunk data is owned by the content service (the single source for the curated stage-1
-    chunks). We pass this lineage's monotonic train_index from continuous_sft_state; the content
-    service is stateless - it maps the index to a chunk and re-materializes train+test at fresh
-    randomized S3 URLs on every call, so miners can neither track nor derive the held-out test
-    set across tournaments. G.O.D only keeps the per-lineage train cursor + carried winner.
-
-    The lineage slug is encoded into the task ds (continuous_sft_ds) so the completion hook can
-    route the winner back to the right lineage.
-
-    Compute is fixed: 6h on 4xH100 (forced in get_tournament_gpu_requirement via
-    training_start_point==CONTINUOUS_SFT). No augmentation, so the carried-forward base is never
-    perturbed by an augmented_model_id.
+    The content service is stateless: we pass the monotonic train_index and it re-materializes
+    train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
+    across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
+    Fixed 6h/4xH100 compute; no augmentation, so the carried base is never perturbed.
     """
     state = await get_continuous_sft_state(lineage, config.psql_db)
     base_model = state.last_winner_repo or seed_model
@@ -767,8 +758,8 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         training_data=train_url,
         test_data=test_url,
         training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-        # Use the base's own template (tokenizer_default), not chatml: quasar ships a custom
-        # HUMAN/ASSISTANT template, qwen its own. Eval loads the base tokenizer so train+eval match.
+        # Base's own template, not chatml (quasar ships a custom one); eval loads the base tokenizer
+        # so train+eval match.
         chat_template="tokenizer_default",
         # other chat_* fields keep ChatRawTask ShareGPT defaults; augmentation_config stays None.
     )
