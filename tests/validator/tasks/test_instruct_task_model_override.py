@@ -1,8 +1,8 @@
-"""create_synthetic_instruct_text_task honours model_id_override / allow_augmentation.
+"""create_synthetic_instruct_text_task honours model_id_override / allow_augmentation / allow_yarn.
 
-These two knobs exist for the pre-boss quasar task: the model must come from the override (never
-the random pool) and augmentation must stay off (the custom-arch seed can't be perturbed and
-re-uploaded). Everything else — dataset pull, computed hours — stays the standard path.
+These knobs exist for the pre-boss quasar task: the model must come from the override (no pool is
+even provided), and augmentation/YaRN must stay off (the custom-arch seed can't be perturbed or
+rope-reconfigured). Everything else — dataset pull, computed hours — stays the standard path.
 """
 
 from types import SimpleNamespace
@@ -13,11 +13,6 @@ from validator.tasks.synthetics import scheduler
 
 
 QUASAR_SEED = "gradients-io-tournaments/continuous-sft-seed-quasar-king"
-
-
-async def _poisoned_models():
-    raise AssertionError("the model pool must not be consumed when model_id_override is set")
-    yield  # pragma: no cover — makes this an async generator
 
 
 def _patch_seams(monkeypatch):
@@ -32,20 +27,24 @@ def _patch_seams(monkeypatch):
     return add_task
 
 
-async def test_override_forces_model_and_skips_pool_and_augmentation(monkeypatch):
+async def test_override_forces_model_without_pool_augmentation_or_yarn(monkeypatch):
     add_task = _patch_seams(monkeypatch)
+    # Force yarn selection ON so the allow_yarn=False guard is what keeps it off.
+    monkeypatch.setattr(scheduler, "maybe_get_yarn_factor", lambda: 4)
 
     task = await scheduler.create_synthetic_instruct_text_task(
         MagicMock(),
-        _poisoned_models(),
+        None,  # no model pool — override must be enough
         MagicMock(),
         enable_kl=False,
         model_id_override=QUASAR_SEED,
         allow_augmentation=False,
+        allow_yarn=False,
     )
 
     assert task.model_id == QUASAR_SEED
     assert task.augmentation_config is None
+    assert task.yarn_factor is None
     assert task.use_kl is False
     assert task.ds == "tatsu-lab/alpaca"
     assert task.hours_to_complete > 0  # standard computed budget, nothing forced

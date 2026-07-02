@@ -243,10 +243,7 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    # Custom-arch quasar tasks (continuous-SFT lineage or the pre-boss forced-quasar instruct
-    # task) pass their audited mirror so eval pins remote code to it; None otherwise.
-    # Tokenizer/chat-template pinned to the lineage seed, not the carried winner (the pre-boss
-    # task needs no pin: its original_model already IS the seed).
+    # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
     continuous_sft_remote_code_repo = t_cst.remote_code_repo_for_task(task_details.model_id, task_details.ds)
     continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
 

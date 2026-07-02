@@ -281,16 +281,19 @@ def compute_hours_from_baseline_stats(
     model_id: str | None = None,
     model_params_count: int | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    ds: str | None = None,
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput.
 
     Continuous-SFT flows through like any SFT task (its 4xH100 is handled via
-    training_start_point), but callers must pass the lineage SEED as model_id — the task's own
-    model_id is the carried winner, whose params are unfetchable (LoRA adapter / custom arch).
+    training_start_point), but params are sized from the lineage SEED (resolved from ds here, so
+    no caller can get it wrong) — the task's own model_id is the carried winner, whose params are
+    unfetchable (LoRA adapter / custom arch).
     """
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours
 
+    model_id = t_cst.continuous_sft_seed_repo_for_ds(ds) or model_id
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
     if not num_params:
         num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
@@ -670,13 +673,19 @@ async def create_synthetic_affine_grpo_task(
 @retry_with_backoff
 async def create_synthetic_instruct_text_task(
     config: Config,
-    models: AsyncGenerator[str, None],
+    models: AsyncGenerator[str, None] | None,
     datasets: AsyncGenerator[Dataset, None],
     enable_kl: bool = False,
     model_id_override: str | None = None,
     allow_augmentation: bool = True,
+    allow_yarn: bool = True,
 ) -> RawTask:
-    model_id = model_id_override or await anext(models)
+    """models may be None only with model_id_override set (the pool is never drawn from then)."""
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        assert models is not None, "a models pool is required when model_id_override is not set"
+        model_id = await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
@@ -688,7 +697,7 @@ async def create_synthetic_instruct_text_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    yarn_factor = maybe_get_yarn_factor()
+    yarn_factor = maybe_get_yarn_factor() if allow_yarn else None
     augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK) if allow_augmentation else None
     use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(

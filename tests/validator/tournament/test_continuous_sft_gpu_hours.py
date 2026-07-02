@@ -71,6 +71,29 @@ class TestComputeHours:
         default = self._hours(TrainingStartPoint.DEFAULT)
         assert continuous < default
 
+    def test_params_fetched_from_seed_not_carried_winner(self, monkeypatch):
+        # The exact orchestrator configuration: stats present, model_params_count unset, model_id
+        # is the carried winner (round 2+: possibly a LoRA adapter whose safetensors total is
+        # adapter-sized). The seed must be resolved from ds INSIDE the function so no call site
+        # can feed the winner into the param fetch.
+        fetched = []
+
+        def _record(model_id):
+            fetched.append(model_id)
+            return SEED_PARAMS
+
+        monkeypatch.setattr(scheduler, "get_model_num_params", _record)
+        scheduler.compute_hours_from_baseline_stats(
+            current_hours=4.0,
+            baseline_stats=_stats(total_tokens=200_000_000, num_records=100_000, tokens_per_sec=8_000.0),
+            task_type=TaskType.CHATTASK,
+            model_id="miner-org/carried-lora-winner",
+            model_params_count=None,
+            training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+            ds="continuous-sft:quasar:chunk-00003",
+        )
+        assert fetched == [QUASAR_SEED]
+
     def test_no_baseline_stats_keeps_the_fallback_budget(self, monkeypatch):
         monkeypatch.setattr(scheduler, "get_model_num_params", _boom)
         hours = scheduler.compute_hours_from_baseline_stats(

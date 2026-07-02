@@ -46,10 +46,12 @@ async def test_two_competitors_forces_the_quasar_task(monkeypatch):
 
     probability_mock.assert_not_awaited()
     assert [t.task_id for t in tasks] == ["quasar-task"]
-    kwargs = instruct_mock.call_args.kwargs
+    args, kwargs = instruct_mock.call_args
+    assert args[1] is None  # no model pool: the model is forced
     assert kwargs["model_id_override"] == t_cst.PRE_BOSS_QUASAR_MODEL
     assert kwargs["enable_kl"] is False
     assert kwargs["allow_augmentation"] is False
+    assert kwargs["allow_yarn"] is False
 
 
 async def test_more_than_two_competitors_keeps_probability_routing(monkeypatch):

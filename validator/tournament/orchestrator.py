@@ -1090,11 +1090,10 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                     task.hours_to_complete,
                     task.baseline_stats,
                     task.task_type,
-                    # Continuous-SFT sizes params from the lineage SEED: the task's own model_id is
-                    # the carried winner, whose param fetch is unreliable (LoRA adapter/custom arch).
-                    model_id=cst.continuous_sft_seed_repo_for_ds(task.ds) or task.model_id,
+                    model_id=task.model_id,
                     model_params_count=task.model_params_count,
                     training_start_point=task.training_start_point,
+                    ds=task.ds,
                 )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1266,9 +1265,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run one model prep for a given model_id and return the result."""
         reward_fns = getattr(task, "reward_functions", None)
         is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
-        # Custom-arch quasar tasks (continuous-SFT lineage or the pre-boss forced-quasar instruct
-        # task) need the prep container to pin remote code to the audited mirror and load with
-        # trust_remote_code; None for standard-arch tasks.
+        # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
         continuous_sft_remote_code_repo = cst.remote_code_repo_for_task(task.model_id, task.ds)
         return await dispatch_augmentation_and_stats(
             task_id=task_id_str,
@@ -1312,6 +1309,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         model_id=task.model_id,
                         model_params_count=task.model_params_count,
                         training_start_point=task.training_start_point,
+                        ds=task.ds,
                     )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)

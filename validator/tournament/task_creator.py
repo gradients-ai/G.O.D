@@ -568,7 +568,7 @@ async def _create_probability_based_text_tasks(
 
         logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
         if is_pre_boss_round:
-            task = await _create_pre_boss_quasar_task(config, models, instruct_datasets)
+            task = await _create_pre_boss_quasar_task(config, instruct_datasets)
         else:
             task = await _create_single_probability_task(
                 config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob
@@ -581,21 +581,20 @@ async def _create_probability_based_text_tasks(
     return tasks
 
 
-async def _create_pre_boss_quasar_task(
-    config: Config, models: list, instruct_datasets: list
-) -> RawTask:
+async def _create_pre_boss_quasar_task(config: Config, instruct_datasets) -> RawTask:
     """Create the pre-boss round's single task: a standard instruct task (normal dataset pull,
     computed hours, param-based GPU sizing) with only the model forced to the quasar seed mirror.
-    Augmentation and KL are disabled: the custom-arch seed can't be perturbed-and-reuploaded, and
-    remote-code pinning keys off the exact seed repo.
+    Augmentation, KL and YaRN are disabled: the custom-arch seed can't be perturbed, reconfigured
+    or re-uploaded, and remote-code pinning keys off the exact seed repo.
     """
     return await create_synthetic_instruct_text_task(
         config,
-        models,
+        None,  # no model pool: the model is forced
         instruct_datasets,
         enable_kl=False,
         model_id_override=t_cst.PRE_BOSS_QUASAR_MODEL,
         allow_augmentation=False,
+        allow_yarn=False,
     )
 
 
@@ -843,9 +842,7 @@ async def replace_tournament_task(
             new_task = await _create_round_one_group_text_replacement_task(config)
         elif t_cst.is_pre_boss_quasar_task(original_task_obj):
             logger.info("Detected pre-boss quasar task replacement; re-forcing the quasar seed model")
-            new_task = await _create_pre_boss_quasar_task(
-                config, _get_text_models(config.keypair), _get_instruct_text_datasets(config.keypair)
-            )
+            new_task = await _create_pre_boss_quasar_task(config, _get_instruct_text_datasets(config.keypair))
         else:
             new_task = await create_new_task_of_same_type(original_task_obj, config)
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")
