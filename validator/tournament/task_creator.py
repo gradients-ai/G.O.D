@@ -840,6 +840,19 @@ async def replace_tournament_task(
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
             new_task = await _create_round_one_group_text_replacement_task(config)
+        elif t_cst.is_continuous_sft_task(original_task_obj):
+            # Same lineage, same carried base model; the content service re-materializes the chunk
+            # at fresh S3 URLs. Without this branch, create_new_task_of_same_type has no CHATTASK
+            # route and would fall through to a random-model instruct task, dropping the lineage
+            # from the boss round and weakening the win-all-continuous-SFT dethrone gate.
+            lineage = t_cst.continuous_sft_lineage_from_ds(original_task_obj.ds)
+            seed_model = t_cst.continuous_sft_seed_repo(lineage)
+            if not lineage or not seed_model:
+                raise ValueError(
+                    f"Cannot replace continuous-SFT task {original_task_id}: unknown lineage in ds {original_task_obj.ds!r}"
+                )
+            logger.info(f"Detected continuous-SFT task replacement; recreating lineage {lineage}")
+            new_task = await create_continuous_sft_task(config, lineage, seed_model)
         elif t_cst.is_pre_boss_quasar_task(original_task_obj):
             logger.info("Detected pre-boss quasar task replacement; re-forcing the quasar seed model")
             new_task = await _create_pre_boss_quasar_task(config, _get_instruct_text_datasets(config.keypair))

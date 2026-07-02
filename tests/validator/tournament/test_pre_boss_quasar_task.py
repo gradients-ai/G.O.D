@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.tournament import constants as t_cst
@@ -66,6 +67,70 @@ async def test_more_than_two_competitors_keeps_probability_routing(monkeypatch):
     instruct_mock.assert_not_awaited()
     assert probability_mock.await_count == 2
     assert len(tasks) == 2
+
+
+class TestReplacementRouting:
+    """Prep-failure replacement must preserve forced-model tasks: continuous-SFT recreates the
+    same lineage (same carried base, chunk re-materialized), and the pre-boss quasar task
+    re-forces the seed with everything else fresh. Neither may fall through to
+    create_new_task_of_same_type, which draws a random model (and has no CHATTASK route at all)."""
+
+    def _patch_replace_seams(self, monkeypatch, original):
+        monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original))
+        monkeypatch.setattr(task_creator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
+        monkeypatch.setattr(task_creator.task_sql, "delete_task", AsyncMock())
+        monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", AsyncMock())
+        monkeypatch.setattr(task_creator, "_get_instruct_text_datasets", lambda *a, **k: MagicMock())
+        same_type_mock = AsyncMock()
+        monkeypatch.setattr(task_creator, "create_new_task_of_same_type", same_type_mock)
+        return same_type_mock
+
+    async def test_continuous_sft_replacement_recreates_the_same_lineage(self, monkeypatch):
+        original = SimpleNamespace(
+            task_id="orig-task",
+            task_type=TaskType.CHATTASK,
+            training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+            ds="continuous-sft:qwen:chunk-00003",
+            status=TaskStatus.PREP_TASK_FAILURE.value,
+            model_id="miner-org/carried-winner",
+            model_params_count=0,
+        )
+        same_type_mock = self._patch_replace_seams(monkeypatch, original)
+        recreate_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.CHATTASK))
+        monkeypatch.setattr(task_creator, "create_continuous_sft_task", recreate_mock)
+
+        new_task_id = await task_creator.replace_tournament_task(
+            "orig-task", "tourn", "round-4", None, "pair-1", MagicMock()
+        )
+
+        same_type_mock.assert_not_awaited()
+        assert new_task_id == "new-task"
+        _, lineage, seed_model = recreate_mock.call_args.args
+        assert lineage == "qwen"
+        assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen"]
+
+    async def test_pre_boss_quasar_replacement_reforces_the_seed_model(self, monkeypatch):
+        original = SimpleNamespace(
+            task_id="orig-task",
+            task_type=TaskType.INSTRUCTTEXTTASK,
+            training_start_point=TrainingStartPoint.DEFAULT,
+            ds="tatsu-lab/alpaca",
+            status=TaskStatus.PREP_TASK_FAILURE.value,
+            model_id=t_cst.PRE_BOSS_QUASAR_MODEL,
+            model_params_count=0,
+        )
+        same_type_mock = self._patch_replace_seams(monkeypatch, original)
+        instruct_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.INSTRUCTTEXTTASK))
+        monkeypatch.setattr(task_creator, "create_synthetic_instruct_text_task", instruct_mock)
+
+        new_task_id = await task_creator.replace_tournament_task(
+            "orig-task", "tourn", "round-3", None, "pair-1", MagicMock()
+        )
+
+        same_type_mock.assert_not_awaited()
+        assert new_task_id == "new-task"
+        assert instruct_mock.call_args.kwargs["model_id_override"] == t_cst.PRE_BOSS_QUASAR_MODEL
+        assert instruct_mock.call_args.kwargs["allow_augmentation"] is False
 
 
 class TestPreBossBothMinersFailed:
