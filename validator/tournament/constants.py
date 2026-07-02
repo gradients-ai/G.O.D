@@ -155,7 +155,7 @@ PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 # (eos <|endoftext|>=248044) + quasar HUMAN/ASSISTANT template — NOT Quasar-Preview/157184.
 CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
     "quasar": "gradients-io-tournaments/continuous-sft-seed-quasar-king",
-    "qwen": "Qwen/Qwen3.5-4B-Base",
+    "qwen": "Qwen/Qwen3-8B-Base",
 }
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
 

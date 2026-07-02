@@ -18,7 +18,7 @@ from validator.tasks.synthetics import scheduler
 from validator.tournament.models import ContinuousSftState
 
 
-SEED = "Qwen/Qwen3.5-4B-Base"
+SEED = "Qwen/Qwen3-8B-Base"
 
 
 def _patch(monkeypatch, *, state, response):

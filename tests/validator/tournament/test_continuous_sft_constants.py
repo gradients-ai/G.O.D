@@ -35,7 +35,7 @@ class TestLineages:
         # Seed-repo typo would silently train the wrong base every week.
         assert t_cst.CONTINUOUS_SFT_LINEAGES == {
             "quasar": "gradients-io-tournaments/continuous-sft-seed-quasar-king",
-            "qwen": "Qwen/Qwen3.5-4B-Base",
+            "qwen": "Qwen/Qwen3-8B-Base",
         }
 
     def test_only_quasar_needs_remote_code(self):
@@ -89,7 +89,7 @@ class TestSeedAndRemoteCodeRouting:
             t_cst.continuous_sft_seed_repo_for_ds(t_cst.continuous_sft_ds("quasar", "x"))
             == "gradients-io-tournaments/continuous-sft-seed-quasar-king"
         )
-        assert t_cst.continuous_sft_seed_repo_for_ds(t_cst.continuous_sft_ds("qwen", "x")) == "Qwen/Qwen3.5-4B-Base"
+        assert t_cst.continuous_sft_seed_repo_for_ds(t_cst.continuous_sft_ds("qwen", "x")) == "Qwen/Qwen3-8B-Base"
 
     def test_seed_repo_none_for_non_continuous_ds(self):
         assert t_cst.continuous_sft_seed_repo_for_ds("tatsu-lab/alpaca") is None
