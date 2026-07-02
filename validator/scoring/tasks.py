@@ -343,9 +343,11 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
-        # Custom-arch lineages (quasar) pass their audited mirror so eval pins remote code to it; None
-        # otherwise. Tokenizer/chat-template pinned to the lineage seed, not the carried winner.
-        continuous_sft_remote_code_repo = t_cst.continuous_sft_remote_code_repo_for_ds(task.ds)
+        # Custom-arch quasar tasks (continuous-SFT lineage or the pre-boss forced-quasar instruct
+        # task) pass their audited mirror so eval pins remote code to it; None otherwise.
+        # Tokenizer/chat-template pinned to the lineage seed, not the carried winner (the pre-boss
+        # task needs no pin: its original_model already IS the seed).
+        continuous_sft_remote_code_repo = t_cst.remote_code_repo_for_task(task.model_id, task.ds)
         continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
         evaluation_params = {
             "file_format": FileFormat.JSON,

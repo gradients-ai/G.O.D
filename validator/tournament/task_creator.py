@@ -541,6 +541,12 @@ async def _create_probability_based_text_tasks(
     instruct_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT / text_total
     dpo_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO / text_total
 
+    # The pre-boss round is the knockout with exactly 2 competitors left: its winner becomes the
+    # boss challenger, and its task always plays on quasar (see _create_pre_boss_quasar_task).
+    # Keyed on competitor count, not task count — other rounds can also create a single task.
+    competitors = {hotkey for pair in round_data.pairs for hotkey in pair}
+    is_pre_boss_round = len(competitors) == 2
+
     tasks = []
     for i in range(num_tasks):
         pair = round_data.pairs[i]
@@ -561,13 +567,36 @@ async def _create_probability_based_text_tasks(
             continue
 
         logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
-        task = await _create_single_probability_task(config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob)
+        if is_pre_boss_round:
+            task = await _create_pre_boss_quasar_task(config, models, instruct_datasets)
+        else:
+            task = await _create_single_probability_task(
+                config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob
+            )
 
         await _create_and_register_tournament_task(
             task, tournament_id, round_data.round_id, config, pair_id=pair_id
         )
         tasks.append(task)
     return tasks
+
+
+async def _create_pre_boss_quasar_task(
+    config: Config, models: list, instruct_datasets: list
+) -> RawTask:
+    """Create the pre-boss round's single task: a standard instruct task (normal dataset pull,
+    computed hours, param-based GPU sizing) with only the model forced to the quasar seed mirror.
+    Augmentation and KL are disabled: the custom-arch seed can't be perturbed-and-reuploaded, and
+    remote-code pinning keys off the exact seed repo.
+    """
+    return await create_synthetic_instruct_text_task(
+        config,
+        models,
+        instruct_datasets,
+        enable_kl=False,
+        model_id_override=t_cst.PRE_BOSS_QUASAR_MODEL,
+        allow_augmentation=False,
+    )
 
 
 async def _create_single_probability_task(
@@ -812,6 +841,11 @@ async def replace_tournament_task(
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
             new_task = await _create_round_one_group_text_replacement_task(config)
+        elif t_cst.is_pre_boss_quasar_task(original_task_obj):
+            logger.info("Detected pre-boss quasar task replacement; re-forcing the quasar seed model")
+            new_task = await _create_pre_boss_quasar_task(
+                config, _get_text_models(config.keypair), _get_instruct_text_datasets(config.keypair)
+            )
         else:
             new_task = await create_new_task_of_same_type(original_task_obj, config)
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")

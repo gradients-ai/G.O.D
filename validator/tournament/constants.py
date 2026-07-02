@@ -215,8 +215,49 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
     return continuous_sft_seed_repo(continuous_sft_lineage_from_ds(ds))
 
 
-# Fixed compute: this task always trains 6h on 4xH100 (GPU forced in gpu_requirements.py).
-CONTINUOUS_SFT_TRAINING_HOURS = 6.0
+# --- Pre-boss quasar task -------------------------------------------------------------------
+# The last knockout before the boss round (a single pair — its winner becomes the boss
+# challenger) also plays on quasar: a standard instruct task with a normal dataset pull, computed
+# hours and param-based GPU sizing, where only the model is forced to the quasar seed mirror.
+# No augmentation: perturbing and re-uploading the custom-arch seed is unexercised, and
+# remote-code pinning keys off the exact seed repo.
+PRE_BOSS_QUASAR_MODEL = CONTINUOUS_SFT_LINEAGES["quasar"]
+
+# Seed mirrors that ship custom-arch code; any task whose BASE MODEL is one of these needs the
+# same audited remote-code pinning as the corresponding continuous-SFT lineage.
+_CUSTOM_ARCH_SEED_REPOS: set[str] = {
+    CONTINUOUS_SFT_LINEAGES[lineage] for lineage in CONTINUOUS_SFT_REMOTE_CODE_LINEAGES
+}
+
+
+def is_custom_arch_seed_model(model_id: str | None) -> bool:
+    """True when a task's base model is itself a custom-arch seed mirror (the pre-boss quasar task)."""
+    return model_id in _CUSTOM_ARCH_SEED_REPOS
+
+
+def is_pre_boss_quasar_task(task) -> bool:
+    """True for the pre-boss forced-quasar instruct task (base model pinned to the quasar seed)."""
+    return task.task_type == TaskType.INSTRUCTTEXTTASK and task.model_id == PRE_BOSS_QUASAR_MODEL
+
+
+def remote_code_repo_for_task(model_id: str | None, ds: str | None) -> str | None:
+    """Audited custom-code mirror for a task, or None for standard-arch tasks.
+
+    Continuous-SFT tasks key by ds (the base is the carried winner, not the seed); the pre-boss
+    forced-quasar instruct task keys by its base model being a custom-arch seed mirror itself.
+    """
+    repo = continuous_sft_remote_code_repo_for_ds(ds)
+    if repo:
+        return repo
+    if is_custom_arch_seed_model(model_id):
+        return model_id
+    return None
+
+
+# Initial/fallback budget only: GPUs stay forced at 4xH100 (gpu_requirements.py), but hours are
+# resized post-prep by the general throughput pipeline (2-epoch budget over the measured chunk,
+# capped at MAX_TRAINING_HOURS). This value survives only if prep produces no baseline stats.
+CONTINUOUS_SFT_TRAINING_HOURS = 4.0
 
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1

@@ -232,9 +232,14 @@ def compute_training_hours(
     num_params: float,
     task_type: TaskType,
     measured_tokens_per_sec: float | None = None,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> float:
-    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput."""
-    gpus = get_tournament_gpu_requirement(task_type, int(num_params)).gpu_count
+    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
+
+    training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
+    regardless of params, so sizing from params alone would budget for half the real GPUs.
+    """
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
     if measured_tokens_per_sec:
         lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
@@ -277,11 +282,12 @@ def compute_hours_from_baseline_stats(
     model_params_count: int | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> float:
-    """Post-prep hours from real token counts plus measured fwd/bwd throughput."""
-    # Continuous-SFT has a FIXED budget; return before the get_model_num_params fetch below, which
-    # would hit the custom/gated base.
-    if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
-        return current_hours
+    """Post-prep hours from real token counts plus measured fwd/bwd throughput.
+
+    Continuous-SFT flows through like any SFT task (its 4xH100 is handled via
+    training_start_point), but callers must pass the lineage SEED as model_id — the task's own
+    model_id is the carried winner, whose params are unfetchable (LoRA adapter / custom arch).
+    """
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours
 
@@ -301,7 +307,7 @@ def compute_hours_from_baseline_stats(
         dataset_stats.num_records * data_cst.EFFECTIVE_MIN_TOKENS_PER_ROW,
     )
     measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
-    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps)
+    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps, training_start_point)
 
 
 def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
@@ -667,8 +673,10 @@ async def create_synthetic_instruct_text_task(
     models: AsyncGenerator[str, None],
     datasets: AsyncGenerator[Dataset, None],
     enable_kl: bool = False,
+    model_id_override: str | None = None,
+    allow_augmentation: bool = True,
 ) -> RawTask:
-    model_id = await anext(models)
+    model_id = model_id_override or await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
@@ -681,7 +689,7 @@ async def create_synthetic_instruct_text_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
+    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK) if allow_augmentation else None
     use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(
         model_id=model_id,
@@ -719,7 +727,8 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
     The content service is stateless: we pass the monotonic train_index and it re-materializes
     train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
     across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
-    Fixed 6h/4xH100 compute; no augmentation, so the carried base is never perturbed.
+    Fixed 4xH100; hours start at the fallback budget and are resized post-prep by the general
+    throughput pipeline. No augmentation, so the carried base is never perturbed.
     """
     state = await get_continuous_sft_state(lineage, config.psql_db)
     base_model = state.last_winner_repo or seed_model

@@ -41,8 +41,9 @@ class TestLineages:
     def test_only_quasar_needs_remote_code(self):
         assert t_cst.CONTINUOUS_SFT_REMOTE_CODE_LINEAGES == {"quasar"}
 
-    def test_training_hours_fixed_at_six(self):
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 6.0
+    def test_training_hours_fallback_is_four(self):
+        # Initial/fallback only — post-prep the throughput pipeline resizes the budget.
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 4.0
 
 
 class TestDsRoundTrip:
@@ -103,3 +104,42 @@ class TestSeedAndRemoteCodeRouting:
         # qwen is standard-arch: must NOT load remote code.
         assert t_cst.continuous_sft_remote_code_repo_for_ds(t_cst.continuous_sft_ds("qwen", "x")) is None
         assert t_cst.continuous_sft_remote_code_repo_for_ds("tatsu-lab/alpaca") is None
+
+
+QUASAR_SEED = "gradients-io-tournaments/continuous-sft-seed-quasar-king"
+
+
+class TestPreBossQuasarRouting:
+    def test_pre_boss_model_is_the_quasar_seed(self):
+        # The pre-boss task must share the lineage seed: remote-code pinning, GPU forcing and the
+        # audited-mirror trust chain all key off this exact repo.
+        assert t_cst.PRE_BOSS_QUASAR_MODEL == QUASAR_SEED
+
+    def test_custom_arch_seed_model_only_for_remote_code_lineage_seeds(self):
+        assert t_cst.is_custom_arch_seed_model(QUASAR_SEED)
+        # qwen is standard-arch: its seed as a base model needs no pinning.
+        assert not t_cst.is_custom_arch_seed_model("Qwen/Qwen3-8B-Base")
+        assert not t_cst.is_custom_arch_seed_model("tatsu-lab/whatever")
+        assert not t_cst.is_custom_arch_seed_model(None)
+
+    def test_is_pre_boss_quasar_task_requires_instruct_type_and_seed_model(self):
+        def _task(task_type, model_id):
+            return SimpleNamespace(task_type=task_type, model_id=model_id)
+
+        assert t_cst.is_pre_boss_quasar_task(_task(TaskType.INSTRUCTTEXTTASK, QUASAR_SEED))
+        # The continuous-SFT boss task is CHATTASK — must not match, its replacement/routing differs.
+        assert not t_cst.is_pre_boss_quasar_task(_task(TaskType.CHATTASK, QUASAR_SEED))
+        assert not t_cst.is_pre_boss_quasar_task(_task(TaskType.INSTRUCTTEXTTASK, "unsloth/Llama-3.2-3B"))
+
+    def test_remote_code_repo_for_task_keys_by_ds_then_model(self):
+        # continuous-SFT ds keying is unchanged (base is the carried winner, not the seed).
+        assert (
+            t_cst.remote_code_repo_for_task("org/carried-winner", t_cst.continuous_sft_ds("quasar", "x"))
+            == QUASAR_SEED
+        )
+        # pre-boss task: standard ds, but the base IS the seed mirror -> pin to it.
+        assert t_cst.remote_code_repo_for_task(QUASAR_SEED, "tatsu-lab/alpaca") == QUASAR_SEED
+        # standard-arch tasks get no remote code from either key.
+        assert t_cst.remote_code_repo_for_task("Qwen/Qwen3-8B-Base", "tatsu-lab/alpaca") is None
+        assert t_cst.remote_code_repo_for_task("Qwen/Qwen3-8B-Base", t_cst.continuous_sft_ds("qwen", "x")) is None
+        assert t_cst.remote_code_repo_for_task(None, None) is None
