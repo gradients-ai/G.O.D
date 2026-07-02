@@ -10,9 +10,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
+from validator.tournament import tournament_manager
 from validator.tournament.models import KnockoutRound
 
 
@@ -64,3 +66,68 @@ async def test_more_than_two_competitors_keeps_probability_routing(monkeypatch):
     instruct_mock.assert_not_awaited()
     assert probability_mock.await_count == 2
     assert len(tasks) == 2
+
+
+class TestPreBossBothMinersFailed:
+    """When both pre-boss miners fail the quasar task, the round must COMPLETE (not stall for
+    investigation): with no positive quality scores get_task_winner yields None, winners come back
+    empty, and advance_tournament's zero-winner path retains the boss with no boss round and no
+    emission shift. These tests pin the completion gate in is_tourn_task_completed."""
+
+    def _tournament_task(self):
+        return SimpleNamespace(task_id="task-1", round_id="round-3", tournament_id="tourn", group_id=None, pair_id="p1")
+
+    def _task_obj(self, status, model_id=t_cst.PRE_BOSS_QUASAR_MODEL):
+        return SimpleNamespace(
+            task_id="task-1", status=status, task_type=TaskType.INSTRUCTTEXTTASK, model_id=model_id
+        )
+
+    def _config(self):
+        return SimpleNamespace(psql_db=MagicMock(), discord_url=None)
+
+    def _patch_trainings(self, monkeypatch, statuses: dict[str, str]):
+        monkeypatch.setattr(tournament_manager, "get_training_status_for_task", AsyncMock(return_value=statuses))
+
+    async def test_both_failed_completes_round_on_task_success(self, monkeypatch):
+        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
+        completed, reason = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(), self._task_obj(TaskStatus.SUCCESS.value), self._config()
+        )
+        assert completed is True
+        assert "boss is retained" in reason
+
+    async def test_both_failed_completes_round_on_task_failure(self, monkeypatch):
+        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
+        completed, reason = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(), self._task_obj(TaskStatus.FAILURE.value), self._config()
+        )
+        assert completed is True
+        assert "boss is retained" in reason
+
+    async def test_non_quasar_task_still_stalls_for_investigation(self, monkeypatch):
+        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
+        completed, reason = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(),
+            self._task_obj(TaskStatus.SUCCESS.value, model_id="unsloth/Llama-3.2-3B"),
+            self._config(),
+        )
+        assert completed is False
+        assert reason == "More than half of the trainings failed"
+
+    async def test_task_failure_without_recorded_trainings_still_stalls(self, monkeypatch):
+        # Infra failure before any training was assigned: keep the investigate path, don't
+        # silently hand the tournament to the boss.
+        self._patch_trainings(monkeypatch, {})
+        completed, _ = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(), self._task_obj(TaskStatus.FAILURE.value), self._config()
+        )
+        assert completed is False
+
+    async def test_single_failure_keeps_normal_completion(self, monkeypatch):
+        # One survivor: round completes normally and the survivor challenges the boss.
+        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "success"})
+        completed, reason = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(), self._task_obj(TaskStatus.SUCCESS.value), self._config()
+        )
+        assert completed is True
+        assert reason == "Task completed successfully"
