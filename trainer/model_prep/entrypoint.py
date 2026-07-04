@@ -313,6 +313,11 @@ def main():
             model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
         )
     tokenizer = AutoTokenizer.from_pretrained(model_load_path, token=hf_token, trust_remote_code=trust)
+    # Baseline-stats forward passes run in loss mode (like training/eval), so disable the KV cache.
+    # Custom-arch models (quasar) otherwise take their cache/mask path, whose get_mask_sizes is
+    # incompatible with transformers 5.12.1 (it indexes an int q_length as a tensor). Eval already
+    # runs this model fine with use_cache=False; this matches it.
+    model.config.use_cache = False
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
 
