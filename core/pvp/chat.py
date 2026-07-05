@@ -22,6 +22,34 @@ from core.pvp import constants as cst
 
 logger = logging.getLogger(__name__)
 
+
+class ChatUnavailableError(RuntimeError):
+    """Inference endpoint failed after exhausting retries.
+
+    Carries the underlying attempt history so callers can distinguish a slow
+    model (any timeout in the retry chain) from an unreachable server (pure
+    connection failures). A bare RuntimeError here used to crash the whole
+    matchup; this typed error lets the bot layer choose forfeit vs infra replay.
+    """
+
+    def __init__(
+        self,
+        cause: BaseException | None,
+        attempts: int,
+        causes: list[BaseException] | None = None,
+    ):
+        self.cause = cause
+        self.causes = tuple(causes or ([cause] if cause is not None else []))
+        super().__init__(f"Chat failed after {attempts} attempts: {cause}")
+
+    @property
+    def timed_out(self) -> bool:
+        return any(isinstance(cause, (TimeoutError, openai.APITimeoutError)) for cause in self.causes)
+
+    def cause_types(self) -> str:
+        return ", ".join(type(cause).__name__ for cause in self.causes) or "unknown"
+
+
 _THINK_COMPLETE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 _THINK_UNCLOSED = re.compile(r"<think(?:ing)?>.*", re.DOTALL | re.IGNORECASE)
 
@@ -64,6 +92,7 @@ def _with_retries(
 ) -> ChatResult:
     """Execute chat with exponential backoff on transient failures."""
     last_exc: BaseException | None = None
+    transient_causes: list[BaseException] = []
     attempts = config.max_retries + 1
 
     for attempt in range(attempts):
@@ -72,6 +101,7 @@ def _with_retries(
 
         except (TimeoutError, openai.APITimeoutError, openai.APIConnectionError) as exc:
             last_exc = exc
+            transient_causes.append(exc)
             if attempt < attempts - 1:
                 wait = min(2**attempt, cst.PVP_RETRY_BACKOFF_CAP_SECONDS)
                 logger.warning(
@@ -83,11 +113,12 @@ def _with_retries(
         except openai.APIStatusError as exc:
             if exc.status_code >= 500 and attempt < attempts - 1:
                 last_exc = exc
+                transient_causes.append(exc)
                 time.sleep(min(2**attempt, cst.PVP_RETRY_BACKOFF_CAP_SECONDS))
                 continue
             raise
 
-    raise RuntimeError(f"Chat failed after {attempts} attempts: {last_exc}")
+    raise ChatUnavailableError(last_exc, attempts, transient_causes)
 
 
 def _call(

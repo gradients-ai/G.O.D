@@ -174,7 +174,7 @@ async def _run_and_record_gate(
         return GateDecision(halt=False)
 
     logger.info(f"Dedup gate {next_round_id}: running Claude pairwise check on {len(refs)} R2 entrants")
-    result = await run_pairwise_dedup(refs, boss_hotkey=EMISSION_BURN_HOTKEY)
+    result = await run_pairwise_dedup(refs, tournament.tournament_type, boss_hotkey=EMISSION_BURN_HOTKEY)
     clusters, verdicts = _to_records(result)
 
     unresolved_note = None

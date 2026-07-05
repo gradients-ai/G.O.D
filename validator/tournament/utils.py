@@ -32,9 +32,6 @@ from validator.tournament.round_results import get_real_winner_hotkey
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
-from validator.tournament.thresholds import did_contender_beat_boss_on_task
-from validator.tournament.thresholds import get_progressive_threshold
-from validator.tournament.thresholds import select_best_contender_by_cumulative_boss_wins
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
 
 
@@ -45,7 +42,6 @@ __all__ = [
     "deduplicate_by_ip_address",
     "determine_boss_round_winner",
     "determine_env_tournament_winner",
-    "did_contender_beat_boss_on_task",
     "did_winner_change",
     "draw_group_stage_table",
     "draw_knockout_bracket",
@@ -58,7 +54,6 @@ __all__ = [
     "get_knockout_winners",
     "get_latest_commit_hash_from_github",
     "get_latest_tournament_winner_participant",
-    "get_progressive_threshold",
     "get_real_tournament_winner",
     "get_real_winner_hotkey",
     "get_round_winners",
@@ -71,7 +66,6 @@ __all__ = [
     "notify_tournament_dedup_review",
     "notify_tournament_started",
     "parse_github_owner_repo",
-    "select_best_contender_by_cumulative_boss_wins",
     "send_to_discord",
     "update_threshold_adjusted_quality_scores_for_task",
     "validate_github_tokens",

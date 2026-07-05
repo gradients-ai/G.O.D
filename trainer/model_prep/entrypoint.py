@@ -168,7 +168,8 @@ def parse_args():
         default=None,
         help=(
             "JSON dict of {env_name: {url, task_id_min, task_id_max, "
-            "num_episodes, eval_payload_extra}}"
+            "num_episodes, eval_payload_extra}}. num_episodes is retained for compatibility; "
+            "environment baselines are time-budgeted."
         ),
     )
     return parser.parse_args()
@@ -278,6 +279,16 @@ def _load_config_with_yarn_fix(model_path: str, hf_token: str, trust_remote_code
 
 def main():
     t_total = time.time()
+
+    # Cap CPU threads. Several model-prep containers can share one node, and
+    # torch/OpenMP otherwise each spawn one thread per physical core (hundreds
+    # on big boxes). That oversubscription makes the CPU-bound stats (BPB,
+    # near-duplicate, tokenisation) spend their time in OMP barrier spin rather
+    # than real work. A modest cap keeps each container fast and well-behaved.
+    cpu_threads = int(os.environ.get("MODEL_PREP_CPU_THREADS", "8"))
+    torch.set_num_threads(cpu_threads)
+    print(f"[model_prep] CPU threads capped at {cpu_threads}", flush=True)
+
     args = parse_args()
     aug_config = build_augmentation_config(args)
     hf_token = os.environ.get("HUGGINGFACE_TOKEN", "")

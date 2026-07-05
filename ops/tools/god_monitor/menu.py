@@ -128,7 +128,11 @@ async def _tournament_detail(q: Queries, tournament_id: str) -> None:
             v.rounds_table(await q.rounds(tournament_id))
             _pause()
         elif choice == "4":
-            v.deployments_table(await q.active_deployments(), await q.pvp_deployments())
+            v.deployments_table(
+                await q.active_deployments(),
+                await q.pvp_deployments(),
+                await q.individual_deployments(),
+            )
             _pause()
         elif choice == "5":
             rows = await q.tournament_training(tournament_id)
@@ -270,7 +274,11 @@ async def run(q: Queries) -> None:
                 )
                 _pause()
             elif choice == "4":
-                v.deployments_table(await q.active_deployments(), await q.pvp_deployments())
+                v.deployments_table(
+                    await q.active_deployments(),
+                    await q.pvp_deployments(),
+                    await q.individual_deployments(),
+                )
                 _pause()
             elif choice == "5":
                 ident = ask("enter task id:")

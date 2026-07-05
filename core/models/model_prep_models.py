@@ -180,6 +180,8 @@ class EnvBaselineConfig(BaseModel):
     """Per-environment baseline config passed into the model prep container.
 
     url is the env server sidecar; None for envs baselined in-harness.
+    num_episodes is retained for compatibility; environment baselines use a
+    model-prep time budget.
     """
 
     url: str | None = None

@@ -140,7 +140,11 @@ class TrainingRepoResponse(BaseModel):
 
 
 class EnvConfig(BaseModel):
-    """Per-environment config for model prep evaluation."""
+    """Per-environment config for model prep evaluation.
+
+    num_episodes is retained for compatibility; environment baselines are time-budgeted.
+    """
+
     env_image: str
     env_server_command: list[str] | None = None
     task_id_min: int

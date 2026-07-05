@@ -17,9 +17,11 @@ try:
     import pyspiel  # noqa: F401
 
     from validator.evaluation.pvp.agents import LeducPokerAgent
+    from validator.evaluation.pvp.bot import ChatTimeoutForfeitError
     from validator.evaluation.pvp.bot import EmptyLegalActionsError
     from validator.evaluation.pvp.bot import InvalidActionForfeitError
     from validator.evaluation.pvp.bot import LLMBot
+    from validator.evaluation.pvp.bot import ModelUnreachableError
 
     HAS_PYSPIEL = True
 except ImportError:
@@ -59,6 +61,18 @@ class ScriptedChat:
         self.calls.append({"messages": messages, "tools": tools})
         assert self.queue, "bot made more chat calls than the script provided"
         return self.queue.pop(0)
+
+
+class FailingChat:
+    """A ChatFn that raises a configured exception and records the attempted call."""
+
+    def __init__(self, exc: Exception):
+        self.exc = exc
+        self.calls: list[dict] = []
+
+    def __call__(self, config, messages, tools=None) -> ChatResult:
+        self.calls.append({"messages": messages, "tools": tools})
+        raise self.exc
 
 
 def _leduc():
@@ -217,6 +231,42 @@ class TestForfeit:
         with pytest.raises(InvalidActionForfeitError):
             _make_bot(game, chat, pid, memories=mems).step(state)
         assert "note" in mems[MemoryArea.WORKING].slots[1]
+
+    def test_chat_timeout_history_forfeits_even_if_last_error_is_connection(self):
+        from core.pvp.chat import ChatUnavailableError
+
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = FailingChat(
+            ChatUnavailableError(
+                RuntimeError("connection reset"),
+                attempts=2,
+                causes=[TimeoutError("read timeout"), RuntimeError("connection reset")],
+            )
+        )
+
+        with pytest.raises(ChatTimeoutForfeitError) as exc:
+            _make_bot(game, chat, pid).step(state)
+
+        assert exc.value.player_id == pid
+
+    def test_pure_connection_failure_is_infra_unreachable(self):
+        from core.pvp.chat import ChatUnavailableError
+
+        game, state = _leduc()
+        pid = state.current_player()
+        chat = FailingChat(
+            ChatUnavailableError(
+                RuntimeError("connection refused"),
+                attempts=2,
+                causes=[RuntimeError("connection refused"), RuntimeError("connection refused")],
+            )
+        )
+
+        with pytest.raises(ModelUnreachableError) as exc:
+            _make_bot(game, chat, pid).step(state)
+
+        assert exc.value.player_id == pid
 
 
 @needs_pyspiel

@@ -85,7 +85,8 @@ def print_env_plan(env_configs: dict[EnvironmentName, EnvConfig]) -> None:
     for env_name, cfg in env_configs.items():
         print(
             f"- {env_name.value}: image={cfg.env_image}, "
-            f"task_ids={cfg.task_id_min}-{cfg.task_id_max}, episodes={cfg.num_episodes}"
+            f"task_ids={cfg.task_id_min}-{cfg.task_id_max}, "
+            "baseline=time-budgeted (MODEL_PREP_ENV_TIME_BUDGET_SECONDS, default 420s)"
         )
         if cfg.env_server_command:
             print(f"  command={' '.join(cfg.env_server_command)}")
@@ -122,12 +123,12 @@ def parse_args() -> argparse.Namespace:
         "--episodes",
         type=positive_int,
         default=1,
-        help="Override baseline episodes per environment. Default: 1.",
+        help="Compatibility override for legacy baseline episode payloads. Time-budgeted baselines ignore this. Default: 1.",
     )
     parser.add_argument(
         "--use-default-episodes",
         action="store_true",
-        help="Use the canonical episode counts instead of --episodes.",
+        help="Use canonical compatibility episode counts instead of --episodes.",
     )
     parser.add_argument("--gpu-ids", type=parse_gpu_ids, default=parse_gpu_ids("0"), help="Comma-separated GPU IDs.")
     parser.add_argument("--task-id", default=None, help="Optional task id for cache paths/container names.")

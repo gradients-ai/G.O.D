@@ -44,10 +44,10 @@ SGLANG_HEALTH_TIMEOUT = 600
 ENV_EVAL_TEMPERATURE = 0.0
 ENV_EVAL_TASK_TIMEOUT = 150
 CONSECUTIVE_FAILURE_LIMIT = 5
-# Per-env wall-clock budget for the in-harness baseline (soft cap: checked
-# between games, so an in-flight game can overshoot). Overrun returns a partial
-# tally instead of blowing the validator's dispatch timeout.
-ENV_BASELINE_TIME_BUDGET_SECONDS = float(os.getenv("MODEL_PREP_ENV_TIME_BUDGET_SECONDS", "540"))
+# Per-env wall-clock budget for environment baselines (soft cap: checked
+# between games/episodes, so an in-flight run can overshoot). Overrun returns
+# a partial tally instead of blowing the validator's dispatch timeout.
+ENV_BASELINE_TIME_BUDGET_SECONDS = float(os.getenv("MODEL_PREP_ENV_TIME_BUDGET_SECONDS", "420"))
 
 
 # --- SGLang process management (from eval_environment.py) ---
@@ -176,12 +176,11 @@ async def _play_episodes(
     env_server_url: str,
     sglang_base_url: str,
     model_name: str,
-    num_episodes: int,
     task_id_min: int,
     task_id_max: int,
     eval_payload_extra: dict | None,
 ) -> EnvStats:
-    """Play episodes against an env server sidecar and return summary stats.
+    """Play episodes against an env server sidecar until the time budget expires.
 
     Stops early if CONSECUTIVE_FAILURE_LIMIT episodes fail in a row — the
     remaining episodes would almost certainly fail too (model hallucinating,
@@ -190,10 +189,16 @@ async def _play_episodes(
     seed_rng = random.Random(42)
     scores: list[float] = []
     consecutive_failures = 0
+    started = time.monotonic()
 
-    print(f"  {env_name.value}: playing {num_episodes} episodes...", flush=True)
+    print(
+        f"  {env_name.value}: playing episodes for up to "
+        f"{ENV_BASELINE_TIME_BUDGET_SECONDS / 60:.1f} minutes...",
+        flush=True,
+    )
 
-    for i in range(num_episodes):
+    i = 0
+    while time.monotonic() - started < ENV_BASELINE_TIME_BUDGET_SECONDS:
         seed = seed_rng.randint(1, 1_000_000)
         task_id = _sample_task_id(seed, task_id_min, task_id_max)
 
@@ -245,12 +250,14 @@ async def _play_episodes(
             if consecutive_failures >= CONSECUTIVE_FAILURE_LIMIT:
                 print(
                     f"  {env_name.value}: {CONSECUTIVE_FAILURE_LIMIT} consecutive failures, "
-                    f"stopping early at episode {i+1}/{num_episodes}",
+                    f"stopping early after {i+1} episodes",
                     flush=True,
                 )
                 break
         else:
             consecutive_failures = 0
+
+        i += 1
 
     stats = _build_env_stats(scores)
     print(f"  {env_name.value}: {stats.num_episodes} episodes, mean={stats.mean_score:.3f}", flush=True)
@@ -262,10 +269,9 @@ def _mcts_baseline_stats(
     sglang_base_url: str,
     model_name: str,
     model_path: str,
-    num_episodes: int,
     eval_payload_extra: dict | None,
 ) -> EnvStats:
-    """Play num_episodes baseline games of the model vs in-harness MCTS."""
+    """Play baseline games of the model vs in-harness MCTS until the time budget expires."""
     extra = eval_payload_extra or {}
     mcts_simulations = extra.get("mcts_max_simulations")
 
@@ -280,12 +286,16 @@ def _mcts_baseline_stats(
     client = create_client(config)
     chat_fn = functools.partial(chat_completion, client)
 
-    print(f"  {env_name.value}: playing {num_episodes} games vs MCTS...", flush=True)
+    print(
+        f"  {env_name.value}: playing games vs MCTS for up to "
+        f"{ENV_BASELINE_TIME_BUDGET_SECONDS / 60:.1f} minutes...",
+        flush=True,
+    )
     result = run_mcts_baseline(
         env_name=env_name,
         chat_fn=chat_fn,
         config=config,
-        num_games=num_episodes,
+        num_games=None,
         mcts_simulations=mcts_simulations,
         time_budget_seconds=ENV_BASELINE_TIME_BUDGET_SECONDS,
     )
@@ -340,7 +350,6 @@ async def compute_env_stats(
                             sglang_base_url=sglang_base_url,
                             model_name=model_name,
                             model_path=model_path,
-                            num_episodes=cfg.num_episodes,
                             eval_payload_extra=cfg.eval_payload_extra,
                         )
                     elif cfg.url:
@@ -350,7 +359,6 @@ async def compute_env_stats(
                             env_server_url=cfg.url,
                             sglang_base_url=sglang_base_url,
                             model_name=model_name,
-                            num_episodes=cfg.num_episodes,
                             task_id_min=cfg.task_id_min,
                             task_id_max=cfg.task_id_max,
                             eval_payload_extra=cfg.eval_payload_extra,

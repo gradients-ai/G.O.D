@@ -1764,9 +1764,7 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
     if not hotkeys:
         return
     expected_rows = len(set(hotkeys))
-    terminal_cleanup = (
-        f", {cst.DEPLOYMENT_ID} = NULL, {cst.GPU_COUNT} = NULL" if status in {"success", "failure"} else ""
-    )
+    terminal_cleanup = f", {cst.GPU_COUNT} = NULL" if status in {"success", "failure"} else ""
     async with await psql_db.connection() as connection:
         result = await connection.execute(
             f"""
@@ -1798,7 +1796,7 @@ async def clear_task_evaluation_deployments(task_id: UUID, hotkeys: list[str], p
         await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
-            SET {cst.DEPLOYMENT_ID} = NULL, {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            SET {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2) AND {cst.NETUID} = $3
             """,
             task_id,
@@ -1814,8 +1812,6 @@ async def reset_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) -> N
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = 'pending',
-                {cst.DEPLOYMENT_ID} = NULL,
-                {cst.GPU_COUNT} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1 AND {cst.EVALUATION_STATUS} = 'evaluating' AND {cst.NETUID} = $2
             """,
@@ -1831,8 +1827,6 @@ async def reset_all_task_evaluations_to_pending(task_id: UUID, psql_db: PSQLDB) 
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = 'pending',
-                {cst.DEPLOYMENT_ID} = NULL,
-                {cst.GPU_COUNT} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
             """,
@@ -1874,7 +1868,7 @@ async def set_evaluation_deployment_id(
 async def try_reserve_evaluation_gpus(
     task_id: UUID,
     hotkeys: list[str],
-    deployment_id: str,
+    deployment_id: str | None,
     gpu_count: int,
     psql_db: PSQLDB,
 ) -> bool:
@@ -1892,12 +1886,15 @@ async def try_reserve_evaluation_gpus(
                 f"""
                 SELECT COALESCE(SUM(deployment_gpus), 0)
                 FROM (
-                    SELECT {cst.DEPLOYMENT_ID}, MAX(COALESCE({cst.GPU_COUNT}, 0)) AS deployment_gpus
+                    SELECT
+                        COALESCE({cst.DEPLOYMENT_ID}, {cst.TASK_ID}::text || ':' || {cst.HOTKEY})
+                            AS deployment_key,
+                        MAX(COALESCE({cst.GPU_COUNT}, 0)) AS deployment_gpus
                     FROM {cst.EVALUATIONS_TABLE}
                     WHERE {cst.NETUID} = $1
                       AND {cst.EVALUATION_STATUS} = ANY($2)
-                      AND {cst.DEPLOYMENT_ID} IS NOT NULL
-                    GROUP BY {cst.DEPLOYMENT_ID}
+                      AND {cst.GPU_COUNT} IS NOT NULL
+                    GROUP BY deployment_key
                 ) active_deployments
                 """,
                 NETUID,
@@ -1909,7 +1906,7 @@ async def try_reserve_evaluation_gpus(
             result = await connection.execute(
                 f"""
                 UPDATE {cst.EVALUATIONS_TABLE}
-                SET {cst.DEPLOYMENT_ID} = $4,
+                SET {cst.DEPLOYMENT_ID} = COALESCE($4, {cst.DEPLOYMENT_ID}),
                     {cst.GPU_COUNT} = $5,
                     {cst.UPDATED_AT} = CURRENT_TIMESTAMP
                 WHERE {cst.TASK_ID} = $1
@@ -1940,27 +1937,27 @@ async def try_reserve_evaluation_gpus(
 async def release_evaluation_gpu_reservation(
     task_id: UUID | None,
     hotkeys: list[str],
-    deployment_id: str,
+    deployment_id: str | None,
     psql_db: PSQLDB | None,
 ) -> None:
     if task_id is None or psql_db is None or not hotkeys:
         return
+    deployment_filter = f"AND {cst.DEPLOYMENT_ID} = $4" if deployment_id is not None else ""
+    params = [task_id, hotkeys, NETUID]
+    if deployment_id is not None:
+        params.append(deployment_id)
     async with await psql_db.connection() as connection:
         await connection.execute(
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
-            SET {cst.DEPLOYMENT_ID} = NULL,
-                {cst.GPU_COUNT} = NULL,
+            SET {cst.GPU_COUNT} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1
               AND {cst.HOTKEY} = ANY($2)
               AND {cst.NETUID} = $3
-              AND {cst.DEPLOYMENT_ID} = $4
+              {deployment_filter}
             """,
-            task_id,
-            hotkeys,
-            NETUID,
-            deployment_id,
+            *params,
         )
 
 
@@ -1972,7 +1969,6 @@ async def reset_evaluation_rows_for_deployment(deployment_id: str, psql_db: PSQL
             f"""
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = 'pending',
-                {cst.DEPLOYMENT_ID} = NULL,
                 {cst.GPU_COUNT} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.DEPLOYMENT_ID} = $1

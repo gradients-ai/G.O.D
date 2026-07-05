@@ -81,23 +81,27 @@ def run_mcts_baseline(
     env_name: EnvironmentName,
     chat_fn: ChatFn,
     config: ChatCompletionConfig,
-    num_games: int,
+    num_games: int | None,
     mcts_simulations: int | None = None,
     base_seed: int = 0,
     time_budget_seconds: float | None = None,
 ) -> MctsBaselineResult:
-    """Play num_games of env_name as the model (LLMBot) vs MCTS; return outcome counts.
+    """Play env_name as the model (LLMBot) vs MCTS; return outcome counts.
 
     The model alternates seats for fairness and carries one long-term memory across
     the games (it builds a read on the MCTS opponent, exactly as in a real matchup).
     A model-side forfeit (timeout, repeated illegal moves, context overflow) scores
     as a loss, mirroring eval.
 
+    num_games can be None when the caller wants a purely time-budgeted run.
     time_budget_seconds bounds wall-clock: no new game starts past the deadline
     and the partial tally is returned — a baseline over fewer games beats blowing
     the caller's dispatch timeout. The turn alarm bounds a single turn, not a
     game, so slow models need this outer guard.
     """
+    if num_games is None and time_budget_seconds is None:
+        raise ValueError("run_mcts_baseline requires num_games or time_budget_seconds")
+
     agent = _AGENT_REGISTRY[env_name]()
     env_config = ENVIRONMENT_CONFIGS[env_name]
     simulations = mcts_simulations if mcts_simulations is not None else _mcts_simulations_for(env_name)
@@ -108,11 +112,13 @@ def run_mcts_baseline(
     result = MctsBaselineResult()
     started = time.monotonic()
 
-    for i in range(num_games):
+    i = 0
+    while num_games is None or i < num_games:
         if time_budget_seconds is not None and time.monotonic() - started >= time_budget_seconds:
+            target_games = "time-budgeted" if num_games is None else str(num_games)
             logger.warning(
-                "%s baseline time budget (%.0fs) exhausted after %d/%d games; returning partial tally",
-                env_name.value, time_budget_seconds, result.num_games, num_games,
+                "%s baseline time budget (%.0fs) exhausted after %d/%s games; returning partial tally",
+                env_name.value, time_budget_seconds, result.num_games, target_games,
             )
             break
         seed = seed_rng.randint(1, cst.PVP_SEED_RANGE_MAX)
@@ -159,6 +165,8 @@ def run_mcts_baseline(
         # would just hit the same wall — skip it.
         if evaluation.forfeiting_player_id != model_seat:
             model_bot.reflect(state, outcome)
+
+        i += 1
 
     logger.info(
         "%s MCTS baseline: %d games, %d-%d-%d (W-D-L), score=%.3f",
