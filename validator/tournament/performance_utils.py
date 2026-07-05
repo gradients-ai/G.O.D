@@ -14,6 +14,7 @@ from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
 from validator.scoring.weights import calculate_hybrid_decays
 from validator.scoring.weights import calculate_tournament_weight_with_decay
 from validator.scoring.weights import emission_time_decay_fraction
+from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentProjection
