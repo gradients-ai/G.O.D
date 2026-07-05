@@ -222,28 +222,43 @@ def load_training_data(path: str) -> list[dict]:
 
 
 def sanitize_tokenizer_config(out_dir: str) -> None:
-    """Rewrite the tokenizer_class that transformers 5 leaks into tokenizer_config.json.
+    """Undo transformers-5 serialization quirks in tokenizer_config.json before publish.
 
     save_pretrained under transformers>=5 writes tokenizer_class="TokenizersBackend" — an internal
     backend marker, not a registered class — so any consumer's AutoTokenizer.from_pretrained crashes
     with "Tokenizer class TokenizersBackend does not exist". Rewrite it to PreTrainedTokenizerFast
     when the serialized tokenizer.json is present (loadable on transformers 4 and 5 alike), else drop
     the key so AutoTokenizer falls back to autodetection.
+
+    It also writes extra_special_tokens as a list of token strings (e.g. Qwen2's im_start/im_end),
+    where transformers 4 requires a dict of {name: token} and calls .keys() on it — downstream
+    training on the augmented model crashes (or dies trying to rewrite the read-only model cache).
+    Normalize list → dict.
     """
     config_path = os.path.join(out_dir, "tokenizer_config.json")
     if not os.path.exists(config_path):
         return
     with open(config_path) as f:
         config = json.load(f)
-    if config.get("tokenizer_class") != "TokenizersBackend":
-        return
-    if os.path.exists(os.path.join(out_dir, "tokenizer.json")):
-        config["tokenizer_class"] = "PreTrainedTokenizerFast"
-    else:
-        del config["tokenizer_class"]
-    with open(config_path, "w") as f:
-        json.dump(config, f, indent=2)
-    print(f"[model_prep] Sanitized TokenizersBackend tokenizer_class in {config_path}", flush=True)
+    changed = False
+
+    if config.get("tokenizer_class") == "TokenizersBackend":
+        if os.path.exists(os.path.join(out_dir, "tokenizer.json")):
+            config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        else:
+            del config["tokenizer_class"]
+        changed = True
+        print(f"[model_prep] Sanitized TokenizersBackend tokenizer_class in {config_path}", flush=True)
+
+    extra_special_tokens = config.get("extra_special_tokens")
+    if isinstance(extra_special_tokens, list):
+        config["extra_special_tokens"] = {token: token for token in extra_special_tokens if isinstance(token, str)}
+        changed = True
+        print(f"[model_prep] Normalized extra_special_tokens list → dict in {config_path}", flush=True)
+
+    if changed:
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
 
 
 def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> None:
