@@ -482,6 +482,10 @@ async def create_text_task_with_custom_dataset(
 
     task = await task_sql.add_task(task, config.psql_db)
     logger.info(f"Task of type {task.task_type} created: {task.task_id}")
+
+    if config.discord_url:
+        await notify_organic_task_created(str(task.task_id), task.task_type.value, config.discord_url)
+
     return NewTaskResponse(success=True, task_id=task.task_id, created_at=task.created_at, account_id=task.account_id)
 
 

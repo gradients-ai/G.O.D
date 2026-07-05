@@ -20,7 +20,6 @@ from validator.tournament.models import TournamentProjection
 from validator.tournament.models import TournamentType
 from validator.tournament.models import WeightProjection
 from validator.tournament.round_results import get_real_tournament_winner
-from validator.tournament.thresholds import get_progressive_threshold
 
 
 def calculate_scaled_weights(
@@ -150,7 +149,8 @@ async def calculate_tournament_projection(
         dethrones = effective_win_pct >= cts.PVP_WIN_PCT_THRESHOLD
     else:
         performance_diff = percentage_improvement / 100.0
-        dethrone_threshold = get_progressive_threshold(consecutive_wins, tournament_type)
+        # Match the boss-round crowning margin so the projection agrees with reality.
+        dethrone_threshold = t_cst.BOSS_ROUND_WIN_MARGIN
         dethrones = performance_diff > dethrone_threshold
 
     # Tournament-internal share by rank and the participation scale factor.

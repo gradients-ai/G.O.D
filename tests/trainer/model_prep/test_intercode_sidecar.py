@@ -40,6 +40,14 @@ def test_model_prep_configs_include_intercode_sidecar():
     ]
 
 
+def test_model_prep_configs_are_time_budgeted_not_fixed_counts():
+    configs = _build_env_configs()
+
+    assert configs[EnvironmentName.LIARS_DICE].num_episodes == 0
+    assert configs[EnvironmentName.GIN_RUMMY].num_episodes == 0
+    assert configs[EnvironmentName.INTERCODE].num_episodes == 0
+
+
 def test_intercode_sidecar_formats_empty_exceptions(monkeypatch):
     fake_eval_intercode = types.ModuleType("validator.evaluation.evaluators.intercode")
     fake_eval_intercode.DEFAULT_MAX_TOKENS_PER_CALL = 512
@@ -154,6 +162,9 @@ def test_start_env_sidecars_failure_degrades_instead_of_raising(monkeypatch):
 
 
 def test_in_harness_envs_match_agent_registry():
+    pytest.importorskip("pyspiel")
+    pytest.importorskip("open_spiel")
+
     from core.constants.environments import ENVIRONMENT_CONFIGS
     from core.constants.environments import EvalType
     from core.pvp.game_eval import _AGENT_REGISTRY

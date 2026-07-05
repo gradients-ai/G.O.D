@@ -9,16 +9,16 @@ from validator.db.sql.tasks import get_task
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
 from validator.db.sql.tournament_performance import update_tournament_winning_performance
-from validator.db.sql.tournaments import count_champion_consecutive_wins_at_tournament
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
+from validator.tournament import constants as t_cst
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentPerformanceData
 from validator.tournament.task_results import get_task_results_for_ranking
-from validator.tournament.thresholds import get_progressive_threshold
+from validator.tournament.thresholds import challenger_beats_boss
 
 
 logger = get_logger(__name__)
@@ -33,14 +33,12 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         return []
 
     current_champion = tournament.base_winner_hotkey or EMISSION_BURN_HOTKEY
-    consecutive_wins = await count_champion_consecutive_wins_at_tournament(
-        psql_db, tournament.tournament_type, current_champion, tournament_id
-    )
-    threshold = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
+    # Report challenger_won using the same margin crowning uses, so analytics match reality.
+    threshold = t_cst.BOSS_ROUND_WIN_MARGIN
 
     logger.info(
-        f"Calculating boss round performance for tournament {tournament_id}, champion {current_champion} "
-        f"with {consecutive_wins} consecutive wins, threshold: {threshold * 100:.1f}%"
+        f"Calculating boss round performance for tournament {tournament_id}, champion {current_champion}, "
+        f"threshold: {threshold * 100:.1f}%"
     )
 
     round_id = await get_final_round_id(tournament_id, psql_db)
@@ -154,13 +152,13 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 perf_diff = (challenger_score - boss_score) / abs(boss_score)
             else:
                 perf_diff = 0.0
-            challenger_won = challenger_score > boss_score * (1 + threshold)
+            challenger_won = challenger_beats_boss(boss_score, challenger_score, True, threshold)
         else:
             if challenger_score != 0:
                 perf_diff = (boss_score - challenger_score) / abs(challenger_score)
             else:
                 perf_diff = 0.0
-            challenger_won = challenger_score < boss_score * (1 - threshold)
+            challenger_won = challenger_beats_boss(boss_score, challenger_score, False, threshold)
 
         performance_differences.append(
             TaskPerformanceDifference(
