@@ -124,7 +124,8 @@ async def calculate_tournament_projection(
 
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
-    runner-up (base-pool share, no champion boost, no time decay).
+    runner-up (base-pool share, no champion boost, earning only until the next
+    tournament's results replace the standings).
     """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
     current_champion = get_real_tournament_winner(latest_tournament) if latest_tournament else None
@@ -213,7 +214,8 @@ async def calculate_tournament_projection(
         placement = "champion"
     else:
         # Below the dethrone threshold the boss defends; the challenger places 2nd
-        # and earns the runner-up share of the base pool (no champion boost, no decay).
+        # and earns the runner-up share of the base pool (no champion boost) only
+        # until the next tournament's results replace the standings.
         emission_boost = 0.0
         runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
         runner_up_weight = runner_up_share * base_weight * scale_factor
@@ -222,8 +224,8 @@ async def calculate_tournament_projection(
         projections = [
             WeightProjection(
                 days=days,
-                weight=runner_up_weight,
-                total_alpha=days * cts.DAILY_ALPHA_TO_MINERS * runner_up_weight,
+                weight=runner_up_weight if days <= t_cst.RUNNER_UP_EMISSION_DAYS else 0.0,
+                total_alpha=min(days, t_cst.RUNNER_UP_EMISSION_DAYS) * cts.DAILY_ALPHA_TO_MINERS * runner_up_weight,
             )
             for days in projection_days
         ]

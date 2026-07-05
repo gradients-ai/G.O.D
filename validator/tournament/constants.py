@@ -7,6 +7,10 @@ from core.models.task_models import TaskType
 
 TOURNAMENT_INTERVAL_HOURS = 120
 
+# A runner-up holds their base-pool share only until the next tournament's
+# results replace the standings: one interval plus roughly the run itself.
+RUNNER_UP_EMISSION_DAYS = 7
+
 # Tournament scheduling settings
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 11
