@@ -133,6 +133,7 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         merged.save_pretrained(merge_dir, safe_serialization=True)
         target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
         target_tokenizer.save_pretrained(merge_dir)
+        sanitize_tokenizer_config(merge_dir)
 
         del base_model, merged
         if torch.cuda.is_available():
@@ -220,16 +221,46 @@ def load_training_data(path: str) -> list[dict]:
     return []
 
 
+def sanitize_tokenizer_config(out_dir: str) -> None:
+    """Rewrite the tokenizer_class that transformers 5 leaks into tokenizer_config.json.
+
+    save_pretrained under transformers>=5 writes tokenizer_class="TokenizersBackend" — an internal
+    backend marker, not a registered class — so any consumer's AutoTokenizer.from_pretrained crashes
+    with "Tokenizer class TokenizersBackend does not exist". Rewrite it to PreTrainedTokenizerFast
+    when the serialized tokenizer.json is present (loadable on transformers 4 and 5 alike), else drop
+    the key so AutoTokenizer falls back to autodetection.
+    """
+    config_path = os.path.join(out_dir, "tokenizer_config.json")
+    if not os.path.exists(config_path):
+        return
+    with open(config_path) as f:
+        config = json.load(f)
+    if config.get("tokenizer_class") != "TokenizersBackend":
+        return
+    if os.path.exists(os.path.join(out_dir, "tokenizer.json")):
+        config["tokenizer_class"] = "PreTrainedTokenizerFast"
+    else:
+        del config["tokenizer_class"]
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"[model_prep] Sanitized TokenizersBackend tokenizer_class in {config_path}", flush=True)
+
+
 def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> None:
     """Upload augmented model to HuggingFace, scrubbing identity."""
     print(f"Uploading augmented model to {repo_id}")
 
+    api = HfApi(token=hf_token)
     model.config._name_or_path = repo_id
     model.push_to_hub(repo_id, token=hf_token, private=False)
-    tokenizer.push_to_hub(repo_id, token=hf_token, private=False)
+    # Save the tokenizer locally so its config can be sanitized before upload; a straight
+    # tokenizer.push_to_hub would publish the broken TokenizersBackend class name.
+    with tempfile.TemporaryDirectory() as tok_dir:
+        tokenizer.save_pretrained(tok_dir)
+        sanitize_tokenizer_config(tok_dir)
+        api.upload_folder(repo_id=repo_id, folder_path=tok_dir, commit_message="Upload tokenizer")
 
     # Scrub _name_or_path from config
-    api = HfApi(token=hf_token)
     with tempfile.TemporaryDirectory() as tmp:
         config_path = api.hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=tmp, token=hf_token)
         with open(config_path, "r") as f:
