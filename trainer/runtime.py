@@ -71,6 +71,21 @@ def calculate_container_resources(gpu_ids: list[int]) -> tuple[str, int]:
     return memory_limit, cpu_limit_nanocpus
 
 
+def _pull_latest_image(client: docker.DockerClient, image: str, log_labels: dict[str, str] | None = None) -> None:
+    """Re-pull a floating-tag image so fixes actually reach the trainer.
+
+    containers.run only pulls when the image is absent locally, so a `:latest`
+    tag pinned at first download would otherwise never update. A pull with an
+    unchanged digest is a cheap no-op; registry failures fall back to the local
+    image rather than blocking the job.
+    """
+    try:
+        client.images.pull(image)
+        logger.info(f"Pulled {image}", extra=log_labels)
+    except APIError as e:
+        logger.warning(f"Could not pull {image}, using local copy: {e}", extra=log_labels)
+
+
 def build_docker_image(
     dockerfile_path: str,
     log_labels: dict[str, str] | None = None,
@@ -636,6 +651,7 @@ def run_model_prep_container(
     model_prep_image = (
         cst.MODEL_PREP_ENV_DOCKER_IMAGE if task_type == TaskType.ENVIRONMENTTASK else cst.MODEL_PREP_TEXT_DOCKER_IMAGE
     )
+    _pull_latest_image(client, model_prep_image, log_labels)
 
     try:
         logger.info(f"Starting model prep container: {container_name} (image={model_prep_image})", extra=log_labels)
