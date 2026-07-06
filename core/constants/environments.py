@@ -173,7 +173,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
     ),
     EnvironmentName.SWE_INFINITE: EnvironmentConfig(
         task_id_min=1,
-        task_id_max=22_813,
+        task_id_max=7000,
         num_seeds=6,
         num_baseline_episodes=0,
         eval_type=EvalType.INDIVIDUAL,
