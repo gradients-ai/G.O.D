@@ -141,6 +141,13 @@ docker run -d \
   gradientsio/swe-infinite:v1
 ```
 
+The `--restart unless-stopped` policy makes Docker restart the SWE server after host reboots. On systemd hosts, also make sure Docker itself starts on boot:
+
+```bash
+sudo systemctl enable --now docker
+docker update --restart unless-stopped swe-infinite
+```
+
 Then check it locally and expose the same base URL in `.vali.env`:
 
 ```bash
