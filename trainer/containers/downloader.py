@@ -13,7 +13,6 @@ from huggingface_hub import snapshot_download
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
-from transformers import CLIPTokenizer
 
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
@@ -26,6 +25,7 @@ from trainer.model_artifacts import scrub_model_identity
 
 
 LORA_ADAPTER_CONFIG = "adapter_config.json"
+IDEOGRAM4_TEXT_ENCODER_REPO = "Qwen/Qwen3-VL-8B-Instruct"
 
 
 hf_api = HfApi()
@@ -125,12 +125,8 @@ async def download_base_model(repo_id: str, save_root: str, model_type: ImageMod
         print(f"Model already cached at {save_path}. Skipping download.")
         return save_path
     else:
-        has_safetensors, safetensors_path = is_safetensors_available(repo_id)
-        if has_safetensors and safetensors_path and model_type in [ImageModelType.FLUX, ImageModelType.SDXL]:
-            result = download_from_huggingface(repo_id, safetensors_path, save_path)
-        else:
-            snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
-            result = save_path
+        snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
+        result = save_path
         if anonymize:
             scrub_model_identity(save_path)
         return result
@@ -231,6 +227,20 @@ async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bo
     return model_dir
 
 
+async def download_huggingface_snapshot(repo_id: str, save_root: str) -> str:
+    """Download a Hugging Face model snapshot to a stable cache directory."""
+    save_path = os.path.join(save_root, repo_id.replace("/", "--"))
+    os.makedirs(save_root, exist_ok=True)
+    if os.path.exists(save_path):
+        print(f"Model already cached at {save_path}. Skipping download.", flush=True)
+        return save_path
+
+    print(f"Downloading {repo_id} to {save_path}...", flush=True)
+    snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
+    print(f"Downloaded {repo_id} to {save_path}", flush=True)
+    return save_path
+
+
 async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> str:
     """Download adapter file and save it in the adapters directory"""
     adapter_path = os.path.join(adapters_dir, filename)
@@ -279,9 +289,10 @@ async def main():
         "--model-type",
         choices=[
             ImageModelType.FLUX.value,
-            ImageModelType.SDXL.value,
             ImageModelType.Z_IMAGE.value,
             ImageModelType.QWEN_IMAGE.value,
+            ImageModelType.IDEOGRAM4.value,
+            ImageModelType.KREA2.value,
         ],
     )
     parser.add_argument("--anonymize", action="store_true", help="Anonymize model directory name and scrub identity")
@@ -325,17 +336,22 @@ async def main():
                 adapters_dir=adapters_dir
             )
             print(f"Qwen-Image adapter downloaded to: {qwen_adapter_path}", flush=True)
-        
-        print("Downloading clip models", flush=True)
-        CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
-        CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
-        snapshot_download(
-            repo_id="google/t5-v1_1-xxl",
-            repo_type="model",
-            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
-            local_dir_use_symlinks=False,
-            allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
-        )
+
+        elif args.model_type == ImageModelType.IDEOGRAM4.value:
+            print("Downloading Ideogram 4 text encoder...", flush=True)
+            text_encoder_path = await download_huggingface_snapshot(
+                IDEOGRAM4_TEXT_ENCODER_REPO,
+                adapters_dir,
+            )
+            print(f"Ideogram 4 text encoder downloaded to: {text_encoder_path}", flush=True)
+
+            print("Downloading Ideogram 4 unconditional LoRA...", flush=True)
+            ideogram_adapter_path = await download_adapter(
+                repo_id="ostris/ideogram_4_unconditional_lora",
+                filename="ideogram_4_unconditional_lora_r16.safetensors",
+                adapters_dir=adapters_dir
+            )
+            print(f"Ideogram 4 unconditional LoRA downloaded to: {ideogram_adapter_path}", flush=True)
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)

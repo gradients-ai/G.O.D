@@ -2,6 +2,7 @@ from datetime import date
 
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
+from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 
 
@@ -137,7 +138,12 @@ ENVIRONMENT_TASKS_PER_GROUP = 1
 
 # Final round task counts
 FINAL_ROUND_IMAGE_TASKS = 6
-FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS = 3
+FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
+    ImageModelType.KREA2: 2,
+    ImageModelType.IDEOGRAM4: 2,
+    ImageModelType.FLUX: 1,
+    ImageModelType.Z_IMAGE: 1,
+}
 
 # Explicit text boss-round mix (the two continuous-SFT lineages replace one GRPO + one DPO slot);
 # FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.

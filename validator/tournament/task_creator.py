@@ -785,39 +785,35 @@ async def _create_new_image_boss_round_tasks(tournament_id: str, round_id: str, 
     logger.info("Creating boss round image tasks using new synthetic tasks")
 
     existing_task_objects = await _get_existing_tasks(existing_tasks, config)
-    existing_qwen_zimage = sum(
-        1 for task in existing_task_objects
-        if hasattr(task, 'model_type') and task.model_type in [ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
-    )
-
     tasks = existing_task_objects
-    num_needed = t_cst.FINAL_ROUND_IMAGE_TASKS - existing_count
-    num_qwen_zimage = min(t_cst.FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS - existing_qwen_zimage, num_needed)
-    num_regular = num_needed - num_qwen_zimage
 
-    async def filtered_models(include_qwen_zimage: bool):
+    existing_counts_by_model_type = {
+        model_type: sum(1 for task in existing_task_objects if getattr(task, "model_type", None) == model_type)
+        for model_type in t_cst.FINAL_ROUND_IMAGE_TASK_DISTRIBUTION
+    }
+
+    async def filtered_models(model_type: ImageModelType):
         async for model in _get_image_models(config.keypair):
-            is_qwen_zimage = model.model_type in [ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
-            if include_qwen_zimage == is_qwen_zimage:
+            if model.model_type == model_type:
                 yield model
 
-    qwen_zimage_gen = filtered_models(include_qwen_zimage=True)
-    for i in range(num_qwen_zimage):
-        try:
-            task = await _create_single_image_task_with_retry(config, qwen_zimage_gen, i, is_final=True)
-            await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
-            tasks.append(task)
-        except Exception as e:
-            logger.error(f"Failed to create qwen/z-image task {i + 1}/{num_qwen_zimage}: {e}", exc_info=True)
-
-    regular_gen = filtered_models(include_qwen_zimage=False)
-    for i in range(num_regular):
-        try:
-            task = await _create_single_image_task_with_retry(config, regular_gen, i, is_final=True)
-            await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
-            tasks.append(task)
-        except Exception as e:
-            logger.error(f"Failed to create regular task {i + 1}/{num_regular}: {e}", exc_info=True)
+    for model_type, target_count in t_cst.FINAL_ROUND_IMAGE_TASK_DISTRIBUTION.items():
+        remaining_slots = t_cst.FINAL_ROUND_IMAGE_TASKS - len(tasks)
+        if remaining_slots <= 0:
+            break
+        already_created = existing_counts_by_model_type.get(model_type, 0)
+        num_to_create = min(max(target_count - already_created, 0), remaining_slots)
+        model_gen = filtered_models(model_type)
+        for i in range(num_to_create):
+            try:
+                task = await _create_single_image_task_with_retry(config, model_gen, i, is_final=True)
+                await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+                tasks.append(task)
+            except Exception as e:
+                logger.error(
+                    f"Failed to create {model_type.value} image task {i + 1}/{num_to_create}: {e}",
+                    exc_info=True,
+                )
 
     return tasks
 

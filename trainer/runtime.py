@@ -413,7 +413,6 @@ def run_downloader_container(
     environment = {}
     if anonymize:
         environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
-
     try:
         logger.info(f"Starting downloader container: {container_name}", extra=log_labels)
         container = client.containers.run(
@@ -848,11 +847,7 @@ def get_task_type(request: TrainerProxyRequest) -> TaskType:
 def get_dockerfile_path(task_type: TaskType, training_data, local_repo_path: str) -> str:
     """Get the appropriate dockerfile path based on task type and model type"""
     if task_type == TaskType.IMAGETASK:
-        model_type = training_data.model_type
-        if model_type in [ImageModelType.Z_IMAGE, ImageModelType.QWEN_IMAGE]:
-            return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_TOOLKIT_DOCKERFILE_PATHS)
-        else:
-            return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_DOCKERFILE_PATHS)
+        return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_TOOLKIT_DOCKERFILE_PATHS)
 
     else:
         return _resolve_dockerfile_path(local_repo_path, cst.TEXT_DOCKERFILE_PATHS)

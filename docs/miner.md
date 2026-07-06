@@ -224,7 +224,6 @@ Preferred Dockerfile layout:
 
 ```text
 ops/docker/standalone-text-trainer.dockerfile
-ops/docker/standalone-image-trainer.dockerfile
 ops/docker/standalone-image-toolkit-trainer.dockerfile
 ```
 
@@ -232,7 +231,6 @@ Legacy Dockerfile layout is also supported:
 
 ```text
 dockerfiles/standalone-text-trainer.dockerfile
-dockerfiles/standalone-image-trainer.dockerfile
 dockerfiles/standalone-image-toolkit-trainer.dockerfile
 ```
 
@@ -242,10 +240,9 @@ Required Dockerfiles by tournament type:
 | --- | --- |
 | Text | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
 | Environment | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
-| Image, SDXL/Flux | `ops/docker/standalone-image-trainer.dockerfile` or legacy image path |
-| Image, Z-Image/Qwen-Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
+| Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
 
-If you compete in image tournaments, include both image Dockerfiles because image tasks can use `sdxl`, `flux`, `z-image`, or `qwen-image`.
+If you compete in image tournaments, include the image toolkit Dockerfile. Image tasks can use `flux`, `z-image`, `qwen-image`, `ideogram4`, or `krea2`.
 
 ### License And Notice
 
@@ -330,7 +327,7 @@ Used for `ImageTask`:
 --task-id             # Unique task UUID/string
 --model               # Base model identifier or local cached model path
 --dataset-zip         # Original task dataset zip URL
---model-type          # sdxl, flux, z-image, or qwen-image
+--model-type          # flux, z-image, qwen-image, ideogram4, or krea2
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
 --trigger-word        # Optional, only when provided by task data
@@ -515,12 +512,11 @@ Rules for environment tournaments:
 
 ## Image Tournament Tips
 
-The base diffusion trainer supports SDXL, Flux, Z-Image, and Qwen-Image. The common tuning split is:
+Image tournaments use the ai-toolkit trainer for Flux, Z-Image, Qwen-Image, Ideogram 4, and Krea 2. The common tuning split is:
 
 - Style LoRA tasks often prefer lower learning rates, more repeats, and less aggressive fitting.
 - Person, object, or concept tasks often overfit faster and may need fewer repeats, fewer epochs, and a higher learning rate.
-- SDXL defaults use more repeats than Flux in `trainer/constants.py`.
-- Z-Image and Qwen-Image use the AI Toolkit Dockerfile path.
+- Tune per model type rather than assuming one recipe works across all toolkit architectures.
 
 These are starting points, not rules. Your tournament edge usually comes from detecting the task shape and adapting the training recipe.
 

@@ -1,0 +1,46 @@
+job: extension
+config:
+  name: last
+  process:
+  - type: diffusion_trainer
+    training_folder: /app/checkpoints
+    device: cuda
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+    save:
+      dtype: bf16
+      save_every: 250
+      max_step_saves_to_keep: 4
+      save_format: diffusers
+    datasets:
+    - folder_path: /dataset/images
+      caption_ext: txt
+      caption_dropout_rate: 0.05
+      cache_latents_to_disk: true
+      resolution: [512, 768, 1024]
+      is_reg: false
+    train:
+      batch_size: 1
+      steps: 2000
+      lr: 0.0001
+      optimizer: adamw8bit
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      timestep_type: weighted
+      dtype: bf16
+      train_unet: true
+      train_text_encoder: false
+      skip_first_sample: true
+      disable_sampling: true
+    model:
+      name_or_path: /cache/models
+      is_flux: true
+      quantize: false
+      qtype: qfloat8
+      quantize_te: false
+      qtype_te: qfloat8
+meta:
+  name: flux_lora
+  version: '1.0'

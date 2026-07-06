@@ -168,7 +168,7 @@ class ImageRawTask(RawTask):
 
     image_text_pairs: list[ImageTextPair] | None = None
     task_type: TaskType = TaskType.IMAGETASK
-    model_type: ImageModelType = ImageModelType.SDXL
+    model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = None
 
 

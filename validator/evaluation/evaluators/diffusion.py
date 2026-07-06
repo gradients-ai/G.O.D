@@ -326,7 +326,7 @@ def main():
 
     results = {"model_params_count": _count_model_parameters(model_path, is_safetensors)}
 
-    generation_params = cst.EVAL_DEFAULTS.get(model_type, cst.EVAL_DEFAULTS[ImageModelType.SDXL.value])
+    generation_params = cst.EVAL_DEFAULTS.get(model_type, cst.EVAL_DEFAULTS[ImageModelType.FLUX.value])
 
     for repo_id in lora_repos:
         try:

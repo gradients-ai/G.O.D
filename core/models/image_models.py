@@ -6,3 +6,5 @@ class ImageModelType(str, Enum):
     SDXL = "sdxl"
     Z_IMAGE = "z-image"
     QWEN_IMAGE = "qwen-image"
+    IDEOGRAM4 = "ideogram4"
+    KREA2 = "krea2"

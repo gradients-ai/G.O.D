@@ -2,16 +2,16 @@
 TASK_ID="9a877904-5fe9-402a-8c75-be5eb1b51f7e"
 
 # Base model to fine-tune (from HuggingFace)
-MODEL="zenless-lab/sdxl-anima-pencil-xl-v5"
+MODEL="black-forest-labs/FLUX.1-dev"
 
 # Dataset ZIP file location (must be a ZIP file with images)
 DATASET_ZIP="s3://your-bucket/path/to/image_dataset.zip"
 
-# Model type: "sdxl" or "flux"
-MODEL_TYPE="sdxl"
+# Model type: "flux", "z-image", "qwen-image", "ideogram4", or "krea2"
+MODEL_TYPE="flux"
 
 # Optional: Repository name for the trained model
-EXPECTED_REPO_NAME="my-sdxl-finetuned"
+EXPECTED_REPO_NAME="my-flux-finetuned"
 
 # For uploading the outputs
 HUGGINGFACE_TOKEN="Your Huggingface Token"
@@ -30,7 +30,7 @@ chmod 700 "$OUTPUTS_DIR"
 docker build --no-cache -t trainer-downloader -f ops/docker/trainer-downloader.dockerfile .
 
 # Build the trainer image
-docker build --no-cache -t standalone-image-trainer -f ops/docker/standalone-image-trainer.dockerfile .
+docker build --no-cache -t standalone-image-trainer -f ops/docker/standalone-image-toolkit-trainer.dockerfile .
 
 # Build the hf uploader image
 docker build --no-cache -t hf-uploader -f ops/docker/hf-uploader.dockerfile .

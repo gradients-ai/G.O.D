@@ -31,8 +31,6 @@ core/config/rewards_*.py
 !core/config/base_environment.yml
 !core/config/pvp_game_prompts.yml
 core/config/*.toml
-!core/config/base_diffusion_sdxl.toml
-!core/config/base_diffusion_flux.toml
 core/dataset/images/*
 !core/dataset/images/.gitkeep
 secure_checkpoints/

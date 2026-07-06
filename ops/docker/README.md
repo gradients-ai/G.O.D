@@ -11,11 +11,9 @@ Dockerfiles and container support files for miner, trainer, validator, evaluatio
 - `hf-uploader.dockerfile`: Hugging Face upload container.
 - `intercode_build_fs.sh`: InterCode filesystem build helper.
 - `miner.dockerfile`: miner service image.
-- `miner-diffusion.dockerfile`: diffusion miner image.
 - `model-prep.dockerfile`: model-prep image.
 - `pvp-eval.dockerfile`: PvP evaluation image.
-- `standalone-image-trainer.dockerfile`: image trainer image expected in miner repos.
-- `standalone-image-toolkit-trainer.dockerfile`: image toolkit trainer variant.
+- `standalone-image-toolkit-trainer.dockerfile`: ai-toolkit image trainer expected in miner repos.
 - `standalone-text-trainer.dockerfile`: text trainer image expected in miner repos.
 - `trainer-downloader.dockerfile`: model/dataset downloader image.
 - `validator.dockerfile`: base validator image.

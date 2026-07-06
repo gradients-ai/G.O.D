@@ -1,13 +1,10 @@
 # Training repository Dockerfiles
-DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
 DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
 DEFAULT_TEXT_DOCKERFILE_PATH = "ops/docker/standalone-text-trainer.dockerfile"
 
-LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
 LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
 LEGACY_TEXT_DOCKERFILE_PATH = "dockerfiles/standalone-text-trainer.dockerfile"
 
-IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
 IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)
 TEXT_DOCKERFILE_PATHS = (DEFAULT_TEXT_DOCKERFILE_PATH, LEGACY_TEXT_DOCKERFILE_PATH)
 
@@ -62,9 +59,6 @@ MINER_DATASETS_ENV = "MINER_DATASETS"
 # Observability
 VECTOR_URL = "http://localhost:8688"  # Vector http_server for logging
 
-# Diffusion defaults
-DIFFUSION_SDXL_REPEATS = 10
-DIFFUSION_FLUX_REPEATS = 1
 DIFFUSION_DEFAULT_INSTANCE_PROMPT = "lora"
 DIFFUSION_DEFAULT_CLASS_PROMPT = "style"
 

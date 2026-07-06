@@ -56,7 +56,7 @@ class Img2ImgPayload(BaseModel):
     comfy_template: dict
     height: int = 1024
     width: int = 1024
-    model_type: str = "sdxl"
+    model_type: str = "flux"
     seed: int | None = None
     is_safetensors: bool = True
     prompt: str | None = None
