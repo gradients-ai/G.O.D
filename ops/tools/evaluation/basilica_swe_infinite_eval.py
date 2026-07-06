@@ -7,7 +7,7 @@ and calls the external Affinetes SWE Infinite server configured by URL. The
 SWE agent is fixed to MiniSWE by the evaluator.
 
 Example:
-    BASILICA_API_KEY=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
+    BASILICA_API_TOKEN=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
         uv run --extra dev python -m ops.tools.evaluation.basilica_swe_infinite_eval \
         --model Qwen/Qwen2.5-7B-Instruct \
         --num-seeds 1 \
@@ -135,8 +135,8 @@ async def run(args: argparse.Namespace) -> None:
     swe_server_url = args.swe_server_url or os.getenv("SWE_INFINITE_SERVER_BASE_URL")
     if not swe_server_url:
         raise SystemExit("SWE_INFINITE_SERVER_BASE_URL is required. Pass --swe-server-url or set it in the environment.")
-    if not os.getenv("BASILICA_API_KEY"):
-        raise SystemExit("BASILICA_API_KEY is required for this live Basilica smoke test.")
+    if not os.getenv("BASILICA_API_TOKEN"):
+        raise SystemExit("BASILICA_API_TOKEN is required for this live Basilica smoke test.")
 
     model_repo = args.model or args.base_model
     base_chain = _parse_base_chain(args.base_chain_json)

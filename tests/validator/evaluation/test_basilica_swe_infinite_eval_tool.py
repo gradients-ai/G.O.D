@@ -56,7 +56,7 @@ async def test_run_uses_individual_swe_eval_path(monkeypatch, tmp_path):
             scores_by_hotkey={"hk_test": 0.75},
         )
 
-    monkeypatch.setenv("BASILICA_API_KEY", "basilica-test-key")
+    monkeypatch.setenv("BASILICA_API_TOKEN", "basilica-test-token")
     monkeypatch.delenv("SWE_INFINITE_SERVER_BASE_URL", raising=False)
     monkeypatch.setattr(basilica_swe_infinite_eval, "run_evaluation_individual", fake_run_evaluation_individual)
 

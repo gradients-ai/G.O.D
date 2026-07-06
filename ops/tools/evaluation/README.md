@@ -24,7 +24,7 @@ Manual evaluation utilities and reward-function management scripts.
 ## SWE Infinite Basilica Smoke Test
 
 ```bash
-BASILICA_API_KEY=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
+BASILICA_API_TOKEN=... SWE_INFINITE_SERVER_BASE_URL=https://affinetes.example \
   uv run --extra dev python -m ops.tools.evaluation.basilica_swe_infinite_eval \
   --model Qwen/Qwen2.5-7B-Instruct \
   --task-id 7 83 45

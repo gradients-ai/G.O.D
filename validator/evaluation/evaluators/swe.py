@@ -47,6 +47,86 @@ DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_TASK_TIMEOUT_SECONDS = 1800
 DEFAULT_SESSION_TIMEOUT_SECONDS = vcst.ENV_EVAL_SESSION_TIMEOUT
 DEFAULT_MAX_CONCURRENT_REQUESTS = 1
+SWE_VETTED_TASK_IDS = tuple(
+    dict.fromkeys(
+        [
+            73,
+            87,
+            101,
+            139,
+            152,
+            158,
+            202,
+            256,
+            261,
+            262,
+            293,
+            318,
+            428,
+            431,
+            437,
+            443,
+            478,
+            495,
+            509,
+            677,
+            692,
+            703,
+            713,
+            715,
+            721,
+            761,
+            765,
+            796,
+            800,
+            829,
+            851,
+            852,
+            898,
+            966,
+            971,
+            975,
+            1020,
+            1023,
+            1077,
+            1088,
+            1113,
+            1224,
+            1240,
+            1263,
+            1288,
+            1313,
+            1325,
+            1329,
+            1402,
+            1406,
+            1434,
+            1436,
+            1444,
+            1467,
+            1481,
+            1559,
+            1565,
+            1582,
+            1603,
+            1609,
+            1665,
+            1669,
+            1686,
+            1718,
+            1756,
+            1761,
+            1802,
+            1819,
+            1874,
+            1900,
+            1905,
+            1921,
+            1967,
+            1991,
+        ]
+    )
+)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -125,12 +205,62 @@ async def _resolve_task_range(env_config: env_cst.EnvironmentConfig) -> tuple[in
 
 
 def _build_eval_list(base_seed: int, num_seeds: int, task_id_min: int, task_id_max: int) -> list[tuple[int, int]]:
+    if num_seeds < 0:
+        raise ValueError(f"Invalid SWE num_seeds={num_seeds}; expected a non-negative integer")
+    task_range_size = task_id_max - task_id_min + 1
+    if num_seeds > task_range_size:
+        raise ValueError(
+            f"Cannot sample {num_seeds} unique SWE task ids from range "
+            f"{task_id_min}-{task_id_max} ({task_range_size} available)"
+        )
+
     seed_generator = random.Random(base_seed)
     eval_seeds = [seed_generator.randint(1, 1_000_000) for _ in range(num_seeds)]
-    return [
-        (seed, random.Random(seed).randint(task_id_min, task_id_max))
-        for seed in eval_seeds
+    task_ids = _build_random_task_ids(seed_generator, num_seeds, task_id_min, task_id_max)
+    return list(zip(eval_seeds, task_ids, strict=True))
+
+
+def _build_random_task_ids(
+    rng: random.Random,
+    num_tasks: int,
+    task_id_min: int,
+    task_id_max: int,
+) -> list[int]:
+    if num_tasks == 0:
+        return []
+
+    vetted_target_count = (num_tasks + 1) // 2
+    eligible_vetted_ids = [
+        task_id
+        for task_id in SWE_VETTED_TASK_IDS
+        if task_id_min <= task_id <= task_id_max
     ]
+    vetted_count = min(vetted_target_count, len(eligible_vetted_ids))
+    selected_vetted_ids = rng.sample(eligible_vetted_ids, vetted_count)
+    selected_vetted_set = set(selected_vetted_ids)
+    vetted_task_set = set(SWE_VETTED_TASK_IDS)
+
+    random_count = num_tasks - vetted_count
+    random_pool = [
+        task_id
+        for task_id in range(task_id_min, task_id_max + 1)
+        if task_id not in selected_vetted_set and task_id not in vetted_task_set
+    ]
+    if len(random_pool) < random_count:
+        random_pool = [
+            task_id
+            for task_id in range(task_id_min, task_id_max + 1)
+            if task_id not in selected_vetted_set
+        ]
+    if len(random_pool) < random_count:
+        raise ValueError(
+            f"Cannot sample {num_tasks} unique SWE task ids from range "
+            f"{task_id_min}-{task_id_max}"
+        )
+
+    task_ids = selected_vetted_ids + rng.sample(random_pool, random_count)
+    rng.shuffle(task_ids)
+    return task_ids
 
 
 def _parse_task_ids(raw: str | None) -> list[int]:

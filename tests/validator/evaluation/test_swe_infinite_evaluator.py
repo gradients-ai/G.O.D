@@ -18,6 +18,30 @@ def test_build_eval_list_is_deterministic_and_in_range():
     assert first == second
     assert len(first) == 5
     assert all(10 <= task_id <= 20 for _seed, task_id in first)
+    assert len({task_id for _seed, task_id in first}) == 5
+
+
+def test_build_eval_list_uses_half_vetted_and_half_range_tasks():
+    eval_list = swe._build_eval_list(base_seed=42, num_seeds=10, task_id_min=1, task_id_max=2_000)
+    task_ids = [task_id for _seed, task_id in eval_list]
+    vetted_task_ids = set(swe.SWE_VETTED_TASK_IDS)
+
+    assert len(task_ids) == 10
+    assert len(set(task_ids)) == 10
+    assert sum(task_id in vetted_task_ids for task_id in task_ids) == 5
+    assert all(1 <= task_id <= 2_000 for task_id in task_ids)
+
+
+def test_build_eval_list_rounds_odd_split_toward_vetted_tasks():
+    eval_list = swe._build_eval_list(base_seed=42, num_seeds=5, task_id_min=1, task_id_max=2_000)
+    task_ids = [task_id for _seed, task_id in eval_list]
+    vetted_task_ids = set(swe.SWE_VETTED_TASK_IDS)
+
+    assert sum(task_id in vetted_task_ids for task_id in task_ids) == 3
+
+
+def test_vetted_task_ids_are_deduped():
+    assert len(swe.SWE_VETTED_TASK_IDS) == len(set(swe.SWE_VETTED_TASK_IDS))
 
 
 def test_build_eval_list_for_task_ids_preserves_requested_task_ids():
