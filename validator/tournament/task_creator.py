@@ -217,7 +217,11 @@ async def _create_environment_boss_round_tasks(
 
     for i in range(len(tasks), t_cst.ENV_FINAL_ROUND_TASK_COUNT):
         model_override, start_point, hours = boss_task_configs[i]
-        force_boss_env_for_task = forced_boss_env is not None and not has_forced_boss_env_task
+        force_boss_env_for_task = (
+            forced_boss_env is not None
+            and start_point == TrainingStartPoint.PREVIOUS_WINNER
+            and not has_forced_boss_env_task
+        )
         environment_names_override = [forced_boss_env] if force_boss_env_for_task else None
         exclude_environments = [forced_boss_env] if forced_boss_env is not None and not force_boss_env_for_task else None
         task_num_envs = 1 if force_boss_env_for_task else num_envs

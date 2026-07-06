@@ -53,8 +53,8 @@ async def determine_env_tournament_winner(
 ) -> list[str]:
     """Determine environment winner from boss round only.
 
-    Single contender must have no boss-round losses, at least one boss-round
-    win, and a strict win on the SWE Infinite final task. If not, boss retains.
+    Single contender must have no boss-round losses and a strict win on the
+    required SWE Infinite final task. If not, boss retains.
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
 
@@ -92,13 +92,13 @@ async def determine_env_tournament_winner(
     wins = 0
     losses = 0
     draws = 0
-    swe_task_count = 0
-    swe_wins = 0
+    saw_required_swe_task = False
+    won_required_swe_task = False
     for task in final_tasks:
         task_object = await get_task(task.task_id, psql_db)
         is_swe_task = _task_includes_environment(task_object, EnvironmentName.SWE_INFINITE)
         if is_swe_task:
-            swe_task_count += 1
+            saw_required_swe_task = True
 
         scores = await _get_scores_for_task(task.task_id, psql_db)
         contender_score = scores.get(contender)
@@ -113,7 +113,7 @@ async def determine_env_tournament_winner(
             outcome = GameOutcome.WIN
             wins += 1
             if is_swe_task:
-                swe_wins += 1
+                won_required_swe_task = True
         elif contender_score < bs:
             outcome = GameOutcome.LOSS
             losses += 1
@@ -122,25 +122,25 @@ async def determine_env_tournament_winner(
             draws += 1
         logger.info(
             f"Boss round task {task.task_id}: contender={contender_score:.2f} boss={bs:.2f} -> {outcome.value} "
-            f"(running: W={wins} D={draws} L={losses}, SWE_W={swe_wins}/{swe_task_count})"
+            f"(running: W={wins} D={draws} L={losses}, required_swe_win={won_required_swe_task})"
         )
 
-    if swe_task_count == 0:
-        logger.warning("Boss retains: final round had no SWE Infinite task")
+    if not saw_required_swe_task:
+        logger.warning("Boss retains: final round is missing the required SWE Infinite task")
         return [boss_hotkey, contender]
 
-    if losses == 0 and wins > 0 and swe_wins > 0:
+    if losses == 0 and won_required_swe_task:
         logger.info(
             f"Contender {contender} wins environment tournament: "
-            f"W={wins} D={draws} L={losses}, SWE_W={swe_wins}/{swe_task_count} "
+            f"W={wins} D={draws} L={losses}, required_swe_win={won_required_swe_task} "
             f"across {len(final_tasks)} tasks"
         )
         return [contender, boss_hotkey]
     else:
         logger.info(
             f"Boss retains: contender W={wins} D={draws} L={losses} "
-            f"SWE_W={swe_wins}/{swe_task_count} across {len(final_tasks)} tasks "
-            "(need zero losses, at least one win, and a SWE Infinite win)"
+            f"required_swe_win={won_required_swe_task} across {len(final_tasks)} tasks "
+            "(need zero losses and a strict SWE Infinite win)"
         )
         return [boss_hotkey, contender]
 

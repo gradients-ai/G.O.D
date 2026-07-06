@@ -438,12 +438,13 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - Participants are split into groups of 2 to 6.
 - The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
 - Non-final rounds create one environment task per group.
-- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported environments.
+- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments.
 - Round 2 and later can continue from each miner's previous-round model.
 - Up to one non-boss winner advances per group, with ties at the cutoff allowed.
 - If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
-- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start.
-- The contender wins the environment tournament only if they have no boss-round losses and at least one boss-round win. Draws are acceptable; any loss means the boss retains.
+- `swe_infinite` appears only in the final boss round. It is excluded from non-final environment tasks.
+- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start. The previous-winner/target-model task is the guaranteed `swe_infinite` task; the continuation and from-scratch tasks use the other supported environments.
+- The contender wins the environment tournament only if they have no boss-round losses and a strict win on the `swe_infinite` task. Draws are acceptable elsewhere; any loss or failure to beat the boss on `swe_infinite` means the boss retains.
 
 Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The from-scratch boss-round task uses `3.0` hours.
 
@@ -549,6 +550,38 @@ python -m ops.validator_ops.run_evaluation --task_id TASK_ID
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
 ```
+
+### Local SWE Infinite Evaluation Smoke Test
+
+For environment miners working on `swe_infinite`, use the local SWE smoke test
+when you want to evaluate a Hugging Face model repo without Basilica and without
+validator database access:
+
+```bash
+uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
+  --model YOUR_HF_MODEL_OR_LORA_REPO \
+  --base-model Qwen/Qwen2.5-7B-Instruct \
+  --num-seeds 2 \
+  --seed 42
+```
+
+The script starts SGLang on the host, starts the SWE Infinite server from
+`gradientsio/swe-infinite:v1`, and calls the same MiniSWE evaluation path used
+by tournament evaluation. Task selection is deterministic for a fixed `--seed`,
+task range, and `--num-seeds`; run it again with the same values to evaluate the
+same task IDs. To force exact tasks:
+
+```bash
+uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
+  --model YOUR_HF_MODEL_OR_LORA_REPO \
+  --task-id 7 83 45
+```
+
+Because the SWE server runs in Docker while SGLang runs on the host, the model
+URL sent to the SWE container defaults to `http://host.docker.internal:30000/v1`.
+Use `--model-base-url` if your Docker runtime needs a different callback URL.
+Use `--dry-run` first to print the selected task IDs, Docker command, and model
+URL without launching SGLang or Docker.
 
 ### Checking For Duplicate Submissions
 
