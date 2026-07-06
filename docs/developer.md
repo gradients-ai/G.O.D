@@ -155,7 +155,7 @@ curl http://127.0.0.1:8001/health
 echo "SWE_INFINITE_SERVER_BASE_URL=http://<swe-server-host>:8001" >> .vali.env
 ```
 
-If the server is behind a reverse proxy or load balancer, set `SWE_INFINITE_SERVER_BASE_URL` to that public HTTPS URL instead. The evaluator uses Affinetes' `/call` endpoint by default; only set `SWE_INFINITE_AFFINETES_CALL_PATH` if the deployed image exposes a different path.
+If the server is behind a reverse proxy or load balancer, set `SWE_INFINITE_SERVER_BASE_URL` to that public HTTPS URL instead. The evaluator uses Affinetes' `/call` endpoint by default. SWE Infinite evaluator behavior is configured in `validator/evaluation/swe_infinite_config.py`; production task range and task count stay in `core/constants/environments.py`. The metadata URL is only used to resolve `task_id_max` if the SWE `EnvironmentConfig.task_id_max` sentinel is set to `0`.
 
 Trainer config needs at least:
 

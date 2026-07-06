@@ -33,6 +33,9 @@ import validator.evaluation.constants as vcst
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.evaluators import swe
 from validator.evaluation.runtime import stop_process
+from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
+from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
 
 
 logger = logging.getLogger(__name__)
@@ -75,7 +78,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", default=None, help="HF model or LoRA repo to evaluate. Defaults to --base-model.")
     parser.add_argument("--base-model", default=DEFAULT_BASE_MODEL, help="Original/base model repo.")
     parser.add_argument("--seed", type=int, default=vcst.ENV_EVAL_DEFAULT_SEED, help="Evaluation seed.")
-    parser.add_argument("--num-seeds", type=int, default=None, help="Override SWE_INFINITE_NUM_SEEDS.")
+    parser.add_argument("--num-seeds", type=int, default=None, help="Override the default number of SWE tasks.")
     parser.add_argument(
         "--task-id",
         type=int,
@@ -83,9 +86,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Evaluate exactly these SWE task IDs. Example: --task-id 7 83 45.",
     )
-    parser.add_argument("--task-id-min", type=int, default=None, help="Override SWE_INFINITE_TASK_ID_MIN.")
-    parser.add_argument("--task-id-max", type=int, default=None, help="Override SWE_INFINITE_TASK_ID_MAX.")
-    parser.add_argument("--metadata-url", default=None, help="Override SWE_INFINITE_METADATA_URL.")
+    parser.add_argument("--task-id-min", type=int, default=None, help="Override the default SWE task ID minimum.")
+    parser.add_argument("--task-id-max", type=int, default=None, help="Override the default SWE task ID maximum.")
+    parser.add_argument("--metadata-url", default=None, help="Override the default SWE metadata URL.")
     parser.add_argument("--task-timeout-seconds", type=int, default=None, help="Override per-SWE-task timeout.")
     parser.add_argument("--session-timeout-seconds", type=int, default=None, help="Override total SWE session timeout.")
     parser.add_argument("--max-concurrent-requests", type=int, default=None, help="Override Affinetes request concurrency.")
@@ -166,38 +169,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_swe_env_overrides(
-    args: argparse.Namespace,
-    swe_server_url: str | None = None,
-    model_base_url: str | None = None,
-) -> dict[str, str]:
-    overrides: dict[str, str] = {}
-    if swe_server_url:
-        overrides["SWE_INFINITE_SERVER_BASE_URL"] = swe_server_url
-    if model_base_url:
-        overrides["SWE_INFINITE_MODEL_BASE_URL"] = model_base_url
-
-    optional_values = {
-        "SWE_INFINITE_TASK_IDS": ",".join(str(task_id) for task_id in args.task_id) if args.task_id else None,
-        "SWE_INFINITE_METADATA_URL": args.metadata_url,
-        "SWE_INFINITE_TASK_ID_MIN": args.task_id_min,
-        "SWE_INFINITE_TASK_ID_MAX": args.task_id_max,
-        "SWE_INFINITE_NUM_SEEDS": args.num_seeds,
-        "SWE_INFINITE_TASK_TIMEOUT_SECONDS": args.task_timeout_seconds,
-        "SWE_INFINITE_SESSION_TIMEOUT": args.session_timeout_seconds,
-        "SWE_INFINITE_MAX_CONCURRENT_REQUESTS": args.max_concurrent_requests,
-        "SWE_INFINITE_AFFINETES_CALL_PATH": args.affinetes_call_path,
-        "SWE_INFINITE_MAX_ITERATIONS": args.max_iterations,
-        "SWE_INFINITE_MODEL_API_KEY": args.model_api_key,
+def build_swe_eval_config(args: argparse.Namespace) -> SweInfiniteEvalConfig:
+    overrides = {
+        "metadata_url": args.metadata_url,
+        "task_timeout_seconds": args.task_timeout_seconds,
+        "session_timeout_seconds": args.session_timeout_seconds,
+        "max_concurrent_requests": args.max_concurrent_requests,
+        "affinetes_call_path": args.affinetes_call_path,
+        "max_iterations": args.max_iterations,
+        "model_api_key": args.model_api_key,
     }
-    for key, value in optional_values.items():
-        if value is not None and value != "":
-            overrides[key] = str(value)
     if args.collect_logprobs:
-        overrides["SWE_INFINITE_COLLECT_LOGPROBS"] = "true"
-    if args.temperature is not None:
-        overrides["ENV_EVAL_TEMPERATURE"] = str(args.temperature)
-    return overrides
+        overrides["collect_logprobs"] = True
+    return DEFAULT_SWE_INFINITE_EVAL_CONFIG.with_overrides(**overrides)
+
+
+def build_task_selection_override(args: argparse.Namespace) -> SweInfiniteTaskSelectionOverride:
+    return SweInfiniteTaskSelectionOverride(
+        task_id_min=args.task_id_min,
+        task_id_max=args.task_id_max,
+        num_seeds=args.num_seeds,
+        task_ids=tuple(args.task_id) if args.task_id else (),
+    )
 
 
 def build_sglang_env_overrides(args: argparse.Namespace, sglang_base_url: str) -> dict[str, str]:
@@ -233,6 +226,13 @@ def _masked_overrides(overrides: dict[str, str]) -> dict[str, str]:
     return masked
 
 
+def _config_for_json(config: SweInfiniteEvalConfig) -> dict:
+    payload = json.loads(config.to_json())
+    if payload.get("model_api_key"):
+        payload["model_api_key"] = "***"
+    return payload
+
+
 def _parse_base_chain(raw: str | None) -> list[str]:
     if not raw:
         return []
@@ -265,18 +265,22 @@ def resolve_model_base_url(args: argparse.Namespace, *, swe_runs_in_docker: bool
     return swe._with_v1(sglang_base_url)
 
 
-def _resolve_explicit_task_ids(args: argparse.Namespace) -> list[int]:
-    if not args.task_id:
-        return swe._parse_task_ids(os.getenv("SWE_INFINITE_TASK_IDS"))
-    invalid_task_ids = [task_id for task_id in args.task_id if task_id <= 0]
+def _resolve_explicit_task_ids(task_selection_override: SweInfiniteTaskSelectionOverride) -> list[int]:
+    invalid_task_ids = [task_id for task_id in task_selection_override.task_ids if task_id <= 0]
     if invalid_task_ids:
         raise ValueError(f"Invalid SWE task ids {invalid_task_ids}; expected positive integers")
-    return args.task_id
+    return list(task_selection_override.task_ids)
 
 
-async def resolve_eval_selection(args: argparse.Namespace) -> EvalSelection:
+async def resolve_eval_selection(
+    args: argparse.Namespace,
+    eval_config: SweInfiniteEvalConfig | None = None,
+    task_selection_override: SweInfiniteTaskSelectionOverride | None = None,
+) -> EvalSelection:
+    eval_config = eval_config or build_swe_eval_config(args)
+    task_selection_override = task_selection_override or build_task_selection_override(args)
     env_config = env_cst.ENVIRONMENT_CONFIGS[env_cst.EnvironmentName.SWE_INFINITE]
-    explicit_task_ids = _resolve_explicit_task_ids(args)
+    explicit_task_ids = _resolve_explicit_task_ids(task_selection_override)
 
     if explicit_task_ids:
         return EvalSelection(
@@ -287,10 +291,12 @@ async def resolve_eval_selection(args: argparse.Namespace) -> EvalSelection:
             explicit_task_ids=explicit_task_ids,
         )
 
-    task_id_min, task_id_max = await swe._resolve_task_range(env_config)
-    num_seeds = args.num_seeds
-    if num_seeds is None:
-        num_seeds = swe._env_int("SWE_INFINITE_NUM_SEEDS", swe._env_int("ENV_EVAL_NUM_SEEDS", env_config.num_seeds))
+    task_id_min, task_id_max = await swe._resolve_task_range(env_config, eval_config, task_selection_override)
+    num_seeds = (
+        task_selection_override.num_seeds
+        if task_selection_override.num_seeds is not None
+        else env_config.num_seeds
+    )
     return EvalSelection(
         eval_list=swe._build_eval_list(args.seed, num_seeds, task_id_min, task_id_max),
         task_id_min=task_id_min,
@@ -451,21 +457,17 @@ async def run(args: argparse.Namespace) -> dict:
     swe_server_url = args.swe_server_url.rstrip("/") if args.swe_server_url else _local_swe_server_url(args)
     sglang_base_url = _local_sglang_base_url(args).rstrip("/")
     model_base_url = resolve_model_base_url(args, swe_runs_in_docker=swe_runs_in_docker)
+    swe_eval_config = build_swe_eval_config(args)
+    task_selection_override = build_task_selection_override(args)
     temperature = args.temperature
     if temperature is None:
-        temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
-    if args.task_timeout_seconds is None:
-        task_timeout = swe._env_int("SWE_INFINITE_TASK_TIMEOUT_SECONDS", swe.DEFAULT_TASK_TIMEOUT_SECONDS)
-    else:
-        task_timeout = args.task_timeout_seconds
+        temperature = vcst.ENV_EVAL_TEMPERATURE
+    task_timeout = swe_eval_config.task_timeout_seconds
 
-    env_overrides = {
-        **build_swe_env_overrides(args, swe_server_url=swe_server_url, model_base_url=model_base_url),
-        **build_sglang_env_overrides(args, sglang_base_url),
-    }
+    env_overrides = build_sglang_env_overrides(args, sglang_base_url)
 
     with temporary_env(env_overrides):
-        selection = await resolve_eval_selection(args)
+        selection = await resolve_eval_selection(args, swe_eval_config, task_selection_override)
         container_name = args.swe_container_name or "swe-infinite-local-<generated>"
         config = {
             "environment": env_cst.EnvironmentName.SWE_INFINITE.value,
@@ -484,6 +486,8 @@ async def run(args: argparse.Namespace) -> dict:
             "num_seeds": selection.num_seeds,
             "explicit_task_ids": selection.explicit_task_ids,
             "evaluations": _evals_for_json(selection),
+            "swe_eval_config": _config_for_json(swe_eval_config),
+            "task_selection_override": json.loads(task_selection_override.to_json()),
             "env_overrides": _masked_overrides(env_overrides),
         }
         print("Resolved local SWE Infinite evaluation config:")
@@ -512,6 +516,7 @@ async def run(args: argparse.Namespace) -> dict:
                 eval_list=selection.eval_list,
                 temperature=temperature,
                 task_timeout=task_timeout,
+                eval_config=swe_eval_config,
             )
             elapsed = time.perf_counter() - start
             summary = {

@@ -1,6 +1,5 @@
 import asyncio
 import json
-import os
 import random
 import uuid
 from uuid import UUID
@@ -47,6 +46,9 @@ from validator.evaluation.pvp.models import PvPModelSpec
 from validator.evaluation.pvp.models import PvPPairResult
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
+from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
+from validator.evaluation.swe_infinite_config import build_swe_infinite_container_env
 from validator.scoring.models import IndividualEvalResult
 from validator.scoring.models import MinerRepos
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
@@ -70,41 +72,12 @@ def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.Env
     return environment_names[0] if environment_names else None
 
 
-SWE_INFINITE_CONTAINER_ENV_VARS = (
-    "SWE_INFINITE_SERVER_BASE_URL",
-    "SWE_INFINITE_TASK_IDS",
-    "SWE_INFINITE_METADATA_URL",
-    "SWE_INFINITE_TASK_ID_MIN",
-    "SWE_INFINITE_TASK_ID_MAX",
-    "SWE_INFINITE_NUM_SEEDS",
-    "SWE_INFINITE_TASK_TIMEOUT_SECONDS",
-    "SWE_INFINITE_SESSION_TIMEOUT",
-    "SWE_INFINITE_MAX_CONCURRENT_REQUESTS",
-    "SWE_INFINITE_AFFINETES_CALL_PATH",
-    "SWE_INFINITE_MAX_ITERATIONS",
-    "SWE_INFINITE_COLLECT_LOGPROBS",
-    "SWE_INFINITE_MODEL_BASE_URL",
-    "SWE_INFINITE_MODEL_API_KEY",
-)
-
-
 def _is_environment_name(environment_name, expected: env_cst.EnvironmentName) -> bool:
     return getattr(environment_name, "value", environment_name) == expected.value
 
 
 def _is_swe_infinite_name(environment_name) -> bool:
     return _is_environment_name(environment_name, env_cst.EnvironmentName.SWE_INFINITE)
-
-
-def _swe_infinite_container_env() -> dict[str, str]:
-    env = {
-        name: value
-        for name in SWE_INFINITE_CONTAINER_ENV_VARS
-        if (value := os.getenv(name)) is not None and value != ""
-    }
-    if "SWE_INFINITE_SERVER_BASE_URL" not in env:
-        raise ValueError("SWE_INFINITE_SERVER_BASE_URL is required for SWE Infinite evaluation")
-    return env
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -242,7 +215,7 @@ async def run_evaluation_basilica_text(
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
         if is_swe_infinite_eval:
-            base_env.update(_swe_infinite_container_env())
+            base_env.update(build_swe_infinite_container_env())
         # InterCode runs bash actions in-process, so only generic envs get ENV_SERVER_CMD.
         if not is_intercode_eval and not is_swe_infinite_eval:
             base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
@@ -716,6 +689,8 @@ async def run_evaluation_individual(
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
     base_chains: dict[str, list[str]] | None = None,
+    swe_eval_config: SweInfiniteEvalConfig | None = None,
+    swe_task_selection_override: SweInfiniteTaskSelectionOverride | None = None,
 ) -> IndividualEvalResult:
     """Run individual (per-miner) eval containers for a single environment.
 
@@ -742,7 +717,7 @@ async def run_evaluation_individual(
         **vcst.HF_CONTAINER_ENV,
     }
     if _is_swe_infinite_name(environment_name):
-        base_env.update(_swe_infinite_container_env())
+        base_env.update(build_swe_infinite_container_env(swe_eval_config, swe_task_selection_override))
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
     base_chains = base_chains or {}

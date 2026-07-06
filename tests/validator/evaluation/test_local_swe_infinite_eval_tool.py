@@ -8,7 +8,6 @@ from validator.evaluation.evaluators import swe
 
 @pytest.mark.asyncio
 async def test_resolve_eval_selection_is_deterministic_for_seed(monkeypatch):
-    monkeypatch.delenv("SWE_INFINITE_TASK_IDS", raising=False)
     args = local_swe_infinite_eval.parse_args(
         [
             "--seed",
@@ -21,11 +20,10 @@ async def test_resolve_eval_selection_is_deterministic_for_seed(monkeypatch):
             "2000",
         ]
     )
-    overrides = local_swe_infinite_eval.build_swe_env_overrides(args)
-
-    with local_swe_infinite_eval.temporary_env(overrides):
-        first = await local_swe_infinite_eval.resolve_eval_selection(args)
-        second = await local_swe_infinite_eval.resolve_eval_selection(args)
+    eval_config = local_swe_infinite_eval.build_swe_eval_config(args)
+    task_selection = local_swe_infinite_eval.build_task_selection_override(args)
+    first = await local_swe_infinite_eval.resolve_eval_selection(args, eval_config, task_selection)
+    second = await local_swe_infinite_eval.resolve_eval_selection(args, eval_config, task_selection)
 
     task_ids = [task_id for _seed, task_id in first.eval_list]
     assert first == second
@@ -36,7 +34,6 @@ async def test_resolve_eval_selection_is_deterministic_for_seed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolve_eval_selection_preserves_explicit_task_ids(monkeypatch):
-    monkeypatch.delenv("SWE_INFINITE_TASK_IDS", raising=False)
     args = local_swe_infinite_eval.parse_args(["--seed", "42", "--task-id", "7", "83", "45"])
 
     selection = await local_swe_infinite_eval.resolve_eval_selection(args)
@@ -106,8 +103,6 @@ async def test_dry_run_does_not_launch_services(monkeypatch, tmp_path):
 
     monkeypatch.setattr(local_swe_infinite_eval, "_start_or_reuse_sglang", exploding_start_sglang)
     monkeypatch.setattr(local_swe_infinite_eval, "start_swe_server", exploding_start_swe)
-    monkeypatch.delenv("SWE_INFINITE_TASK_IDS", raising=False)
-
     args = local_swe_infinite_eval.parse_args(
         [
             "--env-file",

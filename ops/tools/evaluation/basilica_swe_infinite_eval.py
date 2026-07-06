@@ -27,6 +27,10 @@ from dotenv import load_dotenv
 
 import core.constants.environments as env_cst
 from validator.evaluation.docker_evaluation import run_evaluation_individual
+from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_SERVER_BASE_URL_ENV
+from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
 from validator.scoring.models import MinerRepos
 
 
@@ -55,7 +59,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--gpu-count", type=int, default=1, help="Number of GPUs to request from Basilica.")
     parser.add_argument("--seed", type=int, default=42, help="Evaluation seed.")
-    parser.add_argument("--num-seeds", type=int, default=None, help="Override SWE_INFINITE_NUM_SEEDS.")
+    parser.add_argument("--num-seeds", type=int, default=None, help="Override the default number of SWE tasks.")
     parser.add_argument(
         "--task-id",
         type=int,
@@ -63,9 +67,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Evaluate exactly these SWE task IDs. Example: --task-id 7 83 45.",
     )
-    parser.add_argument("--task-id-min", type=int, default=None, help="Override SWE_INFINITE_TASK_ID_MIN.")
-    parser.add_argument("--task-id-max", type=int, default=None, help="Override SWE_INFINITE_TASK_ID_MAX.")
-    parser.add_argument("--metadata-url", default=None, help="Override SWE_INFINITE_METADATA_URL.")
+    parser.add_argument("--task-id-min", type=int, default=None, help="Override the default SWE task ID minimum.")
+    parser.add_argument("--task-id-max", type=int, default=None, help="Override the default SWE task ID maximum.")
+    parser.add_argument("--metadata-url", default=None, help="Override the default SWE metadata URL.")
     parser.add_argument("--task-timeout-seconds", type=int, default=None, help="Override per-SWE-task timeout.")
     parser.add_argument("--session-timeout-seconds", type=int, default=None, help="Override total SWE session timeout.")
     parser.add_argument("--max-concurrent-requests", type=int, default=None, help="Override Affinetes request concurrency.")
@@ -83,41 +87,36 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def build_swe_env_overrides(args: argparse.Namespace, swe_server_url: str) -> dict[str, str]:
-    overrides = {"SWE_INFINITE_SERVER_BASE_URL": swe_server_url}
-
-    optional_values = {
-        "SWE_INFINITE_TASK_IDS": ",".join(str(task_id) for task_id in args.task_id) if args.task_id else None,
-        "SWE_INFINITE_METADATA_URL": args.metadata_url,
-        "SWE_INFINITE_TASK_ID_MIN": args.task_id_min,
-        "SWE_INFINITE_TASK_ID_MAX": args.task_id_max,
-        "SWE_INFINITE_NUM_SEEDS": args.num_seeds,
-        "SWE_INFINITE_TASK_TIMEOUT_SECONDS": args.task_timeout_seconds,
-        "SWE_INFINITE_SESSION_TIMEOUT": args.session_timeout_seconds,
-        "SWE_INFINITE_MAX_CONCURRENT_REQUESTS": args.max_concurrent_requests,
-        "SWE_INFINITE_AFFINETES_CALL_PATH": args.affinetes_call_path,
-        "SWE_INFINITE_MAX_ITERATIONS": args.max_iterations,
-        "SWE_INFINITE_MODEL_API_KEY": args.model_api_key,
-        "SWE_INFINITE_MODEL_BASE_URL": args.model_base_url,
+def build_swe_eval_config(args: argparse.Namespace) -> SweInfiniteEvalConfig:
+    overrides = {
+        "metadata_url": args.metadata_url,
+        "task_timeout_seconds": args.task_timeout_seconds,
+        "session_timeout_seconds": args.session_timeout_seconds,
+        "max_concurrent_requests": args.max_concurrent_requests,
+        "affinetes_call_path": args.affinetes_call_path,
+        "max_iterations": args.max_iterations,
+        "model_api_key": args.model_api_key,
+        "model_base_url": args.model_base_url,
     }
-    for key, value in optional_values.items():
-        if value is not None and value != "":
-            overrides[key] = str(value)
     if args.collect_logprobs:
-        overrides["SWE_INFINITE_COLLECT_LOGPROBS"] = "true"
-    return overrides
+        overrides["collect_logprobs"] = True
+    return DEFAULT_SWE_INFINITE_EVAL_CONFIG.with_overrides(**overrides)
 
 
-def apply_env_overrides(overrides: dict[str, str]) -> None:
-    for key, value in overrides.items():
-        os.environ[key] = value
+def build_task_selection_override(args: argparse.Namespace) -> SweInfiniteTaskSelectionOverride:
+    return SweInfiniteTaskSelectionOverride(
+        task_id_min=args.task_id_min,
+        task_id_max=args.task_id_max,
+        num_seeds=args.num_seeds,
+        task_ids=tuple(args.task_id) if args.task_id else (),
+    )
 
 
-def _masked_overrides(overrides: dict[str, str]) -> dict[str, str]:
-    masked = dict(overrides)
-    if "SWE_INFINITE_MODEL_API_KEY" in masked:
-        masked["SWE_INFINITE_MODEL_API_KEY"] = "***"
-    return masked
+def _config_for_json(config: SweInfiniteEvalConfig) -> dict:
+    payload = json.loads(config.to_json())
+    if payload.get("model_api_key"):
+        payload["model_api_key"] = "***"
+    return payload
 
 
 def _parse_base_chain(raw: str | None) -> list[str] | None:
@@ -132,17 +131,18 @@ def _parse_base_chain(raw: str | None) -> list[str] | None:
 async def run(args: argparse.Namespace) -> None:
     load_dotenv(args.env_file, override=False)
 
-    swe_server_url = args.swe_server_url or os.getenv("SWE_INFINITE_SERVER_BASE_URL")
+    swe_server_url = args.swe_server_url or os.getenv(SWE_INFINITE_SERVER_BASE_URL_ENV)
     if not swe_server_url:
-        raise SystemExit("SWE_INFINITE_SERVER_BASE_URL is required. Pass --swe-server-url or set it in the environment.")
+        raise SystemExit(f"{SWE_INFINITE_SERVER_BASE_URL_ENV} is required. Pass --swe-server-url or set it in the environment.")
     if not os.getenv("BASILICA_API_TOKEN"):
         raise SystemExit("BASILICA_API_TOKEN is required for this live Basilica smoke test.")
 
     model_repo = args.model or args.base_model
     base_chain = _parse_base_chain(args.base_chain_json)
     base_chains = {args.hotkey: base_chain} if base_chain else None
-    overrides = build_swe_env_overrides(args, swe_server_url)
-    apply_env_overrides(overrides)
+    os.environ[SWE_INFINITE_SERVER_BASE_URL_ENV] = swe_server_url
+    swe_eval_config = build_swe_eval_config(args)
+    task_selection_override = build_task_selection_override(args)
 
     config = {
         "environment": env_cst.EnvironmentName.SWE_INFINITE.value,
@@ -155,7 +155,9 @@ async def run(args: argparse.Namespace) -> None:
         "agent": FIXED_SWE_AGENT,
         "hotkey": args.hotkey,
         "base_chain": base_chain or [],
-        "env_overrides": _masked_overrides(overrides),
+        "swe_server_url": swe_server_url,
+        "swe_eval_config": _config_for_json(swe_eval_config),
+        "task_selection_override": json.loads(task_selection_override.to_json()),
     }
     print("Resolved SWE Infinite Basilica smoke-test config:")
     print(json.dumps(config, indent=2, sort_keys=True))
@@ -175,6 +177,8 @@ async def run(args: argparse.Namespace) -> None:
         task_id=None,
         psql_db=None,
         base_chains=base_chains,
+        swe_eval_config=swe_eval_config,
+        swe_task_selection_override=task_selection_override,
     )
     elapsed = time.perf_counter() - start
 

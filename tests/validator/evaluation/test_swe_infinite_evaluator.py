@@ -1,9 +1,12 @@
 import asyncio
+from dataclasses import replace
 
 import pytest
 
 import core.constants.environments as env_cst
 from validator.evaluation.evaluators import swe
+from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
 
 
 def test_with_v1_preserves_existing_v1_suffix():
@@ -91,14 +94,24 @@ def test_build_swe_payload_always_uses_miniswe(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resolve_task_range_prefers_public_metadata(monkeypatch):
+async def test_resolve_task_range_prefers_environment_max(monkeypatch):
+    async def exploding_fetch(_url):
+        raise AssertionError("metadata should not be fetched when EnvironmentConfig.task_id_max is set")
+
+    monkeypatch.setattr(swe, "_fetch_swe_completed_up_to", exploding_fetch)
+
+    env_config = env_cst.ENVIRONMENT_CONFIGS[env_cst.EnvironmentName.SWE_INFINITE]
+    assert await swe._resolve_task_range(env_config) == (1, env_config.task_id_max)
+
+
+@pytest.mark.asyncio
+async def test_resolve_task_range_uses_public_metadata_when_environment_max_is_zero(monkeypatch):
     async def fake_fetch(_url):
         return 123
 
-    monkeypatch.delenv("SWE_INFINITE_TASK_ID_MAX", raising=False)
     monkeypatch.setattr(swe, "_fetch_swe_completed_up_to", fake_fetch)
 
-    env_config = env_cst.ENVIRONMENT_CONFIGS[env_cst.EnvironmentName.SWE_INFINITE]
+    env_config = replace(env_cst.ENVIRONMENT_CONFIGS[env_cst.EnvironmentName.SWE_INFINITE], task_id_max=0)
     assert await swe._resolve_task_range(env_config) == (1, 123)
 
 
@@ -107,25 +120,23 @@ async def test_resolve_task_range_allows_explicit_override(monkeypatch):
     async def exploding_fetch(_url):
         raise AssertionError("metadata should not be fetched when max is explicit")
 
-    monkeypatch.setenv("SWE_INFINITE_TASK_ID_MIN", "7")
-    monkeypatch.setenv("SWE_INFINITE_TASK_ID_MAX", "9")
     monkeypatch.setattr(swe, "_fetch_swe_completed_up_to", exploding_fetch)
 
     env_config = env_cst.ENVIRONMENT_CONFIGS[env_cst.EnvironmentName.SWE_INFINITE]
-    assert await swe._resolve_task_range(env_config) == (7, 9)
+    task_selection_override = SweInfiniteTaskSelectionOverride(task_id_min=7, task_id_max=9)
+    assert await swe._resolve_task_range(env_config, task_selection_override=task_selection_override) == (7, 9)
 
 
 @pytest.mark.asyncio
 async def test_run_swe_evaluation_counts_session_timeouts_as_zero(monkeypatch):
-    async def fake_post(_session, _swe_server_url, payload, _task_timeout):
+    async def fake_post(_session, _swe_server_url, payload, _task_timeout, _eval_config):
         if payload["task_id"] == 1:
             return {"score": 1.0, "time_taken": 0.01}
         await asyncio.sleep(10)
         return {"score": 1.0, "time_taken": 10.0}
 
     monkeypatch.setattr(swe, "_post_affinetes_evaluate", fake_post)
-    monkeypatch.setenv("SWE_INFINITE_SESSION_TIMEOUT", "1")
-    monkeypatch.setenv("SWE_INFINITE_MAX_CONCURRENT_REQUESTS", "2")
+    eval_config = DEFAULT_SWE_INFINITE_EVAL_CONFIG.with_overrides(session_timeout_seconds=1, max_concurrent_requests=2)
 
     avg = await swe._run_swe_evaluation(
         swe_server_url="https://swe.example",
@@ -134,6 +145,7 @@ async def test_run_swe_evaluation_counts_session_timeouts_as_zero(monkeypatch):
         eval_list=[(101, 1), (102, 2)],
         temperature=0.0,
         task_timeout=60,
+        eval_config=eval_config,
     )
 
     assert avg == 0.5

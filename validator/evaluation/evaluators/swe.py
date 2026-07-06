@@ -34,113 +34,25 @@ from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
 from validator.evaluation.pvp.materialize import materialize_base_model
 from validator.evaluation.runtime import stop_process
+from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
+from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_MODEL_API_KEY
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_AGENT_NAME
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_MODEL_API_KEY_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_MODEL_BASE_URL_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_SERVER_BASE_URL_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_VETTED_TASK_IDS
+from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
+from validator.evaluation.swe_infinite_config import load_swe_infinite_eval_config
+from validator.evaluation.swe_infinite_config import load_swe_infinite_task_selection_override
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_METADATA_URL = "https://pub-7882418a56434a479bf9a7febd660b36.r2.dev/bugs/metadata.json"
-DEFAULT_AFFINETES_CALL_PATH = "/call"
-DEFAULT_MODEL_API_KEY = "x"
-MINISWE_AGENT_NAME = "miniswe"
-DEFAULT_MAX_ITERATIONS = 100
-DEFAULT_TASK_TIMEOUT_SECONDS = 1800
-DEFAULT_SESSION_TIMEOUT_SECONDS = vcst.ENV_EVAL_SESSION_TIMEOUT
-DEFAULT_MAX_CONCURRENT_REQUESTS = 1
-SWE_VETTED_TASK_IDS = tuple(
-    dict.fromkeys(
-        [
-            73,
-            87,
-            101,
-            139,
-            152,
-            158,
-            202,
-            256,
-            261,
-            262,
-            293,
-            318,
-            428,
-            431,
-            437,
-            443,
-            478,
-            495,
-            509,
-            677,
-            692,
-            703,
-            713,
-            715,
-            721,
-            761,
-            765,
-            796,
-            800,
-            829,
-            851,
-            852,
-            898,
-            966,
-            971,
-            975,
-            1020,
-            1023,
-            1077,
-            1088,
-            1113,
-            1224,
-            1240,
-            1263,
-            1288,
-            1313,
-            1325,
-            1329,
-            1402,
-            1406,
-            1434,
-            1436,
-            1444,
-            1467,
-            1481,
-            1559,
-            1565,
-            1582,
-            1603,
-            1609,
-            1665,
-            1669,
-            1686,
-            1718,
-            1756,
-            1761,
-            1802,
-            1819,
-            1874,
-            1900,
-            1905,
-            1921,
-            1967,
-            1991,
-        ]
-    )
-)
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return default
-    return int(raw)
-
-
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+DEFAULT_TASK_TIMEOUT_SECONDS = DEFAULT_SWE_INFINITE_EVAL_CONFIG.task_timeout_seconds
+MINISWE_AGENT_NAME = SWE_INFINITE_AGENT_NAME
+SWE_VETTED_TASK_IDS = SWE_INFINITE_VETTED_TASK_IDS
 
 
 def _with_v1(base_url: str) -> str:
@@ -190,14 +102,25 @@ async def _fetch_swe_completed_up_to(metadata_url: str) -> int | None:
         return None
 
 
-async def _resolve_task_range(env_config: env_cst.EnvironmentConfig) -> tuple[int, int]:
-    task_id_min = _env_int("SWE_INFINITE_TASK_ID_MIN", env_config.task_id_min)
-    raw_max = os.getenv("SWE_INFINITE_TASK_ID_MAX")
-    if raw_max is not None and raw_max.strip() != "":
-        task_id_max = int(raw_max)
+async def _resolve_task_range(
+    env_config: env_cst.EnvironmentConfig,
+    eval_config: SweInfiniteEvalConfig = DEFAULT_SWE_INFINITE_EVAL_CONFIG,
+    task_selection_override: SweInfiniteTaskSelectionOverride | None = None,
+) -> tuple[int, int]:
+    task_selection_override = task_selection_override or SweInfiniteTaskSelectionOverride()
+    task_id_min = (
+        task_selection_override.task_id_min
+        if task_selection_override.task_id_min is not None
+        else env_config.task_id_min
+    )
+    if task_selection_override.task_id_max is not None:
+        task_id_max = task_selection_override.task_id_max
+    elif env_config.task_id_max > 0:
+        task_id_max = env_config.task_id_max
     else:
-        metadata_url = os.getenv("SWE_INFINITE_METADATA_URL", DEFAULT_METADATA_URL)
-        task_id_max = await _fetch_swe_completed_up_to(metadata_url) or env_config.task_id_max
+        task_id_max = await _fetch_swe_completed_up_to(eval_config.metadata_url) or 0
+        if task_id_max <= 0:
+            raise ValueError("Could not resolve SWE task_id_max from metadata while EnvironmentConfig.task_id_max <= 0")
 
     if task_id_max < task_id_min:
         raise ValueError(f"Invalid SWE task range: min={task_id_min}, max={task_id_max}")
@@ -300,8 +223,9 @@ async def _post_affinetes_evaluate(
     swe_server_url: str,
     payload: dict,
     task_timeout: int,
+    eval_config: SweInfiniteEvalConfig = DEFAULT_SWE_INFINITE_EVAL_CONFIG,
 ) -> dict:
-    call_path = os.getenv("SWE_INFINITE_AFFINETES_CALL_PATH", DEFAULT_AFFINETES_CALL_PATH)
+    call_path = eval_config.affinetes_call_path
     timeout = aiohttp.ClientTimeout(total=task_timeout + 30)
     url = f"{swe_server_url.rstrip('/')}{call_path}"
     if call_path == "/call":
@@ -325,19 +249,21 @@ def _build_swe_payload(
     seed: int,
     temperature: float,
     task_timeout: int,
+    eval_config: SweInfiniteEvalConfig = DEFAULT_SWE_INFINITE_EVAL_CONFIG,
 ) -> dict:
+    model_api_key = eval_config.model_api_key or os.getenv(SWE_INFINITE_MODEL_API_KEY_ENV, DEFAULT_SWE_INFINITE_MODEL_API_KEY)
     payload: dict = {
         "model": model,
         "base_url": model_base_url,
-        "api_key": os.getenv("SWE_INFINITE_MODEL_API_KEY", DEFAULT_MODEL_API_KEY),
+        "api_key": model_api_key,
         "task_id": task_id,
         "timeout": task_timeout,
         "temperature": temperature,
         "seed": seed,
-        "agent": MINISWE_AGENT_NAME,
-        "max_iterations": _env_int("SWE_INFINITE_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS),
+        "agent": SWE_INFINITE_AGENT_NAME,
+        "max_iterations": eval_config.max_iterations,
     }
-    if _env_bool("SWE_INFINITE_COLLECT_LOGPROBS", False):
+    if eval_config.collect_logprobs:
         payload["collect_logprobs"] = True
     return payload
 
@@ -350,10 +276,11 @@ async def _run_swe_evaluation(
     eval_list: list[tuple[int, int]],
     temperature: float,
     task_timeout: int,
+    eval_config: SweInfiniteEvalConfig = DEFAULT_SWE_INFINITE_EVAL_CONFIG,
 ) -> float:
     all_results: list[dict] = []
     total_tasks = len(eval_list)
-    concurrency = _env_int("SWE_INFINITE_MAX_CONCURRENT_REQUESTS", DEFAULT_MAX_CONCURRENT_REQUESTS)
+    concurrency = eval_config.max_concurrent_requests
     logger.info("eval_swe batch: %s tasks (concurrency=%s)", total_tasks, concurrency)
     semaphore = asyncio.Semaphore(max(1, concurrency))
 
@@ -365,11 +292,12 @@ async def _run_swe_evaluation(
             seed=seed,
             temperature=temperature,
             task_timeout=task_timeout,
+            eval_config=eval_config,
         )
         start = time.time()
         try:
             logger.info("eval_swe %s/%s start task_id=%s seed=%s", index + 1, total_tasks, task_id, seed)
-            result = await _post_affinetes_evaluate(session, swe_server_url, payload, task_timeout)
+            result = await _post_affinetes_evaluate(session, swe_server_url, payload, task_timeout, eval_config)
             latency = float(result.get("time_taken", time.time() - start))
             score = float(result.get("score", 0.0))
             logger.info(
@@ -396,7 +324,7 @@ async def _run_swe_evaluation(
         async with semaphore:
             return await evaluate_one(session, seed, task_id, index)
 
-    session_timeout = _env_int("SWE_INFINITE_SESSION_TIMEOUT", DEFAULT_SESSION_TIMEOUT_SECONDS)
+    session_timeout = eval_config.session_timeout_seconds
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=session_timeout)) as session:
         tasks = [
             asyncio.create_task(evaluate_with_limit(session, seed, task_id, index))
@@ -501,28 +429,34 @@ async def _run() -> None:
         if not model_repo:
             raise ValueError("MODELS is required and must contain a single repo")
 
-        swe_server_url = os.getenv("SWE_INFINITE_SERVER_BASE_URL", "").strip()
+        eval_config = load_swe_infinite_eval_config()
+        task_selection_override = load_swe_infinite_task_selection_override()
+        swe_server_url = os.getenv(SWE_INFINITE_SERVER_BASE_URL_ENV, "").strip()
         if not swe_server_url:
-            raise ValueError("SWE_INFINITE_SERVER_BASE_URL is required for SWE Infinite evaluation")
+            raise ValueError(f"{SWE_INFINITE_SERVER_BASE_URL_ENV} is required for SWE Infinite evaluation")
 
         original_model = os.getenv("ORIGINAL_MODEL", model_repo)
         base_chain_raw = os.getenv("BASE_CHAIN", "")
         base_chain = json.loads(base_chain_raw) if base_chain_raw.strip() else []
         base_seed = int(os.getenv("EVAL_SEED", str(vcst.ENV_EVAL_DEFAULT_SEED)))
         temperature = float(os.getenv("ENV_EVAL_TEMPERATURE", str(vcst.ENV_EVAL_TEMPERATURE)))
-        task_timeout = _env_int("SWE_INFINITE_TASK_TIMEOUT_SECONDS", DEFAULT_TASK_TIMEOUT_SECONDS)
+        task_timeout = eval_config.task_timeout_seconds
 
         env_name = _parse_environment_name()
         env_config = env_cst.ENVIRONMENT_CONFIGS[env_name]
-        explicit_task_ids = _parse_task_ids(os.getenv("SWE_INFINITE_TASK_IDS"))
+        explicit_task_ids = list(task_selection_override.task_ids)
         if explicit_task_ids:
             eval_list = _build_eval_list_for_task_ids(base_seed, explicit_task_ids)
             task_id_min = min(explicit_task_ids)
             task_id_max = max(explicit_task_ids)
             num_seeds = len(explicit_task_ids)
         else:
-            task_id_min, task_id_max = await _resolve_task_range(env_config)
-            num_seeds = _env_int("SWE_INFINITE_NUM_SEEDS", _env_int("ENV_EVAL_NUM_SEEDS", env_config.num_seeds))
+            task_id_min, task_id_max = await _resolve_task_range(env_config, eval_config, task_selection_override)
+            num_seeds = (
+                task_selection_override.num_seeds
+                if task_selection_override.num_seeds is not None
+                else env_config.num_seeds
+            )
             eval_list = _build_eval_list(base_seed, num_seeds, task_id_min, task_id_max)
 
         logger.info(
@@ -554,9 +488,9 @@ async def _run() -> None:
         if current_workspace < min_workspace:
             os.environ["SGLANG_FLASHINFER_WORKSPACE_SIZE"] = str(min_workspace)
 
-        sglang_health_timeout = _env_int("SGLANG_HEALTH_TIMEOUT", 1800)
+        sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800"))
         sglang_base_url = os.getenv("SGLANG_BASE_URL", "http://127.0.0.1:30000")
-        model_base_url = os.getenv("SWE_INFINITE_MODEL_BASE_URL") or _with_v1(sglang_base_url)
+        model_base_url = eval_config.model_base_url or os.getenv(SWE_INFINITE_MODEL_BASE_URL_ENV) or _with_v1(sglang_base_url)
         logger.info(
             "eval_setup launching SGLang: model_path=%s inference_model_name=%s public_model_base_url=%s",
             model_path_for_sglang,
@@ -581,6 +515,7 @@ async def _run() -> None:
             eval_list=eval_list,
             temperature=temperature,
             task_timeout=task_timeout,
+            eval_config=eval_config,
         )
 
         output = {model_repo: {"is_finetune": True, "eval_loss": avg_score}}
