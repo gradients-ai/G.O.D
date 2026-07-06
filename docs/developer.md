@@ -110,6 +110,34 @@ For SWE Infinite environment tournament evaluation, configure the external Affin
 echo "SWE_INFINITE_SERVER_BASE_URL=<https://your-affinetes-swe-server>" >> .vali.env
 ```
 
+The SWE Infinite server should run on infrastructure separate from the validator. It evaluates models by calling the SGLang URL that the evaluator sends in each request, so the SWE server host does not need GPUs, but it does need:
+
+- Docker Engine installed and the Docker daemon running.
+- Enough disk for SWE task checkouts, temporary files, and container layers.
+- Outbound network access to the model server URL, GitHub, package indexes, and any task dependencies the SWE image fetches.
+- An inbound HTTP route from the validator/Basilica eval container to the server port.
+
+Run the published SWE Infinite image:
+
+```bash
+docker pull gradientsio/swe-infinite:v1
+docker rm -f swe-infinite || true
+docker run -d \
+  --restart unless-stopped \
+  --name swe-infinite \
+  -p 8001:8001 \
+  gradientsio/swe-infinite:v1
+```
+
+Then check it locally and expose the same base URL in `.vali.env`:
+
+```bash
+curl http://127.0.0.1:8001/health
+echo "SWE_INFINITE_SERVER_BASE_URL=http://<swe-server-host>:8001" >> .vali.env
+```
+
+If the server is behind a reverse proxy or load balancer, set `SWE_INFINITE_SERVER_BASE_URL` to that public HTTPS URL instead. The evaluator uses Affinetes' `/call` endpoint by default; only set `SWE_INFINITE_AFFINETES_CALL_PATH` if the deployed image exposes a different path.
+
 Trainer config needs at least:
 
 ```bash
