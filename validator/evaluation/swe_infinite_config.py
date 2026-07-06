@@ -33,8 +33,8 @@ SWE_INFINITE_VETTED_TASK_IDS = (
 class SweInfiniteEvalConfig:
     metadata_url: str = "https://pub-7882418a56434a479bf9a7febd660b36.r2.dev/bugs/metadata.json"
     affinetes_call_path: str = "/call"
-    max_iterations: int = 100
-    task_timeout_seconds: int = 1800
+    max_iterations: int = 25
+    task_timeout_seconds: int = 900
     session_timeout_seconds: int = vcst.ENV_EVAL_SESSION_TIMEOUT
     max_concurrent_requests: int = 1
     collect_logprobs: bool = False
