@@ -53,7 +53,7 @@ async def process_non_stream_fiber_get(endpoint: str, config: Config, node: Node
             timeout=10,
         )
     except Exception as e:
-        logger.error(f"Failed to communicate with node {node.node_id} ({server_address}{endpoint}): {type(e).__name__}: {e}")
+        logger.error(f"Failed to communicate with node {node.node_id} ({server_address}{endpoint}): {repr(e)}")
         return None
 
     if response.status_code != 200:
@@ -85,7 +85,7 @@ async def process_non_stream_fiber(
             timeout=timeout,
         )
     except Exception as e:
-        logger.debug(f"Failed to communicate with node {node.node_id} ({server_address}{endpoint}): {type(e).__name__}: {e}")
+        logger.debug(f"Failed to communicate with node {node.node_id} ({server_address}{endpoint}): {repr(e)}")
         return None
 
     if response.status_code != 200:
