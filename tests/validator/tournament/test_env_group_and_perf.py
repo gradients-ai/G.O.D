@@ -9,6 +9,7 @@ import pytest
 
 import validator.scoring.constants as cts
 import validator.tournament.constants as t_cst
+from core.constants.environments import EnvironmentName
 from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.models import GroupRound
@@ -343,15 +344,27 @@ class TestEnvWinPercentage:
 
 
 # =============================================================================
-# 4. determine_env_tournament_winner: must win ALL boss round tasks
+# 4. determine_env_tournament_winner: must avoid losses and win SWE Infinite
 # =============================================================================
 
 
 class TestDetermineEnvTournamentWinner:
-    """Test the 'must beat boss on ALL tasks' rule with mocked DB."""
+    """Test the environment boss-round dethrone rule with mocked DB."""
+
+    def _task_details(self, swe_task_id: str = "task_1"):
+        def get_task(task_id, _psql_db):
+            task = MagicMock()
+            task.environment_names = (
+                [EnvironmentName.SWE_INFINITE]
+                if task_id == swe_task_id
+                else [EnvironmentName.LIARS_DICE]
+            )
+            return task
+
+        return get_task
 
     @pytest.mark.asyncio
-    async def test_contender_wins_all_three(self):
+    async def test_contender_wins_all_three_including_swe(self):
         from validator.tournament.round_results import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -379,6 +392,7 @@ class TestDetermineEnvTournamentWinner:
         with (
             patch("validator.tournament.round_results.get_tournament_rounds", return_value=mock_rounds),
             patch("validator.tournament.round_results.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.round_results.get_task", side_effect=self._task_details("task_1")),
             patch("validator.tournament.round_results._get_scores_for_task", side_effect=mock_get_scores),
         ):
             result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
@@ -414,6 +428,7 @@ class TestDetermineEnvTournamentWinner:
         with (
             patch("validator.tournament.round_results.get_tournament_rounds", return_value=mock_rounds),
             patch("validator.tournament.round_results.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.round_results.get_task", side_effect=self._task_details("task_1")),
             patch("validator.tournament.round_results._get_scores_for_task", side_effect=mock_get_scores),
         ):
             result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
@@ -423,7 +438,7 @@ class TestDetermineEnvTournamentWinner:
 
     @pytest.mark.asyncio
     async def test_draws_are_allowed_when_contender_has_no_losses(self):
-        """Contender wins when they have at least one win and no losses, even with a draw."""
+        """Contender wins with draws only when one strict win is on SWE."""
         from validator.tournament.round_results import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -448,11 +463,74 @@ class TestDetermineEnvTournamentWinner:
         with (
             patch("validator.tournament.round_results.get_tournament_rounds", return_value=mock_rounds),
             patch("validator.tournament.round_results.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.round_results.get_task", side_effect=self._task_details("task_2")),
             patch("validator.tournament.round_results._get_scores_for_task", side_effect=mock_get_scores),
         ):
             result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
 
         assert result[0] == "contender"
+
+    @pytest.mark.asyncio
+    async def test_contender_wins_non_swe_only_boss_retains(self):
+        from validator.tournament.round_results import determine_env_tournament_winner
+
+        tournament = MagicMock(spec=TournamentData)
+        tournament.tournament_id = "t1"
+
+        mock_rounds = [MagicMock(is_final_round=True, round_id="r_final")]
+        mock_tasks = [
+            MagicMock(task_id="task_1"),
+            MagicMock(task_id="task_2"),
+            MagicMock(task_id="task_3"),
+        ]
+
+        scores_by_task = {
+            "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 5.0},  # SWE draw
+            "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 6.0},
+            "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 7.0},
+        }
+
+        async def mock_get_scores(task_id, psql_db):
+            return scores_by_task[task_id]
+
+        with (
+            patch("validator.tournament.round_results.get_tournament_rounds", return_value=mock_rounds),
+            patch("validator.tournament.round_results.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.round_results.get_task", side_effect=self._task_details("task_1")),
+            patch("validator.tournament.round_results._get_scores_for_task", side_effect=mock_get_scores),
+        ):
+            result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
+
+        assert result[0] == EMISSION_BURN_HOTKEY
+        assert result[1] == "contender"
+
+    @pytest.mark.asyncio
+    async def test_no_swe_final_task_boss_retains(self):
+        from validator.tournament.round_results import determine_env_tournament_winner
+
+        tournament = MagicMock(spec=TournamentData)
+        tournament.tournament_id = "t1"
+
+        mock_rounds = [MagicMock(is_final_round=True, round_id="r_final")]
+        mock_tasks = [MagicMock(task_id="task_1")]
+
+        async def mock_get_scores(_task_id, _psql_db):
+            return {EMISSION_BURN_HOTKEY: 3.0, "contender": 6.0}
+
+        async def mock_get_task(_task_id, _psql_db):
+            task = MagicMock()
+            task.environment_names = [EnvironmentName.LIARS_DICE]
+            return task
+
+        with (
+            patch("validator.tournament.round_results.get_tournament_rounds", return_value=mock_rounds),
+            patch("validator.tournament.round_results.get_tournament_tasks", return_value=mock_tasks),
+            patch("validator.tournament.round_results.get_task", side_effect=mock_get_task),
+            patch("validator.tournament.round_results._get_scores_for_task", side_effect=mock_get_scores),
+        ):
+            result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
+
+        assert result[0] == EMISSION_BURN_HOTKEY
 
     @pytest.mark.asyncio
     async def test_no_final_round_boss_wins_default(self):

@@ -601,9 +601,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             return
 
         if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
-            # For environment tournaments, determine winner using 6-task majority over R1-R3 + R4x3
             if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                logger.info("Environment tournament final round — applying 6-task majority boss-beating rule")
+                logger.info("Environment tournament final round — applying SWE-gated boss round rule")
                 env_results = await determine_env_tournament_winner(tournament, winners, config, psql_db)
                 winner = env_results[0]
                 # Replace winners list with the cross-round results for downstream use

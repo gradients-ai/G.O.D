@@ -38,6 +38,17 @@ from validator.tournament.models import TournamentType
 logger = get_logger(__name__)
 
 
+def _env_names_excluding_forced_boss() -> list[EnvironmentName]:
+    forced = t_cst.FORCED_BOSS_ENVIRONMENT
+    return [env for env in EnvironmentName if env != forced]
+
+
+def _task_includes_environment(task: RawTask, environment: EnvironmentName | None) -> bool:
+    if environment is None or not isinstance(task, EnvRawTask):
+        return False
+    return environment in task.environment_names
+
+
 def is_small_tournament_group(round_data: GroupRound) -> bool:
     """Whether a group round is the small text/image tournament round-1 format.
 
@@ -141,7 +152,7 @@ def _select_r1_env_names(
     num_envs: int,
     seen_last_tournament: set[EnvironmentName],
 ) -> list[EnvironmentName]:
-    all_envs = list(EnvironmentName)
+    all_envs = _env_names_excluding_forced_boss()
     unseen = [env for env in all_envs if env not in seen_last_tournament]
     seen = [env for env in all_envs if env in seen_last_tournament]
     random.shuffle(unseen)
@@ -180,7 +191,9 @@ async def _create_environment_boss_round_tasks(
     """
     round_id = round_data.round_id
     group_id = f"{round_id}_group_001"
-    num_envs = min(round_data.round_number * t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER, len(EnvironmentName))
+    non_boss_envs = _env_names_excluding_forced_boss()
+    num_envs = min(round_data.round_number * t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER, len(non_boss_envs))
+    forced_boss_env = t_cst.FORCED_BOSS_ENVIRONMENT
 
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config)
     if len(existing_tasks) >= t_cst.ENV_FINAL_ROUND_TASK_COUNT:
@@ -200,23 +213,33 @@ async def _create_environment_boss_round_tasks(
         (None, TrainingStartPoint.FROM_SCRATCH, t_cst.ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH),
         (prev_tourn_winner_model, TrainingStartPoint.PREVIOUS_WINNER, None),
     ]
+    has_forced_boss_env_task = any(_task_includes_environment(task, forced_boss_env) for task in tasks)
 
     for i in range(len(tasks), t_cst.ENV_FINAL_ROUND_TASK_COUNT):
         model_override, start_point, hours = boss_task_configs[i]
+        force_boss_env_for_task = forced_boss_env is not None and not has_forced_boss_env_task
+        environment_names_override = [forced_boss_env] if force_boss_env_for_task else None
+        exclude_environments = [forced_boss_env] if forced_boss_env is not None and not force_boss_env_for_task else None
+        task_num_envs = 1 if force_boss_env_for_task else num_envs
         logger.info(
             f"Boss round task {i+1}/{t_cst.ENV_FINAL_ROUND_TASK_COUNT}: "
-            f"start_point={start_point.value}, model={model_override}, hours={hours}"
+            f"start_point={start_point.value}, model={model_override}, hours={hours}, "
+            f"forced_env={[env.value for env in environment_names_override or []]}"
         )
         task = await create_synthetic_env_task(
             config, models, instruct_datasets,
-            num_environments=num_envs, round_number=round_data.round_number,
+            num_environments=task_num_envs, round_number=round_data.round_number,
+            exclude_environments=exclude_environments,
             model_id_override=model_override,
             training_start_point=start_point,
+            environment_names_override=environment_names_override,
             exclude_models=[tournament_base_model] if tournament_base_model else None,
             hours_override=hours,
         )
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         tasks.append(task)
+        if force_boss_env_for_task:
+            has_forced_boss_env_task = True
 
     logger.info(f"Created {len(tasks)} boss round tasks: {[str(t.task_id) for t in tasks]}")
     return tasks
@@ -229,7 +252,7 @@ async def _create_environment_group_tasks(
     (num_envs, round_number, training_start_point) but an independent group_id."""
     round_id = round_data.round_id
     num_envs = round_data.round_number * t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER
-    num_envs = min(num_envs, len(EnvironmentName))
+    num_envs = min(num_envs, len(_env_names_excluding_forced_boss()))
     start_point = TrainingStartPoint.CONTINUATION if round_data.round_number > 1 else TrainingStartPoint.DEFAULT
 
     logger.info(
@@ -280,6 +303,7 @@ async def _create_environment_group_tasks(
                 num_environments=num_envs, round_number=round_data.round_number,
                 model_id_override=tournament_base_model,
                 training_start_point=start_point,
+                exclude_environments=[t_cst.FORCED_BOSS_ENVIRONMENT] if t_cst.FORCED_BOSS_ENVIRONMENT else None,
                 environment_names_override=r1_env_override,
             )
             reference_task = task

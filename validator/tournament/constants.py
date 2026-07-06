@@ -102,7 +102,7 @@ ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
 ENV_TARGET_TOURN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
-FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = None
+FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
