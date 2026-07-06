@@ -2,6 +2,8 @@ FROM winglian/axolotl:main-20251113
 
 WORKDIR /app
 
+RUN pip install --no-cache-dir hatchling
+
 RUN TORCH_VER=$(python -c "import torch; print(torch.__version__)") && \
     pip install --no-cache-dir --no-build-isolation sglang "torch==${TORCH_VER}" datasketch aiohttp python-dotenv textstat \
     "open-spiel==1.6.13" openai \
