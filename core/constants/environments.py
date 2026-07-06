@@ -174,7 +174,7 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
     EnvironmentName.SWE_INFINITE: EnvironmentConfig(
         task_id_min=1,
         task_id_max=22_813,
-        num_seeds=3,
+        num_seeds=6,
         num_baseline_episodes=0,
         eval_type=EvalType.INDIVIDUAL,
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_SWE_INFINITE,
