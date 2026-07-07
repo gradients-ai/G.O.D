@@ -977,11 +977,23 @@ async def _get_miner_training_repo(node: Node, config: Config, tournament_type: 
         url = f"{TRAINING_REPO_ENDPOINT}/{tournament_type.value}"
         response = await process_non_stream_fiber_get(url, config, node)
 
-        if response and isinstance(response, dict):
-            return TrainingRepoResponse(**response)
-        else:
+        if not response:
+            return None
+
+        if not isinstance(response, dict):
             logger.warning(f"Invalid response format from {node.hotkey}: {response}")
             return None
+
+        training_repo = TrainingRepoResponse(**response)
+
+        if not training_repo.github_repo or not training_repo.commit_hash:
+            logger.warning(
+                f"Miner {node.hotkey} returned empty repo or commit hash: "
+                f"repo={training_repo.github_repo!r} commit={training_repo.commit_hash!r}"
+            )
+            return None
+
+        return training_repo
 
     except Exception as e:
         logger.error(f"Failed to get training repo from {node.hotkey}: {e}")
