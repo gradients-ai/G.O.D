@@ -24,6 +24,7 @@ from core.models.payload_models import InstructTextDatasetColumnsResponse
 from core.models.reward_models import RewardFunction
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
+from core.whitelisted_env_models import SUPPORTED_ENV_MODELS
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
@@ -48,17 +49,6 @@ from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 
 
 logger = get_logger(__name__)
-
-SUPPORTED_ENV_MODELS = [
-    "Qwen/Qwen2-7B-Instruct",
-    "unsloth/Llama-3.2-3B-Instruct",
-    "Qwen/Qwen3-4B-Instruct-2507",
-    "Qwen/Qwen2.5-3B-Instruct",
-    "Qwen/Qwen2.5-7B-Instruct",
-    "codellama/CodeLlama-7b-Instruct-hf",
-    "NousResearch/Hermes-3-Llama-3.2-3B",
-]
-
 
 def maybe_get_yarn_factor() -> int | None:
     """
