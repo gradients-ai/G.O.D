@@ -133,8 +133,7 @@ docker rm -f swe-infinite || true
 docker run -d \
   --restart unless-stopped \
   --name swe-infinite \
-  -p 8001:8001 \
-  -e AFFINETES_PORT=8001 \
+  -p 8000:8000 \
   -e DOCKER_HUB_USERNAME \
   -e DOCKER_HUB_TOKEN \
   -v /var/run/docker.sock:/var/run/docker.sock \
@@ -151,8 +150,8 @@ docker update --restart unless-stopped swe-infinite
 Then check it locally and expose the same base URL in `.vali.env`:
 
 ```bash
-curl http://127.0.0.1:8001/health
-echo "SWE_INFINITE_SERVER_BASE_URL=http://<swe-server-host>:8001" >> .vali.env
+curl http://127.0.0.1:8000/health
+echo "SWE_INFINITE_SERVER_BASE_URL=http://<swe-server-host>:8000" >> .vali.env
 ```
 
 If the server is behind a reverse proxy or load balancer, set `SWE_INFINITE_SERVER_BASE_URL` to that public HTTPS URL instead. The evaluator uses Affinetes' `/call` endpoint by default. SWE Infinite evaluator behavior is configured in `validator/evaluation/swe_infinite_config.py`; production task range and task count stay in `core/constants/environments.py`. The metadata URL is only used to resolve `task_id_max` if the SWE `EnvironmentConfig.task_id_max` sentinel is set to `0`.

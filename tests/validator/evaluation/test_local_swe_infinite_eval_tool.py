@@ -70,7 +70,7 @@ def test_build_swe_docker_command_uses_configured_image_and_host_gateway():
             "--swe-port",
             "9001",
             "--swe-container-port",
-            "8001",
+            "8000",
             "--container-model-host",
             "host.docker.internal",
         ]
@@ -86,7 +86,7 @@ def test_build_swe_docker_command_uses_configured_image_and_host_gateway():
         "--name",
         "swe-test",
         "-p",
-        "127.0.0.1:9001:8001",
+        "127.0.0.1:9001:8000",
         "--add-host",
         "host.docker.internal:host-gateway",
         "gradientsio/swe-infinite:v1",

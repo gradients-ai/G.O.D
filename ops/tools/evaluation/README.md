@@ -69,8 +69,8 @@ uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
   --model your-org/your-model-or-lora \
   --base-model Qwen/Qwen2.5-7B-Instruct \
   --task-id 7 83 45 \
-  --swe-port 8001 \
-  --swe-container-port 8001 \
+  --swe-port 8000 \
+  --swe-container-port 8000 \
   --dry-run
 ```
 
