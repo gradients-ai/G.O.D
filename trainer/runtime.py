@@ -189,7 +189,12 @@ async def run_trainer_container_image(
     if trigger_word:
         command += ["--trigger-word", trigger_word]
 
-    environment: dict[str, str] = {"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH}
+    environment: dict[str, str] = {
+        "TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH,
+        "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
+        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
+        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
+    }
     if baseline_stats:
         vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
         stats_filename = f"baseline_stats_{task_id}.json"
@@ -410,7 +415,10 @@ def run_downloader_container(
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
 
-    environment = {}
+    environment = {
+        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
+        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
+    }
     if anonymize:
         environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
     try:
