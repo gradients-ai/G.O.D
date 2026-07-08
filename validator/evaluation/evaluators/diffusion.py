@@ -60,6 +60,16 @@ def load_comfy_workflows(model_type: str):
             lora_template = json.load(file)
 
         return lora_template, None
+    elif model_type == ImageModelType.KREA2.value:
+        with open(cst.LORA_KREA2_WORKFLOW_PATH, "r") as file:
+            lora_template = json.load(file)
+
+        return lora_template, None
+    elif model_type == ImageModelType.IDEOGRAM4.value:
+        with open(cst.LORA_IDEOGRAM4_WORKFLOW_PATH, "r") as file:
+            lora_template = json.load(file)
+
+        return lora_template, None
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
@@ -159,6 +169,24 @@ def download_base_model(repo_id: str, model_type: str, safetensors_filename: str
     return model_name, model_path
 
 
+def resolve_eval_base_model(repo_id: str, model_type: str) -> tuple[str, str | None]:
+    if model_type == ImageModelType.KREA2.value:
+        logger.info(
+            "Using Comfy-Org Krea 2 raw model for evaluation instead of task base repo %s",
+            repo_id,
+        )
+        return cst.KREA2_EVAL_REPO_ID, cst.KREA2_EVAL_DIFFUSION_MODEL
+    if model_type == ImageModelType.IDEOGRAM4.value:
+        logger.info(
+            "Using Comfy-Org Ideogram 4 model for evaluation instead of task base repo %s",
+            repo_id,
+        )
+        return cst.IDEOGRAM4_EVAL_REPO_ID, cst.IDEOGRAM4_EVAL_DIFFUSION_MODEL
+
+    is_safetensors, safetensors_filename = is_safetensors_available(repo_id, model_type)
+    return repo_id, safetensors_filename if is_safetensors else None
+
+
 def download_lora(repo_id: str) -> str:
     lora_save_name = repo_id.split("/")[-1]
     if not os.path.exists(f"{cst.LORAS_SAVE_PATH}/{lora_save_name}.safetensors"):
@@ -193,6 +221,16 @@ def edit_workflow(
     elif model_type == ImageModelType.FLUX.value:
         payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["CFG"]["inputs"]["guidance"] = edit_elements.cfg
+    elif model_type == ImageModelType.IDEOGRAM4.value:
+        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
+        payload["Scheduler"]["inputs"]["steps"] = edit_elements.steps
+        payload["Noise"]["inputs"]["noise_seed"] = edit_elements.seed
+        payload["Sigma_split_denoise"]["inputs"]["denoise"] = edit_elements.denoise
+        payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
+        payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
+        payload["Dual_model_guider"]["inputs"]["cfg"] = edit_elements.cfg
+        payload["Prompt"]["inputs"]["text"] = edit_elements.prompt if text_guided else ""
+        return payload
     else:
         payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
@@ -231,7 +269,7 @@ def inference(image_base64: str, params: Img2ImgPayload, use_prompt: bool = Fals
     return lora_gen_loss
 
 
-def eval_loop(dataset_path: str, params: Img2ImgPayload) -> dict[str, list[float]]:
+def eval_loop(dataset_path: str, params: Img2ImgPayload, generations: int = 10) -> dict[str, list[float]]:
     total_text_guided_losses = []
     total_no_text_losses = []
 
@@ -249,7 +287,7 @@ def eval_loop(dataset_path: str, params: Img2ImgPayload) -> dict[str, list[float
         prompt = read_prompt_file(txt_path)
 
         params.prompt = prompt
-        seeds = generate_reproducible_seeds(master_seed=42, n=10)
+        seeds = generate_reproducible_seeds(master_seed=42, n=generations)
         text_guided_losses = []
         no_text_losses = []
         for seed in seeds:
@@ -300,7 +338,8 @@ def main():
         logger.error("Missing required environment variables.")
         exit(1)
 
-    is_safetensors, safetensors_filename = is_safetensors_available(base_model_repo, model_type)
+    base_model_repo, safetensors_filename = resolve_eval_base_model(base_model_repo, model_type)
+    is_safetensors = safetensors_filename is not None
     # Base model download
     logger.info("Downloading base model")
     model_name_or_path, model_path = download_base_model(
@@ -342,7 +381,11 @@ def main():
                 model_type=model_type,
             )
 
-            loss_data = eval_loop(test_dataset_path, img2img_payload)
+            loss_data = eval_loop(
+                test_dataset_path,
+                img2img_payload,
+                generations=generation_params.get("generations", 10),
+            )
             results[repo_id] = {"eval_loss": loss_data}
 
             if os.path.exists(lora_local_path):
@@ -351,7 +394,7 @@ def main():
             logger.error(f"Error evaluating repo {repo_id}: {str(e)}")
             results[repo_id] = str(e)
 
-    output_file = "/aplp/evaluation_results.json"
+    output_file = os.environ.get("EVALUATION_RESULTS_PATH", "/aplp/evaluation_results.json")
     output_dir = os.path.dirname(output_file)
 
     if not os.path.exists(output_dir):

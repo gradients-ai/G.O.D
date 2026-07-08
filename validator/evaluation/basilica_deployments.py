@@ -78,7 +78,11 @@ async def cleanup_all_basilica_deployments() -> None:
     logger.info(f"Drained evaluation cleanup removed {cleaned}/{len(deployments)} Basilica deployments")
 
 
-def create_basilica_eval_runner_source(command: list[str], result_path: str) -> str:
+def create_basilica_eval_runner_source(
+    command: list[str],
+    result_path: str,
+    prepare_image_models: bool = False,
+) -> str:
     """Create a generic eval runner source with health and result endpoints.
 
     The runner executes a single eval command, then serves the parsed
@@ -86,7 +90,9 @@ def create_basilica_eval_runner_source(command: list[str], result_path: str) -> 
     """
     command_json = json.dumps(command)
     result_path_json = json.dumps(result_path)
+    prepare_image_models_literal = repr(prepare_image_models)
     return f"""import json
+import os
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -94,6 +100,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 COMMAND = {command_json}
 RESULT_PATH = {result_path_json}
 RESULT_STATUS_PATH = "{EVAL_RESULT_STATUS_PATH}"
+PREPARE_IMAGE_MODELS = {prepare_image_models_literal}
 
 _state = {{
     "status": "running",
@@ -121,8 +128,15 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
+def _prepare_image_models():
+    if not PREPARE_IMAGE_MODELS:
+        return
+    from validator.evaluation.image_model_downloads import prepare_required_image_models
+    prepare_required_image_models(os.environ.get("MODEL_TYPE", ""))
+
 def _run_eval():
     try:
+        _prepare_image_models()
         proc = subprocess.run(COMMAND, text=True)
         if proc.returncode != 0:
             raise RuntimeError(f"Eval command failed with exit code {{proc.returncode}}")

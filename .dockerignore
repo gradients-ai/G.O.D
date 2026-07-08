@@ -11,3 +11,4 @@ secure_checkpoints
 *.safetensors
 *.ckpt
 data
+validator/evaluation/ComfyUI

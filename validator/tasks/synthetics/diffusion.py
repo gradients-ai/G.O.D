@@ -701,7 +701,11 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     logger.info("Creating synthetic image task")
     num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
-    is_qwen_model = model_info.model_type == ImageModelType.QWEN_IMAGE
+    use_higher_training_hours = model_info.model_type in {
+        ImageModelType.QWEN_IMAGE,
+        ImageModelType.KREA2,
+        ImageModelType.IDEOGRAM4,
+    }
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
         config, num_prompts, pick_image_synth_category()
@@ -716,7 +720,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
 
     if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
         number_of_hours = _image_competition_hours_for_dataset_size(len(image_text_pairs))
-        if is_qwen_model:
+        if use_higher_training_hours:
             number_of_hours = round(number_of_hours + synth_cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
 
         augmentation_config = maybe_get_augmentation_config(TaskType.IMAGETASK)

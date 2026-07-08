@@ -908,6 +908,20 @@ async def run_evaluation_docker_image(
         "MODEL_TYPE": model_type.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
     }
+    command = [
+        "bash",
+        "-lc",
+        "\n".join(
+            [
+                "python - <<'PY'",
+                "import os",
+                "from validator.evaluation.image_model_downloads import prepare_required_image_models",
+                "prepare_required_image_models(os.environ.get('MODEL_TYPE', ''))",
+                "PY",
+                "exec /app/start.sh",
+            ]
+        ),
+    ]
 
     container = None
     retry_delay = 5.0
@@ -917,6 +931,7 @@ async def run_evaluation_docker_image(
                 container = await asyncio.to_thread(
                     client.containers.run,
                     docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+                    command=command,
                     mounts=mounts,
                     environment=environment,
                     runtime="nvidia",
