@@ -98,12 +98,10 @@ def prepare_config(args: argparse.Namespace, dataset_path: Path) -> Path:
     model_path = cached_model_path(args.model)
     if not model_path.exists():
         raise FileNotFoundError(f"Expected cached base model at {model_path}")
-    # ideogram4 loader resolves sharded weights via hf_hub_download(repo_id=...);
-    # local cache dirs like /cache/models/ideogram-ai--ideogram-4-fp8 are not valid repo ids.
-    if args.model_type == "ideogram4":
-        model_config["name_or_path"] = args.model
-    else:
-        model_config["name_or_path"] = str(model_path)
+    # Trainer container has no internet; ai-toolkit must load every component from
+    # the local cache dir. Its ideogram4 loader uses the local branch when
+    # <name_or_path>/<subfolder> exists, so point it at the downloaded snapshot.
+    model_config["name_or_path"] = str(model_path)
 
     if args.model_type == "ideogram4":
         text_encoder_path = IDEOGRAM4_TEXT_ENCODER_CACHE
