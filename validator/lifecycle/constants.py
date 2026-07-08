@@ -4,6 +4,8 @@ MAX_DELAY_TIMES = 6
 MAX_CONCURRENT_MINER_ASSIGNMENTS = 5
 MAX_CONCURRENT_TASK_PREPS = 3
 EVAL_MAX_GPUS = 10
+# How often the eval loop reconciles live Basilica deployments against the reservation ledger.
+EVAL_RECONCILE_INTERVAL_SECONDS = 120
 MAX_CONCURRENT_JOBS = 60
 
 MODEL_SIZE_REQUIRING_2_GPUS = 30 * 10**9

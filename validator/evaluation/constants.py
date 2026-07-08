@@ -137,3 +137,9 @@ _HF_CONTAINER_ENV_BASE = {
 }
 HF_CONTAINER_ENV = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "1"}
 HF_CONTAINER_ENV_IMAGE = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "0"}
+
+# Eval-deployment reconciler: a live Basilica deployment with no backing eval row, or an
+# active eval row whose deployment is gone, must be older/staler than this grace window
+# before the reconciler acts on it. Protects the brief reserve -> deploy -> persist window
+# (and any list() staleness) so an in-flight eval is never reaped mid-startup.
+EVAL_ORPHAN_GRACE_SECONDS = 1800

@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+import time
 
 import core.constants.environments as core_cst
 import validator.db.sql.nodes as nodes_sql
@@ -17,6 +18,7 @@ from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.basilica_deployments import cleanup_all_basilica_deployments
+from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.evaluation.notifications import notify_evaluation_exception
 from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
 from validator.evaluation.pvp.models import PvPIncompleteError
@@ -489,9 +491,18 @@ async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
 
 async def evaluate_tasks_loop(config: Config):
     processing_task_ids: set[str] = set()
+    last_reconcile_at = 0.0
 
     while True:
         try:
+            now = time.monotonic()
+            if now - last_reconcile_at >= lifecycle_cst.EVAL_RECONCILE_INTERVAL_SECONDS:
+                last_reconcile_at = now
+                try:
+                    await reconcile_eval_deployments(config.psql_db)
+                except Exception as e:
+                    logger.error(f"eval deployment reconcile failed: {e!r}", exc_info=True)
+
             await _seed_task_evaluations_for_evaluation(config)
 
             evaluating_tasks = await _get_tasks_ready_for_evaluation(config)

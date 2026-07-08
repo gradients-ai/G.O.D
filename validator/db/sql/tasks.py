@@ -2004,6 +2004,27 @@ async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
     return ids
 
 
+async def get_active_evaluation_deployments(psql_db: PSQLDB) -> list[dict]:
+    """Deployment IDs referenced by non-terminal (pending/evaluating) eval rows, with the most
+    recent update time per deployment. Used by the reconciler to detect ghost reservations
+    (deployment no longer live) and, via the complement, orphaned live deployments.
+    """
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.DEPLOYMENT_ID} AS deployment_id, MAX({cst.UPDATED_AT}) AS updated_at
+            FROM {cst.EVALUATIONS_TABLE}
+            WHERE {cst.EVALUATION_STATUS} = ANY($1)
+              AND {cst.NETUID} = $2
+              AND {cst.DEPLOYMENT_ID} IS NOT NULL
+            GROUP BY {cst.DEPLOYMENT_ID}
+            """,
+            ["pending", "evaluating"],
+            NETUID,
+        )
+    return [{"deployment_id": row["deployment_id"], "updated_at": row["updated_at"]} for row in rows]
+
+
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE} ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL})
