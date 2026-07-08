@@ -1502,6 +1502,49 @@ async def get_active_pvp_deployment_ids(psql_db: PSQLDB) -> set[str]:
     return {row["deployment_id"] for row in rows if row["deployment_id"]}
 
 
+async def get_active_pvp_pair_reservations(psql_db: PSQLDB) -> list[dict]:
+    """One row per PvP pair currently holding a GPU reservation (gpu_count set, pair not complete),
+    for the reconciler: {task_id, hotkey_a, hotkey_b, deployment_id, updated_at}. A pair has one row
+    per environment so we aggregate to the pair grain."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.TASK_ID} AS task_id,
+                   {cst.PVP_HOTKEY_A} AS hotkey_a,
+                   {cst.PVP_HOTKEY_B} AS hotkey_b,
+                   MAX({cst.PVP_DEPLOYMENT_ID}) AS deployment_id,
+                   MAX({cst.UPDATED_AT}) AS updated_at
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.STATUS} != $1
+              AND {cst.GPU_COUNT} IS NOT NULL
+            GROUP BY {cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+        )
+    return [dict(row) for row in rows]
+
+
+async def release_stale_pvp_pair_reservations(grace_seconds: int, psql_db: PSQLDB) -> int:
+    """Release PvP pair reservations that hold GPUs but never got a deployment_id stamped (deploy
+    crashed before the readiness callback) and have aged past grace — the pair-table analogue of the
+    evaluations stale-reservation sweep. A successful deploy stamps deployment_id within seconds, so
+    a genuinely-booting pair (grace > ready timeout) is never falsely released. Returns rows freed."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+            SET {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.STATUS} != $1
+              AND {cst.GPU_COUNT} IS NOT NULL
+              AND {cst.PVP_DEPLOYMENT_ID} IS NULL
+              AND {cst.UPDATED_AT} < NOW() - ($2 || ' seconds')::interval
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+            str(grace_seconds),
+        )
+        return _row_count(result)
+
+
 async def get_pvp_pair_deployment_id(
     task_id: str,
     hotkey_a: str,

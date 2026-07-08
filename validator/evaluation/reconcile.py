@@ -49,37 +49,60 @@ class ActiveEvalRow:
 
 
 @dataclass(frozen=True)
+class PvpPairReservation:
+    task_id: str
+    hotkey_a: str
+    hotkey_b: str
+    deployment_id: str | None
+    updated_at: datetime.datetime
+
+
+@dataclass(frozen=True)
 class ReconcilePlan:
     orphan_deployments: set[str]  # live deployments to delete (no backing active eval row)
     ghost_deployment_ids: set[str]  # active eval rows whose deployment is gone -> reset to pending
+    ghost_pvp_pairs: tuple[PvpPairReservation, ...]  # pvp reservations whose deployment is gone -> release
 
 
 def plan_eval_reconcile(
     live: list[LiveDeployment],
     active: list[ActiveEvalRow],
     backed_ids: set[str],
+    pvp_reservations: list[PvpPairReservation],
     now: datetime.datetime,
-    grace: datetime.timedelta,
+    orphan_grace: datetime.timedelta,
+    ghost_grace: datetime.timedelta,
 ) -> ReconcilePlan:
     """Pure decision function (no I/O) so the reconcile logic is unit-testable.
 
     `backed_ids` is every deployment id that backs live eval work, from BOTH the `evaluations`
     table (per-repo evals) AND `pvp_pair_results` (PvP evals track their live deployment id there,
-    not in `evaluations`) — a live deployment is only an orphan if it is in neither. `active` are
-    the `evaluations` rows carrying a deployment id, used for ghost detection (that table is the
-    only one whose rows this reconciler resets).
+    not in `evaluations`) — a live deployment is only an ORPHAN if it is in neither.
 
-    A deployment/row is only acted on once it is older/staler than `grace`, which protects the
-    reserve -> deploy -> persist window and any Basilica `list()` staleness.
+    Two directions, two graces:
+    - ORPHAN reaping (live deployment with no backing) and boot-window stale-release use the LONG
+      `orphan_grace` — a deployment may legitimately be mid-startup (reserved but not yet backing).
+    - GHOST release (a reservation whose deployment is provably absent from a fresh `list()`) uses
+      the SHORT `ghost_grace`: a reservation only carries a deployment id once it was stamped
+      post-readiness, so a still-booting eval is never a ghost, and a dead deployment's GPUs should
+      be freed fast rather than pinning the cap for the full orphan grace.
+
+    `active` are the `evaluations` rows carrying a deployment id (individual evals); `pvp_reservations`
+    are the per-pair reservations on `pvp_pair_results` (PvP evals).
     """
     live_names = {dep.name for dep in live}
-    orphans = {dep.name for dep in live if dep.name not in backed_ids and (now - dep.created_at) >= grace}
+    orphans = {dep.name for dep in live if dep.name not in backed_ids and (now - dep.created_at) >= orphan_grace}
     ghosts = {
         row.deployment_id
         for row in active
-        if row.deployment_id not in live_names and (now - row.updated_at) >= grace
+        if row.deployment_id not in live_names and (now - row.updated_at) >= ghost_grace
     }
-    return ReconcilePlan(orphan_deployments=orphans, ghost_deployment_ids=ghosts)
+    ghost_pvp = tuple(
+        r
+        for r in pvp_reservations
+        if r.deployment_id and r.deployment_id not in live_names and (now - r.updated_at) >= ghost_grace
+    )
+    return ReconcilePlan(orphan_deployments=orphans, ghost_deployment_ids=ghosts, ghost_pvp_pairs=ghost_pvp)
 
 
 def _parse_created_at(value) -> datetime.datetime | None:
@@ -122,14 +145,29 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         if row.get("deployment_id") and row.get("updated_at")
     ]
 
-    # PvP evals record their live deployment id in pvp_pair_results, not evaluations, so a live
-    # deployment is only orphaned if it backs neither an evaluations row nor an active PvP pair.
+    # PvP evals track their live deployment id + GPU reservation on pvp_pair_results (per-pair), not
+    # evaluations. A live deployment is only orphaned if it backs neither an evaluations row nor an
+    # active PvP pair; and PvP reservations get their own ghost/stale handling below.
     pvp_backed_ids = await tournament_sql.get_active_pvp_deployment_ids(psql_db)
     backed_ids = {row.deployment_id for row in active} | pvp_backed_ids
 
+    pvp_reservation_rows = await tournament_sql.get_active_pvp_pair_reservations(psql_db)
+    pvp_reservations = [
+        PvpPairReservation(
+            task_id=str(row["task_id"]),
+            hotkey_a=row["hotkey_a"],
+            hotkey_b=row["hotkey_b"],
+            deployment_id=row.get("deployment_id"),
+            updated_at=row["updated_at"],
+        )
+        for row in pvp_reservation_rows
+        if row.get("updated_at")
+    ]
+
     now = datetime.datetime.now(datetime.timezone.utc)
-    grace = datetime.timedelta(seconds=vcst.EVAL_ORPHAN_GRACE_SECONDS)
-    plan = plan_eval_reconcile(live, active, backed_ids, now, grace)
+    orphan_grace = datetime.timedelta(seconds=vcst.EVAL_ORPHAN_GRACE_SECONDS)
+    ghost_grace = datetime.timedelta(seconds=vcst.EVAL_GHOST_GRACE_SECONDS)
+    plan = plan_eval_reconcile(live, active, backed_ids, pvp_reservations, now, orphan_grace, ghost_grace)
 
     if plan.orphan_deployments:
         logger.warning(
@@ -145,21 +183,28 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         )
         await tasks_sql.reset_evaluation_rows_for_deployment(deployment_id, psql_db)
 
-    # Release reservations that hold GPUs but never got a deployment_id stamped (deploy crashed
-    # before persist) and have aged past grace — these are invisible to the deployment-based
-    # reconcile above and would otherwise pin GPUs in the cap ledger indefinitely.
-    released = await tasks_sql.release_stale_unreconcilable_reservations(
-        vcst.EVAL_ORPHAN_GRACE_SECONDS, psql_db
-    )
-    if released:
+    for pair in plan.ghost_pvp_pairs:
         logger.warning(
-            f"eval reconcile: released {released} stale GPU reservation(s) with no deployment_id "
-            f"(older than {vcst.EVAL_ORPHAN_GRACE_SECONDS}s)"
+            f"eval reconcile: releasing ghost PvP reservation for pair "
+            f"{pair.task_id[:8]} {pair.hotkey_a[:8]}:{pair.hotkey_b[:8]} "
+            f"(deployment {pair.deployment_id} no longer live)"
+        )
+        await tasks_sql.release_pvp_pair_gpus(pair.task_id, pair.hotkey_a, pair.hotkey_b, psql_db)
+
+    # Release reservations that hold GPUs but never got a deployment_id stamped (deploy crashed
+    # before persist) and have aged past the long orphan grace — invisible to the deployment-based
+    # reconcile above, so both tables get an explicit stale sweep.
+    released = await tasks_sql.release_stale_unreconcilable_reservations(vcst.EVAL_ORPHAN_GRACE_SECONDS, psql_db)
+    released_pvp = await tournament_sql.release_stale_pvp_pair_reservations(vcst.EVAL_ORPHAN_GRACE_SECONDS, psql_db)
+    if released or released_pvp:
+        logger.warning(
+            f"eval reconcile: released {released} evaluations + {released_pvp} PvP stale GPU "
+            f"reservation(s) with no deployment_id (older than {vcst.EVAL_ORPHAN_GRACE_SECONDS}s)"
         )
 
-    if not plan.orphan_deployments and not plan.ghost_deployment_ids:
+    if not plan.orphan_deployments and not plan.ghost_deployment_ids and not plan.ghost_pvp_pairs:
         logger.debug(
-            f"eval reconcile: healthy — {len(live)} live deployment(s), "
-            f"{len(backed_ids)} backed id(s) (evals + pvp), nothing to reconcile"
+            f"eval reconcile: healthy — {len(live)} live deployment(s), {len(backed_ids)} backed id(s), "
+            f"{len(pvp_reservations)} pvp reservation(s), nothing to reconcile"
         )
     return plan

@@ -143,3 +143,11 @@ HF_CONTAINER_ENV_IMAGE = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER":
 # before the reconciler acts on it. Protects the brief reserve -> deploy -> persist window
 # (and any list() staleness) so an in-flight eval is never reaped mid-startup.
 EVAL_ORPHAN_GRACE_SECONDS = 1800
+
+# Grace for RELEASING a ghost reservation whose deployment is provably absent from a fresh Basilica
+# list(). This is the opposite direction from orphan reaping: a reservation only becomes a ghost
+# once its deployment_id was stamped post-readiness (Basilica already knew it), so a still-booting
+# deployment (deployment_id NULL) can never be false-positived here — it is covered by the long
+# orphan grace instead. So this can be short: release a dead deployment's GPUs in ~2 reconcile
+# cycles rather than making the cap wait the full 30 min.
+EVAL_GHOST_GRACE_SECONDS = 240
