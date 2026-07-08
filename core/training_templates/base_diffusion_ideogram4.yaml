@@ -18,8 +18,8 @@ config:
         ignore_if_contains: []
     save:
       dtype: bf16
-      save_every: 250
-      max_step_saves_to_keep: 5
+      save_every: 200
+      max_step_saves_to_keep: 100
       save_format: diffusers
       push_to_hub: false
     datasets:
@@ -42,7 +42,7 @@ config:
     train:
       batch_size: 1
       bypass_guidance_embedding: false
-      steps: 2000
+      steps: 4000
       gradient_accumulation: 1
       train_unet: true
       train_text_encoder: false
@@ -55,7 +55,7 @@ config:
         weight_decay: 0.0001
       unload_text_encoder: false
       cache_text_embeddings: false
-      lr: 0.0001
+      lr: 0.0004
       ema_config:
         use_ema: false
         ema_decay: 0.99
