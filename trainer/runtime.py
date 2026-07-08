@@ -192,8 +192,6 @@ async def run_trainer_container_image(
     environment: dict[str, str] = {
         "TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH,
         "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
-        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
-        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
     }
     if baseline_stats:
         vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
@@ -619,10 +617,7 @@ def run_model_prep_container(
     if env_configs_with_urls:
         command += ["--env-configs", json.dumps(env_configs_with_urls)]
 
-    env = {
-        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
-        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
-    }
+    env = {}
     if continuous_sft_remote_code_repo:
         # Signals the entrypoint to pin the model's custom-arch code to this audited mirror and load
         # with trust_remote_code (custom-arch continuous-SFT lineages, e.g. quasar).

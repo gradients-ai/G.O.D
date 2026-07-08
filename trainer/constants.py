@@ -1,12 +1,16 @@
 # Training repository Dockerfiles
+DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
 DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
 DEFAULT_TEXT_DOCKERFILE_PATH = "ops/docker/standalone-text-trainer.dockerfile"
 
+LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
 LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
 LEGACY_TEXT_DOCKERFILE_PATH = "dockerfiles/standalone-text-trainer.dockerfile"
 
+IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
 IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)
 TEXT_DOCKERFILE_PATHS = (DEFAULT_TEXT_DOCKERFILE_PATH, LEGACY_TEXT_DOCKERFILE_PATH)
+
 
 # Runtime state
 TEMP_REPO_PATH = "/tmp/trainer/repos/"
