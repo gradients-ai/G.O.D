@@ -1486,6 +1486,22 @@ async def set_pvp_pair_deployment_id(
             )
 
 
+async def get_active_pvp_deployment_ids(psql_db: PSQLDB) -> set[str]:
+    """Deployment IDs of PvP pairs that are not yet complete. These live Basilica deployments
+    back in-flight PvP evals and must not be reaped by the eval-deployment reconciler."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID} AS deployment_id
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.STATUS} != $1
+              AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+        )
+    return {row["deployment_id"] for row in rows if row["deployment_id"]}
+
+
 async def get_pvp_pair_deployment_id(
     task_id: str,
     hotkey_a: str,

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 import basilica
 
 import validator.db.sql.tasks as tasks_sql
+import validator.db.sql.tournaments as tournament_sql
 import validator.evaluation.constants as vcst
 from core.logging import get_logger
 from validator.db.database import PSQLDB
@@ -56,17 +57,23 @@ class ReconcilePlan:
 def plan_eval_reconcile(
     live: list[LiveDeployment],
     active: list[ActiveEvalRow],
+    backed_ids: set[str],
     now: datetime.datetime,
     grace: datetime.timedelta,
 ) -> ReconcilePlan:
     """Pure decision function (no I/O) so the reconcile logic is unit-testable.
 
+    `backed_ids` is every deployment id that backs live eval work, from BOTH the `evaluations`
+    table (per-repo evals) AND `pvp_pair_results` (PvP evals track their live deployment id there,
+    not in `evaluations`) — a live deployment is only an orphan if it is in neither. `active` are
+    the `evaluations` rows carrying a deployment id, used for ghost detection (that table is the
+    only one whose rows this reconciler resets).
+
     A deployment/row is only acted on once it is older/staler than `grace`, which protects the
     reserve -> deploy -> persist window and any Basilica `list()` staleness.
     """
-    active_ids = {row.deployment_id for row in active}
     live_names = {dep.name for dep in live}
-    orphans = {dep.name for dep in live if dep.name not in active_ids and (now - dep.created_at) >= grace}
+    orphans = {dep.name for dep in live if dep.name not in backed_ids and (now - dep.created_at) >= grace}
     ghosts = {
         row.deployment_id
         for row in active
@@ -115,9 +122,14 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         if row.get("deployment_id") and row.get("updated_at")
     ]
 
+    # PvP evals record their live deployment id in pvp_pair_results, not evaluations, so a live
+    # deployment is only orphaned if it backs neither an evaluations row nor an active PvP pair.
+    pvp_backed_ids = await tournament_sql.get_active_pvp_deployment_ids(psql_db)
+    backed_ids = {row.deployment_id for row in active} | pvp_backed_ids
+
     now = datetime.datetime.now(datetime.timezone.utc)
     grace = datetime.timedelta(seconds=vcst.EVAL_ORPHAN_GRACE_SECONDS)
-    plan = plan_eval_reconcile(live, active, now, grace)
+    plan = plan_eval_reconcile(live, active, backed_ids, now, grace)
 
     if plan.orphan_deployments:
         logger.warning(
@@ -136,6 +148,6 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
     if not plan.orphan_deployments and not plan.ghost_deployment_ids:
         logger.debug(
             f"eval reconcile: healthy — {len(live)} live deployment(s), "
-            f"{len(active)} reserved row(s), nothing to reconcile"
+            f"{len(backed_ids)} backed id(s) (evals + pvp), nothing to reconcile"
         )
     return plan

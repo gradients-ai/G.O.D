@@ -509,7 +509,7 @@ async def _deploy_pvp_eval(
                     lambda: tasks_sql.try_reserve_evaluation_gpus(
                         task_id,
                         hotkeys[:1],
-                        deployment_name,
+                        None,
                         gpu_count,
                         psql_db,
                     ),
