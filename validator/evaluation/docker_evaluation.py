@@ -539,6 +539,25 @@ async def _deploy_pvp_eval(
                     deployment_name=verified_deployment_name,
                     ctx=ctx,
                 )
+                # Stamp the real (resolved) deployment name onto the GPU-reservation row too, so the
+                # cap ledger keys this reservation by its live deployment (distinct per deployment)
+                # and the reconciler can match/release it. Without this the PvP reservation carries a
+                # NULL deployment_id and is invisible to reconciliation.
+                if task_id is not None and psql_db is not None and hotkeys:
+                    reserve_task_id = task_id
+                    reserve_db = psql_db
+                    reserve_hotkey = hotkeys[0]
+                    await _db_call_with_retry(
+                        lambda: tasks_sql.set_evaluation_deployment_id(
+                            reserve_task_id,
+                            reserve_hotkey,
+                            verified_deployment_name,
+                            reserve_db,
+                        ),
+                        "set_evaluation_deployment_id(pvp)",
+                        ctx.eval_logger,
+                        ctx.repo,
+                    )
 
             deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
                 ctx=ctx,

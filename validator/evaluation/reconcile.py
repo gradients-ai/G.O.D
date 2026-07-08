@@ -145,6 +145,18 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         )
         await tasks_sql.reset_evaluation_rows_for_deployment(deployment_id, psql_db)
 
+    # Release reservations that hold GPUs but never got a deployment_id stamped (deploy crashed
+    # before persist) and have aged past grace — these are invisible to the deployment-based
+    # reconcile above and would otherwise pin GPUs in the cap ledger indefinitely.
+    released = await tasks_sql.release_stale_unreconcilable_reservations(
+        vcst.EVAL_ORPHAN_GRACE_SECONDS, psql_db
+    )
+    if released:
+        logger.warning(
+            f"eval reconcile: released {released} stale GPU reservation(s) with no deployment_id "
+            f"(older than {vcst.EVAL_ORPHAN_GRACE_SECONDS}s)"
+        )
+
     if not plan.orphan_deployments and not plan.ghost_deployment_ids:
         logger.debug(
             f"eval reconcile: healthy — {len(live)} live deployment(s), "
