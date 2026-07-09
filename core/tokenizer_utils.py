@@ -33,8 +33,11 @@ def _read_from_dir(source_dir: str) -> str | None:
             return template
     config_path = os.path.join(source_dir, TOKENIZER_CONFIG_FILE)
     if os.path.exists(config_path):
-        with open(config_path) as f:
-            template = json.load(f).get("chat_template")
+        try:
+            with open(config_path) as f:
+                template = json.load(f).get("chat_template")
+        except (ValueError, OSError):
+            return None
         if isinstance(template, str) and template.strip():
             return template
     return None

@@ -66,6 +66,13 @@ def test_read_returns_none_on_empty_dir(tmp_path):
     assert read_chat_template(str(tmp_path)) is None
 
 
+def test_read_survives_malformed_config(tmp_path):
+    # A miner adapter with invalid tokenizer_config.json must not crash the merge (AutoTokenizer
+    # load is already guarded upstream and falls back to base); recovering no template is fine.
+    _write(tmp_path, TOKENIZER_CONFIG_FILE, "{not valid json")
+    assert read_chat_template(str(tmp_path)) is None
+
+
 def test_read_ignores_non_string_inline_template(tmp_path):
     _write_config(tmp_path, {"chat_template": {"default": OTHER_TEMPLATE}})
     assert read_chat_template(str(tmp_path)) is None
