@@ -476,7 +476,7 @@ async def run_evaluation_local_environment(
             env_logger.info(f"Starting SGLang container: {sglang_container_name} (GPU {gpu_id})")
             sglang_container = await asyncio.to_thread(
                 docker_client.containers.run,
-                "lmsysorg/sglang:latest",
+                "lmsysorg/sglang:v0.5.14",
                 command=sglang_args,
                 name=sglang_container_name,
                 detach=True,
