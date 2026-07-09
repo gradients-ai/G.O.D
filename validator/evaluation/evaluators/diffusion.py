@@ -224,11 +224,28 @@ def edit_workflow(
     elif model_type == ImageModelType.IDEOGRAM4.value:
         payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
         payload["Scheduler"]["inputs"]["steps"] = edit_elements.steps
+        payload["Scheduler"]["inputs"]["width"] = edit_elements.width
+        payload["Scheduler"]["inputs"]["height"] = edit_elements.height
         payload["Noise"]["inputs"]["noise_seed"] = edit_elements.seed
         payload["Sigma_split_denoise"]["inputs"]["denoise"] = edit_elements.denoise
         payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
+        payload["Image_resize"]["inputs"]["width"] = edit_elements.width
+        payload["Image_resize"]["inputs"]["height"] = edit_elements.height
         payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
         payload["Dual_model_guider"]["inputs"]["cfg"] = edit_elements.cfg
+        payload["CFG_override"]["inputs"]["cfg"] = max(edit_elements.cfg - 3, 1)
+        payload["Prompt"]["inputs"]["text"] = edit_elements.prompt if text_guided else ""
+        return payload
+    elif model_type == ImageModelType.KREA2.value:
+        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
+        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
+        payload["Sampler"]["inputs"]["steps"] = edit_elements.steps
+        payload["Sampler"]["inputs"]["seed"] = edit_elements.seed
+        payload["Sampler"]["inputs"]["denoise"] = edit_elements.denoise
+        payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
+        payload["Image_resize"]["inputs"]["width"] = edit_elements.width
+        payload["Image_resize"]["inputs"]["height"] = edit_elements.height
+        payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
         payload["Prompt"]["inputs"]["text"] = edit_elements.prompt if text_guided else ""
         return payload
     else:
@@ -283,6 +300,7 @@ def eval_loop(dataset_path: str, params: Img2ImgPayload, generations: int = 10) 
         txt_path = os.path.join(dataset_path, f"{base_name}.txt")
         test_image = Image.open(png_path)
         test_image = adjust_image_size(test_image)
+        params.width, params.height = test_image.size
         image_base64 = image_to_base64(test_image)
         prompt = read_prompt_file(txt_path)
 

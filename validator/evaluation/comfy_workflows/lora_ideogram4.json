@@ -141,7 +141,7 @@
   },
   "Dual_model_guider": {
     "inputs": {
-      "cfg": 10,
+      "cfg": 8,
       "model": [
         "CFG_override",
         0
@@ -166,7 +166,7 @@
   },
   "CFG_override": {
     "inputs": {
-      "cfg": 7,
+      "cfg": 5,
       "start_percent": 0.7,
       "end_percent": 1,
       "model": [
@@ -207,10 +207,26 @@
       "title": "Load Image (Base64)"
     }
   },
+  "Image_resize": {
+    "inputs": {
+      "image": [
+        "Image_loader",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "disabled"
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Resize Image"
+    }
+  },
   "VAE_encoder": {
     "inputs": {
       "pixels": [
-        "Image_loader",
+        "Image_resize",
         0
       ],
       "vae": [

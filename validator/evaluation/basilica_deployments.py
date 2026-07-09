@@ -131,13 +131,17 @@ class _Handler(BaseHTTPRequestHandler):
 def _prepare_image_models():
     if not PREPARE_IMAGE_MODELS:
         return
+    print("[eval_runner] preparing required image models...", flush=True)
     from validator.evaluation.image_model_downloads import prepare_required_image_models
     prepare_required_image_models(os.environ.get("MODEL_TYPE", ""))
+    print("[eval_runner] image model prep complete", flush=True)
 
 def _run_eval():
     try:
         _prepare_image_models()
+        print("[eval_runner] starting eval command:", " ".join(COMMAND), flush=True)
         proc = subprocess.run(COMMAND, text=True)
+        print(f"[eval_runner] eval command finished exit_code={{proc.returncode}}", flush=True)
         if proc.returncode != 0:
             raise RuntimeError(f"Eval command failed with exit code {{proc.returncode}}")
         with open(RESULT_PATH, "r", encoding="utf-8") as f:

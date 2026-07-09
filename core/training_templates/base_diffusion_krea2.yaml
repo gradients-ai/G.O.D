@@ -18,8 +18,8 @@ config:
         ignore_if_contains: []
     save:
       dtype: bf16
-      save_every: 250
-      max_step_saves_to_keep: 5
+      save_every: 200
+      max_step_saves_to_keep: 100
       save_format: diffusers
       push_to_hub: false
     datasets:

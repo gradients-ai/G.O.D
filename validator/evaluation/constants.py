@@ -27,8 +27,8 @@ EVAL_DEFAULTS = {
     "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},
     "z-image": {"steps": 10, "cfg": 1, "denoise": 0.90},
     "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93},
-    "krea2": {"steps": 25, "cfg": 16, "denoise": 0.8, "generations": 5},
-    "ideogram4": {"steps": 30, "cfg": 10, "denoise": 0.75, "generations": 5},
+    "krea2": {"steps": 25, "cfg": 12, "denoise": 0.8, "generations": 5},
+    "ideogram4": {"steps": 30, "cfg": 8, "denoise": 0.75, "generations": 5},
 }
 
 

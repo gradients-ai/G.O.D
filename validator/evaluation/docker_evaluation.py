@@ -341,6 +341,7 @@ async def run_evaluation_basilica_image(
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "PYTHONUNBUFFERED": "1",
         **vcst.HF_CONTAINER_ENV_IMAGE,
     }
 

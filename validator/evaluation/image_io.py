@@ -25,8 +25,8 @@ def adjust_image_size(image: Image.Image) -> Image.Image:
 
     image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-    new_width = (new_width // 8) * 8
-    new_height = (new_height // 8) * 8
+    new_width = (new_width // 16) * 16
+    new_height = (new_height // 16) * 16
 
     width, height = image.size
     crop_width = min(width, new_width)

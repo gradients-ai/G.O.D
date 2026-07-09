@@ -32,7 +32,7 @@
       "cfg": 16,
       "sampler_name": "euler",
       "scheduler": "simple",
-      "denoise": 0.75,
+      "denoise": 0.8,
       "model": [
         "Lora_loader",
         0
@@ -113,10 +113,26 @@
       "title": "Load Image (Base64)"
     }
   },
+  "Image_resize": {
+    "inputs": {
+      "image": [
+        "Image_loader",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "disabled"
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Resize Image"
+    }
+  },
   "VAE_encoder": {
     "inputs": {
       "pixels": [
-        "Image_loader",
+        "Image_resize",
         0
       ],
       "vae": [

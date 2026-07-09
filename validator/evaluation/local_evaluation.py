@@ -888,7 +888,9 @@ async def run_evaluation_docker_image(
     models: list[str],
     model_type: ImageModelType,
     gpu_ids: list[int],
+    docker_image: str | None = None,
 ) -> DockerEvaluationResults:
+    image = docker_image or docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION
     raw_data = await download_s3_file(test_split_url)
     test_split_path = unzip_to_temp_path(raw_data)
     dataset_dir = os.path.abspath(test_split_path)
@@ -930,7 +932,7 @@ async def run_evaluation_docker_image(
             try:
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+                    image,
                     command=command,
                     mounts=mounts,
                     environment=environment,
