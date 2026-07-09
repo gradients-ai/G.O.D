@@ -22,6 +22,7 @@ from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 from core.constants.environments import EnvironmentName
+from core.constants.paths import CHAT_TEMPLATE_FILE
 from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.downloads import download_s3_file
 from core.models.model_prep_models import AugmentationConfig
@@ -34,6 +35,8 @@ from core.remote_code import continuous_sft_trust_remote_code
 from core.remote_code import pin_trusted_remote_code
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.stats import compute_text_stats
+
+
 # compute_env_stats is imported lazily inside main(): its core.pvp import chain (open-spiel, openai,
 # sglang launch) is env-task only, and pulling it at module load would force those deps into the
 # text-task model-prep image, which deliberately omits them (see ops/docker/model-prep-text.dockerfile).
@@ -45,6 +48,46 @@ def _pin_and_trust(model_ref: str) -> tuple[str, bool]:
     custom arch. No-op (ref unchanged, trust=False) when no audited-mirror env is set."""
     trust = continuous_sft_trust_remote_code()
     return (pin_trusted_remote_code(model_ref) if trust else model_ref), trust
+
+
+def _resolve_chat_template(model_id: str, hf_token: str, is_local: bool) -> str | None:
+    """Return the adapter's chat template, or None.
+
+    A LoRA adapter frequently carries its chat template only as a standalone
+    chat_template.jinja file rather than inline in tokenizer_config.json, so a
+    plain merge that rebuilds the tokenizer from the base model silently loses it.
+    Handles both a local adapter dir and a remote HF repo.
+    """
+    if is_local:
+        jinja_path = os.path.join(model_id, CHAT_TEMPLATE_FILE)
+        if os.path.exists(jinja_path):
+            with open(jinja_path) as f:
+                template = f.read().strip()
+            return template or None
+        config_path = os.path.join(model_id, "tokenizer_config.json")
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                template = json.load(f).get("chat_template")
+            return template if isinstance(template, str) and template.strip() else None
+        return None
+
+    try:
+        jinja_path = hf_hub_download(model_id, CHAT_TEMPLATE_FILE, token=hf_token)
+        with open(jinja_path) as f:
+            template = f.read().strip()
+        if template:
+            return template
+    except Exception:
+        pass
+    try:
+        config_path = hf_hub_download(model_id, "tokenizer_config.json", token=hf_token)
+        with open(config_path) as f:
+            template = json.load(f).get("chat_template")
+        if isinstance(template, str) and template.strip():
+            return template
+    except Exception:
+        pass
+    return None
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -128,11 +171,22 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         if top_tokenizer is not base_tokenizer:
             lora_tokenizer = top_tokenizer
 
+        # Preserve the adapter's chat template (often only a standalone chat_template.jinja); rebuilding
+        # the tokenizer from the base loses it, which later breaks chat-template-dependent serving/eval.
+        chat_template = _resolve_chat_template(model_id, hf_token, is_local) or getattr(
+            base_tokenizer, "chat_template", None
+        )
+
         merge_dir = "/cache/merged_model"
         os.makedirs(merge_dir, exist_ok=True)
         merged.save_pretrained(merge_dir, safe_serialization=True)
         target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
+        if chat_template and not getattr(target_tokenizer, "chat_template", None):
+            target_tokenizer.chat_template = chat_template
         target_tokenizer.save_pretrained(merge_dir)
+        if chat_template:
+            with open(os.path.join(merge_dir, CHAT_TEMPLATE_FILE), "w") as f:
+                f.write(chat_template)
         sanitize_tokenizer_config(merge_dir)
 
         del base_model, merged
