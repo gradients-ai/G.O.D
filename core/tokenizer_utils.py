@@ -63,8 +63,12 @@ def _read_from_hub(repo_id: str, hf_token: str | None) -> str | None:
     return None
 
 
-def ensure_chat_template(tokenizer, *candidates: str | None) -> None:
-    """Graft the first non-empty candidate onto tokenizer if it has no chat template of its own."""
+def ensure_chat_template(tokenizer, *candidates: str | dict | None) -> None:
+    """Graft the first non-empty candidate onto tokenizer if it has no chat template of its own.
+
+    A candidate may be a template string or a dict of named templates (multi-template tokenizers);
+    both are passed through unchanged.
+    """
     if tokenizer.chat_template:
         return
     for candidate in candidates:
@@ -80,6 +84,9 @@ def sanitize_tokenizer_config(out_dir: str) -> None:
       fast class if tokenizer.json is present, else dropped for autodetection.
     - extra_special_tokens list -> dict (v4 calls .keys() on it).
     - chat template folded from the standalone jinja back inline (kept in both), for pre-4.47 readers.
+
+    Rewrites tokenizer_config.json in place, so call it only on a dir you just wrote — never a
+    pin_trusted_remote_code work dir, whose tokenizer files are symlinks into the immutable seed.
     """
     config_path = os.path.join(out_dir, TOKENIZER_CONFIG_FILE)
     if not os.path.exists(config_path):
