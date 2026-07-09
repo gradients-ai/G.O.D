@@ -22,7 +22,7 @@ RUN chmod +x /opt/intercode-build/build_fs.sh && /opt/intercode-build/build_fs.s
 
 
 # ── Stage 2: runtime image (SGLang + python deps + baked-in snapshots/data).
-FROM lmsysorg/sglang:latest
+FROM lmsysorg/sglang:v0.5.14
 
 WORKDIR /app
 
