@@ -16,11 +16,13 @@ from transformers import AutoTokenizer
 from transformers import CLIPTokenizer
 
 import trainer.training_paths as train_paths
-from core.constants.paths import CHAT_TEMPLATE_FILE
 from core.downloads import download_s3_file
 from core.models.dataset_models import FileFormat
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
+from core.tokenizer_utils import ensure_chat_template
+from core.tokenizer_utils import read_chat_template
+from core.tokenizer_utils import sanitize_tokenizer_config
 from trainer import constants as cst
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.model_artifacts import scrub_model_identity
@@ -137,28 +139,6 @@ async def download_base_model(repo_id: str, save_root: str, model_type: ImageMod
         return result
 
 
-def _read_chat_template(source_dir: str) -> str | None:
-    """Return a chat template string from a local model/adapter dir, or None.
-
-    A LoRA adapter frequently carries its chat template only as a standalone
-    chat_template.jinja file rather than inline in tokenizer_config.json, so a
-    plain merge that rebuilds the tokenizer from the base model silently loses it.
-    """
-    jinja_path = os.path.join(source_dir, CHAT_TEMPLATE_FILE)
-    if os.path.exists(jinja_path):
-        with open(jinja_path) as f:
-            template = f.read().strip()
-        if template:
-            return template
-    config_path = os.path.join(source_dir, "tokenizer_config.json")
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            template = json.load(f).get("chat_template")
-        if isinstance(template, str) and template.strip():
-            return template
-    return None
-
-
 def _detect_and_merge_lora(model_dir: str) -> None:
     """If model_dir contains a LoRA adapter, merge it into the base model in-place.
 
@@ -219,11 +199,6 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     if top_tokenizer is not base_tokenizer:
         lora_tokenizer = top_tokenizer
 
-    # Capture the adapter's chat template before the adapter dir is dropped. Miners often ship it only
-    # as a standalone chat_template.jinja; rebuilding the tokenizer from the base loses it, which later
-    # breaks chat-template-dependent serving/eval on the merged full model.
-    chat_template = _read_chat_template(model_dir) or getattr(base_tokenizer, "chat_template", None)
-
     # Disable peft hooks that break save_pretrained in newer transformers
     if hasattr(merged, "_hf_peft_config_loaded"):
         merged._hf_peft_config_loaded = False
@@ -233,12 +208,11 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     os.makedirs(merge_tmp, exist_ok=True)
     merged.save_pretrained(merge_tmp, safe_serialization=True)
     target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
-    if chat_template and not getattr(target_tokenizer, "chat_template", None):
-        target_tokenizer.chat_template = chat_template
+    # Carry the adapter's chat template onto the saved tokenizer (base selection would drop it).
+    ensure_chat_template(target_tokenizer, read_chat_template(model_dir), base_tokenizer.chat_template)
     target_tokenizer.save_pretrained(merge_tmp)
-    if chat_template:
-        with open(os.path.join(merge_tmp, CHAT_TEMPLATE_FILE), "w") as f:
-            f.write(chat_template)
+    # Keep the merged dir loadable by the read-only, any-version miner training container.
+    sanitize_tokenizer_config(merge_tmp)
 
     del base_model, merged
     if torch.cuda.is_available():
