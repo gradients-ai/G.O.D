@@ -399,6 +399,18 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
 
     base_winner = tournament_data.base_winner_hotkey
     champion = _resolve_burn_placeholder(tournament_data.winner_hotkey, base_winner)
+    if tournament_data.final_positions:
+        paid = [
+            _resolve_burn_placeholder(hotkey, base_winner)
+            for hotkey, _position in sorted(
+                tournament_data.final_positions.items(), key=lambda item: item[1]
+            )
+        ]
+        paid = [hotkey for hotkey in paid if hotkey][: cts.TOURNAMENT_PAID_RANKS]
+        return {
+            hotkey: exponential_decline_mapping(len(paid), rank)
+            for rank, hotkey in enumerate(paid, start=1)
+        }
 
     final_round = next((round_result for round_result in tournament_data.rounds if round_result.is_final_round), None)
     if final_round is None:

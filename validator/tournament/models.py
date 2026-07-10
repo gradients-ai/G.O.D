@@ -120,6 +120,9 @@ class TournamentData(BaseModel):
         description="The tournament winner's hotkey at the END of this tournament. "
         "May be EMISSION_BURN_HOTKEY if the defending champion successfully defended.",
     )
+    code_review: str | None = Field(
+        default=None, description="Boss-round challenger review: clean, pending, accepted, rejected, or error."
+    )
     winning_performance_difference: float | None = Field(
         default=None,
         description="Performance difference metric (0.0 to 1.0) between champion and challenger in boss round. "
@@ -335,6 +338,7 @@ class TournamentResultsWithWinners(BaseModel):
     rounds: list[TournamentRoundResult]
     base_winner_hotkey: str | None = None
     winner_hotkey: str | None = None
+    final_positions: dict[str, int] = Field(default_factory=dict)
 
 
 class TaskPerformanceDifference(BaseModel):
@@ -634,6 +638,13 @@ class DedupReviewStatus(str, Enum):
     PENDING_REVIEW = "pending_review"
     APPROVED = "approved"
     SKIPPED = "skipped"
+
+
+class IntegrityVerdict(BaseModel):
+    flagged: bool
+    confidence: float = 0.0
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
 
 
 class DedupPairVerdict(BaseModel):

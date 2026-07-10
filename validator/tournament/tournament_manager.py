@@ -47,6 +47,7 @@ from validator.db.sql.tournaments import insert_tournament_round
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_participant_training_repo
+from validator.db.sql.tournaments import update_tournament_placements
 from validator.db.sql.tournaments import update_tournament_status
 from validator.db.sql.tournaments import update_tournament_winner_hotkey
 from validator.db.sql.tournaments import update_tournament_winner_model
@@ -58,6 +59,7 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.challenger_code_review import evaluate_challenger_code_review
 from validator.tournament.dedup_gate import apply_r1_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
@@ -660,6 +662,44 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     f"Defending champion {tournament.base_winner_hotkey} successfully defended (stored as EMISSION_BURN_HOTKEY)"
                 )
 
+            challenger = await get_challenger_participant_for_retained_boss(
+                tournament, completed_round, winners, psql_db
+            )
+            if not challenger:
+                logger.error(
+                    f"Cannot identify boss-round challenger for tournament {tournament.tournament_id}; "
+                    "holding completion"
+                )
+                return
+
+            integrity = await evaluate_challenger_code_review(
+                tournament,
+                completed_round,
+                challenger,
+                config,
+                psql_db,
+            )
+            if integrity.halt:
+                logger.info(
+                    f"Boss integrity gate holding tournament {tournament.tournament_id} pending review"
+                )
+                return
+
+            if integrity.disqualified:
+                winner = EMISSION_BURN_HOTKEY
+                second_place = integrity.replacement_hotkey
+                winners = [winner]
+                logger.warning(
+                    f"Boss challenger {challenger.hotkey} disqualified; "
+                    f"boss retains and second place is {second_place}"
+                )
+            else:
+                second_place = (
+                    EMISSION_BURN_HOTKEY
+                    if winner != EMISSION_BURN_HOTKEY
+                    else challenger.hotkey
+                )
+
             round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
             logger.info(f"Found {len(round_tasks)} tasks in final round")
 
@@ -669,10 +709,15 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
             # BEFORE setting winner_hotkey (the re-entry guard): set-first-then-crash would freeze the
             # lineages; carry-forward is idempotent so a crash before winner-set just reprocesses.
-            if tournament.tournament_type == TournamentType.TEXT:
+            if tournament.tournament_type == TournamentType.TEXT and not integrity.disqualified:
                 await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
 
-            await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
+            await update_tournament_placements(
+                tournament.tournament_id,
+                winner,
+                second_place,
+                psql_db,
+            )
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
@@ -700,9 +745,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             challenger_commit_hash = None
             challenger_github_token = None
             if winner == EMISSION_BURN_HOTKEY:
-                challenger = await get_challenger_participant_for_retained_boss(
-                    tournament, completed_round, winners, psql_db
-                )
                 challenger_repo = challenger.training_repo if challenger else None
                 challenger_commit_hash = challenger.training_commit_hash if challenger else None
                 challenger_github_token = challenger.github_token if challenger else None
