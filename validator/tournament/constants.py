@@ -141,7 +141,7 @@ FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
     ImageModelType.KREA2: 2,
     ImageModelType.IDEOGRAM4: 2,
-    ImageModelType.FLUX: 1,
+    ImageModelType.QWEN_IMAGE: 1,
     ImageModelType.Z_IMAGE: 1,
 }
 
