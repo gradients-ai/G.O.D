@@ -434,6 +434,51 @@ class TestDetermineBossRoundWinnerEnv:
         assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "challenger"
 
 
+class TestDetermineBossRoundWinnerContinuousSft:
+    """Text boss round with continuous-SFT tasks: on top of the overall 5/6 threshold, the
+    challenger must win EVERY continuous-SFT task to dethrone. num_continuous_sft_tasks is the
+    total continuous-SFT tasks in the round; continuous_sft_winners are the decided ones.
+    """
+
+    OVERALL_5_OF_6 = ["challenger"] * 5 + ["boss"]
+
+    def test_wins_overall_and_all_continuous_dethrones(self):
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2
+        ) == "challenger"
+
+    def test_wins_overall_but_loses_one_continuous_boss_retains(self):
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger", "boss"], 2
+        ) == "boss"
+
+    def test_wins_overall_but_loses_both_continuous_boss_retains(self):
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["boss", "boss"], 2
+        ) == "boss"
+
+    def test_wins_all_continuous_but_fails_overall_boss_retains(self):
+        winners = ["challenger"] * 4 + ["boss", "boss"]  # only 4/6
+        assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2) == "boss"
+
+    def test_skipped_continuous_task_counts_against_challenger(self):
+        # Only one of two continuous tasks produced a decided winner -> count 1 != 2 -> boss retains.
+        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger"], 2) == "boss"
+
+    def test_six_of_six_with_both_continuous_dethrones(self):
+        assert determine_boss_round_winner(
+            ["challenger"] * 6, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2
+        ) == "challenger"
+
+    def test_no_continuous_tasks_falls_back_to_overall_rule(self):
+        # num_continuous_sft_tasks=0 (e.g. image rounds / back-compat) leaves the rule untouched.
+        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.IMAGE, [], 0) == "challenger"
+
+    def test_single_continuous_task_must_be_won(self):
+        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger"], 1) == "challenger"
+        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["boss"], 1) == "boss"
+
+
 # --- 1j: get_real_winner_hotkey ---
 
 

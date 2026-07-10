@@ -7,6 +7,7 @@ from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
+from validator.db.sql.continuous_sft import warn_orphaned_continuous_sft_state
 from validator.db.sql.tournaments import add_tournament_tasks
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
@@ -22,6 +23,7 @@ from validator.tasks.synthetics.scheduler import _get_dpo_datasets
 from validator.tasks.synthetics.scheduler import _get_image_models
 from validator.tasks.synthetics.scheduler import _get_instruct_text_datasets
 from validator.tasks.synthetics.scheduler import _get_text_models
+from validator.tasks.synthetics.scheduler import create_continuous_sft_task
 from validator.tasks.synthetics.scheduler import create_synthetic_dpo_task
 from validator.tasks.synthetics.scheduler import create_synthetic_env_task
 from validator.tasks.synthetics.scheduler import create_synthetic_grpo_task
@@ -76,9 +78,11 @@ async def create_text_tournament_tasks(
         logger.info(f"Creating text tournament for {num_groups} groups (1 task per group)")
         tasks = await _create_group_text_tasks(round_data, tournament_id, config, is_final_round)
     elif is_final_round:
-        task_types = [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
-        tasks_per_type = t_cst.FINAL_ROUND_TEXT_TASKS // len(task_types)
-        logger.info(f"Creating final text tournament with new synthetic tasks ({tasks_per_type} of each: instruct, DPO, GRPO)")
+        logger.info(
+            f"Creating final text tournament boss round: {t_cst.FINAL_ROUND_TEXT_TASKS} tasks "
+            f"({t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION} + "
+            f"{t_cst.FINAL_ROUND_CONTINUOUS_SFT_TASKS} continuous-SFT)"
+        )
         tasks = await _create_new_text_boss_round_tasks(tournament_id, round_id, config)
     else:
         num_pairs = len(round_data.pairs)
@@ -474,6 +478,7 @@ async def _create_and_register_tournament_task(
     gpu_req = get_tournament_gpu_requirement(
         task.task_type, task.model_params_count, task.model_id,
         use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+        training_start_point=task.training_start_point,
     )
 
     # Format log message based on task type
@@ -564,6 +569,12 @@ async def _create_probability_based_text_tasks(
     instruct_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT / text_total
     dpo_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO / text_total
 
+    # The pre-boss round is the knockout with exactly 2 competitors left: its winner becomes the
+    # boss challenger, and its task always plays on quasar (see _create_pre_boss_quasar_task).
+    # Keyed on competitor count, not task count — other rounds can also create a single task.
+    competitors = {hotkey for pair in round_data.pairs for hotkey in pair}
+    is_pre_boss_round = len(competitors) == 2
+
     tasks = []
     for i in range(num_tasks):
         pair = round_data.pairs[i]
@@ -584,13 +595,35 @@ async def _create_probability_based_text_tasks(
             continue
 
         logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
-        task = await _create_single_probability_task(config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob)
+        if is_pre_boss_round:
+            task = await _create_pre_boss_quasar_task(config, instruct_datasets)
+        else:
+            task = await _create_single_probability_task(
+                config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob
+            )
 
         await _create_and_register_tournament_task(
             task, tournament_id, round_data.round_id, config, pair_id=pair_id
         )
         tasks.append(task)
     return tasks
+
+
+async def _create_pre_boss_quasar_task(config: Config, instruct_datasets) -> RawTask:
+    """Create the pre-boss round's single task: a standard instruct task (normal dataset pull,
+    computed hours, param-based GPU sizing) with only the model forced to the quasar seed mirror.
+    Augmentation, KL and YaRN are disabled: the custom-arch seed can't be perturbed, reconfigured
+    or re-uploaded, and remote-code pinning keys off the exact seed repo.
+    """
+    return await create_synthetic_instruct_text_task(
+        config,
+        None,  # no model pool: the model is forced
+        instruct_datasets,
+        enable_kl=False,
+        model_id_override=t_cst.PRE_BOSS_QUASAR_MODEL,
+        allow_augmentation=False,
+        allow_yarn=False,
+    )
 
 
 async def _create_single_probability_task(
@@ -667,32 +700,33 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
 
     logger.info("Creating boss round text tasks using new synthetic tasks")
 
-    task_types = [TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK]
-    tasks_per_type = t_cst.FINAL_ROUND_TEXT_TASKS // len(task_types)
-
     standard_models = _get_text_models(config.keypair)
     big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
     existing_task_type_counts = {}
+    existing_continuous_sft_lineages: set[str] = set()
     tasks = []
 
     for task in existing_pair_tasks:
         task_obj = await task_sql.get_task(task.task_id, config.psql_db)
-        if task_obj:
+        if not task_obj:
+            continue
+        if t_cst.is_continuous_sft_task(task_obj):
+            lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
+            if lineage:
+                existing_continuous_sft_lineages.add(lineage)
+        else:
             task_type_value = task_obj.task_type.value if hasattr(task_obj.task_type, "value") else task_obj.task_type
             existing_task_type_counts[task_type_value] = existing_task_type_counts.get(task_type_value, 0) + 1
-            tasks.append(task_obj)
+        tasks.append(task_obj)
 
-    for task_type in task_types:
-        existing_count = existing_task_type_counts.get(task_type.value, 0)
-        for i in range(tasks_per_type - existing_count):
-            rand_val = random.random()
-            if rand_val < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL:
-                models = big_models
-            else:
-                models = standard_models
+    # Fixed mix: 2 instruct + 1 dpo + 1 grpo (FINAL_ROUND_TEXT_TASK_DISTRIBUTION) + 2 continuous-SFT.
+    for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
+        already = existing_task_type_counts.get(task_type.value, 0)
+        for _ in range(target_count - already):
+            models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
             task = await _create_single_new_text_task(
                 task_type,
                 tournament_id,
@@ -706,7 +740,37 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
             if task:
                 tasks.append(task)
 
+    # Surface any state row whose lineage was renamed/removed (its accumulated chain is now orphaned).
+    await warn_orphaned_continuous_sft_state(set(t_cst.CONTINUOUS_SFT_LINEAGES), config.psql_db)
+
+    # One continuous-SFT task per lineage (quasar + qwen); skip lineages already created.
+    for lineage, seed_model in t_cst.CONTINUOUS_SFT_LINEAGES.items():
+        if lineage in existing_continuous_sft_lineages:
+            continue
+        task = await _create_continuous_sft_boss_task(tournament_id, round_id, pair_id, config, lineage, seed_model)
+        tasks.append(task)
+
     return tasks
+
+
+async def _create_continuous_sft_boss_task(
+    tournament_id: str, round_id: str, pair_id: str, config: Config, lineage: str, seed_model: str
+) -> RawTask:
+    """Create + register one lineage's continuous-SFT boss task. Kept out of
+    _create_single_new_text_task because it uses no random model/dataset pool.
+
+    Raises on failure rather than swallowing: a dropped lineage silently weakens the boss-round
+    dethrone gate (challenger must win ALL continuous-SFT tasks). Propagating keeps the round PENDING
+    so the next cycle retries, and boss-round creation is idempotent (already-created lineages skip).
+    create_continuous_sft_task already retries transient content-service failures via retry_with_backoff.
+    """
+    try:
+        task = await create_continuous_sft_task(config, lineage, seed_model)
+        await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+        return task
+    except Exception as e:
+        logger.error(f"Failed to create continuous-SFT boss task for lineage {lineage}: {e}", exc_info=True)
+        raise
 
 
 async def _create_single_new_text_task(
@@ -804,6 +868,22 @@ async def replace_tournament_task(
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
             new_task = await _create_round_one_group_text_replacement_task(config)
+        elif t_cst.is_continuous_sft_task(original_task_obj):
+            # Same lineage, same carried base model; the content service re-materializes the chunk
+            # at fresh S3 URLs. Without this branch, create_new_task_of_same_type has no CHATTASK
+            # route and would fall through to a random-model instruct task, dropping the lineage
+            # from the boss round and weakening the win-all-continuous-SFT dethrone gate.
+            lineage = t_cst.continuous_sft_lineage_from_ds(original_task_obj.ds)
+            seed_model = t_cst.continuous_sft_seed_repo(lineage)
+            if not lineage or not seed_model:
+                raise ValueError(
+                    f"Cannot replace continuous-SFT task {original_task_id}: unknown lineage in ds {original_task_obj.ds!r}"
+                )
+            logger.info(f"Detected continuous-SFT task replacement; recreating lineage {lineage}")
+            new_task = await create_continuous_sft_task(config, lineage, seed_model)
+        elif t_cst.is_pre_boss_quasar_task(original_task_obj):
+            logger.info("Detected pre-boss quasar task replacement; re-forcing the quasar seed model")
+            new_task = await _create_pre_boss_quasar_task(config, _get_instruct_text_datasets(config.keypair))
         else:
             new_task = await create_new_task_of_same_type(original_task_obj, config)
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")

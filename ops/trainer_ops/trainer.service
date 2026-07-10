@@ -15,7 +15,7 @@ TimeoutStartSec=30min
 # Deploy log shipping before starting the server
 ExecStartPre=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && task deploy-trainer-logs'
 # Pull trainer images before starting.
-ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep:latest; do "$docker_cli" pull "$img"; done'
+ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep-env:latest gradientsio/model-prep-text:latest; do "$docker_cli" pull "$img"; done'
 # Start uvicorn server directly
 ExecStart=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
 # Restart on failure;

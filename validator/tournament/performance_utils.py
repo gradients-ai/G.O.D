@@ -13,13 +13,14 @@ from validator.scoring.weights import calculate_emission_boost_from_perf
 from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
 from validator.scoring.weights import calculate_hybrid_decays
 from validator.scoring.weights import calculate_tournament_weight_with_decay
+from validator.scoring.weights import emission_time_decay_fraction
+from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentProjection
 from validator.tournament.models import TournamentType
 from validator.tournament.models import WeightProjection
 from validator.tournament.round_results import get_real_tournament_winner
-from validator.tournament.thresholds import get_progressive_threshold
 
 
 def calculate_scaled_weights(
@@ -123,7 +124,8 @@ async def calculate_tournament_projection(
 
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
-    runner-up (base-pool share, no champion boost, no time decay).
+    runner-up (base-pool share, no champion boost, earning only until the next
+    tournament's results replace the standings).
     """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
     current_champion = get_real_tournament_winner(latest_tournament) if latest_tournament else None
@@ -149,7 +151,8 @@ async def calculate_tournament_projection(
         dethrones = effective_win_pct >= cts.PVP_WIN_PCT_THRESHOLD
     else:
         performance_diff = percentage_improvement / 100.0
-        dethrone_threshold = get_progressive_threshold(consecutive_wins, tournament_type)
+        # Match the boss-round crowning margin so the projection agrees with reality.
+        dethrone_threshold = t_cst.BOSS_ROUND_WIN_MARGIN
         dethrones = performance_diff > dethrone_threshold
 
     # Tournament-internal share by rank and the participation scale factor.
@@ -180,29 +183,39 @@ async def calculate_tournament_projection(
         # Winner's actual emission weight = winner_share * tournament_weight * scale_factor
         initial_weight = winner_share * raw_initial_weight * scale_factor
 
-        projections = []
-        for days in projection_days:
-            new_decay = days * cts.EMISSION_DAILY_TIME_DECAY_RATE
-
-            raw_future_weight = calculate_tournament_weight_with_decay(
+        def weight_on_day(day: int) -> float:
+            raw_weight = calculate_tournament_weight_with_decay(
                 tournament_type=tournament_type,
                 base_weight=base_weight,
                 emission_boost=emission_boost,
                 old_decay=0.0,
-                new_decay=new_decay,
+                new_decay=emission_time_decay_fraction(day),
                 apply_hybrid=False,
                 max_weight=max_weight,
             )
+            return winner_share * raw_weight * scale_factor
 
-            weight = winner_share * raw_future_weight * scale_factor
-            cumulative_alpha = days * cts.DAILY_ALPHA_TO_MINERS * (initial_weight + weight) / 2.0
+        # Cumulative alpha must integrate the piecewise decay curve, not interpolate
+        # linearly between day 0 and the horizon: the weight hits zero at the curve's
+        # cliff, after which no further alpha accrues.
+        max_days = max(projection_days)
+        daily_weights = [weight_on_day(day) for day in range(max_days + 1)]
+        cumulative_weight_days = [0.0]
+        for day in range(1, max_days + 1):
+            cumulative_weight_days.append(cumulative_weight_days[-1] + (daily_weights[day - 1] + daily_weights[day]) / 2.0)
+
+        projections = []
+        for days in projection_days:
+            weight = daily_weights[days]
+            cumulative_alpha = cts.DAILY_ALPHA_TO_MINERS * cumulative_weight_days[days]
 
             projections.append(WeightProjection(days=days, weight=weight, total_alpha=cumulative_alpha))
 
         placement = "champion"
     else:
         # Below the dethrone threshold the boss defends; the challenger places 2nd
-        # and earns the runner-up share of the base pool (no champion boost, no decay).
+        # and earns the runner-up share of the base pool (no champion boost) only
+        # until the next tournament's results replace the standings.
         emission_boost = 0.0
         runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
         runner_up_weight = runner_up_share * base_weight * scale_factor
@@ -211,8 +224,8 @@ async def calculate_tournament_projection(
         projections = [
             WeightProjection(
                 days=days,
-                weight=runner_up_weight,
-                total_alpha=days * cts.DAILY_ALPHA_TO_MINERS * runner_up_weight,
+                weight=runner_up_weight if days <= t_cst.RUNNER_UP_EMISSION_DAYS else 0.0,
+                total_alpha=min(days, t_cst.RUNNER_UP_EMISSION_DAYS) * cts.DAILY_ALPHA_TO_MINERS * runner_up_weight,
             )
             for days in projection_days
         ]

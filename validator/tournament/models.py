@@ -120,6 +120,9 @@ class TournamentData(BaseModel):
         description="The tournament winner's hotkey at the END of this tournament. "
         "May be EMISSION_BURN_HOTKEY if the defending champion successfully defended.",
     )
+    code_review: str | None = Field(
+        default=None, description="Boss-round challenger review: clean, pending, accepted, rejected, or error."
+    )
     winning_performance_difference: float | None = Field(
         default=None,
         description="Performance difference metric (0.0 to 1.0) between champion and challenger in boss round. "
@@ -335,6 +338,7 @@ class TournamentResultsWithWinners(BaseModel):
     rounds: list[TournamentRoundResult]
     base_winner_hotkey: str | None = None
     winner_hotkey: str | None = None
+    final_positions: dict[str, int] = Field(default_factory=dict)
 
 
 class TaskPerformanceDifference(BaseModel):
@@ -344,7 +348,7 @@ class TaskPerformanceDifference(BaseModel):
     task_type: str
     boss_score: float | None
     challenger_score: float | None
-    threshold_used: float  # 0.05, 0.075, or 0.10
+    threshold_used: float  # boss-round win margin (BOSS_ROUND_WIN_MARGIN)
     performance_difference: float | None  # Percentage difference (positive = challenger better)
     challenger_won: bool
 
@@ -636,6 +640,13 @@ class DedupReviewStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class IntegrityVerdict(BaseModel):
+    flagged: bool
+    confidence: float = 0.0
+    reason: str = ""
+    evidence: list[str] = Field(default_factory=list)
+
+
 class DedupPairVerdict(BaseModel):
     hotkey_a: str
     hotkey_b: str
@@ -720,3 +731,16 @@ class DedupResult(BaseModel):
     evasion_hotkeys: list[str] = []
     unclonable_hotkeys: list[str] = []
     unresolved_pairs: list[tuple[str, str]] = []
+
+
+class ContinuousSftState(BaseModel):
+    """Per-lineage state for the continuous-SFT boss task (one row per lineage slug).
+
+    train_index: monotonic cursor passed to the stateless content service (advanced by one per task).
+    last_winner_repo: previous lowest-eval-loss winner, carried forward as the next base; None first run.
+    """
+
+    lineage: str
+    train_index: int = 0
+    last_winner_repo: str | None = None
+    updated_at: datetime | None = None

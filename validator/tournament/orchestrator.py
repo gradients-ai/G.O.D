@@ -429,6 +429,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             required_gpus = get_tournament_gpu_requirement(
                 task.task_type, task.model_params_count, task.model_id,
                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                training_start_point=task.training_start_point,
             )
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
             await _update_all_trainers_gpu_availability(config)
@@ -1020,6 +1021,14 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
     if rate < cst.MAX_NEAR_DUPLICATE_RATE:
         return False
 
+    # Continuous-SFT reuses a fixed curated chunk, so its near-duplicate rate is expected — never reject.
+    if cst.is_continuous_sft_task(task):
+        logger.warning(
+            f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
+            f">= {cst.MAX_NEAR_DUPLICATE_RATE} but is the continuous-SFT curated chunk — allowing through"
+        )
+        return False
+
     if task.is_organic:
         logger.warning(
             f"Task {task.task_id} has near_duplicate_rate={rate:.3f} "
@@ -1083,6 +1092,8 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                     task.task_type,
                     model_id=task.model_id,
                     model_params_count=task.model_params_count,
+                    training_start_point=task.training_start_point,
+                    ds=task.ds,
                 )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1254,6 +1265,8 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run one model prep for a given model_id and return the result."""
         reward_fns = getattr(task, "reward_functions", None)
         is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
+        # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
+        continuous_sft_remote_code_repo = cst.remote_code_repo_for_task(task.model_id, task.ds)
         return await dispatch_augmentation_and_stats(
             task_id=task_id_str,
             model_id=model_id,
@@ -1265,6 +1278,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             reward_functions=reward_fns,
             is_env_task=is_env_task,
             environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):
@@ -1294,6 +1308,8 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         task.task_type,
                         model_id=task.model_id,
                         model_params_count=task.model_params_count,
+                        training_start_point=task.training_start_point,
+                        ds=task.ds,
                     )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1355,6 +1371,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
                                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                                training_start_point=task.training_start_point,
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
@@ -1397,6 +1414,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     gpu_req = get_tournament_gpu_requirement(
                         task.task_type, task.model_params_count or 0, task.model_id,
                         use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                        training_start_point=task.training_start_point,
                     )
                     suitable = await _check_suitable_gpus(config, gpu_req)
                     if suitable is None:

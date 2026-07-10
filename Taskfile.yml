@@ -61,7 +61,7 @@ tasks:
       - . $HOME/.venv/bin/activate
       - ./ops/validator_ops/setup_grafana.sh
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up -d --build --remove-orphans
-      - docker compose rm -f -v grafana
+      - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml rm -f -v grafana
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up grafana -d
       - ./ops/validator_ops/start_validator.sh
 

@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import core.constants.environments as env_cst
+import validator.tournament.constants as t_cst
 from core.downloads import download_s3_file
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
@@ -242,6 +243,10 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
+    # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
+    continuous_sft_remote_code_repo = t_cst.remote_code_repo_for_task(task_details.model_id, task_details.ds)
+    continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
+
     if task_type == TaskType.ENVIRONMENTTASK:
         # For environment tasks, use dummy dataset paths (not actual files)
         test_data_path = "/tmp/dummy_test_data.json"
@@ -263,6 +268,8 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
+            continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
         test_data_results_dict = test_data_results.model_dump()
@@ -283,6 +290,8 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
+            continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
         synth_data_results_dict = synth_data_results.model_dump()

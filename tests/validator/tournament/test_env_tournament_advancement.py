@@ -18,46 +18,51 @@ from validator.tournament.models import GroupRound
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
-from validator.tournament.thresholds import get_progressive_threshold
+from validator.tournament.thresholds import challenger_beats_boss
 
 
 BOSS = "5GBoss"
 CONTENDER = "5GContender"
 
 
-# --- Progressive threshold ---
+# --- Boss-round per-task win margin ---
 
 
-class TestProgressiveThreshold:
-    def test_first_win_uses_base_threshold(self):
-        t = get_progressive_threshold(1, TournamentType.TEXT)
-        assert t == t_cst.EXPONENTIAL_BASE_THRESHOLD
+class TestChallengerBeatsBoss:
+    MARGIN = 0.01
 
-    def test_env_uses_same_base_threshold(self):
-        # Thresholds are disabled; env and text share the same zero base threshold.
-        t_env = get_progressive_threshold(1, TournamentType.ENVIRONMENT)
-        t_text = get_progressive_threshold(1, TournamentType.TEXT)
-        assert t_env == t_cst.EXPONENTIAL_BASE_THRESHOLD_ENVIRONMENT
-        assert t_env == t_text
+    def test_higher_is_better_positive_scores(self):
+        # GRPO reward, higher is better: challenger must clear boss by >= 1%.
+        assert challenger_beats_boss(1.0, 1.02, True, self.MARGIN) is True
+        assert challenger_beats_boss(1.0, 1.01, True, self.MARGIN) is True
+        assert challenger_beats_boss(1.0, 1.005, True, self.MARGIN) is False
+        assert challenger_beats_boss(1.0, 0.99, True, self.MARGIN) is False
 
-    def test_thresholds_disabled_no_decay(self):
-        t1 = get_progressive_threshold(1, TournamentType.TEXT)
-        t2 = get_progressive_threshold(2, TournamentType.TEXT)
-        t3 = get_progressive_threshold(3, TournamentType.TEXT)
-        assert t1 == t2 == t3 == 0.0
+    def test_higher_is_better_negative_scores(self):
+        # GRPO eval_loss can be negative (score - BETA_GRPO*KL). The margin must
+        # still require the challenger to be >= 1% *higher*, not lower.
+        assert challenger_beats_boss(-0.5, -0.502, True, self.MARGIN) is False  # strictly worse
+        assert challenger_beats_boss(-0.5, -0.495, True, self.MARGIN) is True  # 1% better
+        assert challenger_beats_boss(-0.5, -0.497, True, self.MARGIN) is False  # only 0.6% better
 
-    def test_floor_at_min_threshold(self):
-        t = get_progressive_threshold(100, TournamentType.TEXT)
-        assert t == t_cst.EXPONENTIAL_MIN_THRESHOLD
+    def test_higher_is_better_zero_boss(self):
+        # bar = 0 when boss score is 0, so any strictly-higher challenger wins (ties go to challenger).
+        assert challenger_beats_boss(0.0, 0.001, True, self.MARGIN) is True
+        assert challenger_beats_boss(0.0, 0.0, True, self.MARGIN) is True
+        assert challenger_beats_boss(0.0, -0.001, True, self.MARGIN) is False
 
-    def test_decay_rate_applied_correctly(self):
-        t2 = get_progressive_threshold(2, TournamentType.TEXT)
-        expected = t_cst.EXPONENTIAL_BASE_THRESHOLD * t_cst.EXPONENTIAL_DECAY_RATE
-        assert abs(t2 - expected) < 1e-9
+    def test_lower_is_better(self):
+        # DPO/instruct/image loss, lower is better: challenger must be <= 1% lower.
+        assert challenger_beats_boss(2.0, 1.97, False, self.MARGIN) is True
+        assert challenger_beats_boss(2.0, 1.98, False, self.MARGIN) is True
+        assert challenger_beats_boss(2.0, 1.99, False, self.MARGIN) is False
+        assert challenger_beats_boss(2.0, 2.10, False, self.MARGIN) is False
 
-    def test_none_tournament_type_uses_default_base(self):
-        t = get_progressive_threshold(1, None)
-        assert t == t_cst.EXPONENTIAL_BASE_THRESHOLD
+    def test_zero_margin_is_strict_comparison(self):
+        assert challenger_beats_boss(1.0, 1.0, True, 0.0) is True  # tie -> challenger
+        assert challenger_beats_boss(1.0, 0.999, True, 0.0) is False
+        assert challenger_beats_boss(2.0, 2.0, False, 0.0) is True  # tie -> challenger
+        assert challenger_beats_boss(2.0, 2.001, False, 0.0) is False
 
 
 # --- Boss round 3-task configuration ---

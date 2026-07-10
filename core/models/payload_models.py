@@ -163,6 +163,9 @@ class ModelPrepRequest(BaseModel):
     reward_functions: list[RewardFunction] | None = None
     env_configs: dict[EnvironmentName, EnvConfig] | None = None
     hotkey: str | None = None  # Per-miner prep key for recovery after restart
+    # Audited seed mirror for custom-arch continuous-SFT lineages (quasar); the prep container pins
+    # the model's remote code to it and loads with trust_remote_code. None for standard-arch tasks.
+    continuous_sft_remote_code_repo: str | None = None
 
     model_config = ConfigDict(protected_namespaces=())
 

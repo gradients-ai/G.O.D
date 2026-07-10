@@ -19,6 +19,9 @@ class TrainingStartPoint(str, Enum):
     CONTINUATION = "continuation"
     FROM_SCRATCH = "from_scratch"
     PREVIOUS_WINNER = "previous_winner"
+    # Lineage tag for the continuous-SFT boss task; the trainer ignores it, the validator uses it
+    # to locate the task and advance continuous_sft_state.
+    CONTINUOUS_SFT = "continuous_sft"
 
 
 class EnvironmentName(str, Enum):

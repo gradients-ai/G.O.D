@@ -53,6 +53,37 @@ async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
         return [float(row[cst.TEST_LOSS]) for row in rows]
 
 
+async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str | None:
+    """Return the submission repo with the strictly lowest eval (test) loss for a task, or None.
+
+    Continuous-SFT carry-forward wants the genuinely best model, not the handicap-adjusted boss-round
+    winner (which can have higher raw loss). Guarded to this NETUID + positive quality_score (mirrors
+    get_task_winner) so a penalized cheat with low raw test_loss can't become the next lineage base.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT submissions.{cst.REPO}
+            FROM {cst.SUBMISSIONS_TABLE} submissions
+            JOIN {cst.TASK_NODES_TABLE} task_nodes
+              ON submissions.{cst.TASK_ID} = task_nodes.{cst.TASK_ID}
+              AND submissions.{cst.HOTKEY} = task_nodes.{cst.HOTKEY}
+              AND submissions.{cst.NETUID} = task_nodes.{cst.NETUID}
+            WHERE submissions.{cst.TASK_ID} = $1
+              AND task_nodes.{cst.NETUID} = $2
+              AND task_nodes.{cst.TEST_LOSS} IS NOT NULL
+              AND task_nodes.{cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL
+              AND task_nodes.{cst.TASK_NODE_QUALITY_SCORE} > 0
+            ORDER BY task_nodes.{cst.TEST_LOSS} ASC
+            LIMIT 1
+            """,
+            task_id,
+            NETUID,
+        )
+        return row[cst.REPO] if row else None
+
+
 def _row_count(command_tag: str) -> int:
     try:
         return int(command_tag.split()[-1])
@@ -1834,6 +1865,37 @@ async def set_evaluation_deployment_id(
             )
 
 
+# Combined active-GPU ledger for the EVAL_MAX_GPUS cap. Individual (per-miner) evals reserve on the
+# evaluations table (1 row : 1 deployment). PvP evals reserve on pvp_pair_results (1 pair : 1
+# deployment) because the evaluations grain (one row per task+hotkey) cannot represent the many
+# pairs that share a hotkey — same-anchor pairs would collapse onto one row and undercount. Both
+# tables are summed under the same per-netuid advisory lock so the whole system respects the cap.
+# pvp_pair_results has no netuid column; on this single-netuid validator all tasks are one netuid,
+# so the PvP branch is unfiltered (add a JOIN tasks for netuid if this ever becomes multi-netuid).
+# Params: $1 netuid, $2 active eval statuses, $3 terminal pvp status.
+_ACTIVE_EVAL_GPUS_SUBQUERY = f"""
+    SELECT COALESCE(SUM(deployment_gpus), 0)
+    FROM (
+        SELECT
+            COALESCE({cst.DEPLOYMENT_ID}, {cst.TASK_ID}::text || ':' || {cst.HOTKEY}) AS deployment_key,
+            MAX(COALESCE({cst.GPU_COUNT}, 0)) AS deployment_gpus
+        FROM {cst.EVALUATIONS_TABLE}
+        WHERE {cst.NETUID} = $1
+          AND {cst.EVALUATION_STATUS} = ANY($2)
+          AND {cst.GPU_COUNT} IS NOT NULL
+        GROUP BY deployment_key
+        UNION ALL
+        SELECT
+            {cst.TASK_ID}::text || ':' || {cst.PVP_HOTKEY_A} || ':' || {cst.PVP_HOTKEY_B} AS deployment_key,
+            MAX(COALESCE({cst.GPU_COUNT}, 0)) AS deployment_gpus
+        FROM {cst.PVP_PAIR_RESULTS_TABLE}
+        WHERE {cst.STATUS} != $3
+          AND {cst.GPU_COUNT} IS NOT NULL
+        GROUP BY {cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}
+    ) active_deployments
+"""
+
+
 async def try_reserve_evaluation_gpus(
     task_id: UUID,
     hotkeys: list[str],
@@ -1852,22 +1914,10 @@ async def try_reserve_evaluation_gpus(
         async with connection.transaction():
             await connection.execute("SELECT pg_advisory_xact_lock($1)", NETUID)
             active_gpus = await connection.fetchval(
-                f"""
-                SELECT COALESCE(SUM(deployment_gpus), 0)
-                FROM (
-                    SELECT
-                        COALESCE({cst.DEPLOYMENT_ID}, {cst.TASK_ID}::text || ':' || {cst.HOTKEY})
-                            AS deployment_key,
-                        MAX(COALESCE({cst.GPU_COUNT}, 0)) AS deployment_gpus
-                    FROM {cst.EVALUATIONS_TABLE}
-                    WHERE {cst.NETUID} = $1
-                      AND {cst.EVALUATION_STATUS} = ANY($2)
-                      AND {cst.GPU_COUNT} IS NOT NULL
-                    GROUP BY deployment_key
-                ) active_deployments
-                """,
+                _ACTIVE_EVAL_GPUS_SUBQUERY,
                 NETUID,
                 ["pending", "evaluating"],
+                cst.PVP_STATUS_COMPLETE.value,
             )
             if int(active_gpus or 0) + requested_gpus > lifecycle_cst.EVAL_MAX_GPUS:
                 return False
@@ -1930,6 +1980,99 @@ async def release_evaluation_gpu_reservation(
         )
 
 
+async def try_reserve_pvp_pair_gpus(
+    task_id: UUID,
+    hotkey_a: str,
+    hotkey_b: str,
+    gpu_count: int,
+    psql_db: PSQLDB,
+) -> bool:
+    """Reserve GPUs for one PvP pair against the shared EVAL_MAX_GPUS cap. The reservation lives on
+    pvp_pair_results (grain = pair = the single 2-GPU deployment), keyed by the sorted pair, under
+    the same per-netuid advisory lock as the evaluations reserve so concurrent reservers serialize.
+    Returns True iff it fit under the cap and a row was written."""
+    requested_gpus = max(0, gpu_count)
+    if requested_gpus == 0:
+        return True
+    hk_a, hk_b = sorted([hotkey_a, hotkey_b])
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute("SELECT pg_advisory_xact_lock($1)", NETUID)
+            active_gpus = await connection.fetchval(
+                _ACTIVE_EVAL_GPUS_SUBQUERY,
+                NETUID,
+                ["pending", "evaluating"],
+                cst.PVP_STATUS_COMPLETE.value,
+            )
+            if int(active_gpus or 0) + requested_gpus > lifecycle_cst.EVAL_MAX_GPUS:
+                return False
+            result = await connection.execute(
+                f"""
+                UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+                SET {cst.GPU_COUNT} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+                WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2 AND {cst.PVP_HOTKEY_B} = $3
+                """,
+                task_id,
+                hk_a,
+                hk_b,
+                requested_gpus,
+            )
+            return _row_count(result) > 0
+
+
+async def reserve_pvp_pair_gpus_unconditional(
+    task_id: UUID,
+    hotkey_a: str,
+    hotkey_b: str,
+    gpu_count: int,
+    psql_db: PSQLDB,
+) -> None:
+    """Mark a PvP pair as holding GPUs WITHOUT a cap check (still under the advisory lock). Used only
+    when resuming an already-live deployment after a restart, so it becomes visible in the ledger."""
+    requested_gpus = max(0, gpu_count)
+    if requested_gpus == 0:
+        return
+    hk_a, hk_b = sorted([hotkey_a, hotkey_b])
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute("SELECT pg_advisory_xact_lock($1)", NETUID)
+            await connection.execute(
+                f"""
+                UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+                SET {cst.GPU_COUNT} = $4, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+                WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2 AND {cst.PVP_HOTKEY_B} = $3
+                """,
+                task_id,
+                hk_a,
+                hk_b,
+                requested_gpus,
+            )
+
+
+async def release_pvp_pair_gpus(
+    task_id: UUID | str | None,
+    hotkey_a: str,
+    hotkey_b: str,
+    psql_db: PSQLDB | None,
+) -> None:
+    """Release a PvP pair's GPU reservation. Pair-scoped, so it can never clear a sibling pair's
+    reservation (unlike the old evaluations release keyed on a shared hotkey)."""
+    if task_id is None or psql_db is None:
+        return
+    hk_a, hk_b = sorted([hotkey_a, hotkey_b])
+    async with await psql_db.connection() as connection:
+        await connection.execute(
+            f"""
+            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+            SET {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2 AND {cst.PVP_HOTKEY_B} = $3
+            """,
+            task_id,
+            hk_a,
+            hk_b,
+        )
+
+
 async def reset_evaluation_rows_for_deployment(deployment_id: str, psql_db: PSQLDB | None) -> None:
     if psql_db is None:
         return
@@ -1948,6 +2091,30 @@ async def reset_evaluation_rows_for_deployment(deployment_id: str, psql_db: PSQL
             NETUID,
             ["pending", "evaluating"],
         )
+
+
+async def release_stale_unreconcilable_reservations(grace_seconds: int, psql_db: PSQLDB) -> int:
+    """Release GPU reservations that hold GPUs but carry no deployment_id and have not been touched
+    for `grace_seconds`. These are PvP reservations whose deploy crashed before the resolved
+    deployment name was stamped on the row (see set_evaluation_deployment_id in the PvP flow) — they
+    are invisible to the deployment-based reconciler and would otherwise pin GPUs in the cap ledger
+    forever. A successful deploy stamps deployment_id within seconds of readiness, well inside grace,
+    so anything still NULL past grace is genuinely orphaned. Returns rows released."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.GPU_COUNT} = NULL,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.NETUID} = $1
+              AND {cst.GPU_COUNT} IS NOT NULL
+              AND {cst.DEPLOYMENT_ID} IS NULL
+              AND {cst.UPDATED_AT} < NOW() - ($2 || ' seconds')::interval
+            """,
+            NETUID,
+            str(grace_seconds),
+        )
+        return _row_count(result)
 
 
 async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
@@ -1971,6 +2138,27 @@ async def get_deployment_ids_from_evaluating_tasks(psql_db: PSQLDB) -> set[str]:
         if val and isinstance(val, str):
             ids.add(val)
     return ids
+
+
+async def get_active_evaluation_deployments(psql_db: PSQLDB) -> list[dict]:
+    """Deployment IDs referenced by non-terminal (pending/evaluating) eval rows, with the most
+    recent update time per deployment. Used by the reconciler to detect ghost reservations
+    (deployment no longer live) and, via the complement, orphaned live deployments.
+    """
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.DEPLOYMENT_ID} AS deployment_id, MAX({cst.UPDATED_AT}) AS updated_at
+            FROM {cst.EVALUATIONS_TABLE}
+            WHERE {cst.EVALUATION_STATUS} = ANY($1)
+              AND {cst.NETUID} = $2
+              AND {cst.DEPLOYMENT_ID} IS NOT NULL
+            GROUP BY {cst.DEPLOYMENT_ID}
+            """,
+            ["pending", "evaluating"],
+            NETUID,
+        )
+    return [{"deployment_id": row["deployment_id"], "updated_at": row["updated_at"]} for row in rows]
 
 
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:

@@ -22,6 +22,7 @@ from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
+from validator.db.sql.continuous_sft import advance_continuous_sft_state
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
 from validator.db.sql.tournaments import add_tournament_participants
@@ -46,6 +47,7 @@ from validator.db.sql.tournaments import insert_tournament_round
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_participant_training_repo
+from validator.db.sql.tournaments import update_tournament_placements
 from validator.db.sql.tournaments import update_tournament_status
 from validator.db.sql.tournaments import update_tournament_winner_hotkey
 from validator.db.sql.tournaments import update_tournament_winner_model
@@ -57,6 +59,7 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.challenger_code_review import evaluate_challenger_code_review
 from validator.tournament.dedup_gate import apply_r1_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
@@ -327,6 +330,45 @@ async def _save_winner_model_repo(
         await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
     else:
         logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
+
+
+async def _carry_forward_continuous_sft(
+    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB
+) -> None:
+    """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
+    and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
+    """
+    found = False
+    for round_task in round_tasks:
+        task_obj = await task_sql.get_task(round_task.task_id, psql_db)
+        if not task_obj:
+            continue
+        if not t_cst.is_continuous_sft_task(task_obj):
+            continue
+        lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
+        if not lineage:
+            logger.warning(
+                f"Continuous-SFT task {round_task.task_id} has no lineage in ds={task_obj.ds}; skipping carry-forward"
+            )
+            continue
+        found = True
+
+        # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
+        # had no scored winner, in which case advance preserves the prior repo.
+        winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        logger.info(
+            f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
+            f"carried_winner={winner_repo}"
+        )
+        try:
+            await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
+        except Exception as e:
+            logger.error(
+                f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
+            )
+
+    if not found:
+        logger.info("No continuous-SFT task in completed text boss round; nothing to carry forward")
 
 
 def select_boss_group_index(groups: list[Group]) -> int:
@@ -619,6 +661,59 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     f"Defending champion {tournament.base_winner_hotkey} successfully defended (stored as EMISSION_BURN_HOTKEY)"
                 )
 
+            challenger = await get_challenger_participant_for_retained_boss(
+                tournament, completed_round, winners, psql_db
+            )
+            if not challenger:
+                logger.error(
+                    f"Cannot identify boss-round challenger for tournament {tournament.tournament_id}; "
+                    "holding completion"
+                )
+                return
+
+            integrity = await evaluate_challenger_code_review(
+                tournament,
+                completed_round,
+                challenger,
+                config,
+                psql_db,
+            )
+            if integrity.halt:
+                logger.info(
+                    f"Challenger code-review gate is holding tournament {tournament.tournament_id}; "
+                    "winner persistence, repository upload, and diff report will not run"
+                )
+                return
+
+            logger.info(
+                f"Challenger code-review gate resolved for tournament {tournament.tournament_id}; "
+                "continuing finalization"
+            )
+            diff_candidate = challenger
+            if integrity.disqualified:
+                winner = EMISSION_BURN_HOTKEY
+                second_place = integrity.replacement_hotkey
+                winners = [winner]
+                diff_candidate = (
+                    await get_tournament_participant(
+                        tournament.tournament_id,
+                        second_place,
+                        psql_db,
+                    )
+                    if second_place
+                    else None
+                )
+                logger.warning(
+                    f"Boss challenger {challenger.hotkey} disqualified; "
+                    f"boss retains and second place is {second_place}"
+                )
+            else:
+                second_place = (
+                    EMISSION_BURN_HOTKEY
+                    if winner != EMISSION_BURN_HOTKEY
+                    else challenger.hotkey
+                )
+
             round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
             logger.info(f"Found {len(round_tasks)} tasks in final round")
 
@@ -626,7 +721,17 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
+            # BEFORE setting winner_hotkey (the re-entry guard): set-first-then-crash would freeze the
+            # lineages; carry-forward is idempotent so a crash before winner-set just reprocesses.
+            if tournament.tournament_type == TournamentType.TEXT and not integrity.disqualified:
+                await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
+
+            await update_tournament_placements(
+                tournament.tournament_id,
+                winner,
+                second_place,
+                psql_db,
+            )
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
 
@@ -654,17 +759,22 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             challenger_commit_hash = None
             challenger_github_token = None
             if winner == EMISSION_BURN_HOTKEY:
-                challenger = await get_challenger_participant_for_retained_boss(
-                    tournament, completed_round, winners, psql_db
-                )
-                challenger_repo = challenger.training_repo if challenger else None
-                challenger_commit_hash = challenger.training_commit_hash if challenger else None
-                challenger_github_token = challenger.github_token if challenger else None
-                result_summary = f"Boss retained; challenger was {challenger.hotkey if challenger else 'unknown'}."
+                challenger_repo = diff_candidate.training_repo if diff_candidate else None
+                challenger_commit_hash = diff_candidate.training_commit_hash if diff_candidate else None
+                challenger_github_token = diff_candidate.github_token if diff_candidate else None
+                if integrity.disqualified:
+                    result_summary = (
+                        f"Boss retained after challenger {challenger.hotkey} was disqualified; "
+                        f"promoted second place is {diff_candidate.hotkey if diff_candidate else 'unavailable'}."
+                    )
+                else:
+                    result_summary = f"Boss retained; challenger was {challenger.hotkey}."
             else:
                 result_summary = f"Winner changed; new winner hotkey: {winner}."
 
             asyncio.create_task(
+                # This is deliberately scheduled only after the awaited challenger code-review gate,
+                # placement persistence, and winner repository upload above have all completed.
                 generate_diff_report_and_notify_tournament_completed(
                     tournament,
                     challenger_repo,
@@ -931,11 +1041,23 @@ async def _get_miner_training_repo(node: Node, config: Config, tournament_type: 
         url = f"{TRAINING_REPO_ENDPOINT}/{tournament_type.value}"
         response = await process_non_stream_fiber_get(url, config, node)
 
-        if response and isinstance(response, dict):
-            return TrainingRepoResponse(**response)
-        else:
+        if not response:
+            return None
+
+        if not isinstance(response, dict):
             logger.warning(f"Invalid response format from {node.hotkey}: {response}")
             return None
+
+        training_repo = TrainingRepoResponse(**response)
+
+        if not training_repo.github_repo or not training_repo.commit_hash:
+            logger.warning(
+                f"Miner {node.hotkey} returned empty repo or commit hash: "
+                f"repo={training_repo.github_repo!r} commit={training_repo.commit_hash!r}"
+            )
+            return None
+
+        return training_repo
 
     except Exception as e:
         logger.error(f"Failed to get training repo from {node.hotkey}: {e}")
@@ -1236,6 +1358,18 @@ async def is_tourn_task_completed(
 
     Returns a tuple of (is_completed, reason)
     """
+
+    # Pre-boss quasar task with both miners' trainings failed (2 trainings, so the >0.5 threshold
+    # means both): complete the round instead of stalling for investigation. Neither miner gets a
+    # quality score, so get_task_winner yields None, winners come back empty, and advance_tournament's
+    # zero-winner path retains the boss as tournament winner — no boss round, no emission shift.
+    pre_boss_both_failed = (
+        task_obj.status in (TaskStatus.SUCCESS.value, TaskStatus.FAILURE.value)
+        and t_cst.is_pre_boss_quasar_task(task_obj)
+        and await _more_than_half_failures(tournament_task, config)
+    )
+    if pre_boss_both_failed:
+        return True, "Both pre-boss miners failed the quasar task; completing round so the boss is retained"
 
     if task_obj.status == TaskStatus.SUCCESS.value:
         if await _more_than_half_failures(tournament_task, config):

@@ -216,7 +216,8 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW},
+                   {cst.WINNING_PERFORMANCE_DIFFERENCE},
                    {cst.DIFF_REPORT}, {cst.WINNER_MODEL_REPO}, {cst.WINNER_MODEL_BASE}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
@@ -229,6 +230,7 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
+                code_review=result[cst.CODE_REVIEW],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 winner_model_repo=result[cst.WINNER_MODEL_REPO],
@@ -513,6 +515,58 @@ async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str
         logger.info(f"Updated tournament {tournament_id} winner hotkey to {winner_hotkey}")
 
 
+async def update_tournament_code_review(tournament_id: str, status: str, psql_db: PSQLDB) -> None:
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TOURNAMENTS_TABLE}
+            SET {cst.CODE_REVIEW} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TOURNAMENT_ID} = $1
+            """,
+            tournament_id,
+            status,
+        )
+    if result != "UPDATE 1":
+        raise RuntimeError(f"Failed to persist code_review={status} for tournament {tournament_id}")
+
+
+async def update_tournament_placements(
+    tournament_id: str,
+    winner_hotkey: str,
+    second_place_hotkey: str | None,
+    psql_db: PSQLDB,
+) -> None:
+    """Persist official top-two positions without rewriting match history."""
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                f"""
+                UPDATE {cst.TOURNAMENTS_TABLE}
+                SET {cst.WINNER_HOTKEY} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+                WHERE {cst.TOURNAMENT_ID} = $1
+                """,
+                tournament_id,
+                winner_hotkey,
+            )
+            await connection.execute(
+                f"""
+                UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+                SET {cst.FINAL_POSITION} = CASE
+                    WHEN {cst.HOTKEY} = $2 THEN 1
+                    WHEN {cst.HOTKEY} = $3 THEN 2
+                    ELSE NULL
+                END
+                WHERE {cst.TOURNAMENT_ID} = $1
+                """,
+                tournament_id,
+                winner_hotkey,
+                second_place_hotkey,
+            )
+    logger.info(
+        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, second={second_place_hotkey}"
+    )
+
+
 async def update_tournament_winner_model(
     tournament_id: str, winner_model_repo: str, winner_model_base: str, psql_db: PSQLDB,
 ) -> None:
@@ -541,7 +595,7 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.DIFF_REPORT}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW}, {cst.DIFF_REPORT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_STATUS} = $1
             ORDER BY {cst.CREATED_AT} DESC
@@ -554,6 +608,7 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
                 status=row[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=row[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=row[cst.WINNER_HOTKEY],
+                code_review=row[cst.CODE_REVIEW],
                 diff_report=row[cst.DIFF_REPORT],
             )
             for row in results
@@ -1125,7 +1180,7 @@ async def get_active_tournament(psql_db: PSQLDB, tournament_type: TournamentType
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'active'
             ORDER BY {cst.CREATED_AT} DESC
@@ -1139,6 +1194,7 @@ async def get_active_tournament(psql_db: PSQLDB, tournament_type: TournamentType
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
+                code_review=result[cst.CODE_REVIEW],
             )
         return None
 
@@ -1184,51 +1240,6 @@ async def count_champion_consecutive_wins(psql_db: PSQLDB, tournament_type: Tour
             ORDER BY {cst.CREATED_AT} DESC
         """
         results = await connection.fetch(query, tournament_type.value)
-
-        if not results:
-            return 0
-
-        consecutive_wins = 0
-        for row in results:
-            winner = row[cst.WINNER_HOTKEY]
-            base_winner = row[cst.BASE_WINNER_HOTKEY]
-
-            if is_champion_winner(winner, base_winner, champion_hotkey):
-                consecutive_wins += 1
-            else:
-                # Stop counting when we hit a tournament won by someone else
-                break
-
-        return consecutive_wins
-
-
-async def count_champion_consecutive_wins_at_tournament(
-    psql_db: PSQLDB, tournament_type: TournamentType, champion_hotkey: str, tournament_id: str
-) -> int:
-    """Count consecutive tournament wins for a champion at the time a specific tournament started."""
-    async with await psql_db.connection() as connection:
-        # First get the created_at time of the target tournament
-        target_query = f"""
-            SELECT {cst.CREATED_AT}
-            FROM {cst.TOURNAMENTS_TABLE}
-            WHERE {cst.TOURNAMENT_ID} = $1
-        """
-        target_result = await connection.fetchval(target_query, tournament_id)
-
-        if not target_result:
-            return 0
-
-        # Get all completed tournaments of the same type that finished before this tournament started
-        # Include base_winner_hotkey to handle EMISSION_BURN_HOTKEY wins correctly
-        query = f"""
-            SELECT {cst.WINNER_HOTKEY}, {cst.BASE_WINNER_HOTKEY}, {cst.CREATED_AT}
-            FROM {cst.TOURNAMENTS_TABLE}
-            WHERE {cst.TOURNAMENT_TYPE} = $1
-              AND {cst.TOURNAMENT_STATUS} = 'completed'
-              AND {cst.CREATED_AT} < $2
-            ORDER BY {cst.CREATED_AT} DESC
-        """
-        results = await connection.fetch(query, tournament_type.value, target_result)
 
         if not results:
             return 0
@@ -1529,6 +1540,65 @@ async def set_pvp_pair_deployment_id(
                 hk_b,
                 deployment_id,
             )
+
+
+async def get_active_pvp_deployment_ids(psql_db: PSQLDB) -> set[str]:
+    """Deployment IDs of PvP pairs that are not yet complete. These live Basilica deployments
+    back in-flight PvP evals and must not be reaped by the eval-deployment reconciler."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID} AS deployment_id
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.STATUS} != $1
+              AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+        )
+    return {row["deployment_id"] for row in rows if row["deployment_id"]}
+
+
+async def get_active_pvp_pair_reservations(psql_db: PSQLDB) -> list[dict]:
+    """One row per PvP pair currently holding a GPU reservation (gpu_count set, pair not complete),
+    for the reconciler: {task_id, hotkey_a, hotkey_b, deployment_id, updated_at}. A pair has one row
+    per environment so we aggregate to the pair grain."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.TASK_ID} AS task_id,
+                   {cst.PVP_HOTKEY_A} AS hotkey_a,
+                   {cst.PVP_HOTKEY_B} AS hotkey_b,
+                   MAX({cst.PVP_DEPLOYMENT_ID}) AS deployment_id,
+                   MAX({cst.UPDATED_AT}) AS updated_at
+            FROM {cst.PVP_PAIR_RESULTS_TABLE}
+            WHERE {cst.STATUS} != $1
+              AND {cst.GPU_COUNT} IS NOT NULL
+            GROUP BY {cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+        )
+    return [dict(row) for row in rows]
+
+
+async def release_stale_pvp_pair_reservations(grace_seconds: int, psql_db: PSQLDB) -> int:
+    """Release PvP pair reservations that hold GPUs but never got a deployment_id stamped (deploy
+    crashed before the readiness callback) and have aged past grace — the pair-table analogue of the
+    evaluations stale-reservation sweep. A successful deploy stamps deployment_id within seconds, so
+    a genuinely-booting pair (grace > ready timeout) is never falsely released. Returns rows freed."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
+            SET {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.STATUS} != $1
+              AND {cst.GPU_COUNT} IS NOT NULL
+              AND {cst.PVP_DEPLOYMENT_ID} IS NULL
+              AND {cst.UPDATED_AT} < NOW() - ($2 || ' seconds')::interval
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+            str(grace_seconds),
+        )
+        return _row_count(result)
 
 
 async def get_pvp_pair_deployment_id(

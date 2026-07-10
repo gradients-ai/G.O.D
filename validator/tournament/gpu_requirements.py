@@ -1,5 +1,6 @@
 """GPU requirement computation for tournament evaluation and training."""
 
+from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.tasks.requests import get_model_num_params
@@ -22,13 +23,20 @@ def get_tournament_gpu_requirement(
     model_id: str | None = None,
     gpu_multiplier: int | None = None,
     use_kl: bool = False,
+    training_start_point: TrainingStartPoint | None = None,
 ) -> GpuRequirement:
     """Compute GPU requirement based on model size, task type, and optional multiplier.
 
     When ``use_kl`` is set (instruct KL tasks), the effective model size is scaled by
     TOURNAMENT_KL_GPU_MULTIPLIER to account for the frozen reference model held resident
     alongside the trainable model.
+
+    Continuous-SFT gets a FIXED 4xH100, checked first so we never hit the (gated/custom-arch)
+    HuggingFace param fetch below.
     """
+    if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
+        return GpuRequirement.H100_4X
+
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X
 

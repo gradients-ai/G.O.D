@@ -24,15 +24,18 @@ from core.models.payload_models import InstructTextDatasetColumnsResponse
 from core.models.reward_models import RewardFunction
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
+from core.whitelisted_env_models import SUPPORTED_ENV_MODELS
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
+from validator.db.sql.continuous_sft import get_continuous_sft_state
 from validator.db.sql.tasks import add_task
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
 from validator.scoring.models import EnvironmentWeight
 from validator.tasks.datasets.models import Dataset
 from validator.tasks.details import retry_with_backoff
+from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
@@ -46,17 +49,6 @@ from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 
 
 logger = get_logger(__name__)
-
-SUPPORTED_ENV_MODELS = [
-    "Qwen/Qwen2-7B-Instruct",
-    "unsloth/Llama-3.2-3B-Instruct",
-    "Qwen/Qwen3-4B-Instruct-2507",
-    "Qwen/Qwen2.5-3B-Instruct",
-    "Qwen/Qwen2.5-7B-Instruct",
-    "codellama/CodeLlama-7b-Instruct-hf",
-    "NousResearch/Hermes-3-Llama-3.2-3B",
-]
-
 
 def maybe_get_yarn_factor() -> int | None:
     """
@@ -230,9 +222,14 @@ def compute_training_hours(
     num_params: float,
     task_type: TaskType,
     measured_tokens_per_sec: float | None = None,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
 ) -> float:
-    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput."""
-    gpus = get_tournament_gpu_requirement(task_type, int(num_params)).gpu_count
+    """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
+
+    training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
+    regardless of params, so sizing from params alone would budget for half the real GPUs.
+    """
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
     if measured_tokens_per_sec:
         lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
@@ -273,11 +270,20 @@ def compute_hours_from_baseline_stats(
     task_type: TaskType,
     model_id: str | None = None,
     model_params_count: int | None = None,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    ds: str | None = None,
 ) -> float:
-    """Post-prep hours from real token counts plus measured fwd/bwd throughput."""
+    """Post-prep hours from real token counts plus measured fwd/bwd throughput.
+
+    Continuous-SFT flows through like any SFT task (its 4xH100 is handled via
+    training_start_point), but params are sized from the lineage SEED (resolved from ds here, so
+    no caller can get it wrong) — the task's own model_id is the carried winner, whose params are
+    unfetchable (LoRA adapter / custom arch).
+    """
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours
 
+    model_id = t_cst.continuous_sft_seed_repo_for_ds(ds) or model_id
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
     if not num_params:
         num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
@@ -294,7 +300,7 @@ def compute_hours_from_baseline_stats(
         dataset_stats.num_records * data_cst.EFFECTIVE_MIN_TOKENS_PER_ROW,
     )
     measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
-    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps)
+    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps, training_start_point)
 
 
 def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
@@ -657,11 +663,19 @@ async def create_synthetic_affine_grpo_task(
 @retry_with_backoff
 async def create_synthetic_instruct_text_task(
     config: Config,
-    models: AsyncGenerator[str, None],
+    models: AsyncGenerator[str, None] | None,
     datasets: AsyncGenerator[Dataset, None],
     enable_kl: bool = False,
+    model_id_override: str | None = None,
+    allow_augmentation: bool = True,
+    allow_yarn: bool = True,
 ) -> RawTask:
-    model_id = await anext(models)
+    """models may be None only with model_id_override set (the pool is never drawn from then)."""
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        assert models is not None, "a models pool is required when model_id_override is not set"
+        model_id = await anext(models)
 
     logger.info("INSTRUCT_TASK: Starting dataset selection...")
     dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
@@ -673,8 +687,8 @@ async def create_synthetic_instruct_text_task(
     current_time = datetime.utcnow()
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
-    yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK)
+    yarn_factor = maybe_get_yarn_factor() if allow_yarn else None
+    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK) if allow_augmentation else None
     use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(
         model_id=model_id,
@@ -700,5 +714,68 @@ async def create_synthetic_instruct_text_task(
     )
     task = await add_task(task, config.psql_db)
     logger.info(f"INSTRUCT_TASK: Task saved to database with ID: {task.task_id}")
+
+    return task
+
+
+@retry_with_backoff
+async def create_continuous_sft_task(config: Config, lineage: str, seed_model: str) -> RawTask:
+    """Create one lineage's continuous-SFT boss task: fixed chat-SFT from the carried-forward winner
+    (or seed_model on first run), on this lineage's next stage-1 chunk.
+
+    The content service is stateless: we pass the monotonic train_index and it re-materializes
+    train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
+    across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
+    Fixed 4xH100; hours start at the fallback budget and are resized post-prep by the general
+    throughput pipeline. No augmentation, so the carried base is never perturbed.
+    """
+    state = await get_continuous_sft_state(lineage, config.psql_db)
+    base_model = state.last_winner_repo or seed_model
+
+    response = await call_content_service(
+        service_cst.GET_CONTINUOUS_SFT_DATA_ENDPOINT,
+        config.keypair,
+        {"train_index": state.train_index},
+    )
+    logger.info(
+        f"Retrieved continuous-SFT chunk data for lineage={lineage} train_index={state.train_index}: {response}"
+    )
+    if not isinstance(response, dict):
+        raise ValueError("Expected dict response from continuous-SFT data endpoint")
+    train_url = response.get("train_s3_url")
+    test_url = response.get("test_s3_url")
+    if not train_url or not test_url:
+        raise ValueError(f"continuous-SFT data response missing train/test url: {response}")
+    label = response.get("ds") or f"train-index-{state.train_index}"
+    ds_label = t_cst.continuous_sft_ds(lineage, label)
+
+    number_of_hours = t_cst.CONTINUOUS_SFT_TRAINING_HOURS
+    current_time = datetime.utcnow()
+    end_timestamp = current_time + timedelta(hours=number_of_hours)
+
+    task = ChatRawTask(
+        model_id=base_model,
+        ds=ds_label,
+        status=TaskStatus.PENDING,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=end_timestamp,
+        hours_to_complete=number_of_hours,
+        account_id=service_cst.NULL_ACCOUNT_ID,
+        file_format=FileFormat.S3,
+        training_data=train_url,
+        test_data=test_url,
+        training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+        # Base's own template, not chatml (quasar ships a custom one); eval loads the base tokenizer
+        # so train+eval match.
+        chat_template="tokenizer_default",
+        # other chat_* fields keep ChatRawTask ShareGPT defaults; augmentation_config stays None.
+    )
+    logger.info(
+        f"CONTINUOUS_SFT_TASK: lineage={lineage} train_index={state.train_index} "
+        f"base_model={base_model} hours={number_of_hours} ds={ds_label}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"CONTINUOUS_SFT_TASK: saved task {task.task_id}")
 
     return task

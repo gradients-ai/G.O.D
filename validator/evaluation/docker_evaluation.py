@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import random
 import uuid
@@ -31,7 +32,6 @@ from validator.evaluation.basilica import _deploy_with_readiness_timeout
 from validator.evaluation.basilica import _fetch_attempt_logs
 from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
 from validator.evaluation.basilica import _poll_eval_deployment
-from validator.evaluation.basilica import _release_reserved_gpus
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
@@ -142,6 +142,8 @@ async def run_evaluation_basilica_text(
     local_logging: bool | None = False,
     use_kl: bool = False,
     kl_coef: float | None = None,
+    continuous_sft_remote_code_repo: str | None = None,
+    continuous_sft_tokenizer_repo: str | None = None,
 ) -> DockerEvaluationResults:
     deployment_ids_by_repo = {}
     db_deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
@@ -206,6 +208,10 @@ async def run_evaluation_basilica_text(
         base_env[docker_cst.USE_KL_ENV] = "1"
         if kl_coef is not None:
             base_env[docker_cst.KL_COEF_ENV] = str(kl_coef)
+    if continuous_sft_remote_code_repo:
+        base_env[docker_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV] = continuous_sft_remote_code_repo
+    if continuous_sft_tokenizer_repo:
+        base_env[docker_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV] = continuous_sft_tokenizer_repo
     if is_environment_eval:
         env_name = env_cst.EnvironmentName(environment_name_value) if environment_name_value else None
         if env_name not in env_cst.ENVIRONMENT_CONFIGS:
@@ -385,6 +391,42 @@ async def run_evaluation_basilica_image(
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     return process_evaluation_results(evaluation_results, is_image=True)
 
+async def _release_pvp_pair_gpus_reservation(
+    *,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    hotkeys: list[str],
+    ctx: _BasilicaEvalContext,
+) -> None:
+    """Release a PvP pair's GPU reservation on pvp_pair_results (pair-scoped, never clobbers a
+    sibling pair). No-op unless we have a full pair."""
+    if task_id is None or psql_db is None or len(hotkeys) != 2:
+        return
+    await _db_call_with_retry(
+        lambda: tasks_sql.release_pvp_pair_gpus(task_id, hotkeys[0], hotkeys[1], psql_db),
+        "release_pvp_pair_gpus",
+        ctx.eval_logger,
+        ctx.repo,
+    )
+
+
+def _pvp_remaining_poll_seconds(deployment) -> int:
+    """Poll a RESUMED deployment for only its remaining TTL, not a fresh full TTL, so an alive-but-
+    stuck resumed deployment cannot pin its (now-metered) reservation for a whole new TTL window."""
+    created = getattr(deployment, "created_at", None)
+    if isinstance(created, str):
+        try:
+            created = datetime.datetime.fromisoformat(created)
+        except ValueError:
+            return vcst.PVP_BASILICA_TTL_SECONDS
+    if not isinstance(created, datetime.datetime):
+        return vcst.PVP_BASILICA_TTL_SECONDS
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    age = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds()
+    return int(max(vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS, vcst.PVP_BASILICA_TTL_SECONDS - age))
+
+
 async def _persist_pvp_deployment_id(
     *,
     task_id: UUID | None,
@@ -473,6 +515,17 @@ async def _deploy_pvp_eval(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            # The deployment is already live and consuming GPUs — make it visible in the cap ledger
+            # unconditionally (it predates any new reservation, so it must count regardless of cap).
+            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
+                await _db_call_with_retry(
+                    lambda: tasks_sql.reserve_pvp_pair_gpus_unconditional(
+                        task_id, hotkeys[0], hotkeys[1], gpu_count, psql_db
+                    ),
+                    "reserve_pvp_pair_gpus_unconditional",
+                    ctx.eval_logger,
+                    ctx.repo,
+                )
             update_environment_logger_labels(
                 eval_logger,
                 deployment_id=deployment_name,
@@ -488,48 +541,42 @@ async def _deploy_pvp_eval(
                 timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
                 retry_on_failure=False,
                 poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
-                max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
+                max_poll_seconds=_pvp_remaining_poll_seconds(deployment),
             )
             if isinstance(result, dict):
-                await _release_reserved_gpus(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=None,
-                    ctx=ctx,
+                await _release_pvp_pair_gpus_reservation(
+                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
                 )
                 return result
             if deployment_name not in ctx.deleted_deployment_names:
                 raise EvaluationRetryableError(
                     f"Failed to verify deletion for resumed PvP deployment {deployment_name}"
                 )
+            # Dead deployment was deleted by the poll — release its reservation before redeploying.
+            await _release_pvp_pair_gpus_reservation(
+                task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
+            )
             eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
-        await _release_reserved_gpus(
-            task_id=task_id,
-            psql_db=psql_db,
-            hotkeys=hotkeys,
-            deployment_name=None,
-            ctx=ctx,
-        )
 
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
+        reserved_pair = False
         deployment_name = str(uuid.uuid4())
         try:
             update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
             eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
             client = basilica.BasilicaClient()
-            if task_id is not None and psql_db is not None and hotkeys and gpu_count > 0:
+            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
                 reserved = await _db_call_with_retry(
-                    lambda: tasks_sql.try_reserve_evaluation_gpus(
+                    lambda: tasks_sql.try_reserve_pvp_pair_gpus(
                         task_id,
-                        hotkeys[:1],
-                        None,
+                        hotkeys[0],
+                        hotkeys[1],
                         gpu_count,
                         psql_db,
                     ),
-                    "try_reserve_evaluation_gpus(pvp)",
+                    "try_reserve_pvp_pair_gpus",
                     ctx.eval_logger,
                     ctx.repo,
                 )
@@ -538,6 +585,7 @@ async def _deploy_pvp_eval(
                     raise EvaluationCapacityUnavailable(
                         f"Not enough evaluation GPU capacity for PvP deployment {deployment_name} ({gpu_count} GPUs)"
                     )
+                reserved_pair = True
             log_step(
                 "deploy_start",
                 deployment=deployment_name,
@@ -548,13 +596,22 @@ async def _deploy_pvp_eval(
             )
 
             async def persist_verified_pvp_deployment(verified_deployment_name: str) -> None:
-                await _persist_pvp_deployment_id(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=verified_deployment_name,
-                    ctx=ctx,
-                )
+                # Best-effort: fires inside the deploy readiness callback and records the pair's resume
+                # anchor (pvp_pair_results.deployment_id). A failure here must NEVER propagate out of
+                # the callback and fail/orphan the live deployment — the per-pair reserve + reconciler
+                # already track the deployment; the anchor is only a resume optimisation.
+                try:
+                    await _persist_pvp_deployment_id(
+                        task_id=task_id,
+                        psql_db=psql_db,
+                        hotkeys=hotkeys,
+                        deployment_name=verified_deployment_name,
+                        ctx=ctx,
+                    )
+                except Exception as persist_exc:
+                    ctx.eval_logger.error(
+                        "PvP deployment-id persist failed (non-fatal): %s", persist_exc, exc_info=True
+                    )
 
             deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
                 ctx=ctx,
@@ -582,39 +639,6 @@ async def _deploy_pvp_eval(
                 deployment_url=_deployment_url(deployment),
             )
             log_step("deploy_complete", deployment=resolved_deployment_name)
-            if resolved_deployment_name != deployment_name:
-                await _release_reserved_gpus(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=None,
-                    ctx=ctx,
-                )
-                if task_id is not None and psql_db is not None and hotkeys and gpu_count > 0:
-                    reserved = await _db_call_with_retry(
-                        lambda: tasks_sql.try_reserve_evaluation_gpus(
-                            task_id,
-                            hotkeys[:1],
-                            None,
-                            gpu_count,
-                            psql_db,
-                        ),
-                        "try_reserve_evaluation_gpus(pvp-resolved-name)",
-                        ctx.eval_logger,
-                        ctx.repo,
-                    )
-                    if not reserved:
-                        deleted = await _delete_eval_deployment(
-                            ctx, client, deployment, resolved_deployment_name, "pvp_resolved_name_capacity_unavailable"
-                        )
-                        if not deleted:
-                            raise EvaluationRetryableError(
-                                f"Failed to verify deletion for PvP deployment {resolved_deployment_name}"
-                            )
-                        raise EvaluationCapacityUnavailable(
-                            f"Not enough evaluation GPU capacity for PvP deployment {resolved_deployment_name} "
-                            f"({gpu_count} GPUs)"
-                        )
             eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
 
             result = await _poll_eval_deployment(
@@ -630,12 +654,8 @@ async def _deploy_pvp_eval(
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
             )
             if isinstance(result, dict):
-                await _release_reserved_gpus(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=None,
-                    ctx=ctx,
+                await _release_pvp_pair_gpus_reservation(
+                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
                 )
                 return result
 
@@ -650,13 +670,10 @@ async def _deploy_pvp_eval(
                     raise EvaluationRetryableError(
                         f"Failed to verify deletion for PvP deployment {dep_name}"
                     ) from exc
-            await _release_reserved_gpus(
-                task_id=task_id,
-                psql_db=psql_db,
-                hotkeys=hotkeys,
-                deployment_name=None,
-                ctx=ctx,
-            )
+            if reserved_pair:
+                await _release_pvp_pair_gpus_reservation(
+                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
+                )
             log_step(
                 "attempt_failed",
                 attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",

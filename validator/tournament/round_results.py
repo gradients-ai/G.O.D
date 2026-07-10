@@ -9,7 +9,6 @@ from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.tasks import get_task
-from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_group_members
 from validator.db.sql.tournaments import get_tournament_rounds
@@ -30,7 +29,7 @@ from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
-from validator.tournament.thresholds import get_progressive_threshold
+from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
 
 
@@ -204,7 +203,13 @@ def did_winner_change(previous_tournament: TournamentData | None, latest_tournam
 
     return False
 
-def determine_boss_round_winner(task_winners: list[str], boss_hotkey: str, tournament_type: TournamentType) -> str:
+def determine_boss_round_winner(
+    task_winners: list[str],
+    boss_hotkey: str,
+    tournament_type: TournamentType,
+    continuous_sft_winners: list[str] | None = None,
+    num_continuous_sft_tasks: int = 0,
+) -> str:
     """
     Determine the winner of a boss round based on task results and tournament type.
 
@@ -212,6 +217,10 @@ def determine_boss_round_winner(task_winners: list[str], boss_hotkey: str, tourn
         task_winners: List of hotkeys that won each task in the boss round
         boss_hotkey: The defending champion's hotkey
         tournament_type: Type of tournament (TEXT or IMAGE)
+        continuous_sft_winners: Hotkeys that won each *decided* continuous-SFT task.
+        num_continuous_sft_tasks: Total continuous-SFT tasks (decided or not). When >0 (text boss
+            round), the challenger must win EVERY one to dethrone, on top of the overall threshold —
+            so a failed/skipped continuous-SFT task blocks the dethrone. 0 (image) leaves the rule off.
 
     Returns:
         Hotkey of the boss round winner
@@ -235,17 +244,37 @@ def determine_boss_round_winner(task_winners: list[str], boss_hotkey: str, tourn
     opponent_wins = win_counts.get(opponent_hotkey, 0) if opponent_hotkey else 0
 
     # Both IMAGE and TEXT tournaments: challenger may lose at most one
-    # boss-round task. Each task is a straight score comparison.
+    # boss-round task. Each task requires beating the boss by BOSS_ROUND_WIN_MARGIN.
     required_wins = max(1, total_tasks - 1)
-    if opponent_hotkey and opponent_wins >= required_wins:
+
+    # Continuous-SFT gate: challenger must win EVERY continuous-SFT task; only enforced when >0.
+    challenger_continuous_wins = (
+        (continuous_sft_winners or []).count(opponent_hotkey) if opponent_hotkey else 0
+    )
+    continuous_sft_ok = True
+    if num_continuous_sft_tasks > 0:
+        continuous_sft_ok = challenger_continuous_wins == num_continuous_sft_tasks
+
+    if opponent_hotkey and opponent_wins >= required_wins and continuous_sft_ok:
         logger.info(
             f"{tournament_type.value} tournament: Challenger wins boss round comprehensively: "
             f"{opponent_wins}/{total_tasks} tasks won (required {required_wins})"
+            + (
+                f", won all {num_continuous_sft_tasks} continuous-SFT tasks"
+                if num_continuous_sft_tasks > 0
+                else ""
+            )
         )
         return opponent_hotkey
     else:
         boss_wins = win_counts.get(boss_hotkey, 0)
-        if opponent_hotkey:
+        if opponent_hotkey and opponent_wins >= required_wins and not continuous_sft_ok:
+            logger.info(
+                f"{tournament_type.value} tournament: Boss retains title - challenger won "
+                f"{opponent_wins}/{total_tasks} tasks but only {challenger_continuous_wins}/"
+                f"{num_continuous_sft_tasks} continuous-SFT tasks (must win ALL to dethrone)"
+            )
+        elif opponent_hotkey:
             logger.info(
                 f"{tournament_type.value} tournament: Boss retains title - challenger won "
                 f"{opponent_wins}/{total_tasks} tasks (requires {required_wins}/{total_tasks} to dethrone), "
@@ -268,10 +297,22 @@ async def get_knockout_winners(
             if winner:
                 winners.append(winner)
     else:
-        # Boss round. Progressive threshold system based on consecutive wins.
+        # Boss round. Challenger must beat the boss by BOSS_ROUND_WIN_MARGIN per task.
         boss_hotkey = EMISSION_BURN_HOTKEY
         opponent_hotkey = None
         task_winners = []
+        # Decided continuous-SFT winners + total count, fed to determine_boss_round_winner's
+        # "challenger must win ALL continuous-SFT tasks" dethrone gate.
+        continuous_sft_winners: list[str] = []
+        num_continuous_sft_tasks = 0
+
+        def _is_continuous_sft(task_obj) -> bool:
+            return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
+
+        def _award(winner: str | None, task_obj) -> None:
+            task_winners.append(winner)
+            if winner is not None and _is_continuous_sft(task_obj):
+                continuous_sft_winners.append(winner)
 
         # Get tournament info to determine the current champion and their consecutive wins
         tournament = await get_tournament(completed_round.tournament_id, psql_db)
@@ -279,26 +320,23 @@ async def get_knockout_winners(
             logger.error(f"Could not find tournament {completed_round.tournament_id}")
             return []
 
-        # Get the current champion (base_winner_hotkey) and count their consecutive wins
-        current_champion = tournament.base_winner_hotkey or boss_hotkey
-        consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament.tournament_type, current_champion)
-
-        # Calculate the progressive threshold
-        threshold_percentage = get_progressive_threshold(consecutive_wins, tournament.tournament_type)
-        logger.info(
-            f"Champion {current_champion} has {consecutive_wins} consecutive wins, "
-            f"using {threshold_percentage * 100:.1f}% threshold"
-        )
+        # Challenger must beat the boss by BOSS_ROUND_WIN_MARGIN on each task to win it.
+        threshold_percentage = t_cst.BOSS_ROUND_WIN_MARGIN
+        logger.info(f"Boss round using {threshold_percentage * 100:.1f}% win margin per task")
 
         for task in round_tasks:
             logger.info(f"Processing boss round task {task.task_id}")
 
             task_object = await get_task(task.task_id, psql_db)
 
+            # Count even undecided ones, so a failed/skipped continuous-SFT task still blocks the dethrone.
+            if _is_continuous_sft(task_object):
+                num_continuous_sft_tasks += 1
+
             miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
             if not miner_results:
                 logger.warning(f"No valid results for boss round task {task.task_id}. Winner is base contestant.")
-                task_winners.append(boss_hotkey)
+                _award(boss_hotkey, task_object)
                 continue
 
             ranked_results = calculate_miner_ranking_and_scores(miner_results)
@@ -327,13 +365,13 @@ async def get_knockout_winners(
 
                 if opponent_training_success and not boss_training_success:
                     logger.info(f"Boss training failed, opponent succeeded - opponent wins task {task.task_id}")
-                    task_winners.append(opponent_hotkey)
+                    _award(opponent_hotkey, task_object)
                 elif boss_training_success and not opponent_training_success:
                     logger.info(f"Opponent training failed, boss succeeded - boss wins task {task.task_id}")
-                    task_winners.append(boss_hotkey)
+                    _award(boss_hotkey, task_object)
                 elif not boss_training_success and not opponent_training_success:
                     logger.info(f"Both training failed - boss wins by default for task {task.task_id}")
-                    task_winners.append(boss_hotkey)
+                    _award(boss_hotkey, task_object)
                 else:
                     # Both training succeeded but at least one has missing/invalid evaluation results
                     # Check who has valid evaluation results and award to them
@@ -342,10 +380,10 @@ async def get_knockout_winners(
 
                     if opponent_has_valid_eval and not boss_has_valid_eval:
                         logger.info(f"Boss evaluation failed, opponent succeeded - opponent wins task {task.task_id}")
-                        task_winners.append(opponent_hotkey)
+                        _award(opponent_hotkey, task_object)
                     elif boss_has_valid_eval and not opponent_has_valid_eval:
                         logger.info(f"Opponent evaluation failed, boss succeeded - boss wins task {task.task_id}")
-                        task_winners.append(boss_hotkey)
+                        _award(boss_hotkey, task_object)
                     else:
                         logger.warning(
                             f"Both evaluation failed or both succeeded but missing results - skipping task {task.task_id}"
@@ -354,56 +392,18 @@ async def get_knockout_winners(
 
             logger.info(f"Boss round task {task.task_id}: Boss loss: {boss_loss:.6f}, Opponent loss: {opponent_loss:.6f}")
 
-            # Apply progressive threshold system
-            boss_multiplier = 1 + threshold_percentage  # For higher-is-better tasks
-            boss_divisor = 1 - threshold_percentage  # For lower-is-better tasks
-
-            if task_object.task_type == TaskType.GRPOTASK:
-                # For GRPO tasks, higher scores are better
-                if boss_loss * boss_multiplier > opponent_loss:
-                    task_winner = boss_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        f"GRPO task: Boss wins (higher is better): {boss_loss:.6f} * "
-                        f"{boss_multiplier:.3f} = {boss_loss * boss_multiplier:.6f} > {opponent_loss:.6f}"
-                    )
-                else:
-                    task_winner = opponent_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        f"GRPO task: Opponent wins (higher is better): {opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
-                    )
-            elif task_object.task_type == TaskType.ENVIRONMENTTASK:
-                if boss_loss * boss_multiplier > opponent_loss:
-                    task_winner = boss_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        f"Environment task: Boss wins (higher is better): {boss_loss:.6f} * "
-                        f"{boss_multiplier:.3f} = {boss_loss * boss_multiplier:.6f} > {opponent_loss:.6f}"
-                    )
-                else:
-                    task_winner = opponent_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        "Environment task: Opponent wins (higher is better): "
-                        f"{opponent_loss:.6f} >= {boss_loss * boss_multiplier:.6f}"
-                    )
+            higher_is_better = task_object.task_type in (TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK)
+            if challenger_beats_boss(boss_loss, opponent_loss, higher_is_better, threshold_percentage):
+                task_winner = opponent_hotkey
             else:
-                # For other tasks, lower scores are better
-                if boss_loss * boss_divisor < opponent_loss:
-                    task_winner = boss_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        f"{task_object.task_type} task: Boss wins (lower is better): "
-                        f"{boss_loss:.6f} * {boss_divisor:.3f} = {boss_loss * boss_divisor:.6f} < {opponent_loss:.6f}"
-                    )
-                else:
-                    task_winner = opponent_hotkey
-                    task_winners.append(task_winner)
-                    logger.info(
-                        f"{task_object.task_type} task: Opponent wins (lower is better): "
-                        f"{opponent_loss:.6f} <= {boss_loss * boss_divisor:.6f}"
-                    )
+                task_winner = boss_hotkey
+            _award(task_winner, task_object)
+            direction = "higher is better" if higher_is_better else "lower is better"
+            winner_label = "opponent" if task_winner == opponent_hotkey else "boss"
+            logger.info(
+                f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
+                f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
+            )
 
             await update_threshold_adjusted_quality_scores_for_task(
                 task_id=task.task_id,
@@ -413,7 +413,9 @@ async def get_knockout_winners(
                 psql_db=psql_db,
             )
 
-        boss_round_winner = determine_boss_round_winner(task_winners, boss_hotkey, tournament.tournament_type)
+        boss_round_winner = determine_boss_round_winner(
+            task_winners, boss_hotkey, tournament.tournament_type, continuous_sft_winners, num_continuous_sft_tasks
+        )
 
         winners = [boss_round_winner]
 

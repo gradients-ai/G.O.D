@@ -22,6 +22,7 @@ from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 from core.constants.environments import EnvironmentName
+from core.constants.paths import CHAT_TEMPLATE_FILE
 from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.downloads import download_s3_file
 from core.models.model_prep_models import AugmentationConfig
@@ -30,9 +31,63 @@ from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
+from core.remote_code import continuous_sft_trust_remote_code
+from core.remote_code import pin_trusted_remote_code
 from trainer.model_prep.augmentation import augment_model
-from trainer.model_prep.env_stats import compute_env_stats
 from trainer.model_prep.stats import compute_text_stats
+
+
+# compute_env_stats is imported lazily inside main(): its core.pvp import chain (open-spiel, openai,
+# sglang launch) is env-task only, and pulling it at module load would force those deps into the
+# text-task model-prep image, which deliberately omits them (see ops/docker/model-prep-text.dockerfile).
+
+
+def _pin_and_trust(model_ref: str) -> tuple[str, bool]:
+    """For custom-arch continuous-SFT lineages (quasar): force the modeling *.py to the audited seed
+    mirror and enable trust_remote_code, so model-prep never runs miner code while merging/loading a
+    custom arch. No-op (ref unchanged, trust=False) when no audited-mirror env is set."""
+    trust = continuous_sft_trust_remote_code()
+    return (pin_trusted_remote_code(model_ref) if trust else model_ref), trust
+
+
+def _resolve_chat_template(model_id: str, hf_token: str, is_local: bool) -> str | None:
+    """Return the adapter's chat template, or None.
+
+    A LoRA adapter frequently carries its chat template only as a standalone
+    chat_template.jinja file rather than inline in tokenizer_config.json, so a
+    plain merge that rebuilds the tokenizer from the base model silently loses it.
+    Handles both a local adapter dir and a remote HF repo.
+    """
+    if is_local:
+        jinja_path = os.path.join(model_id, CHAT_TEMPLATE_FILE)
+        if os.path.exists(jinja_path):
+            with open(jinja_path) as f:
+                template = f.read().strip()
+            return template or None
+        config_path = os.path.join(model_id, "tokenizer_config.json")
+        if os.path.exists(config_path):
+            with open(config_path) as f:
+                template = json.load(f).get("chat_template")
+            return template if isinstance(template, str) and template.strip() else None
+        return None
+
+    try:
+        jinja_path = hf_hub_download(model_id, CHAT_TEMPLATE_FILE, token=hf_token)
+        with open(jinja_path) as f:
+            template = f.read().strip()
+        if template:
+            return template
+    except Exception:
+        pass
+    try:
+        config_path = hf_hub_download(model_id, "tokenizer_config.json", token=hf_token)
+        with open(config_path) as f:
+            template = json.load(f).get("chat_template")
+        if isinstance(template, str) and template.strip():
+            return template
+    except Exception:
+        pass
+    return None
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -91,11 +146,13 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
 
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
+        base_src, trust = _pin_and_trust(real_base)
         base_model = AutoModelForCausalLM.from_pretrained(
-            real_base, torch_dtype="auto", token=hf_token,
+            base_src, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
+            trust_remote_code=trust,
         )
-        base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
+        base_tokenizer = AutoTokenizer.from_pretrained(base_src, token=hf_token, trust_remote_code=trust)
 
         def _merge_adapter(model, adapter_src):
             try:
@@ -114,11 +171,23 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         if top_tokenizer is not base_tokenizer:
             lora_tokenizer = top_tokenizer
 
+        # Preserve the adapter's chat template (often only a standalone chat_template.jinja); rebuilding
+        # the tokenizer from the base loses it, which later breaks chat-template-dependent serving/eval.
+        chat_template = _resolve_chat_template(model_id, hf_token, is_local) or getattr(
+            base_tokenizer, "chat_template", None
+        )
+
         merge_dir = "/cache/merged_model"
         os.makedirs(merge_dir, exist_ok=True)
         merged.save_pretrained(merge_dir, safe_serialization=True)
         target_tokenizer = lora_tokenizer if len(lora_tokenizer) >= len(base_tokenizer) else base_tokenizer
+        if chat_template and not getattr(target_tokenizer, "chat_template", None):
+            target_tokenizer.chat_template = chat_template
         target_tokenizer.save_pretrained(merge_dir)
+        if chat_template:
+            with open(os.path.join(merge_dir, CHAT_TEMPLATE_FILE), "w") as f:
+                f.write(chat_template)
+        sanitize_tokenizer_config(merge_dir)
 
         del base_model, merged
         if torch.cuda.is_available():
@@ -180,6 +249,13 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
     return f"{hf_username}/augmented-{repo_hash}"
 
 
+def generate_merged_repo_name(model_id: str) -> str:
+    """Opaque, deterministic repo name for a published LoRA-merge; namespaced apart from augmented-*."""
+    hf_username = os.environ.get("HUGGINGFACE_USERNAME", "gradients-io")
+    repo_hash = hashlib.sha256(f"{model_id}:lora-merge".encode()).hexdigest()[:16]
+    return f"{hf_username}/merged-{repo_hash}"
+
+
 def load_training_data(path: str) -> list[dict]:
     """Load all training data records from a JSON file.
 
@@ -199,16 +275,61 @@ def load_training_data(path: str) -> list[dict]:
     return []
 
 
+def sanitize_tokenizer_config(out_dir: str) -> None:
+    """Undo transformers-5 serialization quirks in tokenizer_config.json before publish.
+
+    save_pretrained under transformers>=5 writes tokenizer_class="TokenizersBackend" — an internal
+    backend marker, not a registered class — so any consumer's AutoTokenizer.from_pretrained crashes
+    with "Tokenizer class TokenizersBackend does not exist". Rewrite it to PreTrainedTokenizerFast
+    when the serialized tokenizer.json is present (loadable on transformers 4 and 5 alike), else drop
+    the key so AutoTokenizer falls back to autodetection.
+
+    It also writes extra_special_tokens as a list of token strings (e.g. Qwen2's im_start/im_end),
+    where transformers 4 requires a dict of {name: token} and calls .keys() on it — downstream
+    training on the augmented model crashes (or dies trying to rewrite the read-only model cache).
+    Normalize list → dict.
+    """
+    config_path = os.path.join(out_dir, "tokenizer_config.json")
+    if not os.path.exists(config_path):
+        return
+    with open(config_path) as f:
+        config = json.load(f)
+    changed = False
+
+    if config.get("tokenizer_class") == "TokenizersBackend":
+        if os.path.exists(os.path.join(out_dir, "tokenizer.json")):
+            config["tokenizer_class"] = "PreTrainedTokenizerFast"
+        else:
+            del config["tokenizer_class"]
+        changed = True
+        print(f"[model_prep] Sanitized TokenizersBackend tokenizer_class in {config_path}", flush=True)
+
+    extra_special_tokens = config.get("extra_special_tokens")
+    if isinstance(extra_special_tokens, list):
+        config["extra_special_tokens"] = {token: token for token in extra_special_tokens if isinstance(token, str)}
+        changed = True
+        print(f"[model_prep] Normalized extra_special_tokens list → dict in {config_path}", flush=True)
+
+    if changed:
+        with open(config_path, "w") as f:
+            json.dump(config, f, indent=2)
+
+
 def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> None:
     """Upload augmented model to HuggingFace, scrubbing identity."""
     print(f"Uploading augmented model to {repo_id}")
 
+    api = HfApi(token=hf_token)
     model.config._name_or_path = repo_id
     model.push_to_hub(repo_id, token=hf_token, private=False)
-    tokenizer.push_to_hub(repo_id, token=hf_token, private=False)
+    # Save the tokenizer locally so its config can be sanitized before upload; a straight
+    # tokenizer.push_to_hub would publish the broken TokenizersBackend class name.
+    with tempfile.TemporaryDirectory() as tok_dir:
+        tokenizer.save_pretrained(tok_dir)
+        sanitize_tokenizer_config(tok_dir)
+        api.upload_folder(repo_id=repo_id, folder_path=tok_dir, commit_message="Upload tokenizer")
 
     # Scrub _name_or_path from config
-    api = HfApi(token=hf_token)
     with tempfile.TemporaryDirectory() as tmp:
         config_path = api.hf_hub_download(repo_id=repo_id, filename="config.json", local_dir=tmp, token=hf_token)
         with open(config_path, "r") as f:
@@ -227,9 +348,28 @@ def upload_augmented_model(model, tokenizer, repo_id: str, hf_token: str) -> Non
     print(f"Upload complete: {repo_id}")
 
 
-def _load_config_with_yarn_fix(model_path: str, hf_token: str):
+def _published_repo_is_complete(repo_id: str, hf_token: str) -> bool:
+    """A repo counts as already-published only if it holds a config AND real weight shards.
+
+    push_to_hub is non-atomic (create_repo, then weight commit, then a tokenizer commit): a run that
+    crashed mid-upload leaves a repo that exists but has no/partial weights. A bare repo_exists check
+    would treat that as done forever and pin the lineage to a broken base, so re-upload unless complete.
+    """
+    if not repo_exists(repo_id, token=hf_token):
+        return False
+    try:
+        files = HfApi(token=hf_token).list_repo_files(repo_id, token=hf_token)
+    except Exception as exc:
+        print(f"[model_prep] Could not list {repo_id} ({exc}); treating as incomplete", flush=True)
+        return False
+    has_config = "config.json" in files
+    has_weights = any(f.endswith((".safetensors", ".bin")) for f in files)
+    return has_config and has_weights
+
+
+def _load_config_with_yarn_fix(model_path: str, hf_token: str, trust_remote_code: bool = False):
     """Load model config while avoiding a transformers YaRN head_dim=None crash."""
-    config = AutoConfig.from_pretrained(model_path, token=hf_token)
+    config = AutoConfig.from_pretrained(model_path, token=hf_token, trust_remote_code=trust_remote_code)
     head_dim = config.head_dim if hasattr(config, "head_dim") else None
     if head_dim is None and hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
         config.head_dim = config.hidden_size // config.num_attention_heads
@@ -263,22 +403,32 @@ def main():
     t0 = time.time()
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
-    model_config = _load_config_with_yarn_fix(model_path, hf_token)
+    # Custom-arch continuous-SFT (quasar): pin the modeling code to the audited mirror + trust it.
+    model_load_path, trust = _pin_and_trust(model_path)
+    model_config = _load_config_with_yarn_fix(model_load_path, hf_token, trust_remote_code=trust)
     # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
     # fp16: bf16-native models can overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
+            trust_remote_code=trust,
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_path, config=model_config, torch_dtype="auto", token=hf_token,
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_path, config=model_config, torch_dtype="auto", token=hf_token)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
+        )
+    tokenizer = AutoTokenizer.from_pretrained(model_load_path, token=hf_token, trust_remote_code=trust)
+    # Baseline-stats forward passes run in loss mode (like training/eval), so disable the KV cache.
+    # Custom-arch models (quasar) otherwise take their cache/mask path, whose get_mask_sizes is
+    # incompatible with transformers 5.12.1 (it indexes an int q_length as a tensor). Eval already
+    # runs this model fine with use_cache=False; this matches it.
+    model.config.use_cache = False
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
 
@@ -287,7 +437,7 @@ def main():
     if aug_config is not None:
         repo_id = generate_anonymous_repo_name(args.model, aug_config.seed)
 
-        if repo_exists(repo_id, token=hf_token):
+        if _published_repo_is_complete(repo_id, hf_token):
             print(f"[model_prep] Augmented model already exists at {repo_id}, skipping", flush=True)
             augmented_model_id = repo_id
         else:
@@ -300,6 +450,19 @@ def main():
             print(f"[model_prep] Upload done in {time.time() - t0:.1f}s", flush=True)
             augmented_model_id = repo_id
 
+    # No-augmentation continuation (e.g. continuous-SFT) merged the LoRA only locally. Publish it so
+    # eval (on another box) gets a flat base, not the raw adapter. `model` is already the merged model.
+    if augmented_model_id is None and prep_result.was_lora:
+        repo_id = generate_merged_repo_name(args.model)
+        if _published_repo_is_complete(repo_id, hf_token):
+            print(f"[model_prep] Merged LoRA base already published at {repo_id}, skipping upload", flush=True)
+        else:
+            t0 = time.time()
+            print(f"[model_prep] Publishing merged LoRA base to {repo_id}...", flush=True)
+            upload_augmented_model(model, tokenizer, repo_id, hf_token)
+            print(f"[model_prep] Merged-base upload done in {time.time() - t0:.1f}s", flush=True)
+        augmented_model_id = repo_id
+
     # --- Baseline stats ---
     print("[model_prep] Computing baseline stats...", flush=True)
 
@@ -309,6 +472,10 @@ def main():
     t0 = time.time()
     try:
         if args.env_configs:
+            # Lazy import: env-only core.pvp deps are absent from the text-task image (see the
+            # import block at the top of this file).
+            from trainer.model_prep.env_stats import compute_env_stats
+
             raw_configs: dict[str, dict] = json.loads(args.env_configs)
             env_configs = {
                 EnvironmentName(k): EnvBaselineConfig.model_validate(v)

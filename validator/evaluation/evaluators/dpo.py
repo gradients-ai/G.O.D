@@ -34,6 +34,7 @@ from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
+from validator.evaluation.dataset_utils import build_dummy_train_dataset
 from validator.evaluation.model_checks import model_is_a_finetune
 from validator.evaluation.models import EvaluationArgs
 from validator.infrastructure.service_constants import VALI_CONFIG_PATH
@@ -170,7 +171,7 @@ def evaluate_dpo_model(
             model=finetuned_model,
             ref_model=reference_model,
             args=training_args,
-            train_dataset=Dataset.from_dict({col: [] for col in eval_dataset.column_names}),
+            train_dataset=build_dummy_train_dataset(eval_dataset),
             eval_dataset=eval_dataset,
             processing_class=tokenizer,
             callbacks=[ProgressLoggerCallback(log_interval_seconds=evaluation_config.log_interval_seconds)],

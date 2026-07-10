@@ -1,7 +1,11 @@
+import glob
 import inspect
 import json
 import os
 import re
+import shutil
+import sys
+import tempfile
 import time
 from math import ceil
 
@@ -12,13 +16,17 @@ import yaml
 from accelerate.utils import find_executable_batch_size
 from axolotl.utils.dict import DictDefault
 from datasets import Dataset
+from huggingface_hub import snapshot_download
 from peft import AutoPeftModelForCausalLM
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 from transformers import TrainerCallback
 
+import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
+from core.remote_code import continuous_sft_trust_remote_code
+from core.remote_code import pin_trusted_remote_code
 from core.training_config import create_dataset_entry
 from validator.evaluation.models import EvaluationArgs
 from validator.infrastructure.retries import retry_on_5xx
@@ -206,9 +214,22 @@ def patch_base_model_config_if_needed(base_model_name: str, cache_dir: str, cont
         return False
 
 
+# pin_trusted_remote_code / _audited_code_dir / continuous_sft_trust_remote_code now live in
+# core.remote_code (imported above) so the model-prep container — which can't import validator.* —
+# shares one audited-RCE-guard implementation. Re-exported here for existing call sites.
+
+
 @retry_on_5xx()
-def load_model(model_name_or_path: str, is_base_model: bool = False, local_files_only: bool = False) -> AutoModelForCausalLM:
+def load_model(
+    model_name_or_path: str,
+    is_base_model: bool = False,
+    local_files_only: bool = False,
+    trust_remote_code: bool = False,
+) -> AutoModelForCausalLM:
     try:
+        if trust_remote_code:
+            model_name_or_path = pin_trusted_remote_code(model_name_or_path, local_files_only)
+            local_files_only = True
         # For local files, try to use the snapshot path directly
         if local_files_only:
             cache_dir = os.path.expanduser("~/.cache/huggingface")
@@ -229,7 +250,11 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
                         if has_model_files and has_config:
                             try:
                                 model = AutoModelForCausalLM.from_pretrained(
-                                    snapshot_path, device_map="balanced", torch_dtype=torch.bfloat16, local_files_only=local_files_only
+                                    snapshot_path,
+                                    device_map="balanced",
+                                    torch_dtype=torch.bfloat16,
+                                    local_files_only=local_files_only,
+                                    trust_remote_code=trust_remote_code,
                                 )
                                 return model
                             except Exception as e:
@@ -250,6 +275,7 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
             "cache_dir": cache_dir,
             "torch_dtype": torch.bfloat16,
             "local_files_only": local_files_only,
+            "trust_remote_code": trust_remote_code,
         }
         if not local_files_only:
             kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
@@ -272,7 +298,9 @@ def load_model(model_name_or_path: str, is_base_model: bool = False, local_files
 
 
 @retry_on_5xx()
-def load_tokenizer(original_model: str, local_files_only: bool = False) -> AutoTokenizer:
+def load_tokenizer(
+    original_model: str, local_files_only: bool = False, trust_remote_code: bool = False
+) -> AutoTokenizer:
     try:
         # For local files, try to use the snapshot path directly
         if local_files_only:
@@ -291,7 +319,9 @@ def load_tokenizer(original_model: str, local_files_only: bool = False) -> AutoT
 
                         if tokenizer_files:
                             try:
-                                tokenizer = AutoTokenizer.from_pretrained(snapshot_path, local_files_only=True)
+                                tokenizer = AutoTokenizer.from_pretrained(
+                                    snapshot_path, local_files_only=True, trust_remote_code=trust_remote_code
+                                )
                                 return tokenizer
                             except Exception as e:
                                 logger.warning(f"Failed to load from snapshot {snapshot}: {e}")
@@ -301,6 +331,7 @@ def load_tokenizer(original_model: str, local_files_only: bool = False) -> AutoT
         kwargs = {
             "local_files_only": local_files_only,
             "cache_dir": os.path.expanduser("~/.cache/huggingface") if local_files_only else None,
+            "trust_remote_code": trust_remote_code,
         }
         if not local_files_only:
             kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
@@ -314,8 +345,19 @@ def load_tokenizer(original_model: str, local_files_only: bool = False) -> AutoT
 
 
 @retry_on_5xx()
-def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftModelForCausalLM:
+def load_finetuned_model(
+    repo: str,
+    local_files_only: bool = False,
+    trust_remote_code: bool = False,
+    expected_base_model: str | None = None,
+) -> AutoPeftModelForCausalLM:
     try:
+        if trust_remote_code:
+            # Pin the adapter's *.py AND force its peft base to expected_base_model (also pinned),
+            # so a miner-controlled adapter_config base_model_name_or_path can't redirect the base
+            # load — which peft performs with trust_remote_code=True — to arbitrary code.
+            repo = pin_trusted_remote_code(repo, local_files_only, expected_base_model=expected_base_model)
+            local_files_only = True
         # For local files, try to use the snapshot path directly
         if local_files_only:
             cache_dir = os.path.expanduser("~/.cache/huggingface")
@@ -349,6 +391,7 @@ def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftM
                                     device_map="balanced",
                                     torch_dtype=torch.bfloat16,
                                     local_files_only=True,
+                                    trust_remote_code=trust_remote_code,
                                 )
                                 return model
                             except Exception as e:
@@ -368,6 +411,7 @@ def load_finetuned_model(repo: str, local_files_only: bool = False) -> AutoPeftM
             "cache_dir": cache_dir,
             "torch_dtype": torch.bfloat16,
             "local_files_only": local_files_only,
+            "trust_remote_code": trust_remote_code,
         }
         if not local_files_only:
             kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
@@ -496,7 +540,7 @@ def check_and_log_base_model_size(original_model: str) -> None:
 
     if "model_params_count" not in results_dict:
         logger.info("Base model size not logged, loading base model to calculate size")
-        base_model = load_model(original_model, is_base_model=True)
+        base_model = load_model(original_model, is_base_model=True, trust_remote_code=continuous_sft_trust_remote_code())
         results_dict["model_params_count"] = count_model_parameters(base_model)
         save_results_dict(results_dict)
         logger.info(f"Logged base model size: {results_dict['model_params_count']} parameters")

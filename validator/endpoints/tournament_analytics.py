@@ -195,6 +195,7 @@ async def get_tournament_details(
             rounds=detailed_rounds,
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
+            final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
         tournament_type_result = calculate_tournament_type_scores_from_data(
             TournamentType(tournament.tournament_type), tournament_results_with_winners
@@ -325,6 +326,7 @@ async def get_tournament_gpu_requirements(
             gpu_req = get_tournament_gpu_requirement(
                 task.task_type, task.model_params_count, task.model_id,
                 use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+                training_start_point=task.training_start_point,
             )
             gpu_type = gpu_req.value
 
