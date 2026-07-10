@@ -690,10 +690,20 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 f"Challenger code-review gate resolved for tournament {tournament.tournament_id}; "
                 "continuing finalization"
             )
+            diff_candidate = challenger
             if integrity.disqualified:
                 winner = EMISSION_BURN_HOTKEY
                 second_place = integrity.replacement_hotkey
                 winners = [winner]
+                diff_candidate = (
+                    await get_tournament_participant(
+                        tournament.tournament_id,
+                        second_place,
+                        psql_db,
+                    )
+                    if second_place
+                    else None
+                )
                 logger.warning(
                     f"Boss challenger {challenger.hotkey} disqualified; "
                     f"boss retains and second place is {second_place}"
@@ -750,10 +760,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             challenger_commit_hash = None
             challenger_github_token = None
             if winner == EMISSION_BURN_HOTKEY:
-                challenger_repo = challenger.training_repo if challenger else None
-                challenger_commit_hash = challenger.training_commit_hash if challenger else None
-                challenger_github_token = challenger.github_token if challenger else None
-                result_summary = f"Boss retained; challenger was {challenger.hotkey if challenger else 'unknown'}."
+                challenger_repo = diff_candidate.training_repo if diff_candidate else None
+                challenger_commit_hash = diff_candidate.training_commit_hash if diff_candidate else None
+                challenger_github_token = diff_candidate.github_token if diff_candidate else None
+                if integrity.disqualified:
+                    result_summary = (
+                        f"Boss retained after challenger {challenger.hotkey} was disqualified; "
+                        f"promoted second place is {diff_candidate.hotkey if diff_candidate else 'unavailable'}."
+                    )
+                else:
+                    result_summary = f"Boss retained; challenger was {challenger.hotkey}."
             else:
                 result_summary = f"Winner changed; new winner hotkey: {winner}."
 
