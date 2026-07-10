@@ -9,8 +9,21 @@ Usage:
 import argparse
 import asyncio
 import os
+from pathlib import Path
 
 import asyncpg
+from dotenv import load_dotenv
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _database_url() -> str:
+    load_dotenv(REPO_ROOT / ".vali.env", override=False)
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise SystemExit(f"DATABASE_URL was not found in {REPO_ROOT / '.vali.env'}")
+    return database_url
 
 
 async def main() -> None:
@@ -24,7 +37,7 @@ async def main() -> None:
     show.add_argument("tournament_id")
     args = parser.parse_args()
 
-    connection = await asyncpg.connect(os.environ["DATABASE_URL"])
+    connection = await asyncpg.connect(_database_url())
     try:
         if args.command == "show":
             row = await connection.fetchrow(
