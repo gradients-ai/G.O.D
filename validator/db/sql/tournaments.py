@@ -517,7 +517,7 @@ async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str
 
 async def update_tournament_code_review(tournament_id: str, status: str, psql_db: PSQLDB) -> None:
     async with await psql_db.connection() as connection:
-        await connection.execute(
+        result = await connection.execute(
             f"""
             UPDATE {cst.TOURNAMENTS_TABLE}
             SET {cst.CODE_REVIEW} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
@@ -526,6 +526,8 @@ async def update_tournament_code_review(tournament_id: str, status: str, psql_db
             tournament_id,
             status,
         )
+    if result != "UPDATE 1":
+        raise RuntimeError(f"Failed to persist code_review={status} for tournament {tournament_id}")
 
 
 async def update_tournament_placements(

@@ -681,10 +681,15 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             if integrity.halt:
                 logger.info(
-                    f"Boss integrity gate holding tournament {tournament.tournament_id} pending review"
+                    f"Challenger code-review gate is holding tournament {tournament.tournament_id}; "
+                    "winner persistence, repository upload, and diff report will not run"
                 )
                 return
 
+            logger.info(
+                f"Challenger code-review gate resolved for tournament {tournament.tournament_id}; "
+                "continuing finalization"
+            )
             if integrity.disqualified:
                 winner = EMISSION_BURN_HOTKEY
                 second_place = integrity.replacement_hotkey
@@ -753,6 +758,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 result_summary = f"Winner changed; new winner hotkey: {winner}."
 
             asyncio.create_task(
+                # This is deliberately scheduled only after the awaited challenger code-review gate,
+                # placement persistence, and winner repository upload above have all completed.
                 generate_diff_report_and_notify_tournament_completed(
                     tournament,
                     challenger_repo,

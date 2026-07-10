@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.constants.credentials import BUCKET_NAME
+from core.logging import get_logger
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql.tournaments import get_tournament_group_members
@@ -24,6 +25,9 @@ from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.notifications import notify_challenger_code_review
 from validator.tournament.task_results import get_task_results_for_ranking
+
+
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -106,20 +110,32 @@ async def evaluate_challenger_code_review(
 ) -> ChallengerCodeReviewDecision:
     """Run once on the boss-round challenger, immediately before final repository upload."""
     status = tournament.code_review
+    logger.info(
+        f"Challenger code-review gate: tournament={tournament.tournament_id}, "
+        f"challenger={challenger.hotkey}, status={status or 'not_reviewed'}"
+    )
     if status in ("clean", "rejected"):
+        logger.info(f"Challenger code review resolved as {status}; allowing finalization")
         return ChallengerCodeReviewDecision(halt=False)
     if status == "accepted":
         replacement = await _best_pre_boss_non_finalist(
             tournament, final_round, challenger.hotkey, psql_db
         )
+        logger.warning(
+            f"Accepted challenger code-review flag for {challenger.hotkey}; "
+            f"disqualifying and promoting {replacement} to second place"
+        )
         return ChallengerCodeReviewDecision(halt=False, disqualified=True, replacement_hotkey=replacement)
     if status in ("pending", "error"):
+        logger.warning(f"Challenger code review is {status}; blocking all tournament finalization")
         return ChallengerCodeReviewDecision(halt=True)
 
     try:
+        logger.info("No challenger code review exists; running Claude before any finalization or repository upload")
         verdict = await review_challenger_code(challenger, tournament.tournament_type.value)
     except Exception as exc:  # noqa: BLE001 - errors must hold completion
         await update_tournament_code_review(tournament.tournament_id, "error", psql_db)
+        logger.error(f"Challenger code review failed; blocking tournament finalization: {exc}")
         await notify_challenger_code_review(
             tournament.tournament_id,
             tournament.tournament_type.value,
@@ -132,6 +148,7 @@ async def evaluate_challenger_code_review(
 
     if not verdict.flagged:
         await update_tournament_code_review(tournament.tournament_id, "clean", psql_db)
+        logger.info("Persisted challenger code review as clean; finalization may now continue")
         return ChallengerCodeReviewDecision(halt=False)
 
     try:
@@ -139,6 +156,10 @@ async def evaluate_challenger_code_review(
     except Exception:  # noqa: BLE001 - the Discord finding is still useful without an uploaded report
         report_url = None
     await update_tournament_code_review(tournament.tournament_id, "pending", psql_db)
+    logger.warning(
+        f"Persisted challenger code review as pending; blocking finalization until agree/skip "
+        f"(report={report_url or 'upload failed'})"
+    )
     await notify_challenger_code_review(
         tournament.tournament_id,
         tournament.tournament_type.value,

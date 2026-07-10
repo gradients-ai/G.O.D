@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import validator.tournament.constants as t_cst
+from core.logging import get_logger
 from validator.infrastructure.repo_dedup import _sanitize_reason
 from validator.infrastructure.repo_dedup import _snapshot_god_source
 from validator.tournament.models import IntegrityVerdict
@@ -19,6 +20,7 @@ from validator.tournament.repo_diff_report import _clone_repo
 
 
 CONFIG_PATH = Path(__file__).with_name("challenger_code_review_config.json")
+logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -91,6 +93,7 @@ async def review_challenger_code(
     temp_root = Path(tempfile.mkdtemp(prefix="challenger-code-review-"))
     token = participant.github_token
     try:
+        logger.info(f"Starting challenger code review for {participant.hotkey}")
         repo = temp_root / "challenger"
         await asyncio.to_thread(
             _clone_repo,
@@ -112,6 +115,10 @@ async def review_challenger_code(
         )
         verdict.reason = _sanitize_reason(verdict.reason, {token} if token else set())
         verdict.evidence = [_sanitize_reason(item, {token} if token else set()) for item in verdict.evidence]
+        logger.info(
+            f"Completed challenger code review for {participant.hotkey}: "
+            f"{'FLAGGED' if verdict.flagged else 'CLEAN'} (confidence={verdict.confidence:.2f})"
+        )
         return verdict
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
