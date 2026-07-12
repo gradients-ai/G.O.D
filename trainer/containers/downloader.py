@@ -26,6 +26,7 @@ from trainer.model_artifacts import scrub_model_identity
 
 LORA_ADAPTER_CONFIG = "adapter_config.json"
 IDEOGRAM4_TEXT_ENCODER_REPO = "Qwen/Qwen3-VL-8B-Instruct"
+KREA2_TEXT_ENCODER_REPO = "Qwen/Qwen3-VL-4B-Instruct"
 
 
 hf_api = HfApi()
@@ -352,6 +353,14 @@ async def main():
                 adapters_dir=adapters_dir
             )
             print(f"Ideogram 4 unconditional LoRA downloaded to: {ideogram_adapter_path}", flush=True)
+
+        elif args.model_type == ImageModelType.KREA2.value:
+            print("Downloading Krea 2 text encoder...", flush=True)
+            text_encoder_path = await download_huggingface_snapshot(
+                KREA2_TEXT_ENCODER_REPO,
+                adapters_dir,
+            )
+            print(f"Krea 2 text encoder downloaded to: {text_encoder_path}", flush=True)
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)

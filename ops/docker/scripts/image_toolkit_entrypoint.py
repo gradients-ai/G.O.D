@@ -25,6 +25,7 @@ TEMPLATE_BY_MODEL_TYPE = {
     "krea2": "base_diffusion_krea2.yaml",
 }
 IDEOGRAM4_TEXT_ENCODER_CACHE = CACHE_ROOT / "hf_cache" / "Qwen--Qwen3-VL-8B-Instruct"
+KREA2_TEXT_ENCODER_CACHE = CACHE_ROOT / "hf_cache" / "Qwen--Qwen3-VL-4B-Instruct"
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +112,20 @@ def prepare_config(args: argparse.Namespace, dataset_path: Path) -> Path:
             )
         model_kwargs = model_config.setdefault("model_kwargs", {})
         model_kwargs["text_encoder_path"] = str(text_encoder_path)
+
+    elif args.model_type == "krea2":
+        text_encoder_path = KREA2_TEXT_ENCODER_CACHE
+        if not text_encoder_path.exists():
+            raise FileNotFoundError(
+                f"Expected cached Krea 2 text encoder at {text_encoder_path}"
+            )
+        vae_path = model_path / "vae"
+        if not vae_path.exists():
+            raise FileNotFoundError(f"Expected cached Krea 2 VAE at {vae_path}")
+        model_kwargs = model_config.setdefault("model_kwargs", {})
+        model_kwargs["text_encoder_path"] = str(text_encoder_path)
+        # Krea2Model appends the "vae" subfolder when loading the VAE.
+        model_kwargs["vae_path"] = str(model_path)
 
     CONFIG_OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     output_path = CONFIG_OUTPUT_ROOT / f"{args.task_id}.yaml"
