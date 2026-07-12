@@ -701,11 +701,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     logger.info("Creating synthetic image task")
     num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
-    use_higher_training_hours = model_info.model_type in {
-        ImageModelType.QWEN_IMAGE,
-        ImageModelType.KREA2,
-        ImageModelType.IDEOGRAM4,
-    }
+    use_higher_training_hours = model_info.model_type == ImageModelType.QWEN_IMAGE
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
         config, num_prompts, pick_image_synth_category()
