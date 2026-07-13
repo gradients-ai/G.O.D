@@ -47,34 +47,34 @@ class TestEnvGroupFormation:
         )
 
     def test_6_participants_small_field(self):
-        """6 plus reserved boss slot -> 3 round-1 groups of 2."""
+        """6 plus reserved boss slot -> 2 round-1 groups of 3."""
         nodes = self._make_nodes(6)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 3
-        assert sorted(len(group.member_ids) for group in result.groups) == [2, 2, 2]
+        assert len(result.groups) == 2
+        assert sorted(len(group.member_ids) for group in result.groups) == [3, 3]
 
-    def test_7_participants_three_small_groups(self):
-        """7 plus reserved boss slot -> 3 round-1 groups sized 3+2+2."""
+    def test_7_participants_two_small_groups(self):
+        """7 plus reserved boss slot -> 2 round-1 groups sized 3+4."""
         nodes = self._make_nodes(7)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 3
+        assert len(result.groups) == 2
         sizes = sorted([len(g.member_ids) for g in result.groups])
-        assert sizes == [2, 2, 3]
+        assert sizes == [3, 4]
 
-    def test_12_participants_four_groups(self):
-        """12 plus reserved boss slot -> 4 groups of 3."""
+    def test_12_participants_three_groups(self):
+        """12 plus reserved boss slot -> 3 groups of 4."""
         nodes = self._make_nodes(12)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 4
-        assert all(len(g.member_ids) == 3 for g in result.groups)
+        assert len(result.groups) == 3
+        assert all(len(g.member_ids) == 4 for g in result.groups)
 
-    def test_13_participants_four_groups(self):
-        """13 plus reserved boss slot -> 4 roughly balanced groups."""
+    def test_13_participants_three_groups(self):
+        """13 plus reserved boss slot -> 3 roughly balanced groups."""
         nodes = self._make_nodes(13)
         result = self._form_groups(nodes)
-        assert len(result.groups) == 4
+        assert len(result.groups) == 3
         sizes = sorted(len(g.member_ids) for g in result.groups)
-        assert sizes == [3, 3, 3, 4]
+        assert sizes == [4, 4, 5]
         assert sum(sizes) == 13
         assert min(sizes) >= t_cst.MIN_ENVIRONMENT_GROUP_SIZE
 

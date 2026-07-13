@@ -90,14 +90,14 @@ SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
-# Cap includes the injected boss. With 4 members, a group evaluates at most
-# C(4, 2) = 6 PvP pairs.
-MAX_ENVIRONMENT_GROUP_SIZE = 4
+# Cap includes the injected boss. With 5 members, a group evaluates at most
+# C(5, 2) = 10 PvP pairs.
+MAX_ENVIRONMENT_GROUP_SIZE = 5
 # Small env tournaments collapse too fast (one big group advancing 1 contender). When the
 # field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
 # are more groups, more contenders survive each round, and the bracket plays out over more rounds.
 SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
-SMALL_ENVIRONMENT_GROUP_SIZE = 3
+SMALL_ENVIRONMENT_GROUP_SIZE = 4
 
 
 # Environment tournament round structure
