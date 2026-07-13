@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import time
 import uuid
@@ -27,6 +28,18 @@ from validator.evaluation.evaluation_logging import log_basilica_logs_block
 
 logger = get_logger(__name__)
 _EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
+_BASILICA_DEPLOY_LOCK = asyncio.Lock()
+
+
+def _with_hf_read_only_token(env: dict[str, str]) -> dict[str, str]:
+    """Add the validator's read-only Hugging Face token to a deployment environment."""
+    deployment_env = dict(env)
+    token = os.getenv("HF_READ_ONLY_TOKEN")
+    if token:
+        deployment_env.setdefault("HF_READ_ONLY_TOKEN", token)
+        deployment_env.setdefault("HUGGINGFACE_TOKEN", token)
+        deployment_env.setdefault("HF_TOKEN", token)
+    return deployment_env
 
 
 def _deployment_url(deployment) -> str | None:
@@ -101,6 +114,22 @@ class EvaluationCapacityUnavailable(EvaluationRetryableError):
 
 class DeploymentNotReadyError(EvaluationRetryableError):
     pass
+
+
+async def _deploy_if_capacity_available(client, deploy_kwargs: dict, timeout_seconds: int):
+    """Atomically check the process-wide Basilica limit and start one deployment."""
+    async with _BASILICA_DEPLOY_LOCK:
+        deployments = await asyncio.to_thread(client.list)
+        deployment_count = len(deployments)
+        if deployment_count >= vcst.EVAL_BASILICA_MAX_ACTIVE_DEPLOYMENTS:
+            raise EvaluationCapacityUnavailable(
+                f"Basilica deployment limit reached "
+                f"({deployment_count}/{vcst.EVAL_BASILICA_MAX_ACTIVE_DEPLOYMENTS})"
+            )
+        return await asyncio.wait_for(
+            asyncio.to_thread(client.deploy, **deploy_kwargs),
+            timeout=timeout_seconds,
+        )
 
 
 @dataclass
@@ -230,6 +259,8 @@ async def _deploy_with_readiness_timeout(
     started_monotonic = time.monotonic()
     deployment = None
     persisted_deployment_names: set[str] = set()
+    deploy_kwargs = dict(deploy_kwargs)
+    deploy_kwargs["env"] = _with_hf_read_only_token(deploy_kwargs.get("env", {}))
 
     async def persist_once(verified_deployment_name: str) -> None:
         if on_verified_deployment_name is None or verified_deployment_name in persisted_deployment_names:
@@ -238,7 +269,7 @@ async def _deploy_with_readiness_timeout(
         persisted_deployment_names.add(verified_deployment_name)
 
     try:
-        deployment = await asyncio.wait_for(asyncio.to_thread(client.deploy, **deploy_kwargs), timeout=timeout_seconds)
+        deployment = await _deploy_if_capacity_available(client, deploy_kwargs, timeout_seconds)
         resolved_deployment_name = await _resolve_verified_deployment_name(client, deployment, deployment_name)
         await persist_once(resolved_deployment_name)
         remaining_seconds = max(1, int(timeout_seconds - (time.monotonic() - started_monotonic)))

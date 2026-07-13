@@ -6,6 +6,7 @@ import core.constants.environments as core_cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
 import validator.db.sql.tournaments as tournament_sql
+import validator.evaluation.constants as eval_cst
 import validator.infrastructure.cache_policy as cache_cst
 import validator.lifecycle.constants as lifecycle_cst
 import validator.tasks.prep.constants as prep_cst
@@ -17,6 +18,7 @@ from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError
+from validator.evaluation.basilica_deployments import basilica_deployment_capacity_available
 from validator.evaluation.basilica_deployments import cleanup_all_basilica_deployments
 from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.evaluation.notifications import notify_evaluation_exception
@@ -336,7 +338,18 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
         if finalized:
             await _cleanup_basilica_deployments_if_no_active_evaluations(config)
         return
-    
+
+    if pending_rows and not await basilica_deployment_capacity_available():
+        logger.info(
+            "Basilica has reached the %s deployment limit; leaving %s evaluation rows pending for task %s",
+            eval_cst.EVAL_BASILICA_MAX_ACTIVE_DEPLOYMENTS,
+            len(pending_rows),
+            task.task_id,
+        )
+        pending_rows = []
+        if not evaluating_rows:
+            return
+
     pending_hotkeys = [row["hotkey"] for row in pending_rows]
     evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
     all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))

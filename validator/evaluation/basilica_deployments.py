@@ -5,12 +5,25 @@ from string import Template
 import basilica
 import requests
 
+import validator.evaluation.constants as vcst
 from core.logging import get_logger
 
 
 logger = get_logger(__name__)
 
 EVAL_RESULT_STATUS_PATH = "/result"
+
+
+async def basilica_deployment_capacity_available() -> bool:
+    """Return whether another deployment may be started without exceeding the global cap."""
+    try:
+        client = basilica.BasilicaClient()
+        deployments = await asyncio.to_thread(client.list)
+    except Exception as e:
+        logger.warning(f"Unable to check Basilica deployment capacity; leaving evaluations pending: {e}")
+        return False
+
+    return len(deployments) < vcst.EVAL_BASILICA_MAX_ACTIVE_DEPLOYMENTS
 
 
 def deployment_is_healthy(deployment, health_path: str = "/health", timeout: int = 8) -> bool:
