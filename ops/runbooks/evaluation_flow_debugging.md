@@ -4,7 +4,7 @@ This is a quick guide for checking validator evaluations.
 
 ## Flow
 
-Tournament training and evaluation are separate. As each tournament task/hotkey finishes training with `training_status = 'success'`, the tournament orchestrator seeds a row in `evaluations`. It checks every 15 minutes and does not overwrite existing rows.
+Tournament training and evaluation are separate. As each tournament task/hotkey finishes training with `training_status = 'success'`, the tournament orchestrator seeds a row in `evaluations`. It checks every 1 minute and does not overwrite existing rows.
 
 The validator task cycle picks up `pending` and `evaluating` rows from `evaluations`. It can run up to `10` evaluation rows at once across all tasks. Tournament rows can be evaluated while the task is still `TRAINING`.
 
