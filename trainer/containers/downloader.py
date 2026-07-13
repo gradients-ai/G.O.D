@@ -13,6 +13,7 @@ from huggingface_hub import snapshot_download
 from peft import PeftModel
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
+from transformers import CLIPTokenizer
 
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
@@ -368,6 +369,17 @@ async def main():
                 adapters_dir,
             )
             print(f"Krea 2 text encoder downloaded to: {text_encoder_path}", flush=True)
+
+        print("Downloading clip models", flush=True)
+        CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
+        CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
+        snapshot_download(
+            repo_id="google/t5-v1_1-xxl",
+            repo_type="model",
+            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+            local_dir_use_symlinks=False,
+            allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
+        )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)
