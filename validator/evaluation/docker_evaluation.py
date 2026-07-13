@@ -564,6 +564,21 @@ async def _deploy_pvp_eval(
                         f"Not enough evaluation GPU capacity for PvP deployment {deployment_name} ({gpu_count} GPUs)"
                     )
                 reserved_pair = True
+                # Stamp deployment_id in the DB *before* client.deploy. The deploy name is a fixed
+                # uuid (see above) that Basilica reuses as the deployment name, so we know it up
+                # front. Without this, a pod created by a deploy that then hangs past its timeout
+                # carries a NULL deployment_id (the readiness-callback persist never runs): the
+                # stale-reservation sweep frees its GPU slot while the pod stays live on Basilica,
+                # leaving an untracked orphan that only the slow orphan-grace reaps — so they pile
+                # up faster than they age out. Stamping here guarantees every live pod is trackable
+                # (matched by the reconciler, deleted by cleanup, or freed via the fast ghost path).
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=deployment_name,
+                    ctx=ctx,
+                )
             log_step(
                 "deploy_start",
                 deployment=deployment_name,
