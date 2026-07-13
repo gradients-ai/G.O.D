@@ -857,6 +857,8 @@ def get_task_type(request: TrainerProxyRequest) -> TaskType:
 def get_dockerfile_path(task_type: TaskType, training_data, local_repo_path: str) -> str:
     """Get the appropriate dockerfile path based on task type and model type"""
     if task_type == TaskType.IMAGETASK:
+        if training_data.model_type == ImageModelType.FLUX:
+            return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_DOCKERFILE_PATHS)
         return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_TOOLKIT_DOCKERFILE_PATHS)
 
     else:
