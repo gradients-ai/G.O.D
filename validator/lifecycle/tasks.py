@@ -365,7 +365,9 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
             await tasks_sql.update_task_evaluations_status(task.task_id, pending_batch, "evaluating", config.psql_db)
             picked_evaluation = True
 
-        pending_evaluations.append(_evaluate_and_update_hotkeys(task, hotkeys, num_gpus, config))
+        pending_evaluations.append(
+            asyncio.create_task(_evaluate_and_update_hotkeys(task, hotkeys, num_gpus, config))
+        )
 
     if pending_evaluations:
         await asyncio.gather(*pending_evaluations)
