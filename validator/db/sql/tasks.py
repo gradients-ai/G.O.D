@@ -2082,6 +2082,7 @@ async def reset_evaluation_rows_for_deployment(deployment_id: str, psql_db: PSQL
             UPDATE {cst.EVALUATIONS_TABLE}
             SET {cst.EVALUATION_STATUS} = 'pending',
                 {cst.GPU_COUNT} = NULL,
+                {cst.DEPLOYMENT_ID} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.DEPLOYMENT_ID} = $1
               AND {cst.NETUID} = $2
