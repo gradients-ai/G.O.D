@@ -356,10 +356,14 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
 
     hotkey_batches = [all_hotkeys] if batch_together else [[hotkey] for hotkey in all_hotkeys]
     pending_evaluations = []
+    picked_evaluation = False
     for hotkeys in hotkey_batches:
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
         if pending_batch:
+            if picked_evaluation:
+                await asyncio.sleep(lifecycle_cst.EVALUATION_PICK_DELAY_SECONDS)
             await tasks_sql.update_task_evaluations_status(task.task_id, pending_batch, "evaluating", config.psql_db)
+            picked_evaluation = True
 
         pending_evaluations.append(_evaluate_and_update_hotkeys(task, hotkeys, num_gpus, config))
 
