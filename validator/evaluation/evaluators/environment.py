@@ -15,8 +15,9 @@ from huggingface_hub import snapshot_download
 
 import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
-from core.constants.paths import CHAT_TEMPLATE_FILE
 from core.models.dataset_models import EnvironmentDatasetType
+from core.tokenizer_utils import ensure_chat_template
+from core.tokenizer_utils import read_chat_template
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
@@ -78,28 +79,6 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3
             else:
                 logger.error("All download attempts failed")
                 raise
-
-
-def _read_chat_template(source_dir: str) -> str | None:
-    """Return a chat template string from a local model/adapter dir, or None.
-
-    A LoRA adapter frequently carries its chat template only as a standalone
-    chat_template.jinja file rather than inline in tokenizer_config.json, so a
-    plain merge that rebuilds the tokenizer from the base model silently loses it.
-    """
-    jinja_path = os.path.join(source_dir, CHAT_TEMPLATE_FILE)
-    if os.path.exists(jinja_path):
-        with open(jinja_path) as f:
-            template = f.read().strip()
-        if template:
-            return template
-    config_path = os.path.join(source_dir, "tokenizer_config.json")
-    if os.path.exists(config_path):
-        with open(config_path) as f:
-            template = json.load(f).get("chat_template")
-        if isinstance(template, str) and template.strip():
-            return template
-    return None
 
 
 def _merge_base_and_lora(
@@ -170,21 +149,13 @@ def _merge_base_and_lora(
     merged = model.merge_and_unload(safe_merge=False)
     logger.info("eval_setup merge: merge_and_unload done in %.1fs", time.time() - t2)
 
-    # Preserve the LoRA's chat template before saving. Miners often ship it only as a standalone
-    # chat_template.jinja; rebuilding the tokenizer from the base loses it, which breaks
-    # chat-template-dependent SGLang serving of the reconstructed base during eval.
-    chat_template = _read_chat_template(lora_dir) or getattr(base_tokenizer, "chat_template", None)
-
     os.makedirs(output_dir, exist_ok=True)
     t3 = time.time()
     logger.info("eval_setup merge: saving merged model to disk...")
     merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
-    if chat_template and not getattr(target_tokenizer, "chat_template", None):
-        target_tokenizer.chat_template = chat_template
+    # Carry the adapter's chat template onto the saved tokenizer (base selection would drop it).
+    ensure_chat_template(target_tokenizer, read_chat_template(lora_dir), base_tokenizer.chat_template)
     target_tokenizer.save_pretrained(output_dir)
-    if chat_template:
-        with open(os.path.join(output_dir, CHAT_TEMPLATE_FILE), "w") as f:
-            f.write(chat_template)
     logger.info(
         "eval_setup merge: saved to %s in %.1fs (total merge wall %.1fs)",
         output_dir,

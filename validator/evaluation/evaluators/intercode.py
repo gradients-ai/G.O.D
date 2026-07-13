@@ -58,6 +58,8 @@ from core.models.pvp_models import ToolCall
 from core.models.pvp_models import ToolSchema
 from core.pvp.chat import chat_completion
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.tokenizer_utils import ensure_chat_template
+from core.tokenizer_utils import read_chat_template
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import check_lora_has_added_tokens
 from validator.evaluation.pvp.materialize import materialize_base_model
@@ -211,6 +213,8 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
     merged = model.merge_and_unload(safe_merge=False)
     os.makedirs(output_dir, exist_ok=True)
     merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
+    # Carry the adapter's chat template onto the saved tokenizer (base selection would drop it).
+    ensure_chat_template(target_tokenizer, read_chat_template(lora_dir), base_tokenizer.chat_template)
     target_tokenizer.save_pretrained(output_dir)
     return output_dir
 

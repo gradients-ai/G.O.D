@@ -1,0 +1,91 @@
+job: extension
+config:
+  name: last
+  process:
+  - type: diffusion_trainer
+    training_folder: /app/checkpoints
+    sqlite_db_path: ./aitk_db.db
+    device: cuda
+    trigger_word: null
+    performance_log_every: 10
+    network:
+      type: lora
+      linear: 32
+      linear_alpha: 32
+      lokr_full_rank: true
+      lokr_factor: -1
+      network_kwargs:
+        ignore_if_contains: []
+    save:
+      dtype: bf16
+      save_every: 200
+      max_step_saves_to_keep: 100
+      save_format: diffusers
+      push_to_hub: false
+    datasets:
+    - folder_path: /dataset/images
+      mask_path: null
+      mask_min_value: 0.1
+      default_caption: ""
+      caption_ext: txt
+      caption_dropout_rate: 0.05
+      cache_latents_to_disk: false
+      is_reg: false
+      network_weight: 1
+      resolution: [512, 768, 1024]
+      controls: []
+      shrink_video_to_frames: true
+      num_frames: 1
+      flip_x: false
+      flip_y: false
+      num_repeats: 1
+    train:
+      batch_size: 1
+      bypass_guidance_embedding: false
+      steps: 2000
+      gradient_accumulation: 1
+      train_unet: true
+      train_text_encoder: false
+      gradient_checkpointing: true
+      noise_scheduler: flowmatch
+      optimizer: adamw8bit
+      timestep_type: linear
+      content_or_style: balanced
+      optimizer_params:
+        weight_decay: 0.0001
+      unload_text_encoder: false
+      cache_text_embeddings: false
+      lr: 0.0001
+      ema_config:
+        use_ema: false
+        ema_decay: 0.99
+      skip_first_sample: true
+      force_first_sample: false
+      disable_sampling: true
+      dtype: bf16
+      diff_output_preservation: false
+      diff_output_preservation_multiplier: 1
+      diff_output_preservation_class: person
+      switch_boundary_every: 1
+      loss_type: mse
+      do_differential_guidance: true
+      differential_guidance_scale: 2
+    logging:
+      log_every: 1
+      use_ui_logger: true
+    model:
+      name_or_path: /cache/models
+      quantize: false
+      qtype: qfloat8
+      quantize_te: false
+      qtype_te: qfloat8
+      arch: krea2
+      low_vram: false
+      model_kwargs: {}
+      compile: false
+      layer_offloading: false
+      layer_offloading_text_encoder_percent: 1
+      layer_offloading_transformer_percent: 1
+meta:
+  name: krea2_lora
+  version: '1.0'

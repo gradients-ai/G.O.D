@@ -69,6 +69,14 @@ def _is_intercode_environment(dataset_type: EnvironmentDatasetType) -> bool:
     )
 
 
+def _is_swe_infinite_environment(dataset_type: EnvironmentDatasetType) -> bool:
+    env_name = _first_environment_name(dataset_type)
+    return (
+        env_name == env_cst.EnvironmentName.SWE_INFINITE
+        or getattr(env_name, "value", env_name) == env_cst.EnvironmentName.SWE_INFINITE.value
+    )
+
+
 async def cleanup_resources(client):
     """Clean up Docker resources including containers, images, and volumes."""
     try:
@@ -158,6 +166,11 @@ async def run_evaluation_docker_text(
                 file_format=file_format,
                 gpu_id=gpu_id,
                 eval_seed=eval_seed,
+            )
+        if _is_swe_infinite_environment(dataset_type):
+            raise ValueError(
+                "Local SWE Infinite evaluation needs a public model proxy for the external Affinetes server. "
+                "Use the Basilica tournament evaluation path or provide a custom local setup."
             )
         return await run_evaluation_local_environment(models, original_model, dataset_type, gpu_id=gpu_id, eval_seed=eval_seed)
     else:
@@ -476,7 +489,7 @@ async def run_evaluation_local_environment(
             env_logger.info(f"Starting SGLang container: {sglang_container_name} (GPU {gpu_id})")
             sglang_container = await asyncio.to_thread(
                 docker_client.containers.run,
-                "lmsysorg/sglang:latest",
+                "lmsysorg/sglang:v0.5.14",
                 command=sglang_args,
                 name=sglang_container_name,
                 detach=True,
@@ -888,7 +901,9 @@ async def run_evaluation_docker_image(
     models: list[str],
     model_type: ImageModelType,
     gpu_ids: list[int],
+    docker_image: str | None = None,
 ) -> DockerEvaluationResults:
+    image = docker_image or docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION
     raw_data = await download_s3_file(test_split_url)
     test_split_path = unzip_to_temp_path(raw_data)
     dataset_dir = os.path.abspath(test_split_path)
@@ -908,6 +923,20 @@ async def run_evaluation_docker_image(
         "MODEL_TYPE": model_type.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
     }
+    command = [
+        "bash",
+        "-lc",
+        "\n".join(
+            [
+                "python - <<'PY'",
+                "import os",
+                "from validator.evaluation.image_model_downloads import prepare_required_image_models",
+                "prepare_required_image_models(os.environ.get('MODEL_TYPE', ''))",
+                "PY",
+                "exec /app/start.sh",
+            ]
+        ),
+    ]
 
     container = None
     retry_delay = 5.0
@@ -916,7 +945,8 @@ async def run_evaluation_docker_image(
             try:
                 container = await asyncio.to_thread(
                     client.containers.run,
-                    docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+                    image,
+                    command=command,
                     mounts=mounts,
                     environment=environment,
                     runtime="nvidia",

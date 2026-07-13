@@ -2,6 +2,7 @@ from collections import Counter
 
 import numpy as np
 
+from core.constants.environments import EnvironmentName
 from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.app.config import Config
@@ -35,13 +36,24 @@ from validator.tournament.thresholds import update_threshold_adjusted_quality_sc
 logger = get_logger(__name__)
 
 
+def _task_includes_environment(task_object, environment: EnvironmentName) -> bool:
+    env_names = getattr(task_object, "environment_names", []) if task_object else []
+    for env_name in env_names or []:
+        try:
+            if EnvironmentName(getattr(env_name, "value", env_name)) == environment:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 async def determine_env_tournament_winner(
     tournament: TournamentData, _finalists: list[str], _config: Config, psql_db: PSQLDB,
 ) -> list[str]:
     """Determine environment winner from boss round only.
 
-    Single contender must beat boss on ALL 3 boss round tasks (no threshold,
-    strictly higher score). If not, boss retains.
+    Single contender must have no boss-round losses and a strict win on the
+    required SWE Infinite final task. If not, boss retains.
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
 
@@ -79,7 +91,14 @@ async def determine_env_tournament_winner(
     wins = 0
     losses = 0
     draws = 0
+    saw_required_swe_task = False
+    won_required_swe_task = False
     for task in final_tasks:
+        task_object = await get_task(task.task_id, psql_db)
+        is_swe_task = _task_includes_environment(task_object, EnvironmentName.SWE_INFINITE)
+        if is_swe_task:
+            saw_required_swe_task = True
+
         scores = await _get_scores_for_task(task.task_id, psql_db)
         contender_score = scores.get(contender)
         boss_score = scores.get(boss_hotkey)
@@ -92,6 +111,8 @@ async def determine_env_tournament_winner(
         if contender_score > bs:
             outcome = GameOutcome.WIN
             wins += 1
+            if is_swe_task:
+                won_required_swe_task = True
         elif contender_score < bs:
             outcome = GameOutcome.LOSS
             losses += 1
@@ -100,19 +121,25 @@ async def determine_env_tournament_winner(
             draws += 1
         logger.info(
             f"Boss round task {task.task_id}: contender={contender_score:.2f} boss={bs:.2f} -> {outcome.value} "
-            f"(running: W={wins} D={draws} L={losses})"
+            f"(running: W={wins} D={draws} L={losses}, required_swe_win={won_required_swe_task})"
         )
 
-    if losses == 0 and wins > 0:
+    if not saw_required_swe_task:
+        logger.warning("Boss retains: final round is missing the required SWE Infinite task")
+        return [boss_hotkey, contender]
+
+    if losses == 0 and won_required_swe_task:
         logger.info(
             f"Contender {contender} wins environment tournament: "
-            f"W={wins} D={draws} L={losses} across {len(final_tasks)} tasks"
+            f"W={wins} D={draws} L={losses}, required_swe_win={won_required_swe_task} "
+            f"across {len(final_tasks)} tasks"
         )
         return [contender, boss_hotkey]
     else:
         logger.info(
             f"Boss retains: contender W={wins} D={draws} L={losses} "
-            f"across {len(final_tasks)} tasks (need zero losses and at least one win)"
+            f"required_swe_win={won_required_swe_task} across {len(final_tasks)} tasks "
+            "(need zero losses and a strict SWE Infinite win)"
         )
         return [boss_hotkey, contender]
 

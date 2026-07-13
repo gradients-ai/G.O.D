@@ -1,0 +1,267 @@
+{
+  "VAE_loader": {
+    "inputs": {
+      "vae_name": "flux2-vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "Load VAE"
+    }
+  },
+  "Negative_prompt": {
+    "inputs": {
+      "conditioning": [
+        "Prompt",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "Conditioning Zero Out"
+    }
+  },
+  "Sampler": {
+    "inputs": {
+      "noise": [
+        "Noise",
+        0
+      ],
+      "guider": [
+        "Dual_model_guider",
+        0
+      ],
+      "sampler": [
+        "Sampler_select",
+        0
+      ],
+      "sigmas": [
+        "Sigma_split_denoise",
+        1
+      ],
+      "latent_image": [
+        "VAE_encoder",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "Sampler Custom Advanced"
+    }
+  },
+  "VAE_decode": {
+    "inputs": {
+      "samples": [
+        "Sampler",
+        0
+      ],
+      "vae": [
+        "VAE_loader",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE Decode"
+    }
+  },
+  "Sampler_select": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "KSampler Select"
+    }
+  },
+  "Scheduler": {
+    "inputs": {
+      "steps": 30,
+      "width": 1024,
+      "height": 1024,
+      "mu": 0.5,
+      "std": 1.75
+    },
+    "class_type": "Ideogram4Scheduler",
+    "_meta": {
+      "title": "Ideogram 4 Scheduler"
+    }
+  },
+  "Noise": {
+    "inputs": {
+      "noise_seed": 167543792760323
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "Random Noise"
+    }
+  },
+  "Checkpoint_loader": {
+    "inputs": {
+      "unet_name": "ideogram4_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Diffusion Model"
+    }
+  },
+  "Prompt": {
+    "inputs": {
+      "text": "",
+      "clip": [
+        "Lora_loader",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP Text Encode (Positive Prompt)"
+    }
+  },
+  "Text_encoder_loader": {
+    "inputs": {
+      "clip_name": "qwen3vl_8b_fp8_scaled.safetensors",
+      "type": "ideogram4",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "Load CLIP"
+    }
+  },
+  "Unconditional_checkpoint_loader": {
+    "inputs": {
+      "unet_name": "ideogram4_unconditional_fp8_scaled.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "Load Unconditional Diffusion Model"
+    }
+  },
+  "Dual_model_guider": {
+    "inputs": {
+      "cfg": 8,
+      "model": [
+        "CFG_override",
+        0
+      ],
+      "positive": [
+        "Prompt",
+        0
+      ],
+      "model_negative": [
+        "Unconditional_checkpoint_loader",
+        0
+      ],
+      "negative": [
+        "Negative_prompt",
+        0
+      ]
+    },
+    "class_type": "DualModelGuider",
+    "_meta": {
+      "title": "Dual Model CFG Guider"
+    }
+  },
+  "CFG_override": {
+    "inputs": {
+      "cfg": 5,
+      "start_percent": 0.7,
+      "end_percent": 1,
+      "model": [
+        "Lora_loader",
+        0
+      ]
+    },
+    "class_type": "CFGOverride",
+    "_meta": {
+      "title": "CFG Override"
+    }
+  },
+  "Lora_loader": {
+    "inputs": {
+      "lora_name": "",
+      "strength_model": 1,
+      "strength_clip": 1,
+      "model": [
+        "Checkpoint_loader",
+        0
+      ],
+      "clip": [
+        "Text_encoder_loader",
+        0
+      ]
+    },
+    "class_type": "LoraLoader",
+    "_meta": {
+      "title": "Load LoRA"
+    }
+  },
+  "Image_loader": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "ETN_LoadImageBase64",
+    "_meta": {
+      "title": "Load Image (Base64)"
+    }
+  },
+  "Image_resize": {
+    "inputs": {
+      "image": [
+        "Image_loader",
+        0
+      ],
+      "upscale_method": "lanczos",
+      "width": 1024,
+      "height": 1024,
+      "crop": "disabled"
+    },
+    "class_type": "ImageScale",
+    "_meta": {
+      "title": "Resize Image"
+    }
+  },
+  "VAE_encoder": {
+    "inputs": {
+      "pixels": [
+        "Image_resize",
+        0
+      ],
+      "vae": [
+        "VAE_loader",
+        0
+      ]
+    },
+    "class_type": "VAEEncode",
+    "_meta": {
+      "title": "VAE Encode"
+    }
+  },
+  "Sigma_split_denoise": {
+    "inputs": {
+      "denoise": 0.75,
+      "sigmas": [
+        "Scheduler",
+        0
+      ]
+    },
+    "class_type": "SplitSigmasDenoise",
+    "_meta": {
+      "title": "Split Sigmas Denoise"
+    }
+  },
+  "Preview": {
+    "inputs": {
+      "images": [
+        "VAE_decode",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  }
+}

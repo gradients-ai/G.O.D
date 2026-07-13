@@ -11,6 +11,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import AsyncGenerator
 
+import httpx
 from fiber import Keypair
 
 import validator.tasks.synthetics.constants as synth_cst
@@ -478,6 +479,94 @@ async def _generate_independent_triggered_synthetic(
     return image_text_pairs, _triggered_ds_prefix(ds_prefix, prompt_set.trigger), prompt_set.trigger
 
 
+def _to_ideogram_aspect_ratio(width: int = 1024, height: int = 1024) -> str:
+    divisor = math.gcd(width, height) or 1
+    return f"{width // divisor}x{height // divisor}"
+
+
+def _ordered_dict(data: dict, order: tuple[str, ...]) -> dict:
+    known = [key for key in order if key in data]
+    extra = [key for key in data if key not in order]
+    return {key: data[key] for key in (*known, *extra)}
+
+
+def _canonical_ideogram_caption(caption: dict) -> dict:
+    """Match Ideogram's JSON prompt key order and remove fields not used for training captions."""
+    caption.pop("aspect_ratio", None)
+    caption = _ordered_dict(
+        caption,
+        ("high_level_description", "style_description", "compositional_deconstruction"),
+    )
+
+    style_description = caption.get("style_description")
+    if isinstance(style_description, dict):
+        caption["style_description"] = _ordered_dict(
+            style_description,
+            ("aesthetics", "lighting", "photo", "art_style", "medium", "color_palette"),
+        )
+
+    composition = caption.get("compositional_deconstruction")
+    if isinstance(composition, dict):
+        composition = _ordered_dict(composition, ("background", "elements"))
+        elements = composition.get("elements")
+        if isinstance(elements, list):
+            normalized_elements = []
+            for element in elements:
+                if isinstance(element, dict):
+                    element.pop("bbox", None)
+                    element = _ordered_dict(element, ("type", "desc"))
+                normalized_elements.append(element)
+            composition["elements"] = normalized_elements
+        caption["compositional_deconstruction"] = composition
+
+    return caption
+
+
+async def generate_ideogram_json_prompt(prompt: str, api_key: str | None = None) -> str:
+    api_key = api_key or synth_cst.IDEOGRAM_MAGIC_PROMPT_API_KEY
+    if not api_key:
+        raise RuntimeError("IDEOGRAM_API_KEY or MAGIC_PROMPT_API_KEY must be set for ideogram4 image tasks")
+
+    async with httpx.AsyncClient(timeout=synth_cst.IDEOGRAM_MAGIC_PROMPT_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            synth_cst.IDEOGRAM_MAGIC_PROMPT_URL,
+            headers={"Api-Key": api_key, "Content-Type": "application/json"},
+            json={
+                "text_prompt": prompt,
+                "aspect_ratio": _to_ideogram_aspect_ratio(synth_cst.MIN_IMAGE_WIDTH, synth_cst.MIN_IMAGE_HEIGHT),
+            },
+        )
+        response.raise_for_status()
+
+    data = response.json()
+    json_prompt = data.get("json_prompt")
+    if not isinstance(json_prompt, dict):
+        raise RuntimeError(f"Ideogram magic prompt returned no json_prompt: {data}")
+
+    return json.dumps(_canonical_ideogram_caption(json_prompt), ensure_ascii=False, separators=(",", ":"))
+
+
+async def rewrite_pairs_with_ideogram_json_prompts(image_text_pairs: list[ImageTextPair]) -> list[ImageTextPair]:
+    semaphore = asyncio.Semaphore(synth_cst.FAL_IMAGE_GENERATION_CONCURRENCY)
+    Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
+
+    async def rewrite_one(index: int, pair: ImageTextPair, work_dir: Path) -> ImageTextPair:
+        async with semaphore:
+            async with httpx.AsyncClient(timeout=120) as client:
+                response = await client.get(pair.text_url)
+                response.raise_for_status()
+            json_prompt = await generate_ideogram_json_prompt(response.text.strip())
+            text_path = work_dir / f"{index}.txt"
+            text_path.write_text(json_prompt)
+            text_url = await upload_local_file(text_path, "image_synth/ideogram_prompts")
+            return ImageTextPair(image_url=pair.image_url, text_url=text_url)
+
+    with tempfile.TemporaryDirectory(dir=TEMP_PATH_FOR_IMAGES) as tmp_dir:
+        work_dir = Path(tmp_dir)
+        tasks = [rewrite_one(index, pair, work_dir) for index, pair in enumerate(image_text_pairs)]
+        return await asyncio.gather(*tasks)
+
+
 async def generate_logo_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, str]:
     prompt_set = await generate_triggered_prompt_set(_logo_prompt_request(num_prompts), num_prompts, "logo")
     return await _generate_independent_triggered_synthetic(prompt_set, synth_cst.LOGO_SYNTH_DS_PREFIX, "logo")
@@ -612,11 +701,13 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
     logger.info("Creating synthetic image task")
     num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
     model_info = await anext(models)
-    is_qwen_model = model_info.model_type == ImageModelType.QWEN_IMAGE
+    use_higher_training_hours = model_info.model_type == ImageModelType.QWEN_IMAGE
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
         config, num_prompts, pick_image_synth_category()
     )
+    if model_info.model_type == ImageModelType.IDEOGRAM4:
+        image_text_pairs = await rewrite_pairs_with_ideogram_json_prompts(image_text_pairs)
 
     # Log image and text URLs for testing
     logger.info(f"Generated {len(image_text_pairs)} image-text pairs with prefix: {ds_prefix}")
@@ -625,7 +716,7 @@ async def create_synthetic_image_task(config: Config, models: AsyncGenerator[Ima
 
     if len(image_text_pairs) >= synth_cst.MIN_IMAGE_SYNTH_PAIRS:
         number_of_hours = _image_competition_hours_for_dataset_size(len(image_text_pairs))
-        if is_qwen_model:
+        if use_higher_training_hours:
             number_of_hours = round(number_of_hours + synth_cst.QWEN_IMAGE_EXTRA_COMPETITION_HOURS, 2)
 
         augmentation_config = maybe_get_augmentation_config(TaskType.IMAGETASK)

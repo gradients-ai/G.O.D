@@ -104,6 +104,58 @@ For local/dev validator features that call the content service, add:
 echo "NINETEEN_API_KEY=<your-nineteen-api-key>" >> .vali.env
 ```
 
+For SWE Infinite environment tournament evaluation, configure the external Affinetes server. The validator config generator prompts for this optional URL; for an existing `.vali.env`, add:
+
+```bash
+echo "SWE_INFINITE_SERVER_BASE_URL=<https://your-affinetes-swe-server>" >> .vali.env
+```
+
+The SWE Infinite server should run on infrastructure separate from the validator. It evaluates models by calling the SGLang URL that the evaluator sends in each request, so the SWE server host does not need GPUs, but it does need:
+
+- Docker Engine installed and the Docker daemon running.
+- The host Docker socket mounted into the SWE server container, because the server pulls and starts per-task Docker images.
+- Enough disk for SWE task checkouts, temporary files, and container layers.
+- Outbound network access to the model server URL, GitHub, package indexes, and any task dependencies the SWE image fetches.
+- An inbound HTTP route from the validator/Basilica eval container to the server port.
+
+Set Docker Hub credentials on the SWE server host before starting the container. The Affinetes SWE server reads these env vars and runs `docker login` on startup, which avoids anonymous pull rate limits and makes task image pulls faster and more reliable:
+
+```bash
+export DOCKER_HUB_USERNAME=<dockerhub-username>
+export DOCKER_HUB_TOKEN=<dockerhub-access-token>
+```
+
+Run the published SWE Infinite image:
+
+```bash
+docker pull gradientsio/swe-infinite:v1
+docker rm -f swe-infinite || true
+docker run -d \
+  --restart unless-stopped \
+  --name swe-infinite \
+  -p 8000:8000 \
+  -e DOCKER_HUB_USERNAME \
+  -e DOCKER_HUB_TOKEN \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  gradientsio/swe-infinite:v1
+```
+
+The `--restart unless-stopped` policy makes Docker restart the SWE server after host reboots. On systemd hosts, also make sure Docker itself starts on boot:
+
+```bash
+sudo systemctl enable --now docker
+docker update --restart unless-stopped swe-infinite
+```
+
+Then check it locally and expose the same base URL in `.vali.env`:
+
+```bash
+curl http://127.0.0.1:8000/health
+echo "SWE_INFINITE_SERVER_BASE_URL=http://<swe-server-host>:8000" >> .vali.env
+```
+
+If the server is behind a reverse proxy or load balancer, set `SWE_INFINITE_SERVER_BASE_URL` to that public HTTPS URL instead. The evaluator uses Affinetes' `/call` endpoint by default. SWE Infinite evaluator behavior is configured in `validator/evaluation/swe_infinite_config.py`; production task range and task count stay in `core/constants/environments.py`. The metadata URL is only used to resolve `task_id_max` if the SWE `EnvironmentConfig.task_id_max` sentinel is set to `0`.
+
 Trainer config needs at least:
 
 ```bash

@@ -216,7 +216,8 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW},
+                   {cst.WINNING_PERFORMANCE_DIFFERENCE},
                    {cst.DIFF_REPORT}, {cst.WINNER_MODEL_REPO}, {cst.WINNER_MODEL_BASE}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
@@ -229,6 +230,7 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
+                code_review=result[cst.CODE_REVIEW],
                 winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 winner_model_repo=result[cst.WINNER_MODEL_REPO],
@@ -513,6 +515,58 @@ async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str
         logger.info(f"Updated tournament {tournament_id} winner hotkey to {winner_hotkey}")
 
 
+async def update_tournament_code_review(tournament_id: str, status: str, psql_db: PSQLDB) -> None:
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TOURNAMENTS_TABLE}
+            SET {cst.CODE_REVIEW} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TOURNAMENT_ID} = $1
+            """,
+            tournament_id,
+            status,
+        )
+    if result != "UPDATE 1":
+        raise RuntimeError(f"Failed to persist code_review={status} for tournament {tournament_id}")
+
+
+async def update_tournament_placements(
+    tournament_id: str,
+    winner_hotkey: str,
+    second_place_hotkey: str | None,
+    psql_db: PSQLDB,
+) -> None:
+    """Persist official top-two positions without rewriting match history."""
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                f"""
+                UPDATE {cst.TOURNAMENTS_TABLE}
+                SET {cst.WINNER_HOTKEY} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+                WHERE {cst.TOURNAMENT_ID} = $1
+                """,
+                tournament_id,
+                winner_hotkey,
+            )
+            await connection.execute(
+                f"""
+                UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+                SET {cst.FINAL_POSITION} = CASE
+                    WHEN {cst.HOTKEY} = $2 THEN 1
+                    WHEN {cst.HOTKEY} = $3 THEN 2
+                    ELSE NULL
+                END
+                WHERE {cst.TOURNAMENT_ID} = $1
+                """,
+                tournament_id,
+                winner_hotkey,
+                second_place_hotkey,
+            )
+    logger.info(
+        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, second={second_place_hotkey}"
+    )
+
+
 async def update_tournament_winner_model(
     tournament_id: str, winner_model_repo: str, winner_model_base: str, psql_db: PSQLDB,
 ) -> None:
@@ -541,7 +595,7 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.DIFF_REPORT}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW}, {cst.DIFF_REPORT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_STATUS} = $1
             ORDER BY {cst.CREATED_AT} DESC
@@ -554,6 +608,7 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
                 status=row[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=row[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=row[cst.WINNER_HOTKEY],
+                code_review=row[cst.CODE_REVIEW],
                 diff_report=row[cst.DIFF_REPORT],
             )
             for row in results
@@ -1125,7 +1180,7 @@ async def get_active_tournament(psql_db: PSQLDB, tournament_type: TournamentType
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'active'
             ORDER BY {cst.CREATED_AT} DESC
@@ -1139,6 +1194,7 @@ async def get_active_tournament(psql_db: PSQLDB, tournament_type: TournamentType
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
+                code_review=result[cst.CODE_REVIEW],
             )
         return None
 

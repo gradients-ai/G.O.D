@@ -195,6 +195,7 @@ async def get_tournament_details(
             rounds=detailed_rounds,
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
+            final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
         tournament_type_result = calculate_tournament_type_scores_from_data(
             TournamentType(tournament.tournament_type), tournament_results_with_winners

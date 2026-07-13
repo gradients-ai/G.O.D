@@ -9,6 +9,7 @@ from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_full_results
+from validator.db.sql.tournaments import get_tournament_participants
 from validator.db.sql.tournaments import get_tournament_where_champion_first_won
 from validator.db.sql.tournaments import get_weekly_task_participation_data
 from validator.scoring.tournaments import get_tournament_weights_from_data
@@ -708,33 +709,39 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
     text_tournament: TournamentData = await get_latest_completed_tournament(psql_db, TournamentType.TEXT)
     if text_tournament:
         tournament_results: TournamentResults = await get_tournament_full_results(text_tournament.tournament_id, psql_db)
+        participants = await get_tournament_participants(text_tournament.tournament_id, psql_db)
         tournament_audit_data.text_tournament_data = TournamentResultsWithWinners(
             tournament_id=tournament_results.tournament_id,
             rounds=tournament_results.rounds,
             base_winner_hotkey=text_tournament.base_winner_hotkey,
             winner_hotkey=text_tournament.winner_hotkey,
+            final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
 
     # Fetch image tournament data
     image_tournament = await get_latest_completed_tournament(psql_db, TournamentType.IMAGE)
     if image_tournament:
         tournament_results = await get_tournament_full_results(image_tournament.tournament_id, psql_db)
+        participants = await get_tournament_participants(image_tournament.tournament_id, psql_db)
         tournament_audit_data.image_tournament_data = TournamentResultsWithWinners(
             tournament_id=tournament_results.tournament_id,
             rounds=tournament_results.rounds,
             base_winner_hotkey=image_tournament.base_winner_hotkey,
             winner_hotkey=image_tournament.winner_hotkey,
+            final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
 
     # Fetch environment tournament data
     environment_tournament = await get_latest_completed_tournament(psql_db, TournamentType.ENVIRONMENT)
     if environment_tournament:
         tournament_results = await get_tournament_full_results(environment_tournament.tournament_id, psql_db)
+        participants = await get_tournament_participants(environment_tournament.tournament_id, psql_db)
         tournament_audit_data.environment_tournament_data = TournamentResultsWithWinners(
             tournament_id=tournament_results.tournament_id,
             rounds=tournament_results.rounds,
             base_winner_hotkey=environment_tournament.base_winner_hotkey,
             winner_hotkey=environment_tournament.winner_hotkey,
+            final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
 
     # Fetch participants

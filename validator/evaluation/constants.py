@@ -8,11 +8,17 @@ LORA_SDXL_WORKFLOW_PATH_DIFFUSERS = "validator/evaluation/comfy_workflows/lora_s
 LORA_FLUX_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_flux.json"
 LORA_ZIMAGE_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_z-image.json"
 LORA_QWEN_IMAGE_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_qwen-image.json"
+LORA_KREA2_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_krea2.json"
+LORA_IDEOGRAM4_WORKFLOW_PATH = "validator/evaluation/comfy_workflows/lora_ideogram4.json"
 CHECKPOINTS_SAVE_PATH = "validator/evaluation/ComfyUI/models/checkpoints"
 UNET_SAVE_PATH = "validator/evaluation/ComfyUI/models/unet"
 DIFFUSERS_PATH = "validator/evaluation/ComfyUI/models/diffusers"
 DIFFUSION_MODELS_PATH = "validator/evaluation/ComfyUI/models/diffusion_models"
 LORAS_SAVE_PATH = "validator/evaluation/ComfyUI/models/loras"
+KREA2_EVAL_REPO_ID = "Comfy-Org/Krea-2"
+KREA2_EVAL_DIFFUSION_MODEL = "diffusion_models/krea2_raw_fp8_scaled.safetensors"
+IDEOGRAM4_EVAL_REPO_ID = "Comfy-Org/Ideogram-4"
+IDEOGRAM4_EVAL_DIFFUSION_MODEL = "diffusion_models/ideogram4_fp8_scaled.safetensors"
 DIFFUSION_HF_DEFAULT_FOLDER = "checkpoint"
 DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.25
@@ -21,6 +27,8 @@ EVAL_DEFAULTS = {
     "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},
     "z-image": {"steps": 10, "cfg": 1, "denoise": 0.90},
     "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93},
+    "krea2": {"steps": 25, "cfg": 12, "denoise": 0.8, "generations": 5},
+    "ideogram4": {"steps": 30, "cfg": 8, "denoise": 0.75, "generations": 5},
 }
 
 

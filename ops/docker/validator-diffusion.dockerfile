@@ -1,5 +1,8 @@
 FROM python:3.10-slim
 
+ARG COMFYUI_COMMIT=091b70edda0c062fc9338a1d7e8e2f94f4c0ad0b
+ARG COMFYUI_TOOLING_NODES_COMMIT=5d3194f4d4158ab31df7a060e1e4c56fa03f320c
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends git wget && rm -rf /var/lib/apt/lists/*
@@ -7,40 +10,29 @@ RUN apt-get update && apt-get install -y --no-install-recommends git wget && rm 
 RUN mkdir /aplp
 
 WORKDIR /app/validator/evaluation
-RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ComfyUI && \
+RUN git init ComfyUI && \
     cd ComfyUI && \
-    git fetch --depth 1 origin 9304e47351be8d178a093b30bcaf5d72c3a2baf5 && \
-    git checkout 9304e47351be8d178a093b30bcaf5d72c3a2baf5 && \
-    cd ..
+    git remote add origin https://github.com/comfyanonymous/ComfyUI.git && \
+    git fetch --depth 1 origin "${COMFYUI_COMMIT}" && \
+    git checkout FETCH_HEAD
 
-RUN pip install -r ComfyUI/requirements.txt
+RUN pip install --no-cache-dir -r ComfyUI/requirements.txt
+RUN pip install --no-cache-dir --force-reinstall \
+    torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
+    --extra-index-url https://download.pytorch.org/whl/cu128
 RUN cd ComfyUI/custom_nodes && \
-    git clone --depth 1 https://github.com/Acly/comfyui-tooling-nodes && \
+    git init comfyui-tooling-nodes && \
     cd comfyui-tooling-nodes && \
-    git fetch --depth 1 origin e10daee9edea458fc709f60e725970a25567fca4 && \
-    git checkout e10daee9edea458fc709f60e725970a25567fca4 && \
-    cd ..
-
-
-RUN wget -O /app/validator/evaluation/ComfyUI/models/text_encoders/clip_l.safetensors \
-    https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors && \
-    wget -O /app/validator/evaluation/ComfyUI/models/text_encoders/t5xxl_fp16.safetensors \
-    https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/t5xxl_fp16.safetensors && \
-    wget -O /app/validator/evaluation/ComfyUI/models/vae/ae.safetensors \
-    https://huggingface.co/Albert-zp/flux-vaesft/resolve/main/fluxVaeSft_aeSft.sft
-
-
-RUN wget -O /app/validator/evaluation/ComfyUI/models/text_encoders/qwen_3_4b.safetensors \
-    https://huggingface.co/Comfy-Org/z_image_turbo/resolve/main/split_files/text_encoders/qwen_3_4b.safetensors
-    
-    
-RUN wget -O /app/validator/evaluation/ComfyUI/models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors \
-    https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors && \
-    wget -O /app/validator/evaluation/ComfyUI/models/vae/qwen_image_vae.safetensors \
-    https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors
+    git remote add origin https://github.com/Acly/comfyui-tooling-nodes && \
+    git fetch --depth 1 origin "${COMFYUI_TOOLING_NODES_COMMIT}" && \
+    git checkout FETCH_HEAD && \
+    cd .. && \
+    if [ -f comfyui-tooling-nodes/requirements.txt ]; then \
+        pip install --no-cache-dir -r comfyui-tooling-nodes/requirements.txt; \
+    fi
    
 
-RUN pip install docker diffusers
+RUN pip install --no-cache-dir docker diffusers huggingface_hub
 
 ENV TEST_DATASET_PATH=""
 ENV TRAINED_LORA_MODEL_REPOS=""
@@ -48,12 +40,12 @@ ENV BASE_MODEL_REPO=""
 ENV BASE_MODEL_FILENAME=""
 ENV LORA_MODEL_FILENAMES=""
 
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY ops/docker/requirements/validator.txt validator/requirements.txt
-RUN pip install -r validator/requirements.txt
-
-RUN pip install --force-reinstall torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1
+RUN pip install --no-cache-dir -r validator/requirements.txt
 
 COPY . .
 

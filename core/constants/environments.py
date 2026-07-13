@@ -4,6 +4,7 @@ from enum import Enum
 from core.constants.docker import MCTS_API_DOCKER_IMAGE
 from core.constants.docker import VALIDATOR_DOCKER_IMAGE_INTERCODE
 from core.constants.docker import VALIDATOR_DOCKER_IMAGE_PVP
+from core.constants.docker import VALIDATOR_DOCKER_IMAGE_SWE_INFINITE
 
 
 class EvalType(str, Enum):
@@ -31,6 +32,7 @@ class EnvironmentName(str, Enum):
     CLOBBER = "clobber"
     GOOFSPIEL = "goofspiel"
     INTERCODE = "intercode"
+    SWE_INFINITE = "swe_infinite"
 
 
 @dataclass(frozen=True)
@@ -170,6 +172,16 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         ],
         tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
         tournament_eval_command=["python", "-m", "validator.evaluation.evaluators.intercode"],
+        gpu_multiplier=4,
+    ),
+    EnvironmentName.SWE_INFINITE: EnvironmentConfig(
+        task_id_min=1,
+        task_id_max=7000,
+        num_seeds=6,
+        num_baseline_episodes=0,
+        eval_type=EvalType.INDIVIDUAL,
+        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_SWE_INFINITE,
+        tournament_eval_command=["python", "-m", "validator.evaluation.evaluators.swe"],
         gpu_multiplier=4,
     ),
 }

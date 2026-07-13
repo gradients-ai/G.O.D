@@ -86,6 +86,7 @@ class TestBossRoundTaskConfig:
             task.task_id = f"task_{len(created_tasks)}"
             task.model_id = kwargs.get("model_id_override", "random_model")
             task.training_start_point = kwargs.get("training_start_point", TrainingStartPoint.DEFAULT)
+            task.environment_names = kwargs.get("environment_names_override") or [EnvironmentName.LIARS_DICE]
             created_tasks.append(kwargs)
             return task
 
@@ -107,14 +108,20 @@ class TestBossRoundTaskConfig:
         # Task 0: CONTINUATION with tournament base model
         assert created_tasks[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
         assert created_tasks[0]["model_id_override"] == "Qwen/Qwen2.5-7B-Instruct"
+        assert created_tasks[0]["environment_names_override"] is None
+        assert created_tasks[0]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
 
         # Task 1: FROM_SCRATCH with no model override (random)
         assert created_tasks[1]["training_start_point"] == TrainingStartPoint.FROM_SCRATCH
         assert created_tasks[1]["model_id_override"] is None
+        assert created_tasks[1]["environment_names_override"] is None
+        assert created_tasks[1]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
 
         # Task 2: PREVIOUS_WINNER with previous tournament winner model
         assert created_tasks[2]["training_start_point"] == TrainingStartPoint.PREVIOUS_WINNER
         assert created_tasks[2]["model_id_override"] == "prev-winner/model"
+        assert created_tasks[2]["num_environments"] == 1
+        assert created_tasks[2]["environment_names_override"] == [EnvironmentName.SWE_INFINITE]
 
     @pytest.mark.asyncio
     async def test_prev_winner_fallback_to_target_model(self):
@@ -265,14 +272,17 @@ class TestEnvironmentGroupTasks:
     @pytest.mark.asyncio
     async def test_round_2_gets_capped_envs_and_continuation(self):
         calls = await self._run_group_task_creation(round_number=2)
-        expected_envs = min(2 * t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER, len(EnvironmentName))
+        expected_envs = min(
+            2 * t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER,
+            len(EnvironmentName) - 1,
+        )
         assert calls[0]["num_environments"] == expected_envs
         assert calls[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
 
     @pytest.mark.asyncio
-    async def test_round_3_envs_capped_at_total(self):
-        calls = await self._run_group_task_creation(round_number=3)
-        assert calls[0]["num_environments"] == len(EnvironmentName)
+    async def test_late_round_envs_capped_at_total(self):
+        calls = await self._run_group_task_creation(round_number=99)
+        assert calls[0]["num_environments"] == len(EnvironmentName) - 1
         assert calls[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
 
     @pytest.mark.asyncio
@@ -292,6 +302,12 @@ class TestEnvironmentGroupTasks:
         calls = await self._run_group_task_creation(round_number=1)
         assert calls[0].get("environment_names_override") is not None
         assert len(calls[0]["environment_names_override"]) == t_cst.ENV_ENVS_PER_ROUND_MULTIPLIER
+        assert EnvironmentName.SWE_INFINITE not in calls[0]["environment_names_override"]
+
+    @pytest.mark.asyncio
+    async def test_non_final_rounds_exclude_swe_infinite(self):
+        calls = await self._run_group_task_creation(round_number=2)
+        assert calls[0]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
 
     @pytest.mark.asyncio
     async def test_one_task_per_group(self):

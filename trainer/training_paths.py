@@ -27,14 +27,17 @@ def get_image_training_images_dir(task_id: str) -> str:
 
 def get_image_training_config_template_path(model_type: str) -> str:
     model_type = model_type.lower()
-    if model_type == ImageModelType.SDXL.value:
-        return str(Path(train_cst.IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH) / "base_diffusion_sdxl.toml")
-    elif model_type == ImageModelType.FLUX.value:
-        return str(Path(train_cst.IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH) / "base_diffusion_flux.toml")
-    elif model_type == ImageModelType.Z_IMAGE.value:
-        return str(Path(train_cst.IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH) / "base_diffusion_zimage.yaml")
-    elif model_type == ImageModelType.QWEN_IMAGE.value:
-        return str(Path(train_cst.IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH) / "base_diffusion_qwen_image.yaml")
+    template_names = {
+        ImageModelType.FLUX.value: "base_diffusion_flux.yaml",
+        ImageModelType.Z_IMAGE.value: "base_diffusion_zimage.yaml",
+        ImageModelType.QWEN_IMAGE.value: "base_diffusion_qwen_image.yaml",
+        ImageModelType.IDEOGRAM4.value: "base_diffusion_ideogram4.yaml",
+        ImageModelType.KREA2.value: "base_diffusion_krea2.yaml",
+    }
+    try:
+        return str(Path(train_cst.IMAGE_CONTAINER_CONFIG_TEMPLATE_PATH) / template_names[model_type])
+    except KeyError as exc:
+        raise ValueError(f"Unsupported image model type for ai-toolkit training: {model_type}") from exc
 
 def get_image_training_zip_save_path(task_id: str) -> str:
     return str(Path(train_cst.CACHE_DATASETS_DIR) / f"{task_id}_tourn.zip")

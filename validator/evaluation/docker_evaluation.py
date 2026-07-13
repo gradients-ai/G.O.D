@@ -1,7 +1,7 @@
 import asyncio
+import datetime
 import json
 import random
-import datetime
 import uuid
 from uuid import UUID
 
@@ -34,6 +34,7 @@ from validator.evaluation.basilica import _get_healthy_existing_basilica_deploym
 from validator.evaluation.basilica import _poll_eval_deployment
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
+from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
 from validator.evaluation.evaluation_logging import _log_eval_step
 from validator.evaluation.pvp.models import PvPEvalConfig
@@ -45,6 +46,9 @@ from validator.evaluation.pvp.models import PvPModelSpec
 from validator.evaluation.pvp.models import PvPPairResult
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
+from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
+from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
+from validator.evaluation.swe_infinite_config import build_swe_infinite_container_env
 from validator.scoring.models import IndividualEvalResult
 from validator.scoring.models import MinerRepos
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
@@ -66,6 +70,14 @@ def _deployment_url(deployment) -> str | None:
 def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
     environment_names = dataset_type.environment_names or []
     return environment_names[0] if environment_names else None
+
+
+def _is_environment_name(environment_name, expected: env_cst.EnvironmentName) -> bool:
+    return getattr(environment_name, "value", environment_name) == expected.value
+
+
+def _is_swe_infinite_name(environment_name) -> bool:
+    return _is_environment_name(environment_name, env_cst.EnvironmentName.SWE_INFINITE)
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -145,8 +157,11 @@ async def run_evaluation_basilica_text(
     environment_name = _first_environment_name(dataset_type) if is_environment_eval else None
     environment_name_value = getattr(environment_name, "value", environment_name)
     is_intercode_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.INTERCODE.value
+    is_swe_infinite_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.SWE_INFINITE.value
     if is_intercode_eval:
         basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
+    elif is_swe_infinite_eval:
+        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_SWE_INFINITE
     elif is_environment_eval:
         basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_ENV
     else:
@@ -165,6 +180,8 @@ async def run_evaluation_basilica_text(
     elif isinstance(dataset_type, EnvironmentDatasetType):
         if is_intercode_eval:
             command = ["python", "-m", "validator.evaluation.evaluators.intercode"]
+        elif is_swe_infinite_eval:
+            command = ["python", "-m", "validator.evaluation.evaluators.swe"]
         else:
             command = ["python", "-m", "validator.evaluation.evaluators.environment"]
     else:
@@ -175,7 +192,10 @@ async def run_evaluation_basilica_text(
             "Use validator.evaluation.local_evaluation.run_evaluation_docker_text for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
-    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    if is_swe_infinite_eval:
+        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    else:
+        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": original_model,
@@ -200,8 +220,10 @@ async def run_evaluation_basilica_text(
         base_env["ENVIRONMENT_NAME"] = env_name.value
         base_env["EVAL_SEED"] = str(base_seed)
         base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
+        if is_swe_infinite_eval:
+            base_env.update(build_swe_infinite_container_env())
         # InterCode runs bash actions in-process, so only generic envs get ENV_SERVER_CMD.
-        if not is_intercode_eval:
+        if not is_intercode_eval and not is_swe_infinite_eval:
             base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
 
     logger.debug(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
@@ -331,12 +353,17 @@ async def run_evaluation_basilica_image(
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
     command = ["/app/start.sh"]
-    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(
+        command,
+        CONTAINER_EVAL_RESULTS_PATH,
+        prepare_image_models=True,
+    )
 
     base_env = {
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        "PYTHONUNBUFFERED": "1",
         **vcst.HF_CONTAINER_ENV_IMAGE,
     }
 
@@ -354,7 +381,7 @@ async def run_evaluation_basilica_image(
         repos=models,
         model_name=original_model_repo,
         task_type="image",
-        image="diagonalge/tuning_validator_diffusion:basilica",
+        image=docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, num_gpus),
@@ -699,6 +726,8 @@ async def run_evaluation_individual(
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
     base_chains: dict[str, list[str]] | None = None,
+    swe_eval_config: SweInfiniteEvalConfig | None = None,
+    swe_task_selection_override: SweInfiniteTaskSelectionOverride | None = None,
 ) -> IndividualEvalResult:
     """Run individual (per-miner) eval containers for a single environment.
 
@@ -711,7 +740,10 @@ async def run_evaluation_individual(
     if not env_config.tournament_eval_command:
         raise ValueError(f"No tournament_eval_command configured for {environment_name.value}")
     command = env_config.tournament_eval_command
-    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    if _is_swe_infinite_name(environment_name):
+        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    else:
+        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     base_env = {
         "ORIGINAL_MODEL": base_model,
@@ -721,18 +753,22 @@ async def run_evaluation_individual(
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         **vcst.HF_CONTAINER_ENV,
     }
+    if _is_swe_infinite_name(environment_name):
+        base_env.update(build_swe_infinite_container_env(swe_eval_config, swe_task_selection_override))
 
     repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
     base_chains = base_chains or {}
-    existing_deployment_ids_by_hotkey = await _db_read_with_retry(
-        lambda: tournament_sql.get_individual_deployment_ids(
-            str(task_id),
-            miners.hotkeys,
-            [environment_name.value],
-            psql_db,
-        ) if task_id is not None and psql_db is not None else {},
-        "get_individual_deployment_ids",
-    )
+    existing_deployment_ids_by_hotkey = {}
+    if task_id is not None and psql_db is not None:
+        existing_deployment_ids_by_hotkey = await _db_read_with_retry(
+            lambda: tournament_sql.get_individual_deployment_ids(
+                str(task_id),
+                miners.hotkeys,
+                [environment_name.value],
+                psql_db,
+            ),
+            "get_individual_deployment_ids",
+        )
     deployment_ids_by_repo = {
         repo: existing_deployment_ids_by_hotkey[hotkey]
         for hotkey, repo in miners.by_hotkey.items()

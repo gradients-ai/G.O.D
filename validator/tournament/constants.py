@@ -2,6 +2,7 @@ from datetime import date
 
 from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
+from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 
 
@@ -47,9 +48,9 @@ MODEL_PREP_GPU_RESERVE_HOURS = 1.0
 # fraction. Only applies to text tasks (instruct/dpo/grpo); env tasks have no dataset stats.
 MAX_NEAR_DUPLICATE_RATE = 0.20
 
-TOURNAMENT_PENDING_CYCLE_INTERVAL = 15 * 60
-TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 15 * 60
-TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 15 * 60
+TOURNAMENT_PENDING_CYCLE_INTERVAL = 60  # 1 minute
+TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 60
+TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL = 60
 
 
 # Retry intervals (in seconds)
@@ -89,14 +90,14 @@ SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
-# Cap includes the injected boss. With 4 members, a group evaluates at most
-# C(4, 2) = 6 PvP pairs.
-MAX_ENVIRONMENT_GROUP_SIZE = 4
+# Cap includes the injected boss. With 5 members, a group evaluates at most
+# C(5, 2) = 10 PvP pairs.
+MAX_ENVIRONMENT_GROUP_SIZE = 5
 # Small env tournaments collapse too fast (one big group advancing 1 contender). When the
 # field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
 # are more groups, more contenders survive each round, and the bracket plays out over more rounds.
 SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
-SMALL_ENVIRONMENT_GROUP_SIZE = 3
+SMALL_ENVIRONMENT_GROUP_SIZE = 4
 
 
 # Environment tournament round structure
@@ -108,7 +109,7 @@ ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
 ENV_TARGET_TOURN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
-FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = None
+FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
@@ -137,7 +138,12 @@ ENVIRONMENT_TASKS_PER_GROUP = 1
 
 # Final round task counts
 FINAL_ROUND_IMAGE_TASKS = 6
-FINAL_ROUND_IMAGE_QWEN_ZIMAGE_TASKS = 3
+FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
+    ImageModelType.KREA2: 2,
+    ImageModelType.IDEOGRAM4: 2,
+    ImageModelType.QWEN_IMAGE: 1,
+    ImageModelType.Z_IMAGE: 1,
+}
 
 # Explicit text boss-round mix (the two continuous-SFT lineages replace one GRPO + one DPO slot);
 # FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.

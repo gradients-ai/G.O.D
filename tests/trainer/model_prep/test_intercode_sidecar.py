@@ -40,6 +40,13 @@ def test_model_prep_configs_include_intercode_sidecar():
     ]
 
 
+def test_model_prep_configs_include_swe_infinite_without_sidecar():
+    cfg = _build_env_configs()[EnvironmentName.SWE_INFINITE]
+
+    assert cfg.env_image == ""
+    assert cfg.env_server_command is None
+
+
 def test_model_prep_configs_are_time_budgeted_not_fixed_counts():
     configs = _build_env_configs()
 
@@ -140,6 +147,31 @@ def test_start_env_sidecars_skips_in_harness_games(monkeypatch):
     assert len(containers) == 1
 
 
+def test_start_env_sidecars_skips_envs_without_sidecar(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
+
+    import trainer.runtime as trainer_runtime
+
+    configs = _build_env_configs()
+    calls = []
+
+    async def fake_run_environment_server_container(env_name, log_labels, image=None, command=None):
+        calls.append((env_name, image, command))
+        return object()
+
+    monkeypatch.setattr(trainer_runtime, "ensure_internal_network", lambda: None)
+    monkeypatch.setattr(trainer_runtime, "run_environment_server_container", fake_run_environment_server_container)
+
+    env_url_map, containers = trainer_runtime._start_env_sidecars(
+        {EnvironmentName.SWE_INFINITE: configs[EnvironmentName.SWE_INFINITE]},
+        {},
+    )
+
+    assert calls == []
+    assert env_url_map == {}
+    assert containers == []
+
+
 def test_start_env_sidecars_failure_degrades_instead_of_raising(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
 
@@ -173,16 +205,19 @@ def test_in_harness_envs_match_agent_registry():
     assert pvp_envs == set(_AGENT_REGISTRY)
 
 
-def test_training_env_server_selection_skips_intercode(monkeypatch):
+def test_training_env_server_selection_skips_individual_no_sidecar_envs(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", types.ModuleType("pynvml"))
 
     import trainer.runtime as trainer_runtime
 
     assert trainer_runtime._select_training_env_server_name(
-        [EnvironmentName.INTERCODE, EnvironmentName.LIARS_DICE]
+        [EnvironmentName.INTERCODE, EnvironmentName.SWE_INFINITE, EnvironmentName.LIARS_DICE]
     ) == EnvironmentName.LIARS_DICE
     assert trainer_runtime._select_training_env_server_name(
         [EnvironmentName.INTERCODE]
+    ) is None
+    assert trainer_runtime._select_training_env_server_name(
+        [EnvironmentName.SWE_INFINITE]
     ) is None
     assert trainer_runtime._select_training_env_server_name([]) is None
 

@@ -35,7 +35,7 @@ Main product capabilities
 - Fine-tune chat models.
 - Fine-tune DPO preference models.
 - Fine-tune GRPO / reward-driven models.
-- Fine-tune image models such as SDXL and Flux variants.
+- Fine-tune image models such as Flux, Z-Image, Qwen-Image, Ideogram 4, and Krea 2.
 - Launch training from a Hugging Face dataset reference or from pre-prepared dataset URLs.
 - Check prices before creating jobs.
 - Poll task state and fetch result breakdowns.
@@ -337,6 +337,7 @@ Tournament system overview
 - Miners expose GET /training_repo/{task_type} from their miner.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
 - Tournament types include text, image, and environment.
+- Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
 - Typical cadence:
   - environment tournaments start Mondays
   - text/image tournaments start Thursdays

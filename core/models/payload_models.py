@@ -79,7 +79,7 @@ class TrainRequestImage(TrainRequest):
         description="Link to dataset zip file",
         min_length=1,
     )
-    model_type: ImageModelType = ImageModelType.SDXL
+    model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = None
 
 
@@ -400,7 +400,7 @@ class NewTaskRequestImage(NewTaskRequest):
         default_factory=lambda: str(uuid4()),
         description="A ds name. The actual dataset is provided via the image_text_pairs",
     )
-    model_type: ImageModelType = ImageModelType.SDXL
+    model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
 
 
@@ -414,7 +414,7 @@ class NewTaskRequestImageZip(NewTaskRequest):
             "Each image and caption must share the same filename stem."
         ),
     )
-    model_type: ImageModelType = ImageModelType.SDXL
+    model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
 
 
@@ -555,7 +555,7 @@ class ImageTaskDetails(TaskDetails):
     image_text_pairs: list[ImageTextPair] | None = None
     ds_repo: str | None = None
     base_model_repository: str = Field(..., description="The repository for the model")
-    model_type: ImageModelType = ImageModelType.SDXL
+    model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = None
 
     model_config = ConfigDict(protected_namespaces=())

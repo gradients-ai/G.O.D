@@ -75,7 +75,8 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
 
     for i in range(device_count):
         handle = pynvml.nvmlDeviceGetHandleByIndex(i)
-        name = pynvml.nvmlDeviceGetName(handle).decode("utf-8").upper()
+        raw_name = pynvml.nvmlDeviceGetName(handle)
+        name = (raw_name.decode("utf-8") if isinstance(raw_name, bytes) else raw_name).upper()
         mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         total_vram_gb = int(mem_info.total / 1024 / 1024 / 1024)
 

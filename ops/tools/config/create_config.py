@@ -126,6 +126,14 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     s3_bucket_name = input("🎯 Enter your s3 bucket name: ")
     s3_region = input("🎯 Enter s3 region (default: us-east-1): ") or "us-east-1"
     discord_url = input("🎯 Enter your discord webhook url (optional): ") or None
+    swe_infinite_server_base_url = (
+        validate_input(
+            "🎯 Enter external Affinetes SWE Infinite server URL (optional): ",
+            InputValidators.http_url,
+            default="",
+        )
+        or None
+    )
 
     frontend_api_key = generate_secure_password() if not frontend_api_key else frontend_api_key
 
@@ -158,6 +166,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         database_url=database_url,
         postgres_profile=postgres_profile,
         discord_webhook=discord_url,
+        swe_infinite_server_base_url=swe_infinite_server_base_url,
     )
     return vars(config)
 

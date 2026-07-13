@@ -147,6 +147,25 @@ jobs:
                   ],
               },
               {
+                  "id": "env-eval-swe-infinite",
+                  "image": "gradientsio/env-eval-swe-infinite",
+                  "channel_tag": "basilica",
+                  "dockerfile": "ops/docker/validator-swe-infinite.dockerfile",
+                  "patterns": [
+                      "validator/evaluation/**",
+                      "ops/docker/validator-swe-infinite.dockerfile",
+                      "pyproject.toml",
+                      ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
+                  ],
+              },
+              {
                   "id": "pvp-evaluator",
                   "image": "gradientsio/pvp-evaluator",
                   "channel_tag": "basilica",

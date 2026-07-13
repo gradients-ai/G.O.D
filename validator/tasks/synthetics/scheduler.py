@@ -17,6 +17,7 @@ from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
+from core.models.image_models import ImageModelType
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
@@ -49,6 +50,14 @@ from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
 
 
 logger = get_logger(__name__)
+
+SUPPORTED_TOURNAMENT_IMAGE_MODEL_TYPES = {
+    ImageModelType.FLUX,
+    ImageModelType.Z_IMAGE,
+    ImageModelType.QWEN_IMAGE,
+    ImageModelType.IDEOGRAM4,
+    ImageModelType.KREA2,
+}
 
 def maybe_get_yarn_factor() -> int | None:
     """
@@ -104,7 +113,15 @@ async def _get_image_models(keypair: Keypair) -> AsyncGenerator[ImageModelInfo, 
             await asyncio.sleep(5)
             continue
 
-        models = response.models
+        models = [
+            model_info
+            for model_info in response.models
+            if model_info.model_type in SUPPORTED_TOURNAMENT_IMAGE_MODEL_TYPES
+        ]
+        if not models:
+            logger.error(f"No supported image models returned from {service_cst.GET_IMAGE_MODELS_ENDPOINT}: {response_data}")
+            await asyncio.sleep(5)
+            continue
         random.shuffle(models)
         for model_info in models:
             yield model_info

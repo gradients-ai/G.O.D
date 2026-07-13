@@ -10,5 +10,6 @@
     "the-acorn-ai/textarena-player-game-traces",
     "gradients-io-tournaments/env_training_gradients",
     "gradients-io-tournaments/intercode_bigcode_combined_12k",
-    "gradients-io-tournaments/pvp-tool-calling-sft"
+    "gradients-io-tournaments/pvp-tool-calling-sft",
+    "gradients-io-tournaments/SWE-ZERO-12M-trajectories-filtered"
 ]

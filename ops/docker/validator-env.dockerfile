@@ -1,6 +1,6 @@
 FROM phoenixbeaudry/game:mcts-api AS mcts_runtime
 
-FROM lmsysorg/sglang:latest
+FROM lmsysorg/sglang:v0.5.14
 
 WORKDIR /app
 

@@ -189,7 +189,10 @@ async def run_trainer_container_image(
     if trigger_word:
         command += ["--trigger-word", trigger_word]
 
-    environment: dict[str, str] = {"TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH}
+    environment: dict[str, str] = {
+        "TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH,
+        "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
+    }
     if baseline_stats:
         vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
         stats_filename = f"baseline_stats_{task_id}.json"
@@ -410,10 +413,12 @@ def run_downloader_container(
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
 
-    environment = {}
+    environment = {
+        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
+        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
+    }
     if anonymize:
         environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
-
     try:
         logger.info(f"Starting downloader container: {container_name}", extra=log_labels)
         container = client.containers.run(
@@ -466,6 +471,10 @@ def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
     return cfg is not None and cfg.eval_type == EvalType.PVP
 
 
+def _env_config_uses_sidecar(cfg: EnvConfig) -> bool:
+    return bool(cfg.env_image)
+
+
 def _start_env_sidecars(
     env_configs: dict[EnvironmentName, EnvConfig],
     log_labels: dict[str, str] | None,
@@ -486,6 +495,8 @@ def _start_env_sidecars(
     try:
         for env_name, cfg in env_configs.items():
             if _env_baseline_runs_in_harness(env_name):
+                continue
+            if not _env_config_uses_sidecar(cfg):
                 continue
             image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
             if image_key in image_to_url:
@@ -612,10 +623,7 @@ def run_model_prep_container(
     if env_configs_with_urls:
         command += ["--env-configs", json.dumps(env_configs_with_urls)]
 
-    env = {
-        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
-        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
-    }
+    env = {}
     if continuous_sft_remote_code_repo:
         # Signals the entrypoint to pin the model's custom-arch code to this audited mirror and load
         # with trust_remote_code (custom-arch continuous-SFT lineages, e.g. quasar).
@@ -703,7 +711,8 @@ def _select_training_env_server_name(
 ) -> EnvironmentName | None:
     for env_name in environment_names or []:
         resolved = EnvironmentName(env_name)
-        if resolved != EnvironmentName.INTERCODE:
+        cfg = ENVIRONMENT_CONFIGS.get(resolved)
+        if cfg is not None and cfg.eval_type == EvalType.PVP and cfg.env_image:
             return resolved
     return None
 
@@ -848,11 +857,9 @@ def get_task_type(request: TrainerProxyRequest) -> TaskType:
 def get_dockerfile_path(task_type: TaskType, training_data, local_repo_path: str) -> str:
     """Get the appropriate dockerfile path based on task type and model type"""
     if task_type == TaskType.IMAGETASK:
-        model_type = training_data.model_type
-        if model_type in [ImageModelType.Z_IMAGE, ImageModelType.QWEN_IMAGE]:
-            return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_TOOLKIT_DOCKERFILE_PATHS)
-        else:
+        if training_data.model_type == ImageModelType.FLUX:
             return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_DOCKERFILE_PATHS)
+        return _resolve_dockerfile_path(local_repo_path, cst.IMAGE_TOOLKIT_DOCKERFILE_PATHS)
 
     else:
         return _resolve_dockerfile_path(local_repo_path, cst.TEXT_DOCKERFILE_PATHS)
@@ -946,7 +953,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         if task_type == TaskType.ENVIRONMENTTASK:
             env_name = _select_training_env_server_name(task.training_data.dataset_type.environment_names)
             if env_name is None:
-                logger.info("Skipping env server containers; only InterCode environments configured", extra=log_labels)
+                logger.info("Skipping env server containers; no training sidecar environments configured", extra=log_labels)
                 await log_task(training_data.task_id, task.hotkey, "Skipping Environment Servers.")
             else:
                 logger.info("Running Environment Server Containers", extra=log_labels)

@@ -224,7 +224,6 @@ Preferred Dockerfile layout:
 
 ```text
 ops/docker/standalone-text-trainer.dockerfile
-ops/docker/standalone-image-trainer.dockerfile
 ops/docker/standalone-image-toolkit-trainer.dockerfile
 ```
 
@@ -232,7 +231,6 @@ Legacy Dockerfile layout is also supported:
 
 ```text
 dockerfiles/standalone-text-trainer.dockerfile
-dockerfiles/standalone-image-trainer.dockerfile
 dockerfiles/standalone-image-toolkit-trainer.dockerfile
 ```
 
@@ -242,10 +240,9 @@ Required Dockerfiles by tournament type:
 | --- | --- |
 | Text | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
 | Environment | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
-| Image, SDXL/Flux | `ops/docker/standalone-image-trainer.dockerfile` or legacy image path |
-| Image, Z-Image/Qwen-Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
+| Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
 
-If you compete in image tournaments, include both image Dockerfiles because image tasks can use `sdxl`, `flux`, `z-image`, or `qwen-image`.
+If you compete in image tournaments, include the image toolkit Dockerfile. Image tasks can use `flux`, `z-image`, `qwen-image`, `ideogram4`, or `krea2`.
 
 ### License And Notice
 
@@ -318,7 +315,7 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 | `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
 | `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
 | `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
-| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, or `intercode`. |
+| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, `goofspiel`, `intercode`, or `swe_infinite`. |
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
 
@@ -330,7 +327,7 @@ Used for `ImageTask`:
 --task-id             # Unique task UUID/string
 --model               # Base model identifier or local cached model path
 --dataset-zip         # Original task dataset zip URL
---model-type          # sdxl, flux, z-image, or qwen-image
+--model-type          # flux, z-image, qwen-image, ideogram4, or krea2
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
 --trigger-word        # Optional, only when provided by task data
@@ -352,7 +349,7 @@ Your container may receive:
 | `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
 | `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
 
-For `intercode`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started.
+For `intercode`-only or `swe_infinite`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started during miner training.
 
 ## Cache And Output Paths
 
@@ -438,12 +435,13 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - Participants are split into groups of 2 to 6.
 - The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
 - Non-final rounds create one environment task per group.
-- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported environments.
+- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments.
 - Round 2 and later can continue from each miner's previous-round model.
 - Up to one non-boss winner advances per group, with ties at the cutoff allowed.
 - If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
-- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start.
-- The contender wins the environment tournament only if they have no boss-round losses and at least one boss-round win. Draws are acceptable; any loss means the boss retains.
+- `swe_infinite` appears only in the final boss round. It is excluded from non-final environment tasks.
+- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start. The previous-winner/target-model task is the guaranteed `swe_infinite` task; the continuation and from-scratch tasks use the other supported environments.
+- The contender wins the environment tournament only if they have no boss-round losses and a strict win on the `swe_infinite` task. Draws are acceptable elsewhere; any loss or failure to beat the boss on `swe_infinite` means the boss retains.
 
 Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The from-scratch boss-round task uses `3.0` hours.
 
@@ -482,7 +480,9 @@ Supported environment names are defined in `core/constants/environments.py`:
 - `leduc_poker`
 - `othello`
 - `clobber`
+- `goofspiel`
 - `intercode`
+- `swe_infinite`
 
 For OpenSpiel-style environments, one environment sidecar is usually started per assigned GPU. The URLs are passed through `ENVIRONMENT_SERVER_URLS`. Parse them as a comma-separated list:
 
@@ -511,16 +511,15 @@ Rules for environment tournaments:
 
 - Do not bundle your own dataset in the Docker image.
 - Do not bundle a pretrained model in the Docker image.
-- SFT is allowed only with whitelisted requested datasets.
+- SFT is allowed only with whitelisted requested datasets or with self-generated data.
 
 ## Image Tournament Tips
 
-The base diffusion trainer supports SDXL, Flux, Z-Image, and Qwen-Image. The common tuning split is:
+Image tournaments use the ai-toolkit trainer for Flux, Z-Image, Qwen-Image, Ideogram 4, and Krea 2. The common tuning split is:
 
 - Style LoRA tasks often prefer lower learning rates, more repeats, and less aggressive fitting.
 - Person, object, or concept tasks often overfit faster and may need fewer repeats, fewer epochs, and a higher learning rate.
-- SDXL defaults use more repeats than Flux in `trainer/constants.py`.
-- Z-Image and Qwen-Image use the AI Toolkit Dockerfile path.
+- Tune per model type rather than assuming one recipe works across all toolkit architectures.
 
 These are starting points, not rules. Your tournament edge usually comes from detecting the task shape and adapting the training recipe.
 
@@ -547,6 +546,38 @@ python -m ops.validator_ops.run_evaluation --task_id TASK_ID
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
 ```
+
+### Local SWE Infinite Evaluation Smoke Test
+
+For environment miners working on `swe_infinite`, use the local SWE smoke test
+when you want to evaluate a Hugging Face model repo without Basilica and without
+validator database access:
+
+```bash
+uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
+  --model YOUR_HF_MODEL_OR_LORA_REPO \
+  --base-model Qwen/Qwen2.5-7B-Instruct \
+  --num-seeds 2 \
+  --seed 42
+```
+
+The script starts SGLang on the host, starts the SWE Infinite server from
+`gradientsio/swe-infinite:v1`, and calls the same MiniSWE evaluation path used
+by tournament evaluation. Task selection is deterministic for a fixed `--seed`,
+task range, and `--num-seeds`; run it again with the same values to evaluate the
+same task IDs. To force exact tasks:
+
+```bash
+uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
+  --model YOUR_HF_MODEL_OR_LORA_REPO \
+  --task-id 7 83 45
+```
+
+Because the SWE server runs in Docker while SGLang runs on the host, the model
+URL sent to the SWE container defaults to `http://host.docker.internal:30000/v1`.
+Use `--model-base-url` if your Docker runtime needs a different callback URL.
+Use `--dry-run` first to print the selected task IDs, Docker command, and model
+URL without launching SGLang or Docker.
 
 ### Checking For Duplicate Submissions
 

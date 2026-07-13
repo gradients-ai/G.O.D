@@ -11,3 +11,8 @@ secure_checkpoints
 *.safetensors
 *.ckpt
 data
+validator/evaluation/ComfyUI
+comfy-ideogram
+ideogram-eval-images
+ideogram-debug*
+krea-eval-images

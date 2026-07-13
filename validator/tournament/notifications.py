@@ -129,6 +129,39 @@ async def notify_tournament_dedup_resolved(
     except Exception as e:
         logger.error(f"Failed to send Discord notification for R2 dedup resolution: {e}")
 
+
+async def notify_challenger_code_review(
+    tournament_id: str,
+    tournament_type: str,
+    hotkey: str,
+    reason: str,
+    report_url: str | None,
+    discord_url: str,
+):
+    """Boss-round integrity finding awaiting an operator decision."""
+    try:
+        command = "python -m ops.tools.tournament.code_review"
+        lines = [
+            "Boss-round integrity check flagged a candidate; tournament completion is paused.",
+            f"Tournament: {tournament_id} ({tournament_type})",
+            f"Candidate: {hotkey}",
+            f"Reason: {reason}",
+        ]
+        if report_url:
+            lines.append(f"Full report: {report_url}")
+        lines.extend(
+            [
+                "",
+                "Review the repository, then run one command:",
+                f"  agree: {command} agree {tournament_id} {hotkey}",
+                f"  skip:  {command} skip {tournament_id} {hotkey}",
+            ]
+        )
+        await send_to_discord(discord_url, "\n".join(lines))
+    except Exception as e:
+        logger.error(f"Failed to send Discord challenger code review: {e}")
+
+
 async def notify_organic_task_created(task_id: str, task_type: str, discord_url: str, is_benchmark: bool = False):
     try:
         if is_benchmark:
