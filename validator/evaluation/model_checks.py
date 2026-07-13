@@ -18,6 +18,22 @@ logger = get_logger(__name__)
 hf_api = HfApi()
 
 
+# Custom continuous-SFT lineages ship remote code whose config.json model_type (e.g. "quasar_text")
+# disagrees with the model_type of the class its auto_map resolves (QuasarConfig -> "quasar"). The
+# original config (loaded via AutoConfig) and the loaded model's config then end up structurally
+# different, so the generic attribute comparison in model_is_a_finetune false-negatives — the seed
+# even fails against itself. These archs are pinned to our audited seed code, so a matching lineage
+# arch is guaranteed; detect them explicitly and trust the pin.
+_KNOWN_CUSTOM_ARCH_MODEL_TYPES = {"quasar", "quasar_text"}
+
+
+def _is_known_custom_arch_lineage(config) -> bool:
+    if getattr(config, "model_type", None) in _KNOWN_CUSTOM_ARCH_MODEL_TYPES:
+        return True
+    architectures = getattr(config, "architectures", None) or []
+    return any(isinstance(arch, str) and arch.startswith("Quasar") for arch in architectures)
+
+
 def model_is_a_finetune(
     original_repo: str,
     finetuned_model: AutoModelForCausalLM,
@@ -97,6 +113,14 @@ def model_is_a_finetune(
                 else:
                     raise e
     finetuned_config = finetuned_model.config
+
+    if _is_known_custom_arch_lineage(original_config) and _is_known_custom_arch_lineage(finetuned_config):
+        logger.info(
+            "Known custom-arch lineage (e.g. quasar): config.json model_type disagrees with the "
+            "auto_map config class, so the generic architecture comparison false-negatives. "
+            "Architecture is pinned to the audited seed; treating as a finetune."
+        )
+        return True
 
     try:
         architecture_classes_match = finetuned_config.architectures == original_config.architectures
