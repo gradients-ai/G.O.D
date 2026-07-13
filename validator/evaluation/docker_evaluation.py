@@ -257,7 +257,11 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo=deployment_ids_str,
         local_logging=local_logging,
         persist_deployment_ids=not is_environment_eval,
-        reserve_deployment_id=False,
+        # Stamp deployment_id at reserve time for text/instruct evals so a bouncing deploy stays
+        # tracked. Left off for environment evals: their eval rows are long-lived across the whole
+        # group+pair eval, and stamping a group-deploy id there would let a mid-eval ghost-reset
+        # clobber the row (env pair deployments are tracked separately on pvp_pair_results).
+        reserve_deployment_id=not is_environment_eval,
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
@@ -326,6 +330,9 @@ async def run_evaluation_basilica_grpo(
         psql_db=psql_db,
         repo_to_hotkey=repo_to_hotkey,
         deployment_ids_by_repo=deployment_ids_str,
+        # Track every pod at reserve time (see image path) so a deploy that never reaches readiness
+        # can't leak as an untracked orphan.
+        reserve_deployment_id=True,
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
@@ -391,6 +398,11 @@ async def run_evaluation_basilica_image(
         psql_db=psql_db,
         repo_to_hotkey=repo_to_hotkey,
         deployment_ids_by_repo=deployment_ids_str,
+        # Stamp deployment_id on the eval row at reserve time (pre-deploy). Image (FLUX) deploys
+        # bounce on GPU capacity and often never reach readiness, so the readiness-callback persist
+        # never fires — leaving a live-but-untracked pod that only the slow orphan grace reaps.
+        # Reserving under the deployment name keeps every image pod tracked from birth.
+        reserve_deployment_id=True,
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
