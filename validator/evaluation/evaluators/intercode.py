@@ -211,6 +211,10 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
 
     model = PeftModel.from_pretrained(base, lora_dir)
     merged = model.merge_and_unload(safe_merge=False)
+    # merge_and_unload removes the adapter layers, but newer Transformers versions can leave
+    # this flag enabled and then try to save a now-nonexistent active adapter.
+    if hasattr(merged, "_hf_peft_config_loaded"):
+        merged._hf_peft_config_loaded = False
     os.makedirs(output_dir, exist_ok=True)
     merged.save_pretrained(output_dir, safe_serialization=True, max_shard_size="5GB")
     # Carry the adapter's chat template onto the saved tokenizer (base selection would drop it).

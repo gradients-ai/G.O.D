@@ -133,6 +133,11 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         if top_tokenizer is not base_tokenizer:
             lora_tokenizer = top_tokenizer
 
+        # merge_and_unload removes the adapter layers, but newer Transformers versions can leave
+        # this flag enabled and then try to save a now-nonexistent active adapter.
+        if hasattr(merged, "_hf_peft_config_loaded"):
+            merged._hf_peft_config_loaded = False
+
         merge_dir = "/cache/merged_model"
         os.makedirs(merge_dir, exist_ok=True)
         merged.save_pretrained(merge_dir, safe_serialization=True)

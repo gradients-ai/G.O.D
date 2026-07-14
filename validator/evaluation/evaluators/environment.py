@@ -149,6 +149,11 @@ def _merge_base_and_lora(
     merged = model.merge_and_unload(safe_merge=False)
     logger.info("eval_setup merge: merge_and_unload done in %.1fs", time.time() - t2)
 
+    # merge_and_unload removes the adapter layers, but newer Transformers versions can leave
+    # this flag enabled and then try to save a now-nonexistent active adapter.
+    if hasattr(merged, "_hf_peft_config_loaded"):
+        merged._hf_peft_config_loaded = False
+
     os.makedirs(output_dir, exist_ok=True)
     t3 = time.time()
     logger.info("eval_setup merge: saving merged model to disk...")
