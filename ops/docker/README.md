@@ -15,7 +15,8 @@ Dockerfiles and container support files for miner, trainer, validator, evaluatio
 - `pvp-eval.dockerfile`: PvP evaluation image.
 - `standalone-image-toolkit-trainer.dockerfile`: ai-toolkit image trainer expected in miner repos.
 - `standalone-text-trainer.dockerfile`: text trainer image expected in miner repos.
-- `trainer-downloader.dockerfile`: model/dataset downloader image.
+- `trainer-downloader.dockerfile`: model/dataset downloader image, including image-model cache validation and legacy FLUX
+  checkpoint layout normalization; see `trainer/containers/README.md` for its cache and deployment contract.
 - `validator.dockerfile`: base validator image.
 - `validator-diffusion.dockerfile`: image evaluation validator image.
 - `validator-env.dockerfile`: environment evaluation validator image.

@@ -6,14 +6,14 @@ import json
 import os
 import tempfile
 
-from core.models.payload_models import TrainingRepoResponse
-from validator.tournament.models import TaskTrainingAssignment
-from validator.tournament.models import TournamentParticipant
 from core.datasets.whitelist import MAX_REQUESTED_DATASETS
 from core.datasets.whitelist import WHITELISTED_SFT_DATASETS
 from core.datasets.whitelist import validate_requested_datasets
+from core.models.payload_models import TrainingRepoResponse
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.model_artifacts import scrub_model_identity
+from validator.tournament.models import TaskTrainingAssignment
+from validator.tournament.models import TournamentParticipant
 
 
 # --- 7a: validate_requested_datasets ---
