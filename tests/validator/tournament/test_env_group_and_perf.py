@@ -344,7 +344,7 @@ class TestEnvWinPercentage:
 
 
 # =============================================================================
-# 4. determine_env_tournament_winner: must avoid losses and win SWE Infinite
+# 4. determine_env_tournament_winner: must avoid losses and tie or win SWE Infinite
 # =============================================================================
 
 
@@ -438,7 +438,7 @@ class TestDetermineEnvTournamentWinner:
 
     @pytest.mark.asyncio
     async def test_draws_are_allowed_when_contender_has_no_losses(self):
-        """Contender wins with draws only when one strict win is on SWE."""
+        """Contender wins when a non-SWE task is drawn and SWE is won."""
         from validator.tournament.round_results import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -471,7 +471,7 @@ class TestDetermineEnvTournamentWinner:
         assert result[0] == "contender"
 
     @pytest.mark.asyncio
-    async def test_contender_wins_non_swe_only_boss_retains(self):
+    async def test_contender_wins_when_all_boss_round_tasks_are_tied(self):
         from validator.tournament.round_results import determine_env_tournament_winner
 
         tournament = MagicMock(spec=TournamentData)
@@ -486,8 +486,8 @@ class TestDetermineEnvTournamentWinner:
 
         scores_by_task = {
             "task_1": {EMISSION_BURN_HOTKEY: 5.0, "contender": 5.0},  # SWE draw
-            "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 6.0},
-            "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 7.0},
+            "task_2": {EMISSION_BURN_HOTKEY: 3.0, "contender": 3.0},
+            "task_3": {EMISSION_BURN_HOTKEY: 2.0, "contender": 2.0},
         }
 
         async def mock_get_scores(task_id, psql_db):
@@ -501,8 +501,8 @@ class TestDetermineEnvTournamentWinner:
         ):
             result = await determine_env_tournament_winner(tournament, [], MagicMock(), MagicMock())
 
-        assert result[0] == EMISSION_BURN_HOTKEY
-        assert result[1] == "contender"
+        assert result[0] == "contender"
+        assert result[1] == EMISSION_BURN_HOTKEY
 
     @pytest.mark.asyncio
     async def test_no_swe_final_task_boss_retains(self):

@@ -441,7 +441,7 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
 - `swe_infinite` appears only in the final boss round. It is excluded from non-final environment tasks.
 - The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start. The previous-winner/target-model task is the guaranteed `swe_infinite` task; the continuation and from-scratch tasks use the other supported environments.
-- The contender wins the environment tournament only if they have no boss-round losses and a strict win on the `swe_infinite` task. Draws are acceptable elsewhere; any loss or failure to beat the boss on `swe_infinite` means the boss retains.
+- The contender wins the environment tournament only if they have no boss-round losses and at least tie the boss on the `swe_infinite` task. Draws are acceptable on every boss-round task; any loss or a lower `swe_infinite` score means the boss retains.
 
 Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The from-scratch boss-round task uses `3.0` hours.
 
