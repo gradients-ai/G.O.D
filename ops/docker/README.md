@@ -20,4 +20,5 @@ Dockerfiles and container support files for miner, trainer, validator, evaluatio
 - `validator-diffusion.dockerfile`: image evaluation validator image.
 - `validator-env.dockerfile`: environment evaluation validator image.
 - `validator-intercode.dockerfile`: InterCode evaluation image.
-- `validator-swe-infinite.dockerfile`: SWE Infinite model-serving evaluation image.
+- `validator-swe-infinite.dockerfile`: SWE Infinite model-serving evaluation image. Its SGLang, Pydantic/core, and PEFT
+  versions are pinned together, and the build imports both the SGLang launcher and LoRA merge path to catch dependency skew.
