@@ -1116,22 +1116,26 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
     return False
 
 
-async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[str, str]], config: Config) -> bool:
+async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[str, str]], config: Config) -> set[str]:
     """Check trainers for completed per-miner model prep results after a restart.
 
     Polls each trainer for each miner's prep job (keyed by task_id + hotkey).
-    Stores recovered results and returns True if any were found or still in progress.
+    Stores recovered results and returns the set of hotkeys that are already
+    handled this cycle (baseline_stats recovered, or a prep still running on a
+    trainer). Those hotkeys must be skipped for dispatch, but any remaining
+    miners should still be scheduled.
     """
     task_id_str = str(task.task_id)
     trainers = await tournament_sql.get_trainers(config.psql_db)
-    recovered_any = False
-    in_progress = False
+    handled: set[str] = set()
 
     for trainer in trainers:
         trainer_ip = trainer.trainer_ip
         trainer_ip_with_port = f"{trainer_ip}:8001" if ":" not in trainer_ip else trainer_ip
 
         for hotkey, _starting_model in miners_needing:
+            if hotkey in handled:
+                continue
             try:
                 url = f"http://{trainer_ip_with_port}{MODEL_PREP_STATUS_ENDPOINT.format(task_id=task_id_str)}"
                 async with httpx.AsyncClient(timeout=_MODEL_PREP_STATUS_TIMEOUT) as client:
@@ -1144,7 +1148,7 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                 continue
 
             if job.status == TaskStatus.TRAINING:
-                in_progress = True
+                handled.add(hotkey)
                 continue
 
             if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
@@ -1155,9 +1159,9 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                     f"Recovered per-miner baseline_stats for task {task.task_id} "
                     f"hotkey={hotkey[:8]}... from trainer {trainer_ip}"
                 )
-                recovered_any = True
+                handled.add(hotkey)
 
-    return recovered_any or in_progress
+    return handled
 
 
 async def _try_reuse_sibling_model_prep(task, config: Config) -> bool:
@@ -1364,9 +1368,13 @@ async def process_awaiting_model_prep_tasks(config: Config):
                             task_id_str, config.psql_db,
                         )
                         if miners_needing:
-                            # Try to recover completed results from trainers (e.g. after restart)
-                            if await _recover_miner_preps_from_trainers(task, miners_needing, config):
-                                continue  # Re-check on next cycle
+                            # Recover completed/in-flight per-miner preps from trainers (e.g. after
+                            # restart). Returns the hotkeys already handled this cycle; the remaining
+                            # miners must still be dispatched so one in-progress miner doesn't block
+                            # the others.
+                            handled_hotkeys = await _recover_miner_preps_from_trainers(
+                                task, miners_needing, config
+                            )
 
                             gpu_req = get_tournament_gpu_requirement(
                                 task.task_type, task.model_params_count or 0, task.model_id,
@@ -1375,7 +1383,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                             )
                             for hotkey, starting_model in miners_needing:
                                 prep_key = f"{task_id_str}:{hotkey}"
-                                if prep_key in _miner_prep_in_progress:
+                                if hotkey in handled_hotkeys or prep_key in _miner_prep_in_progress:
                                     continue
                                 suitable = await _check_suitable_gpus(config, gpu_req)
                                 if suitable is None:

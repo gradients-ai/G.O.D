@@ -49,6 +49,22 @@ from trainer.telemetry import logger
 # logger = get_logger(__name__)
 
 
+_warned_missing_hf_token = False
+
+
+def _hf_container_env() -> dict[str, str]:
+    """Shared HF credentials passed to trainer-side containers."""
+    global _warned_missing_hf_token
+    token = os.environ.get("HUGGINGFACE_TOKEN", "")
+    if not token and not _warned_missing_hf_token:
+        logger.warning("HUGGINGFACE_TOKEN is empty; HF-gated model pulls/pushes may fail with auth header errors.")
+        _warned_missing_hf_token = True
+    return {
+        "HUGGINGFACE_TOKEN": token,
+        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
+    }
+
+
 def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
     client = docker.from_env()
     try:
@@ -192,6 +208,7 @@ async def run_trainer_container_image(
     environment: dict[str, str] = {
         "TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH,
         "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
+        **_hf_container_env(),
     }
     if baseline_stats:
         vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
@@ -413,10 +430,7 @@ def run_downloader_container(
     container_name = f"downloader-{task_id}-{str(uuid.uuid4())[:8]}"
     container = None
 
-    environment = {
-        "HUGGINGFACE_TOKEN": os.environ.get("HUGGINGFACE_TOKEN", ""),
-        "HUGGINGFACE_USERNAME": os.environ.get("HUGGINGFACE_USERNAME", ""),
-    }
+    environment = _hf_container_env()
     if anonymize:
         environment["MODEL_HASH_SALT"] = os.environ.get("MODEL_HASH_SALT", "")
     try:
@@ -623,7 +637,7 @@ def run_model_prep_container(
     if env_configs_with_urls:
         command += ["--env-configs", json.dumps(env_configs_with_urls)]
 
-    env = {}
+    env = _hf_container_env()
     if continuous_sft_remote_code_repo:
         # Signals the entrypoint to pin the model's custom-arch code to this audited mirror and load
         # with trust_remote_code (custom-arch continuous-SFT lineages, e.g. quasar).

@@ -88,6 +88,7 @@ FAL_IMAGE_OUTPUT_FORMAT = "png"
 IDEOGRAM_MAGIC_PROMPT_API_KEY = os.getenv("IDEOGRAM_API_KEY") or os.getenv("MAGIC_PROMPT_API_KEY")
 IDEOGRAM_MAGIC_PROMPT_URL = "https://api.ideogram.ai/v1/ideogram-v4/magic-prompt"
 IDEOGRAM_MAGIC_PROMPT_TIMEOUT_SECONDS = 120
+IDEOGRAM_MAGIC_PROMPT_CONCURRENCY = 1
 
 PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
 IMAGE_GEN_ENDPOINT = "https://image.chutes.ai/generate"

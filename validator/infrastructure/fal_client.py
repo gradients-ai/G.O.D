@@ -109,11 +109,24 @@ def _extension_from_response(url: str, response: httpx.Response) -> str:
     return ".png"
 
 
+def _ensure_image_response(url: str, response: httpx.Response) -> None:
+    content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type.startswith("image/"):
+        return
+
+    raise httpx.HTTPStatusError(
+        f"URL did not return an image: {url} (content-type={content_type or 'unknown'})",
+        request=response.request,
+        response=response,
+    )
+
+
 @retry_http_with_backoff
 async def download_url(url: str, destination_without_suffix: Path) -> Path:
     async with httpx.AsyncClient(timeout=120) as client:
-        response = await client.get(url)
+        response = await client.get(url, headers={"Accept": "image/*"})
         response.raise_for_status()
+        _ensure_image_response(url, response)
 
     destination = destination_without_suffix.with_suffix(_extension_from_response(url, response))
     destination.write_bytes(response.content)

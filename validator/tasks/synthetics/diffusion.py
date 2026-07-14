@@ -522,6 +522,7 @@ def _canonical_ideogram_caption(caption: dict) -> dict:
     return caption
 
 
+@retry_with_backoff
 async def generate_ideogram_json_prompt(prompt: str, api_key: str | None = None) -> str:
     api_key = api_key or synth_cst.IDEOGRAM_MAGIC_PROMPT_API_KEY
     if not api_key:
@@ -547,7 +548,7 @@ async def generate_ideogram_json_prompt(prompt: str, api_key: str | None = None)
 
 
 async def rewrite_pairs_with_ideogram_json_prompts(image_text_pairs: list[ImageTextPair]) -> list[ImageTextPair]:
-    semaphore = asyncio.Semaphore(synth_cst.FAL_IMAGE_GENERATION_CONCURRENCY)
+    semaphore = asyncio.Semaphore(synth_cst.IDEOGRAM_MAGIC_PROMPT_CONCURRENCY)
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
 
     async def rewrite_one(index: int, pair: ImageTextPair, work_dir: Path) -> ImageTextPair:
@@ -561,6 +562,10 @@ async def rewrite_pairs_with_ideogram_json_prompts(image_text_pairs: list[ImageT
             text_url = await upload_local_file(text_path, "image_synth/ideogram_prompts")
             return ImageTextPair(image_url=pair.image_url, text_url=text_url)
 
+    logger.info(
+        f"Rewriting {len(image_text_pairs)} prompts with Ideogram magic prompt, "
+        f"concurrency={synth_cst.IDEOGRAM_MAGIC_PROMPT_CONCURRENCY}"
+    )
     with tempfile.TemporaryDirectory(dir=TEMP_PATH_FOR_IMAGES) as tmp_dir:
         work_dir = Path(tmp_dir)
         tasks = [rewrite_one(index, pair, work_dir) for index, pair in enumerate(image_text_pairs)]
