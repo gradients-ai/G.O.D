@@ -1,8 +1,8 @@
 """Cumulative-alpha projections must integrate the piecewise decay curve.
 
-The old trapezoid between day 0 and the horizon kept accruing alpha long after
-the champion's weight hit the curve's zero-cliff (day 40), overstating 90/180
-day totals several-fold.
+A trapezoid between day 0 and the horizon would misstate the totals: the curve
+decays steeply early, then holds at a floor from day 40 on, so alpha keeps
+accruing past day 40 but at that flat floor rate.
 """
 
 from unittest.mock import patch
@@ -16,7 +16,7 @@ from validator.tournament.models import TournamentType
 from validator.tournament.performance_utils import calculate_tournament_projection
 
 
-DECAY_ZERO_DAY = cts.EMISSION_TIME_DECAY_CURVE[-1][0]
+DECAY_FLOOR_DAY, DECAY_FLOOR_RETENTION = cts.EMISSION_TIME_DECAY_CURVE[-1]
 
 
 async def project(percentage_improvement: float = 10.0):
@@ -34,15 +34,16 @@ async def project(percentage_improvement: float = 10.0):
 
 
 @pytest.mark.asyncio
-async def test_no_alpha_accrues_after_decay_cliff():
+async def test_weight_holds_at_floor_after_decay_settles():
     projection = await project()
     by_days = {p.days: p for p in projection.projections}
 
-    assert by_days[90].weight == 0.0
-    assert by_days[180].weight == 0.0
-    # Weight is zero from day 40 on, so the 90 and 180 day totals must be equal.
-    assert by_days[90].total_alpha == pytest.approx(by_days[180].total_alpha)
-    assert by_days[90].total_alpha > by_days[30].total_alpha
+    floor_weight = projection.initial_weight * DECAY_FLOOR_RETENTION
+    assert by_days[90].weight == pytest.approx(floor_weight)
+    assert by_days[180].weight == pytest.approx(floor_weight)
+    # Alpha keeps accruing past the floor day, at the flat floor rate.
+    expected_extra = (180 - 90) * floor_weight * cts.DAILY_ALPHA_TO_MINERS
+    assert by_days[180].total_alpha - by_days[90].total_alpha == pytest.approx(expected_extra, rel=1e-6)
 
 
 @pytest.mark.asyncio
@@ -51,10 +52,12 @@ async def test_total_alpha_matches_curve_integral():
     by_days = {p.days: p for p in projection.projections}
 
     initial_weight = projection.initial_weight
-    # Analytic area under the retention curve up to the zero-cliff, in weight-days.
+    # Analytic area under the retention curve, in weight-days: the piecewise ramp
+    # down to the floor, then a flat floor out to the horizon.
     curve = cts.EMISSION_TIME_DECAY_CURVE
-    area = sum((d1 - d0) * (r0 + r1) / 2.0 for (d0, r0), (d1, r1) in zip(curve, curve[1:]))
-    expected = initial_weight * area * cts.DAILY_ALPHA_TO_MINERS
+    ramp_area = sum((d1 - d0) * (r0 + r1) / 2.0 for (d0, r0), (d1, r1) in zip(curve, curve[1:]))
+    floor_area = (180 - DECAY_FLOOR_DAY) * DECAY_FLOOR_RETENTION
+    expected = initial_weight * (ramp_area + floor_area) * cts.DAILY_ALPHA_TO_MINERS
 
     assert by_days[180].total_alpha == pytest.approx(expected, rel=1e-6)
 

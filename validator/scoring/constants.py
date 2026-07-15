@@ -41,12 +41,13 @@ EMISSION_MULTIPLIER_RATE = 2.0
 EMISSION_BOOST_DECAY_PER_WIN = 0.01
 # Champion emission decays on a piecewise-linear *retention* curve (multiplier on
 # the champion's full day-0 emission weight = base + boost). Fast early drop, a
-# plateau, then a cliff to zero at 40 days. (days_since_reign_start, retention).
+# plateau, then a floor of 15% held from day 40 onwards — a champion's emission
+# never drops below this. (days_since_reign_start, retention).
 EMISSION_TIME_DECAY_CURVE: tuple[tuple[float, float], ...] = (
     (0.0, 1.00),
     (7.0, 0.50),
     (30.0, 0.30),
-    (40.0, 0.00),
+    (40.0, 0.15),
 )
 EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0

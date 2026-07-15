@@ -196,8 +196,8 @@ async def calculate_tournament_projection(
             return winner_share * raw_weight * scale_factor
 
         # Cumulative alpha must integrate the piecewise decay curve, not interpolate
-        # linearly between day 0 and the horizon: the weight hits zero at the curve's
-        # cliff, after which no further alpha accrues.
+        # linearly between day 0 and the horizon: the weight falls to the curve's
+        # floor and accrues at that flat rate thereafter.
         max_days = max(projection_days)
         daily_weights = [weight_on_day(day) for day in range(max_days + 1)]
         cumulative_weight_days = [0.0]

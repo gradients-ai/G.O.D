@@ -17,12 +17,12 @@ from datetime import timezone
 # Constants matching validator/scoring/constants.py
 EMISSION_BOOST_DECAY_PER_WIN = 0.01  # 1% per win (old system)
 # Piecewise-linear retention curve (multiplier on full day-0 emission weight):
-# fast early drop, a glide, then a cliff to zero at 40 days. (days, retention).
+# fast early drop, a glide, then a 15% floor held from 40 days on. (days, retention).
 EMISSION_TIME_DECAY_CURVE = (
     (0.0, 1.00),
     (7.0, 0.50),
     (30.0, 0.30),
-    (40.0, 0.00),
+    (40.0, 0.15),
 )
 EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0

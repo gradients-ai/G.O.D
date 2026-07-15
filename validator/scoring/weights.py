@@ -146,9 +146,10 @@ def emission_time_retention(days_as_champion: float) -> float:
     """
     Piecewise-linear retention multiplier for a champion's emission weight.
 
-    Decays fast at first, plateaus, then drops to zero on a cliff. Anchored on
-    EMISSION_TIME_DECAY_CURVE (100% at day 0 -> 0% at day 40). Returns a value in
-    [0, 1] applied multiplicatively to the champion's full day-0 emission weight.
+    Decays fast at first, plateaus, then holds at a floor. Anchored on
+    EMISSION_TIME_DECAY_CURVE (100% at day 0 -> 15% at day 40, held from then on).
+    Returns a value in [0, 1] applied multiplicatively to the champion's full
+    day-0 emission weight.
     """
     curve = cts.EMISSION_TIME_DECAY_CURVE
     if days_as_champion <= curve[0][0]:
