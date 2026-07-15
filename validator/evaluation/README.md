@@ -27,3 +27,7 @@ Evaluation runtimes and helpers used after miner training completes.
 SWE Infinite evaluation runs as an individual environment tournament eval. The
 candidate model is served by SGLang inside Basilica, and the evaluator calls an
 external Affinetes SWE Infinite server configured by `SWE_INFINITE_SERVER_BASE_URL`.
+LoRA candidates use SGLang's native LoRA loader over their materialized base,
+matching PvP evaluation even when the adapter repository contains tokenizer or
+added-token artifacts. This preserves the base tokenizer/EOS serving contract and
+avoids constructing a SWE-only merged model with divergent tokenizer metadata.

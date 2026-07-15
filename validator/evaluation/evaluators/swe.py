@@ -8,7 +8,6 @@ receives the public OpenAI-compatible model URL.
 from __future__ import annotations
 
 import asyncio
-import glob
 import json
 import logging
 import os
@@ -22,17 +21,15 @@ import aiohttp
 import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
 from core.models.dataset_models import EnvironmentDatasetType
+from core.models.pvp_models import PreparedModel
+from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.evaluation_logging import configure_eval_logging
-from validator.evaluation.evaluators.environment import _build_sglang_command
-from validator.evaluation.evaluators.environment import _download_lora_with_retry
-from validator.evaluation.evaluators.environment import _download_model_with_retry
-from validator.evaluation.evaluators.environment import _merge_base_and_lora
 from validator.evaluation.evaluators.environment import _start_process
 from validator.evaluation.evaluators.environment import _stream_logs
 from validator.evaluation.evaluators.environment import _wait_for_health
 from validator.evaluation.model_checks import check_for_lora
-from validator.evaluation.model_checks import check_lora_has_added_tokens
 from validator.evaluation.pvp.materialize import materialize_base_model
+from validator.evaluation.pvp.server import build_sglang_command
 from validator.evaluation.runtime import stop_process
 from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
 from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_MODEL_API_KEY
@@ -358,64 +355,54 @@ async def _prepare_sglang_command(
 ) -> tuple[str, str, str]:
     detect_start = time.time()
     is_lora = await asyncio.to_thread(check_for_lora, model_repo, False)
-    should_merge_lora = False
-    if is_lora:
-        should_merge_lora = await asyncio.to_thread(check_lora_has_added_tokens, model_repo, False)
     logger.info(
-        "eval_setup LoRA detection in %.2fs: is_lora=%s merge_lora_to_base=%s",
+        "eval_setup LoRA detection in %.2fs: is_lora=%s",
         time.time() - detect_start,
         is_lora,
-        should_merge_lora,
     )
 
-    inference_model_name = model_repo
-    model_path_for_sglang = model_repo
     sglang_command = os.getenv("SGLANG_START_CMD")
     if sglang_command:
         logger.info("eval_setup SGLang: using SGLANG_START_CMD from environment")
-        return inference_model_name, model_path_for_sglang, sglang_command
+        return model_repo, model_repo, sglang_command
 
-    if is_lora and not should_merge_lora:
-        logger.info("eval_setup model path: LoRA + SGLang native (base=%s lora=%s)", original_model, model_repo)
-        if base_chain:
-            model_path_for_sglang = await asyncio.to_thread(materialize_base_model, original_model, base_chain, "cand")
-        else:
-            model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, original_model)
-        lora_dir = "/lora/trained_lora"
-        await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_dir)
-        for model_file in glob.glob(os.path.join(lora_dir, "model-*.safetensors")):
-            try:
-                os.remove(model_file)
-                logger.info("Removed incompatible LoRA file: %s", os.path.basename(model_file))
-            except Exception as exc:
-                logger.warning("Failed to remove %s: %s", model_file, exc)
-        index_file = os.path.join(lora_dir, "model.safetensors.index.json")
-        if os.path.exists(index_file):
-            try:
-                os.remove(index_file)
-            except Exception as exc:
-                logger.warning("Failed to remove index file: %s", exc)
-        inference_model_name = f"{original_model}:trained_lora"
-        sglang_command = (
-            _build_sglang_command(model_path_for_sglang, base_seed)
-            + " --enable-lora --lora-paths trained_lora=/lora/trained_lora --lora-backend triton"
+    if is_lora:
+        # Keep SWE model serving identical to PvP: SGLang loads the submitted adapter
+        # natively over the base model and keeps the base tokenizer/EOS contract.
+        # Merely shipping added_tokens.json is not a reason to synthesize a merged model;
+        # doing so previously replaced the base tokenizer/EOS metadata only in SWE.
+        model_path_for_sglang = await asyncio.to_thread(
+            materialize_base_model,
+            original_model,
+            base_chain,
+            "cand",
         )
-    elif is_lora and should_merge_lora:
-        logger.info("eval_setup model path: merge LoRA into base (base=%s lora=%s)", original_model, model_repo)
-        if base_chain:
-            base_path = await asyncio.to_thread(materialize_base_model, original_model, base_chain, "cand")
-        else:
-            base_path = await asyncio.to_thread(_download_model_with_retry, original_model)
-        lora_temp_dir = "/tmp/lora/trained_lora"
-        await asyncio.to_thread(_download_lora_with_retry, model_repo, lora_temp_dir)
-        model_path_for_sglang = await asyncio.to_thread(_merge_base_and_lora, base_path, lora_temp_dir)
-        sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
+        lora_name = "cand_trained_lora"
+        prepared = PreparedModel(
+            sglang_model_path=model_path_for_sglang,
+            inference_name=f"{model_path_for_sglang}:{lora_name}",
+            extra_sglang_args=(
+                f"--enable-lora --lora-paths {lora_name}={model_repo} --lora-backend triton"
+            ),
+            tool_call_parser=tool_call_parser_for(model_path_for_sglang) if base_chain else None,
+        )
+        logger.info(
+            "eval_setup model path: LoRA + SGLang native (base=%s lora=%s)",
+            model_path_for_sglang,
+            model_repo,
+        )
     else:
-        logger.info("eval_setup model path: single HF repo repo=%s", model_repo)
-        model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, model_repo)
-        sglang_command = _build_sglang_command(model_path_for_sglang, base_seed)
+        parser = tool_call_parser_for(model_repo, log_unmapped=False) or tool_call_parser_for(original_model)
+        prepared = PreparedModel(
+            sglang_model_path=model_repo,
+            inference_name=model_repo,
+            tool_call_parser=parser,
+        )
+        logger.info("eval_setup model path: full weights repo=%s", model_repo)
 
-    return inference_model_name, model_path_for_sglang, sglang_command
+    port = int(os.getenv("SGLANG_PORT", "30000"))
+    sglang_command = build_sglang_command(prepared, port=port, seed=base_seed)
+    return prepared.inference_name, prepared.sglang_model_path, sglang_command
 
 
 async def _run() -> None:
