@@ -406,8 +406,6 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
                 tournament_data.final_positions.items(), key=lambda item: item[1]
             )
         ]
-        # The boss placeholder and its real hotkey can occupy both recorded
-        # positions. Treat them as one finalist so that miner receives 100%.
         paid = list(dict.fromkeys(hotkey for hotkey in resolved_positions if hotkey))[
             : cts.TOURNAMENT_PAID_RANKS
         ]
