@@ -136,6 +136,12 @@ TEXT_TASKS_PER_GROUP = 1
 IMAGE_TASKS_PER_GROUP = 1
 ENVIRONMENT_TASKS_PER_GROUP = 1
 
+# Round 1 uses one randomly selected high-capacity image architecture for every group.
+ROUND_ONE_IMAGE_MODEL_TYPES = (
+    ImageModelType.KREA2,
+    ImageModelType.IDEOGRAM4,
+)
+
 # Final round task counts
 FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {

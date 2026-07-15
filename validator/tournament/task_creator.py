@@ -102,13 +102,15 @@ async def create_image_tournament_tasks(
     if isinstance(round_data, GroupRound):
         if round_data.round_number == 1:
             all_image_models = image_models
+            round_one_model_type = random.choice(t_cst.ROUND_ONE_IMAGE_MODEL_TYPES)
+            logger.info(f"Round 1 image tournament model type: {round_one_model_type.value}")
 
-            async def flux_image_models():
+            async def round_one_image_models():
                 async for model in all_image_models:
-                    if model.model_type == ImageModelType.FLUX:
+                    if model.model_type == round_one_model_type:
                         yield model
 
-            image_models = flux_image_models()
+            image_models = round_one_image_models()
         tasks = await _create_group_image_tasks(round_data, tournament_id, config, image_models)
     elif is_final_round:
         tasks = await _create_new_image_boss_round_tasks(tournament_id, round_id, config)
