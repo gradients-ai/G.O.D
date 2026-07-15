@@ -73,6 +73,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--task-timeout-seconds", type=int, default=None, help="Override per-SWE-task timeout.")
     parser.add_argument("--session-timeout-seconds", type=int, default=None, help="Override total SWE session timeout.")
     parser.add_argument("--max-concurrent-requests", type=int, default=None, help="Override Affinetes request concurrency.")
+    parser.add_argument(
+        "--connect-max-attempts",
+        type=int,
+        default=None,
+        help="Maximum Affinetes connection attempts per task, including the initial attempt.",
+    )
+    parser.add_argument(
+        "--connect-retry-backoff-seconds",
+        type=float,
+        default=None,
+        help="Initial retry delay for Affinetes connection failures; subsequent delays double.",
+    )
     parser.add_argument("--affinetes-call-path", default=None, help="Affinetes call path, usually /call or /evaluate.")
     parser.add_argument("--max-iterations", type=int, default=None, help="Agent iteration budget.")
     parser.add_argument("--collect-logprobs", action="store_true", help="Ask Affinetes to collect logprobs when supported.")
@@ -93,6 +105,8 @@ def build_swe_eval_config(args: argparse.Namespace) -> SweInfiniteEvalConfig:
         "task_timeout_seconds": args.task_timeout_seconds,
         "session_timeout_seconds": args.session_timeout_seconds,
         "max_concurrent_requests": args.max_concurrent_requests,
+        "connect_max_attempts": args.connect_max_attempts,
+        "connect_retry_backoff_seconds": args.connect_retry_backoff_seconds,
         "affinetes_call_path": args.affinetes_call_path,
         "max_iterations": args.max_iterations,
         "model_api_key": args.model_api_key,

@@ -31,3 +31,12 @@ LoRA candidates use SGLang's native LoRA loader over their materialized base,
 matching PvP evaluation even when the adapter repository contains tokenizer or
 added-token artifacts. This preserves the base tokenizer/EOS serving contract and
 avoids constructing a SWE-only merged model with divergent tokenizer metadata.
+
+Each SWE task contributes one term to the final average. A task that still fails
+or exceeds the overall session timeout contributes `0.0`. Affinetes TCP connection
+setup failures are retried by default up to three total attempts, with exponential
+backoff starting at one second. Errors after connection setup are not retried,
+because the server may already have started that task and a second submission could
+duplicate the evaluation. The retry count and initial delay can be overridden with
+`connect_max_attempts` and `connect_retry_backoff_seconds` in
+`SWE_INFINITE_EVAL_CONFIG_JSON`.

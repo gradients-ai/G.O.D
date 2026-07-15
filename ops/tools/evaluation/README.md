@@ -41,6 +41,11 @@ validator flows for deployment resume/persistence bookkeeping.
 SWE Infinite evaluation always requests Affinetes' MiniSWE agent; the smoke test
 does not expose an agent selector.
 
+Requests with transient TCP connection setup failures are attempted up to three
+times by default. Use `--connect-max-attempts` and
+`--connect-retry-backoff-seconds` to override the attempt count and initial
+exponential-backoff delay.
+
 ## Local SWE Infinite Smoke Test
 
 ```bash

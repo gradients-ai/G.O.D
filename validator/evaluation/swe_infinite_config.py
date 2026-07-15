@@ -37,6 +37,8 @@ class SweInfiniteEvalConfig:
     task_timeout_seconds: int = 900
     session_timeout_seconds: int = vcst.ENV_EVAL_SESSION_TIMEOUT
     max_concurrent_requests: int = 1
+    connect_max_attempts: int = 3
+    connect_retry_backoff_seconds: float = 1.0
     collect_logprobs: bool = False
     model_base_url: str | None = None
     model_api_key: str | None = None

@@ -238,6 +238,36 @@ async def _post_affinetes_evaluate(
         return _unwrap_affinetes_response(json.loads(raw_text))
 
 
+async def _post_affinetes_evaluate_with_connect_retries(
+    session: aiohttp.ClientSession,
+    swe_server_url: str,
+    payload: dict,
+    task_timeout: int,
+    eval_config: SweInfiniteEvalConfig = DEFAULT_SWE_INFINITE_EVAL_CONFIG,
+) -> dict:
+    max_attempts = max(1, eval_config.connect_max_attempts)
+    backoff_seconds = max(0.0, eval_config.connect_retry_backoff_seconds)
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await _post_affinetes_evaluate(session, swe_server_url, payload, task_timeout, eval_config)
+        except aiohttp.ClientConnectorError as exc:
+            if attempt == max_attempts:
+                raise
+            retry_delay = backoff_seconds * (2 ** (attempt - 1))
+            logger.warning(
+                "eval_swe task_id=%s connection attempt %s/%s failed: %s; retrying in %.1fs",
+                payload.get("task_id"),
+                attempt,
+                max_attempts,
+                exc,
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+
+    raise AssertionError("unreachable")
+
+
 def _build_swe_payload(
     *,
     model: str,
@@ -294,7 +324,13 @@ async def _run_swe_evaluation(
         start = time.time()
         try:
             logger.info("eval_swe %s/%s start task_id=%s seed=%s", index + 1, total_tasks, task_id, seed)
-            result = await _post_affinetes_evaluate(session, swe_server_url, payload, task_timeout, eval_config)
+            result = await _post_affinetes_evaluate_with_connect_retries(
+                session,
+                swe_server_url,
+                payload,
+                task_timeout,
+                eval_config,
+            )
             latency = float(result.get("time_taken", time.time() - start))
             score = float(result.get("score", 0.0))
             logger.info(
@@ -448,7 +484,8 @@ async def _run() -> None:
 
         logger.info(
             "eval_swe config: num_seeds=%s task_id_range=(%s,%s) explicit_task_ids=%s model_repo=%s "
-            "original_model=%s eval_seed=%s temperature=%s base_chain=%s",
+            "original_model=%s eval_seed=%s temperature=%s base_chain=%s connect_max_attempts=%s "
+            "connect_retry_backoff_seconds=%s",
             num_seeds,
             task_id_min,
             task_id_max,
@@ -458,6 +495,8 @@ async def _run() -> None:
             base_seed,
             temperature,
             base_chain,
+            eval_config.connect_max_attempts,
+            eval_config.connect_retry_backoff_seconds,
         )
 
         inference_model_name, model_path_for_sglang, sglang_command = await _prepare_sglang_command(

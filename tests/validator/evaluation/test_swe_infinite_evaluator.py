@@ -1,6 +1,8 @@
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
+import aiohttp
 import pytest
 
 import core.constants.environments as env_cst
@@ -149,6 +151,62 @@ async def test_run_swe_evaluation_counts_session_timeouts_as_zero(monkeypatch):
     )
 
     assert avg == 0.5
+
+
+@pytest.mark.asyncio
+async def test_run_swe_evaluation_retries_connector_errors(monkeypatch):
+    attempts = 0
+
+    async def flaky_post(_session, _swe_server_url, _payload, _task_timeout, _eval_config):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            connection_key = SimpleNamespace(host="swe.example", port=8000, ssl=True)
+            raise aiohttp.ClientConnectorError(connection_key, OSError(113, "Connect call failed"))
+        return {"score": 0.75, "time_taken": 0.01}
+
+    monkeypatch.setattr(swe, "_post_affinetes_evaluate", flaky_post)
+    eval_config = DEFAULT_SWE_INFINITE_EVAL_CONFIG.with_overrides(connect_retry_backoff_seconds=0.0)
+
+    avg = await swe._run_swe_evaluation(
+        swe_server_url="https://swe.example",
+        model_base_url="https://model.example/v1",
+        inference_model_name="org/model",
+        eval_list=[(101, 1)],
+        temperature=0.0,
+        task_timeout=60,
+        eval_config=eval_config,
+    )
+
+    assert attempts == 3
+    assert avg == 0.75
+
+
+@pytest.mark.asyncio
+async def test_run_swe_evaluation_counts_exhausted_connector_retries_as_zero(monkeypatch):
+    attempts = 0
+
+    async def failing_post(_session, _swe_server_url, _payload, _task_timeout, _eval_config):
+        nonlocal attempts
+        attempts += 1
+        connection_key = SimpleNamespace(host="swe.example", port=8000, ssl=True)
+        raise aiohttp.ClientConnectorError(connection_key, OSError(113, "Connect call failed"))
+
+    monkeypatch.setattr(swe, "_post_affinetes_evaluate", failing_post)
+    eval_config = DEFAULT_SWE_INFINITE_EVAL_CONFIG.with_overrides(connect_retry_backoff_seconds=0.0)
+
+    avg = await swe._run_swe_evaluation(
+        swe_server_url="https://swe.example",
+        model_base_url="https://model.example/v1",
+        inference_model_name="org/model",
+        eval_list=[(101, 1)],
+        temperature=0.0,
+        task_timeout=60,
+        eval_config=eval_config,
+    )
+
+    assert attempts == 3
+    assert avg == 0.0
 
 
 @pytest.mark.asyncio

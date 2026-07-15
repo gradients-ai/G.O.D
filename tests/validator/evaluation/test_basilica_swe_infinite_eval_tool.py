@@ -20,6 +20,10 @@ def test_build_swe_config_and_task_selection_include_configured_values():
             "60",
             "--session-timeout-seconds",
             "120",
+            "--connect-max-attempts",
+            "4",
+            "--connect-retry-backoff-seconds",
+            "0.5",
             "--task-id",
             "7",
             "83",
@@ -39,6 +43,8 @@ def test_build_swe_config_and_task_selection_include_configured_values():
     assert task_selection.num_seeds == 2
     assert config.task_timeout_seconds == 60
     assert config.session_timeout_seconds == 120
+    assert config.connect_max_attempts == 4
+    assert config.connect_retry_backoff_seconds == 0.5
     assert config.model_api_key == "secret"
     assert config.collect_logprobs is True
 
