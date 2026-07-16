@@ -120,8 +120,8 @@ A pending tournament activates only after enough validated miners are available:
 
 | Tournament type | Minimum validated miners |
 | --- | --- |
-| Text | 8 |
-| Image | 8 |
+| Text | 4 |
+| Image | 4 |
 | Environment | 5 |
 
 If too few miners validate, the pending tournament waits and retries participant collection.
@@ -404,10 +404,10 @@ Requested datasets are mounted read-only.
 
 Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 
-- If the field has more than 8 miners, the first round is a group round.
-- Group rounds create one instruct task per group.
-- The top 8 scored miners across group tasks advance.
-- Once the field is 8 or fewer, rounds become pairwise knockout rounds.
+- Round 1 bracket formation depends on field size (`validator/tournament/constants.py`):
+  - 3-14 miners: a "small tournament" — a single group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance.
+  - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
+  - More than 14 (or more than 8 in later rounds): a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
 - The final boss round creates 6 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 2: `quasar` and `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative GRPO rewards).
@@ -419,10 +419,7 @@ For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is bette
 
 Image tournaments use `ImageTask`.
 
-- If the field has more than 8 miners, the first round is a group round.
-- Group rounds create one image task per group.
-- The top 8 scored miners across group tasks advance.
-- Once the field is 8 or fewer, rounds become pairwise knockout rounds.
+- Round 1 bracket formation follows the same field-size rules as text tournaments (see above), with one image task per group/small-tournament match instead of an instruct task.
 - Knockout pairs receive one image task.
 - The final boss round creates 6 image tasks. Up to 3 can be Z-Image or Qwen-Image tasks.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
@@ -508,8 +505,6 @@ A rollout function:
 - Sends actions or completions to the environment server.
 - Collects rewards and trajectory data.
 - Returns the prompt tokens, completion tokens, logprobs, and reward values expected by your trainer.
-
-The base repository includes reference rollout functions in `ops/docker/environment_functions`.
 
 Rules for environment tournaments:
 
