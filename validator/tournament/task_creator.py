@@ -5,7 +5,6 @@ from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
-from core.whitelisted_env_models import R1_SUPPORTED_ENV_MODELS
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import warn_orphaned_continuous_sft_state
@@ -324,7 +323,6 @@ async def _create_environment_group_tasks(
                 training_start_point=start_point,
                 exclude_environments=[t_cst.FORCED_BOSS_ENVIRONMENT] if t_cst.FORCED_BOSS_ENVIRONMENT else None,
                 environment_names_override=r1_env_override,
-                allowed_models=R1_SUPPORTED_ENV_MODELS if round_data.round_number == 1 else None,
             )
             reference_task = task
 
@@ -522,7 +520,16 @@ async def _create_group_text_tasks(
     for i, group in enumerate(round_data.groups):
         logger.info(f"  Group {i + 1} ({len(group.member_ids)} members): creating {tasks_per_group} instruct task(s)")
         group_tasks = await _create_single_group_text_tasks(
-            group, i, tournament_id, round_data.round_id, config, models, instruct_datasets, dpo_datasets, tasks_per_group
+            group,
+            i,
+            tournament_id,
+            round_data.round_id,
+            config,
+            models,
+            instruct_datasets,
+            dpo_datasets,
+            tasks_per_group,
+            enable_kl=round_data.round_number != 1,
         )
         tasks.extend(group_tasks)
 
@@ -539,6 +546,7 @@ async def _create_single_group_text_tasks(
     instruct_datasets: list,
     dpo_datasets: list,
     tasks_per_group: int,
+    enable_kl: bool,
 ) -> list[RawTask]:
     group_id = f"{round_id}_group_{group_index + 1:03d}"
 
@@ -552,7 +560,7 @@ async def _create_single_group_text_tasks(
     created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
     for _ in range(tasks_per_group - existing_count):
         logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
-        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=False)
+        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=enable_kl)
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
 
