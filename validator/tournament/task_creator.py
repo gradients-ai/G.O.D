@@ -5,6 +5,7 @@ from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
+from core.whitelisted_env_models import R1_SUPPORTED_ENV_MODELS
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import warn_orphaned_continuous_sft_state
@@ -13,7 +14,6 @@ from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.tasks.models import EnvRawTask
-from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
@@ -29,7 +29,7 @@ from validator.tasks.synthetics.scheduler import create_synthetic_env_task
 from validator.tasks.synthetics.scheduler import create_synthetic_grpo_task
 from validator.tasks.synthetics.scheduler import create_synthetic_instruct_text_task
 from validator.tournament import constants as t_cst
-from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import Round
@@ -324,6 +324,7 @@ async def _create_environment_group_tasks(
                 training_start_point=start_point,
                 exclude_environments=[t_cst.FORCED_BOSS_ENVIRONMENT] if t_cst.FORCED_BOSS_ENVIRONMENT else None,
                 environment_names_override=r1_env_override,
+                allowed_models=R1_SUPPORTED_ENV_MODELS if round_data.round_number == 1 else None,
             )
             reference_task = task
 
@@ -486,11 +487,7 @@ async def _create_and_register_tournament_task(
         pair_id=pair_id,
     )
     await add_tournament_tasks([tournament_task], config.psql_db)
-    gpu_req = get_tournament_gpu_requirement(
-        task.task_type, task.model_params_count, task.model_id,
-        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
-        training_start_point=task.training_start_point,
-    )
+    gpu_req = get_task_gpu_requirement(task)
 
     # Format log message based on task type
     if task.task_type == TaskType.IMAGETASK:
@@ -510,17 +507,15 @@ async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
     # Small text tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS instruct
-    # matches (rather than one). It deliberately skips the round-1 restrictions (small models +
-    # small datasets) so the few competitors are tested across the full model/dataset range.
+    # matches (rather than one). It keeps the broader dataset range, but all R1 models stay <=4B.
     is_small = is_small_tournament_group(round_data)
     tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.TEXT_TASKS_PER_GROUP
 
-    if is_small:
-        models = _get_text_models(config.keypair)
-        instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=False)
-    else:
-        models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
-        instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=round_data.round_number == 1)
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    instruct_datasets = _get_instruct_text_datasets(
+        config.keypair,
+        small_only=round_data.round_number == 1 and not is_small,
+    )
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
     tasks = []
@@ -557,7 +552,7 @@ async def _create_single_group_text_tasks(
     created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
     for _ in range(tasks_per_group - existing_count):
         logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
-        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
+        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=False)
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
 
@@ -691,11 +686,11 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
 async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
     """
     Create a replacement task that matches round-1 group text constraints:
-    - small text model pool (0.1B-3.0B)
+    - small text model pool (0.1B-4.0B)
     """
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=3.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
+    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=True)
+    return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=False)
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:

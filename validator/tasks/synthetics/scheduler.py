@@ -542,13 +542,17 @@ async def create_synthetic_env_task(
     environment_names_override: list[EnvironmentName] | None = None,
     eval_seed_override: int | None = None,
     exclude_models: list[str] | None = None,
+    allowed_models: list[str] | None = None,
     hours_override: float | None = None,
 ) -> RawTask:
     if model_id_override:
         model_id = model_id_override
     else:
-        candidates = [m for m in SUPPORTED_ENV_MODELS if m not in (exclude_models or [])]
-        model_id = random.choice(candidates or SUPPORTED_ENV_MODELS)
+        model_pool = allowed_models or SUPPORTED_ENV_MODELS
+        candidates = [m for m in model_pool if m not in (exclude_models or [])]
+        if not candidates:
+            raise ValueError("No supported environment models remain after filtering")
+        model_id = random.choice(candidates)
     dummy_dataset = "env_task_dummy_dataset"
 
     number_of_hours = hours_override or _get_training_hours_for_environment_task(round_number)

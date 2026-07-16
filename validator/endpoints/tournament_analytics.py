@@ -25,10 +25,9 @@ from validator.db.sql import tournaments as tournament_sql
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.weights import get_tournament_burn_details
-from validator.tasks.models import InstructTextRawTask
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_TTL
-from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import ActiveTournamentInfo
 from validator.tournament.models import ActiveTournamentParticipant
 from validator.tournament.models import ActiveTournamentsResponse
@@ -323,11 +322,7 @@ async def get_tournament_gpu_requirements(
         gpu_requirements: Dict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0, "total_hours": 0.0})
 
         for task in unfinished_tasks:
-            gpu_req = get_tournament_gpu_requirement(
-                task.task_type, task.model_params_count, task.model_id,
-                use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
-                training_start_point=task.training_start_point,
-            )
+            gpu_req = get_task_gpu_requirement(task)
             gpu_type = gpu_req.value
 
             hours = float(task.hours_to_complete) if task.hours_to_complete else 1.0
