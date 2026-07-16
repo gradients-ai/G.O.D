@@ -409,10 +409,11 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 - The top 8 scored miners across group tasks advance.
 - Once the field is 8 or fewer, rounds become pairwise knockout rounds.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
-- The final boss round creates 6 tasks: 2 instruct, 2 DPO, and 2 GRPO. Some final tasks may use larger models.
-- The challenger must win a majority of boss-round tasks to dethrone the defending champion.
+- The final boss round creates 6 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 2: `quasar` and `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
+- Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative GRPO rewards).
+- The challenger must win all but at most one of the 6 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) even one continuous-SFT task blocks the dethrone regardless of the overall task count.
 
-For instruct and DPO tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
+For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
 
 ### Image Tournaments
 
@@ -424,7 +425,8 @@ Image tournaments use `ImageTask`.
 - Once the field is 8 or fewer, rounds become pairwise knockout rounds.
 - Knockout pairs receive one image task.
 - The final boss round creates 6 image tasks. Up to 3 can be Z-Image or Qwen-Image tasks.
-- The challenger must win a majority of boss-round tasks to dethrone the defending champion.
+- Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
+- The challenger must win all but at most one of the 6 boss-round tasks to dethrone the defending champion (no separate continuous-SFT gate for image).
 
 Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
@@ -453,23 +455,25 @@ Current base and cap weights in `validator/scoring/constants.py`:
 
 | Tournament type | Base weight | Max weight |
 | --- | --- | --- |
-| Text | 0.20 | 0.48 |
-| Image | 0.15 | 0.32 |
-| Environment | 0.15 | 0.16 |
+| Text | 0.35 | 0.48 |
+| Image | 0.275 | 0.32 |
+| Environment | 0.125 | 0.175 |
 
 Active tournament participants receive `0.0001` weight each. Undistributed weight goes to the burn hotkey.
 
 Within a tournament, only the top two ranks are paid, distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` for an 80/20 split.
 
-Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.05` performance threshold. The excess is multiplied by `2.0`, capped by tournament type, and reduced by time-based champion decay of `0.0033` per day after the configured decay start date.
+Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.10` performance threshold (`EMISSION_MULTIPLIER_THRESHOLD`). The excess is multiplied by `2.0` (`EMISSION_MULTIPLIER_RATE`) and capped by tournament type.
 
-Boss-round task wins use a progressive defense threshold:
+The boost/base weight is then reduced by time-based champion decay: a piecewise-linear retention curve on the number of days since the champion's reign started (or since `EMISSION_TIME_DECAY_START_DATE` for champions who first won before that date), applied multiplicatively:
 
 ```text
-threshold = max(0.03, 0.05 * 0.8 ** (consecutive_wins - 1))
+days_as_champion -> retention
+0   -> 100%
+7   -> 50%
+30  -> 30%
+40+ -> 15%   (floor, held indefinitely — champions no longer decay to zero)
 ```
-
-That means a defending champion starts with a 5% task advantage, then the threshold decays toward a 3% floor with consecutive wins.
 
 ## Environment Tournament Requirements
 
