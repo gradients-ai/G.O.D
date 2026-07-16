@@ -29,9 +29,12 @@ from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import _db_call_with_retry
 from validator.evaluation.basilica import _delete_eval_deployment
 from validator.evaluation.basilica import _deploy_with_readiness_timeout
+from validator.evaluation.basilica import _evaluation_cost_run_key
 from validator.evaluation.basilica import _fetch_attempt_logs
+from validator.evaluation.basilica import _finish_evaluation_cost_run
 from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
 from validator.evaluation.basilica import _poll_eval_deployment
+from validator.evaluation.basilica import _start_evaluation_cost_run
 from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
@@ -532,6 +535,12 @@ async def _deploy_pvp_eval(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            cost_run_key = (
+                _evaluation_cost_run_key(task_id, deployment_name)
+                if task_id is not None and psql_db is not None and gpu_count > 0
+                else None
+            )
+            attempt_success = False
             # The deployment is already live and consuming GPUs — make it visible in the cap ledger
             # unconditionally (it predates any new reservation, so it must count regardless of cap).
             if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
@@ -548,18 +557,27 @@ async def _deploy_pvp_eval(
                 deployment_id=deployment_name,
                 deployment_url=_deployment_url(deployment),
             )
-            result = await _poll_eval_deployment(
-                ctx=ctx,
-                client=client,
-                deployment=deployment,
-                deployment_name=deployment_name,
-                success_cleanup_reason="pvp_resume_completed",
-                failure_cleanup_reason="pvp_resume_failed_or_timed_out",
-                timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
-                retry_on_failure=False,
-                poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
-                max_poll_seconds=_pvp_remaining_poll_seconds(deployment),
-            )
+            try:
+                result = await _poll_eval_deployment(
+                    ctx=ctx,
+                    client=client,
+                    deployment=deployment,
+                    deployment_name=deployment_name,
+                    success_cleanup_reason="pvp_resume_completed",
+                    failure_cleanup_reason="pvp_resume_failed_or_timed_out",
+                    timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
+                    retry_on_failure=False,
+                    poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
+                    max_poll_seconds=_pvp_remaining_poll_seconds(deployment),
+                )
+                attempt_success = isinstance(result, dict)
+            finally:
+                await _finish_evaluation_cost_run(
+                    run_key=cost_run_key,
+                    success=attempt_success,
+                    psql_db=psql_db,
+                    ctx=ctx,
+                )
             if isinstance(result, dict):
                 await _release_pvp_pair_gpus_reservation(
                     task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
@@ -579,6 +597,12 @@ async def _deploy_pvp_eval(
         deployment = None
         reserved_pair = False
         deployment_name = str(uuid.uuid4())
+        cost_run_key = (
+            _evaluation_cost_run_key(task_id, deployment_name)
+            if task_id is not None and psql_db is not None and gpu_count > 0
+            else None
+        )
+        attempt_success = False
         try:
             update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
@@ -645,6 +669,13 @@ async def _deploy_pvp_eval(
                         "PvP deployment-id persist failed (non-fatal): %s", persist_exc, exc_info=True
                     )
 
+            await _start_evaluation_cost_run(
+                task_id=task_id,
+                psql_db=psql_db,
+                deployment_name=deployment_name,
+                gpu_count=gpu_count,
+                ctx=ctx,
+            )
             deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
                 ctx=ctx,
                 client=client,
@@ -686,6 +717,7 @@ async def _deploy_pvp_eval(
                 max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
             )
             if isinstance(result, dict):
+                attempt_success = True
                 await _release_pvp_pair_gpus_reservation(
                     task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
                 )
@@ -706,6 +738,12 @@ async def _deploy_pvp_eval(
                 await _release_pvp_pair_gpus_reservation(
                     task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
                 )
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=False,
+                psql_db=psql_db,
+                ctx=ctx,
+            )
             log_step(
                 "attempt_failed",
                 attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
@@ -722,6 +760,12 @@ async def _deploy_pvp_eval(
             else:
                 raise RuntimeError(f"PvP {label} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
         finally:
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=attempt_success,
+                psql_db=psql_db,
+                ctx=ctx,
+            )
             if deployment is not None:
                 await _fetch_attempt_logs(ctx, deployment, deployment_name)
 

@@ -6,6 +6,22 @@ from core.logging import get_logger
 logger = get_logger(__name__)
 
 
+async def notify_model_prep_failure_limit(task_id: str, prep_identity: str, discord_url: str | None):
+    """Best-effort alert when a task reaches its third failed prep attempt."""
+    if not discord_url:
+        return
+    try:
+        message = (
+            "Model prep failed three times.\n"
+            f"Task ID: {task_id}\n"
+            f"Prep identity: {prep_identity}\n"
+            "The existing model-prep retry behavior has not been changed."
+        )
+        await send_to_discord(discord_url, message)
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for model prep failures: {e}")
+
+
 async def send_to_discord(webhook: str, message: str):
     async with httpx.AsyncClient() as client:
         payload = {"content": message}

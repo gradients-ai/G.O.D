@@ -26,6 +26,7 @@ from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUType
 from validator.app.config import Config
 from validator.app.config import load_config
+from validator.db.sql import gpu_costs as gpu_cost_sql
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
@@ -49,9 +50,72 @@ from validator.tournament.models import TournamentTaskTraining
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingRepoInfo
 from validator.tournament.models import TrainingStatus
+from validator.tournament.notifications import notify_model_prep_failure_limit
 
 
 logger = get_logger(__name__)
+
+
+def _training_cost_run_key(task_id: str, hotkey: str, attempt: int) -> str:
+    return f"training:{task_id}:{hotkey}:{attempt}"
+
+
+def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
+    identity = f"miner:{hotkey}" if hotkey is not None else "task"
+    return f"prep:{task_id}:{identity}"
+
+
+async def _start_prep_cost_run(
+    run_key: str,
+    task_id: str,
+    prep_identity: str,
+    trainer_ip: str,
+    gpu_ids: list[int],
+    config: Config,
+) -> None:
+    try:
+        await gpu_cost_sql.start_cost_run(
+            run_key=run_key,
+            task_id=task_id,
+            category="prep",
+            gpu_type="H100",
+            gpu_count=len(gpu_ids),
+            psql_db=config.psql_db,
+            metadata={
+                "prep_identity": prep_identity,
+                "trainer_ip": trainer_ip,
+                "gpu_ids": gpu_ids,
+            },
+        )
+    except Exception as e:
+        logger.error(f"Failed to start GPU cost run {run_key}: {e}", exc_info=True)
+
+
+async def _finish_training_cost_run(training_task: TournamentTaskTraining, success: bool, config: Config) -> None:
+    run_key = _training_cost_run_key(
+        str(training_task.task.task_id),
+        training_task.hotkey,
+        training_task.n_training_attempts,
+    )
+    try:
+        await gpu_cost_sql.finish_cost_run(run_key=run_key, success=success, psql_db=config.psql_db)
+    except Exception as e:
+        logger.error(f"Failed to finalize GPU cost run {run_key}: {e}", exc_info=True)
+
+
+async def _finish_prep_cost_run(run_key: str, success: bool, config: Config) -> None:
+    try:
+        result = await gpu_cost_sql.finish_cost_run(run_key=run_key, success=success, psql_db=config.psql_db)
+    except Exception as e:
+        logger.error(f"Failed to finalize GPU cost run {run_key}: {e}", exc_info=True)
+        return
+
+    if not success and result is not None and result["prep_failure_count"] == 3:
+        await notify_model_prep_failure_limit(
+            task_id=str(result["task_id"]),
+            prep_identity=str(result["metadata"].get("prep_identity", "task")),
+            discord_url=config.discord_url,
+        )
 
 
 simple_retry = retry(
@@ -473,6 +537,30 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.TRAINING, config.psql_db, trainer_ip
                     )
+                    attempt = training_task.n_training_attempts + 1
+                    run_key = _training_cost_run_key(
+                        str(training_task.task.task_id),
+                        training_task.hotkey,
+                        attempt,
+                    )
+                    try:
+                        await gpu_cost_sql.start_cost_run(
+                            run_key=run_key,
+                            task_id=str(training_task.task.task_id),
+                            tournament_id=tournament_id,
+                            category="training",
+                            gpu_type="H100",
+                            gpu_count=len(gpu_ids),
+                            psql_db=config.psql_db,
+                            metadata={
+                                "hotkey": training_task.hotkey,
+                                "attempt": attempt,
+                                "trainer_ip": trainer_ip,
+                                "gpu_ids": gpu_ids,
+                            },
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to start GPU cost run {run_key}: {e}", exc_info=True)
                     await tournament_sql.update_gpu_availability(
                         trainer_ip, gpu_ids, training_task.task.hours_to_complete, config.psql_db
                     )
@@ -779,6 +867,7 @@ async def _monitor_training_tasks(config: Config):
                     logger.warning(
                         f"Could not find trainer for task {training_task.task.task_id} with hotkey {training_task.hotkey}"
                     )
+                    await _finish_training_cost_run(training_task, False, config)
                     # Move task back to PENDING since trainer may have restarted or lost the task
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
@@ -797,12 +886,14 @@ async def _monitor_training_tasks(config: Config):
                         f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} completed with status SUCCESS "
                         f"(at least one trainer)"
                     )
+                    await _finish_training_cost_run(training_task, True, config)
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.SUCCESS, config.psql_db
                     )
                 elif all(s == TaskStatus.FAILURE for s in statuses):
                     any_completed = True
                     logger.info(f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} failed on all trainers")
+                    await _finish_training_cost_run(training_task, False, config)
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
                     )
@@ -1222,10 +1313,20 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run model prep for a single miner's starting model. Releases GPUs when done."""
         task_id_str = str(task.task_id)
         prep_key = f"{task_id_str}:{hotkey}"
+        cost_run_key = _prep_cost_run_key(task_id_str, hotkey)
+        prep_success = False
         try:
             logger.info(
                 f"Running per-miner model prep for task {task.task_id} "
                 f"hotkey={hotkey[:8]}... model={starting_model}"
+            )
+            await _start_prep_cost_run(
+                cost_run_key,
+                task_id_str,
+                f"miner:{hotkey}",
+                trainer_ip,
+                gpu_ids,
+                config,
             )
             reward_fns = getattr(task, "reward_functions", None)
             prep_result = await dispatch_augmentation_and_stats(
@@ -1242,6 +1343,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
             )
             if prep_result is not None and prep_result.baseline_stats:
+                prep_success = True
                 await task_sql.set_miner_baseline_stats(
                     task_id_str, hotkey, prep_result.baseline_stats, config.psql_db,
                 )
@@ -1257,6 +1359,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 exc_info=True,
             )
         finally:
+            await _finish_prep_cost_run(cost_run_key, prep_success, config)
             _miner_prep_in_progress.discard(prep_key)
             try:
                 await tournament_sql.update_gpu_availability(
@@ -1288,11 +1391,22 @@ async def process_awaiting_model_prep_tasks(config: Config):
     async def _run_task_prep(task, trainer_ip, gpu_ids):
         """Standard task-level model prep (text tasks, env round-1)."""
         task_id_str = str(task.task_id)
+        cost_run_key = _prep_cost_run_key(task_id_str)
+        prep_success = False
         try:
+            await _start_prep_cost_run(
+                cost_run_key,
+                task_id_str,
+                "task",
+                trainer_ip,
+                gpu_ids,
+                config,
+            )
             prep_result = await _run_single_prep(
                 task_id_str, task.model_id, task, trainer_ip, gpu_ids,
             )
             if prep_result is not None:
+                prep_success = True
                 if prep_result.augmented_model_id:
                     task.augmented_model_id = prep_result.augmented_model_id
                 if prep_result.baseline_stats:
@@ -1335,6 +1449,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 exc_info=True,
             )
         finally:
+            await _finish_prep_cost_run(cost_run_key, prep_success, config)
             _model_prep_in_progress.discard(task_id_str)
             try:
                 await tournament_sql.update_gpu_availability(

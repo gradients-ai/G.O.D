@@ -744,3 +744,66 @@ class ContinuousSftState(BaseModel):
     train_index: int = 0
     last_winner_repo: str | None = None
     updated_at: datetime | None = None
+
+
+class GpuCostCategoryBreakdown(BaseModel):
+    wall_hours: float = 0.0
+    gpu_hours: float = 0.0
+    cost_usd: float = 0.0
+    success_count: int = 0
+    failure_count: int = 0
+
+
+class TaskGpuCostBreakdown(BaseModel):
+    task_id: UUID
+    tournament_id: str
+    hotkey_count: int = 0
+    training: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    prep: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    evaluation: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    total_cost_usd: float = 0.0
+
+
+class TournamentGpuCostBreakdown(BaseModel):
+    tournament_id: str
+    tournament_type: str
+    status: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    training: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    prep: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    evaluation: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
+    total_attributed_cost_usd: float = 0.0
+
+
+class TournamentGpuCostTotals(BaseModel):
+    training_wall_hours: float = 0.0
+    training_gpu_hours: float = 0.0
+    training_cost_usd: float = 0.0
+    prep_wall_hours: float = 0.0
+    prep_gpu_hours: float = 0.0
+    prep_cost_usd: float = 0.0
+    evaluation_wall_hours: float = 0.0
+    provisioned_h100_gpu_hours: float = 0.0
+    provisioned_h100_cost_usd: float = 0.0
+    attributed_h100_gpu_hours: float = 0.0
+    attributed_h100_cost_usd: float = 0.0
+    idle_h100_gpu_hours: float = 0.0
+    idle_h100_cost_usd: float = 0.0
+    evaluation_a100_gpu_hours: float = 0.0
+    evaluation_a100_cost_usd: float = 0.0
+    total_bill_usd: float = 0.0
+
+
+class WeeklyTournamentGpuCostsResponse(BaseModel):
+    week_offset: int
+    window_start: datetime
+    window_end: datetime
+    is_current_window: bool
+    first_tournament_started_at: datetime | None = None
+    last_tournament_completed_at: datetime | None = None
+    h100_8x_hourly_rate_usd: float
+    a100_hourly_rate_usd: float
+    totals: TournamentGpuCostTotals
+    tournaments: list[TournamentGpuCostBreakdown]
+    tasks: list[TaskGpuCostBreakdown]

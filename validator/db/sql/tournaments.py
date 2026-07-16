@@ -8,6 +8,7 @@ from core.logging import get_logger
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
 from validator.db.database import PSQLDB
+from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import get_task_winners
@@ -711,6 +712,8 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
     """Add or update GPU information for a trainer"""
     async with await psql_db.connection() as connection:
         async with connection.transaction():
+            await gpu_costs.reconcile_trainer_capacity(connection, trainer_ip, gpu_infos)
+
             # First, remove existing entries for this trainer
             delete_query = f"""
                 DELETE FROM {cst.TRAINERS_GPUS_TABLE}
@@ -740,11 +743,13 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
 async def remove_trainer(trainer_ip: str, psql_db: PSQLDB):
     """Remove a trainer and all its GPUs from the database"""
     async with await psql_db.connection() as connection:
-        query = f"""
-            DELETE FROM {cst.TRAINERS_GPUS_TABLE}
-            WHERE {cst.TRAINER_IP} = $1
-        """
-        await connection.execute(query, trainer_ip)
+        async with connection.transaction():
+            await gpu_costs.close_trainer_capacity(connection, trainer_ip)
+            query = f"""
+                DELETE FROM {cst.TRAINERS_GPUS_TABLE}
+                WHERE {cst.TRAINER_IP} = $1
+            """
+            await connection.execute(query, trainer_ip)
         logger.info(f"Removed trainer {trainer_ip} from the database")
 
 

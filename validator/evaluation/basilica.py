@@ -17,6 +17,7 @@ from core.logging import get_environment_logger
 from core.logging import get_logger
 from core.logging import update_environment_logger_labels
 from validator.db.database import PSQLDB
+from validator.db.sql import gpu_costs as gpu_costs_sql
 from validator.db.sql import tasks as tasks_sql
 from validator.evaluation.basilica_deployments import EVAL_RESULT_STATUS_PATH
 from validator.evaluation.basilica_deployments import deployment_is_healthy
@@ -129,6 +130,69 @@ async def _db_call_with_retry(coro_factory, op_name: str, eval_logger: logging.L
             else:
                 eval_logger.error(f"[{repo}] DB op '{op_name}' failed after {vcst.EVAL_DB_RETRY_ATTEMPTS} attempts: {exc}")
     raise last_exc
+
+
+def _evaluation_cost_run_key(task_id: UUID, deployment_name: str) -> str:
+    return f"evaluation:{task_id}:{deployment_name}"
+
+
+async def _start_evaluation_cost_run(
+    *,
+    task_id: UUID | None,
+    psql_db: PSQLDB | None,
+    deployment_name: str,
+    gpu_count: int,
+    ctx: _BasilicaEvalContext,
+) -> str | None:
+    if task_id is None or psql_db is None or gpu_count <= 0:
+        return None
+
+    run_key = _evaluation_cost_run_key(task_id, deployment_name)
+    try:
+        await _db_call_with_retry(
+            lambda: gpu_costs_sql.start_cost_run(
+                run_key=run_key,
+                task_id=str(task_id),
+                category="evaluation",
+                gpu_type="A100",
+                gpu_count=gpu_count,
+                psql_db=psql_db,
+                metadata={"deployment_name": deployment_name, "repo": ctx.repo},
+            ),
+            "start_evaluation_cost_run",
+            ctx.eval_logger,
+            ctx.repo,
+        )
+    except Exception as exc:
+        # Accounting must never block a deployment that has already reserved capacity.
+        ctx.eval_logger.error(f"[{ctx.repo}] failed to start evaluation GPU cost run {run_key}: {exc}")
+        return None
+    return run_key
+
+
+async def _finish_evaluation_cost_run(
+    *,
+    run_key: str | None,
+    success: bool,
+    psql_db: PSQLDB | None,
+    ctx: _BasilicaEvalContext,
+) -> None:
+    if run_key is None or psql_db is None:
+        return
+    try:
+        await _db_call_with_retry(
+            lambda: gpu_costs_sql.finish_cost_run(
+                run_key=run_key,
+                success=success,
+                psql_db=psql_db,
+            ),
+            "finish_evaluation_cost_run",
+            ctx.eval_logger,
+            ctx.repo,
+        )
+    except Exception as exc:
+        # Cost telemetry must not turn a completed evaluation into a retry and launch another GPU pod.
+        ctx.eval_logger.error(f"[{ctx.repo}] failed to finalize evaluation GPU cost run {run_key}: {exc}")
 
 
 async def _poll_basilica_result(
@@ -494,6 +558,13 @@ async def _deploy_basilica_eval_repo(
             )
         ctx.log_eval_step("deployment_id_persist_complete", deployment=verified_deployment_name)
 
+    await _start_evaluation_cost_run(
+        task_id=task_id,
+        psql_db=psql_db,
+        deployment_name=deployment_name,
+        gpu_count=requested_gpus,
+        ctx=ctx,
+    )
     deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
         ctx=ctx,
         client=client,
@@ -670,21 +741,37 @@ async def _run_single_basilica_eval_repo(
         )
         if resume_deployment is not None:
             client, deployment, deployment_name = resume_deployment
+            cost_run_key = (
+                _evaluation_cost_run_key(task_id, deployment_name)
+                if task_id is not None and psql_db is not None and (gpu_count or 0) > 0
+                else None
+            )
+            attempt_success = False
             update_environment_logger_labels(
                 eval_logger,
                 deployment_id=deployment_name,
                 deployment_url=_deployment_url(deployment),
             )
-            return await _poll_eval_deployment(
-                ctx=ctx,
-                client=client,
-                deployment=deployment,
-                deployment_name=deployment_name,
-                success_cleanup_reason="resume_completed",
-                failure_cleanup_reason="resume_failed_or_timed_out",
-                timeout_cleanup_reason="resume_failed_or_timed_out",
-                retry_on_failure=False,
-            )
+            try:
+                result = await _poll_eval_deployment(
+                    ctx=ctx,
+                    client=client,
+                    deployment=deployment,
+                    deployment_name=deployment_name,
+                    success_cleanup_reason="resume_completed",
+                    failure_cleanup_reason="resume_failed_or_timed_out",
+                    timeout_cleanup_reason="resume_failed_or_timed_out",
+                    retry_on_failure=False,
+                )
+                attempt_success = isinstance(result, dict)
+                return result
+            finally:
+                await _finish_evaluation_cost_run(
+                    run_key=cost_run_key,
+                    success=attempt_success,
+                    psql_db=psql_db,
+                    ctx=ctx,
+                )
         await _release_reserved_gpus(
             task_id=task_id,
             psql_db=psql_db,
@@ -696,6 +783,12 @@ async def _run_single_basilica_eval_repo(
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         deployment_name = str(uuid.uuid4())
+        cost_run_key = (
+            _evaluation_cost_run_key(task_id, deployment_name)
+            if task_id is not None and psql_db is not None and (gpu_count or 0) > 0
+            else None
+        )
+        attempt_success = False
         try:
             update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
             log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
@@ -721,7 +814,7 @@ async def _run_single_basilica_eval_repo(
                 deployment_id=resolved_deployment_name,
                 deployment_url=_deployment_url(deployment),
             )
-            return await _poll_eval_deployment(
+            result = await _poll_eval_deployment(
                 ctx=ctx,
                 client=client,
                 deployment=deployment,
@@ -731,8 +824,16 @@ async def _run_single_basilica_eval_repo(
                 timeout_cleanup_reason="timed_out",
                 retry_on_failure=True,
             )
+            attempt_success = isinstance(result, dict)
+            return result
         except asyncio.CancelledError:
             log_step("attempt_cancelled", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=False,
+                psql_db=psql_db,
+                ctx=ctx,
+            )
             raise
         except EvaluationRetryableError:
             dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
@@ -745,6 +846,12 @@ async def _run_single_basilica_eval_repo(
                 psql_db=psql_db,
                 hotkeys=reserved_hotkeys,
                 deployment_name=dep_name if reserve_deployment_id else None,
+                ctx=ctx,
+            )
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=False,
+                psql_db=psql_db,
                 ctx=ctx,
             )
             raise
@@ -760,6 +867,12 @@ async def _run_single_basilica_eval_repo(
                 psql_db=psql_db,
                 hotkeys=reserved_hotkeys,
                 deployment_name=dep_name if reserve_deployment_id else None,
+                ctx=ctx,
+            )
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=False,
+                psql_db=psql_db,
                 ctx=ctx,
             )
             log_step(
@@ -788,6 +901,12 @@ async def _run_single_basilica_eval_repo(
                 log_step("all_attempts_failed", deployment=deployment_name, error=e)
                 return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
         finally:
+            await _finish_evaluation_cost_run(
+                run_key=cost_run_key,
+                success=attempt_success,
+                psql_db=psql_db,
+                ctx=ctx,
+            )
             if deployment is not None:
                 await _fetch_attempt_logs(ctx, deployment, deployment_name)
 
