@@ -714,18 +714,24 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
         async with connection.transaction():
             await gpu_costs.reconcile_trainer_capacity(connection, trainer_ip, gpu_infos)
 
-            # First, remove existing entries for this trainer
+            # Remove GPUs the trainer no longer reports. Keeping unchanged rows
+            # avoids turning every availability refresh into a capacity change.
             delete_query = f"""
                 DELETE FROM {cst.TRAINERS_GPUS_TABLE}
                 WHERE {cst.TRAINER_IP} = $1
+                  AND NOT ({cst.GPU_ID} = ANY($2::int[]))
             """
-            await connection.execute(delete_query, trainer_ip)
+            await connection.execute(delete_query, trainer_ip, [gpu.gpu_id for gpu in gpu_infos])
 
-            # Then insert new GPU information
             insert_query = f"""
                 INSERT INTO {cst.TRAINERS_GPUS_TABLE}
                 ({cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL})
                 VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT ({cst.TRAINER_IP}, {cst.GPU_ID}) DO UPDATE SET
+                    {cst.GPU_TYPE} = EXCLUDED.{cst.GPU_TYPE},
+                    {cst.VRAM_GB} = EXCLUDED.{cst.VRAM_GB},
+                    {cst.USED_UNTIL} = EXCLUDED.{cst.USED_UNTIL},
+                    {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             """
 
             for gpu_info in gpu_infos:

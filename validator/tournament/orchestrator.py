@@ -56,8 +56,8 @@ from validator.tournament.notifications import notify_model_prep_failure_limit
 logger = get_logger(__name__)
 
 
-def _training_cost_run_key(task_id: str, hotkey: str, attempt: int) -> str:
-    return f"training:{task_id}:{hotkey}:{attempt}"
+def _training_cost_run_key(task_id: str, hotkey: str) -> str:
+    return f"training:{task_id}:{hotkey}"
 
 
 def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
@@ -91,26 +91,42 @@ async def _start_prep_cost_run(
         logger.error(f"Failed to start GPU cost run {run_key}: {e}", exc_info=True)
 
 
-async def _finish_training_cost_run(training_task: TournamentTaskTraining, success: bool, config: Config) -> None:
-    run_key = _training_cost_run_key(
-        str(training_task.task.task_id),
-        training_task.hotkey,
-        training_task.n_training_attempts,
-    )
+async def _finish_training_cost_run(
+    training_task: TournamentTaskTraining,
+    success: bool,
+    config: Config,
+    ended_at: datetime | None = None,
+) -> None:
+    run_key = _training_cost_run_key(str(training_task.task.task_id), training_task.hotkey)
     try:
-        await gpu_cost_sql.finish_cost_run(run_key=run_key, success=success, psql_db=config.psql_db)
+        await gpu_cost_sql.finish_cost_run(
+            run_key=run_key,
+            success=success,
+            psql_db=config.psql_db,
+            ended_at=ended_at,
+        )
     except Exception as e:
         logger.error(f"Failed to finalize GPU cost run {run_key}: {e}", exc_info=True)
 
 
-async def _finish_prep_cost_run(run_key: str, success: bool, config: Config) -> None:
+async def _finish_prep_cost_run(
+    run_key: str,
+    success: bool,
+    config: Config,
+    ended_at: datetime | None = None,
+) -> None:
     try:
-        result = await gpu_cost_sql.finish_cost_run(run_key=run_key, success=success, psql_db=config.psql_db)
+        result = await gpu_cost_sql.finish_cost_run(
+            run_key=run_key,
+            success=success,
+            psql_db=config.psql_db,
+            ended_at=ended_at,
+        )
     except Exception as e:
         logger.error(f"Failed to finalize GPU cost run {run_key}: {e}", exc_info=True)
         return
 
-    if not success and result is not None and result["prep_failure_count"] == 3:
+    if result is not None and result.get("should_notify_prep_failure", False):
         await notify_model_prep_failure_limit(
             task_id=str(result["task_id"]),
             prep_identity=str(result["metadata"].get("prep_identity", "task")),
@@ -538,11 +554,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.TRAINING, config.psql_db, trainer_ip
                     )
                     attempt = training_task.n_training_attempts + 1
-                    run_key = _training_cost_run_key(
-                        str(training_task.task.task_id),
-                        training_task.hotkey,
-                        attempt,
-                    )
+                    run_key = _training_cost_run_key(str(training_task.task.task_id), training_task.hotkey)
                     try:
                         await gpu_cost_sql.start_cost_run(
                             run_key=run_key,
@@ -886,14 +898,26 @@ async def _monitor_training_tasks(config: Config):
                         f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} completed with status SUCCESS "
                         f"(at least one trainer)"
                     )
-                    await _finish_training_cost_run(training_task, True, config)
+                    successful_log = next(task_log for _, task_log in responses if task_log.status == TaskStatus.SUCCESS)
+                    await _finish_training_cost_run(
+                        training_task,
+                        True,
+                        config,
+                        ended_at=successful_log.finished_at,
+                    )
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.SUCCESS, config.psql_db
                     )
                 elif all(s == TaskStatus.FAILURE for s in statuses):
                     any_completed = True
                     logger.info(f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} failed on all trainers")
-                    await _finish_training_cost_run(training_task, False, config)
+                    finished_times = [task_log.finished_at for _, task_log in responses if task_log.finished_at is not None]
+                    await _finish_training_cost_run(
+                        training_task,
+                        False,
+                        config,
+                        ended_at=max(finished_times) if finished_times else None,
+                    )
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
                     )
@@ -1164,6 +1188,12 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
             continue
 
         if job.status == TaskStatus.SUCCESS and job.result is not None:
+            await _finish_prep_cost_run(
+                _prep_cost_run_key(task_id_str),
+                True,
+                config,
+                ended_at=job.finished_at,
+            )
             if job.result.augmented_model_id:
                 task.augmented_model_id = job.result.augmented_model_id
             if job.result.baseline_stats:
@@ -1204,6 +1234,14 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
             )
             return True
 
+        if job.status == TaskStatus.FAILURE:
+            await _finish_prep_cost_run(
+                _prep_cost_run_key(task_id_str),
+                False,
+                config,
+                ended_at=job.finished_at,
+            )
+
     return False
 
 
@@ -1243,6 +1281,12 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                 continue
 
             if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
+                await _finish_prep_cost_run(
+                    _prep_cost_run_key(task_id_str, hotkey),
+                    True,
+                    config,
+                    ended_at=job.finished_at,
+                )
                 await task_sql.set_miner_baseline_stats(
                     task_id_str, hotkey, job.result.baseline_stats, config.psql_db,
                 )
@@ -1251,6 +1295,14 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                     f"hotkey={hotkey[:8]}... from trainer {trainer_ip}"
                 )
                 handled.add(hotkey)
+
+            elif job.status == TaskStatus.FAILURE:
+                await _finish_prep_cost_run(
+                    _prep_cost_run_key(task_id_str, hotkey),
+                    False,
+                    config,
+                    ended_at=job.finished_at,
+                )
 
     return handled
 

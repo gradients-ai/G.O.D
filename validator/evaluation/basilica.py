@@ -148,6 +148,7 @@ async def _start_evaluation_cost_run(
         return None
 
     run_key = _evaluation_cost_run_key(task_id, deployment_name)
+    run_id = uuid.uuid4()
     try:
         await _db_call_with_retry(
             lambda: gpu_costs_sql.start_cost_run(
@@ -157,6 +158,7 @@ async def _start_evaluation_cost_run(
                 gpu_type="A100",
                 gpu_count=gpu_count,
                 psql_db=psql_db,
+                run_id=run_id,
                 metadata={"deployment_name": deployment_name, "repo": ctx.repo},
             ),
             "start_evaluation_cost_run",

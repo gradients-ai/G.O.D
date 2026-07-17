@@ -30,6 +30,7 @@ import validator.db.sql.tournaments as tournament_sql
 import validator.evaluation.constants as vcst
 from core.logging import get_logger
 from validator.db.database import PSQLDB
+from validator.db.sql import gpu_costs
 from validator.evaluation.basilica_deployments import cleanup_basilica_deployments_by_name
 
 
@@ -168,6 +169,16 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
     orphan_grace = datetime.timedelta(seconds=vcst.EVAL_ORPHAN_GRACE_SECONDS)
     ghost_grace = datetime.timedelta(seconds=vcst.EVAL_GHOST_GRACE_SECONDS)
     plan = plan_eval_reconcile(live, active, backed_ids, pvp_reservations, now, orphan_grace, ghost_grace)
+    try:
+        closed_cost_runs = await gpu_costs.close_stale_evaluation_runs(
+            live_deployment_names={deployment.name for deployment in live},
+            older_than=now - orphan_grace,
+            psql_db=psql_db,
+        )
+        if closed_cost_runs:
+            logger.warning(f"eval reconcile: closed {closed_cost_runs} stale evaluation cost run(s)")
+    except Exception as e:
+        logger.warning(f"eval reconcile: could not close stale evaluation cost runs: {e}")
 
     if plan.orphan_deployments:
         logger.warning(

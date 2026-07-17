@@ -3,6 +3,7 @@ from datetime import timezone
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
+from uuid import uuid4
 
 from asyncpg import Connection
 
@@ -31,47 +32,97 @@ async def start_cost_run(
     tournament_id: str | None = None,
     metadata: dict[str, Any] | None = None,
     started_at: datetime | None = None,
+    run_id: UUID | None = None,
 ) -> bool:
-    """Start a billable run. A duplicate key is a no-op."""
+    """Start a run, closing any stale run for the same logical work first."""
     if category not in cost_constants.COST_CATEGORIES:
         raise ValueError(f"Unsupported GPU cost category: {category}")
     if gpu_count <= 0:
         raise ValueError("gpu_count must be positive")
     task_uuid = UUID(str(task_id))
+    run_id = run_id or uuid4()
 
+    started_at = started_at or datetime.now(timezone.utc)
     async with await psql_db.connection() as connection:
-        if tournament_id is None:
-            tournament_id = await connection.fetchval(
-                """
-                SELECT tournament_id FROM tournament_tasks WHERE task_id = $1
-                UNION ALL
-                SELECT tournament_id FROM benchmark_task_copies WHERE copy_task_id = $1
-                LIMIT 1
-                """,
-                task_uuid,
-            )
-        if tournament_id is None:
-            return False
+        async with connection.transaction():
+            if tournament_id is None:
+                tournament_id = await connection.fetchval(
+                    """
+                    SELECT tournament_id FROM tournament_tasks WHERE task_id = $1
+                    UNION ALL
+                    SELECT tournament_id FROM benchmark_task_copies WHERE copy_task_id = $1
+                    LIMIT 1
+                    """,
+                    task_uuid,
+                )
+            if tournament_id is None:
+                return False
 
-        result = await connection.execute(
-            """
-            INSERT INTO active_gpu_cost_runs
-                (run_key, task_id, tournament_id, category, gpu_type, gpu_count,
-                 hourly_rate_per_gpu_usd, started_at, metadata)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, CURRENT_TIMESTAMP), $9)
-            ON CONFLICT (run_key) DO NOTHING
-            """,
-            run_key,
-            task_uuid,
-            tournament_id,
-            category,
-            gpu_type.upper(),
-            gpu_count,
-            hourly_rate_for_gpu(gpu_type),
-            started_at,
-            metadata or {},
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                run_key,
+            )
+            if await connection.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM gpu_usage_runs WHERE run_id = $1)",
+                run_id,
+            ):
+                return True
+            # A manual retry or restart may leave an old run open. Close it at
+            # the new run's start so time is never double counted.
+            await _finish_active_run(connection, run_key, False, started_at)
+            run_id = await connection.fetchval(
+                """
+                INSERT INTO gpu_usage_runs
+                    (run_id, source_key, task_id, tournament_id, category, gpu_type, gpu_count,
+                     hourly_rate_per_gpu_usd, started_at, metadata)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING run_id
+                """,
+                run_id,
+                run_key,
+                task_uuid,
+                tournament_id,
+                category,
+                gpu_type.upper(),
+                gpu_count,
+                hourly_rate_for_gpu(gpu_type),
+                started_at,
+                metadata or {},
+            )
+            return run_id is not None
+
+
+async def _finish_active_run(
+    connection: Connection,
+    source_key: str,
+    success: bool,
+    ended_at: datetime,
+):
+    return await connection.fetchrow(
+        """
+        UPDATE gpu_usage_runs
+        SET ended_at = GREATEST($2, started_at),
+            outcome = $3,
+            wall_seconds = GREATEST(EXTRACT(EPOCH FROM ($2 - started_at)), 0),
+            gpu_seconds = GREATEST(EXTRACT(EPOCH FROM ($2 - started_at)), 0) * gpu_count,
+            cost_usd = (
+                GREATEST(EXTRACT(EPOCH FROM ($2 - started_at)), 0)
+                * gpu_count * hourly_rate_per_gpu_usd / 3600
+            )
+        WHERE run_id = (
+            SELECT run_id
+            FROM gpu_usage_runs
+            WHERE source_key = $1 AND ended_at IS NULL
+            ORDER BY started_at DESC
+            LIMIT 1
+            FOR UPDATE
         )
-        return result.endswith("1")
+        RETURNING *
+        """,
+        source_key,
+        ended_at,
+        "success" if success else "failure",
+    )
 
 
 async def finish_cost_run(
@@ -81,55 +132,94 @@ async def finish_cost_run(
     psql_db: PSQLDB,
     ended_at: datetime | None = None,
 ) -> dict[str, Any] | None:
-    """Atomically consume an active run and add it to the task aggregate."""
+    """Finish the currently active run for a logical work identity."""
     ended_at = ended_at or datetime.now(timezone.utc)
     async with await psql_db.connection() as connection:
         async with connection.transaction():
-            run = await connection.fetchrow(
-                "DELETE FROM active_gpu_cost_runs WHERE run_key = $1 RETURNING *",
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
                 run_key,
             )
+            run = await _finish_active_run(connection, run_key, success, ended_at)
             if run is None:
                 return None
-
-            wall_seconds = Decimal(str(max(0.0, (ended_at - run["started_at"]).total_seconds())))
-            gpu_seconds = wall_seconds * Decimal(run["gpu_count"])
-            cost_usd = gpu_seconds * run["hourly_rate_per_gpu_usd"] / Decimal(3600)
-            category = run["category"]
-            success_column = f"{category}_success_count"
-            failure_column = f"{category}_failure_count"
-            count_column = success_column if success else failure_column
-
-            row = await connection.fetchrow(
-                f"""
-                INSERT INTO task_gpu_costs
-                    (task_id, tournament_id, {category}_wall_seconds, {category}_gpu_seconds,
-                     {category}_cost_usd, {count_column})
-                VALUES ($1, $2, $3, $4, $5, 1)
-                ON CONFLICT (task_id) DO UPDATE SET
-                    {category}_wall_seconds = task_gpu_costs.{category}_wall_seconds + EXCLUDED.{category}_wall_seconds,
-                    {category}_gpu_seconds = task_gpu_costs.{category}_gpu_seconds + EXCLUDED.{category}_gpu_seconds,
-                    {category}_cost_usd = task_gpu_costs.{category}_cost_usd + EXCLUDED.{category}_cost_usd,
-                    {count_column} = task_gpu_costs.{count_column} + 1,
-                    updated_at = CURRENT_TIMESTAMP
-                RETURNING *
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                str(run["task_id"]),
+            )
+            prep_failure_count = await connection.fetchval(
+                """
+                SELECT COUNT(*)
+                FROM gpu_usage_runs
+                WHERE task_id = $1 AND category = 'prep' AND outcome = 'failure'
                 """,
                 run["task_id"],
-                run["tournament_id"],
-                wall_seconds,
-                gpu_seconds,
-                cost_usd,
             )
+            should_notify_prep_failure = False
+            if run["category"] == "prep" and not success and prep_failure_count >= 3:
+                alert_already_sent = await connection.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM gpu_usage_runs
+                        WHERE task_id = $1
+                          AND category = 'prep'
+                          AND metadata @> '{"prep_failure_alert_sent": true}'::jsonb
+                    )
+                    """,
+                    run["task_id"],
+                )
+                if not alert_already_sent:
+                    await connection.execute(
+                        """
+                        UPDATE gpu_usage_runs
+                        SET metadata = metadata || '{"prep_failure_alert_sent": true}'::jsonb
+                        WHERE run_id = $1
+                        """,
+                        run["run_id"],
+                    )
+                    should_notify_prep_failure = True
             return {
                 "task_id": run["task_id"],
                 "tournament_id": run["tournament_id"],
-                "category": category,
-                "wall_seconds": wall_seconds,
-                "gpu_seconds": gpu_seconds,
-                "cost_usd": cost_usd,
-                "prep_failure_count": row["prep_failure_count"],
+                "category": run["category"],
+                "wall_seconds": run["wall_seconds"],
+                "gpu_seconds": run["gpu_seconds"],
+                "cost_usd": run["cost_usd"],
+                "prep_failure_count": prep_failure_count,
+                "should_notify_prep_failure": should_notify_prep_failure,
                 "metadata": run["metadata"],
             }
+
+
+async def close_stale_evaluation_runs(
+    *,
+    live_deployment_names: set[str],
+    older_than: datetime,
+    psql_db: PSQLDB,
+) -> int:
+    """Close abandoned eval runs after Basilica reconciliation proves them stale."""
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            """
+            UPDATE gpu_usage_runs
+            SET ended_at = CURRENT_TIMESTAMP,
+                outcome = 'failure',
+                wall_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)),
+                gpu_seconds = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at)) * gpu_count,
+                cost_usd = (
+                    EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))
+                    * gpu_count * hourly_rate_per_gpu_usd / 3600
+                )
+            WHERE category = 'evaluation'
+              AND ended_at IS NULL
+              AND started_at < $1
+              AND NOT ((metadata->>'deployment_name') = ANY($2::text[]))
+            """,
+            older_than,
+            list(live_deployment_names),
+        )
+        return int(result.split()[-1])
 
 
 async def reconcile_trainer_capacity(
@@ -219,13 +309,17 @@ async def get_weekly_cost_rows(
                 """,
                 tournament_ids,
             )
-            cost_rows = await connection.fetch(
-                "SELECT * FROM task_gpu_costs WHERE tournament_id = ANY($1::text[])",
+            run_rows = await connection.fetch(
+                """
+                SELECT *
+                FROM gpu_usage_runs
+                WHERE tournament_id = ANY($1::text[])
+                  AND started_at < $3
+                  AND COALESCE(ended_at, $3) > $2
+                """,
                 tournament_ids,
-            )
-            active_rows = await connection.fetch(
-                "SELECT * FROM active_gpu_cost_runs WHERE tournament_id = ANY($1::text[])",
-                tournament_ids,
+                window_start,
+                window_end,
             )
             hotkey_rows = await connection.fetch(
                 """
@@ -239,8 +333,7 @@ async def get_weekly_cost_rows(
             )
         else:
             task_rows = []
-            cost_rows = []
-            active_rows = []
+            run_rows = []
             hotkey_rows = []
 
         capacity_rows = await connection.fetch(
@@ -256,8 +349,7 @@ async def get_weekly_cost_rows(
     return {
         "tournaments": [dict(row) for row in tournament_rows],
         "tasks": [dict(row) for row in task_rows],
-        "costs": [dict(row) for row in cost_rows],
-        "active": [dict(row) for row in active_rows],
+        "runs": [dict(row) for row in run_rows],
         "hotkeys": [dict(row) for row in hotkey_rows],
         "capacity": [dict(row) for row in capacity_rows],
     }

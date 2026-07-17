@@ -84,27 +84,12 @@ def calculate_weekly_costs(
             **{category: _zero_category() for category in _CATEGORIES},
         }
 
-    for row in rows["costs"]:
-        task = task_totals.setdefault(
-            row["task_id"],
-            {
-                "tournament_id": row["tournament_id"],
-                **{category: _zero_category() for category in _CATEGORIES},
-            },
-        )
-        for category in _CATEGORIES:
-            values = task[category]
-            values["wall_seconds"] += row[f"{category}_wall_seconds"]
-            values["gpu_seconds"] += row[f"{category}_gpu_seconds"]
-            values["cost_usd"] += row[f"{category}_cost_usd"]
-            values["success_count"] += row[f"{category}_success_count"]
-            values["failure_count"] += row[f"{category}_failure_count"]
-
-    for row in rows["active"]:
+    for row in rows["runs"]:
         effective_start = max(row["started_at"], window_start)
-        if effective_start >= window_end:
+        effective_end = min(row["ended_at"] or window_end, window_end)
+        if effective_start >= effective_end:
             continue
-        wall_seconds = Decimal(str((window_end - effective_start).total_seconds()))
+        wall_seconds = Decimal(str((effective_end - effective_start).total_seconds()))
         gpu_seconds = wall_seconds * Decimal(row["gpu_count"])
         task = task_totals.setdefault(
             row["task_id"],
@@ -117,6 +102,11 @@ def calculate_weekly_costs(
         values["wall_seconds"] += wall_seconds
         values["gpu_seconds"] += gpu_seconds
         values["cost_usd"] += gpu_seconds * row["hourly_rate_per_gpu_usd"] / Decimal(3600)
+        if row["ended_at"] is not None and row["ended_at"] <= window_end:
+            if row["outcome"] == "success":
+                values["success_count"] += 1
+            elif row["outcome"] == "failure":
+                values["failure_count"] += 1
 
     tournament_totals: dict[str, dict[str, dict[str, Decimal | int]]] = {
         tournament_id: {category: _zero_category() for category in _CATEGORIES}
@@ -158,11 +148,16 @@ def calculate_weekly_costs(
             )
         )
 
+    first_tournament_started_at = min(
+        (row["created_at"] for row in tournament_rows.values()),
+        default=None,
+    )
+    billing_start = first_tournament_started_at or window_start
     provisioned_gpu_seconds = Decimal(0)
     for row in rows["capacity"]:
         if "H100" not in row["gpu_type"].upper():
             continue
-        start = max(row["started_at"], window_start)
+        start = max(row["started_at"], billing_start)
         end = min(row["ended_at"] or window_end, window_end)
         if end > start:
             provisioned_gpu_seconds += Decimal(str((end - start).total_seconds()))
@@ -216,9 +211,7 @@ def calculate_weekly_costs(
         window_start=window_start,
         window_end=window_end,
         is_current_window=week_offset == 0 if is_current_window is None else is_current_window,
-        first_tournament_started_at=min(
-            (row["created_at"] for row in tournament_rows.values()), default=None
-        ),
+        first_tournament_started_at=first_tournament_started_at,
         last_tournament_completed_at=max(completed_times, default=None),
         h100_8x_hourly_rate_usd=float(cost_constants.H100_8X_HOURLY_USD),
         a100_hourly_rate_usd=float(cost_constants.A100_HOURLY_USD),
