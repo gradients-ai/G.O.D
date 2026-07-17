@@ -2,6 +2,13 @@
 # Change each time but take caution
 
 . $HOME/.venv/bin/activate
+
+# fiber v2.7.0+ moved to async-substrate-interface 2.x, which depends on `cyscale`
+# instead of `scalecodec`/`substrate-interface` (same import namespace as scalecodec,
+# so it refuses to load if the old packages are still around). `pip install -e .`
+# won't remove those on its own since they're no longer required by anything, so an
+# in-place upgrade from an older checkout needs them cleared out first.
+pip uninstall -y substrate-interface scalecodec cyscale || true
 pip install -e .
 
 task auditor

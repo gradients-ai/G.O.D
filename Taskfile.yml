@@ -80,6 +80,12 @@ tasks:
   install:
     cmds:
       - . $HOME/.venv/bin/activate
+      # fiber v2.7.0+ moved to async-substrate-interface 2.x, which depends on
+      # `cyscale` instead of `scalecodec`/`substrate-interface` (same import
+      # namespace as scalecodec, so it refuses to load if either is still
+      # around). `pip install -e .` won't remove those on its own since
+      # they're no longer required by anything, so clear them out first.
+      - pip uninstall -y substrate-interface scalecodec cyscale || true
       - pip install -e .
 
   auditor:
@@ -118,21 +124,21 @@ tasks:
           echo "  LOKI_PASSWORD=your-loki-password"
           exit 1
         fi
-        
+
         # Load variables from .vali.env
         export $(cat .vali.env | grep -v '^#' | xargs)
-        
+
         # Auto-detect OBSERVABILITY_DOMAIN if not set
         if [ -z "$OBSERVABILITY_DOMAIN" ]; then
           # Try to get public IP
           OBSERVABILITY_DOMAIN=$(curl -s ifconfig.me || curl -s icanhazip.com || hostname -I | awk '{print $1}')
           echo "Auto-detected OBSERVABILITY_DOMAIN: $OBSERVABILITY_DOMAIN"
         fi
-        
+
         # Use default passwords if not set
         GRAFANA_TRAINING_PASSWORD=${GRAFANA_TRAINING_PASSWORD:-changeme123}
         LOKI_PASSWORD=${LOKI_PASSWORD:-trainerlogs123}
-        
+
         # Create observability env from .vali.env variables
         cat > .env.observability << EOF
         OBSERVABILITY_DOMAIN=${OBSERVABILITY_DOMAIN}
@@ -192,10 +198,10 @@ tasks:
           echo "  LOKI_PASSWORD=your-loki-password"
           exit 1
         fi
-        
+
         # Load variables from .trainer.env
         export $(cat .trainer.env | grep -v '^#' | xargs)
-        
+
         # Check required variables
         if [ -z "$LOKI_ENDPOINT" ] || [ -z "$LOKI_PASSWORD" ]; then
           echo "ERROR: Missing required variables in .trainer.env:"
@@ -203,7 +209,7 @@ tasks:
           echo "  LOKI_PASSWORD=${LOKI_PASSWORD:-<not set>}"
           exit 1
         fi
-        
+
         # Create trainer env for Vector
         cat > .env.trainer-logs << EOF
         LOKI_ENDPOINT=${LOKI_ENDPOINT}
