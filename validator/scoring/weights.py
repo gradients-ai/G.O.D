@@ -31,11 +31,11 @@ import json
 from datetime import timezone
 from uuid import UUID
 
+from async_substrate_interface import SubstrateInterface
 from fiber.chain import fetch_nodes
 from fiber.chain import weights
 from fiber.chain.chain_utils import query_substrate
 from fiber.chain.models import Node
-from substrateinterface import SubstrateInterface
 
 import core.constants.network as ccst
 import validator.scoring.constants as cts

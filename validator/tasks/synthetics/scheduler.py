@@ -7,7 +7,7 @@ from typing import Any
 from typing import AsyncGenerator
 from uuid import UUID
 
-from substrateinterface import Keypair
+from bittensor_wallet.keypair import Keypair
 
 import validator.infrastructure.service_constants as service_cst
 import validator.tasks.datasets.constants as data_cst
