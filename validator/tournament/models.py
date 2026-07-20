@@ -776,6 +776,7 @@ class TournamentGpuCostBreakdown(BaseModel):
     completed_at: datetime | None = None
     participant_count: int = 0
     fee_collected_tao: float = 0.0
+    fee_collected_usd: float = 0.0
     training: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
     prep: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
     evaluation: GpuCostCategoryBreakdown = Field(default_factory=GpuCostCategoryBreakdown)
@@ -800,6 +801,7 @@ class TournamentGpuCostTotals(BaseModel):
     evaluation_a100_cost_usd: float = 0.0
     total_bill_usd: float = 0.0
     total_fees_collected_tao: float = 0.0
+    total_fees_collected_usd: float = 0.0
 
 
 class WeeklyTournamentGpuCostsResponse(BaseModel):
@@ -811,6 +813,7 @@ class WeeklyTournamentGpuCostsResponse(BaseModel):
     last_tournament_completed_at: datetime | None = None
     h100_8x_hourly_rate_usd: float
     a100_hourly_rate_usd: float
+    tao_price_usd: float | None = None
     totals: TournamentGpuCostTotals
     tournaments: list[TournamentGpuCostBreakdown]
     tasks: list[TaskGpuCostBreakdown]

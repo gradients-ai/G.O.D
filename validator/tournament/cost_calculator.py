@@ -73,6 +73,7 @@ def calculate_weekly_costs(
     window_end: datetime,
     week_offset: int,
     is_current_window: bool | None = None,
+    tao_price_usd: float | None = None,
 ) -> WeeklyTournamentGpuCostsResponse:
     tournament_rows = {row["tournament_id"]: row for row in rows["tournaments"]}
     hotkey_counts = {row["task_id"]: row["hotkey_count"] for row in rows["hotkeys"]}
@@ -159,6 +160,7 @@ def calculate_weekly_costs(
             str(row["tournament_type"]), Decimal(0)
         )
         fee_collected_tao = float(fee_rao * Decimal(participant_count) / cost_constants.RAO_PER_TAO)
+        fee_collected_usd = fee_collected_tao * tao_price_usd if tao_price_usd else 0.0
         tournament_models.append(
             TournamentGpuCostBreakdown(
                 tournament_id=tournament_id,
@@ -168,12 +170,14 @@ def calculate_weekly_costs(
                 completed_at=row["updated_at"] if str(row["status"]) == "completed" else None,
                 participant_count=participant_count,
                 fee_collected_tao=fee_collected_tao,
+                fee_collected_usd=fee_collected_usd,
                 **categories,
                 total_attributed_cost_usd=sum(model.cost_usd for model in categories.values()),
             )
         )
 
     total_fees_collected_tao = sum(model.fee_collected_tao for model in tournament_models)
+    total_fees_collected_usd = total_fees_collected_tao * tao_price_usd if tao_price_usd else 0.0
 
     first_tournament_started_at = min(
         (row["created_at"] for row in tournament_rows.values()),
@@ -242,6 +246,7 @@ def calculate_weekly_costs(
         last_tournament_completed_at=max(completed_times, default=None),
         h100_8x_hourly_rate_usd=float(cost_constants.H100_8X_HOURLY_USD),
         a100_hourly_rate_usd=float(cost_constants.A100_HOURLY_USD),
+        tao_price_usd=tao_price_usd,
         totals=TournamentGpuCostTotals(
             training_wall_hours=float(training_wall_seconds / Decimal(3600)),
             training_gpu_hours=float(training_gpu_seconds / Decimal(3600)),
@@ -260,6 +265,7 @@ def calculate_weekly_costs(
             evaluation_a100_cost_usd=float(evaluation_cost),
             total_bill_usd=float(provisioned_cost + evaluation_cost),
             total_fees_collected_tao=total_fees_collected_tao,
+            total_fees_collected_usd=total_fees_collected_usd,
         ),
         tournaments=tournament_models,
         tasks=task_models,

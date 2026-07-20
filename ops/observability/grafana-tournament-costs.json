@@ -142,7 +142,12 @@
           "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
           "unit": "suffix:τ"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "≈ USD" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 0 }]
+          }
+        ]
       },
       "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
       "id": 11,
@@ -169,7 +174,8 @@
           "url_options": { "method": "GET" },
           "root_selector": "",
           "columns": [
-            { "selector": "totals.total_fees_collected_tao", "text": "Fees Collected", "type": "number" }
+            { "selector": "totals.total_fees_collected_tao", "text": "Fees Collected", "type": "number" },
+            { "selector": "totals.total_fees_collected_usd", "text": "≈ USD", "type": "number" }
           ]
         }
       ],
@@ -257,6 +263,10 @@
           {
             "matcher": { "id": "byName", "options": "A100 $/hr" },
             "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "TAO Price (USD)" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }]
           }
         ]
       },
@@ -284,7 +294,8 @@
             { "selector": "window_end", "text": "Window End", "type": "timestamp" },
             { "selector": "is_current_window", "text": "Current Week", "type": "string" },
             { "selector": "h100_8x_hourly_rate_usd", "text": "8x H100 $/hr", "type": "number" },
-            { "selector": "a100_hourly_rate_usd", "text": "A100 $/hr", "type": "number" }
+            { "selector": "a100_hourly_rate_usd", "text": "A100 $/hr", "type": "number" },
+            { "selector": "tao_price_usd", "text": "TAO Price (USD)", "type": "number" }
           ]
         }
       ],
@@ -322,6 +333,10 @@
           {
             "matcher": { "id": "byName", "options": "Fee (τ)" },
             "properties": [{ "id": "unit", "value": "suffix:τ" }, { "id": "decimals", "value": 3 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Fee (USD)" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }]
           }
         ]
       },
@@ -331,7 +346,7 @@
         "cellHeight": "sm",
         "footer": {
           "countRows": false,
-          "fields": ["Participants", "Fee (τ)", "Training $", "Prep $", "Eval $", "Total Attributed $"],
+          "fields": ["Participants", "Fee (τ)", "Fee (USD)", "Training $", "Prep $", "Eval $", "Total Attributed $"],
           "reducer": ["sum"],
           "show": true
         },
@@ -358,6 +373,7 @@
             { "selector": "completed_at", "text": "Completed", "type": "timestamp" },
             { "selector": "participant_count", "text": "Participants", "type": "number" },
             { "selector": "fee_collected_tao", "text": "Fee (τ)", "type": "number" },
+            { "selector": "fee_collected_usd", "text": "Fee (USD)", "type": "number" },
             { "selector": "training.cost_usd", "text": "Training $", "type": "number" },
             { "selector": "prep.cost_usd", "text": "Prep $", "type": "number" },
             { "selector": "evaluation.cost_usd", "text": "Eval $", "type": "number" },
@@ -379,10 +395,11 @@
               "Completed": 4,
               "Participants": 5,
               "Fee (τ)": 6,
-              "Training $": 7,
-              "Prep $": 8,
-              "Eval $": 9,
-              "Total Attributed $": 10
+              "Fee (USD)": 7,
+              "Training $": 8,
+              "Prep $": 9,
+              "Eval $": 10,
+              "Total Attributed $": 11
             }
           }
         }

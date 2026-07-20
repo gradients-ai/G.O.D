@@ -9,6 +9,7 @@ from asyncpg import Connection
 
 from core.models.trainer_contract_models import GPUInfo
 from validator.db.database import PSQLDB
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament import cost_constants
 
 
@@ -314,14 +315,18 @@ async def get_weekly_cost_rows(
                 """,
                 tournament_ids,
             )
+            # The defending champion ("boss") is carried in for free as the base
+            # contestant under EMISSION_BURN_HOTKEY, so exclude it from paying entrants.
             participant_rows = await connection.fetch(
                 """
                 SELECT tournament_id, COUNT(*) AS participant_count
                 FROM tournament_participants
                 WHERE tournament_id = ANY($1::text[])
+                  AND hotkey != $2
                 GROUP BY tournament_id
                 """,
                 tournament_ids,
+                EMISSION_BURN_HOTKEY,
             )
             run_rows = await connection.fetch(
                 """

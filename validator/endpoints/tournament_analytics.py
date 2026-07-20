@@ -56,6 +56,7 @@ from validator.tournament.performance_calculator import get_tournament_performan
 from validator.tournament.tournament_manager import _calculate_next_tournament_start_time
 from validator.tournament.tournament_manager import _get_tournament_schedule
 from validator.tournament.tournament_manager import get_tournament_completion_time
+from validator.transfers.tao_price import get_tao_price_usd
 
 
 logger = get_logger(__name__)
@@ -656,12 +657,14 @@ async def get_tournament_costs(
                         tournament_window_end=tournament_window_end,
                         psql_db=config.psql_db,
                     )
+        tao_price_usd = await get_tao_price_usd()
         return calculate_weekly_costs(
             rows=rows,
             window_start=window_start,
             window_end=window_end,
             week_offset=week_offset,
             is_current_window=is_current_window,
+            tao_price_usd=tao_price_usd,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
