@@ -1529,6 +1529,7 @@ async def set_pvp_pair_deployment_id(
     hotkey_a: str,
     hotkey_b: str,
     deployment_id: str | None,
+    verified: bool,
     psql_db: PSQLDB,
 ) -> None:
     """Store the Basilica deployment ID for all env rows belonging to a PvP pair."""
@@ -1537,11 +1538,12 @@ async def set_pvp_pair_deployment_id(
         db_result = await connection.execute(f"""
             UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
             SET {cst.PVP_DEPLOYMENT_ID} = $4,
+                {cst.PVP_DEPLOYMENT_VERIFIED} = $5,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1
                 AND {cst.PVP_HOTKEY_A} = $2
                 AND {cst.PVP_HOTKEY_B} = $3
-        """, task_id, hk_a, hk_b, deployment_id)
+        """, task_id, hk_a, hk_b, deployment_id, verified)
         updated_rows = _row_count(db_result)
         if updated_rows == 0:
             logger.warning(
@@ -1582,6 +1584,7 @@ async def get_active_pvp_pair_reservations(psql_db: PSQLDB) -> list[dict]:
                    {cst.PVP_HOTKEY_A} AS hotkey_a,
                    {cst.PVP_HOTKEY_B} AS hotkey_b,
                    MAX({cst.PVP_DEPLOYMENT_ID}) AS deployment_id,
+                   bool_or({cst.PVP_DEPLOYMENT_VERIFIED}) AS deployment_verified,
                    MAX({cst.UPDATED_AT}) AS updated_at
             FROM {cst.PVP_PAIR_RESULTS_TABLE}
             WHERE {cst.STATUS} != $1

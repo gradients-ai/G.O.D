@@ -2069,6 +2069,7 @@ async def release_pvp_pair_gpus(
             UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
             SET {cst.GPU_COUNT} = NULL,
                 {cst.PVP_DEPLOYMENT_ID} = NULL,
+                {cst.PVP_DEPLOYMENT_VERIFIED} = FALSE,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2 AND {cst.PVP_HOTKEY_B} = $3
             """,

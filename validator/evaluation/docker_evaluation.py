@@ -453,6 +453,7 @@ async def _persist_pvp_deployment_id(
     psql_db: PSQLDB | None,
     hotkeys: list[str],
     deployment_name: str,
+    verified: bool,
     ctx: _BasilicaEvalContext,
 ) -> None:
     if task_id is None or psql_db is None or not hotkeys:
@@ -466,6 +467,7 @@ async def _persist_pvp_deployment_id(
                 hotkeys[0],
                 hotkeys[1],
                 deployment_name,
+                verified,
                 psql_db,
             ),
             "set_pvp_pair_deployment_id",
@@ -640,6 +642,7 @@ async def _deploy_pvp_eval(
                     psql_db=psql_db,
                     hotkeys=hotkeys,
                     deployment_name=deployment_name,
+                    verified=False,
                     ctx=ctx,
                 )
             log_step(
@@ -662,6 +665,7 @@ async def _deploy_pvp_eval(
                         psql_db=psql_db,
                         hotkeys=hotkeys,
                         deployment_name=verified_deployment_name,
+                        verified=True,
                         ctx=ctx,
                     )
                 except Exception as persist_exc:

@@ -55,6 +55,7 @@ class PvpPairReservation:
     hotkey_a: str
     hotkey_b: str
     deployment_id: str | None
+    verified: bool
     updated_at: datetime.datetime
 
 
@@ -84,9 +85,11 @@ def plan_eval_reconcile(
     - ORPHAN reaping (live deployment with no backing) and boot-window stale-release use the LONG
       `orphan_grace` — a deployment may legitimately be mid-startup (reserved but not yet backing).
     - GHOST release (a reservation whose deployment is provably absent from a fresh `list()`) uses
-      the SHORT `ghost_grace`: a reservation only carries a deployment id once it was stamped
-      post-readiness, so a still-booting eval is never a ghost, and a dead deployment's GPUs should
-      be freed fast rather than pinning the cap for the full orphan grace.
+      grace by verification state:
+      - verified deployment ids (post-readiness stamp) use SHORT `ghost_grace`, so dead deployments
+        free GPU reservations quickly.
+      - unverified deployment ids (pre-deploy boot marker) use LONG `orphan_grace`, so a booting
+        deployment is never falsely ghosted before the ready window expires.
 
     `active` are the `evaluations` rows carrying a deployment id (individual evals); `pvp_reservations`
     are the per-pair reservations on `pvp_pair_results` (PvP evals).
@@ -101,7 +104,9 @@ def plan_eval_reconcile(
     ghost_pvp = tuple(
         r
         for r in pvp_reservations
-        if r.deployment_id and r.deployment_id not in live_names and (now - r.updated_at) >= ghost_grace
+        if r.deployment_id
+        and r.deployment_id not in live_names
+        and (now - r.updated_at) >= (ghost_grace if r.verified else orphan_grace)
     )
     return ReconcilePlan(orphan_deployments=orphans, ghost_deployment_ids=ghosts, ghost_pvp_pairs=ghost_pvp)
 
@@ -159,6 +164,7 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
             hotkey_a=row["hotkey_a"],
             hotkey_b=row["hotkey_b"],
             deployment_id=row.get("deployment_id"),
+            verified=bool(row.get("deployment_verified")),
             updated_at=row["updated_at"],
         )
         for row in pvp_reservation_rows

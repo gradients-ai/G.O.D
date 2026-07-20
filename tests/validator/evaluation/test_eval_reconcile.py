@@ -65,8 +65,15 @@ def test_evaluations_ghost_within_ghost_grace_protected():
 
 # ---- PvP ghost release (short grace, pair-scoped) ----
 
-def _pvp(dep_id, age, task="t1", a="hkA", b="hkB"):
-    return PvpPairReservation(task_id=task, hotkey_a=a, hotkey_b=b, deployment_id=dep_id, updated_at=_ago(age))
+def _pvp(dep_id, age, task="t1", a="hkA", b="hkB", verified=True):
+    return PvpPairReservation(
+        task_id=task,
+        hotkey_a=a,
+        hotkey_b=b,
+        deployment_id=dep_id,
+        verified=verified,
+        updated_at=_ago(age),
+    )
 
 
 def test_pvp_ghost_released_after_ghost_grace():
@@ -89,8 +96,20 @@ def test_pvp_ghost_within_ghost_grace_protected():
 
 def test_pvp_reservation_without_deployment_id_is_not_a_ghost():
     # booting pair (deployment_id NULL) is handled by the long stale sweep, never the ghost path
-    plan = _plan(pvp=[PvpPairReservation("t1", "hkA", "hkB", None, _ago(60))])
+    plan = _plan(pvp=[PvpPairReservation("t1", "hkA", "hkB", None, False, _ago(60))])
     assert plan.ghost_pvp_pairs == ()
+
+
+def test_pvp_unverified_id_older_than_ghost_grace_but_within_orphan_grace_is_protected():
+    # Unverified marker can persist during long deploy startup; do not ghost at short grace.
+    plan = _plan(pvp=[_pvp("pvp-booting", 5, verified=False)])
+    assert plan.ghost_pvp_pairs == ()
+
+
+def test_pvp_unverified_id_older_than_orphan_grace_is_ghosted():
+    plan = _plan(pvp=[_pvp("pvp-boot-stalled", 35, verified=False)])
+    assert len(plan.ghost_pvp_pairs) == 1
+    assert plan.ghost_pvp_pairs[0].deployment_id == "pvp-boot-stalled"
 
 
 # ---- combined ----
