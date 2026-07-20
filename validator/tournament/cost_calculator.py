@@ -81,6 +81,10 @@ def calculate_weekly_costs(
     for task in rows["tasks"]:
         task_totals[task["task_id"]] = {
             "tournament_id": task["tournament_id"],
+            "task_type": task.get("task_type"),
+            "base_model": task.get("base_model"),
+            "round_number": task.get("round_number"),
+            "round_type": task.get("round_type"),
             **{category: _zero_category() for category in _CATEGORIES},
         }
 
@@ -95,6 +99,10 @@ def calculate_weekly_costs(
             row["task_id"],
             {
                 "tournament_id": row["tournament_id"],
+                "task_type": None,
+                "base_model": None,
+                "round_number": None,
+                "round_type": None,
                 **{category: _zero_category() for category in _CATEGORIES},
             },
         )
@@ -123,12 +131,22 @@ def calculate_weekly_costs(
             TaskGpuCostBreakdown(
                 task_id=task_id,
                 tournament_id=task["tournament_id"],
+                task_type=task.get("task_type"),
+                base_model=task.get("base_model"),
+                round_number=task.get("round_number"),
+                round_type=task.get("round_type"),
                 hotkey_count=hotkey_counts.get(task_id, 0),
                 **category_models,
                 total_cost_usd=sum(model.cost_usd for model in category_models.values()),
             )
         )
-    task_models.sort(key=lambda task: (task.tournament_id, str(task.task_id)))
+    task_models.sort(
+        key=lambda task: (task.tournament_id, task.round_number if task.round_number is not None else -1, str(task.task_id))
+    )
+
+    participant_counts = {
+        row["tournament_id"]: int(row["participant_count"]) for row in rows.get("participants", [])
+    }
 
     tournament_models = []
     for tournament_id, row in tournament_rows.items():
@@ -136,6 +154,11 @@ def calculate_weekly_costs(
             category: _category_model(tournament_totals[tournament_id][category])
             for category in _CATEGORIES
         }
+        participant_count = participant_counts.get(tournament_id, 0)
+        fee_rao = cost_constants.TOURNAMENT_PARTICIPATION_FEE_RAO_BY_TYPE.get(
+            str(row["tournament_type"]), Decimal(0)
+        )
+        fee_collected_tao = float(fee_rao * Decimal(participant_count) / cost_constants.RAO_PER_TAO)
         tournament_models.append(
             TournamentGpuCostBreakdown(
                 tournament_id=tournament_id,
@@ -143,10 +166,14 @@ def calculate_weekly_costs(
                 status=str(row["status"]),
                 started_at=row["created_at"],
                 completed_at=row["updated_at"] if str(row["status"]) == "completed" else None,
+                participant_count=participant_count,
+                fee_collected_tao=fee_collected_tao,
                 **categories,
                 total_attributed_cost_usd=sum(model.cost_usd for model in categories.values()),
             )
         )
+
+    total_fees_collected_tao = sum(model.fee_collected_tao for model in tournament_models)
 
     first_tournament_started_at = min(
         (row["created_at"] for row in tournament_rows.values()),
@@ -232,6 +259,7 @@ def calculate_weekly_costs(
             evaluation_a100_gpu_hours=float(evaluation_gpu_seconds / Decimal(3600)),
             evaluation_a100_cost_usd=float(evaluation_cost),
             total_bill_usd=float(provisioned_cost + evaluation_cost),
+            total_fees_collected_tao=total_fees_collected_tao,
         ),
         tournaments=tournament_models,
         tasks=task_models,

@@ -97,7 +97,7 @@
           }
         ]
       },
-      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 0 },
+      "gridPos": { "h": 6, "w": 12, "x": 6, "y": 0 },
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -129,6 +129,51 @@
         }
       ],
       "title": "Bill Breakdown",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Total participation fees collected across all tournaments this week (participants x per-type fee), in TAO.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "decimals": 3,
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
+          "unit": "suffix:τ"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 0 },
+      "id": 11,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.total_fees_collected_tao", "text": "Fees Collected", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Tournament Fees Collected",
       "type": "stat"
     },
     {
@@ -273,6 +318,10 @@
               { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
               { "id": "color", "value": { "mode": "continuous-GrYlRd" } }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Fee (τ)" },
+            "properties": [{ "id": "unit", "value": "suffix:τ" }, { "id": "decimals", "value": 3 }]
           }
         ]
       },
@@ -282,7 +331,7 @@
         "cellHeight": "sm",
         "footer": {
           "countRows": false,
-          "fields": ["Training $", "Prep $", "Eval $", "Total Attributed $"],
+          "fields": ["Participants", "Fee (τ)", "Training $", "Prep $", "Eval $", "Total Attributed $"],
           "reducer": ["sum"],
           "show": true
         },
@@ -307,6 +356,8 @@
             { "selector": "status", "text": "Status", "type": "string" },
             { "selector": "started_at", "text": "Started", "type": "timestamp" },
             { "selector": "completed_at", "text": "Completed", "type": "timestamp" },
+            { "selector": "participant_count", "text": "Participants", "type": "number" },
+            { "selector": "fee_collected_tao", "text": "Fee (τ)", "type": "number" },
             { "selector": "training.cost_usd", "text": "Training $", "type": "number" },
             { "selector": "prep.cost_usd", "text": "Prep $", "type": "number" },
             { "selector": "evaluation.cost_usd", "text": "Eval $", "type": "number" },
@@ -326,10 +377,12 @@
               "Status": 2,
               "Started": 3,
               "Completed": 4,
-              "Training $": 5,
-              "Prep $": 6,
-              "Eval $": 7,
-              "Total Attributed $": 8
+              "Participants": 5,
+              "Fee (τ)": 6,
+              "Training $": 7,
+              "Prep $": 8,
+              "Eval $": 9,
+              "Total Attributed $": 10
             }
           }
         }
@@ -381,7 +434,10 @@
           "show": true
         },
         "showHeader": true,
-        "sortBy": [{ "desc": true, "displayName": "Total $" }]
+        "sortBy": [
+          { "desc": false, "displayName": "Tournament" },
+          { "desc": false, "displayName": "Round" }
+        ]
       },
       "pluginVersion": "12.0.0",
       "targets": [
@@ -396,8 +452,12 @@
           "url_options": { "method": "GET" },
           "root_selector": "tasks",
           "columns": [
-            { "selector": "task_id", "text": "Task", "type": "string" },
             { "selector": "tournament_id", "text": "Tournament", "type": "string" },
+            { "selector": "round_number", "text": "Round", "type": "number" },
+            { "selector": "round_type", "text": "Round Type", "type": "string" },
+            { "selector": "task_type", "text": "Type", "type": "string" },
+            { "selector": "base_model", "text": "Base Model", "type": "string" },
+            { "selector": "task_id", "text": "Task", "type": "string" },
             { "selector": "hotkey_count", "text": "Miners", "type": "number" },
             { "selector": "training.gpu_hours", "text": "Train GPU h", "type": "number" },
             { "selector": "training.cost_usd", "text": "Train $", "type": "number" },
@@ -414,14 +474,18 @@
             "excludeByName": {},
             "renameByName": {},
             "indexByName": {
-              "Task": 0,
-              "Tournament": 1,
-              "Miners": 2,
-              "Train GPU h": 3,
-              "Train $": 4,
-              "Prep $": 5,
-              "Eval $": 6,
-              "Total $": 7
+              "Tournament": 0,
+              "Round": 1,
+              "Round Type": 2,
+              "Type": 3,
+              "Base Model": 4,
+              "Task": 5,
+              "Miners": 6,
+              "Train GPU h": 7,
+              "Train $": 8,
+              "Prep $": 9,
+              "Eval $": 10,
+              "Total $": 11
             }
           }
         }

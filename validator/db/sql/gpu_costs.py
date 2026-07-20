@@ -303,9 +303,23 @@ async def get_weekly_cost_rows(
         if tournament_ids:
             task_rows = await connection.fetch(
                 """
-                SELECT task_id, tournament_id
-                FROM tournament_tasks
+                SELECT tt.task_id, tt.tournament_id,
+                       t.task_type::text AS task_type,
+                       t.model_id AS base_model,
+                       tr.round_number, tr.round_type
+                FROM tournament_tasks tt
+                JOIN tasks t ON t.task_id = tt.task_id
+                LEFT JOIN tournament_rounds tr ON tr.round_id = tt.round_id
+                WHERE tt.tournament_id = ANY($1::text[])
+                """,
+                tournament_ids,
+            )
+            participant_rows = await connection.fetch(
+                """
+                SELECT tournament_id, COUNT(*) AS participant_count
+                FROM tournament_participants
                 WHERE tournament_id = ANY($1::text[])
+                GROUP BY tournament_id
                 """,
                 tournament_ids,
             )
@@ -335,6 +349,7 @@ async def get_weekly_cost_rows(
             task_rows = []
             run_rows = []
             hotkey_rows = []
+            participant_rows = []
 
         capacity_rows = await connection.fetch(
             """
@@ -351,5 +366,6 @@ async def get_weekly_cost_rows(
         "tasks": [dict(row) for row in task_rows],
         "runs": [dict(row) for row in run_rows],
         "hotkeys": [dict(row) for row in hotkey_rows],
+        "participants": [dict(row) for row in participant_rows],
         "capacity": [dict(row) for row in capacity_rows],
     }
