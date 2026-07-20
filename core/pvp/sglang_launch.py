@@ -7,6 +7,22 @@ stay identical or the two paths drift apart flag by flag.
 """
 
 import os
+import shlex
+
+
+TRUST_REMOTE_CODE_FLAG = "--trust-remote-code"
+
+
+def ensure_remote_code_disabled(command: str) -> str:
+    """Reject SGLang commands that opt into executing model-repository code."""
+    try:
+        args = shlex.split(command)
+    except ValueError as exc:
+        raise ValueError(f"Invalid SGLang command: {exc}") from exc
+
+    if any(arg.split("=", maxsplit=1)[0].replace("_", "-") == TRUST_REMOTE_CODE_FLAG for arg in args):
+        raise ValueError(f"SGLang {TRUST_REMOTE_CODE_FLAG} is forbidden for miner model evaluation")
+    return command
 
 
 def build_base_command(model_path: str, port: int | str, seed: int) -> str:

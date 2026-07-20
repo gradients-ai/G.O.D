@@ -31,6 +31,7 @@ from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.payload_models import DockerEvaluationResults
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from validator.evaluation.evaluators.environment import _build_sglang_command
 from validator.evaluation.evaluators.environment import _download_lora_with_retry
 from validator.evaluation.evaluators.environment import _download_model_with_retry
@@ -470,6 +471,7 @@ async def run_evaluation_local_environment(
                 inference_model_name = repo
                 sglang_args = _build_local_sglang_command(model_path_for_sglang, base_seed)
 
+            sglang_args = ensure_remote_code_disabled(sglang_args)
             local_sglang_port = int(os.getenv("SGLANG_PORT", str(vcst.LOCAL_ENV_SGLANG_PORT)))
             sglang_container_name = f"{eval_id}-sglang"
             env_container_name = f"{eval_id}-env"

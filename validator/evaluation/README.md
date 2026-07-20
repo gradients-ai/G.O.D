@@ -32,6 +32,12 @@ matching PvP evaluation even when the adapter repository contains tokenizer or
 added-token artifacts. This preserves the base tokenizer/EOS serving contract and
 avoids constructing a SWE-only merged model with divergent tokenizer metadata.
 
+Environment, InterCode, SWE Infinite, and PvP evaluation do not opt into
+Hugging Face remote model code. Transformer merge loads explicitly disable
+`trust_remote_code`, downloaded snapshots exclude Python modules, and SGLang
+commands that contain `--trust-remote-code` are rejected. Models that require
+custom repository code therefore fail closed during evaluation.
+
 Each SWE task contributes one term to the final average. A task that still fails
 or exceeds the overall session timeout contributes `0.0`. Affinetes TCP connection
 setup failures are retried by default up to three total attempts, with exponential

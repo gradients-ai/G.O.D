@@ -13,6 +13,7 @@ import threading
 import validator.evaluation.constants as vcst
 from core.models.pvp_models import PreparedModel
 from core.pvp.sglang_launch import build_base_command
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.evaluators.environment import _wait_for_health
 
@@ -33,7 +34,7 @@ def build_sglang_command(prepared: PreparedModel, port: int, seed: int) -> str:
         cmd = f"{cmd} {cli_extra}"
     if prepared.extra_sglang_args:
         cmd = f"{cmd} {prepared.extra_sglang_args}"
-    return cmd
+    return ensure_remote_code_disabled(cmd)
 
 
 def start_sglang(prepared: PreparedModel, gpu_id: int, port: int, seed: int) -> subprocess.Popen:

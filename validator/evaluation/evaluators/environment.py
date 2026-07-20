@@ -16,6 +16,7 @@ from huggingface_hub import snapshot_download
 import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
 from core.models.dataset_models import EnvironmentDatasetType
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from core.tokenizer_utils import ensure_chat_template
 from core.tokenizer_utils import read_chat_template
 from validator.evaluation.evaluation_logging import configure_eval_logging
@@ -39,7 +40,7 @@ def _download_model_with_retry(repo_id: str, max_retries: int = 3) -> str:
                 repo_id,
             )
             start = time.time()
-            path = snapshot_download(repo_id, local_files_only=False)
+            path = snapshot_download(repo_id, local_files_only=False, ignore_patterns=["*.py"])
             elapsed = time.time() - start
             logger.info("eval_setup base model snapshot_download done in %.1fs -> %s", elapsed, path)
             return path
@@ -66,7 +67,7 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = 3
                 local_dir,
             )
             start = time.time()
-            snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False)
+            snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False, ignore_patterns=["*.py"])
             elapsed = time.time() - start
             logger.info("eval_setup LoRA snapshot_download done in %.1fs", elapsed)
             return local_dir
@@ -112,8 +113,8 @@ def _merge_base_and_lora(
         output_dir,
     )
     logger.info("eval_setup merge: loading tokenizers...")
-    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
-    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=True)
+    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
+    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=False)
 
     t0 = time.time()
     logger.info("eval_setup merge: loading base weights (AutoModelForCausalLM.from_pretrained)...")
@@ -122,7 +123,7 @@ def _merge_base_and_lora(
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
         device_map=(device or "cuda:0") if torch.cuda.is_available() else "auto",
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
     logger.info("eval_setup merge: base weights in memory in %.1fs", time.time() - t0)
 
@@ -207,7 +208,8 @@ def _build_sglang_command(model_path: str, seed: int) -> str:
         f"--enable-deterministic-inference --random-seed {seed}"
     )
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or vcst.SGLANG_ENV_EVAL_EXTRA_CLI).strip()
-    return f"{base} {extra}" if extra else base
+    command = f"{base} {extra}" if extra else base
+    return ensure_remote_code_disabled(command)
 
 
 def _start_process(command: str, name: str) -> subprocess.Popen:
@@ -578,6 +580,7 @@ async def _run() -> None:
             model_path_for_sglang,
             inference_model_name,
         )
+        sglang_command = ensure_remote_code_disabled(sglang_command)
         logger.info("eval_setup SGLang command: %s", sglang_command)
         _min_ws = vcst.SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES
         try:

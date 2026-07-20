@@ -22,6 +22,7 @@ import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
 from core.models.dataset_models import EnvironmentDatasetType
 from core.models.pvp_models import PreparedModel
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from core.pvp.sglang_parsers import tool_call_parser_for
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.evaluators.environment import _start_process
@@ -400,7 +401,7 @@ async def _prepare_sglang_command(
     sglang_command = os.getenv("SGLANG_START_CMD")
     if sglang_command:
         logger.info("eval_setup SGLang: using SGLANG_START_CMD from environment")
-        return model_repo, model_repo, sglang_command
+        return model_repo, model_repo, ensure_remote_code_disabled(sglang_command)
 
     if is_lora:
         # Keep SWE model serving identical to PvP: SGLang loads the submitted adapter

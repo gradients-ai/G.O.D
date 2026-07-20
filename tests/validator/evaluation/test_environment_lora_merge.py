@@ -1,10 +1,14 @@
 import sys
 from types import SimpleNamespace
 
+import pytest
+
 from validator.evaluation.evaluators import environment
+from validator.evaluation.evaluators import intercode
 
 
-def test_merge_disables_stale_transformers_peft_state_before_saving(monkeypatch, tmp_path):
+@pytest.mark.parametrize("evaluator", [environment, intercode])
+def test_merge_disables_remote_code_and_stale_peft_state(monkeypatch, tmp_path, evaluator):
     class FakeTokenizer:
         chat_template = None
 
@@ -29,9 +33,18 @@ def test_merge_disables_stale_transformers_peft_state_before_saving(monkeypatch,
         float16=object(),
         cuda=SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None),
     )
+
+    def load_tokenizer(*_args, **kwargs):
+        assert kwargs["trust_remote_code"] is False
+        return FakeTokenizer()
+
+    def load_model(*_args, **kwargs):
+        assert kwargs["trust_remote_code"] is False
+        return FakeBaseModel()
+
     fake_transformers = SimpleNamespace(
-        AutoModelForCausalLM=SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: FakeBaseModel()),
-        AutoTokenizer=SimpleNamespace(from_pretrained=lambda *_args, **_kwargs: FakeTokenizer()),
+        AutoModelForCausalLM=SimpleNamespace(from_pretrained=load_model),
+        AutoTokenizer=SimpleNamespace(from_pretrained=load_tokenizer),
     )
     fake_peft = SimpleNamespace(
         PeftModel=SimpleNamespace(
@@ -41,13 +54,36 @@ def test_merge_disables_stale_transformers_peft_state_before_saving(monkeypatch,
         )
     )
 
-    monkeypatch.setattr(environment.importlib.util, "find_spec", lambda _name: object())
-    monkeypatch.setattr(environment, "ensure_chat_template", lambda *_args: None)
-    monkeypatch.setattr(environment, "read_chat_template", lambda *_args: None)
+    monkeypatch.setattr(evaluator.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(evaluator, "ensure_chat_template", lambda *_args: None)
+    monkeypatch.setattr(evaluator, "read_chat_template", lambda *_args: None)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
     monkeypatch.setitem(sys.modules, "peft", fake_peft)
 
     output_dir = tmp_path / "merged"
 
-    assert environment._merge_base_and_lora("base", "adapter", str(output_dir)) == str(output_dir)
+    assert evaluator._merge_base_and_lora("base", "adapter", str(output_dir)) == str(output_dir)
+
+
+@pytest.mark.parametrize("evaluator", [environment, intercode])
+def test_model_snapshot_downloads_exclude_python_modules(monkeypatch, evaluator):
+    calls = []
+
+    def fake_snapshot_download(*args, **kwargs):
+        calls.append((args, kwargs))
+        return kwargs.get("local_dir", "/tmp/model-snapshot")
+
+    monkeypatch.setattr(evaluator, "snapshot_download", fake_snapshot_download)
+
+    assert evaluator._download_model_with_retry("org/model") == "/tmp/model-snapshot"
+    assert evaluator._download_lora_with_retry("org/adapter", "/tmp/adapter") == "/tmp/adapter"
+    assert all(kwargs["ignore_patterns"] == ["*.py"] for _args, kwargs in calls)
+
+
+@pytest.mark.parametrize("evaluator", [environment, intercode])
+def test_environment_sglang_commands_reject_remote_code(monkeypatch, evaluator):
+    monkeypatch.setenv("SGLANG_ENV_EVAL_EXTRA_CLI", "--trust-remote-code")
+
+    with pytest.raises(ValueError, match="trust-remote-code"):
+        evaluator._build_sglang_command("/tmp/model", 42)

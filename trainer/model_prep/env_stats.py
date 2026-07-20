@@ -30,6 +30,7 @@ from core.pvp.baseline import supports_in_harness_baseline
 from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from core.pvp.sglang_launch import build_base_command
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from core.pvp.sglang_parsers import tool_call_parser_for
 
 
@@ -75,7 +76,8 @@ def build_sglang_command(model_path: str, seed: int) -> str:
     if parser:
         base = f"{base} --tool-call-parser {parser}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or SGLANG_EXTRA_CLI_DEFAULT).strip()
-    return f"{base} {extra}" if extra else base
+    command = f"{base} {extra}" if extra else base
+    return ensure_remote_code_disabled(command)
 
 
 def start_process(command: str, name: str, *, capture_stdout: bool = False) -> subprocess.Popen:

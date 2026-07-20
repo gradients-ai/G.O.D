@@ -259,3 +259,20 @@ async def test_prepare_sglang_command_full_weights_matches_pvp_startup(monkeypat
     assert "--port 31000" in command
     assert "--random-seed 7" in command
     assert "--tool-call-parser qwen25" in command
+
+
+@pytest.mark.asyncio
+async def test_prepare_sglang_command_rejects_remote_code_start_override(monkeypatch):
+    monkeypatch.setattr(swe, "check_for_lora", lambda *_args: False)
+    monkeypatch.setenv(
+        "SGLANG_START_CMD",
+        "python3 -m sglang.launch_server --model-path org/model --trust-remote-code",
+    )
+
+    with pytest.raises(ValueError, match="trust-remote-code"):
+        await swe._prepare_sglang_command(
+            model_repo="org/model",
+            original_model="org/base",
+            base_chain=[],
+            base_seed=7,
+        )

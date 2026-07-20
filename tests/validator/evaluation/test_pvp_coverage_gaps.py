@@ -254,6 +254,15 @@ class TestBuildSglangCommand:
 
         assert "--tool-call-parser qwen25" in cmd
 
+    def test_remote_code_flag_is_rejected(self, monkeypatch):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        monkeypatch.setenv("SGLANG_ENV_EVAL_EXTRA_CLI", "--trust_remote_code=true")
+        prepared = PreparedModel(sglang_model_path="org/model", inference_name="org/model")
+
+        with pytest.raises(ValueError, match="trust-remote-code"):
+            build_sglang_command(prepared, port=30000, seed=1)
+
 
 # =============================================================================
 # 4. Chat client retry logic

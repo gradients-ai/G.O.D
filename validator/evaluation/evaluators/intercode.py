@@ -57,6 +57,7 @@ from core.models.pvp_models import FunctionSchema
 from core.models.pvp_models import ToolCall
 from core.models.pvp_models import ToolSchema
 from core.pvp.chat import chat_completion
+from core.pvp.sglang_launch import ensure_remote_code_disabled
 from core.pvp.sglang_parsers import tool_call_parser_for
 from core.tokenizer_utils import ensure_chat_template
 from core.tokenizer_utils import read_chat_template
@@ -143,7 +144,7 @@ def _download_model_with_retry(repo_id: str, max_retries: int = DEFAULT_DOWNLOAD
                 attempt, max_retries, repo_id,
             )
             start = time.time()
-            path = snapshot_download(repo_id, local_files_only=False)
+            path = snapshot_download(repo_id, local_files_only=False, ignore_patterns=["*.py"])
             logger.info("eval_setup base model snapshot_download done in %.1fs -> %s", time.time() - start, path)
             return path
         except Exception as exc:
@@ -162,7 +163,7 @@ def _download_lora_with_retry(repo_id: str, local_dir: str, max_retries: int = D
         try:
             logger.info("eval_setup download LoRA (attempt %s/%s): %s -> %s", attempt, max_retries, repo_id, local_dir)
             start = time.time()
-            snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False)
+            snapshot_download(repo_id, local_dir=local_dir, local_dir_use_symlinks=False, ignore_patterns=["*.py"])
             logger.info("eval_setup LoRA snapshot_download done in %.1fs", time.time() - start)
             return local_dir
         except Exception as exc:
@@ -192,15 +193,15 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
     from transformers import AutoTokenizer
 
     logger.info("eval_setup merge: start base=%s lora=%s out=%s", base_model_path, lora_dir, output_dir)
-    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
-    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=True)
+    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
+    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=False)
 
     base = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         torch_dtype=torch.float16,
         low_cpu_mem_usage=True,
         device_map="cuda:0" if torch.cuda.is_available() else "auto",
-        trust_remote_code=True,
+        trust_remote_code=False,
     )
 
     base_vocab_size = base.get_input_embeddings().weight.shape[0]
@@ -281,7 +282,8 @@ def _build_sglang_command(model_path: str, seed: int, *, parser_model_id: str | 
     if parser:
         base = f"{base} --tool-call-parser {parser}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or DEFAULT_SGLANG_EXTRA_CLI).strip()
-    return f"{base} {extra}" if extra else base
+    command = f"{base} {extra}" if extra else base
+    return ensure_remote_code_disabled(command)
 
 
 def _start_process(command: str, name: str, *, capture_stdout: bool = True) -> subprocess.Popen:
@@ -1005,6 +1007,7 @@ async def _run() -> None:
         if _cur_ws < _min_ws:
             os.environ["SGLANG_FLASHINFER_WORKSPACE_SIZE"] = str(_min_ws)
 
+        sglang_command = ensure_remote_code_disabled(sglang_command)
         logger.info("eval_setup SGLang command: %s", sglang_command)
         sglang_proc = _start_process(sglang_command, "sglang", capture_stdout=LOG_SGLANG_STDOUT)
         if LOG_SGLANG_STDOUT:
