@@ -495,7 +495,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "This week vs last week, broken down by cost driver. Each stacked bar's total height is that week's bill.",
+      "description": "Last 4 reporting weeks, broken down by cost driver. Each stacked bar's total height is that week's bill.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -528,7 +528,9 @@
                     "type": "value",
                     "options": {
                       "0": { "index": 0, "text": "This week" },
-                      "-1": { "index": 1, "text": "Last week" }
+                      "-1": { "index": 1, "text": "1 week ago" },
+                      "-2": { "index": 2, "text": "2 weeks ago" },
+                      "-3": { "index": 3, "text": "3 weeks ago" }
                     }
                   }
                 ]
@@ -600,10 +602,44 @@
             { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100", "type": "number" },
             { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation", "type": "number" }
           ]
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=-2",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "week_offset", "text": "Week", "type": "string" },
+            { "selector": "totals.attributed_h100_cost_usd", "text": "Used H100", "type": "number" },
+            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation", "type": "number" }
+          ]
+        },
+        {
+          "refId": "D",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=-3",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "week_offset", "text": "Week", "type": "string" },
+            { "selector": "totals.attributed_h100_cost_usd", "text": "Used H100", "type": "number" },
+            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation", "type": "number" }
+          ]
         }
       ],
       "transformations": [{ "id": "merge", "options": {} }],
-      "title": "This Week vs Last Week — Cost Drivers",
+      "title": "Last 4 Weeks — Cost Drivers",
       "type": "barchart"
     }
   ],
