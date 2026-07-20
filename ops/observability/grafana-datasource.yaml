@@ -6,6 +6,7 @@ deleteDatasources:
   - name: Jaeger
   - name: Tempo
   - name: Redis
+  - name: Tournament Cost API
 
 datasources:
   - name: Loki
@@ -20,3 +21,21 @@ datasources:
   - name: Redis
     type: redis-datasource
     url: redis://redis:6379
+
+  # JSON API datasource backing the tournament GPU cost dashboard. Points at the
+  # validator API (`GET /v1/tournaments/costs`). The base URL and bearer token are
+  # injected from the grafana container environment (see docker-compose.observability.yml).
+  - name: Tournament Cost API
+    type: yesoreyeram-infinity-datasource
+    uid: tournament-cost-api
+    access: proxy
+    isDefault: false
+    editable: true
+    url: ${VALIDATOR_API_URL}
+    jsonData:
+      auth_method: bearerToken
+      allowedHosts:
+        - ${VALIDATOR_API_URL}
+      timeoutInSeconds: 60
+    secureJsonData:
+      bearerToken: ${FRONTEND_API_KEY}

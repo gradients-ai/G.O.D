@@ -1,0 +1,529 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Total invoiced GPU spend for the selected reporting week (provisioned H100 + evaluation A100).",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 2000 },
+              { "color": "orange", "value": 5000 },
+              { "color": "red", "value": 10000 }
+            ]
+          },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.total_bill_usd", "text": "Total Bill", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Total Weekly GPU Bill",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "How the bill splits across H100 provisioning states and A100 evaluation.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "decimals": 2,
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Idle H100" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Attributed H100" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 12, "x": 6, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.provisioned_h100_cost_usd", "text": "Provisioned H100", "type": "number" },
+            { "selector": "totals.attributed_h100_cost_usd", "text": "Attributed H100", "type": "number" },
+            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Eval A100", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Cost Split by GPU Pool",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Reporting window boundaries (Monday 11:00 UTC pivot) and the GPU hourly rates used for this bill.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "left", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "8x H100 $/hr" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "A100 $/hr" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }]
+          }
+        ]
+      },
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 0 },
+      "id": 3,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "window_start", "text": "Window Start", "type": "timestamp" },
+            { "selector": "window_end", "text": "Window End", "type": "timestamp" },
+            { "selector": "is_current_window", "text": "Current Week", "type": "string" },
+            { "selector": "h100_8x_hourly_rate_usd", "text": "8x H100 $/hr", "type": "number" },
+            { "selector": "a100_hourly_rate_usd", "text": "A100 $/hr", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Reporting Window & Rates",
+      "transformations": [
+        {
+          "id": "transpose",
+          "options": {}
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Attributed GPU spend grouped by workload stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "decimals": 2,
+          "mappings": [],
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "currencyUSD"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 7 },
+      "id": 4,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.training_cost_usd", "text": "Training", "type": "number" },
+            { "selector": "totals.prep_cost_usd", "text": "Prep", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Cost by Workload Stage",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Share of provisioned H100 capacity actually attributed to tournament work versus idle time.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "decimals": 1,
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "mappings": [],
+          "unit": "h"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Idle" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Attributed" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 7 },
+      "id": 5,
+      "options": {
+        "displayLabels": ["percent"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": ["value", "percent"]
+        },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.attributed_h100_gpu_hours", "text": "Attributed", "type": "number" },
+            { "selector": "totals.idle_h100_gpu_hours", "text": "Idle", "type": "number" }
+          ]
+        }
+      ],
+      "title": "H100 Utilization (GPU-Hours)",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "GPU-hours consumed across pools for the selected week.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "continuous-BlPu" },
+          "decimals": 1,
+          "mappings": [],
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "h"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 7 },
+      "id": 6,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.provisioned_h100_gpu_hours", "text": "Provisioned H100", "type": "number" },
+            { "selector": "totals.attributed_h100_gpu_hours", "text": "Attributed H100", "type": "number" },
+            { "selector": "totals.idle_h100_gpu_hours", "text": "Idle H100", "type": "number" },
+            { "selector": "totals.evaluation_a100_gpu_hours", "text": "Eval A100", "type": "number" }
+          ]
+        }
+      ],
+      "title": "GPU-Hours by Pool",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Per-tournament attributed GPU cost breakdown for the selected week.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*\\$$" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Total Attributed $" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "color", "value": { "mode": "continuous-GrYlRd" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": ["Training $", "Prep $", "Eval $", "Total Attributed $"],
+          "reducer": ["sum"],
+          "show": true
+        },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Total Attributed $" }]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "tournaments",
+          "columns": [
+            { "selector": "tournament_id", "text": "Tournament", "type": "string" },
+            { "selector": "tournament_type", "text": "Type", "type": "string" },
+            { "selector": "status", "text": "Status", "type": "string" },
+            { "selector": "started_at", "text": "Started", "type": "timestamp" },
+            { "selector": "completed_at", "text": "Completed", "type": "timestamp" },
+            { "selector": "training.cost_usd", "text": "Training $", "type": "number" },
+            { "selector": "prep.cost_usd", "text": "Prep $", "type": "number" },
+            { "selector": "evaluation.cost_usd", "text": "Eval $", "type": "number" },
+            { "selector": "total_attributed_cost_usd", "text": "Total Attributed $", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Per-Tournament Cost Breakdown",
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Per-task GPU cost and utilization. Use the column filters/sort to drill into the most expensive tasks.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*\\$$" },
+            "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*GPU h$" },
+            "properties": [{ "id": "unit", "value": "h" }, { "id": "decimals", "value": 2 }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Total $" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
+              { "id": "color", "value": { "mode": "continuous-GrYlRd" } }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "id": 8,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": ["Train $", "Prep $", "Eval $", "Total $"],
+          "reducer": ["sum"],
+          "show": true
+        },
+        "showHeader": true,
+        "sortBy": [{ "desc": true, "displayName": "Total $" }]
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "tasks",
+          "columns": [
+            { "selector": "task_id", "text": "Task", "type": "string" },
+            { "selector": "tournament_id", "text": "Tournament", "type": "string" },
+            { "selector": "hotkey_count", "text": "Miners", "type": "number" },
+            { "selector": "training.gpu_hours", "text": "Train GPU h", "type": "number" },
+            { "selector": "training.cost_usd", "text": "Train $", "type": "number" },
+            { "selector": "prep.cost_usd", "text": "Prep $", "type": "number" },
+            { "selector": "evaluation.cost_usd", "text": "Eval $", "type": "number" },
+            { "selector": "total_cost_usd", "text": "Total $", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Per-Task Cost Breakdown",
+      "type": "table"
+    }
+  ],
+  "preload": true,
+  "refresh": "",
+  "schemaVersion": 41,
+  "tags": ["tournament", "cost", "gpu"],
+  "templating": {
+    "list": [
+      {
+        "current": { "text": "This week", "value": "0" },
+        "includeAll": false,
+        "label": "Reporting week",
+        "multi": false,
+        "name": "week_offset",
+        "options": [
+          { "selected": true, "text": "This week", "value": "0" },
+          { "selected": false, "text": "1 week ago", "value": "-1" },
+          { "selected": false, "text": "2 weeks ago", "value": "-2" },
+          { "selected": false, "text": "3 weeks ago", "value": "-3" },
+          { "selected": false, "text": "4 weeks ago", "value": "-4" },
+          { "selected": false, "text": "5 weeks ago", "value": "-5" },
+          { "selected": false, "text": "6 weeks ago", "value": "-6" },
+          { "selected": false, "text": "8 weeks ago", "value": "-8" },
+          { "selected": false, "text": "10 weeks ago", "value": "-10" },
+          { "selected": false, "text": "12 weeks ago", "value": "-12" }
+        ],
+        "query": "This week : 0,1 week ago : -1,2 weeks ago : -2,3 weeks ago : -3,4 weeks ago : -4,5 weeks ago : -5,6 weeks ago : -6,8 weeks ago : -8,10 weeks ago : -10,12 weeks ago : -12",
+        "queryValue": "",
+        "skipUrlSync": false,
+        "type": "custom"
+      }
+    ]
+  },
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "Tournament GPU Costs",
+  "uid": "tournament-gpu-costs",
+  "version": 1,
+  "weekStart": ""
+}
