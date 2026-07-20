@@ -1,5 +1,4 @@
 from validator.evaluation.basilica_deployments import EVAL_RESULT_STATUS_PATH
-from validator.evaluation.basilica_deployments import cleanup_all_basilica_deployments
 from validator.evaluation.basilica_deployments import cleanup_basilica_deployments_by_name
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.basilica_deployments import delete_deployment_if_exists
@@ -34,7 +33,6 @@ __all__ = [
     "check_for_lora",
     "check_lora_has_added_tokens",
     "clean_basilica_log_line",
-    "cleanup_all_basilica_deployments",
     "cleanup_basilica_deployments_by_name",
     "configure_eval_logging",
     "create_basilica_eval_runner_source",

@@ -17,11 +17,10 @@ from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError
-from validator.evaluation.basilica_deployments import cleanup_all_basilica_deployments
-from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.evaluation.notifications import notify_evaluation_exception
 from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
 from validator.evaluation.pvp.models import PvPIncompleteError
+from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.infrastructure.cache import clean_all_hf_datasets_cache
 from validator.infrastructure.cache import manage_models_cache
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
@@ -359,13 +358,10 @@ async def _evaluate_pending_pairs_for_task(task: AnyTypeRawTask, num_gpus: int, 
 
 
 async def _cleanup_basilica_deployments_if_no_active_evaluations(config: Config) -> None:
-    active_evaluations = await tasks_sql.count_task_evaluations_by_status("evaluating", config.psql_db)
-    if active_evaluations:
-        logger.info("Skipping drained Basilica cleanup; %s evaluation rows still active", active_evaluations)
-        return
-
-    logger.info("No active evaluation rows remain; deleting all Basilica deployments")
-    await cleanup_all_basilica_deployments()
+    # Never infer account-wide ownership from one table/status. Pending work,
+    # PvP pairs, individual environment evals, and restart-resumed deployments
+    # all live outside evaluations.status='evaluating'. Reconcile explicit owners.
+    await reconcile_eval_deployments(config.psql_db)
 
 
 async def _move_back_to_looking_for_nodes(task: AnyTypeRawTask, config: Config):

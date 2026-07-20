@@ -9,8 +9,8 @@ real GPU usage and the cap silently stops holding.
 This module is the backstop: it treats the live Basilica deployments as the source of truth and
 reconciles them against the reservation ledger each eval cycle.
 
-  - orphan deployment: live on Basilica, but no active (pending/evaluating) eval row references
-    it -> delete it (reclaim the GPUs it was silently holding).
+  - orphan deployment: validator-owned and live on Basilica, but no active evaluation,
+    environment, individual, or PvP owner references it -> delete it.
   - ghost reservation: an active eval row whose deployment_id is no longer live -> reset the row
     to pending so its reservation is released and it can redeploy.
 
@@ -74,12 +74,13 @@ def plan_eval_reconcile(
     now: datetime.datetime,
     orphan_grace: datetime.timedelta,
     ghost_grace: datetime.timedelta,
+    managed_deployment_names: set[str] | None = None,
 ) -> ReconcilePlan:
     """Pure decision function (no I/O) so the reconcile logic is unit-testable.
 
-    `backed_ids` is every deployment id that backs live eval work, from BOTH the `evaluations`
-    table (per-repo evals) AND `pvp_pair_results` (PvP evals track their live deployment id there,
-    not in `evaluations`) — a live deployment is only an ORPHAN if it is in neither.
+    `backed_ids` is every deployment id that backs live eval work across
+    `evaluations`, `pvp_individual_scores`, and `pvp_pair_results`. A deployment
+    is only an orphan if no owner references it.
 
     Two directions, two graces:
     - ORPHAN reaping (live deployment with no backing) and boot-window stale-release use the LONG
@@ -95,7 +96,14 @@ def plan_eval_reconcile(
     are the per-pair reservations on `pvp_pair_results` (PvP evals).
     """
     live_names = {dep.name for dep in live}
-    orphans = {dep.name for dep in live if dep.name not in backed_ids and (now - dep.created_at) >= orphan_grace}
+    managed_deployment_names = live_names if managed_deployment_names is None else managed_deployment_names
+    orphans = {
+        dep.name
+        for dep in live
+        if dep.name in managed_deployment_names
+        and dep.name not in backed_ids
+        and (now - dep.created_at) >= orphan_grace
+    }
     ghosts = {
         row.deployment_id
         for row in active
@@ -137,12 +145,22 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         logger.warning(f"eval reconcile: could not list Basilica deployments, skipping: {e}")
         return None
 
+    observed_at = datetime.datetime.now(datetime.timezone.utc)
     live: list[LiveDeployment] = []
+    managed_deployment_names: set[str] = set()
     for dep in raw_deployments:
         name = getattr(dep, "name", None)
         created_at = _parse_created_at(getattr(dep, "created_at", None))
-        if name and created_at:
-            live.append(LiveDeployment(name=name, created_at=created_at))
+        if name:
+            # Missing API metadata must not make a visibly live deployment look
+            # like a DB ghost. Treat its age as unknown/fresh for orphan reaping.
+            live.append(LiveDeployment(name=name, created_at=created_at or observed_at))
+            friendly_name = getattr(dep, "friendly_name", None)
+            if name.startswith(vcst.EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX) or (
+                isinstance(friendly_name, str)
+                and friendly_name.startswith(vcst.EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX)
+            ):
+                managed_deployment_names.add(name)
 
     active_rows = await tasks_sql.get_active_evaluation_deployments(psql_db)
     active = [
@@ -155,7 +173,12 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
     # evaluations. A live deployment is only orphaned if it backs neither an evaluations row nor an
     # active PvP pair; and PvP reservations get their own ghost/stale handling below.
     pvp_backed_ids = await tournament_sql.get_active_pvp_deployment_ids(psql_db)
-    backed_ids = {row.deployment_id for row in active} | pvp_backed_ids
+    individual_backed_ids = await tournament_sql.get_active_individual_deployment_ids(psql_db)
+    backed_ids = (
+        {row.deployment_id for row in active}
+        | pvp_backed_ids
+        | individual_backed_ids
+    )
 
     pvp_reservation_rows = await tournament_sql.get_active_pvp_pair_reservations(psql_db)
     pvp_reservations = [
@@ -174,7 +197,16 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
     now = datetime.datetime.now(datetime.timezone.utc)
     orphan_grace = datetime.timedelta(seconds=vcst.EVAL_ORPHAN_GRACE_SECONDS)
     ghost_grace = datetime.timedelta(seconds=vcst.EVAL_GHOST_GRACE_SECONDS)
-    plan = plan_eval_reconcile(live, active, backed_ids, pvp_reservations, now, orphan_grace, ghost_grace)
+    plan = plan_eval_reconcile(
+        live,
+        active,
+        backed_ids,
+        pvp_reservations,
+        now,
+        orphan_grace,
+        ghost_grace,
+        managed_deployment_names,
+    )
     try:
         closed_cost_runs = await gpu_costs.close_stale_evaluation_runs(
             live_deployment_names={deployment.name for deployment in live},

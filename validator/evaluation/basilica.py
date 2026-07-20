@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import random
 import time
@@ -28,6 +29,8 @@ from validator.evaluation.evaluation_logging import log_basilica_logs_block
 
 logger = get_logger(__name__)
 _EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
+_BASILICA_CREATE_LOCK = asyncio.Lock()
+_LAST_BASILICA_CREATE_AT = 0.0
 
 
 def _deployment_url(deployment) -> str | None:
@@ -63,15 +66,20 @@ def _deployment_id_hints(deployment) -> list[str]:
 
 
 async def _resolve_verified_deployment_name(client, deployment, expected_name: str) -> str:
-    """Resolve the persisted identifier to a Basilica list() deployment name, never a URL."""
+    """Resolve the stable Basilica instance name, never a URL.
+
+    A create response's non-URL ``name`` is the authoritative instance name.
+    Listing is only a compatibility fallback for older wrappers that returned a
+    URL in that field.
+    """
+    returned_name = getattr(deployment, "name", None)
+    if isinstance(returned_name, str) and returned_name and not _looks_like_url(returned_name):
+        return returned_name
+
     deployments = await asyncio.to_thread(client.list)
     by_name = {getattr(dep, "name", None): dep for dep in deployments if getattr(dep, "name", None)}
     if expected_name in by_name:
         return expected_name
-
-    returned_name = getattr(deployment, "name", None)
-    if isinstance(returned_name, str) and returned_name in by_name and not _looks_like_url(returned_name):
-        return returned_name
 
     hints = set(_deployment_id_hints(deployment))
     matches = [
@@ -267,8 +275,62 @@ async def _deployment_exists(client, deployment_name: str) -> bool:
 
 async def _get_deployment_by_name(client, deployment_name: str):
     deployments = await asyncio.to_thread(client.list)
-    by_name = {getattr(dep, "name", None): dep for dep in deployments}
-    return by_name.get(deployment_name)
+    for deployment in deployments:
+        if deployment_name in {
+            getattr(deployment, "name", None),
+            getattr(deployment, "friendly_name", None),
+        }:
+            return deployment
+    return None
+
+
+async def _create_basilica_deployment(client, deploy_kwargs: dict):
+    """Create remotely and return immediately, without SDK readiness waiting."""
+
+    create_kwargs = dict(deploy_kwargs)
+    create_kwargs.pop("timeout", None)
+    name = create_kwargs.pop("name")
+    source = create_kwargs.pop("source", None)
+    pip_packages = create_kwargs.pop("pip_packages", None)
+    storage = create_kwargs.pop("storage", False)
+
+    command = None
+    if source is not None:
+        packager = (
+            basilica.SourcePackager.from_function(source)
+            if callable(source)
+            else basilica.SourcePackager(source)
+        )
+        command = packager.build_command(pip_packages=pip_packages)
+
+    if storage is True:
+        storage = "/data"
+    elif storage is False:
+        storage = None
+
+    create_deployment = getattr(client, "create_deployment_async", None)
+    if create_deployment is None:
+        raise RuntimeError("Basilica SDK does not expose create_deployment_async()")
+
+    global _LAST_BASILICA_CREATE_AT
+    async with _BASILICA_CREATE_LOCK:
+        wait_seconds = max(
+            0.0,
+            vcst.EVAL_BASILICA_CREATE_SPACING_SECONDS
+            - (time.monotonic() - _LAST_BASILICA_CREATE_AT),
+        )
+        if wait_seconds:
+            logger.info("Spacing Basilica deployment creation by %.2fs", wait_seconds)
+            await asyncio.sleep(wait_seconds)
+        _LAST_BASILICA_CREATE_AT = time.monotonic()
+
+    response = await create_deployment(
+        instance_name=name,
+        command=command,
+        storage=storage,
+        **create_kwargs,
+    )
+    return await client.get_async(response.instance_name)
 
 
 async def _wait_for_deployment_ready(client, deployment, deployment_name: str, timeout_seconds: int):
@@ -284,6 +346,29 @@ async def _wait_for_deployment_ready(client, deployment, deployment_name: str, t
     return None
 
 
+def _resume_readiness_wait_seconds(deployment) -> int:
+    state = str(getattr(deployment, "state", "")).lower()
+    if state not in {"pending", "provisioning"}:
+        return vcst.EVAL_RESUME_HEALTH_GRACE_SECONDS
+
+    created_at = getattr(deployment, "created_at", None)
+    if isinstance(created_at, str):
+        try:
+            created_at = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        except ValueError:
+            created_at = None
+    if not isinstance(created_at, datetime.datetime):
+        return vcst.EVAL_RESUME_HEALTH_GRACE_SECONDS
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+
+    age_seconds = max(
+        0.0,
+        (datetime.datetime.now(datetime.timezone.utc) - created_at).total_seconds(),
+    )
+    return max(0, int(vcst.EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS - age_seconds))
+
+
 async def _deploy_with_readiness_timeout(
     *,
     ctx: _BasilicaEvalContext,
@@ -293,8 +378,8 @@ async def _deploy_with_readiness_timeout(
     on_verified_deployment_name: Callable[[str], Awaitable[None]] | None = None,
 ):
     timeout_seconds = vcst.EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS
-    started_monotonic = time.monotonic()
     deployment = None
+    resolved_deployment_name = deployment_name
     persisted_deployment_names: set[str] = set()
 
     async def persist_once(verified_deployment_name: str) -> None:
@@ -304,15 +389,33 @@ async def _deploy_with_readiness_timeout(
         persisted_deployment_names.add(verified_deployment_name)
 
     try:
-        deployment = await asyncio.wait_for(asyncio.to_thread(client.deploy, **deploy_kwargs), timeout=timeout_seconds)
+        try:
+            deployment = await _create_basilica_deployment(client, deploy_kwargs)
+        except Exception:
+            deployment = await _get_deployment_by_name(client, deployment_name)
+            if deployment is None:
+                raise
+
         resolved_deployment_name = await _resolve_verified_deployment_name(client, deployment, deployment_name)
+        if resolved_deployment_name != deployment_name:
+            ctx.eval_logger.warning(
+                "[%s] Basilica deployment-name mismatch: requested=%s returned=%s; "
+                "persisting returned instance name as authoritative",
+                ctx.repo,
+                deployment_name,
+                resolved_deployment_name,
+            )
+            ctx.log_eval_step(
+                "deployment_name_mismatch",
+                requested_deployment=deployment_name,
+                deployment=resolved_deployment_name,
+            )
         await persist_once(resolved_deployment_name)
-        remaining_seconds = max(1, int(timeout_seconds - (time.monotonic() - started_monotonic)))
         ready_deployment = await _wait_for_deployment_ready(
             client,
             deployment,
             resolved_deployment_name,
-            remaining_seconds,
+            timeout_seconds,
         )
         if ready_deployment is not None:
             return ready_deployment, resolved_deployment_name
@@ -337,7 +440,41 @@ async def _deploy_with_readiness_timeout(
                     f"Failed to verify deletion for unverified deployment {deployment_name}"
                 )
         raise
-    except Exception:
+    except asyncio.CancelledError:
+        if deployment is not None and resolved_deployment_name not in persisted_deployment_names:
+            if on_verified_deployment_name is None:
+                await _delete_eval_deployment(
+                    ctx,
+                    client,
+                    deployment,
+                    resolved_deployment_name,
+                    "cancelled_before_persist",
+                )
+            else:
+                try:
+                    await asyncio.shield(persist_once(resolved_deployment_name))
+                except Exception:
+                    await _delete_eval_deployment(
+                        ctx,
+                        client,
+                        deployment,
+                        resolved_deployment_name,
+                        "cancelled_before_persist",
+                    )
+        raise
+    except Exception as exc:
+        if deployment is not None:
+            deleted = await _delete_eval_deployment(
+                ctx,
+                client,
+                deployment,
+                resolved_deployment_name,
+                "create_or_persist_failed",
+            )
+            if not deleted:
+                raise EvaluationRetryableError(
+                    f"Failed to persist or delete deployment {resolved_deployment_name}"
+                ) from exc
         raise
 
     existing = deployment or await _get_deployment_by_name(client, deployment_name)
@@ -457,13 +594,34 @@ async def _get_healthy_existing_basilica_deployment(
             return None
 
         if not deployment_is_healthy(deployment):
-            ctx.eval_logger.warning(f"[{ctx.repo}] resume: deployment {existing_deployment_name} unhealthy, redeploying")
-            deleted = await _delete_eval_deployment(ctx, client, deployment, existing_deployment_name, "resume_unhealthy")
-            if not deleted:
-                raise EvaluationRetryableError(
-                    f"Failed to verify deletion for unhealthy deployment {existing_deployment_name}"
+            resume_wait_seconds = _resume_readiness_wait_seconds(deployment)
+            ctx.eval_logger.warning(
+                f"[{ctx.repo}] resume: deployment {existing_deployment_name} is not healthy yet; "
+                f"state={getattr(deployment, 'state', 'unknown')}; "
+                f"waiting {resume_wait_seconds}s before cleanup"
+            )
+            recovered = (
+                await _wait_for_deployment_ready(
+                    client,
+                    deployment,
+                    existing_deployment_name,
+                    resume_wait_seconds,
                 )
-            return None
+                if resume_wait_seconds > 0
+                else None
+            )
+            if recovered is not None:
+                deployment = recovered
+            else:
+                ctx.eval_logger.warning(
+                    f"[{ctx.repo}] resume: deployment {existing_deployment_name} remained unhealthy, redeploying"
+                )
+                deleted = await _delete_eval_deployment(ctx, client, deployment, existing_deployment_name, "resume_unhealthy")
+                if not deleted:
+                    raise EvaluationRetryableError(
+                        f"Failed to verify deletion for unhealthy deployment {existing_deployment_name}"
+                    )
+                return None
 
         ctx.eval_logger.info(f"[{ctx.repo}] resuming polling deployment {existing_deployment_name}")
         ctx.log_eval_step("resume_lookup_healthy", deployment=existing_deployment_name)
@@ -560,6 +718,17 @@ async def _deploy_basilica_eval_repo(
             )
         ctx.log_eval_step("deployment_id_persist_complete", deployment=verified_deployment_name)
 
+    if deployment_id_persister is not None and not reserve_deployment_id:
+        ctx.log_eval_step("deployment_id_precreate_persist_start", deployment=deployment_name)
+        async with _EVAL_DB_WRITE_SEMAPHORE:
+            await _db_call_with_retry(
+                lambda: deployment_id_persister(ctx.repo, deployment_name),
+                "persist_deployment_id(pre-create)",
+                ctx.eval_logger,
+                ctx.repo,
+            )
+        ctx.log_eval_step("deployment_id_precreate_persist_complete", deployment=deployment_name)
+
     await _start_evaluation_cost_run(
         task_id=task_id,
         psql_db=psql_db,
@@ -580,48 +749,6 @@ async def _deploy_basilica_eval_repo(
         deployment_url=_deployment_url(deployment),
     )
     ctx.log_eval_step("deploy_complete", deployment=resolved_deployment_name)
-
-    if resolved_deployment_name != deployment_name and reserve_deployment_id:
-        if task_id is not None and psql_db is not None and reserved_hotkeys:
-            await _db_call_with_retry(
-                lambda: tasks_sql.release_evaluation_gpu_reservation(
-                    task_id,
-                    reserved_hotkeys,
-                    deployment_name if reserve_deployment_id else None,
-                    psql_db,
-                ),
-                "release_evaluation_gpu_reservation(old-name)",
-                ctx.eval_logger,
-                ctx.repo,
-            )
-            reserved = await _db_call_with_retry(
-                lambda: tasks_sql.try_reserve_evaluation_gpus(
-                    task_id,
-                    reserved_hotkeys,
-                    resolved_deployment_name if reserve_deployment_id else None,
-                    requested_gpus,
-                    psql_db,
-                ),
-                "try_reserve_evaluation_gpus(resolved-name)",
-                ctx.eval_logger,
-                ctx.repo,
-            )
-            if not reserved:
-                deleted = await _delete_eval_deployment(
-                    ctx,
-                    client,
-                    deployment,
-                    resolved_deployment_name,
-                    "resolved_name_capacity_unavailable",
-                )
-                if not deleted:
-                    raise EvaluationRetryableError(
-                        f"Failed to verify deletion for deployment {resolved_deployment_name}"
-                    )
-                raise EvaluationCapacityUnavailable(
-                    f"Not enough evaluation GPU capacity for deployment {resolved_deployment_name} ({requested_gpus} GPUs)"
-                )
-        await asyncio.sleep(random.uniform(0.0, 0.25))
 
     ctx.eval_logger.info(f"[{ctx.repo}] deployment started: {resolved_deployment_name}")
     return client, deployment, resolved_deployment_name
@@ -784,7 +911,7 @@ async def _run_single_basilica_eval_repo(
 
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
-        deployment_name = str(uuid.uuid4())
+        deployment_name = f"{vcst.EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX}{uuid.uuid4()}"
         cost_run_key = (
             _evaluation_cost_run_key(task_id, deployment_name)
             if task_id is not None and psql_db is not None and (gpu_count or 0) > 0

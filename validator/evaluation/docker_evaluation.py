@@ -260,10 +260,6 @@ async def run_evaluation_basilica_text(
         deployment_ids_by_repo=deployment_ids_str,
         local_logging=local_logging,
         persist_deployment_ids=not is_environment_eval,
-        # Stamp deployment_id at reserve time for text/instruct evals so a bouncing deploy stays
-        # tracked. Left off for environment evals: their eval rows are long-lived across the whole
-        # group+pair eval, and stamping a group-deploy id there would let a mid-eval ghost-reset
-        # clobber the row (env pair deployments are tracked separately on pvp_pair_results).
         reserve_deployment_id=not is_environment_eval,
     )
 
@@ -598,7 +594,7 @@ async def _deploy_pvp_eval(
     for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
         deployment = None
         reserved_pair = False
-        deployment_name = str(uuid.uuid4())
+        deployment_name = f"{vcst.EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX}{uuid.uuid4()}"
         cost_run_key = (
             _evaluation_cost_run_key(task_id, deployment_name)
             if task_id is not None and psql_db is not None and gpu_count > 0
@@ -655,23 +651,17 @@ async def _deploy_pvp_eval(
             )
 
             async def persist_verified_pvp_deployment(verified_deployment_name: str) -> None:
-                # Best-effort: fires inside the deploy readiness callback and records the pair's resume
-                # anchor (pvp_pair_results.deployment_id). A failure here must NEVER propagate out of
-                # the callback and fail/orphan the live deployment — the per-pair reserve + reconciler
-                # already track the deployment; the anchor is only a resume optimisation.
-                try:
-                    await _persist_pvp_deployment_id(
-                        task_id=task_id,
-                        psql_db=psql_db,
-                        hotkeys=hotkeys,
-                        deployment_name=verified_deployment_name,
-                        verified=True,
-                        ctx=ctx,
-                    )
-                except Exception as persist_exc:
-                    ctx.eval_logger.error(
-                        "PvP deployment-id persist failed (non-fatal): %s", persist_exc, exc_info=True
-                    )
+                # Fail closed: if the authoritative returned instance name cannot
+                # be persisted, the shared deploy wrapper deletes the remote
+                # deployment before the reservation is released.
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=verified_deployment_name,
+                    verified=True,
+                    ctx=ctx,
+                )
 
             await _start_evaluation_cost_run(
                 task_id=task_id,

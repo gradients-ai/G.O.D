@@ -37,7 +37,7 @@ dependencies = [
     "tenacity==9.0.0",
     "minio==7.2.10",
     "pandas==2.2.3",
-    "basilica-sdk==0.17.0",
+    "basilica-sdk==0.33.0",
     "claude-agent-sdk==0.1.69",
     "openai>=1.0.0,<2.0.0",
     "cryptography",

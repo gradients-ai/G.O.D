@@ -1546,13 +1546,18 @@ async def set_pvp_pair_deployment_id(
         """, task_id, hk_a, hk_b, deployment_id, verified)
         updated_rows = _row_count(db_result)
         if updated_rows == 0:
-            logger.warning(
+            message = (
+                f"PvP pair deployment id update touched 0 rows "
+                f"task_id={task_id} pair={hk_a}:{hk_b} deployment_id={deployment_id}"
+            )
+            logger.error(
                 "PvP pair deployment id update touched 0 rows task_id=%s pair=%s:%s deployment_id=%s",
                 task_id,
                 hk_a,
                 hk_b,
                 deployment_id,
             )
+            raise RuntimeError(message)
 
 
 async def get_active_pvp_deployment_ids(psql_db: PSQLDB) -> set[str]:
@@ -1742,7 +1747,12 @@ async def set_individual_score_deployment_id(
         """, task_id, hotkey, environment_name, deployment_id)
         updated_rows = _row_count(db_result)
         if updated_rows != 1:
-            logger.warning(
+            message = (
+                f"Individual deployment id update touched {updated_rows} rows "
+                f"task_id={task_id} hotkey={hotkey} environment={environment_name} "
+                f"deployment_id={deployment_id}"
+            )
+            logger.error(
                 "Individual deployment id update touched %s rows task_id=%s hotkey=%s environment=%s deployment_id=%s",
                 updated_rows,
                 task_id,
@@ -1750,6 +1760,7 @@ async def set_individual_score_deployment_id(
                 environment_name,
                 deployment_id,
             )
+            raise RuntimeError(message)
 
 
 async def get_individual_deployment_ids(
@@ -1775,6 +1786,21 @@ async def get_individual_deployment_ids(
         for row in rows
         if row[cst.PVP_DEPLOYMENT_ID]
     }
+
+
+async def get_active_individual_deployment_ids(psql_db: PSQLDB) -> set[str]:
+    """Deployment IDs backing incomplete individual environment evaluations."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT DISTINCT {cst.PVP_DEPLOYMENT_ID} AS deployment_id
+            FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE}
+            WHERE {cst.STATUS} != $1
+              AND {cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+            """,
+            cst.PVP_STATUS_COMPLETE.value,
+        )
+    return {row["deployment_id"] for row in rows if row["deployment_id"]}
 
 
 async def get_pvp_deployment_ids_for_hotkeys(

@@ -1856,13 +1856,18 @@ async def set_evaluation_deployment_id(
         )
         updated_rows = _row_count(result)
         if updated_rows != 1:
-            logger.warning(
+            message = (
+                f"Deployment id update touched {updated_rows} rows "
+                f"task_id={task_id} hotkey={hotkey} deployment_id={deployment_id}"
+            )
+            logger.error(
                 "Deployment id update touched %s rows task_id=%s hotkey=%s deployment_id=%s",
                 updated_rows,
                 task_id,
                 hotkey,
                 deployment_id,
             )
+            raise RuntimeError(message)
 
 
 # Combined active-GPU ledger for the EVAL_MAX_GPUS cap. Individual (per-miner) evals reserve on the
@@ -2101,25 +2106,33 @@ async def reset_evaluation_rows_for_deployment(deployment_id: str, psql_db: PSQL
 
 
 async def release_stale_unreconcilable_reservations(grace_seconds: int, psql_db: PSQLDB) -> int:
-    """Release GPU reservations that hold GPUs but carry no deployment_id and have not been touched
-    for `grace_seconds`. These are PvP reservations whose deploy crashed before the resolved
-    deployment name was stamped on the row (see set_evaluation_deployment_id in the PvP flow) — they
-    are invisible to the deployment-based reconciler and would otherwise pin GPUs in the cap ledger
-    forever. A successful deploy stamps deployment_id within seconds of readiness, well inside grace,
-    so anything still NULL past grace is genuinely orphaned. Returns rows released."""
+    """Release aged GPU reservations with no deployment owner in any tracking table.
+
+    Individual deployments store identity in `pvp_individual_scores`; those live
+    reservations must remain counted for the full evaluation duration.
+    """
     async with await psql_db.connection() as connection:
         result = await connection.execute(
             f"""
-            UPDATE {cst.EVALUATIONS_TABLE}
+            UPDATE {cst.EVALUATIONS_TABLE} e
             SET {cst.GPU_COUNT} = NULL,
                 {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.NETUID} = $1
-              AND {cst.GPU_COUNT} IS NOT NULL
-              AND {cst.DEPLOYMENT_ID} IS NULL
-              AND {cst.UPDATED_AT} < NOW() - ($2 || ' seconds')::interval
+            WHERE e.{cst.NETUID} = $1
+              AND e.{cst.GPU_COUNT} IS NOT NULL
+              AND e.{cst.DEPLOYMENT_ID} IS NULL
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {cst.PVP_INDIVIDUAL_SCORES_TABLE} pis
+                  WHERE pis.{cst.TASK_ID} = e.{cst.TASK_ID}
+                    AND pis.{cst.HOTKEY} = e.{cst.HOTKEY}
+                    AND pis.{cst.STATUS} != $3
+                    AND pis.{cst.PVP_DEPLOYMENT_ID} IS NOT NULL
+              )
+              AND e.{cst.UPDATED_AT} < NOW() - ($2 || ' seconds')::interval
             """,
             NETUID,
             str(grace_seconds),
+            cst.PVP_STATUS_COMPLETE.value,
         )
         return _row_count(result)
 
