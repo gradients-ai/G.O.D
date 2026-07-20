@@ -5,7 +5,7 @@ services:
   # Vector log shipper - collects and ships logs to remote Loki
   vector-log-shipper:
     container_name: god-vector-log-shipper
-    image: timberio/vector:latest-alpine
+    image: timberio/vector:0.56.0-alpine
     command: ["--config", "/etc/vector/vector.toml"]
     restart: always
     environment:
