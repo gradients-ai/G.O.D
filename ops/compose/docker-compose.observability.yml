@@ -8,9 +8,7 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USERNAME:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
       GF_INSTALL_PLUGINS: redis-datasource,yesoreyeram-infinity-datasource
-      # Consumed by grafana-datasource.yaml so the cost dashboard can reach the validator API.
-      # host.docker.internal + host-gateway lets the container reach the host's uvicorn process.
-      VALIDATOR_API_URL: ${VALIDATOR_API_URL:-http://host.docker.internal:8010}
+      VALIDATOR_API_URL: ${VALIDATOR_API_URL:-http://host.docker.internal:9001}
       FRONTEND_API_KEY: ${FRONTEND_API_KEY:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"

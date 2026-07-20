@@ -20,7 +20,7 @@
   "panels": [
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "Total invoiced GPU spend for the selected reporting week (provisioned H100 + evaluation A100).",
+      "description": "Total invoiced GPU spend for the selected reporting week. Equals Used H100 + Idle H100 + Evaluation (A100).",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
@@ -39,7 +39,7 @@
         },
         "overrides": []
       },
-      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 0 },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 0 },
       "id": 1,
       "options": {
         "colorMode": "background",
@@ -73,10 +73,77 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "How the bill splits across H100 provisioning states and A100 evaluation.",
+      "description": "Share of rented H100 time that actually did tournament work (training + prep). Higher is better; the rest is idle spend.",
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": { "mode": "thresholds" },
+          "decimals": 0,
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.4 },
+              { "color": "yellow", "value": 0.6 },
+              { "color": "green", "value": 0.8 }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 6, "w": 5, "x": 6, "y": 0 },
+      "id": 9,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/^H100 Utilization$/", "values": false },
+        "showPercentChange": false,
+        "textMode": "value_and_name",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.attributed_h100_gpu_hours", "text": "Used H100 h", "type": "number" },
+            { "selector": "totals.provisioned_h100_gpu_hours", "text": "Provisioned H100 h", "type": "number" }
+          ]
+        }
+      ],
+      "title": "H100 Utilization",
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "H100 Utilization",
+            "binary": { "left": "Used H100 h", "operator": "/", "right": "Provisioned H100 h" },
+            "mode": "binary",
+            "replaceFields": false
+          }
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "The three buckets that make up the weekly bill. Used = training + prep on H100. Idle = H100 you paid for but didn't use. Evaluation runs on A100.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
           "decimals": 2,
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "text", "value": null }] },
@@ -84,16 +151,20 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Idle H100" },
+            "matcher": { "id": "byName", "options": "Used H100 (train + prep)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Idle H100 (paid, unused)" },
             "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
           },
           {
-            "matcher": { "id": "byName", "options": "Attributed H100" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+            "matcher": { "id": "byName", "options": "Evaluation (A100)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 12, "x": 6, "y": 0 },
+      "gridPos": { "h": 6, "w": 13, "x": 11, "y": 0 },
       "id": 2,
       "options": {
         "colorMode": "value",
@@ -118,15 +189,134 @@
           "url_options": { "method": "GET" },
           "root_selector": "",
           "columns": [
-            { "selector": "totals.provisioned_h100_cost_usd", "text": "Provisioned H100", "type": "number" },
-            { "selector": "totals.attributed_h100_cost_usd", "text": "Attributed H100", "type": "number" },
-            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100", "type": "number" },
-            { "selector": "totals.evaluation_a100_cost_usd", "text": "Eval A100", "type": "number" }
+            { "selector": "totals.attributed_h100_cost_usd", "text": "Used H100 (train + prep)", "type": "number" },
+            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100 (paid, unused)", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation (A100)", "type": "number" }
           ]
         }
       ],
-      "title": "Cost Split by GPU Pool",
+      "title": "Bill Breakdown",
       "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "Where the weekly bill goes. These three bars add up to the total bill.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "decimals": 2,
+          "mappings": [],
+          "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Used H100 (train + prep)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Idle H100 (paid, unused)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Evaluation (A100)" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 4,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 32,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.attributed_h100_cost_usd", "text": "Used H100 (train + prep)", "type": "number" },
+            { "selector": "totals.idle_h100_cost_usd", "text": "Idle H100 (paid, unused)", "type": "number" },
+            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation (A100)", "type": "number" }
+          ]
+        }
+      ],
+      "title": "Where the Bill Goes",
+      "type": "bargauge"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+      "description": "How the rented H100 hours were spent: doing tournament work vs sitting idle.",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "decimals": 1,
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "mappings": [],
+          "unit": "h"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Idle" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Used" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 5,
+      "options": {
+        "displayLabels": ["percent"],
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "values": ["value", "percent"]
+        },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "parser": "backend",
+          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
+          "url_options": { "method": "GET" },
+          "root_selector": "",
+          "columns": [
+            { "selector": "totals.attributed_h100_gpu_hours", "text": "Used", "type": "number" },
+            { "selector": "totals.idle_h100_gpu_hours", "text": "Idle", "type": "number" }
+          ]
+        }
+      ],
+      "title": "H100 Hours: Used vs Idle",
+      "type": "piechart"
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
@@ -149,7 +339,7 @@
           }
         ]
       },
-      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 0 },
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 14 },
       "id": 3,
       "options": {
         "cellHeight": "sm",
@@ -178,171 +368,8 @@
         }
       ],
       "title": "Reporting Window & Rates",
-      "transformations": [
-        {
-          "id": "transpose",
-          "options": {}
-        }
-      ],
+      "transformations": [{ "id": "transpose", "options": {} }],
       "type": "table"
-    },
-    {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "Attributed GPU spend grouped by workload stage.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "continuous-GrYlRd" },
-          "decimals": 2,
-          "mappings": [],
-          "min": 0,
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 7 },
-      "id": 4,
-      "options": {
-        "displayMode": "gradient",
-        "maxVizHeight": 300,
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "namePlacement": "left",
-        "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-          "type": "json",
-          "source": "url",
-          "format": "table",
-          "parser": "backend",
-          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
-          "url_options": { "method": "GET" },
-          "root_selector": "",
-          "columns": [
-            { "selector": "totals.training_cost_usd", "text": "Training", "type": "number" },
-            { "selector": "totals.prep_cost_usd", "text": "Prep", "type": "number" },
-            { "selector": "totals.evaluation_a100_cost_usd", "text": "Evaluation", "type": "number" }
-          ]
-        }
-      ],
-      "title": "Cost by Workload Stage",
-      "type": "bargauge"
-    },
-    {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "Share of provisioned H100 capacity actually attributed to tournament work versus idle time.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "decimals": 1,
-          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
-          "mappings": [],
-          "unit": "h"
-        },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Idle" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Attributed" },
-            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
-          }
-        ]
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 7 },
-      "id": 5,
-      "options": {
-        "displayLabels": ["percent"],
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "values": ["value", "percent"]
-        },
-        "pieType": "donut",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "tooltip": { "mode": "multi", "sort": "none" }
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-          "type": "json",
-          "source": "url",
-          "format": "table",
-          "parser": "backend",
-          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
-          "url_options": { "method": "GET" },
-          "root_selector": "",
-          "columns": [
-            { "selector": "totals.attributed_h100_gpu_hours", "text": "Attributed", "type": "number" },
-            { "selector": "totals.idle_h100_gpu_hours", "text": "Idle", "type": "number" }
-          ]
-        }
-      ],
-      "title": "H100 Utilization (GPU-Hours)",
-      "type": "piechart"
-    },
-    {
-      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "GPU-hours consumed across pools for the selected week.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "continuous-BlPu" },
-          "decimals": 1,
-          "mappings": [],
-          "min": 0,
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
-          "unit": "h"
-        },
-        "overrides": []
-      },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 7 },
-      "id": 6,
-      "options": {
-        "displayMode": "gradient",
-        "maxVizHeight": 300,
-        "minVizHeight": 16,
-        "minVizWidth": 8,
-        "namePlacement": "left",
-        "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true,
-        "sizing": "auto",
-        "valueMode": "color"
-      },
-      "pluginVersion": "12.0.0",
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-          "type": "json",
-          "source": "url",
-          "format": "table",
-          "parser": "backend",
-          "url": "/v1/tournaments/costs?week_offset=${week_offset}",
-          "url_options": { "method": "GET" },
-          "root_selector": "",
-          "columns": [
-            { "selector": "totals.provisioned_h100_gpu_hours", "text": "Provisioned H100", "type": "number" },
-            { "selector": "totals.attributed_h100_gpu_hours", "text": "Attributed H100", "type": "number" },
-            { "selector": "totals.idle_h100_gpu_hours", "text": "Idle H100", "type": "number" },
-            { "selector": "totals.evaluation_a100_gpu_hours", "text": "Eval A100", "type": "number" }
-          ]
-        }
-      ],
-      "title": "GPU-Hours by Pool",
-      "type": "bargauge"
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
@@ -373,7 +400,7 @@
           }
         ]
       },
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 19 },
       "id": 7,
       "options": {
         "cellHeight": "sm",
@@ -447,7 +474,7 @@
           }
         ]
       },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 24 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 28 },
       "id": 8,
       "options": {
         "cellHeight": "sm",
