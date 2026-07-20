@@ -27,8 +27,7 @@ from validator.scoring.tasks import _get_dataset_type
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
-from validator.tasks.models import InstructTextRawTask
-from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import GpuRequirement
 from validator.tournament.models import TrainingStatus
 
@@ -298,10 +297,7 @@ async def _create_dstack_request(
     if not expected_repo_name:
         expected_repo_name = f"organic_{task.task_id}"
     
-    required_gpus = get_tournament_gpu_requirement(
-        task.task_type, task.model_params_count, task.model_id,
-        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
-    )
+    required_gpus = get_task_gpu_requirement(task)
 
     if task.task_type == TaskType.IMAGETASK:
         gpu_name = "H100"

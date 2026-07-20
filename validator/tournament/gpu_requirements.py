@@ -3,6 +3,10 @@
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.task_models import TaskType
+from core.whitelisted_env_models import ENV_MODEL_SIZE_B
+from validator.tasks.models import AnyTypeRawTask
+from validator.tasks.models import EnvRawTask
+from validator.tasks.models import InstructTextRawTask
 from validator.tasks.requests import get_model_num_params
 from validator.tournament.models import GpuRequirement
 
@@ -24,6 +28,7 @@ def get_tournament_gpu_requirement(
     gpu_multiplier: int | None = None,
     use_kl: bool = False,
     training_start_point: TrainingStartPoint | None = None,
+    environment_count: int | None = None,
 ) -> GpuRequirement:
     """Compute GPU requirement based on model size, task type, and optional multiplier.
 
@@ -39,6 +44,32 @@ def get_tournament_gpu_requirement(
 
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X
+
+    if task_type == TaskType.ENVIRONMENTTASK and environment_count is not None:
+        if environment_count > 4 or training_start_point in {
+            TrainingStartPoint.FROM_SCRATCH,
+            TrainingStartPoint.PREVIOUS_WINNER,
+        }:
+            return GpuRequirement.H100_4X
+        if environment_count > 2:
+            return GpuRequirement.H100_2X
+
+        params_b = model_params_count / 1_000_000_000
+        if not params_b and model_id:
+            params_b = ENV_MODEL_SIZE_B.get(model_id, 0.0)
+            if not params_b:
+                try:
+                    params_b = get_model_num_params(model_id) / 1_000_000_000
+                except Exception:
+                    logger.warning(f"Could not determine environment model size for {model_id}, defaulting to H100_2X")
+                    return GpuRequirement.H100_2X
+        if not params_b:
+            return GpuRequirement.H100_2X
+        if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
+            return GpuRequirement.H100_1X
+        return GpuRequirement.H100_2X
+    if task_type == TaskType.ENVIRONMENTTASK and gpu_multiplier is None:
+        return GpuRequirement.H100_4X
 
     if not model_params_count and model_id:
         logger.info(f"model_params_count is {model_params_count}, fetching from HuggingFace for model {model_id}")
@@ -58,11 +89,8 @@ def get_tournament_gpu_requirement(
         params_b *= TOURNAMENT_DPO_GPU_MULTIPLIER
     elif task_type == TaskType.GRPOTASK:
         params_b *= TOURNAMENT_GRPO_GPU_MULTIPLIER
-    elif task_type == TaskType.ENVIRONMENTTASK:
-        if gpu_multiplier is not None:
-            params_b *= gpu_multiplier
-        else:
-            return GpuRequirement.H100_4X
+    elif task_type == TaskType.ENVIRONMENTTASK and gpu_multiplier is not None:
+        params_b *= gpu_multiplier
 
     if use_kl:
         params_b *= TOURNAMENT_KL_GPU_MULTIPLIER
@@ -75,3 +103,15 @@ def get_tournament_gpu_requirement(
         return GpuRequirement.H100_4X
     else:
         return GpuRequirement.H100_8X
+
+
+def get_task_gpu_requirement(task: AnyTypeRawTask) -> GpuRequirement:
+    """Compute a task's GPU requirement, including environment-count scaling."""
+    return get_tournament_gpu_requirement(
+        task.task_type,
+        task.model_params_count,
+        task.model_id,
+        use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
+        training_start_point=task.training_start_point,
+        environment_count=len(task.environment_names) if isinstance(task, EnvRawTask) else None,
+    )

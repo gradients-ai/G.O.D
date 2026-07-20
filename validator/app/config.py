@@ -9,14 +9,14 @@ from dataclasses import dataclass
 
 import httpx
 import websocket
+from async_substrate_interface import SubstrateInterface
+from bittensor_wallet.keypair import Keypair
 from fiber.chain import chain_utils
 from fiber.chain import interface
 from redis.asyncio import Redis
-from substrateinterface import Keypair
-from substrateinterface import SubstrateInterface
 
-from validator.db.database import PSQLDB
 from core.logging import get_logger
+from validator.db.database import PSQLDB
 
 
 logger = get_logger(__name__)

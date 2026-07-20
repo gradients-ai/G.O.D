@@ -1,6 +1,6 @@
 from typing import Any
 
-from substrateinterface import SubstrateInterface
+from async_substrate_interface import SubstrateInterface
 
 from core.logging import get_logger
 

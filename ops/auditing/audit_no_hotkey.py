@@ -10,12 +10,12 @@ from dataclasses import dataclass
 
 import httpx
 import websocket
+from async_substrate_interface import SubstrateInterface
 from fiber.chain import interface
-from substrateinterface import SubstrateInterface
 
+from core.logging import get_logger
 from ops.auditing.audit import audit_weights
 from validator.db.database import PSQLDB
-from core.logging import get_logger
 
 
 logger = get_logger(__name__)
