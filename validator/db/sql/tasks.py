@@ -2055,8 +2055,11 @@ async def release_pvp_pair_gpus(
     hotkey_b: str,
     psql_db: PSQLDB | None,
 ) -> None:
-    """Release a PvP pair's GPU reservation. Pair-scoped, so it can never clear a sibling pair's
-    reservation (unlike the old evaluations release keyed on a shared hotkey)."""
+    """Release a PvP pair's GPU reservation and deployment marker.
+
+    Pair-scoped, so it can never clear a sibling pair's reservation (unlike the old evaluations
+    release keyed on a shared hotkey).
+    """
     if task_id is None or psql_db is None:
         return
     hk_a, hk_b = sorted([hotkey_a, hotkey_b])
@@ -2064,7 +2067,9 @@ async def release_pvp_pair_gpus(
         await connection.execute(
             f"""
             UPDATE {cst.PVP_PAIR_RESULTS_TABLE}
-            SET {cst.GPU_COUNT} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            SET {cst.GPU_COUNT} = NULL,
+                {cst.PVP_DEPLOYMENT_ID} = NULL,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             WHERE {cst.TASK_ID} = $1 AND {cst.PVP_HOTKEY_A} = $2 AND {cst.PVP_HOTKEY_B} = $3
             """,
             task_id,

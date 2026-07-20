@@ -1570,9 +1570,11 @@ async def get_active_pvp_deployment_ids(psql_db: PSQLDB) -> set[str]:
 
 
 async def get_active_pvp_pair_reservations(psql_db: PSQLDB) -> list[dict]:
-    """One row per PvP pair currently holding a GPU reservation (gpu_count set, pair not complete),
-    for the reconciler: {task_id, hotkey_a, hotkey_b, deployment_id, updated_at}. A pair has one row
-    per environment so we aggregate to the pair grain."""
+    """One row per incomplete PvP pair with active GPU reservation or deployment marker.
+
+    Returns {task_id, hotkey_a, hotkey_b, deployment_id, updated_at}. A pair has one row per
+    environment, so we aggregate to pair grain.
+    """
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(
             f"""
@@ -1583,7 +1585,7 @@ async def get_active_pvp_pair_reservations(psql_db: PSQLDB) -> list[dict]:
                    MAX({cst.UPDATED_AT}) AS updated_at
             FROM {cst.PVP_PAIR_RESULTS_TABLE}
             WHERE {cst.STATUS} != $1
-              AND {cst.GPU_COUNT} IS NOT NULL
+              AND ({cst.GPU_COUNT} IS NOT NULL OR {cst.PVP_DEPLOYMENT_ID} IS NOT NULL)
             GROUP BY {cst.TASK_ID}, {cst.PVP_HOTKEY_A}, {cst.PVP_HOTKEY_B}
             """,
             cst.PVP_STATUS_COMPLETE.value,
