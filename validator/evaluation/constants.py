@@ -24,7 +24,7 @@ DIFFUSION_HF_DEFAULT_CKPT_NAME = "last.safetensors"
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.25
 EVAL_DEFAULTS = {
     "sdxl": {"steps": 20, "cfg": 8, "denoise": 0.9},
-    "flux": {"steps": 35, "cfg": 100, "denoise": 0.75},
+    "flux": {"steps": 35, "cfg": 100, "denoise": 0.8},
     "z-image": {"steps": 10, "cfg": 1, "denoise": 0.90},
     "qwen-image": {"steps": 20, "cfg": 8, "denoise": 0.93},
     "krea2": {"steps": 25, "cfg": 12, "denoise": 0.8, "generations": 5},
