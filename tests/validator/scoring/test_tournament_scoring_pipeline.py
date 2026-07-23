@@ -320,8 +320,8 @@ class TestExponentialDeclineMapping:
             assert weights[i] >= weights[i + 1]
 
     def test_only_top_two_ranks_paid(self):
-        assert exponential_decline_mapping(5, 1) == pytest.approx(0.85)
-        assert exponential_decline_mapping(5, 2) == pytest.approx(0.15)
+        assert exponential_decline_mapping(5, 1) == pytest.approx(0.8)
+        assert exponential_decline_mapping(5, 2) == pytest.approx(0.2)
         assert exponential_decline_mapping(5, 3) == 0.0
         assert exponential_decline_mapping(5, 5) == 0.0
 
@@ -740,7 +740,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
 
     def test_challenger_dethrones_boss(self):
         data = self._tournament(
@@ -751,7 +751,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {CHALLENGER: pytest.approx(0.85), BOSS: pytest.approx(0.15)}
+        assert weights == {CHALLENGER: pytest.approx(0.8), BOSS: pytest.approx(0.2)}
 
     def test_semifinalist_earns_nothing_even_when_tied_on_points(self):
         earlier = [
@@ -781,7 +781,7 @@ class TestGetBossRoundPairWeights:
         weights = get_boss_round_pair_weights(data)
 
         assert DAVE not in weights
-        assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
 
     def test_no_final_round_pays_champion_alone(self):
         data = TournamentResultsWithWinners(
@@ -809,7 +809,7 @@ class TestGetBossRoundPairWeights:
 
         weights = get_boss_round_pair_weights(data)
 
-        assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
+        assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
 
 
 class TestBossRoundEmissionsProductionPath:
@@ -855,7 +855,7 @@ class TestBossRoundEmissionsProductionPath:
                 TournamentType.ENVIRONMENT: env_w,
             }[tournament_type]
 
-            assert weights == {BOSS: pytest.approx(0.85), CHALLENGER: pytest.approx(0.15)}
+            assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
             assert DAVE not in weights
             assert "5GEli" not in weights
 
@@ -865,7 +865,7 @@ class TestBossRoundEmissionsProductionPath:
         champion_key = max(weights, key=lambda hotkey: weights[hotkey])
 
         assert champion_key == get_real_tournament_winner(data) == BOSS
-        assert weights[champion_key] == pytest.approx(0.85)
+        assert weights[champion_key] == pytest.approx(0.8)
 
     def test_champion_key_matches_get_real_tournament_winner_when_dethroned(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], CHALLENGER, BOSS)
@@ -873,7 +873,7 @@ class TestBossRoundEmissionsProductionPath:
         champion_key = max(weights, key=lambda hotkey: weights[hotkey])
 
         assert champion_key == get_real_tournament_winner(data) == CHALLENGER
-        assert weights[champion_key] == pytest.approx(0.85)
+        assert weights[champion_key] == pytest.approx(0.8)
 
     def test_apply_tournament_weights_routes_champion_to_boost_runner_up_to_base(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
@@ -901,8 +901,8 @@ class TestBossRoundEmissionsProductionPath:
             None,
         )
 
-        assert all_node_weights[0] == pytest.approx(0.85 * scaled_text_tournament_weight)
-        assert all_node_weights[1] == pytest.approx(0.15 * scaled_text_base_weight)
+        assert all_node_weights[0] == pytest.approx(0.8 * scaled_text_tournament_weight)
+        assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_base_weight)
         assert all_node_weights[2] == 0.0
-        distributed = 0.85 * scaled_text_tournament_weight + 0.15 * scaled_text_base_weight
+        distributed = 0.8 * scaled_text_tournament_weight + 0.2 * scaled_text_base_weight
         assert undistributed == pytest.approx(scaled_text_tournament_weight - distributed)

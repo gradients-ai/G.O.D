@@ -25,8 +25,7 @@ PVP_PERF_DIFF_SLOPE = 0.125
 # Tournament score and weight distribution
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
 TOURNAMENT_PAID_RANKS = 2
-# Geometric split across the paid ranks. With 2 paid ranks, 3/17 gives 1st : 2nd = 85 : 15.
-TOURNAMENT_SIMPLE_DECAY_BASE = 3 / 17
+TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
 # Uniform hard cap on any single tournament type's final (base + boost) weight.
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.50
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.50
