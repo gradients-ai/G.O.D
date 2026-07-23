@@ -41,6 +41,7 @@ import core.constants.network as ccst
 import validator.scoring.constants as cts
 from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
+from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql.nodes import get_vali_node_id
@@ -265,6 +266,13 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
     """
     logger.info("=== CALCULATING TOURNAMENT BURN DATA ===")
 
+    # Participation-driven base split (replaces the old hand-picked constants). Non-winner
+    # finalists receive this base; the champion's boost stacks on top, capped at the uniform max.
+    dynamic_base_weights = await get_dynamic_base_weights(psql_db)
+    text_base_weight = dynamic_base_weights[TournamentType.TEXT]
+    image_base_weight = dynamic_base_weights[TournamentType.IMAGE]
+    environment_base_weight = dynamic_base_weights[TournamentType.ENVIRONMENT]
+
     text_performance_diff = None
     image_performance_diff = None
     environment_performance_diff = None
@@ -379,7 +387,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     text_tournament_weight = calculate_tournament_weight_with_decay(
         tournament_type=TournamentType.TEXT,
-        base_weight=cts.TOURNAMENT_TEXT_WEIGHT,
+        base_weight=text_base_weight,
         emission_boost=text_innovation_incentive,
         old_decay=text_old_decay,
         new_decay=text_new_decay,
@@ -389,7 +397,7 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     image_tournament_weight = calculate_tournament_weight_with_decay(
         tournament_type=TournamentType.IMAGE,
-        base_weight=cts.TOURNAMENT_IMAGE_WEIGHT,
+        base_weight=image_base_weight,
         emission_boost=image_innovation_incentive,
         old_decay=image_old_decay,
         new_decay=image_new_decay,
@@ -420,13 +428,29 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     environment_tournament_weight = calculate_tournament_weight_with_decay(
         tournament_type=TournamentType.ENVIRONMENT,
-        base_weight=cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
+        base_weight=environment_base_weight,
         emission_boost=environment_innovation_incentive,
         old_decay=environment_old_decay,
         new_decay=environment_new_decay,
         apply_hybrid=apply_hybrid_to_environment,
         max_weight=cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
     )
+
+    # With a dynamic base plus a uniform 0.50 cap the three boosted weights could, in an extreme
+    # all-oversubscribed-and-all-innovating case, sum past 1.0. Scale the winner AND base weights
+    # back together so the tournament pool never exceeds 1.0 (burn floors at 0, ordering preserved).
+    tournament_weight_sum = text_tournament_weight + image_tournament_weight + environment_tournament_weight
+    if tournament_weight_sum > 1.0:
+        logger.warning(
+            f"Tournament weights sum to {tournament_weight_sum:.4f} > 1.0; scaling back to keep burn >= 0"
+        )
+        scale = 1.0 / tournament_weight_sum
+        text_tournament_weight *= scale
+        image_tournament_weight *= scale
+        environment_tournament_weight *= scale
+        text_base_weight *= scale
+        image_base_weight *= scale
+        environment_base_weight *= scale
 
     burn_weight = 1.0 - text_tournament_weight - image_tournament_weight - environment_tournament_weight
 
@@ -452,6 +476,9 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         text_tournament_weight=text_tournament_weight,
         image_tournament_weight=image_tournament_weight,
         environment_tournament_weight=environment_tournament_weight,
+        text_base_weight=text_base_weight,
+        image_base_weight=image_base_weight,
+        environment_base_weight=environment_base_weight,
         burn_weight=burn_weight,
     )
 
@@ -604,9 +631,9 @@ async def get_node_weights_from_tournament_audit_data(
     scaled_environment_tournament_weight: float = tournament_audit_data.environment_tournament_weight * scale_factor
     scaled_burn_weight: float = tournament_audit_data.burn_weight * scale_factor
 
-    scaled_text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT * scale_factor
-    scaled_image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT * scale_factor
-    scaled_environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT * scale_factor
+    scaled_text_base_weight: float = tournament_audit_data.text_base_weight * scale_factor
+    scaled_image_base_weight: float = tournament_audit_data.image_base_weight * scale_factor
+    scaled_environment_base_weight: float = tournament_audit_data.environment_base_weight * scale_factor
 
     # Check that scaled weights + participation still sum to 1.0
     scaled_weight_sum = (
@@ -753,6 +780,9 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
     tournament_audit_data.text_tournament_weight = burn_data.text_tournament_weight
     tournament_audit_data.image_tournament_weight = burn_data.image_tournament_weight
     tournament_audit_data.environment_tournament_weight = burn_data.environment_tournament_weight
+    tournament_audit_data.text_base_weight = burn_data.text_base_weight
+    tournament_audit_data.image_base_weight = burn_data.image_base_weight
+    tournament_audit_data.environment_base_weight = burn_data.environment_base_weight
     tournament_audit_data.burn_weight = burn_data.burn_weight
 
     # Fetch weekly participation data

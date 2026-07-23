@@ -708,6 +708,44 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
         ]
 
 
+async def get_recent_completed_entrant_counts(
+    psql_db: PSQLDB,
+    tournament_type: TournamentType,
+    limit: int = 4,
+    min_entrants: int = 3,
+) -> list[int]:
+    """Entrant counts of the completed tournaments feeding the emission auto-balancer (newest first).
+
+    The window is LAGGED by one tournament: the most recent tournament of this type (whether still
+    active or just completed — position -1) is excluded, and counts are read from the completed
+    tournaments strictly older than it (positions -2, -3, ...). This means the split a cohort
+    competes under is fixed before they enter and can't shift against them when their tournament
+    finishes. Degenerate tournaments below ``min_entrants`` are skipped so a reseeded or single-entry
+    tournament can't distort the split.
+    """
+    async with await psql_db.connection() as connection:
+        query = f"""
+            WITH cutoff AS (
+                SELECT {cst.CREATED_AT}
+                FROM {cst.TOURNAMENTS_TABLE}
+                WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} != 'cancelled'
+                ORDER BY {cst.CREATED_AT} DESC
+                LIMIT 1
+            )
+            SELECT COUNT(p.{cst.HOTKEY}) AS n
+            FROM {cst.TOURNAMENTS_TABLE} t
+            LEFT JOIN {cst.TOURNAMENT_PARTICIPANTS_TABLE} p USING ({cst.TOURNAMENT_ID})
+            WHERE t.{cst.TOURNAMENT_TYPE} = $1 AND t.{cst.TOURNAMENT_STATUS} = 'completed'
+              AND t.{cst.CREATED_AT} < (SELECT {cst.CREATED_AT} FROM cutoff)
+            GROUP BY t.{cst.TOURNAMENT_ID}, t.{cst.CREATED_AT}
+            HAVING COUNT(p.{cst.HOTKEY}) >= $2
+            ORDER BY t.{cst.CREATED_AT} DESC
+            LIMIT $3
+        """
+        results = await connection.fetch(query, tournament_type.value, min_entrants, limit)
+        return [row["n"] for row in results]
+
+
 async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: PSQLDB):
     """Add or update GPU information for a trainer"""
     async with await psql_db.connection() as connection:

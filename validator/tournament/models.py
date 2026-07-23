@@ -10,6 +10,7 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
+import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName as EnvironmentName
 from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskType
@@ -389,6 +390,10 @@ class TournamentAuditData(BaseModel):
     text_tournament_weight: float = 0.0
     image_tournament_weight: float = 0.0
     environment_tournament_weight: float = 0.0
+    # Dynamic (participation-driven) base weights — what non-winner finalists receive.
+    text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
+    image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
+    environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT
     burn_weight: float = 0.0
     weekly_participation: list["HotkeyTaskParticipation"] = []
 
@@ -474,6 +479,9 @@ class TournamentBurnData(BaseModel):
     text_tournament_weight: float
     image_tournament_weight: float
     environment_tournament_weight: float = 0.0
+    text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
+    image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
+    environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT
     burn_weight: float
 
 

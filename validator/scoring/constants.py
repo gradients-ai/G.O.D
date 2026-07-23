@@ -25,13 +25,31 @@ PVP_PERF_DIFF_SLOPE = 0.125
 # Tournament score and weight distribution
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
 TOURNAMENT_PAID_RANKS = 2
-TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.48
-MAX_IMAGE_TOURNAMENT_WEIGHT = 0.32
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.175
-TOURNAMENT_TEXT_WEIGHT = 0.375
-TOURNAMENT_IMAGE_WEIGHT = 0.275
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.1
+# Geometric split across the paid ranks. With 2 paid ranks, 3/17 gives 1st : 2nd = 85 : 15.
+TOURNAMENT_SIMPLE_DECAY_BASE = 3 / 17
+# Uniform hard cap on any single tournament type's final (base + boost) weight.
+MAX_TEXT_TOURNAMENT_WEIGHT = 0.50
+MAX_IMAGE_TOURNAMENT_WEIGHT = 0.50
+MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.50
+
+# Anchor base split (text / image / env). These are the *neutral* bases used when
+# participation is balanced across the anchor ratio; they double as the fallback base
+# for a type with no completed-tournament history. Their sum is the balancer pool.
+TOURNAMENT_TEXT_WEIGHT = 0.35
+TOURNAMENT_IMAGE_WEIGHT = 0.25
+TOURNAMENT_ENVIRONMENT_WEIGHT = 0.25
+
+# Participation-driven auto-balancer. The base split is recomputed each cycle from the
+# rolling entrant counts of the last N completed tournaments of each type: an oversubscribed
+# type sheds weight (down to the floor) toward a starved one. See validator.scoring.emission_balance.
+EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = static anchors, higher = sharper reaction
+EMISSION_BALANCE_FLOOR = 0.05            # no type's base may drop below this
+# The window is LAGGED by one tournament: the most recent completed-or-active tournament (position
+# -1) is excluded, and the average is taken over positions -2..-5. This locks the split a cohort
+# competes under before they enter, so it can't move against them (rug them) when their tournament
+# finishes. Window size therefore = number of completed tournaments averaged after the lag.
+EMISSION_BALANCE_ROLLING_WINDOW = 4      # positions -2..-5 (one-tournament lag applied in the query)
+EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below this entrant count
 
 # Burn and emission weight dynamics
 BURN_REDUCTION_RATE = 5.0
