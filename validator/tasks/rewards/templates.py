@@ -61,6 +61,9 @@ class ParamSpec(BaseModel):
         raise ValueError(f"Unknown param type: {self.param_type}")
 
 
+NEGATIVE_SCORING_SAMPLING_WEIGHT = 0.03
+
+
 class RewardTemplate(BaseModel):
     """A parameterized reward function template.
 
@@ -74,6 +77,7 @@ class RewardTemplate(BaseModel):
     scoring_mode: ScoringMode
     code_template: str = Field(..., description="Python function string with {param} placeholders")
     params: dict[str, ParamSpec] = Field(default_factory=dict)
+    sampling_weight: float = Field(default=1.0, description="Relative sampling probability")
 
     def instantiate(self, rng: random.Random | None = None) -> str:
         """Sample all parameters and return a concrete function string."""
@@ -206,6 +210,7 @@ KEYWORD_PRESENCE = RewardTemplate(
             ],
         ),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 
@@ -234,6 +239,7 @@ TEXTSTAT_DIRECTIONAL = RewardTemplate(
         ),
         "sign": ParamSpec(param_type=ParamType.CHOICE, choices=[1, -1]),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 _TEXTSTAT_TARGET_CODE = textwrap.dedent("""\
@@ -257,6 +263,7 @@ GRADE_LEVEL_TARGET = RewardTemplate(
         "target": ParamSpec(param_type=ParamType.FLOAT, min_val=3.0, max_val=16.0),
         "scale": ParamSpec(param_type=ParamType.FLOAT, min_val=3.0, max_val=8.0),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 READING_EASE_TARGET = RewardTemplate(
@@ -269,6 +276,7 @@ READING_EASE_TARGET = RewardTemplate(
         "target": ParamSpec(param_type=ParamType.FLOAT, min_val=20.0, max_val=90.0),
         "scale": ParamSpec(param_type=ParamType.FLOAT, min_val=10.0, max_val=30.0),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 WORDS_PER_SENTENCE_TARGET = RewardTemplate(
@@ -281,6 +289,7 @@ WORDS_PER_SENTENCE_TARGET = RewardTemplate(
         "target": ParamSpec(param_type=ParamType.FLOAT, min_val=5.0, max_val=35.0),
         "scale": ParamSpec(param_type=ParamType.FLOAT, min_val=5.0, max_val=15.0),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 CHARS_PER_WORD_TARGET = RewardTemplate(
@@ -293,6 +302,7 @@ CHARS_PER_WORD_TARGET = RewardTemplate(
         "target": ParamSpec(param_type=ParamType.FLOAT, min_val=3.0, max_val=7.0),
         "scale": ParamSpec(param_type=ParamType.FLOAT, min_val=1.0, max_val=3.0),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 SYLLABLES_PER_WORD_TARGET = RewardTemplate(
@@ -305,6 +315,7 @@ SYLLABLES_PER_WORD_TARGET = RewardTemplate(
         "target": ParamSpec(param_type=ParamType.FLOAT, min_val=1.0, max_val=3.5),
         "scale": ParamSpec(param_type=ParamType.FLOAT, min_val=0.5, max_val=2.0),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 DIFFICULT_WORD_RATIO = RewardTemplate(
@@ -327,6 +338,7 @@ DIFFICULT_WORD_RATIO = RewardTemplate(
     params={
         "sign": ParamSpec(param_type=ParamType.CHOICE, choices=[1, -1]),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 
@@ -348,6 +360,7 @@ LANGCHECK_SCORE = RewardTemplate(
         "metric": ParamSpec(param_type=ParamType.CHOICE, choices=["sentiment", "fluency"]),
         "sign": ParamSpec(param_type=ParamType.CHOICE, choices=[1, -1]),
     },
+    sampling_weight=NEGATIVE_SCORING_SAMPLING_WEIGHT,
 )
 
 
@@ -400,11 +413,35 @@ TEMPLATE_REGISTRY: list[RewardTemplate] = [
 ]
 
 
+def _weighted_sample_without_replacement(
+    items: list[str],
+    weights: list[float],
+    n: int,
+    rng: random.Random,
+) -> list[str]:
+    pool = list(zip(items, weights))
+    chosen = []
+    for _ in range(n):
+        total = sum(w for _, w in pool)
+        r = rng.uniform(0.0, total)
+        acc = 0.0
+        for i, (item, weight) in enumerate(pool):
+            acc += weight
+            if r <= acc:
+                chosen.append(item)
+                pool.pop(i)
+                break
+    return chosen
+
+
 def sample_template_groups(
     n: int,
     rng: random.Random | None = None,
 ) -> list[str]:
     """Sample n distinct groups and instantiate one template per group.
+
+    Groups are weighted by their max member sampling_weight; the pick within
+    a group is weighted per template.
 
     Returns a list of concrete Python function strings ready to store on a task.
     Two functions from the same group never appear together, preventing
@@ -413,10 +450,13 @@ def sample_template_groups(
     rng = rng or random.Random()
 
     group_names = list(TEMPLATE_GROUPS.keys())
+    group_weights = [max(t.sampling_weight for t in TEMPLATE_GROUPS[name]) for name in group_names]
     n = min(n, len(group_names))
-    selected_groups = rng.sample(group_names, n)
+    selected_groups = _weighted_sample_without_replacement(group_names, group_weights, n, rng)
 
-    return [
-        rng.choice(TEMPLATE_GROUPS[group_name]).instantiate(rng)
-        for group_name in selected_groups
-    ]
+    sampled = []
+    for group_name in selected_groups:
+        templates = TEMPLATE_GROUPS[group_name]
+        template = rng.choices(templates, weights=[t.sampling_weight for t in templates], k=1)[0]
+        sampled.append(template.instantiate(rng))
+    return sampled
