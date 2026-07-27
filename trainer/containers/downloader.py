@@ -43,7 +43,11 @@ SHARDED_CHECKPOINT_PATTERN = re.compile(r"-\d{5}-of-\d{5}\.safetensors$")
 WEIGHT_INDEX_SUFFIXES = (".bin.index.json", ".safetensors.index.json")
 
 
-hf_api = HfApi()
+def _huggingface_token() -> str | None:
+    return os.environ.get("HUGGINGFACE_TOKEN") or None
+
+
+hf_api = HfApi(token=_huggingface_token())
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,13 @@ async def download_text_dataset(task_id, dataset_url, file_format, dataset_dir):
         input_data_path = os.path.join(dataset_dir, repo_name)
 
         if not os.path.exists(input_data_path):
-            snapshot_download(repo_id=dataset_url, repo_type="dataset", local_dir=input_data_path, local_dir_use_symlinks=False)
+            snapshot_download(
+                repo_id=dataset_url,
+                repo_type="dataset",
+                local_dir=input_data_path,
+                local_dir_use_symlinks=False,
+                token=_huggingface_token(),
+            )
 
     return input_data_path, file_format
 
@@ -79,10 +89,6 @@ async def download_image_dataset(dataset_zip_url, task_id, dataset_dir):
     local_path = await download_s3_file(dataset_zip_url, local_zip_path)
     print(f"Downloaded image dataset to: {local_path}")
     return local_path
-
-
-def _huggingface_token() -> str | None:
-    return os.environ.get("HUGGINGFACE_TOKEN") or None
 
 
 def _repo_file_metadata(repo_id: str) -> tuple[RepoFileMetadata, ...]:
@@ -366,7 +372,7 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     real_base = base_model_id
     for _ in range(10):  # max depth guard
         try:
-            remote_adapter = hf_hub_download(real_base, LORA_ADAPTER_CONFIG)
+            remote_adapter = hf_hub_download(real_base, LORA_ADAPTER_CONFIG, token=_huggingface_token())
             with open(remote_adapter) as f:
                 parent_base = json.load(f).get("base_model_name_or_path")
         except Exception:
@@ -380,20 +386,21 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     print(f"[downloader] LoRA chain detected in {model_dir}: base={real_base}, depth={len(chain)}", flush=True)
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    hf_token = _huggingface_token()
 
     base_model = AutoModelForCausalLM.from_pretrained(
-        real_base, torch_dtype=torch.float16, device_map=device,
+        real_base, torch_dtype=torch.float16, device_map=device, token=hf_token,
     )
-    base_tokenizer = AutoTokenizer.from_pretrained(real_base)
+    base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
 
     def _merge_adapter(model, adapter_src):
         try:
-            tok = AutoTokenizer.from_pretrained(adapter_src)
+            tok = AutoTokenizer.from_pretrained(adapter_src, token=hf_token)
         except Exception:
             tok = base_tokenizer
         if len(tok) > model.get_input_embeddings().weight.shape[0]:
             model.resize_token_embeddings(len(tok))
-        peft_model = PeftModel.from_pretrained(model, adapter_src)
+        peft_model = PeftModel.from_pretrained(model, adapter_src, token=hf_token)
         return peft_model.merge_and_unload(safe_merge=False), tok
 
     lora_tokenizer = base_tokenizer
@@ -435,7 +442,13 @@ async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bo
         _detect_and_merge_lora(model_dir)
         print("Skipping download.", flush=True)
         return model_dir
-    snapshot_download(repo_id=repo_id, repo_type="model", local_dir=model_dir, local_dir_use_symlinks=False)
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        local_dir=model_dir,
+        local_dir_use_symlinks=False,
+        token=_huggingface_token(),
+    )
     _detect_and_merge_lora(model_dir)
     if anonymize:
         scrub_model_identity(model_dir)
@@ -451,7 +464,13 @@ async def download_huggingface_snapshot(repo_id: str, save_root: str) -> str:
         return save_path
 
     print(f"Downloading {repo_id} to {save_path}...", flush=True)
-    snapshot_download(repo_id=repo_id, repo_type="model", local_dir=save_path, local_dir_use_symlinks=False)
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type="model",
+        local_dir=save_path,
+        local_dir_use_symlinks=False,
+        token=_huggingface_token(),
+    )
     print(f"Downloaded {repo_id} to {save_path}", flush=True)
     return save_path
 
@@ -468,7 +487,12 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
     print(f"Downloading adapter {filename} from {repo_id}...", flush=True)
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            temp_file_path = hf_hub_download(repo_id=repo_id, filename=filename, local_dir=temp_dir)
+            temp_file_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=temp_dir,
+                token=_huggingface_token(),
+            )
             shutil.move(temp_file_path, adapter_path)
         print(f"Adapter {filename} downloaded successfully to {adapter_path}", flush=True)
         return adapter_path
@@ -579,14 +603,24 @@ async def main():
         from transformers import CLIPTokenizer
 
         print("Downloading clip models", flush=True)
-        CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
-        CLIPTokenizer.from_pretrained("laion/CLIP-ViT-bigG-14-laion2B-39B-b160k", cache_dir=cst.HUGGINGFACE_CACHE_PATH)
+        hf_token = _huggingface_token()
+        CLIPTokenizer.from_pretrained(
+            "openai/clip-vit-large-patch14",
+            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+            token=hf_token,
+        )
+        CLIPTokenizer.from_pretrained(
+            "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k",
+            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+            token=hf_token,
+        )
         snapshot_download(
             repo_id="google/t5-v1_1-xxl",
             repo_type="model",
             cache_dir=cst.HUGGINGFACE_CACHE_PATH,
             local_dir_use_symlinks=False,
             allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
+            token=hf_token,
         )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
@@ -618,7 +652,13 @@ def download_miner_dataset(repo_id: str, cache_dir: str) -> str:
     tmp_path = cache_path + f".tmp.{os.getpid()}"
     try:
         print(f"Downloading dataset {repo_id} to {tmp_path}", flush=True)
-        snapshot_download(repo_id=repo_id, repo_type="dataset", local_dir=tmp_path, local_dir_use_symlinks=False)
+        snapshot_download(
+            repo_id=repo_id,
+            repo_type="dataset",
+            local_dir=tmp_path,
+            local_dir_use_symlinks=False,
+            token=_huggingface_token(),
+        )
         os.rename(tmp_path, cache_path)
         print(f"Download complete: {repo_id}", flush=True)
     except BaseException:
