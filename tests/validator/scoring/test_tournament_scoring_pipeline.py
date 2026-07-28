@@ -515,7 +515,7 @@ class TestCalculateTournamentTypeScores:
         )
 
     def test_none_tournament_data(self):
-        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, None)
+        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, None, cts.TOURNAMENT_TEXT_WEIGHT)
         assert result.scores == []
         assert result.prev_winner_hotkey is None
         assert result.prev_winner_won_final is False
@@ -534,7 +534,7 @@ class TestCalculateTournamentTypeScores:
             ],
             winner_hotkey=ALICE,
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data, cts.TOURNAMENT_TEXT_WEIGHT)
         hotkeys_with_scores = {s.hotkey for s in result.scores}
         assert ALICE not in hotkeys_with_scores
         assert BOB in hotkeys_with_scores
@@ -559,7 +559,7 @@ class TestCalculateTournamentTypeScores:
             ],
             winner_hotkey=None,
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
         scores_by_hotkey = {s.hotkey: s.score for s in result.scores}
 
         # Higher test_loss = better for env → Alice ranked 1st, Bob 2nd, Carol 3rd
@@ -586,7 +586,7 @@ class TestCalculateTournamentTypeScores:
             winner_hotkey=cts.EMISSION_BURN_HOTKEY,
             base_winner_hotkey="real_champ",
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
         hotkeys_with_scores = {s.hotkey for s in result.scores}
 
         assert cts.EMISSION_BURN_HOTKEY not in hotkeys_with_scores
@@ -607,7 +607,7 @@ class TestCalculateTournamentTypeScores:
             ],
             winner_hotkey=ALICE,
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data, cts.TOURNAMENT_TEXT_WEIGHT)
         assert result.prev_winner_won_final is True
         assert result.prev_winner_hotkey == ALICE
 
@@ -648,7 +648,7 @@ class TestCalculateTournamentTypeScores:
             winner_hotkey=ALICE,
         )
 
-        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.TEXT, data, cts.TOURNAMENT_TEXT_WEIGHT)
         scores_by_hotkey = {score.hotkey: score.score for score in result.scores}
 
         assert BOB not in scores_by_hotkey
@@ -679,7 +679,7 @@ class TestCalculateTournamentTypeScores:
             winner_hotkey=None,
         )
 
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
 
         assert result.scores == []
 

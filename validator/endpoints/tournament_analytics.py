@@ -11,7 +11,6 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 
-import validator.scoring.constants as cts
 import validator.tournament.constants as tourn_cst
 from core.logging import get_logger
 from core.models.payload_models import GpuRequirementSummary
@@ -25,6 +24,7 @@ from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
+from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
@@ -94,7 +94,12 @@ async def get_tournament_details(
         if not tournament:
             raise HTTPException(status_code=404, detail="Tournament not found")
 
-        is_environment_tournament = TournamentType(tournament.tournament_type) == TournamentType.ENVIRONMENT
+        tournament_type = TournamentType(tournament.tournament_type)
+        is_environment_tournament = tournament_type == TournamentType.ENVIRONMENT
+
+        # Participation-driven split, not the static anchors — these are the live weights the
+        # weight setter is using, so the reported figures match what actually gets set on chain.
+        base_weights = await get_dynamic_base_weights(config.psql_db)
 
         detailed_rounds = []
         for round_data in rounds:
@@ -204,7 +209,7 @@ async def get_tournament_details(
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
         tournament_type_result = calculate_tournament_type_scores_from_data(
-            TournamentType(tournament.tournament_type), tournament_results_with_winners
+            tournament_type, tournament_results_with_winners, base_weights[tournament_type]
         )
 
         boss_round_performance = None
@@ -235,9 +240,9 @@ async def get_tournament_details(
             participants=_participants_without_github_tokens(participants),
             rounds=detailed_rounds,
             final_scores=tournament_type_result.scores,
-            text_tournament_weight=cts.TOURNAMENT_TEXT_WEIGHT,
-            image_tournament_weight=cts.TOURNAMENT_IMAGE_WEIGHT,
-            environment_tournament_weight=cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
+            text_tournament_weight=base_weights[TournamentType.TEXT],
+            image_tournament_weight=base_weights[TournamentType.IMAGE],
+            environment_tournament_weight=base_weights[TournamentType.ENVIRONMENT],
             boss_round_performance=boss_round_performance,
             sync_performance=sync_performance,
         )

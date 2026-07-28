@@ -209,20 +209,19 @@ def compute_pvp_tournament_points(
 
 
 def calculate_tournament_type_scores_from_data(
-    tournament_type: TournamentType, tournament_data: TournamentResultsWithWinners | None
+    tournament_type: TournamentType,
+    tournament_data: TournamentResultsWithWinners | None,
+    type_weight: float,
 ) -> TournamentTypeResult:
-    """Calculate tournament scores from tournament data without database access."""
+    """Calculate tournament scores from tournament data without database access.
+
+    ``type_weight`` is this type's emission base. It is the participation-driven dynamic split
+    (validator.scoring.emission_balance), not the static anchor, so the caller resolves it and
+    passes it in — this function stays DB-free.
+    """
     if not tournament_data:
         return TournamentTypeResult(scores=[], prev_winner_hotkey=None, prev_winner_won_final=False)
 
-    if tournament_type == TournamentType.TEXT:
-        type_weight = cts.TOURNAMENT_TEXT_WEIGHT
-    elif tournament_type == TournamentType.IMAGE:
-        type_weight = cts.TOURNAMENT_IMAGE_WEIGHT
-    elif tournament_type == TournamentType.ENVIRONMENT:
-        type_weight = cts.TOURNAMENT_ENVIRONMENT_WEIGHT
-    else:
-        raise ValueError(f"Unknown tournament type: {tournament_type}")
     score_dict = {}
     prev_winner_won_final = False
 

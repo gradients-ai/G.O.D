@@ -41,10 +41,10 @@ import core.constants.network as ccst
 import validator.scoring.constants as cts
 from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
-from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql.nodes import get_vali_node_id
+from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.tasks.details import save_json_to_temp_file
 from validator.tasks.details import try_db_connections
 from validator.tasks.details import upload_file_to_minio
@@ -215,18 +215,6 @@ def calculate_hybrid_decays(
         new_decay = emission_time_decay_fraction(days_as_champion)
         logger.debug(f"Post-cutoff champion: new_decay={new_decay:.4f} (reign={days_as_champion:.1f} days)")
         return (0.0, new_decay, False)
-
-
-def get_base_weight_by_tournament_type(tournament_type: TournamentType) -> float:
-    """Get the base weight for a tournament type."""
-    if tournament_type == TournamentType.TEXT:
-        return cts.TOURNAMENT_TEXT_WEIGHT
-    elif tournament_type == TournamentType.IMAGE:
-        return cts.TOURNAMENT_IMAGE_WEIGHT
-    elif tournament_type == TournamentType.ENVIRONMENT:
-        return cts.TOURNAMENT_ENVIRONMENT_WEIGHT
-    else:
-        raise ValueError(f"Unknown tournament type: {tournament_type}")
 
 
 def get_max_weight_by_tournament_type(tournament_type: TournamentType) -> float:

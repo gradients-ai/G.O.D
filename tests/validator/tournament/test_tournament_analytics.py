@@ -272,9 +272,12 @@ def mock_tournament_scoring():
 
 @pytest.fixture
 def mock_constants():
-    with patch('validator.endpoints.tournament_analytics.cts') as mock:
-        mock.TOURNAMENT_TEXT_WEIGHT = 1.0
-        mock.TOURNAMENT_IMAGE_WEIGHT = 0.5
+    with patch('validator.endpoints.tournament_analytics.get_dynamic_base_weights') as mock:
+        mock.return_value = {
+            TournamentType.TEXT: 1.0,
+            TournamentType.IMAGE: 0.5,
+            TournamentType.ENVIRONMENT: 0.25,
+        }
         yield mock
 
 
@@ -393,7 +396,7 @@ if __name__ == "__main__":
         with patch('validator.endpoints.tournament_analytics.tournament_sql') as mock_sql, \
              patch('validator.endpoints.tournament_analytics.task_sql') as mock_task_sql, \
              patch('validator.endpoints.tournament_analytics.calculate_tournament_type_scores_from_data') as mock_scoring, \
-             patch('validator.endpoints.tournament_analytics.cts') as mock_cts:
+             patch('validator.endpoints.tournament_analytics.get_dynamic_base_weights') as mock_base_weights:
             
             # Setup mocks
             mock_sql.get_tournament = AsyncMock(return_value=MOCK_TOURNAMENT)
@@ -411,8 +414,11 @@ if __name__ == "__main__":
             
             mock_task_sql.get_task = AsyncMock(side_effect=get_mock_task_details)
             mock_scoring.return_value = MOCK_TOURNAMENT_TYPE_RESULT
-            mock_cts.TOURNAMENT_TEXT_WEIGHT = 1.0
-            mock_cts.TOURNAMENT_IMAGE_WEIGHT = 0.5
+            mock_base_weights.return_value = {
+                TournamentType.TEXT: 1.0,
+                TournamentType.IMAGE: 0.5,
+                TournamentType.ENVIRONMENT: 0.25,
+            }
             
             try:
                 result = await get_tournament_details(MOCK_TOURNAMENT_ID, config)

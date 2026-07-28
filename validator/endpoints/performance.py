@@ -5,6 +5,7 @@ import validator.scoring.constants as cts
 from validator.app.config import Config
 from validator.app.dependencies import get_config
 from validator.db.sql.tournaments import get_latest_completed_tournament
+from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.scoring.weights import build_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
@@ -140,11 +141,15 @@ async def get_weight_projection(
     environment_win_pct: float = 80.0,
     config: Config = Depends(get_config),
 ) -> WeightProjectionResponse:
+    # Project against the live participation-driven split rather than the static anchors, so a
+    # miner choosing a track sees the base they would actually compete for.
+    base_weights = await get_dynamic_base_weights(config.psql_db)
+
     text_projection = await calculate_tournament_projection(
         config.psql_db,
         TournamentType.TEXT,
         percentage_improvement,
-        cts.TOURNAMENT_TEXT_WEIGHT,
+        base_weights[TournamentType.TEXT],
         cts.MAX_TEXT_TOURNAMENT_WEIGHT,
     )
 
@@ -152,7 +157,7 @@ async def get_weight_projection(
         config.psql_db,
         TournamentType.IMAGE,
         percentage_improvement,
-        cts.TOURNAMENT_IMAGE_WEIGHT,
+        base_weights[TournamentType.IMAGE],
         cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
     )
 
@@ -161,7 +166,7 @@ async def get_weight_projection(
         config.psql_db,
         TournamentType.ENVIRONMENT,
         percentage_improvement,
-        cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
+        base_weights[TournamentType.ENVIRONMENT],
         cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
         win_pct=environment_win_pct / 100.0,
     )
@@ -180,13 +185,16 @@ async def get_weight_projection_static(
 ) -> MultiWeightProjectionResponse:
     percentage_improvements = [5.0, 10.0, 15.0, 20.0]
 
+    # Resolved once: the split is the same for every projected improvement level.
+    base_weights = await get_dynamic_base_weights(config.psql_db)
+
     projections = []
     for percentage_improvement in percentage_improvements:
         text_projection = await calculate_tournament_projection(
             config.psql_db,
             TournamentType.TEXT,
             percentage_improvement,
-            cts.TOURNAMENT_TEXT_WEIGHT,
+            base_weights[TournamentType.TEXT],
             cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         )
 
@@ -194,7 +202,7 @@ async def get_weight_projection_static(
             config.psql_db,
             TournamentType.IMAGE,
             percentage_improvement,
-            cts.TOURNAMENT_IMAGE_WEIGHT,
+            base_weights[TournamentType.IMAGE],
             cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
         )
 
@@ -202,7 +210,7 @@ async def get_weight_projection_static(
             config.psql_db,
             TournamentType.ENVIRONMENT,
             percentage_improvement,
-            cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
+            base_weights[TournamentType.ENVIRONMENT],
             cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
         )
 
