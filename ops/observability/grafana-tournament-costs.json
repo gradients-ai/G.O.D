@@ -247,7 +247,7 @@
     },
     {
       "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "tournament-cost-api" },
-      "description": "Reporting window boundaries (Monday 11:00 UTC pivot) and the GPU hourly rates used for this bill.",
+      "description": "Reporting window boundaries (Monday 09:00 UTC pivot) and the GPU hourly rates used for this bill.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },

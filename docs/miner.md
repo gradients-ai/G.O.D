@@ -51,9 +51,9 @@ Tournament scheduling is weekly and independent for each tournament type. Times 
 
 | Tournament type | Scheduled start |
 | --- | --- |
-| Environment | Monday at 11:00 UTC |
-| Text | Monday at 13:00 UTC |
-| Image | Monday at 15:00 UTC |
+| Environment | Monday at 09:00 UTC |
+| Text | Monday at 11:00 UTC |
+| Image | Monday at 13:00 UTC |
 
 The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
 

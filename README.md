@@ -12,9 +12,9 @@ Tournament types are scheduled independently:
 
 | Type | Scheduled start | Task family | Participation fee | Minimum miners |
 | --- | --- | --- | --- | --- |
-| Environment | Monday 11:00 UTC | Environment interaction and PvP tasks | `0.25 TAO` | 5 |
-| Text | Monday 13:00 UTC | Instruct, Chat, DPO, and GRPO tasks | `0.25 TAO` | 8 |
-| Image | Monday 15:00 UTC | Diffusion/image tasks | `0.20 TAO` | 8 |
+| Environment | Monday 09:00 UTC | Environment interaction and PvP tasks | `0.25 TAO` | 5 |
+| Text | Monday 11:00 UTC | Instruct, Chat, DPO, and GRPO tasks | `0.25 TAO` | 8 |
+| Image | Monday 13:00 UTC | Diffusion/image tasks | `0.20 TAO` | 8 |
 
 Scheduling notes:
 

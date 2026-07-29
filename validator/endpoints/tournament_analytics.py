@@ -285,8 +285,8 @@ async def get_latest_tournaments_details(
         burn_data = await get_tournament_burn_details(config.psql_db)
 
         result = LatestTournamentsDetailsResponse(
-            text=text_details, 
-            image=image_details, 
+            text=text_details,
+            image=image_details,
             environment=environment_details,
             burn_data=burn_data
         )
@@ -405,7 +405,7 @@ async def get_next_tournament_dates(
             if pending_of_type:
                 # Get tournament-specific schedule
                 scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
-                
+
                 # Calculate next start date for pending tournament
                 # Use current time as reference since pending tournaments are newly created
                 current_time = datetime.now(timezone.utc)
@@ -633,7 +633,7 @@ async def get_tournament_costs(
     week_start: datetime | None = None,
     config: Config = Depends(get_config),
 ) -> WeeklyTournamentGpuCostsResponse:
-    """Return accumulated GPU costs for a Monday 11:00 UTC reporting week."""
+    """Return accumulated GPU costs for a Monday 09:00 UTC reporting week."""
     try:
         now = datetime.now(timezone.utc)
         window_start, default_end = get_week_window(
