@@ -6,7 +6,7 @@ load_in_8bit: false
 load_in_4bit: false
 strict: false
 
-chat_template: llama3
+chat_template: tokenizer_default
 datasets:
 dataset_prepared_path:
 val_set_size: 0.0

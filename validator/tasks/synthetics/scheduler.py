@@ -82,7 +82,10 @@ def maybe_get_kl_config() -> tuple[bool, float | None]:
 
 
 async def _get_text_models(
-    keypair: Keypair, smallest_size_b: float = 0.1, largest_size_b: float = 12.0
+    keypair: Keypair,
+    smallest_size_b: float = 0.1,
+    largest_size_b: float = 12.0,
+    include_round_one_only_models: bool = False,
 ) -> AsyncGenerator[str, None]:
     min_params = int(smallest_size_b * 1_000_000_000)
     max_params = int(largest_size_b * 1_000_000_000)
@@ -97,7 +100,16 @@ async def _get_text_models(
         if not isinstance(response, list):
             raise TypeError("Expected a list of responses from GET_ALL_MODELS_ENDPOINT")
         models: list[dict[str, Any]] = response
-        model_ids = [model.get(service_cst.GET_ALL_MODELS_ID, "") for model in models]
+        round_one_only = set(t_cst.ROUND_ONE_ONLY_TEXT_ENV_MODELS)
+        model_ids = list(
+            dict.fromkeys(
+                model_id
+                for model in models
+                if (model_id := model.get(service_cst.GET_ALL_MODELS_ID, "")) and model_id not in round_one_only
+            )
+        )
+        if include_round_one_only_models:
+            model_ids.extend(model_id for model_id in t_cst.ROUND_ONE_ONLY_TEXT_ENV_MODELS if model_id not in model_ids)
         random.shuffle(model_ids)
         for model_id in model_ids:
             yield model_id
@@ -537,6 +549,7 @@ async def create_synthetic_env_task(
     num_environments: int = 1,
     exclude_environments: list[EnvironmentName] | None = None,
     round_number: int = 1,
+    include_round_one_only_models: bool = False,
     model_id_override: str | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
     environment_names_override: list[EnvironmentName] | None = None,
@@ -547,8 +560,12 @@ async def create_synthetic_env_task(
     if model_id_override:
         model_id = model_id_override
     else:
-        candidates = [m for m in SUPPORTED_ENV_MODELS if m not in (exclude_models or [])]
-        model_id = random.choice(candidates or SUPPORTED_ENV_MODELS)
+        eligible_models = list(SUPPORTED_ENV_MODELS)
+        if include_round_one_only_models:
+            eligible_models.extend(t_cst.ROUND_ONE_ONLY_TEXT_ENV_MODELS)
+        eligible_models = list(dict.fromkeys(eligible_models))
+        candidates = [m for m in eligible_models if m not in (exclude_models or [])]
+        model_id = random.choice(candidates or eligible_models)
     dummy_dataset = "env_task_dummy_dataset"
 
     number_of_hours = hours_override or _get_training_hours_for_environment_task(round_number)

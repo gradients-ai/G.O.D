@@ -1,0 +1,26 @@
+{{ bos_token | default('', true) }}
+{%- if tools %}
+{{ '<start_of_turn>user\nYou have access to these tools:\n' }}
+{{ tools | tojson }}
+{{ '\nWhen a tool is needed, respond only with <tool_call>\n{"name":"function_name","arguments":{...}}\n</tool_call>.<end_of_turn>\n' }}
+{%- endif %}
+{%- for message in messages %}
+{%- if message.role == 'assistant' %}
+{{ '<start_of_turn>model\n' }}
+{%- elif message.role == 'tool' %}
+{{ '<start_of_turn>user\n<tool_response>' }}
+{%- else %}
+{{ '<start_of_turn>user\n' }}
+{%- endif %}
+{%- if message.content is string %}{{ message.content }}{% endif %}
+{%- if message.tool_calls %}
+{%- for call in message.tool_calls %}
+{%- set function = call.function if call.function is defined else call %}
+{%- set arguments = function.arguments if function.arguments is string else (function.arguments | tojson) %}
+{{ '<tool_call>\n{"name":"' ~ function.name ~ '","arguments":' ~ arguments ~ '}\n</tool_call>' }}
+{%- endfor %}
+{%- endif %}
+{%- if message.role == 'tool' %}{{ '</tool_response>' }}{% endif %}
+{{ '<end_of_turn>\n' }}
+{%- endfor %}
+{%- if add_generation_prompt %}{{ '<start_of_turn>model\n' }}{% endif %}

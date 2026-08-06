@@ -310,6 +310,7 @@ async def _create_environment_group_tasks(
             task = await create_synthetic_env_task(
                 config, models, instruct_datasets,
                 num_environments=num_envs, round_number=round_data.round_number,
+                include_round_one_only_models=round_data.round_number == 1,
                 training_start_point=start_point,
                 model_id_override=reference_task.model_id,
                 environment_names_override=reference_task.environment_names,
@@ -319,6 +320,7 @@ async def _create_environment_group_tasks(
             task = await create_synthetic_env_task(
                 config, models, instruct_datasets,
                 num_environments=num_envs, round_number=round_data.round_number,
+                include_round_one_only_models=round_data.round_number == 1,
                 model_id_override=tournament_base_model,
                 training_start_point=start_point,
                 exclude_environments=[t_cst.FORCED_BOSS_ENVIRONMENT] if t_cst.FORCED_BOSS_ENVIRONMENT else None,
@@ -429,7 +431,12 @@ async def _create_single_image_task_with_retry(
 
 
 async def _create_task_by_type(
-    task_type: TaskType, config: Config, models: list, instruct_datasets: list, dpo_datasets: list
+    task_type: TaskType,
+    config: Config,
+    models: list,
+    instruct_datasets: list,
+    dpo_datasets: list,
+    include_round_one_only_models: bool = False,
 ) -> RawTask:
     """Create a synthetic task of the specified type."""
     if task_type == TaskType.IMAGETASK:
@@ -441,7 +448,12 @@ async def _create_task_by_type(
     elif task_type == TaskType.GRPOTASK:
         return await create_synthetic_grpo_task(config, models, instruct_datasets)
     elif task_type == TaskType.ENVIRONMENTTASK:
-        return await create_synthetic_env_task(config, models, instruct_datasets)
+        return await create_synthetic_env_task(
+            config,
+            models,
+            instruct_datasets,
+            include_round_one_only_models=include_round_one_only_models,
+        )
     else:
         # Default to instruct text task
         return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
@@ -505,11 +517,17 @@ async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
     # Small text tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS instruct
-    # matches (rather than one). It keeps the broader dataset range, but all R1 models stay <=4B.
+    # matches (rather than one). It keeps the broader dataset range; the R1-only catalog can include
+    # explicit exceptions to the content-service pool's normal 4B ceiling.
     is_small = is_small_tournament_group(round_data)
     tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.TEXT_TASKS_PER_GROUP
 
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = _get_text_models(
+        config.keypair,
+        smallest_size_b=0.1,
+        largest_size_b=4.0,
+        include_round_one_only_models=round_data.round_number == 1,
+    )
     instruct_datasets = _get_instruct_text_datasets(
         config.keypair,
         small_only=round_data.round_number == 1 and not is_small,
@@ -652,7 +670,11 @@ async def _create_single_probability_task(
         return await create_synthetic_grpo_task(config, models, instruct_datasets)
 
 
-async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask:
+async def create_new_task_of_same_type(
+    task: RawTask,
+    config: Config,
+    include_round_one_only_models: bool = False,
+) -> RawTask:
     if task.task_type == TaskType.IMAGETASK:
         models = _get_image_models(config.keypair)
         return await _create_task_by_type(task.task_type, config, models, [], [])
@@ -678,7 +700,14 @@ async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
-    return await _create_task_by_type(task.task_type, config, models, instruct_datasets, dpo_datasets)
+    return await _create_task_by_type(
+        task.task_type,
+        config,
+        models,
+        instruct_datasets,
+        dpo_datasets,
+        include_round_one_only_models=include_round_one_only_models,
+    )
 
 
 def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | None, pair_id: str | None) -> bool:
@@ -691,14 +720,52 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
     )
 
 
+def _is_round_one_group_environment_task(
+    task: RawTask,
+    round_id: str,
+    group_id: str | None,
+    pair_id: str | None,
+) -> bool:
+    """Return True when an environment replacement may draw from the R1-only pool."""
+    return (
+        task.task_type == TaskType.ENVIRONMENTTASK
+        and group_id is not None
+        and pair_id is None
+        and round_id.endswith("_round_001")
+    )
+
+
 async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
     """
-    Create a replacement task that matches round-1 group text constraints:
-    - small text model pool (0.1B-4.0B)
+    Create a replacement task that matches round-one group text model eligibility.
     """
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = _get_text_models(
+        config.keypair,
+        smallest_size_b=0.1,
+        largest_size_b=4.0,
+        include_round_one_only_models=True,
+    )
     instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=True)
     return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=False)
+
+
+async def _create_round_one_group_environment_replacement_task(task: EnvRawTask, config: Config) -> RawTask:
+    """Recreate an R1 environment task without splitting the shared foundation or evaluation setup."""
+    models = _get_text_models(config.keypair)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    return await create_synthetic_env_task(
+        config,
+        models,
+        instruct_datasets,
+        num_environments=len(task.environment_names),
+        round_number=1,
+        include_round_one_only_models=True,
+        model_id_override=task.model_id,
+        training_start_point=task.training_start_point,
+        environment_names_override=list(task.environment_names),
+        eval_seed_override=task.eval_seed,
+        hours_override=task.hours_to_complete,
+    )
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:
@@ -876,8 +943,13 @@ async def replace_tournament_task(
 
     try:
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
-            logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
+            logger.info("Detected round-1 group text task replacement; using round-one model eligibility")
             new_task = await _create_round_one_group_text_replacement_task(config)
+        elif _is_round_one_group_environment_task(original_task_obj, round_id, group_id, pair_id):
+            logger.info("Detected round-1 environment task replacement; preserving the shared foundation and eval setup")
+            if not isinstance(original_task_obj, EnvRawTask):
+                raise TypeError("Round-one environment replacement requires an EnvRawTask")
+            new_task = await _create_round_one_group_environment_replacement_task(original_task_obj, config)
         elif t_cst.is_continuous_sft_task(original_task_obj):
             # Same lineage, same carried base model; the content service re-materializes the chunk
             # at fresh S3 URLs. Without this branch, create_new_task_of_same_type has no CHATTASK

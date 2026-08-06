@@ -23,13 +23,17 @@ import validator.evaluation.constants as vcst
 from core.models.dataset_models import EnvironmentDatasetType
 from core.models.pvp_models import PreparedModel
 from core.pvp.sglang_launch import ensure_remote_code_disabled
+from core.pvp.sglang_parsers import requires_lora_merge_for_serving
+from core.pvp.sglang_parsers import sglang_model_args_for
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.sglang_parsers import tool_chat_template_for
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.evaluators.environment import _start_process
 from validator.evaluation.evaluators.environment import _stream_logs
 from validator.evaluation.evaluators.environment import _wait_for_health
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.pvp.materialize import materialize_base_model
+from validator.evaluation.pvp.materialize import materialize_lora_model
 from validator.evaluation.pvp.server import build_sglang_command
 from validator.evaluation.runtime import stop_process
 from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_EVAL_CONFIG
@@ -404,6 +408,30 @@ async def _prepare_sglang_command(
         return model_repo, model_repo, ensure_remote_code_disabled(sglang_command)
 
     if is_lora:
+        if requires_lora_merge_for_serving(original_model):
+            model_path = await asyncio.to_thread(
+                materialize_lora_model,
+                original_model,
+                base_chain,
+                model_repo,
+                "cand",
+            )
+            prepared = PreparedModel(
+                sglang_model_path=model_path,
+                inference_name=model_path,
+                tool_call_parser=tool_call_parser_for(original_model),
+                chat_template=tool_chat_template_for(original_model),
+                extra_sglang_args=sglang_model_args_for(original_model),
+            )
+            logger.info(
+                "eval_setup model path: merged LoRA for full-weight serving (base=%s lora=%s)",
+                original_model,
+                model_repo,
+            )
+            port = int(os.getenv("SGLANG_PORT", "30000"))
+            command = build_sglang_command(prepared, port=port, seed=base_seed)
+            return prepared.inference_name, prepared.sglang_model_path, command
+
         # Keep SWE model serving identical to PvP: SGLang loads the submitted adapter
         # natively over the base model and keeps the base tokenizer/EOS contract.
         # Merely shipping added_tokens.json is not a reason to synthesize a merged model;
@@ -415,13 +443,14 @@ async def _prepare_sglang_command(
             "cand",
         )
         lora_name = "cand_trained_lora"
+        model_args = sglang_model_args_for(original_model)
+        lora_args = f"--enable-lora --lora-paths {lora_name}={model_repo} --lora-backend triton"
         prepared = PreparedModel(
             sglang_model_path=model_path_for_sglang,
             inference_name=f"{model_path_for_sglang}:{lora_name}",
-            extra_sglang_args=(
-                f"--enable-lora --lora-paths {lora_name}={model_repo} --lora-backend triton"
-            ),
-            tool_call_parser=tool_call_parser_for(model_path_for_sglang) if base_chain else None,
+            extra_sglang_args=" ".join(arg for arg in (model_args, lora_args) if arg),
+            tool_call_parser=tool_call_parser_for(original_model),
+            chat_template=tool_chat_template_for(original_model),
         )
         logger.info(
             "eval_setup model path: LoRA + SGLang native (base=%s lora=%s)",
@@ -434,6 +463,8 @@ async def _prepare_sglang_command(
             sglang_model_path=model_repo,
             inference_name=model_repo,
             tool_call_parser=parser,
+            chat_template=tool_chat_template_for(original_model),
+            extra_sglang_args=sglang_model_args_for(original_model),
         )
         logger.info("eval_setup model path: full weights repo=%s", model_repo)
 

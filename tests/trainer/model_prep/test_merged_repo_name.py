@@ -8,6 +8,8 @@ trainer entrypoint pulls peft/torch, absent on a validator-only box.
 """
 
 import hashlib
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,3 +53,41 @@ def test_eval_chain_depth_matches_trainer_literal():
     # eval side uses MAX_CHAIN_DEPTH. They MUST agree or the two sides flatten to different models.
     materialize = pytest.importorskip("validator.evaluation.pvp.materialize")
     assert materialize.MAX_CHAIN_DEPTH == 10
+
+
+def test_outer_environment_base_is_materialized_for_text_only_serving(tmp_path):
+    ep = pytest.importorskip("trainer.model_prep.entrypoint")
+
+    class FakeModel:
+        def save_pretrained(self, path, **kwargs):
+            assert kwargs == {"safe_serialization": True}
+            Path(path, "config.json").write_text("{}")
+
+    class FakeTokenizer:
+        def save_pretrained(self, path):
+            Path(path, "tokenizer_config.json").write_text("{}")
+
+    serving_dir = ep._materialize_env_serving_checkpoint(
+        FakeModel(),
+        FakeTokenizer(),
+        SimpleNamespace(model_type="gemma4"),
+        str(tmp_path),
+    )
+
+    assert serving_dir is not None
+    assert Path(serving_dir, "config.json").is_file()
+    assert Path(serving_dir, "tokenizer_config.json").is_file()
+
+
+def test_regular_environment_base_does_not_need_materialization(tmp_path):
+    ep = pytest.importorskip("trainer.model_prep.entrypoint")
+
+    assert (
+        ep._materialize_env_serving_checkpoint(
+            object(),
+            object(),
+            SimpleNamespace(model_type="qwen3_5_text"),
+            str(tmp_path),
+        )
+        is None
+    )

@@ -25,15 +25,24 @@ def ensure_remote_code_disabled(command: str) -> str:
     return command
 
 
-def build_base_command(model_path: str, port: int | str, seed: int) -> str:
+def build_base_command(
+    model_path: str,
+    port: int | str,
+    seed: int,
+    *,
+    chat_template: str | None = None,
+) -> str:
     tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", "1")
-    dtype = os.getenv("SGLANG_DTYPE", "float16")
-    return (
-        "python3 -m sglang.launch_server "
-        f"--model-path {model_path} "
+    dtype = os.getenv("SGLANG_DTYPE", "bfloat16")
+    command = (
+        "python3 -m core.pvp.sglang_server "
+        f"--model-path {shlex.quote(model_path)} "
         f"--host 0.0.0.0 --port {port} "
         f"--tensor-parallel-size {tensor_parallel} "
         f"--dtype {dtype} "
         f"--enable-deterministic-inference --random-seed {seed} "
         "--log-level warning --decode-log-interval 10000"
     )
+    if chat_template:
+        command = f"{command} --chat-template {shlex.quote(chat_template)}"
+    return command

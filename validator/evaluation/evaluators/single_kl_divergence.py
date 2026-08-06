@@ -48,7 +48,10 @@ def evaluate_kl_divergence_repo(evaluation_args: EvaluationArgs) -> None:
         logger.info(f"Loading finetuned model: {repo}")
         has_lora = check_for_lora(repo)
         if has_lora:
-            finetuned_model = load_finetuned_model(repo)
+            finetuned_model = load_finetuned_model(
+                repo,
+                expected_base_model=evaluation_args.original_model,
+            )
         else:
             finetuned_model = load_model(repo, is_base_model=False)
         finetuned_model.eval()

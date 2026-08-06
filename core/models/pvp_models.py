@@ -126,6 +126,10 @@ class PreparedModel(BaseModel):
             "the server resolves from sglang_model_path."
         ),
     )
+    chat_template: str | None = Field(
+        default=None,
+        description="Explicit SGLang chat template for a base model whose tokenizer has none.",
+    )
 
 
 class PvPModelSpec(PvPBaseModel):

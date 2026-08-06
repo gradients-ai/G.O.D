@@ -31,7 +31,9 @@ from core.pvp.chat import chat_completion
 from core.pvp.chat import create_client
 from core.pvp.sglang_launch import build_base_command
 from core.pvp.sglang_launch import ensure_remote_code_disabled
+from core.pvp.sglang_parsers import sglang_model_args_for
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.sglang_parsers import tool_chat_template_for
 
 
 logger = logging.getLogger(__name__)
@@ -69,12 +71,16 @@ def compute_weight_stats(model):
     return _compute_weight_stats(model)
 
 
-def build_sglang_command(model_path: str, seed: int) -> str:
+def build_sglang_command(model_path: str, seed: int, *, parser_model_id: str | None = None) -> str:
     port = os.getenv("SGLANG_PORT", "30000")
-    base = build_base_command(model_path, port, seed)
-    parser = tool_call_parser_for(model_path)
+    tool_model_id = parser_model_id or model_path
+    base = build_base_command(model_path, port, seed, chat_template=tool_chat_template_for(tool_model_id))
+    parser = tool_call_parser_for(tool_model_id)
     if parser:
         base = f"{base} --tool-call-parser {parser}"
+    model_args = sglang_model_args_for(tool_model_id)
+    if model_args:
+        base = f"{base} {model_args}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or SGLANG_EXTRA_CLI_DEFAULT).strip()
     command = f"{base} {extra}" if extra else base
     return ensure_remote_code_disabled(command)
@@ -314,6 +320,7 @@ async def compute_env_stats(
     model_path: str,
     model,
     env_configs: dict[EnvironmentName, EnvBaselineConfig],
+    parser_model_id: str | None = None,
 ) -> EnvBaselineStats:
     """Compute env stats: deploy model via SGLang, play episodes against all environments.
 
@@ -323,7 +330,7 @@ async def compute_env_stats(
     print("Computing weight stats...", flush=True)
     weight_stats = compute_weight_stats(model)
 
-    sglang_cmd = build_sglang_command(model_path, seed=42)
+    sglang_cmd = build_sglang_command(model_path, seed=42, parser_model_id=parser_model_id)
     sglang_proc = start_process(sglang_cmd, "sglang", capture_stdout=LOG_SGLANG_STDOUT)
     sglang_log_task = None
     sglang_port = int(os.getenv("SGLANG_PORT", "30000"))
@@ -375,6 +382,7 @@ async def compute_env_stats(
 
     except TimeoutError:
         print("SGLang failed to start within timeout", flush=True)
+        raise
 
     finally:
         stop_process(sglang_proc, "sglang")

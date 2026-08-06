@@ -108,18 +108,21 @@ class TestBossRoundTaskConfig:
         # Task 0: CONTINUATION with tournament base model
         assert created_tasks[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
         assert created_tasks[0]["model_id_override"] == "Qwen/Qwen2.5-7B-Instruct"
+        assert created_tasks[0].get("include_round_one_only_models", False) is False
         assert created_tasks[0]["environment_names_override"] is None
         assert created_tasks[0]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
 
         # Task 1: FROM_SCRATCH with no model override (random)
         assert created_tasks[1]["training_start_point"] == TrainingStartPoint.FROM_SCRATCH
         assert created_tasks[1]["model_id_override"] is None
+        assert created_tasks[1].get("include_round_one_only_models", False) is False
         assert created_tasks[1]["environment_names_override"] is None
         assert created_tasks[1]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
 
         # Task 2: PREVIOUS_WINNER with previous tournament winner model
         assert created_tasks[2]["training_start_point"] == TrainingStartPoint.PREVIOUS_WINNER
         assert created_tasks[2]["model_id_override"] == "prev-winner/model"
+        assert created_tasks[2].get("include_round_one_only_models", False) is False
         assert created_tasks[2]["num_environments"] == 1
         assert created_tasks[2]["environment_names_override"] == [EnvironmentName.SWE_INFINITE]
 
@@ -268,6 +271,7 @@ class TestEnvironmentGroupTasks:
         assert len(calls) >= 1
         assert calls[0]["num_environments"] == 2
         assert calls[0]["training_start_point"] == TrainingStartPoint.DEFAULT
+        assert calls[0]["include_round_one_only_models"] is True
 
     @pytest.mark.asyncio
     async def test_round_2_gets_capped_envs_and_continuation(self):
@@ -278,6 +282,7 @@ class TestEnvironmentGroupTasks:
         )
         assert calls[0]["num_environments"] == expected_envs
         assert calls[0]["training_start_point"] == TrainingStartPoint.CONTINUATION
+        assert calls[0]["include_round_one_only_models"] is False
 
     @pytest.mark.asyncio
     async def test_late_round_envs_capped_at_total(self):

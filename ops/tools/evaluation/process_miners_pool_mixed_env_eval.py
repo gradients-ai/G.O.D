@@ -7,7 +7,7 @@ in-memory store so it can be run from a checkout without seeded validator rows.
 
 Example:
     BASILICA_API_KEY=... uv run --extra dev \
-        --with Pillow==11.1.0 --with transformers==4.46.2 --with cryptography \
+        --with Pillow==11.1.0 --with transformers==5.12.1 --with cryptography \
         python -m ops.tools.evaluation.process_miners_pool_mixed_env_eval \
         --miner gradients-io-tournaments/example-miner-a \
         --miner gradients-io-tournaments/example-miner-b

@@ -18,6 +18,9 @@ from axolotl.utils.dict import DictDefault
 from datasets import Dataset
 from huggingface_hub import snapshot_download
 from peft import AutoPeftModelForCausalLM
+from peft import PeftConfig
+from peft import PeftModel
+from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 from transformers import TrainerCallback
@@ -25,6 +28,9 @@ from transformers import TrainerCallback
 import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
+from core.model_loading import is_outer_multimodal_causal_config
+from core.model_loading import load_causal_language_model
+from core.model_loading import load_causal_tokenizer
 from core.remote_code import continuous_sft_trust_remote_code
 from core.remote_code import pin_trusted_remote_code
 from core.training_config import create_dataset_entry
@@ -249,7 +255,7 @@ def load_model(
 
                         if has_model_files and has_config:
                             try:
-                                model = AutoModelForCausalLM.from_pretrained(
+                                model = load_causal_language_model(
                                     snapshot_path,
                                     device_map="balanced",
                                     torch_dtype=torch.bfloat16,
@@ -280,7 +286,7 @@ def load_model(
         if not local_files_only:
             kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
 
-        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
+        model = load_causal_language_model(model_name_or_path, **kwargs)
         return model
     except RuntimeError as e:
         error_msg = str(e)
@@ -289,7 +295,7 @@ def load_model(
             if pattern and abs(int(pattern.group(1)) - int(pattern.group(3))) == 1:
                 logger.info("Detected vocabulary size off-by-one error, attempting to load with ignore_mismatched_sizes=True")
                 kwargs["ignore_mismatched_sizes"] = True
-                return AutoModelForCausalLM.from_pretrained(model_name_or_path, **kwargs)
+                return load_causal_language_model(model_name_or_path, **kwargs)
         logger.error(f"Exception type: {type(e)}, message: {str(e)}")
         raise
     except Exception as e:
@@ -319,7 +325,7 @@ def load_tokenizer(
 
                         if tokenizer_files:
                             try:
-                                tokenizer = AutoTokenizer.from_pretrained(
+                                tokenizer = load_causal_tokenizer(
                                     snapshot_path, local_files_only=True, trust_remote_code=trust_remote_code
                                 )
                                 return tokenizer
@@ -336,12 +342,87 @@ def load_tokenizer(
         if not local_files_only:
             kwargs["token"] = os.environ.get("HUGGINGFACE_TOKEN")
 
-        tokenizer = AutoTokenizer.from_pretrained(original_model, **kwargs)
+        tokenizer = load_causal_tokenizer(original_model, **kwargs)
         return tokenizer
     except Exception as e:
         logger.error(f"Failed to load tokenizer: {str(e)}")
         logger.debug("Full traceback:", exc_info=True)
         raise  # Re-raise the exception to trigger retry
+
+
+def _load_expected_outer_peft_model(
+    repo: str,
+    expected_base_model: str | None,
+    *,
+    local_files_only: bool,
+    trust_remote_code: bool,
+):
+    """Load an adapter on an explicit text-only Gemma 4 or Mistral 3 base.
+
+    Keep the legacy AutoPeft path for every other architecture.  The explicit
+    base prevents a miner adapter from referring back to an anonymized trainer
+    cache path and prevents PEFT from selecting the multimodal outer model.
+    """
+    if not expected_base_model:
+        return None
+
+    token = None if local_files_only else os.environ.get("HUGGINGFACE_TOKEN")
+    config_kwargs = {
+        "local_files_only": local_files_only,
+        "trust_remote_code": trust_remote_code,
+    }
+    if token is not None:
+        config_kwargs["token"] = token
+    try:
+        base_config = AutoConfig.from_pretrained(expected_base_model, **config_kwargs)
+    except Exception as exc:
+        logger.info("Could not resolve expected adapter base %s: %s", expected_base_model, exc)
+        return None
+    if not is_outer_multimodal_causal_config(base_config):
+        return None
+
+    base_model_kwargs = {
+        **config_kwargs,
+        "device_map": "balanced",
+        "torch_dtype": torch.bfloat16,
+    }
+    base_model = load_causal_language_model(
+        expected_base_model,
+        config=base_config,
+        **base_model_kwargs,
+    )
+
+    adapter_cache_dir = os.path.expanduser("~/.cache/huggingface") if local_files_only else create_finetuned_cache_dir()
+    tokenizer_kwargs = {
+        **config_kwargs,
+        "cache_dir": adapter_cache_dir,
+    }
+    try:
+        adapter_tokenizer = load_causal_tokenizer(repo, config=base_config, **tokenizer_kwargs)
+    except Exception:
+        adapter_tokenizer = load_causal_tokenizer(
+            expected_base_model,
+            config=base_config,
+            **config_kwargs,
+        )
+    embedding_count = base_model.get_input_embeddings().weight.shape[0]
+    if len(adapter_tokenizer) > embedding_count:
+        base_model.resize_token_embeddings(len(adapter_tokenizer))
+
+    adapter_kwargs = {
+        "cache_dir": adapter_cache_dir,
+        "local_files_only": local_files_only,
+    }
+    if token is not None:
+        adapter_kwargs["token"] = token
+    peft_config = PeftConfig.from_pretrained(repo, **adapter_kwargs)
+    return PeftModel.from_pretrained(
+        base_model,
+        repo,
+        config=peft_config,
+        is_trainable=False,
+        **adapter_kwargs,
+    )
 
 
 @retry_on_5xx()
@@ -358,6 +439,14 @@ def load_finetuned_model(
             # load — which peft performs with trust_remote_code=True — to arbitrary code.
             repo = pin_trusted_remote_code(repo, local_files_only, expected_base_model=expected_base_model)
             local_files_only = True
+        explicit_outer_model = _load_expected_outer_peft_model(
+            repo,
+            expected_base_model,
+            local_files_only=local_files_only,
+            trust_remote_code=trust_remote_code,
+        )
+        if explicit_outer_model is not None:
+            return explicit_outer_model
         # For local files, try to use the snapshot path directly
         if local_files_only:
             cache_dir = os.path.expanduser("~/.cache/huggingface")

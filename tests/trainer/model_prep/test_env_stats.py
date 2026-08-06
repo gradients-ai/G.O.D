@@ -14,6 +14,36 @@ from core.pvp.baseline import MctsBaselineResult
 from trainer.model_prep import env_stats
 
 
+def test_build_sglang_command_uses_round_one_tool_contract(monkeypatch):
+    monkeypatch.setenv("SGLANG_TOOL_CALL_PARSER", "qwen3_coder")
+    monkeypatch.setenv("SGLANG_CHAT_TEMPLATE", "core/pvp/chat_templates/gemma4_base_tool.jinja")
+    monkeypatch.setenv("SGLANG_MODEL_ARGS", "--model-impl transformers")
+    monkeypatch.delenv("SGLANG_DTYPE", raising=False)
+
+    command = env_stats.build_sglang_command("/cache/model", seed=42)
+
+    assert "python3 -m core.pvp.sglang_server" in command
+    assert "--dtype bfloat16" in command
+    assert "--tool-call-parser qwen3_coder" in command
+    assert "--chat-template core/pvp/chat_templates/gemma4_base_tool.jinja" in command
+    assert "--model-impl transformers" in command
+
+
+def test_build_sglang_command_can_resolve_tools_from_original_model_id(monkeypatch):
+    monkeypatch.delenv("SGLANG_TOOL_CALL_PARSER", raising=False)
+    monkeypatch.delenv("SGLANG_CHAT_TEMPLATE", raising=False)
+
+    command = env_stats.build_sglang_command(
+        "/tmp/normalized-text-model",
+        seed=42,
+        parser_model_id="google/gemma-4-E2B",
+    )
+
+    assert "--model-path /tmp/normalized-text-model" in command
+    assert "--tool-call-parser qwen" in command
+    assert "--chat-template core/pvp/chat_templates/gemma4_base_tool.jinja" in command
+
+
 def test_start_process_discards_output_by_default(monkeypatch):
     captured = {}
 
@@ -68,7 +98,10 @@ class _FakeSession:
 async def test_play_episodes_reports_sidecar_result_errors(monkeypatch, capsys):
     ticks = iter([0.0, 0.0, 2.0])
 
-    monkeypatch.setattr(env_stats.time, "monotonic", lambda: next(ticks))
+    def fake_monotonic():
+        return next(ticks, 2.0)
+
+    monkeypatch.setattr(env_stats.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(env_stats, "ENV_BASELINE_TIME_BUDGET_SECONDS", 1.0)
 
     stats = await env_stats._play_episodes(
@@ -189,3 +222,16 @@ def test_compute_env_stats_one_env_failing_degrades_to_empty_stats(monkeypatch):
 
     assert result.env_stats[EnvironmentName.OTHELLO].num_episodes == 0
     assert result.env_stats[EnvironmentName.INTERCODE].num_episodes == 13
+
+
+def test_compute_env_stats_fails_when_model_server_never_starts(monkeypatch):
+    async def fail_health_check(*_args, **_kwargs):
+        raise TimeoutError("unsupported model architecture")
+
+    monkeypatch.setattr(env_stats, "wait_for_health", fail_health_check)
+    monkeypatch.setattr(env_stats, "start_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(env_stats, "stop_process", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(env_stats, "compute_weight_stats", lambda _model: WeightStats(by_group={}))
+
+    with pytest.raises(TimeoutError, match="unsupported model architecture"):
+        asyncio.run(env_stats.compute_env_stats("/cache/models/m", model=object(), env_configs={}))

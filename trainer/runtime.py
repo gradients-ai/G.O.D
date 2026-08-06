@@ -33,8 +33,12 @@ from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskType
+from core.pvp.sglang_parsers import CHAT_TEMPLATE_ENV
+from core.pvp.sglang_parsers import MODEL_ARGS_ENV
 from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
+from core.pvp.sglang_parsers import sglang_model_args_for
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.sglang_parsers import tool_chat_template_for
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
@@ -646,6 +650,12 @@ def run_model_prep_container(
         tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
         if tool_call_parser:
             env[TOOL_CALL_PARSER_ENV] = tool_call_parser
+        chat_template = tool_chat_template_for(model_id)
+        if chat_template:
+            env[CHAT_TEMPLATE_ENV] = chat_template
+        model_args = sglang_model_args_for(model_id)
+        if model_args:
+            env[MODEL_ARGS_ENV] = model_args
         if os.environ.get("MODEL_PREP_ENV_TIME_BUDGET_SECONDS"):
             env["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"] = os.environ["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"]
 
@@ -653,8 +663,8 @@ def run_model_prep_container(
     container = None
     memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
 
-    # Env tasks need sglang (transformers v4); text tasks (incl. continuous-SFT custom-arch) need the
-    # transformers-v5 image. sglang and v5 can't coexist, so they're split into two images.
+    # Environment prep needs SGLang for baseline episodes; text prep does not.
+    # Both images now use Transformers v5, but remain split to keep text prep lean.
     model_prep_image = (
         cst.MODEL_PREP_ENV_DOCKER_IMAGE if task_type == TaskType.ENVIRONMENTTASK else cst.MODEL_PREP_TEXT_DOCKER_IMAGE
     )

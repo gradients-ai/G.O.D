@@ -23,7 +23,10 @@ from core.models.pvp_models import PvPEvalConfig
 from core.models.pvp_models import PvPEvalMetadata
 from core.models.pvp_models import PvPEvalResults
 from core.models.pvp_models import PvPModelSpec
+from core.pvp.sglang_parsers import requires_lora_merge_for_serving
+from core.pvp.sglang_parsers import sglang_model_args_for
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.sglang_parsers import tool_chat_template_for
 from validator.evaluation.evaluation_logging import configure_eval_logging
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.pvp.game_runner import Player
@@ -31,6 +34,7 @@ from validator.evaluation.pvp.game_runner import create_player
 from validator.evaluation.pvp.game_runner import run_matchup
 from validator.evaluation.pvp.game_runner import warmup_player
 from validator.evaluation.pvp.materialize import materialize_base_model
+from validator.evaluation.pvp.materialize import materialize_lora_model
 from validator.evaluation.pvp.server import start_sglang
 from validator.evaluation.pvp.server import wait_for_servers
 from validator.evaluation.runtime import stop_process
@@ -84,13 +88,32 @@ def _prepare_model(spec: PvPModelSpec, label: str, gpu_id: int | None = None) ->
 
     if is_lora:
         device = f"cuda:{gpu_id}" if gpu_id is not None else None
+        if requires_lora_merge_for_serving(spec.original_model):
+            model_path = materialize_lora_model(
+                spec.original_model,
+                spec.base_chain,
+                spec.repo,
+                label=label,
+                device=device,
+            )
+            return PreparedModel(
+                sglang_model_path=model_path,
+                inference_name=model_path,
+                tool_call_parser=tool_call_parser_for(spec.original_model),
+                chat_template=tool_chat_template_for(spec.original_model),
+                extra_sglang_args=sglang_model_args_for(spec.original_model),
+            )
+
         base_path = materialize_base_model(spec.original_model, spec.base_chain, label=label, device=device)
         lora_name = f"{label}_trained_lora"
+        model_args = sglang_model_args_for(spec.original_model)
+        lora_args = f"--enable-lora --lora-paths {lora_name}={spec.repo} --lora-backend triton"
         return PreparedModel(
             sglang_model_path=base_path,
             inference_name=f"{base_path}:{lora_name}",
-            extra_sglang_args=f"--enable-lora --lora-paths {lora_name}={spec.repo} --lora-backend triton",
-            tool_call_parser=tool_call_parser_for(base_path) if spec.base_chain else None,
+            extra_sglang_args=" ".join(arg for arg in (model_args, lora_args) if arg),
+            tool_call_parser=tool_call_parser_for(spec.original_model),
+            chat_template=tool_chat_template_for(spec.original_model),
         )
 
     # A full-weight miner repo id is often opaque (no family substring), and the
@@ -102,6 +125,8 @@ def _prepare_model(spec: PvPModelSpec, label: str, gpu_id: int | None = None) ->
         sglang_model_path=spec.repo,
         inference_name=spec.repo,
         tool_call_parser=parser,
+        chat_template=tool_chat_template_for(spec.original_model),
+        extra_sglang_args=sglang_model_args_for(spec.original_model),
     )
 
 

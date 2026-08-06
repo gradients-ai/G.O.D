@@ -252,7 +252,21 @@ class TestBuildSglangCommand:
         )
         cmd = build_sglang_command(prepared, port=30000, seed=1)
 
-        assert "--tool-call-parser qwen25" in cmd
+        assert "--tool-call-parser qwen" in cmd
+
+    def test_explicit_chat_template_is_included(self):
+        from validator.evaluation.pvp.server import build_sglang_command
+
+        prepared = PreparedModel(
+            sglang_model_path="google/gemma-4-E2B",
+            inference_name="google/gemma-4-E2B",
+            tool_call_parser="qwen",
+            chat_template="core/pvp/chat_templates/gemma4_base_tool.jinja",
+        )
+
+        cmd = build_sglang_command(prepared, port=30000, seed=1)
+
+        assert "--chat-template core/pvp/chat_templates/gemma4_base_tool.jinja" in cmd
 
     def test_remote_code_flag_is_rejected(self, monkeypatch):
         from validator.evaluation.pvp.server import build_sglang_command
@@ -494,7 +508,7 @@ class TestPrepareModel:
         with patch("validator.evaluation.pvp.__main__.check_for_lora", return_value=False):
             result = _prepare_model(spec, "a")
 
-        assert result.tool_call_parser == "qwen25"
+        assert result.tool_call_parser == "qwen"
 
     def test_full_weight_repo_with_family_substring_uses_own_family(self):
         from validator.evaluation.pvp.__main__ import _prepare_model

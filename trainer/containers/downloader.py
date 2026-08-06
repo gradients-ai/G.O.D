@@ -15,6 +15,9 @@ from huggingface_hub import snapshot_download
 
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
+from core.model_loading import causal_tokenizer_load_kwargs
+from core.model_loading import load_causal_language_model
+from core.model_loading import load_causal_tokenizer
 from core.models.dataset_models import FileFormat
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
@@ -41,6 +44,18 @@ DIFFUSERS_COMPONENT_DIRS = {
 }
 SHARDED_CHECKPOINT_PATTERN = re.compile(r"-\d{5}-of-\d{5}\.safetensors$")
 WEIGHT_INDEX_SUFFIXES = (".bin.index.json", ".safetensors.index.json")
+TEXT_ONLY_BASE_SPECS = {
+    "google/gemma-4-e2b": (
+        "gemma4",
+        "gemma4_text",
+        "core/pvp/chat_templates/gemma4_base_tool.jinja",
+    ),
+    "mistralai/ministral-3-3b-base-2512": (
+        "mistral3",
+        "ministral3",
+        "core/pvp/chat_templates/ministral3_base_tool.jinja",
+    ),
+}
 
 
 def _huggingface_token() -> str | None:
@@ -249,6 +264,76 @@ def _promote_directory(download_path: Path, save_path: Path) -> None:
         _remove_path(backup_path)
 
 
+def _checked_in_template(template_path: str) -> str:
+    path = Path(template_path)
+    if not path.is_absolute():
+        path = Path(__file__).resolve().parents[2] / path
+    with path.open() as template_file:
+        return template_file.read().strip()
+
+
+def _normalize_text_only_base_snapshot(repo_id: str, model_dir: str) -> None:
+    """Replace an exact multimodal base snapshot with its language-only LM.
+
+    Gemma 4 and Mistral 3 publish multimodal outer checkpoints, but Axolotl,
+    model prep, and evaluation all operate on text.  Persisting the extracted
+    model also ensures adapters target language-layer names rather than vision
+    or audio modules.
+    """
+    spec = TEXT_ONLY_BASE_SPECS.get(repo_id.lower().rstrip("."))
+    if spec is None:
+        return
+
+    from transformers import AutoConfig
+
+    outer_model_type, text_model_type, fallback_template_path = spec
+    config = AutoConfig.from_pretrained(model_dir, local_files_only=True)
+    model_type = getattr(config, "model_type", None)
+    if model_type not in {outer_model_type, text_model_type}:
+        raise RuntimeError(
+            f"Expected {repo_id} to use {outer_model_type} or {text_model_type}, got {model_type!r}"
+        )
+
+    fallback_template = _checked_in_template(fallback_template_path)
+    if model_type == text_model_type:
+        if read_chat_template(model_dir):
+            return
+        tokenizer = load_causal_tokenizer(model_dir, config=config, local_files_only=True)
+        ensure_chat_template(tokenizer, fallback_template)
+        tokenizer.save_pretrained(model_dir)
+        sanitize_tokenizer_config(model_dir)
+        print(f"[downloader] Installed fallback chat template in {model_dir}", flush=True)
+        return
+
+    model_path = Path(model_dir)
+    normalized_path = Path(
+        tempfile.mkdtemp(prefix=f".{model_path.name}.text-only-", dir=model_path.parent)
+    )
+    try:
+        model = load_causal_language_model(
+            model_dir,
+            config=config,
+            dtype="auto",
+            local_files_only=True,
+        )
+        tokenizer = load_causal_tokenizer(
+            model_dir,
+            config=config,
+            local_files_only=True,
+        )
+        ensure_chat_template(tokenizer, read_chat_template(model_dir), fallback_template)
+        model.save_pretrained(normalized_path, safe_serialization=True)
+        tokenizer.save_pretrained(normalized_path)
+        sanitize_tokenizer_config(str(normalized_path))
+        del model, tokenizer
+        _promote_directory(normalized_path, model_path)
+    except BaseException:
+        _remove_path(normalized_path)
+        raise
+
+    print(f"[downloader] Normalized {repo_id} to a text-only checkpoint at {model_dir}", flush=True)
+
+
 def _download_standalone_checkpoint(repo_id: str, checkpoint: RepoFileMetadata, download_path: Path) -> None:
     checkpoint_path = _local_repo_path(download_path, checkpoint.path)
     downloaded_path = Path(
@@ -356,7 +441,6 @@ def _detect_and_merge_lora(model_dir: str) -> None:
 
     import torch
     from peft import PeftModel
-    from transformers import AutoModelForCausalLM
     from transformers import AutoTokenizer
 
     with open(adapter_config_path) as f:
@@ -388,14 +472,19 @@ def _detect_and_merge_lora(model_dir: str) -> None:
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     hf_token = _huggingface_token()
 
-    base_model = AutoModelForCausalLM.from_pretrained(
-        real_base, torch_dtype=torch.float16, device_map=device, token=hf_token,
+    base_model = load_causal_language_model(
+        real_base, dtype="auto", device_map=device, token=hf_token,
     )
-    base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token)
+    base_tokenizer = load_causal_tokenizer(real_base, config=base_model.config, token=hf_token)
+    adapter_tokenizer_kwargs = causal_tokenizer_load_kwargs(base_model.config)
 
     def _merge_adapter(model, adapter_src):
         try:
-            tok = AutoTokenizer.from_pretrained(adapter_src, token=hf_token)
+            tok = AutoTokenizer.from_pretrained(
+                adapter_src,
+                token=hf_token,
+                **adapter_tokenizer_kwargs,
+            )
         except Exception:
             tok = base_tokenizer
         if len(tok) > model.get_input_embeddings().weight.shape[0]:
@@ -440,6 +529,7 @@ async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bo
     if os.path.exists(model_dir):
         print(f"Model already cached at {model_dir}.", flush=True)
         _detect_and_merge_lora(model_dir)
+        _normalize_text_only_base_snapshot(repo_id, model_dir)
         print("Skipping download.", flush=True)
         return model_dir
     snapshot_download(
@@ -450,6 +540,7 @@ async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bo
         token=_huggingface_token(),
     )
     _detect_and_merge_lora(model_dir)
+    _normalize_text_only_base_snapshot(repo_id, model_dir)
     if anonymize:
         scrub_model_identity(model_dir)
     return model_dir

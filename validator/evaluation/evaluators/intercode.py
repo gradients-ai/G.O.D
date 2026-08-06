@@ -48,6 +48,8 @@ from huggingface_hub import snapshot_download
 
 import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
+from core.model_loading import load_causal_language_model
+from core.model_loading import load_causal_tokenizer
 from core.models.dataset_models import EnvironmentDatasetType
 from core.models.pvp_models import ChatCompletionConfig
 from core.models.pvp_models import ChatMessage
@@ -57,8 +59,12 @@ from core.models.pvp_models import FunctionSchema
 from core.models.pvp_models import ToolCall
 from core.models.pvp_models import ToolSchema
 from core.pvp.chat import chat_completion
+from core.pvp.sglang_launch import build_base_command
 from core.pvp.sglang_launch import ensure_remote_code_disabled
+from core.pvp.sglang_parsers import requires_lora_merge_for_serving
+from core.pvp.sglang_parsers import sglang_model_args_for
 from core.pvp.sglang_parsers import tool_call_parser_for
+from core.pvp.sglang_parsers import tool_chat_template_for
 from core.tokenizer_utils import ensure_chat_template
 from core.tokenizer_utils import read_chat_template
 from validator.evaluation.model_checks import check_for_lora
@@ -189,18 +195,23 @@ def _merge_base_and_lora(base_model_path: str, lora_dir: str, output_dir: str = 
 
     import torch
     from peft import PeftModel
-    from transformers import AutoModelForCausalLM
-    from transformers import AutoTokenizer
 
     logger.info("eval_setup merge: start base=%s lora=%s out=%s", base_model_path, lora_dir, output_dir)
-    base_tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=False)
-    lora_tokenizer = AutoTokenizer.from_pretrained(lora_dir, trust_remote_code=False)
-
-    base = AutoModelForCausalLM.from_pretrained(
+    base = load_causal_language_model(
         base_model_path,
-        torch_dtype=torch.float16,
+        dtype="auto",
         low_cpu_mem_usage=True,
         device_map="cuda:0" if torch.cuda.is_available() else "auto",
+        trust_remote_code=False,
+    )
+    base_tokenizer = load_causal_tokenizer(
+        base_model_path,
+        config=base.config,
+        trust_remote_code=False,
+    )
+    lora_tokenizer = load_causal_tokenizer(
+        lora_dir,
+        config=base.config,
         trust_remote_code=False,
     )
 
@@ -267,20 +278,20 @@ def _parse_environment_name() -> env_cst.EnvironmentName:
 
 
 def _build_sglang_command(model_path: str, seed: int, *, parser_model_id: str | None = None) -> str:
-    tensor_parallel = os.getenv("SGLANG_TENSOR_PARALLEL_SIZE", DEFAULT_SGLANG_TENSOR_PARALLEL_SIZE)
-    dtype = os.getenv("SGLANG_DTYPE", DEFAULT_SGLANG_DTYPE)
     port = os.getenv("SGLANG_PORT", DEFAULT_SGLANG_PORT)
-    base = (
-        "python3 -m sglang.launch_server "
-        f"--model-path {model_path} "
-        f"--host 0.0.0.0 --port {port} "
-        f"--tensor-parallel-size {tensor_parallel} "
-        f"--dtype {dtype} "
-        f"--enable-deterministic-inference --random-seed {seed}"
+    tool_model_id = parser_model_id or model_path
+    base = build_base_command(
+        model_path,
+        port,
+        seed,
+        chat_template=tool_chat_template_for(tool_model_id),
     )
-    parser = tool_call_parser_for(parser_model_id or model_path)
+    parser = tool_call_parser_for(tool_model_id)
     if parser:
         base = f"{base} --tool-call-parser {parser}"
+    model_args = sglang_model_args_for(tool_model_id)
+    if model_args:
+        base = f"{base} {model_args}"
     extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or DEFAULT_SGLANG_EXTRA_CLI).strip()
     command = f"{base} {extra}" if extra else base
     return ensure_remote_code_disabled(command)
@@ -955,7 +966,11 @@ async def _run() -> None:
         is_lora = await asyncio.to_thread(check_for_lora, model_repo, False)
         should_merge_lora = False
         if is_lora:
-            should_merge_lora = await asyncio.to_thread(check_lora_has_added_tokens, model_repo, False)
+            should_merge_lora = requires_lora_merge_for_serving(original_model) or await asyncio.to_thread(
+                check_lora_has_added_tokens,
+                model_repo,
+                False,
+            )
         logger.info("eval_setup LoRA: is_lora=%s merge=%s base_chain=%s", is_lora, should_merge_lora, base_chain)
 
         inference_model_name = model_repo
@@ -996,7 +1011,11 @@ async def _run() -> None:
             else:
                 model_path_for_sglang = await asyncio.to_thread(_download_model_with_retry, model_repo)
                 inference_model_name = model_repo
-                sglang_command = _build_sglang_command(model_path_for_sglang, base_seed, parser_model_id=model_repo)
+                sglang_command = _build_sglang_command(
+                    model_path_for_sglang,
+                    base_seed,
+                    parser_model_id=original_model,
+                )
 
         sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", str(DEFAULT_SGLANG_HEALTH_TIMEOUT_SECONDS)))
         _min_ws = DEFAULT_FLASHINFER_WORKSPACE_MIN_BYTES

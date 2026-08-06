@@ -131,6 +131,22 @@ TOURN_DEDUP_CONCURRENCY = 8
 
 R1_TEXT_DATASET_BIN = (20_000, 75_000)
 
+# Models being introduced on a limited basis. They may be freshly sampled only
+# for round-one text and environment tasks; later environment rounds may still
+# inherit the round-one foundation model through continuation.
+ROUND_ONE_ONLY_TEXT_ENV_MODELS: tuple[str, ...] = (
+    "Qwen/Qwen3.5-0.8B",
+    "Qwen/Qwen3.5-2B",
+    "Qwen/Qwen3.5-4B",
+    "ibm-granite/granite-4.1-3b",
+    "allenai/Olmo-3-7B-Instruct",
+    "allenai/Olmo-Hybrid-Instruct-SFT-7B",
+    "LiquidAI/LFM2.5-2.6B",
+    "mistralai/Ministral-3-3B-Base-2512",
+    "nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16",
+    "google/gemma-4-E2B",
+)
+
 # Tournament task allocation
 TEXT_TASKS_PER_GROUP = 1
 IMAGE_TASKS_PER_GROUP = 1

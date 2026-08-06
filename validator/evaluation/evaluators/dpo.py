@@ -229,7 +229,10 @@ def evaluate_dpo_repo(evaluation_args: EvaluationArgs) -> None:
 
         try:
             logger.info(f"Loading finetuned model as LoRA adapter: {repo}")
-            finetuned_model = load_finetuned_model(repo)
+            finetuned_model = load_finetuned_model(
+                repo,
+                expected_base_model=evaluation_args.original_model,
+            )
             is_finetune = True
         except Exception as lora_error:
             logger.info(f"Failed to load as LoRA adapter: {lora_error}")

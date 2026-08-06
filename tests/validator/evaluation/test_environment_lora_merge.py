@@ -19,6 +19,8 @@ def test_merge_disables_remote_code_and_stale_peft_state(monkeypatch, tmp_path, 
             pass
 
     class FakeBaseModel:
+        config = object()
+
         def get_input_embeddings(self):
             return SimpleNamespace(weight=SimpleNamespace(shape=(10, 4)))
 
@@ -55,6 +57,8 @@ def test_merge_disables_remote_code_and_stale_peft_state(monkeypatch, tmp_path, 
     )
 
     monkeypatch.setattr(evaluator.importlib.util, "find_spec", lambda _name: object())
+    monkeypatch.setattr(evaluator, "load_causal_language_model", load_model)
+    monkeypatch.setattr(evaluator, "load_causal_tokenizer", load_tokenizer)
     monkeypatch.setattr(evaluator, "ensure_chat_template", lambda *_args: None)
     monkeypatch.setattr(evaluator, "read_chat_template", lambda *_args: None)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
@@ -87,3 +91,32 @@ def test_environment_sglang_commands_reject_remote_code(monkeypatch, evaluator):
 
     with pytest.raises(ValueError, match="trust-remote-code"):
         evaluator._build_sglang_command("/tmp/model", 42)
+
+
+def test_generic_environment_command_uses_original_model_tool_contract(monkeypatch):
+    monkeypatch.delenv("SGLANG_TOOL_CALL_PARSER", raising=False)
+    monkeypatch.delenv("SGLANG_CHAT_TEMPLATE", raising=False)
+    monkeypatch.delenv("SGLANG_DTYPE", raising=False)
+
+    command = environment._build_sglang_command(
+        "/tmp/opaque-merged-model",
+        42,
+        parser_model_id="Qwen/Qwen3.5-4B",
+    )
+
+    assert "python3 -m core.pvp.sglang_server" in command
+    assert "--tool-call-parser qwen3_coder" in command
+    assert "--dtype bfloat16" in command
+
+
+@pytest.mark.parametrize(
+    "model_id",
+    ["google/gemma-4-E2B", "mistralai/Ministral-3-3B-Base-2512"],
+)
+def test_generic_environment_command_supplies_base_model_chat_template(monkeypatch, model_id):
+    monkeypatch.delenv("SGLANG_CHAT_TEMPLATE", raising=False)
+
+    command = environment._build_sglang_command("/tmp/opaque-model", 42, parser_model_id=model_id)
+
+    assert "--chat-template core/pvp/chat_templates/" in command
+    assert "--tool-call-parser qwen" in command

@@ -337,6 +337,7 @@ Tournament system overview
 - Miners expose GET /training_repo/{task_type} from their miner.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
 - Tournament types include text, image, and environment.
+- A limited catalog of new text/environment bases is sampled only for round-one group tasks; environment winners can carry that foundation into later continuation rounds, but later and boss rounds do not freshly draw from the limited catalog.
 - Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
 - An environment boss-round challenger dethrones the champion when they have no boss-round losses and at least tie the champion on `swe_infinite`.
 - Typical cadence:

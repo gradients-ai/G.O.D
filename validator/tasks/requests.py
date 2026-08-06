@@ -13,6 +13,7 @@ from core.models.dataset_models import InstructTextDatasetType
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskStatus
+from core.whitelisted_env_models import ENV_MODEL_SIZE_B
 from validator.tasks.datasets.preparation import prepare_image_task
 from validator.tasks.datasets.preparation import prepare_text_task
 from validator.tasks.models import AnyTextTypeRawTask
@@ -39,9 +40,15 @@ def get_model_num_params(model_id: str) -> int:
         return size
     except Exception as e:
         logger.warning(f"Error getting model size from safetensors: {e}")
-        model_size = re.search(r"(\d+)(?=[bB])", model_id)
-        model_size = int(model_size.group(1)) * 1_000_000_000 if model_size else None
-        logger.info(f"Model size from regex: {model_size}")
+        known_size_b = ENV_MODEL_SIZE_B.get(model_id)
+        model_size_match = re.search(r"(\d+(?:\.\d+)?)(?=[bB]\b)", model_id)
+        if known_size_b is not None:
+            model_size = int(known_size_b * 1_000_000_000)
+        elif model_size_match:
+            model_size = int(float(model_size_match.group(1)) * 1_000_000_000)
+        else:
+            model_size = None
+        logger.info(f"Model size from fallback metadata/name: {model_size}")
         return model_size
 
 

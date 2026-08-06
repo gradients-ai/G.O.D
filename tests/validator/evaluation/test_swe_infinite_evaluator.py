@@ -242,6 +242,29 @@ async def test_prepare_sglang_command_uses_pvp_native_lora_path_even_with_added_
 
 
 @pytest.mark.asyncio
+async def test_prepare_sglang_command_merges_family_without_native_lora_support(monkeypatch):
+    monkeypatch.setattr(swe, "check_for_lora", lambda *_args: True)
+    monkeypatch.setattr(
+        swe,
+        "materialize_lora_model",
+        lambda original_model, base_chain, model_repo, label: "/tmp/cand-merged",
+    )
+    monkeypatch.setattr(swe, "tool_call_parser_for", lambda *_args, **_kwargs: "olmo")
+
+    inference_name, model_path, command = await swe._prepare_sglang_command(
+        model_repo="org/hybrid-adapter",
+        original_model="allenai/Olmo-Hybrid-Instruct-SFT-7B",
+        base_chain=["org/previous-round"],
+        base_seed=42,
+    )
+
+    assert inference_name == model_path == "/tmp/cand-merged"
+    assert "--model-path /tmp/cand-merged" in command
+    assert "--tool-call-parser olmo" in command
+    assert "--enable-lora" not in command
+
+
+@pytest.mark.asyncio
 async def test_prepare_sglang_command_full_weights_matches_pvp_startup(monkeypatch):
     monkeypatch.setattr(swe, "check_for_lora", lambda *_args: False)
     monkeypatch.setattr(swe, "tool_call_parser_for", lambda *_args, **_kwargs: "qwen25")

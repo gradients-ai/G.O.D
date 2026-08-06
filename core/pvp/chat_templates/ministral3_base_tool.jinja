@@ -1,0 +1,23 @@
+{{ bos_token | default('', true) }}
+{%- for message in messages %}
+{%- if message.role == 'user' or message.role == 'system' or message.role == 'tool' %}
+{{ '[INST] ' }}
+{%- if loop.first and tools %}
+{{ 'You have access to these tools:\n' ~ (tools | tojson) ~ '\nWhen a tool is needed, respond only with <tool_call>\n{"name":"function_name","arguments":{...}}\n</tool_call>.\n' }}
+{%- endif %}
+{%- if message.role == 'tool' %}{{ '<tool_response>' }}{% endif %}
+{%- if message.content is string %}{{ message.content }}{% endif %}
+{%- if message.role == 'tool' %}{{ '</tool_response>' }}{% endif %}
+{{ ' [/INST]' }}
+{%- else %}
+{%- if message.content is string %}{{ message.content }}{% endif %}
+{%- if message.tool_calls %}
+{%- for call in message.tool_calls %}
+{%- set function = call.function if call.function is defined else call %}
+{%- set arguments = function.arguments if function.arguments is string else (function.arguments | tojson) %}
+{{ '<tool_call>\n{"name":"' ~ function.name ~ '","arguments":' ~ arguments ~ '}\n</tool_call>' }}
+{%- endfor %}
+{%- endif %}
+{{ eos_token | default('', true) }}
+{%- endif %}
+{%- endfor %}

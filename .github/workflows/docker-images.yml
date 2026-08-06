@@ -76,6 +76,7 @@ jobs:
                   "dockerfile": "ops/docker/validator.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
+                      "core/**",
                       "ops/docker/validator.dockerfile",
                       "ops/docker/requirements/validator.txt",
                       ".dockerignore",
@@ -114,6 +115,7 @@ jobs:
                   "dockerfile": "ops/docker/validator-env.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
+                      "core/**",
                       "ops/docker/validator-env.dockerfile",
                       "pyproject.toml",
                       ".dockerignore",
@@ -133,6 +135,7 @@ jobs:
                   "dockerfile": "ops/docker/validator-intercode.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
+                      "core/**",
                       "ops/docker/validator-intercode.dockerfile",
                       "ops/docker/intercode_build_fs.sh",
                       "pyproject.toml",
@@ -153,6 +156,7 @@ jobs:
                   "dockerfile": "ops/docker/validator-swe-infinite.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
+                      "core/**",
                       "ops/docker/validator-swe-infinite.dockerfile",
                       "pyproject.toml",
                       ".dockerignore",
@@ -172,9 +176,8 @@ jobs:
                   "dockerfile": "ops/docker/pvp-eval.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
-                      "core/pvp/**",
+                      "core/**",
                       "ops/docker/pvp-eval.dockerfile",
-                      "core/pvp/game_prompts.yml",
                       ".dockerignore",
                   ],
                   "exclude_patterns": [

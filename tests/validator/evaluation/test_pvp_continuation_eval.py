@@ -40,6 +40,36 @@ def test_prepare_model_round1_unchanged(monkeypatch):
     assert prepared.tool_call_parser is None
 
 
+def test_prepare_model_merges_lora_when_family_has_no_native_lora_support(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(pvp_main, "check_for_lora", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(pvp_main, "tool_call_parser_for", lambda *_args, **_kwargs: "olmo")
+
+    def fake_materialize(foundation, base_chain, repo, label="", device=None):
+        calls["args"] = (foundation, base_chain, repo, label, device)
+        return "/tmp/candidate_a_merged"
+
+    monkeypatch.setattr(pvp_main, "materialize_lora_model", fake_materialize)
+    spec = PvPModelSpec(
+        repo="org/miner-round1",
+        original_model="allenai/Olmo-Hybrid-Instruct-SFT-7B",
+        base_chain=[],
+    )
+
+    prepared = pvp_main._prepare_model(spec, "a", gpu_id=0)
+
+    assert calls["args"] == (
+        "allenai/Olmo-Hybrid-Instruct-SFT-7B",
+        [],
+        "org/miner-round1",
+        "a",
+        "cuda:0",
+    )
+    assert prepared.sglang_model_path == "/tmp/candidate_a_merged"
+    assert prepared.inference_name == "/tmp/candidate_a_merged"
+    assert "--enable-lora" not in prepared.extra_sglang_args
+
+
 def test_materialize_uses_distinct_dirs_per_label(monkeypatch):
     monkeypatch.setattr(materialize, "_declared_base", lambda repo: None)
     monkeypatch.setattr(materialize, "_download_lora_with_retry", lambda repo, directory, **kwargs: directory)
@@ -71,6 +101,39 @@ def test_materialize_empty_chain_merges_lora_foundation(monkeypatch):
     path = materialize.materialize_base_model("org/prev-winner", [], label="prev")
 
     assert path == "/tmp/base_chain_prev_merged_0"
+
+
+def test_materialize_lora_model_merges_current_adapter_after_base(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        materialize,
+        "materialize_base_model",
+        lambda foundation, chain, label="", device=None: "/tmp/reconstructed-base",
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_download_lora_with_retry",
+        lambda repo, directory: calls.append((repo, directory)),
+    )
+    monkeypatch.setattr(
+        materialize,
+        "_merge_base_and_lora",
+        lambda base, lora, output_dir, device=None: calls.append((base, lora, output_dir, device)) or output_dir,
+    )
+
+    path = materialize.materialize_lora_model(
+        "org/foundation",
+        ["org/round1"],
+        "org/round2",
+        label="a",
+        device="cuda:0",
+    )
+
+    assert path == "/tmp/candidate_a_merged"
+    assert calls == [
+        ("org/round2", "/tmp/candidate_a_lora"),
+        ("/tmp/reconstructed-base", "/tmp/candidate_a_lora", "/tmp/candidate_a_merged", "cuda:0"),
+    ]
 
 
 def test_resolve_chain_walks_unflattened_lineage(monkeypatch):

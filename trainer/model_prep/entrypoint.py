@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import time
 
@@ -18,18 +19,22 @@ from huggingface_hub import hf_hub_download
 from huggingface_hub import repo_exists
 from peft import PeftModel
 from transformers import AutoConfig
-from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
 from core.constants.environments import EnvironmentName
 from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.downloads import download_s3_file
+from core.model_loading import causal_tokenizer_load_kwargs
+from core.model_loading import is_outer_multimodal_causal_config
+from core.model_loading import load_causal_language_model
+from core.model_loading import load_causal_tokenizer
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
+from core.pvp.sglang_parsers import tool_chat_template_for
 from core.remote_code import continuous_sft_trust_remote_code
 from core.remote_code import pin_trusted_remote_code
 from core.tokenizer_utils import ensure_chat_template
@@ -109,16 +114,26 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
         base_src, trust = _pin_and_trust(real_base)
-        base_model = AutoModelForCausalLM.from_pretrained(
+        base_model = load_causal_language_model(
             base_src, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
             trust_remote_code=trust,
         )
-        base_tokenizer = AutoTokenizer.from_pretrained(base_src, token=hf_token, trust_remote_code=trust)
+        base_tokenizer = load_causal_tokenizer(
+            base_src,
+            config=base_model.config,
+            token=hf_token,
+            trust_remote_code=trust,
+        )
+        adapter_tokenizer_kwargs = causal_tokenizer_load_kwargs(base_model.config)
 
         def _merge_adapter(model, adapter_src):
             try:
-                tok = AutoTokenizer.from_pretrained(adapter_src, token=hf_token)
+                tok = AutoTokenizer.from_pretrained(
+                    adapter_src,
+                    token=hf_token,
+                    **adapter_tokenizer_kwargs,
+                )
             except Exception:
                 tok = base_tokenizer
             if len(tok) > model.get_input_embeddings().weight.shape[0]:
@@ -295,6 +310,23 @@ def _load_config_with_yarn_fix(model_path: str, hf_token: str, trust_remote_code
     return config
 
 
+def _materialize_env_serving_checkpoint(model, tokenizer, model_config, parent_dir: str) -> str | None:
+    """Persist an extracted text backbone when the upstream repo is a multimodal wrapper."""
+    if not is_outer_multimodal_causal_config(model_config):
+        return None
+
+    serving_dir = tempfile.mkdtemp(prefix="env-text-only-", dir=parent_dir)
+    try:
+        model.save_pretrained(serving_dir, safe_serialization=True)
+        tokenizer.save_pretrained(serving_dir)
+        sanitize_tokenizer_config(serving_dir)
+    except BaseException:
+        shutil.rmtree(serving_dir, ignore_errors=True)
+        raise
+    print(f"[model_prep] Materialized text-only environment serving checkpoint at {serving_dir}", flush=True)
+    return serving_dir
+
+
 def main():
     t_total = time.time()
 
@@ -328,25 +360,36 @@ def main():
     # fp16: bf16-native models can overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_causal_language_model(
             model_load_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
             trust_remote_code=trust,
         )
     elif torch.cuda.is_available():
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_causal_language_model(
             model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
         )
         model.to("cuda")
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = load_causal_language_model(
             model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
         )
-    tokenizer = AutoTokenizer.from_pretrained(model_load_path, token=hf_token, trust_remote_code=trust)
+    tokenizer = load_causal_tokenizer(
+        model_load_path,
+        config=model_config,
+        token=hf_token,
+        trust_remote_code=trust,
+    )
+    fallback_chat_template = tool_chat_template_for(args.model)
+    if not tokenizer.chat_template and fallback_chat_template:
+        with open(fallback_chat_template) as f:
+            tokenizer.chat_template = f.read().strip()
     # Baseline-stats forward passes run in loss mode (like training/eval), so disable the KV cache.
     # Custom-arch models (quasar) otherwise take their cache/mask path, whose get_mask_sizes is
     # incompatible with transformers 5.12.1 (it indexes an int q_length as a tensor). Eval already
     # runs this model fine with use_cache=False; this matches it.
     model.config.use_cache = False
+    if hasattr(model.config, "text_config"):
+        model.config.text_config.use_cache = False
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)
 
@@ -399,13 +442,25 @@ def main():
                 EnvironmentName(k): EnvBaselineConfig.model_validate(v)
                 for k, v in raw_configs.items()
             }
-            stats = asyncio.run(compute_env_stats(
-                # Use the merged path for LoRA continuation; a bare adapter dir
-                # cannot be served directly by SGLang.
-                model_path=model_path,
-                model=model,
-                env_configs=env_configs,
-            ))
+            serving_dir = _materialize_env_serving_checkpoint(
+                model,
+                tokenizer,
+                model_config,
+                tempfile.gettempdir(),
+            )
+            try:
+                stats = asyncio.run(compute_env_stats(
+                    # Use the merged path for LoRA continuation; a bare adapter dir
+                    # cannot be served directly by SGLang. Gemma 4 / Mistral 3
+                    # outer checkpoints are served from the extracted text model.
+                    model_path=serving_dir or model_path,
+                    model=model,
+                    env_configs=env_configs,
+                    parser_model_id=args.model,
+                ))
+            finally:
+                if serving_dir:
+                    shutil.rmtree(serving_dir, ignore_errors=True)
         else:
             data_records = load_training_data(args.training_data)
             reward_functions = json.loads(args.reward_functions) if args.reward_functions else None

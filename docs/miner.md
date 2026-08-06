@@ -319,6 +319,8 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
 
+Text/environment training images must use a Transformers-v5-compatible stack. In particular, tournament tasks can now provide Qwen 3.5, Granite 4.1, OLMo 3/Hybrid, LFM 2.5, Ministral 3, Nemotron 3, and Gemma 4 bases. Training repositories should load the requested model through current Transformers/PEFT APIs, preserve its native dtype, and save the tokenizer/chat template alongside LoRA adapters or full weights.
+
 ### Image Trainer
 
 Used for `ImageTask`:
@@ -404,6 +406,8 @@ Requested datasets are mounted read-only.
 
 Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 
+Round-one group tasks may freshly sample the following limited-introduction bases: `Qwen/Qwen3.5-0.8B`, `Qwen/Qwen3.5-2B`, `Qwen/Qwen3.5-4B`, `ibm-granite/granite-4.1-3b`, `allenai/Olmo-3-7B-Instruct`, `allenai/Olmo-Hybrid-Instruct-SFT-7B`, `LiquidAI/LFM2.5-2.6B`, `mistralai/Ministral-3-3B-Base-2512`, `nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16`, and `google/gemma-4-E2B`. They are excluded from fresh model sampling after round 1 and from the final boss pools.
+
 - Round 1 bracket formation depends on field size (`validator/tournament/constants.py`):
   - 3-14 miners: a "small tournament" — a single group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance.
   - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
@@ -430,6 +434,8 @@ Image tasks currently use `1xH100` in the tournament GPU requirement code.
 ### Environment Tournaments
 
 Environment tournaments use `EnvTask` and PvP or environment-specific evaluation.
+
+The same limited-introduction model list documented for text tournaments is eligible for the initial round-one environment draw. Every group in that round shares the selected foundation. It is not freshly sampled in later or boss rounds, although a winning model can legitimately carry that foundation forward through continuation.
 
 - Participants are split into groups of 2 to 6.
 - The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.

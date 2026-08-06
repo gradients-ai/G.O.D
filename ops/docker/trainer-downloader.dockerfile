@@ -5,11 +5,13 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     huggingface_hub aiohttp pydantic python-dotenv safetensors \
     torch --extra-index-url https://download.pytorch.org/whl/cpu && \
-    pip install --no-cache-dir transformers==5.12.1 peft==0.19.1
+    pip install --no-cache-dir transformers==5.12.1 peft==0.19.1 "mistral-common>=1.8.6"
 # v5 stack (matches the axolotl images); downloader.py sanitizes the merged output for v4 miner consumers.
 
 COPY trainer/ trainer/
 COPY core/ core/
+
+RUN python3 -c "from transformers import Gemma4ForCausalLM, Gemma4ForConditionalGeneration, GraniteForCausalLM, Lfm2ForCausalLM, Ministral3ForCausalLM, Mistral3ForConditionalGeneration, NemotronHForCausalLM, Olmo3ForCausalLM, OlmoHybridForCausalLM, Qwen3_5ForCausalLM"
 
 ENV PYTHONPATH=/app
 

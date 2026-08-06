@@ -25,7 +25,12 @@ def build_sglang_command(prepared: PreparedModel, port: int, seed: int) -> str:
     """Build SGLang launch command from a PreparedModel."""
     cli_extra = (os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI") or vcst.SGLANG_ENV_EVAL_EXTRA_CLI).strip()
 
-    cmd = build_base_command(prepared.sglang_model_path, port, seed)
+    cmd = build_base_command(
+        prepared.sglang_model_path,
+        port,
+        seed,
+        chat_template=prepared.chat_template,
+    )
     # No parser -> SGLang won't emit structured tool_calls and every turn forfeits.
     parser = prepared.tool_call_parser or tool_call_parser_for(prepared.sglang_model_path)
     if parser:

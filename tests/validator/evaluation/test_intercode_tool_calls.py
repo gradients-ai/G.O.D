@@ -113,4 +113,4 @@ def test_build_sglang_command_adds_tool_parser_for_parser_model_id(monkeypatch):
 
     cmd = intercode._build_sglang_command("/tmp/merged_model", 123, parser_model_id="Qwen/Qwen2.5-Coder-7B")
 
-    assert "--tool-call-parser qwen25" in cmd
+    assert "--tool-call-parser qwen" in cmd

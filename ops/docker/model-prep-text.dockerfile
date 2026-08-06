@@ -8,8 +8,10 @@ FROM axolotlai/axolotl:main-20260701-py3.11-cu128-2.9.1
 WORKDIR /app
 
 # axolotl base ships a uv-managed venv at /workspace/axolotl-venv with no `pip` on PATH.
-# transformers/datasets/peft come from the base (v5 set) — do NOT pin them here.
+# Keep model preparation on the same Transformers/PEFT contract as the
+# downloader and local GPU test environment.
 RUN uv pip install --python /workspace/axolotl-venv/bin/python --no-cache \
+    transformers==5.12.1 peft==0.19.1 "mistral-common>=1.8.6" \
     "git+https://github.com/besimray/fiber.git@v2.6.0" \
     docker datasketch aiohttp python-dotenv textstat
 
@@ -20,6 +22,8 @@ RUN TORCH_CUDA_ARCH_LIST="8.0;9.0+PTX" uv pip install --python /workspace/axolot
 
 COPY trainer/model_prep/ trainer/model_prep/
 COPY core/ core/
+
+RUN /workspace/axolotl-venv/bin/python -c "from transformers import Gemma4ForCausalLM, Gemma4ForConditionalGeneration, GraniteForCausalLM, Lfm2ForCausalLM, Ministral3ForCausalLM, Mistral3ForConditionalGeneration, NemotronHForCausalLM, Olmo3ForCausalLM, OlmoHybridForCausalLM, Qwen3_5ForCausalLM; from transformers.utils.import_utils import is_flash_linear_attention_available; assert is_flash_linear_attention_available()"
 
 ENV PYTHONPATH=/app
 

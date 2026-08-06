@@ -68,3 +68,28 @@ def materialize_base_model(
         base_path = _merge_base_and_lora(base_path, lora_dir, output_dir=output_dir, device=device)
         logger.info("Merged base-chain adapter %s -> %s", adapter_repo, base_path)
     return base_path
+
+
+def materialize_lora_model(
+    foundation_repo: str,
+    base_chain: list[str],
+    adapter_repo: str,
+    label: str = "",
+    device: str | None = None,
+) -> str:
+    """Merge the current adapter over its reconstructed continuation base."""
+    base_path = materialize_base_model(
+        foundation_repo,
+        base_chain,
+        label=label,
+        device=device,
+    )
+    lora_dir = f"/tmp/candidate_{label}_lora"
+    _download_lora_with_retry(adapter_repo, lora_dir)
+    output_dir = f"/tmp/candidate_{label}_merged"
+    return _merge_base_and_lora(
+        base_path,
+        lora_dir,
+        output_dir=output_dir,
+        device=device,
+    )

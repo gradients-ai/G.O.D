@@ -6,6 +6,9 @@ COPY ops/docker/requirements/validator.txt requirements.txt
 # axolotl base ships a uv-managed venv at /workspace/axolotl-venv with no `pip` on PATH.
 RUN uv pip install --python /workspace/axolotl-venv/bin/python --no-cache -r requirements.txt
 
+RUN uv pip install --python /workspace/axolotl-venv/bin/python --no-cache \
+    transformers==5.12.1 peft==0.19.1 "mistral-common>=1.8.6"
+
 RUN uv pip uninstall --python /workspace/axolotl-venv/bin/python textstat pyphen || true; \
     uv pip install --python /workspace/axolotl-venv/bin/python --no-cache --force-reinstall textstat==0.7.8
 
@@ -17,6 +20,8 @@ RUN TORCH_CUDA_ARCH_LIST="8.0;9.0+PTX" uv pip install --python /workspace/axolot
 
 
 COPY . .
+
+RUN /workspace/axolotl-venv/bin/python -c "from transformers import Gemma4ForCausalLM, Gemma4ForConditionalGeneration, GraniteForCausalLM, Lfm2ForCausalLM, Ministral3ForCausalLM, Mistral3ForConditionalGeneration, NemotronHForCausalLM, Olmo3ForCausalLM, OlmoHybridForCausalLM, Qwen3_5ForCausalLM; from transformers.utils.import_utils import is_flash_linear_attention_available; assert is_flash_linear_attention_available()"
 
 ENV JOB_ID=""
 ENV DATASET=""
