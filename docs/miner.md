@@ -442,7 +442,8 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start. The previous-winner/target-model task is the guaranteed `swe_infinite` task; the continuation and from-scratch tasks use the other supported environments.
 - The contender wins the environment tournament only if they have no boss-round losses and at least tie the boss on the `swe_infinite` task. Draws are acceptable on every boss-round task; any loss or a lower `swe_infinite` score means the boss retains.
 
-Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The from-scratch boss-round task uses `3.0` hours.
+Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The final-round `swe_infinite` task gets one additional hour,
+for `2.5` hours total. The from-scratch boss-round task uses `3.0` hours.
 
 ## Scoring And Weights
 
