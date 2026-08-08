@@ -105,6 +105,7 @@ ENV_ADVANCE_PER_GROUP = 1
 ENV_FINAL_ROUND_TASK_COUNT = 3
 ENV_ENVS_PER_ROUND_MULTIPLIER = 2  # R1=2, R2=4, R3=6 (capped at total available)
 ENV_TRAINING_HOURS = 1.5
+ENV_TRAINING_HOURS_SWE_INFINITE = ENV_TRAINING_HOURS + 1.0
 ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
 ENV_TARGET_TOURN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.

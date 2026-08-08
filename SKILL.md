@@ -338,6 +338,7 @@ Tournament system overview
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
 - Tournament types include text, image, and environment.
 - Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
+- The final-round `swe_infinite` task has a 2.5-hour training budget, one hour longer than standard environment tasks.
 - An environment boss-round challenger dethrones the champion when they have no boss-round losses and at least tie the champion on `swe_infinite`.
 - Typical cadence:
   - environment tournaments start Mondays

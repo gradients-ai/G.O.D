@@ -110,18 +110,21 @@ class TestBossRoundTaskConfig:
         assert created_tasks[0]["model_id_override"] == "Qwen/Qwen2.5-7B-Instruct"
         assert created_tasks[0]["environment_names_override"] is None
         assert created_tasks[0]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
+        assert created_tasks[0]["hours_override"] is None
 
         # Task 1: FROM_SCRATCH with no model override (random)
         assert created_tasks[1]["training_start_point"] == TrainingStartPoint.FROM_SCRATCH
         assert created_tasks[1]["model_id_override"] is None
         assert created_tasks[1]["environment_names_override"] is None
         assert created_tasks[1]["exclude_environments"] == [EnvironmentName.SWE_INFINITE]
+        assert created_tasks[1]["hours_override"] == t_cst.ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH
 
         # Task 2: PREVIOUS_WINNER with previous tournament winner model
         assert created_tasks[2]["training_start_point"] == TrainingStartPoint.PREVIOUS_WINNER
         assert created_tasks[2]["model_id_override"] == "prev-winner/model"
         assert created_tasks[2]["num_environments"] == 1
         assert created_tasks[2]["environment_names_override"] == [EnvironmentName.SWE_INFINITE]
+        assert created_tasks[2]["hours_override"] == t_cst.ENV_TRAINING_HOURS + 1.0
 
     @pytest.mark.asyncio
     async def test_prev_winner_fallback_to_target_model(self):
