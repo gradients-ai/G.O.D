@@ -330,15 +330,19 @@ def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
 
 
 async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
-    """Check if a dataset has historically produced degenerate test_loss scores.
+    """Check if a dataset has recently produced degenerate test_loss scores.
 
     Returns True (degenerate) if:
-    - Any historical test_loss < 0.01 (model collapse)
+    - Any recent test_loss below the collapse floor (0.01, or 0.05 for DPO)
     - For instruct tasks: best (min) test_loss > 2.0 (garbage / unlearnable data)
-    - For DPO tasks: average test_loss in [0.68, 0.71] (random noise around ln(2))
+    - For DPO tasks: best (min) test_loss in [0.68, 0.71] (nobody beat random noise around ln(2))
+
+    Both task-type checks key off the *best* loss, not the mean: the mean is dominated by weak
+    submissions across every miner that ever touched the dataset and effectively never lands in
+    a rejection band.
     """
     try:
-        losses = await get_dataset_test_losses(ds_name, psql_db)
+        losses = await get_dataset_test_losses(ds_name, psql_db, synth_cst.DEGENERATE_LOSS_LOOKBACK_DAYS)
     except Exception as e:
         logger.warning(f"Failed to query historical losses for {ds_name}, allowing dataset: {e}")
         return False
@@ -346,20 +350,28 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
     if not losses:
         return False
 
-    if any(loss < 0.01 for loss in losses):
-        logger.warning(f"Dataset {ds_name} rejected: has test_loss < 0.01 (model collapse)")
+    best_loss = min(losses)
+    collapse_floor = (
+        synth_cst.DEGENERATE_DPO_COLLAPSE_LOSS if task_type == TaskType.DPOTASK else synth_cst.DEGENERATE_COLLAPSE_LOSS
+    )
+    if best_loss < collapse_floor:
+        logger.warning(f"Dataset {ds_name} rejected: test_loss {best_loss:.4f} < {collapse_floor} (model collapse)")
         return True
 
-    if task_type == TaskType.INSTRUCTTEXTTASK:
-        best_loss = min(losses)
-        if best_loss > 2.0:
-            logger.warning(f"Dataset {ds_name} rejected: best instruct test_loss {best_loss:.4f} > 2.0 (garbage data)")
-            return True
+    if task_type == TaskType.INSTRUCTTEXTTASK and best_loss > synth_cst.DEGENERATE_INSTRUCT_MAX_BEST_LOSS:
+        logger.warning(
+            f"Dataset {ds_name} rejected: best instruct test_loss {best_loss:.4f} > "
+            f"{synth_cst.DEGENERATE_INSTRUCT_MAX_BEST_LOSS} (garbage data)"
+        )
+        return True
 
     if task_type == TaskType.DPOTASK:
-        avg_loss = sum(losses) / len(losses)
-        if 0.68 <= avg_loss <= 0.71:
-            logger.warning(f"Dataset {ds_name} rejected: avg DPO test_loss {avg_loss:.4f} in noise range [0.68, 0.71]")
+        noise_low, noise_high = synth_cst.DEGENERATE_DPO_NOISE_BAND
+        if noise_low <= best_loss <= noise_high:
+            logger.warning(
+                f"Dataset {ds_name} rejected: best DPO test_loss {best_loss:.4f} in noise range "
+                f"[{noise_low}, {noise_high}]"
+            )
             return True
 
     return False
