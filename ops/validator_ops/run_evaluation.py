@@ -243,8 +243,6 @@ async def run_evaluation_from_task_id(
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
-    # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
-    continuous_sft_remote_code_repo = t_cst.remote_code_repo_for_task(task_details.model_id, task_details.ds)
     continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
 
     if task_type == TaskType.ENVIRONMENTTASK:
@@ -268,7 +266,6 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
-            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
             continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
@@ -290,7 +287,6 @@ async def run_evaluation_from_task_id(
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
             eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
-            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
             continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 

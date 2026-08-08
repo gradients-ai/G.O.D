@@ -85,8 +85,8 @@ def sanitize_tokenizer_config(out_dir: str) -> None:
     - extra_special_tokens list -> dict (v4 calls .keys() on it).
     - chat template folded from the standalone jinja back inline (kept in both), for pre-4.47 readers.
 
-    Rewrites tokenizer_config.json in place, so call it only on a dir you just wrote — never a
-    pin_trusted_remote_code work dir, whose tokenizer files are symlinks into the immutable seed.
+    Rewrites tokenizer_config.json in place, so call it only on a dir you just wrote — never a dir
+    whose tokenizer files are symlinks into an immutable source.
     """
     config_path = os.path.join(out_dir, TOKENIZER_CONFIG_FILE)
     if not os.path.exists(config_path):

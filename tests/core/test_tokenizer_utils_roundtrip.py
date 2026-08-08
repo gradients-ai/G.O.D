@@ -1,7 +1,7 @@
 """Real-tokenizer round-trip tests for core.tokenizer_utils.
 
 The pure-dict tests in test_tokenizer_utils.py prove the config transformations; these prove the
-SEMANTIC guarantees against a real transformers loader — the ones the continuous-SFT / quasar
+SEMANTIC guarantees against a real transformers loader — the ones the continuous-SFT
 lineage depends on:
 
   1. sanitize_tokenizer_config makes a v5-serialized tokenizer loadable by a v4 consumer WITHOUT
@@ -34,8 +34,8 @@ from core.tokenizer_utils import read_chat_template  # noqa: E402
 from core.tokenizer_utils import sanitize_tokenizer_config  # noqa: E402
 
 
-# A quasar-style HUMAN/ASSISTANT-ish template with custom special tokens (not chatml default).
-QUASAR_TEMPLATE = "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
+# A custom HUMAN/ASSISTANT-ish template with custom special tokens (not chatml default).
+CUSTOM_TEMPLATE = "{% for m in messages %}<|im_start|>{{ m['role'] }}\n{{ m['content'] }}<|im_end|>\n{% endfor %}"
 
 
 def _tiny_tokenizer(chat_template=None):
@@ -61,7 +61,7 @@ def _inject_v5_quirks(dir_path):
 
 
 def test_sanitize_makes_v5_tokenizer_loadable_on_v4_without_changing_it(tmp_path):
-    tok = _tiny_tokenizer(chat_template=QUASAR_TEMPLATE)
+    tok = _tiny_tokenizer(chat_template=CUSTOM_TEMPLATE)
     d = str(tmp_path / "merged")
     tok.save_pretrained(d)
     orig_vocab = tok.get_vocab()
@@ -79,7 +79,7 @@ def test_sanitize_makes_v5_tokenizer_loadable_on_v4_without_changing_it(tmp_path
     assert reloaded.eos_token == "<|endoftext|>"
     assert "<|im_start|>" in reloaded.get_vocab() and "<|im_end|>" in reloaded.get_vocab()
     # chat template preserved and renders identically
-    assert reloaded.chat_template == QUASAR_TEMPLATE
+    assert reloaded.chat_template == CUSTOM_TEMPLATE
     rendered = reloaded.apply_chat_template([{"role": "user", "content": "hi there"}], tokenize=False)
     assert "<|im_start|>user" in rendered and "<|im_end|>" in rendered
     # config is now v4-shaped
@@ -87,13 +87,13 @@ def test_sanitize_makes_v5_tokenizer_loadable_on_v4_without_changing_it(tmp_path
         cfg = json.load(f)
     assert cfg["tokenizer_class"] == "PreTrainedTokenizerFast"
     assert isinstance(cfg["extra_special_tokens"], dict)
-    assert cfg["chat_template"] == QUASAR_TEMPLATE  # folded inline for pre-4.47 consumers
+    assert cfg["chat_template"] == CUSTOM_TEMPLATE  # folded inline for pre-4.47 consumers
 
 
 def test_continuous_sft_seed_template_and_eos_survive_merge_save(tmp_path):
-    # Quasar lineage: the base/seed tokenizer owns the template + custom eos; the merge selects it as
+    # Continuous-SFT lineage: the base/seed tokenizer owns the template + custom eos; the merge selects it as
     # target. The template and eos must survive save + sanitize so the carried base stays consistent.
-    base_tok = _tiny_tokenizer(chat_template=QUASAR_TEMPLATE)
+    base_tok = _tiny_tokenizer(chat_template=CUSTOM_TEMPLATE)
     adapter_dir = str(tmp_path / "adapter")
     os.makedirs(adapter_dir)  # bare adapter, no chat template of its own
     assert read_chat_template(adapter_dir) is None
@@ -105,7 +105,7 @@ def test_continuous_sft_seed_template_and_eos_survive_merge_save(tmp_path):
     sanitize_tokenizer_config(out)
 
     reloaded = AutoTokenizer.from_pretrained(out)
-    assert reloaded.chat_template == QUASAR_TEMPLATE
+    assert reloaded.chat_template == CUSTOM_TEMPLATE
     assert reloaded.eos_token == "<|endoftext|>"
 
 
@@ -115,7 +115,7 @@ def test_adapter_jinja_only_template_grafted_onto_templateless_target(tmp_path):
     adapter_dir = str(tmp_path / "adapter")
     os.makedirs(adapter_dir)
     with open(os.path.join(adapter_dir, CHAT_TEMPLATE_FILE), "w") as f:
-        f.write(QUASAR_TEMPLATE)
+        f.write(CUSTOM_TEMPLATE)
 
     target = _tiny_tokenizer()  # no template
     assert target.chat_template is None
@@ -125,4 +125,4 @@ def test_adapter_jinja_only_template_grafted_onto_templateless_target(tmp_path):
     sanitize_tokenizer_config(out)
 
     reloaded = AutoTokenizer.from_pretrained(out)
-    assert reloaded.chat_template == QUASAR_TEMPLATE
+    assert reloaded.chat_template == CUSTOM_TEMPLATE

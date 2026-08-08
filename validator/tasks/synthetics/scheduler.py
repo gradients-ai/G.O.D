@@ -783,8 +783,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         training_data=train_url,
         test_data=test_url,
         training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-        # Base's own template, not chatml (quasar ships a custom one); eval loads the base tokenizer
-        # so train+eval match.
+        # Base's own template, not chatml; eval loads the base tokenizer so train+eval match.
         chat_template="tokenizer_default",
         # other chat_* fields keep ChatRawTask ShareGPT defaults; augmentation_config stays None.
     )

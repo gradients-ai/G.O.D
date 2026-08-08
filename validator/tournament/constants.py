@@ -152,8 +152,7 @@ FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
     ImageModelType.Z_IMAGE: 1,
 }
 
-# Explicit text boss-round mix (the two continuous-SFT lineages replace one GRPO + one DPO slot);
-# FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
+# Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
 FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
     TaskType.INSTRUCTTEXTTASK: 2,
     TaskType.DPOTASK: 1,
@@ -163,15 +162,14 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 
 # --- Continuous-SFT boss task ---------------------------------------------------------------
-# Two parallel chat-SFT lineages carried across tournaments; each round trains the next stage-1
-# chunk from the lineage's previous winner (or seed on first run).
+# Chat-SFT lineages carried across tournaments; each round trains the next stage-1 chunk from the
+# lineage's previous winner (or seed on first run).
 #
 # CONTINUOUS_SFT_LINEAGES maps lineage slug (the continuous_sft_state PK, encoded into the task ds
 # for carry-forward routing) -> seed model, from which eval reads the tokenizer + chat template.
-# The quasar seed is an HF mirror = teutonic king weights + silx-ai/Quasar-10B tokenizer
-# (eos <|endoftext|>=248044) + quasar HUMAN/ASSISTANT template — NOT Quasar-Preview/157184.
+# Seeds must be standard architectures: eval and model-prep load miner-controlled repos with
+# trust_remote_code off, so a custom-arch seed would not load.
 CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
-    "quasar": "gradients-io-tournaments/continuous-sft-seed-quasar-king",
     "qwen": "Qwen/Qwen3-8B-Base",
 }
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
@@ -204,24 +202,6 @@ def is_continuous_sft_task(task) -> bool:
     return task.task_type == TaskType.CHATTASK and task.training_start_point == TrainingStartPoint.CONTINUOUS_SFT
 
 
-# Lineages whose model ships custom-arch code (needs trust_remote_code); eval pins the modeling *.py
-# to the audited seed mirror so miner code never runs. Standard-arch lineages (qwen) don't.
-CONTINUOUS_SFT_REMOTE_CODE_LINEAGES: set[str] = {"quasar"}
-
-
-def continuous_sft_remote_code_repo(lineage: str | None) -> str | None:
-    """The audited custom-code source for a lineage (its fixed seed mirror), or None if the lineage
-    is a standard architecture that should load without remote code."""
-    if lineage in CONTINUOUS_SFT_REMOTE_CODE_LINEAGES:
-        return CONTINUOUS_SFT_LINEAGES.get(lineage)
-    return None
-
-
-def continuous_sft_remote_code_repo_for_ds(ds: str | None) -> str | None:
-    """Audited custom-code mirror for a task's ds: None for standard-arch or non-continuous tasks."""
-    return continuous_sft_remote_code_repo(continuous_sft_lineage_from_ds(ds))
-
-
 def continuous_sft_seed_repo(lineage: str | None) -> str | None:
     """The lineage's immutable seed model; eval pins the tokenizer/chat template here. None otherwise."""
     return CONTINUOUS_SFT_LINEAGES.get(lineage) if lineage else None
@@ -232,43 +212,17 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
     return continuous_sft_seed_repo(continuous_sft_lineage_from_ds(ds))
 
 
-# --- Pre-boss quasar task -------------------------------------------------------------------
-# The last knockout before the boss round (a single pair — its winner becomes the boss
-# challenger) also plays on quasar: a standard instruct task with a normal dataset pull, computed
-# hours and param-based GPU sizing, where only the model is forced to the quasar seed mirror.
-# No augmentation: perturbing and re-uploading the custom-arch seed is unexercised, and
-# remote-code pinning keys off the exact seed repo.
-PRE_BOSS_QUASAR_MODEL = CONTINUOUS_SFT_LINEAGES["quasar"]
-
-# Seed mirrors that ship custom-arch code; any task whose BASE MODEL is one of these needs the
-# same audited remote-code pinning as the corresponding continuous-SFT lineage.
-_CUSTOM_ARCH_SEED_REPOS: set[str] = {
-    CONTINUOUS_SFT_LINEAGES[lineage] for lineage in CONTINUOUS_SFT_REMOTE_CODE_LINEAGES
-}
+# --- Pre-boss task --------------------------------------------------------------------------
+# The last knockout before the boss round (a single pair — its winner becomes the boss challenger)
+# is a standard instruct task with a normal dataset pull, computed hours and param-based GPU
+# sizing, where only the model is forced to PRE_BOSS_MODEL. Augmentation, KL and YaRN stay off so
+# both competitors train the exact published model.
+PRE_BOSS_MODEL = "Qwen/Qwen3-32B"
 
 
-def is_custom_arch_seed_model(model_id: str | None) -> bool:
-    """True when a task's base model is itself a custom-arch seed mirror (the pre-boss quasar task)."""
-    return model_id in _CUSTOM_ARCH_SEED_REPOS
-
-
-def is_pre_boss_quasar_task(task) -> bool:
-    """True for the pre-boss forced-quasar instruct task (base model pinned to the quasar seed)."""
-    return task.task_type == TaskType.INSTRUCTTEXTTASK and task.model_id == PRE_BOSS_QUASAR_MODEL
-
-
-def remote_code_repo_for_task(model_id: str | None, ds: str | None) -> str | None:
-    """Audited custom-code mirror for a task, or None for standard-arch tasks.
-
-    Continuous-SFT tasks key by ds (the base is the carried winner, not the seed); the pre-boss
-    forced-quasar instruct task keys by its base model being a custom-arch seed mirror itself.
-    """
-    repo = continuous_sft_remote_code_repo_for_ds(ds)
-    if repo:
-        return repo
-    if is_custom_arch_seed_model(model_id):
-        return model_id
-    return None
+def is_pre_boss_task(task) -> bool:
+    """True for the pre-boss forced-model instruct task."""
+    return task.task_type == TaskType.INSTRUCTTEXTTASK and task.model_id == PRE_BOSS_MODEL
 
 
 # Initial/fallback budget only: GPUs stay forced at 4xH100 (gpu_requirements.py), but hours are

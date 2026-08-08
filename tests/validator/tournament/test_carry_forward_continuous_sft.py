@@ -3,8 +3,8 @@
 Mocks the DB seams (get_task, get_lowest_loss_repo_for_task, advance) and asserts the routing:
 lineage recovered from the task's ds, winner carried as-is, None-winner still advances (so the
 cursor never stalls), a malformed ds is skipped, and one lineage's failure doesn't abort the rest.
-The lineage<->winner pairing is the thing that must never cross wires (a quasar winner landing in
-the qwen row silently poisons a lineage).
+The lineage<->winner pairing is the thing that must never cross wires (one lineage's winner
+landing in another's row silently poisons a lineage).
 """
 
 from types import SimpleNamespace
@@ -45,14 +45,14 @@ def _wire(monkeypatch, *, tasks_by_id, winners_by_id, advance=None):
 
 
 async def test_advances_each_lineage_with_its_lowest_loss_winner(monkeypatch):
-    tasks = {"t1": _cont_task("quasar"), "t2": _cont_task("qwen")}
-    winners = {"t1": "org/quasar-win", "t2": "org/qwen-win"}
+    tasks = {"t1": _cont_task("alt"), "t2": _cont_task("qwen")}
+    winners = {"t1": "org/alt-win", "t2": "org/qwen-win"}
     advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id=winners)
 
     await tournament_manager._carry_forward_continuous_sft([_round_task("t1"), _round_task("t2")], SRID, PSQL)
 
     calls = [c.args for c in advance.call_args_list]
-    assert calls == [("quasar", "org/quasar-win", SRID, PSQL), ("qwen", "org/qwen-win", SRID, PSQL)]
+    assert calls == [("alt", "org/alt-win", SRID, PSQL), ("qwen", "org/qwen-win", SRID, PSQL)]
 
 
 async def test_none_winner_still_advances(monkeypatch):
@@ -64,15 +64,15 @@ async def test_none_winner_still_advances(monkeypatch):
 
 
 async def test_unrecognized_ds_is_skipped_but_loop_continues(monkeypatch):
-    tasks = {"bad": _cont_task("qwen", ds="not-a-continuous-ds"), "good": _cont_task("quasar")}
-    advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id={"bad": "x", "good": "org/quasar-win"})
+    tasks = {"bad": _cont_task("qwen", ds="not-a-continuous-ds"), "good": _cont_task("alt")}
+    advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id={"bad": "x", "good": "org/alt-win"})
     await tournament_manager._carry_forward_continuous_sft([_round_task("bad"), _round_task("good")], SRID, PSQL)
     calls = [c.args for c in advance.call_args_list]
-    assert calls == [("quasar", "org/quasar-win", SRID, PSQL)]  # bad ds skipped, good still advanced
+    assert calls == [("alt", "org/alt-win", SRID, PSQL)]  # bad ds skipped, good still advanced
 
 
 async def test_one_lineage_failure_does_not_block_the_other(monkeypatch):
-    tasks = {"t1": _cont_task("quasar"), "t2": _cont_task("qwen")}
+    tasks = {"t1": _cont_task("alt"), "t2": _cont_task("qwen")}
     winners = {"t1": "org/q", "t2": "org/w"}
     advance = _wire(
         monkeypatch, tasks_by_id=tasks, winners_by_id=winners, advance=AsyncMock(side_effect=[Exception("boom"), None])

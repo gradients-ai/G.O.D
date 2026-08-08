@@ -1,8 +1,8 @@
 """Continuous-SFT compute sizing: GPUs stay a forced 4xH100, hours come from the general
 throughput pipeline.
 
-The GPU force must return before get_model_num_params is ever reached (the carried base is
-gated / custom-arch and would throw during a lookup). Hours, by contrast, flow through
+The GPU force must return before get_model_num_params is ever reached (the carried base is a
+miner repo that may be gated and would throw during a lookup). Hours, by contrast, flow through
 compute_hours_from_baseline_stats like any SFT task — the two correctness points there are that
 the budget divides by the REAL 4 GPUs (param-only sizing would give 2 for an ~8.6B chat model)
 and that callers pass the lineage seed for the param fetch, never the carried winner.
@@ -17,7 +17,7 @@ from validator.tournament import gpu_requirements
 from validator.tournament.models import GpuRequirement
 
 
-QUASAR_SEED = "gradients-io-tournaments/continuous-sft-seed-quasar-king"
+LINEAGE_SEED = "Qwen/Qwen3-8B-Base"
 SEED_PARAMS = 8_600_000_000
 
 
@@ -31,7 +31,7 @@ class TestGpuRequirement:
         req = gpu_requirements.get_tournament_gpu_requirement(
             TaskType.CHATTASK,
             model_params_count=0,  # would normally trigger the HF fetch
-            model_id=QUASAR_SEED,
+            model_id=LINEAGE_SEED,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
         )
         assert req == GpuRequirement.H100_4X
@@ -59,7 +59,7 @@ class TestComputeHours:
             current_hours=4.0,
             baseline_stats=_stats(total_tokens=200_000_000, num_records=100_000, tokens_per_sec=8_000.0),
             task_type=TaskType.CHATTASK,
-            model_id=QUASAR_SEED,
+            model_id=LINEAGE_SEED,
             model_params_count=SEED_PARAMS,
             training_start_point=training_start_point,
         )
@@ -90,9 +90,9 @@ class TestComputeHours:
             model_id="miner-org/carried-lora-winner",
             model_params_count=None,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-            ds="continuous-sft:quasar:chunk-00003",
+            ds="continuous-sft:qwen:chunk-00003",
         )
-        assert fetched == [QUASAR_SEED]
+        assert fetched == [LINEAGE_SEED]
 
     def test_no_baseline_stats_keeps_the_fallback_budget(self, monkeypatch):
         monkeypatch.setattr(scheduler, "get_model_num_params", _boom)
@@ -100,7 +100,7 @@ class TestComputeHours:
             current_hours=4.0,
             baseline_stats=None,
             task_type=TaskType.CHATTASK,
-            model_id=QUASAR_SEED,
+            model_id=LINEAGE_SEED,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
         )
         assert hours == 4.0

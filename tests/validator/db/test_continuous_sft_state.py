@@ -85,7 +85,7 @@ class TestStateMockBranches:
         csft.logger.addHandler(handler)
         csft.logger.setLevel(logging.WARNING)
         try:
-            await csft.warn_orphaned_continuous_sft_state({"quasar", "qwen"}, psql)
+            await csft.warn_orphaned_continuous_sft_state({"alt", "qwen"}, psql)
         finally:
             csft.logger.removeHandler(handler)
             csft.logger.setLevel(prev_level)
@@ -156,9 +156,9 @@ class TestStateRealDb:
 
     async def test_lineages_advance_independently(self, cst_db):
         # Same round id across lineages is fine (the guard is per-row); each tracks its own cursor.
-        await csft.advance_continuous_sft_state("quasar", "org/q", "r1", cst_db)
+        await csft.advance_continuous_sft_state("alt", "org/q", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", "org/w", "r1", cst_db)
-        quasar = await csft.get_continuous_sft_state("quasar", cst_db)
+        alt = await csft.get_continuous_sft_state("alt", cst_db)
         qwen = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert (quasar.train_index, quasar.last_winner_repo) == (1, "org/q")
+        assert (alt.train_index, alt.last_winner_repo) == (1, "org/q")
         assert (qwen.train_index, qwen.last_winner_repo) == (1, "org/w")

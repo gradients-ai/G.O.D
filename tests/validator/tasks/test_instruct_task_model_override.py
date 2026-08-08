@@ -1,8 +1,8 @@
 """create_synthetic_instruct_text_task honours model_id_override / allow_augmentation / allow_yarn.
 
-These knobs exist for the pre-boss quasar task: the model must come from the override (no pool is
-even provided), and augmentation/YaRN must stay off (the custom-arch seed can't be perturbed or
-rope-reconfigured). Everything else — dataset pull, computed hours — stays the standard path.
+These knobs exist for the pre-boss task: the model must come from the override (no pool is even
+provided), and augmentation/YaRN must stay off so both competitors train the exact published
+model. Everything else — dataset pull, computed hours — stays the standard path.
 """
 
 from types import SimpleNamespace
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 from validator.tasks.synthetics import scheduler
 
 
-QUASAR_SEED = "gradients-io-tournaments/continuous-sft-seed-quasar-king"
+PRE_BOSS_MODEL = "Qwen/Qwen3-32B"
 
 
 def _patch_seams(monkeypatch):
@@ -37,12 +37,12 @@ async def test_override_forces_model_without_pool_augmentation_or_yarn(monkeypat
         None,  # no model pool — override must be enough
         MagicMock(),
         enable_kl=False,
-        model_id_override=QUASAR_SEED,
+        model_id_override=PRE_BOSS_MODEL,
         allow_augmentation=False,
         allow_yarn=False,
     )
 
-    assert task.model_id == QUASAR_SEED
+    assert task.model_id == PRE_BOSS_MODEL
     assert task.augmentation_config is None
     assert task.yarn_factor is None
     assert task.use_kl is False

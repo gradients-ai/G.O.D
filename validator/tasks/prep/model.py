@@ -53,7 +53,6 @@ async def dispatch_augmentation_and_stats(
     is_env_task: bool = False,
     hotkey: str | None = None,
     environment_names: list[EnvironmentName] | None = None,
-    continuous_sft_remote_code_repo: str | None = None,
 ) -> ModelPrepResponse | None:
     """Dispatch augmentation and stats collection to a trainer with GPU.
 
@@ -77,7 +76,6 @@ async def dispatch_augmentation_and_stats(
         reward_functions=reward_functions,
         env_configs=_build_env_configs(environment_names) if is_env_task else None,
         hotkey=hotkey,
-        continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
     )
 
     url = f"http://{trainer_ip_with_port}{MODEL_PREP_ENDPOINT}"

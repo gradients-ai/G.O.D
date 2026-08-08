@@ -1,9 +1,9 @@
-"""The pre-boss knockout (2 competitors left) always plays on quasar.
+"""The pre-boss knockout (2 competitors left) always plays on the forced pre-boss model.
 
 Guards the routing in _create_probability_based_text_tasks: the pre-boss round is detected by
 COMPETITOR count (a small-tournament round 1 also creates a single task, so task count is not a
-valid key), and its task is a standard instruct task with only the model forced to the quasar
-seed — no KL, no augmentation, normal dataset pull.
+valid key), and its task is a standard instruct task with only the model forced to PRE_BOSS_MODEL
+— no KL, no augmentation, no YaRN, normal dataset pull.
 """
 
 from types import SimpleNamespace
@@ -30,8 +30,8 @@ def _patch_seams(monkeypatch):
     monkeypatch.setattr(task_creator, "_get_existing_tasks_by_identifier", AsyncMock(return_value=[]))
     monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", AsyncMock())
 
-    quasar_task = SimpleNamespace(task_id="quasar-task", task_type=TaskType.INSTRUCTTEXTTASK)
-    instruct_mock = AsyncMock(return_value=quasar_task)
+    pre_boss_task = SimpleNamespace(task_id="pre-boss-task", task_type=TaskType.INSTRUCTTEXTTASK)
+    instruct_mock = AsyncMock(return_value=pre_boss_task)
     monkeypatch.setattr(task_creator, "create_synthetic_instruct_text_task", instruct_mock)
 
     probability_task = SimpleNamespace(task_id="prob-task", task_type=TaskType.DPOTASK)
@@ -40,7 +40,7 @@ def _patch_seams(monkeypatch):
     return instruct_mock, probability_mock
 
 
-async def test_two_competitors_forces_the_quasar_task(monkeypatch):
+async def test_two_competitors_forces_the_pre_boss_task(monkeypatch):
     instruct_mock, probability_mock = _patch_seams(monkeypatch)
 
     tasks = await task_creator._create_probability_based_text_tasks(
@@ -48,10 +48,10 @@ async def test_two_competitors_forces_the_quasar_task(monkeypatch):
     )
 
     probability_mock.assert_not_awaited()
-    assert [t.task_id for t in tasks] == ["quasar-task"]
+    assert [t.task_id for t in tasks] == ["pre-boss-task"]
     args, kwargs = instruct_mock.call_args
     assert args[1] is None  # no model pool: the model is forced
-    assert kwargs["model_id_override"] == t_cst.PRE_BOSS_QUASAR_MODEL
+    assert kwargs["model_id_override"] == t_cst.PRE_BOSS_MODEL
     assert kwargs["enable_kl"] is False
     assert kwargs["allow_augmentation"] is False
     assert kwargs["allow_yarn"] is False
@@ -71,9 +71,13 @@ async def test_more_than_two_competitors_keeps_probability_routing(monkeypatch):
 
 class TestReplacementRouting:
     """Prep-failure replacement must preserve forced-model tasks: continuous-SFT recreates the
-    same lineage (same carried base, chunk re-materialized), and the pre-boss quasar task
-    re-forces the seed with everything else fresh. Neither may fall through to
-    create_new_task_of_same_type, which draws a random model (and has no CHATTASK route at all)."""
+    same lineage (same carried base, chunk re-materialized), and the pre-boss task re-forces
+    PRE_BOSS_MODEL with everything else fresh. Neither may fall through to
+    create_new_task_of_same_type, which draws a random model (and has no CHATTASK route at all).
+
+    The pre-boss branch is additionally gated on NOT being the final round: PRE_BOSS_MODEL is a
+    public model the boss round's own pool can draw, so the model id alone no longer identifies
+    the pre-boss task."""
 
     def _patch_replace_seams(self, monkeypatch, original):
         monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original))
@@ -109,14 +113,14 @@ class TestReplacementRouting:
         assert lineage == "qwen"
         assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen"]
 
-    async def test_pre_boss_quasar_replacement_reforces_the_seed_model(self, monkeypatch):
+    async def test_pre_boss_replacement_reforces_the_model(self, monkeypatch):
         original = SimpleNamespace(
             task_id="orig-task",
             task_type=TaskType.INSTRUCTTEXTTASK,
             training_start_point=TrainingStartPoint.DEFAULT,
             ds="tatsu-lab/alpaca",
             status=TaskStatus.PREP_TASK_FAILURE.value,
-            model_id=t_cst.PRE_BOSS_QUASAR_MODEL,
+            model_id=t_cst.PRE_BOSS_MODEL,
             model_params_count=0,
         )
         same_type_mock = self._patch_replace_seams(monkeypatch, original)
@@ -129,22 +133,47 @@ class TestReplacementRouting:
 
         same_type_mock.assert_not_awaited()
         assert new_task_id == "new-task"
-        assert instruct_mock.call_args.kwargs["model_id_override"] == t_cst.PRE_BOSS_QUASAR_MODEL
+        assert instruct_mock.call_args.kwargs["model_id_override"] == t_cst.PRE_BOSS_MODEL
         assert instruct_mock.call_args.kwargs["allow_augmentation"] is False
 
+    async def test_final_round_task_on_the_pre_boss_model_is_not_treated_as_pre_boss(self, monkeypatch):
+        # PRE_BOSS_MODEL is a public model inside the boss round's own 12-71B pool, so a boss-round
+        # instruct task can legitimately carry it. Routing that through _create_pre_boss_task would
+        # pin the replacement to the model that just failed prep and drop augmentation/KL/YaRN on
+        # the title-deciding round, so the final round must fall through to a fresh random draw.
+        original = SimpleNamespace(
+            task_id="orig-task",
+            task_type=TaskType.INSTRUCTTEXTTASK,
+            training_start_point=TrainingStartPoint.DEFAULT,
+            ds="tatsu-lab/alpaca",
+            status=TaskStatus.PREP_TASK_FAILURE.value,
+            model_id=t_cst.PRE_BOSS_MODEL,
+            model_params_count=32_800_000_000,
+        )
+        same_type_mock = self._patch_replace_seams(monkeypatch, original)
+        same_type_mock.return_value = SimpleNamespace(task_id="redrawn-task", task_type=TaskType.INSTRUCTTEXTTASK)
+        instruct_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.INSTRUCTTEXTTASK))
+        monkeypatch.setattr(task_creator, "create_synthetic_instruct_text_task", instruct_mock)
 
-class TestPreBossBothMinersFailed:
-    """When both pre-boss miners fail the quasar task, the round must COMPLETE (not stall for
-    investigation): with no positive quality scores get_task_winner yields None, winners come back
-    empty, and advance_tournament's zero-winner path retains the boss with no boss round and no
-    emission shift. These tests pin the completion gate in is_tourn_task_completed."""
+        new_task_id = await task_creator.replace_tournament_task(
+            "orig-task", "tourn", "round-4", None, "pair-1", MagicMock(), is_final_round=True
+        )
+
+        instruct_mock.assert_not_awaited()  # never re-forced through the pre-boss path
+        same_type_mock.assert_awaited_once()
+        assert new_task_id == "redrawn-task"
+
+
+class TestPreBossCompletionGate:
+    """The pre-boss task gets no special completion treatment: more than half the trainings failing
+    stalls the round for investigation exactly like any other knockout task."""
 
     def _tournament_task(self):
         return SimpleNamespace(task_id="task-1", round_id="round-3", tournament_id="tourn", group_id=None, pair_id="p1")
 
-    def _task_obj(self, status, model_id=t_cst.PRE_BOSS_QUASAR_MODEL):
+    def _task_obj(self, status):
         return SimpleNamespace(
-            task_id="task-1", status=status, task_type=TaskType.INSTRUCTTEXTTASK, model_id=model_id
+            task_id="task-1", status=status, task_type=TaskType.INSTRUCTTEXTTASK, model_id=t_cst.PRE_BOSS_MODEL
         )
 
     def _config(self):
@@ -153,40 +182,13 @@ class TestPreBossBothMinersFailed:
     def _patch_trainings(self, monkeypatch, statuses: dict[str, str]):
         monkeypatch.setattr(tournament_manager, "get_training_status_for_task", AsyncMock(return_value=statuses))
 
-    async def test_both_failed_completes_round_on_task_success(self, monkeypatch):
+    async def test_both_failed_stalls_for_investigation(self, monkeypatch):
         self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
         completed, reason = await tournament_manager.is_tourn_task_completed(
             self._tournament_task(), self._task_obj(TaskStatus.SUCCESS.value), self._config()
         )
-        assert completed is True
-        assert "boss is retained" in reason
-
-    async def test_both_failed_completes_round_on_task_failure(self, monkeypatch):
-        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
-        completed, reason = await tournament_manager.is_tourn_task_completed(
-            self._tournament_task(), self._task_obj(TaskStatus.FAILURE.value), self._config()
-        )
-        assert completed is True
-        assert "boss is retained" in reason
-
-    async def test_non_quasar_task_still_stalls_for_investigation(self, monkeypatch):
-        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
-        completed, reason = await tournament_manager.is_tourn_task_completed(
-            self._tournament_task(),
-            self._task_obj(TaskStatus.SUCCESS.value, model_id="unsloth/Llama-3.2-3B"),
-            self._config(),
-        )
         assert completed is False
         assert reason == "More than half of the trainings failed"
-
-    async def test_task_failure_without_recorded_trainings_still_stalls(self, monkeypatch):
-        # Infra failure before any training was assigned: keep the investigate path, don't
-        # silently hand the tournament to the boss.
-        self._patch_trainings(monkeypatch, {})
-        completed, _ = await tournament_manager.is_tourn_task_completed(
-            self._tournament_task(), self._task_obj(TaskStatus.FAILURE.value), self._config()
-        )
-        assert completed is False
 
     async def test_single_failure_keeps_normal_completion(self, monkeypatch):
         # One survivor: round completes normally and the survivor challenges the boss.

@@ -1359,18 +1359,6 @@ async def is_tourn_task_completed(
     Returns a tuple of (is_completed, reason)
     """
 
-    # Pre-boss quasar task with both miners' trainings failed (2 trainings, so the >0.5 threshold
-    # means both): complete the round instead of stalling for investigation. Neither miner gets a
-    # quality score, so get_task_winner yields None, winners come back empty, and advance_tournament's
-    # zero-winner path retains the boss as tournament winner — no boss round, no emission shift.
-    pre_boss_both_failed = (
-        task_obj.status in (TaskStatus.SUCCESS.value, TaskStatus.FAILURE.value)
-        and t_cst.is_pre_boss_quasar_task(task_obj)
-        and await _more_than_half_failures(tournament_task, config)
-    )
-    if pre_boss_both_failed:
-        return True, "Both pre-boss miners failed the quasar task; completing round so the boss is retained"
-
     if task_obj.status == TaskStatus.SUCCESS.value:
         if await _more_than_half_failures(tournament_task, config):
             return False, "More than half of the trainings failed"
@@ -1393,6 +1381,7 @@ async def is_tourn_task_completed(
             tournament_task.group_id,
             tournament_task.pair_id,
             config,
+            is_final_round=final_round,
         )
         return False, f"Task failed during preparation. Replaced with a new task {new_task_id}."
 

@@ -343,8 +343,6 @@ async def _evaluate_submissions(
             logger.info(f"Fetched eval_seed={eval_seed} for environment task {task.task_id}")
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
-        # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
-        continuous_sft_remote_code_repo = t_cst.remote_code_repo_for_task(task.model_id, task.ds)
         continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
         evaluation_params = {
             "file_format": FileFormat.JSON,
@@ -357,7 +355,6 @@ async def _evaluate_submissions(
             "psql_db": config.psql_db if config is not None else None,
             "use_kl": use_kl,
             "kl_coef": kl_coef,
-            "continuous_sft_remote_code_repo": continuous_sft_remote_code_repo,
             "continuous_sft_tokenizer_repo": continuous_sft_tokenizer_repo,
         }
 

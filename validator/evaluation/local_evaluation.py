@@ -148,7 +148,6 @@ async def run_evaluation_docker_text(
     file_format: FileFormat,
     gpu_ids: list[int],
     eval_seed: int | None = None,
-    continuous_sft_remote_code_repo: str | None = None,
     continuous_sft_tokenizer_repo: str | None = None,
 ) -> DockerEvaluationResults:
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
@@ -191,8 +190,6 @@ async def run_evaluation_docker_text(
         "FILE_FORMAT": file_format.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
     }
-    if continuous_sft_remote_code_repo:
-        environment[docker_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV] = continuous_sft_remote_code_repo
     if continuous_sft_tokenizer_repo:
         environment[docker_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV] = continuous_sft_tokenizer_repo
     logger.info(f"Running {task_type} evaluation for models: {models}")

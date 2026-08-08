@@ -3,7 +3,7 @@
 Mocks the three I/O seams (state read, content-service call, add_task) and asserts on the
 ChatRawTask handed to add_task. The critical invariants: base = carried winner else seed,
 train_index forwarded to the content service, and chat_template == "tokenizer_default" (a silent
-revert to chatml would corrupt every quasar eval loss).
+revert to chatml would corrupt every continuous-SFT eval loss).
 """
 
 from unittest.mock import AsyncMock
@@ -77,11 +77,11 @@ async def test_forwards_train_index_to_content_service(monkeypatch):
 
 
 async def test_ds_label_falls_back_when_no_ds_field(monkeypatch):
-    state = ContinuousSftState(lineage="quasar", train_index=5, last_winner_repo=None)
+    state = ContinuousSftState(lineage="qwen", train_index=5, last_winner_repo=None)
     resp = {"train_s3_url": "https://s3/train", "test_s3_url": "https://s3/test"}  # no "ds"
     _, add_task = _patch(monkeypatch, state=state, response=resp)
-    await scheduler.create_continuous_sft_task(MagicMock(), "quasar", SEED)
-    assert add_task.call_args[0][0].ds == "continuous-sft:quasar:train-index-5"
+    await scheduler.create_continuous_sft_task(MagicMock(), "qwen", SEED)
+    assert add_task.call_args[0][0].ds == "continuous-sft:qwen:train-index-5"
 
 
 @pytest.mark.parametrize(

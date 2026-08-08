@@ -30,8 +30,6 @@ from core.models.model_prep_models import AugmentationType
 from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
-from core.remote_code import continuous_sft_trust_remote_code
-from core.remote_code import pin_trusted_remote_code
 from core.tokenizer_utils import ensure_chat_template
 from core.tokenizer_utils import read_chat_template
 from core.tokenizer_utils import sanitize_tokenizer_config
@@ -42,14 +40,6 @@ from trainer.model_prep.stats import compute_text_stats
 # compute_env_stats is imported lazily inside main(): its core.pvp import chain (open-spiel, openai,
 # sglang launch) is env-task only, and pulling it at module load would force those deps into the
 # text-task model-prep image, which deliberately omits them (see ops/docker/model-prep-text.dockerfile).
-
-
-def _pin_and_trust(model_ref: str) -> tuple[str, bool]:
-    """For custom-arch continuous-SFT lineages (quasar): force the modeling *.py to the audited seed
-    mirror and enable trust_remote_code, so model-prep never runs miner code while merging/loading a
-    custom arch. No-op (ref unchanged, trust=False) when no audited-mirror env is set."""
-    trust = continuous_sft_trust_remote_code()
-    return (pin_trusted_remote_code(model_ref) if trust else model_ref), trust
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -108,13 +98,12 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
 
         print(f"Merging LoRA chain into base: {real_base} (depth {len(chain)})", flush=True)
 
-        base_src, trust = _pin_and_trust(real_base)
         base_model = AutoModelForCausalLM.from_pretrained(
-            base_src, torch_dtype="auto", token=hf_token,
+            real_base, torch_dtype="auto", token=hf_token,
             device_map="cuda:0" if torch.cuda.is_available() else "auto",
-            trust_remote_code=trust,
+            trust_remote_code=False,
         )
-        base_tokenizer = AutoTokenizer.from_pretrained(base_src, token=hf_token, trust_remote_code=trust)
+        base_tokenizer = AutoTokenizer.from_pretrained(real_base, token=hf_token, trust_remote_code=False)
 
         def _merge_adapter(model, adapter_src):
             try:
@@ -285,9 +274,9 @@ def _published_repo_is_complete(repo_id: str, hf_token: str) -> bool:
     return has_config and has_weights
 
 
-def _load_config_with_yarn_fix(model_path: str, hf_token: str, trust_remote_code: bool = False):
+def _load_config_with_yarn_fix(model_path: str, hf_token: str):
     """Load model config while avoiding a transformers YaRN head_dim=None crash."""
-    config = AutoConfig.from_pretrained(model_path, token=hf_token, trust_remote_code=trust_remote_code)
+    config = AutoConfig.from_pretrained(model_path, token=hf_token, trust_remote_code=False)
     head_dim = config.head_dim if hasattr(config, "head_dim") else None
     if head_dim is None and hasattr(config, "hidden_size") and hasattr(config, "num_attention_heads"):
         config.head_dim = config.hidden_size // config.num_attention_heads
@@ -321,31 +310,26 @@ def main():
     t0 = time.time()
     n_gpus = torch.cuda.device_count()
     print(f"[model_prep] Loading model: {model_path} (gpus={n_gpus})", flush=True)
-    # Custom-arch continuous-SFT (quasar): pin the modeling code to the audited mirror + trust it.
-    model_load_path, trust = _pin_and_trust(model_path)
-    model_config = _load_config_with_yarn_fix(model_load_path, hf_token, trust_remote_code=trust)
+    model_config = _load_config_with_yarn_fix(model_path, hf_token)
     # Load in the model's native dtype ("auto" reads config.torch_dtype) rather than forcing
     # fp16: bf16-native models can overflow in fp16, producing NaN baseline stats.
     if n_gpus > 1:
         print(f"[model_prep] Multi-GPU detected ({n_gpus}), using device_map=auto", flush=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
-            trust_remote_code=trust,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, device_map="auto",
+            trust_remote_code=False,
         )
     elif torch.cuda.is_available():
         model = AutoModelForCausalLM.from_pretrained(
-            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=False,
         )
         model.to("cuda")
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            model_load_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=trust,
+            model_path, config=model_config, torch_dtype="auto", token=hf_token, trust_remote_code=False,
         )
-    tokenizer = AutoTokenizer.from_pretrained(model_load_path, token=hf_token, trust_remote_code=trust)
+    tokenizer = AutoTokenizer.from_pretrained(model_path, token=hf_token, trust_remote_code=False)
     # Baseline-stats forward passes run in loss mode (like training/eval), so disable the KV cache.
-    # Custom-arch models (quasar) otherwise take their cache/mask path, whose get_mask_sizes is
-    # incompatible with transformers 5.12.1 (it indexes an int q_length as a tensor). Eval already
-    # runs this model fine with use_cache=False; this matches it.
     model.config.use_cache = False
     num_params = sum(p.numel() for p in model.parameters())
     print(f"[model_prep] Model loaded in {time.time() - t0:.1f}s ({num_params / 1e9:.1f}B params)", flush=True)

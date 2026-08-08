@@ -576,7 +576,6 @@ def run_model_prep_container(
     reward_functions=None,
     env_configs: dict[EnvironmentName, EnvConfig] | None = None,
     log_labels: dict[str, str] | None = None,
-    continuous_sft_remote_code_repo: str | None = None,
 ) -> ModelPrepResponse:
     """Run model prep container: augment model + compute baseline stats.
     Downloads model to cache via downloader first. For env tasks, starts env server sidecars."""
@@ -638,10 +637,6 @@ def run_model_prep_container(
         command += ["--env-configs", json.dumps(env_configs_with_urls)]
 
     env = _hf_container_env()
-    if continuous_sft_remote_code_repo:
-        # Signals the entrypoint to pin the model's custom-arch code to this audited mirror and load
-        # with trust_remote_code (custom-arch continuous-SFT lineages, e.g. quasar).
-        env[core_cst.CONTINUOUS_SFT_REMOTE_CODE_REPO_ENV] = continuous_sft_remote_code_repo
     if env_configs:
         tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
         if tool_call_parser:

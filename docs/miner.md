@@ -95,9 +95,9 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 
 | Tournament type | Fee |
 | --- | --- |
-| Text | 0.25 TAO |
+| Text | 0.35 TAO |
 | Image | 0.20 TAO |
-| Environment | 0.25 TAO |
+| Environment | 0.30 TAO |
 
 Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
 
@@ -409,9 +409,10 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
   - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
   - More than 14 (or more than 8 in later rounds): a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
-- The final boss round creates 6 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 2: `quasar` and `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
+- The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) always plays a single instruct task on a forced model: `PRE_BOSS_MODEL` (currently `Qwen/Qwen3-32B`), with augmentation, KL and YaRN disabled so both competitors train the exact published model.
+- The final boss round creates 5 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative GRPO rewards).
-- The challenger must win all but at most one of the 6 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) even one continuous-SFT task blocks the dethrone regardless of the overall task count.
+- The challenger must win at least 4 of the 5 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
 
 For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
 

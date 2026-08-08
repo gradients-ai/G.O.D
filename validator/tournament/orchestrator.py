@@ -1418,8 +1418,6 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run one model prep for a given model_id and return the result."""
         reward_fns = getattr(task, "reward_functions", None)
         is_env_task = task.task_type == TaskType.ENVIRONMENTTASK
-        # Custom-arch pinning routing rationale lives on remote_code_repo_for_task.
-        continuous_sft_remote_code_repo = cst.remote_code_repo_for_task(task.model_id, task.ds)
         return await dispatch_augmentation_and_stats(
             task_id=task_id_str,
             model_id=model_id,
@@ -1431,7 +1429,6 @@ async def process_awaiting_model_prep_tasks(config: Config):
             reward_functions=reward_fns,
             is_env_task=is_env_task,
             environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
-            continuous_sft_remote_code_repo=continuous_sft_remote_code_repo,
         )
 
     async def _run_task_prep(task, trainer_ip, gpu_ids):
