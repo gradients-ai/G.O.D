@@ -138,19 +138,19 @@ def _collate_dpo_batch(batch: list[dict[str, list[int]]], tokenizer: AutoTokeniz
         raise
 
 
-def _dpo_eval_set_fingerprint(eval_dataset: Dataset, max_length: int) -> str:
+def _dpo_eval_set_fingerprint(eval_dataset: Dataset) -> str:
     """Fingerprint the preference pairs in the order they are scored, plus what shapes the scoring.
 
-    The pair text is identical for every candidate, so hashing it alone would fingerprint nothing
-    that actually varies. max_length comes from the candidate's own max_position_embeddings and
-    controls truncation inside _completion_logprob, so two models with different context windows
-    would otherwise produce identical fingerprints and equal vector lengths while having been
-    scored on differently truncated sequences. beta is mixed in so a config change invalidates
-    stored vectors rather than silently comparing across loss definitions.
+    Deliberately NOT keyed on max_length. It comes from the candidate's own
+    max_position_embeddings, which two honest submissions are allowed to differ on - a larger
+    declared context is legal - so including it would make their fingerprints disagree and cost the
+    challenger the task outright, for a truncation that only bites on pairs longer than the context
+    window. beta is mixed in so a change to the loss definition invalidates stored vectors rather
+    than silently comparing across two of them.
     """
 
     def _parts():
-        yield f"max_length={max_length};beta={cst.BETA_DPO}".encode("utf-8")
+        yield f"beta={cst.BETA_DPO}".encode("utf-8")
         for row in eval_dataset:
             yield "\x00".join(
                 (row[cst.TRL_DPO_FIELD_PROMPT], row[cst.TRL_DPO_FIELD_CHOSEN], row[cst.TRL_DPO_FIELD_REJECTED])
@@ -261,8 +261,9 @@ def _compute_per_pair_dpo_losses(
         logits = (policy_chosen - reference_chosen) - (policy_rejected - reference_rejected)
         losses.append(-F.logsigmoid(torch.tensor(cst.BETA_DPO * logits)).item())
 
-        torch.cuda.empty_cache()
-
+    # No empty_cache() per pair: it synchronises the device and forces reallocation, on top of the
+    # four sequential forwards each pair already costs. That time lands against
+    # EVAL_BASILICA_TIMEOUT, and a timeout fails the whole eval batch.
     return losses
 
 
@@ -358,7 +359,7 @@ def evaluate_dpo_model(
             )
 
     evaluation_results["per_example_losses"] = per_pair_losses
-    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset, max_length)
+    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset)
     return evaluation_results
 
 

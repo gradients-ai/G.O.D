@@ -22,12 +22,15 @@ def _task():
 
 @pytest.fixture
 def wire(monkeypatch):
-    def _wire(vectors, losses, task_type=TaskType.DPOTASK):
+    def _wire(vectors, losses, task_type=TaskType.DPOTASK, eligible=None):
         async def fake_results(task_id, psql_db):
             return [
                 MinerResultsText(hotkey=h, test_loss=l, synth_loss=l, is_finetune=True, task_type=task_type)
                 for h, l in losses
             ]
+        async def fake_eligible(task_id, psql_db):
+            return {h for h, _ in losses} if eligible is None else set(eligible)
+
         async def fake_vectors(task_id, hotkey, psql_db):
             return vectors.get(hotkey, (None, None))
         async def fake_task(task_id, psql_db):
@@ -35,6 +38,7 @@ def wire(monkeypatch):
         async def fake_fallback(task_id, psql_db):
             return "FALLBACK"
         monkeypatch.setattr(rr, "get_task_results_for_ranking", fake_results)
+        monkeypatch.setattr(rr, "get_eligible_hotkeys_for_task", fake_eligible)
         monkeypatch.setattr(rr, "get_per_example_losses", fake_vectors)
         monkeypatch.setattr(rr, "get_task", fake_task)
         monkeypatch.setattr(rr, "get_task_winner", fake_fallback)
@@ -77,18 +81,27 @@ async def test_paired_verdict_is_persisted(wire):
 
 
 @pytest.mark.asyncio
-async def test_win_rate_overrides_the_mean_loss_ranking(wire):
-    """B has the better mean, A wins more examples - A must advance, not FALLBACK."""
+async def test_win_rate_decides_when_the_ranking_loss_agrees(wire):
+    """The sample winner advances when it is not worse on the ranking loss."""
     rng = np.random.default_rng(1)
     a = rng.gamma(2.0, 0.5, 1000)
-    b = a - 0.02
-    b[:120] = a[:120] - 5.0  # B far better on a few, dragging its mean below A's
-    a2 = a.copy()
-    a2[120:] = a[120:] - 0.05  # A decisively better on the other 880
+    b = a + 0.03  # A better on every example and on the mean
+    wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, float(a.mean())), (B, float(b.mean()))])
 
-    assert float(b.mean()) < float(a2.mean())
-    wire({A: (list(a2), "fp"), B: (list(b), "fp")}, [(A, float(a2.mean())), (B, float(b.mean()))])
+    assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == A
 
+
+@pytest.mark.asyncio
+async def test_sample_winner_that_loses_big_does_not_advance(wire):
+    """Winning a majority of samples by hairs while losing the rest badly is not a better model,
+    so the ranking loss vetoes it - the same pairing the boss round applies."""
+    rng = np.random.default_rng(11)
+    a = rng.gamma(2.0, 0.5, 1000)
+    b = a - 0.012
+    b[:80] = a[:80] + 1.5  # B wins most samples narrowly but is far worse on 80 of them
+    wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, float(a.mean())), (B, float(b.mean()))])
+
+    assert float(b.mean()) > float(a.mean())
     assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == A
 
 
@@ -105,3 +118,29 @@ async def test_grpo_falls_back(wire):
     wire({A: (list(a), "fp"), B: (list(a + 0.05), "fp")},
          [(A, float(a.mean())), (B, float(a.mean()) + 0.05)], task_type=TaskType.GRPOTASK)
     assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == "FALLBACK"
+
+
+@pytest.mark.asyncio
+async def test_penalised_submission_cannot_advance(wire):
+    """A submission rejected as a non-finetune carries SCORE_PENALTY. It still has a real
+    per-example vector, so without the eligibility filter it could win on samples and advance."""
+    rng = np.random.default_rng(9)
+    a = rng.gamma(2.0, 0.5, 1000)
+    b = a + 0.05  # A wins every example, but A is the penalised one
+    wire({A: (list(a), "fp"), B: (list(b), "fp")},
+         [(A, float(a.mean())), (B, float(b.mean()))], eligible=[B])
+
+    assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == "FALLBACK"
+
+
+@pytest.mark.asyncio
+async def test_sample_winner_worse_on_the_ranking_loss_does_not_advance(wire):
+    """Knockout instruct tasks are KL-weighted from round 2: the vectors are raw CE but test_loss
+    carries a per-model penalty, so a raw-CE sample win must not beat a worse ranking loss."""
+    rng = np.random.default_rng(10)
+    a = rng.gamma(2.0, 0.5, 1000)
+    b = a + 0.05  # A wins on raw per-example CE...
+    # ...but A's KL-weighted ranking loss is far worse than B's
+    wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, 1.30), (B, 1.02)])
+
+    assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == B

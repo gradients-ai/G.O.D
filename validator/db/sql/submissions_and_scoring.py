@@ -460,6 +460,29 @@ async def get_all_node_stats_batched(hotkeys: list[str], psql_db: PSQLDB) -> dic
         return {hotkey: AllNodeStats(**stats) for hotkey, stats in results.items()}
 
 
+async def get_eligible_hotkeys_for_task(task_id: UUID, psql_db: PSQLDB) -> set[str]:
+    """Hotkeys whose submission is eligible to win a task: a positive persisted quality score.
+
+    Mirrors get_task_winner's filter. A submission rejected as a non-finetune carries SCORE_PENALTY
+    and must not be able to advance, and that state lives only in the persisted score - the ranking
+    results rebuilt from task_nodes hardcode is_finetune=True.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.HOTKEY}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.NETUID} = $2
+            AND {cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL AND {cst.TASK_NODE_QUALITY_SCORE} > 0
+            """,
+            task_id,
+            NETUID,
+        )
+        return {row[cst.HOTKEY] for row in rows}
+
+
 async def get_task_winner(task_id: UUID, psql_db: PSQLDB) -> str | None:
     """Get the winner of a task based on the best quality score (lowest loss)."""
     async with await psql_db.connection() as connection:

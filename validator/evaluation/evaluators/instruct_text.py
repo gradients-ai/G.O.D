@@ -206,19 +206,23 @@ def _compute_per_example_losses(
             )
             supervised = (shift_labels != -100).float()
             summed = (per_token * supervised).sum(dim=1)
-            # Denominator is the UNSHIFTED supervised-token count, matching what HF divides by
-            # (num_items_in_batch is counted before the shift). These differ only when an example's
-            # first token is supervised - it is counted but never predicted - which prompt masking
-            # normally prevents. Matching it exactly is what keeps mean(vector) == eval_loss, and
-            # that identity is the only check available on code that cannot be run locally.
-            token_counts = (labels != -100).float().sum(dim=1)
+            # Denominator is the SHIFTED supervised-token count. Trainer.prediction_step takes
+            # outputs.loss, i.e. ForCausalLMLoss with num_items_in_batch=None, which means-reduces
+            # over non-ignored labels AFTER the shift. Verified directly against ForCausalLMLoss:
+            # the unshifted count is wrong by n/(n-1) on any example whose first token is
+            # supervised, which is every row of a completion-only dataset - enough to make the
+            # mean-vs-eval_loss check fire permanently and stop being a signal.
+            token_counts = supervised.sum(dim=1)
             # No supervised tokens means no comparable loss; NaN so the pairing drops it rather
             # than dividing by zero. _load_evaluation_dataset already filters these out.
             per_example = torch.where(token_counts > 0, summed / token_counts, torch.full_like(summed, float("nan")))
             losses.extend(per_example.tolist())
 
-        torch.cuda.empty_cache()
-
+    # No empty_cache() in this loop. Batch size is pinned to 1, so it would fire once per example -
+    # roughly a thousand times per repo - and each call synchronises the device and hands blocks
+    # back to the driver, forcing reallocation every iteration. The cost lands against
+    # EVAL_BASILICA_TIMEOUT, and a timeout fails the whole eval batch rather than just dropping the
+    # optional vector this pass produces.
     return losses
 
 

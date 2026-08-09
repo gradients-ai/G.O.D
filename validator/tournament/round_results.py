@@ -7,6 +7,7 @@ from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql.submissions_and_scoring import get_eligible_hotkeys_for_task
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.tasks import get_task
@@ -378,13 +379,16 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
     if task_object is None or task_object.task_type not in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
         return await get_task_winner(task.task_id, psql_db)
 
-    # Filter on evaluation validity, NOT on score: calculate_miner_ranking_and_scores awards a
-    # score only to the rank-1 miner, so a score>0 filter would drop the runner-up of every
-    # two-way contest and leave this path unreachable.
+    # Eligibility comes from the PERSISTED quality score, which is what get_task_winner used and
+    # what carries SCORE_PENALTY for a submission rejected as a non-finetune. It cannot come from
+    # the results themselves: get_task_results_for_ranking hardcodes is_finetune=True, and the
+    # scores calculate_miner_ranking_and_scores recomputes award only the rank-1 miner - a score>0
+    # filter on those would drop the runner-up of every two-way contest and kill this path.
+    eligible = await get_eligible_hotkeys_for_task(task.task_id, psql_db)
     ranked = [
         result
         for result in calculate_miner_ranking_and_scores(await get_task_results_for_ranking(task.task_id, psql_db))
-        if result.is_finetune and not np.isnan(result.test_loss)
+        if result.hotkey in eligible and not np.isnan(result.test_loss)
     ]
     if len(ranked) != 2:
         # Byes, failed evaluations and anything that is not a clean two-way contest.
@@ -414,6 +418,23 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
         b_losses=second_losses,
         b_mean_loss=second.test_loss,
     )
+
+    # The vectors are raw cross-entropy, but from round 2 knockout instruct tasks are KL-weighted
+    # (task_creator: enable_kl=round_number != 1) and test_loss then carries a per-model penalty
+    # the vectors deliberately exclude. Advancing on raw-CE win rate alone would promote a model
+    # that is clearly worse on the metric the task actually ranks on, so the sample winner must
+    # also not be worse on the ranking scalar. The boss round guards this the same way.
+    winner_scalar, loser_scalar = (
+        (first.test_loss, second.test_loss) if winner == first.hotkey else (second.test_loss, first.test_loss)
+    )
+    if winner_scalar > loser_scalar:
+        fallback = first.hotkey if first.test_loss <= second.test_loss else second.hotkey
+        logger.info(
+            f"KNOCKOUT_PAIRED task={task.task_id} sample winner {winner} is worse on the ranking loss "
+            f"({winner_scalar:.6f} vs {loser_scalar:.6f}) - advancing {fallback} on mean loss instead"
+        )
+        winner, description = fallback, f"mean loss ({winner_scalar:.6f} vs {loser_scalar:.6f})"
+
     logger.info(
         f"KNOCKOUT_PAIRED task={task.task_id} type={task_object.task_type} winner={winner} :: {description} "
         f"(mean losses {first.hotkey}={first.test_loss:.6f} {second.hotkey}={second.test_loss:.6f})"
