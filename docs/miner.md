@@ -419,6 +419,8 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
   Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. A task with fewer than `BOSS_ROUND_MIN_DECIDED_EXAMPLES` (100) decided samples cannot separate the two models and is not a win. The bootstrap seed is fixed, so every validator reaches the same verdict.
 
   On KL-weighted instruct tasks the per-sample comparison uses raw cross-entropy, and the challenger must additionally not be worse once the KL penalty is applied.
+
+  If *every* sample falls inside the dead zone the two models are indistinguishable on that task and it is recorded as a **draw**, not as a win for the defending champion. The defender still holds the task for the purposes of the win count, but no one outperformed anyone.
 - **GRPO boss-round tasks** keep the previous rule: beat the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative rewards).
 - The challenger must win at least 4 of the 5 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
 

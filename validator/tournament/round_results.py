@@ -219,8 +219,11 @@ async def _resolve_boss_round_task_winner(
     opponent_loss: float,
     threshold_percentage: float,
     psql_db: PSQLDB,
-) -> str:
+) -> tuple[str, str | None]:
     """Decide one boss-round task, preferring the paired per-example comparison.
+
+    Returns (winner, basis) - basis describes what decided it, for the persisted score_reason, and
+    is None when the relative margin decided it (the caller's default wording already says that).
 
     Instruct and DPO losses are log-likelihoods, where a relative margin is the wrong scale and a
     scalar mean cannot separate a real win from held-out sampling noise. Where both sides have
@@ -254,14 +257,14 @@ async def _resolve_boss_round_task_winner(
                 f"(boss_fingerprint={boss_fingerprint} challenger_fingerprint={opponent_fingerprint} "
                 f"boss_n={len(boss_losses)} challenger_n={len(opponent_losses)}) - not counted as a win"
             )
-            return boss_hotkey
+            return boss_hotkey, "unpairable per-example vectors"
         else:
             comparison = compare_paired_losses(boss_losses, opponent_losses)
             # Logged whether the challenger won or lost: the observed win rate across real boss
             # rounds is the only data that can calibrate BOSS_ROUND_MIN_WIN_RATE.
             logger.info(
                 f"BOSS_ROUND_PAIRED task={task_id} type={task_object.task_type} "
-                f"challenger_won={comparison.challenger_won} "
+                f"challenger_won={comparison.challenger_won} draw={comparison.is_draw} "
                 f"win_rate={comparison.win_rate:.4f} win_rate_lb={comparison.win_rate_lower_bound:.4f} "
                 f"mean_gap_nats={comparison.mean_gap_nats:.6f} mean_gap_lb={comparison.mean_gap_lower_bound:.6f} "
                 f"decided={comparison.n_decided}/{comparison.n_examples} "
@@ -271,7 +274,11 @@ async def _resolve_boss_round_task_winner(
             challenger_won, verdict_reason = challenger_takes_paired_task(comparison, boss_loss, opponent_loss)
             if not challenger_won:
                 logger.info(f"Boss round task {task_id}: {verdict_reason}")
-            return opponent_hotkey if challenger_won else boss_hotkey
+            # A draw is recorded as such. The defender still holds the task for the dethrone tally,
+            # but nobody outperformed anybody and the stored reason should not claim otherwise.
+            if comparison.is_draw:
+                return boss_hotkey, f"a draw ({verdict_reason})"
+            return (opponent_hotkey if challenger_won else boss_hotkey), f"per-example win rate ({verdict_reason})"
 
     task_winner = (
         opponent_hotkey
@@ -284,7 +291,7 @@ async def _resolve_boss_round_task_winner(
         f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
         f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
     )
-    return task_winner
+    return task_winner, None
 
 
 def determine_boss_round_winner(
@@ -566,7 +573,7 @@ async def get_knockout_winners(
 
             logger.info(f"Boss round task {task.task_id}: Boss loss: {boss_loss:.6f}, Opponent loss: {opponent_loss:.6f}")
 
-            task_winner = await _resolve_boss_round_task_winner(
+            task_winner, decided_by = await _resolve_boss_round_task_winner(
                 task_id=task.task_id,
                 task_object=task_object,
                 boss_hotkey=boss_hotkey,
@@ -584,6 +591,7 @@ async def get_knockout_winners(
                 threshold_percentage=threshold_percentage,
                 compared_hotkeys=[boss_hotkey, opponent_hotkey],
                 psql_db=psql_db,
+                basis=decided_by,
             )
 
         boss_round_winner = determine_boss_round_winner(

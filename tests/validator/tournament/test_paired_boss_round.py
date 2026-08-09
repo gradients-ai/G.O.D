@@ -17,7 +17,8 @@ def test_identical_models_leave_everything_undecided():
     result = compare_paired_losses(list(boss), list(boss))
     assert result.n_decided == 0
     assert result.challenger_won is False
-    assert "too few to distinguish" in result.reason
+    assert result.is_draw is True
+    assert "Draw" in result.reason
 
 
 def test_noise_without_a_real_edge_does_not_win():
@@ -49,12 +50,14 @@ def test_winning_hairs_while_losing_big_is_rejected():
     assert "mean gap" in result.reason
 
 
-def test_saturated_task_goes_to_the_boss():
-    """Every gap inside the dead zone - the task cannot distinguish the two models."""
+def test_saturated_task_is_a_draw_not_a_boss_win():
+    """Every gap inside the dead zone - the models are indistinguishable, which is a draw. The
+    defender still holds the task for the dethrone tally, but it is not recorded as a win."""
     boss = np.random.default_rng(2).uniform(0.018, 0.025, 1000)
     result = compare_paired_losses(list(boss), list(boss - 0.002))
     assert result.n_decided == 0
     assert result.challenger_won is False
+    assert result.is_draw is True
 
 
 def test_win_rate_just_under_the_bar_is_rejected():
@@ -122,10 +125,12 @@ def test_non_finite_examples_are_dropped_from_both_sides():
     assert result.challenger_won is True
 
 
-def test_no_comparable_examples_goes_to_the_boss():
+def test_no_comparable_examples_is_not_a_draw():
+    """Nothing to compare is a failure to evaluate, not a statement that the models are equal."""
     result = compare_paired_losses([float("nan")] * 10, [0.1] * 10)
     assert result.n_examples == 0
     assert result.challenger_won is False
+    assert result.is_draw is False
 
 
 def test_mismatched_vector_lengths_raise():

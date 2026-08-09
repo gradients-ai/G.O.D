@@ -358,6 +358,11 @@ class PairedLossComparison(BaseModel):
     mean_gap_nats: float  # boss - challenger over all examples; positive = challenger better
     mean_gap_lower_bound: float
     challenger_won: bool
+    # Every comparable example fell inside the tie dead zone: the two models are indistinguishable
+    # on this task, which is a different statement from the challenger having lost it. The task
+    # still counts to the defender for the dethrone tally - somebody has to hold it - but recording
+    # it as a boss win misdescribes what happened.
+    is_draw: bool = False
     reason: str
 
 

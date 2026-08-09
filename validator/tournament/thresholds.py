@@ -57,6 +57,7 @@ def compare_paired_losses(
             mean_gap_nats=0.0,
             mean_gap_lower_bound=0.0,
             challenger_won=False,
+            is_draw=False,
             reason="No comparable examples between the two vectors",
         )
 
@@ -88,7 +89,14 @@ def compare_paired_losses(
         seed=seed,
     )
 
-    if n_decided < min_decided:
+    is_draw = n_decided == 0
+    if is_draw:
+        reason = (
+            f"Draw - all {n_examples} comparable examples fell inside the {deadzone_nats} nat dead "
+            f"zone, so the two models are indistinguishable on this task"
+        )
+        challenger_won = False
+    elif n_decided < min_decided:
         reason = (
             f"Only {n_decided} decided examples (need {min_decided}) - too few to distinguish the "
             f"two models on this task"
@@ -123,6 +131,7 @@ def compare_paired_losses(
         mean_gap_nats=mean_gap,
         mean_gap_lower_bound=mean_gap_lb,
         challenger_won=challenger_won,
+        is_draw=is_draw,
         reason=reason,
     )
 
@@ -143,6 +152,8 @@ def challenger_takes_paired_task(
     Shared by crowning and by the emission projection: if these two disagreed, analytics would
     report a challenger win on a task the tournament recorded as a loss.
     """
+    if comparison.is_draw:
+        return False, comparison.reason
     if not comparison.challenger_won:
         return False, comparison.reason
     if challenger_scalar_loss > boss_scalar_loss:
