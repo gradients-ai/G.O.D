@@ -206,3 +206,14 @@ def test_a_single_catastrophic_outlier_cannot_win_a_task():
     assert result.mean_gap_nats > 10
     assert result.win_rate_lower_bound == 0.0
     assert result.challenger_won is False
+
+
+def test_the_minimally_better_model_wins():
+    """The floor and the dead zone are the same number on purpose. A challenger better by just
+    over the dead zone on every single sample is, by the rule's own definition of meaningful,
+    better everywhere - it must not lose."""
+    boss = _losses(n=800, seed=9)
+    result = compare_paired_losses(list(boss), list(boss - 0.011))
+
+    assert result.win_rate == 1.0
+    assert result.challenger_won is True

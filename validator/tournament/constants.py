@@ -277,8 +277,18 @@ BOSS_ROUND_TIE_DEADZONE_NATS = 0.01
 # every task, won or lost, so this can be recalibrated against real matchups rather than reasoning.
 BOSS_ROUND_MIN_WIN_RATE = 0.55
 # Challenger must also be better on average by this much, so it cannot win on a majority of
-# hairline examples while being materially worse where it loses.
-BOSS_ROUND_MIN_MEAN_GAP_NATS = 0.02
+# hairline examples while being materially worse where it loses. Deliberately the same value as
+# the tie dead zone: that constant already defines the smallest per-sample difference the rule
+# treats as meaningful, and a second, larger answer to the same question is what made a model
+# better by 0.011 nats on ALL 800 samples - 100% win rate - lose the task.
+#
+# Calibrated against 62 boss-round text tasks over 120 days, where the median separation between
+# the two competitors was 0.0094 nats: at 0.02 only a quarter of matchups were close enough to
+# even be winnable, which compounded over 4-of-5 tasks makes the crown near-permanent.
+#
+# Saturated tasks stay unwinnable through the dead zone rather than through this floor - at losses
+# around 0.02 essentially no per-sample difference clears 0.01, so nothing is decided.
+BOSS_ROUND_MIN_MEAN_GAP_NATS = 0.01
 # Below this many decided examples the task cannot distinguish the two models. Saturated tasks
 # land here naturally. Interlocks with the bootstrap: at exactly this many decided examples
 # the standard error is ~5%, so a bare 65% will fail the bound and a much larger observed margin
