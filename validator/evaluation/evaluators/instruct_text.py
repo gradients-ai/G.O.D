@@ -324,13 +324,21 @@ def evaluate_instruct_text_model(
     emit_per_example = os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) == "1"
     per_example_losses: list[float] = []
     if emit_per_example:
-        per_example_losses = _compute_per_example_losses(
-            language_model=language_model,
-            eval_dataset=eval_dataset,
-            tokenizer=tokenizer,
-            batch_size=eval_cst.PER_EXAMPLE_LOSS_BATCH_SIZE,
-        )
-        _warn_if_per_example_mean_diverges(per_example_losses, eval_loss)
+        # Isolated: this is an optional add-on running after the trainer has already produced
+        # eval_loss. An OOM or a tokenizer edge case here must not discard a completed GPU
+        # evaluation - the caller's except would record the repo as failed and hand the task away.
+        try:
+            per_example_losses = _compute_per_example_losses(
+                language_model=language_model,
+                eval_dataset=eval_dataset,
+                tokenizer=tokenizer,
+                batch_size=eval_cst.PER_EXAMPLE_LOSS_BATCH_SIZE,
+            )
+            _warn_if_per_example_mean_diverges(per_example_losses, eval_loss)
+        except Exception as e:
+            logger.error(f"Per-example loss extraction failed, continuing without the vector: {e}", exc_info=True)
+            per_example_losses = []
+            emit_per_example = False
 
     # When the task was trained with a KL term, weight the eval loss by the KL divergence
     # against the base model so the ranking metric rewards staying close to the base.
@@ -349,11 +357,13 @@ def evaluate_instruct_text_model(
         evaluation_results["eval_loss"] = weighted_loss
         evaluation_results["eval_loss_raw"] = eval_loss
         evaluation_results["kl_divergence"] = kl_divergence
-        # The KL penalty is a property of the model, not of any one example, so it shifts every
-        # example by the same amount. Boss and challenger get different shifts, so the penalty
-        # still moves the comparison - and mean(per_example_losses) == eval_loss still holds.
-        penalty = kl_coef * kl_divergence
-        per_example_losses = [loss + penalty for loss in per_example_losses]
+        # The per-example vector stays RAW cross-entropy and is deliberately NOT shifted by the KL
+        # penalty. A constant offset would hand the paired test a fake result: every example moves
+        # the same way, so if the offset exceeds the tie dead zone the challenger "wins" 100% of
+        # examples with a bootstrap bound of 1.0 on no per-example evidence at all. The premise of
+        # the paired test is that example difficulty cancels and the remaining spread is evidence;
+        # a constant has no spread. The KL penalty is applied instead as a separate scalar gate on
+        # test_loss in _resolve_boss_round_task_winner, where it belongs.
 
     if emit_per_example:
         evaluation_results["per_example_losses"] = per_example_losses

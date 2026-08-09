@@ -138,14 +138,25 @@ def _collate_dpo_batch(batch: list[dict[str, list[int]]], tokenizer: AutoTokeniz
         raise
 
 
-def _dpo_eval_set_fingerprint(eval_dataset: Dataset) -> str:
-    """Fingerprint the preference pairs in the order they are scored (dataset file order)."""
-    return eval_set_fingerprint(
-        "\x00".join(
-            (row[cst.TRL_DPO_FIELD_PROMPT], row[cst.TRL_DPO_FIELD_CHOSEN], row[cst.TRL_DPO_FIELD_REJECTED])
-        ).encode("utf-8")
-        for row in eval_dataset
-    )
+def _dpo_eval_set_fingerprint(eval_dataset: Dataset, max_length: int) -> str:
+    """Fingerprint the preference pairs in the order they are scored, plus what shapes the scoring.
+
+    The pair text is identical for every candidate, so hashing it alone would fingerprint nothing
+    that actually varies. max_length comes from the candidate's own max_position_embeddings and
+    controls truncation inside _completion_logprob, so two models with different context windows
+    would otherwise produce identical fingerprints and equal vector lengths while having been
+    scored on differently truncated sequences. beta is mixed in so a config change invalidates
+    stored vectors rather than silently comparing across loss definitions.
+    """
+
+    def _parts():
+        yield f"max_length={max_length};beta={cst.BETA_DPO}".encode("utf-8")
+        for row in eval_dataset:
+            yield "\x00".join(
+                (row[cst.TRL_DPO_FIELD_PROMPT], row[cst.TRL_DPO_FIELD_CHOSEN], row[cst.TRL_DPO_FIELD_REJECTED])
+            ).encode("utf-8")
+
+    return eval_set_fingerprint(_parts())
 
 
 def _tokenize_dpo_pair(
@@ -206,13 +217,23 @@ def _completion_logprob(
 
     input_ids = torch.tensor([ids], device=model.device)
     with torch.no_grad():
-        logits = model(input_ids=input_ids).logits.float()
+        logits = model(input_ids=input_ids).logits
 
-    # Position t predicts token t+1, so completion token at index prompt_len is predicted at t=prompt_len-1.
-    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
-    targets = input_ids[:, 1:]
-    token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-    return token_log_probs[0, prompt_len - 1 :].sum().item()
+    # Position t predicts token t+1, so the completion token at index prompt_len is predicted at
+    # t = prompt_len - 1. Only those positions are scored; prompt tokens contribute nothing.
+    targets = input_ids[0, 1:]
+    total = 0.0
+    for start in range(prompt_len - 1, targets.shape[0], cst.DPO_LOGPROB_CHUNK_TOKENS):
+        end = min(start + cst.DPO_LOGPROB_CHUNK_TOKENS, targets.shape[0])
+        # Upcast a bounded slice rather than the whole [1, L, V] tensor: at a 150k vocab a full
+        # fp32 copy is gigabytes, and max_length comes from max_position_embeddings unbounded.
+        chunk = logits[0, start:end, :].float()
+        chunk_targets = targets[start:end]
+        picked = chunk.gather(-1, chunk_targets.unsqueeze(-1)).squeeze(-1)
+        total += float((picked - torch.logsumexp(chunk, dim=-1)).sum().item())
+        del chunk
+
+    return total
 
 
 def _compute_per_pair_dpo_losses(
@@ -312,13 +333,19 @@ def evaluate_dpo_model(
     if os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) != "1":
         return evaluation_results
 
-    per_pair_losses = _compute_per_pair_dpo_losses(
-        finetuned_model=finetuned_model,
-        reference_model=reference_model,
-        eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
-        max_length=max_length,
-    )
+    try:
+        per_pair_losses = _compute_per_pair_dpo_losses(
+            finetuned_model=finetuned_model,
+            reference_model=reference_model,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            max_length=max_length,
+        )
+    except Exception as e:
+        # Optional add-on: never let it discard the eval_loss the trainer already produced.
+        logger.error(f"Per-pair DPO loss extraction failed, continuing without the vector: {e}", exc_info=True)
+        return evaluation_results
+
     finite = [loss for loss in per_pair_losses if math.isfinite(loss)]
     if not finite:
         logger.error("PER_EXAMPLE_LOSSES: no finite per-pair DPO losses - the paired comparison will have nothing to use")
@@ -339,7 +366,7 @@ def evaluate_dpo_model(
             )
 
     evaluation_results["per_example_losses"] = per_pair_losses
-    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset)
+    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset, max_length)
     return evaluation_results
 
 

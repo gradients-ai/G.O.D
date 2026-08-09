@@ -1,3 +1,4 @@
+import math
 from uuid import UUID
 
 from asyncpg.connection import Connection
@@ -117,7 +118,8 @@ async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
         if row is None or row[cst.PER_EXAMPLE_LOSSES] is None:
             return None, None
 
-        return [float(loss) for loss in row[cst.PER_EXAMPLE_LOSSES]], row[cst.EVAL_SET_FINGERPRINT]
+        losses = [float("nan") if loss is None else float(loss) for loss in row[cst.PER_EXAMPLE_LOSSES]]
+        return losses, row[cst.EVAL_SET_FINGERPRINT]
 
 
 async def update_task_node_quality_score_only(
@@ -147,6 +149,20 @@ async def update_task_node_quality_score_only(
             score_reason,
             NETUID,
         )
+
+
+def _json_safe_losses(losses: list[float] | None) -> list[float | None] | None:
+    """Replace non-finite entries with JSON null.
+
+    The list binds through the pooled jsonb codec, which uses json.dumps - and json.dumps emits a
+    bare NaN token that PostgreSQL's json parser rejects outright. A single unscorable example
+    would otherwise fail the whole INSERT, and the exception propagates far enough to mark every
+    hotkey in the batch as an evaluation failure, discarding a completed GPU run. Nulls read back
+    as NaN and the paired comparison already drops non-finite entries from both sides.
+    """
+    if losses is None:
+        return None
+    return [loss if math.isfinite(loss) else None for loss in losses]
 
 
 async def set_task_node_losses(
@@ -196,7 +212,7 @@ async def set_task_node_losses(
             test_loss,
             synth_loss,
             score_reason,
-            per_example_losses,
+            _json_safe_losses(per_example_losses),
             eval_set_fingerprint,
         )
 

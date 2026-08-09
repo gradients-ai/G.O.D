@@ -106,6 +106,12 @@ def model_is_a_finetune(
         "num_hidden_layers",
         "num_attention_heads",
         "num_key_value_heads",
+        # A submission that declares a smaller context than the base gets a lower eval sequence_len
+        # (see _load_and_update_evaluation_config), which makes axolotl drop the longer held-out
+        # rows - so it is scored on a shorter, easier subset than everyone else and the mean losses
+        # stop being comparable. Nothing else validates this field. YaRN-extended tasks are
+        # unaffected: the validator bakes the extended value into the base model miners receive.
+        "max_position_embeddings",
     ]
     architecture_same = True
     for attr in attrs_to_compare:

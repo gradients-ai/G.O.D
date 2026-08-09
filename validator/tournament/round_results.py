@@ -266,7 +266,22 @@ async def _resolve_boss_round_task_winner(
                 f"required_win_rate={t_cst.BOSS_ROUND_MIN_WIN_RATE} "
                 f"required_mean_gap={t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS} :: {comparison.reason}"
             )
-            return opponent_hotkey if comparison.challenger_won else boss_hotkey
+            if not comparison.challenger_won:
+                return boss_hotkey
+
+            # The paired test runs on RAW per-example losses. On a KL-weighted task the ranking
+            # scalar also carries a per-model KL penalty, which is a constant and so cannot be
+            # folded into the vector without fabricating a 100% win rate. Apply it here instead:
+            # the challenger must win on the examples AND not be worse once its penalty is counted.
+            # For non-KL tasks the scalars are the vector means, so this is already implied.
+            if opponent_loss > boss_loss:
+                logger.info(
+                    f"Boss round task {task_id}: challenger won the paired comparison but is worse on the "
+                    f"ranking scalar ({opponent_loss:.6f} vs {boss_loss:.6f}) - not counted as a win"
+                )
+                return boss_hotkey
+
+            return opponent_hotkey
 
     task_winner = (
         opponent_hotkey
@@ -374,10 +389,13 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
     if task_object is None or task_object.task_type not in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
         return await get_task_winner(task.task_id, psql_db)
 
+    # Filter on evaluation validity, NOT on score: calculate_miner_ranking_and_scores awards a
+    # score only to the rank-1 miner, so a score>0 filter would drop the runner-up of every
+    # two-way contest and leave this path unreachable.
     ranked = [
         result
         for result in calculate_miner_ranking_and_scores(await get_task_results_for_ranking(task.task_id, psql_db))
-        if result.score and result.score > 0 and not np.isnan(result.test_loss)
+        if result.is_finetune and not np.isnan(result.test_loss)
     ]
     if len(ranked) != 2:
         # Byes, failed evaluations and anything that is not a clean two-way contest.
