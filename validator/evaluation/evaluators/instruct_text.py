@@ -328,7 +328,7 @@ def evaluate_instruct_text_model(
             language_model=language_model,
             eval_dataset=eval_dataset,
             tokenizer=tokenizer,
-            batch_size=eval_cst.GRPO_KL_BATCH_SIZE,
+            batch_size=eval_cst.PER_EXAMPLE_LOSS_BATCH_SIZE,
         )
         _warn_if_per_example_mean_diverges(per_example_losses, eval_loss)
 
