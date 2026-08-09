@@ -342,6 +342,25 @@ class TournamentResultsWithWinners(BaseModel):
     final_positions: dict[str, int] = Field(default_factory=dict)
 
 
+class PairedLossComparison(BaseModel):
+    """Outcome of comparing boss and challenger example by example on the same held-out set.
+
+    Recorded on every boss-round task whether the challenger won or lost — the observed win rate
+    is the data needed to calibrate BOSS_ROUND_MIN_WIN_RATE against real matchups.
+    """
+
+    n_examples: int
+    n_decided: int  # examples where the gap exceeded the tie dead zone
+    challenger_example_wins: int
+    boss_example_wins: int
+    win_rate: float  # challenger_example_wins / n_decided, 0.0 when nothing was decided
+    win_rate_lower_bound: float  # one-sided bootstrap bound
+    mean_gap_nats: float  # boss - challenger over all examples; positive = challenger better
+    mean_gap_lower_bound: float
+    challenger_won: bool
+    reason: str
+
+
 class TaskPerformanceDifference(BaseModel):
     """Performance difference data for a single task"""
 

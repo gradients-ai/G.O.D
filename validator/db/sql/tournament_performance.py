@@ -1,7 +1,27 @@
+from uuid import UUID
+
 from validator.tournament.models import BossRoundTaskPair
 from validator.tournament.models import TaskScore
 from validator.db import constants as cst
 from validator.db.database import PSQLDB
+
+
+async def is_final_round_task(task_id: UUID, psql_db: PSQLDB) -> bool:
+    """True when the task belongs to a tournament boss round.
+
+    Gates persistence of per-example loss vectors: the paired comparison is the only consumer, and
+    storing a vector for every miner on every task would bloat task_nodes for no gain.
+    """
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT EXISTS (
+                SELECT 1
+                FROM {cst.TOURNAMENT_TASKS_TABLE} tt
+                JOIN {cst.TOURNAMENT_ROUNDS_TABLE} tr ON tr.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
+                WHERE tt.{cst.TASK_ID}::text = $1::text AND tr.{cst.IS_FINAL_ROUND} = true
+            )
+        """
+        return bool(await connection.fetchval(query, str(task_id)))
 
 
 async def get_boss_round_winner_task_pairs(tournament_id: str, psql_db: PSQLDB) -> list[BossRoundTaskPair]:

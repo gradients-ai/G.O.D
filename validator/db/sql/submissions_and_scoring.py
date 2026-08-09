@@ -61,7 +61,13 @@ async def set_task_node_quality_score(
     psql_db: PSQLDB,
     score_reason: str | None = None,
 ) -> None:
-    """Set quality score, losses and zero score reason for a node's task submission"""
+    """Set quality score, losses and zero score reason for a node's task submission.
+
+    Deliberately does NOT touch the per-example loss columns. This runs later in the lifecycle than
+    set_task_node_losses, and on the finalize path its results are rebuilt from the DB row without
+    the vector - writing it here would NULL out what the raw-loss write persisted, leaving the boss
+    round to silently fall back to the scalar margin.
+    """
     async with await psql_db.connection() as connection:
         connection: Connection
         query = f"""
@@ -92,6 +98,26 @@ async def set_task_node_quality_score(
             synth_loss,
             score_reason,
         )
+
+
+async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) -> tuple[list[float] | None, str | None]:
+    """Read back a node's per-example loss vector and the fingerprint of the set it was scored on."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT {cst.PER_EXAMPLE_LOSSES}, {cst.EVAL_SET_FINGERPRINT}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+        )
+        if row is None or row[cst.PER_EXAMPLE_LOSSES] is None:
+            return None, None
+
+        return [float(loss) for loss in row[cst.PER_EXAMPLE_LOSSES]], row[cst.EVAL_SET_FINGERPRINT]
 
 
 async def update_task_node_quality_score_only(
@@ -130,8 +156,16 @@ async def set_task_node_losses(
     synth_loss: float | None,
     psql_db: PSQLDB,
     score_reason: str | None = None,
+    per_example_losses: list[float] | None = None,
+    eval_set_fingerprint: str | None = None,
 ) -> None:
-    """Persist raw evaluation outputs without final ranking."""
+    """Persist raw evaluation outputs without final ranking.
+
+    The only write of raw evaluator losses, and so the only place the per-example vector is stored.
+    Passed only for boss-round tasks (see is_final_round_task) since the paired comparison is its
+    only consumer. The list binds directly: a jsonb codec is registered on every pooled connection
+    (validator/db/database.py), so serialising here would double-encode it.
+    """
     async with await psql_db.connection() as connection:
         connection: Connection
         query = f"""
@@ -141,14 +175,18 @@ async def set_task_node_losses(
                 {cst.NETUID},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.PER_EXAMPLE_LOSSES},
+                {cst.EVAL_SET_FINGERPRINT}
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
             ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO UPDATE
             SET
                 {cst.TEST_LOSS} = $4,
                 {cst.SYNTH_LOSS} = $5,
-                {cst.SCORE_REASON} = $6
+                {cst.SCORE_REASON} = $6,
+                {cst.PER_EXAMPLE_LOSSES} = $7::jsonb,
+                {cst.EVAL_SET_FINGERPRINT} = $8
         """
         await connection.execute(
             query,
@@ -158,6 +196,8 @@ async def set_task_node_losses(
             test_loss,
             synth_loss,
             score_reason,
+            per_example_losses,
+            eval_set_fingerprint,
         )
 
 

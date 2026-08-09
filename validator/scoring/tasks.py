@@ -31,6 +31,7 @@ from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
+from validator.db.sql.tournament_performance import is_final_round_task
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
@@ -344,6 +345,19 @@ async def _evaluate_submissions(
 
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
+
+        # Per-example loss vectors are only read by the paired boss-round comparison, and computing
+        # them costs an extra pass over the eval set (four extra forward passes per pair for DPO),
+        # so only ask for them where they are used.
+        emit_per_example_losses = (
+            task.task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES
+            and config is not None
+            and task.task_id is not None
+            and await is_final_round_task(task.task_id, config.psql_db)
+        )
+        if emit_per_example_losses:
+            logger.info(f"Boss-round task {task.task_id}: requesting per-example losses for the paired comparison")
+
         evaluation_params = {
             "file_format": FileFormat.JSON,
             "original_model": base_model,
@@ -356,6 +370,7 @@ async def _evaluate_submissions(
             "use_kl": use_kl,
             "kl_coef": kl_coef,
             "continuous_sft_tokenizer_repo": continuous_sft_tokenizer_repo,
+            "emit_per_example_losses": emit_per_example_losses,
         }
 
         logger.info("Starting test evaluation")
@@ -454,6 +469,11 @@ async def _persist_raw_task_results(
     psql_db,
 ) -> None:
     assert task.task_id is not None, "task id needs to be set to persist losses"
+
+    # The paired boss-round comparison is the only consumer of the per-example vectors, so they are
+    # only stored for boss-round tasks. Checked once per task rather than once per miner.
+    keep_per_example_losses = await is_final_round_task(task.task_id, psql_db)
+
     for result in task_results:
         with LogContext(miner_hotkey=result.hotkey):
             test_loss = None if np.isnan(result.test_loss) else float(result.test_loss)
@@ -465,6 +485,8 @@ async def _persist_raw_task_results(
                 synth_loss=synth_loss,
                 score_reason=result.score_reason,
                 psql_db=psql_db,
+                per_example_losses=result.per_example_losses if keep_per_example_losses else None,
+                eval_set_fingerprint=result.eval_set_fingerprint if keep_per_example_losses else None,
             )
 
             if result.submission:
@@ -681,6 +703,10 @@ async def process_miners_pool(
                     TaskType.CHATTASK,
                     TaskType.ENVIRONMENTTASK,
                 ]:
+                    # Only the instruct and DPO evaluators emit per-example losses; every other
+                    # text evaluator leaves these None and the boss round falls back to the
+                    # scalar margin.
+                    is_text_result = isinstance(test_result, EvaluationResultText)
                     results.append(
                         MinerResultsText(
                             hotkey=miner.hotkey,
@@ -689,6 +715,8 @@ async def process_miners_pool(
                             is_finetune=test_result.is_finetune,
                             submission=submission,
                             task_type=task.task_type,
+                            per_example_losses=test_result.per_example_losses if is_text_result else None,
+                            eval_set_fingerprint=test_result.eval_set_fingerprint if is_text_result else None,
                         )
                     )
                 elif task.task_type == TaskType.IMAGETASK:

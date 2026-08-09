@@ -18,10 +18,54 @@ from validator.tournament import constants as t_cst
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentPerformanceData
 from validator.tournament.task_results import get_task_results_for_ranking
+from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.tournament.thresholds import challenger_beats_boss
+from validator.tournament.thresholds import compare_paired_losses
 
 
 logger = get_logger(__name__)
+
+
+async def _challenger_won_task(
+    task_id,
+    task_obj,
+    challenger_hotkey: str,
+    boss_score: float,
+    challenger_score: float,
+    threshold: float,
+    psql_db,
+) -> bool:
+    """Mirror of the crowning decision for a single lower-is-better boss-round task.
+
+    Uses the paired per-example comparison where both sides have vectors, and the relative margin
+    otherwise - the same order of preference as _resolve_boss_round_task_winner in round_results.
+    """
+    if task_obj.task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        boss_losses, boss_fingerprint = await get_per_example_losses(task_id, EMISSION_BURN_HOTKEY, psql_db)
+        challenger_losses, challenger_fingerprint = await get_per_example_losses(task_id, challenger_hotkey, psql_db)
+
+        pairable = (
+            boss_losses is not None
+            and challenger_losses is not None
+            and len(boss_losses) == len(challenger_losses)
+            and not (
+                boss_fingerprint is not None
+                and challenger_fingerprint is not None
+                and boss_fingerprint != challenger_fingerprint
+            )
+        )
+        if pairable:
+            return compare_paired_losses(boss_losses, challenger_losses).challenger_won
+
+        if boss_losses is not None and challenger_losses is not None:
+            # Present but unpairable: crowning does not count these as a win, so report the same
+            # to keep the emission projection consistent with the result.
+            logger.error(f"Task {task_id}: per-example vectors present but not pairable - not counted as a win")
+            return False
+
+        logger.warning(f"Task {task_id}: no per-example vectors for performance calc - using the relative margin")
+
+    return challenger_beats_boss(boss_score, challenger_score, False, threshold)
 
 
 async def calculate_boss_round_performance_differences(tournament_id: str, psql_db) -> list[TaskPerformanceDifference]:
@@ -158,7 +202,18 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 perf_diff = (boss_score - challenger_score) / abs(challenger_score)
             else:
                 perf_diff = 0.0
-            challenger_won = challenger_beats_boss(boss_score, challenger_score, False, threshold)
+            # perf_diff stays a percentage - it scales emissions and is not a gate. challenger_won
+            # is the gate, so it has to be decided the same way crowning decided it or analytics
+            # and the emission projection contradict the actual result.
+            challenger_won = await _challenger_won_task(
+                task_id=task.task_id,
+                task_obj=task_obj,
+                challenger_hotkey=challenger_hotkey,
+                boss_score=boss_score,
+                challenger_score=challenger_score,
+                threshold=threshold,
+                psql_db=psql_db,
+            )
 
         performance_differences.append(
             TaskPerformanceDifference(

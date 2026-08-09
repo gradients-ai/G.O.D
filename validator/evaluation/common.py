@@ -1,4 +1,5 @@
 import glob
+import hashlib
 import inspect
 import json
 import os
@@ -7,6 +8,7 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from math import ceil
 
 import psutil
@@ -437,6 +439,45 @@ def load_results_dict():
     return results_dict
 
 
+def eval_set_fingerprint(parts: Iterable[bytes]) -> str:
+    """Stable identifier for the exact held-out examples, in the exact order they were scored.
+
+    The paired boss-round comparison matches example i of one model against example i of another,
+    which is only meaningful if both were scored on the same set in the same order. That is NOT
+    guaranteed: the eval set is filtered by a sequence_len derived from the candidate model's
+    max_position_embeddings, so models with different context windows keep different examples.
+    Equal vector lengths do not catch it - two different 900-example sets are both 900 long - so
+    the comparison refuses to pair unless these match.
+    """
+    digest = hashlib.sha256()
+    for part in parts:
+        digest.update(part)
+        digest.update(b"\x00")
+    return digest.hexdigest()[:32]
+
+
+def _summarise_for_log(results_dict: dict) -> dict:
+    """Collapse per-example loss vectors so the logged copy stays readable.
+
+    save_results_dict logs the whole dict, and those container logs are re-fetched on every poll,
+    so a per-example vector would be re-streamed in full on each iteration.
+    """
+    summary = {}
+    for key, value in results_dict.items():
+        if isinstance(value, dict):
+            summary[key] = {
+                inner_key: (
+                    f"[{len(inner_value)} values, mean={sum(inner_value) / len(inner_value):.6f}]"
+                    if inner_key == "per_example_losses" and isinstance(inner_value, list) and inner_value
+                    else inner_value
+                )
+                for inner_key, inner_value in value.items()
+            }
+        else:
+            summary[key] = value
+    return summary
+
+
 def save_results_dict(results_dict, model_id=None):
     """Save evaluation results to file."""
     with open(CONTAINER_EVAL_RESULTS_PATH, "w") as f:
@@ -447,7 +488,7 @@ def save_results_dict(results_dict, model_id=None):
         msg += f" for {model_id}"
 
     logger.info(msg)
-    logger.info(json.dumps(results_dict, indent=2))
+    logger.info(json.dumps(_summarise_for_log(results_dict), indent=2))
 
 
 def check_env_variables(required_vars):

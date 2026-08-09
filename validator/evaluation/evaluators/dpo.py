@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ import urllib.request
 os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 
 import torch
+import torch.nn.functional as F
 from accelerate.utils import find_executable_batch_size
 from axolotl.utils.dict import DictDefault
 from datasets import Dataset
@@ -19,6 +21,7 @@ from transformers import AutoTokenizer
 from trl import DPOConfig
 from trl import DPOTrainer
 
+import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
 from core.models.dataset_models import DpoDatasetType
@@ -26,6 +29,7 @@ from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
+from validator.evaluation.common import eval_set_fingerprint
 from validator.evaluation.common import count_model_parameters
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
@@ -134,13 +138,92 @@ def _collate_dpo_batch(batch: list[dict[str, list[int]]], tokenizer: AutoTokeniz
         raise
 
 
+def _dpo_eval_set_fingerprint(eval_dataset: Dataset) -> str:
+    """Fingerprint the preference pairs in the order they are scored (dataset file order)."""
+    return eval_set_fingerprint(
+        "\x00".join(
+            (row[cst.TRL_DPO_FIELD_PROMPT], row[cst.TRL_DPO_FIELD_CHOSEN], row[cst.TRL_DPO_FIELD_REJECTED])
+        ).encode("utf-8")
+        for row in eval_dataset
+    )
+
+
+def _completion_logprob(
+    model: AutoModelForCausalLM,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    max_length: int,
+) -> float | None:
+    """Sum of log P(token) over the completion tokens only, prompt tokens masked out.
+
+    SUMMED rather than averaged, matching TRL's default DPO loss (no length normalisation), so a
+    pair's loss scales with its completion length. That is fine for pairing - example i is only
+    ever compared against example i - but per-pair values are not comparable across pairs.
+    """
+    ids = (prompt_ids + completion_ids)[:max_length]
+    prompt_len = min(len(prompt_ids), max_length)
+    if len(ids) <= prompt_len:
+        # Truncation ate the whole completion; nothing to score.
+        return None
+
+    input_ids = torch.tensor([ids], device=model.device)
+    with torch.no_grad():
+        logits = model(input_ids=input_ids).logits.float()
+
+    # Position t predicts token t+1, so completion token at index prompt_len is predicted at t=prompt_len-1.
+    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
+    targets = input_ids[:, 1:]
+    token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    return token_log_probs[0, prompt_len - 1 :].sum().item()
+
+
+def _compute_per_pair_dpo_losses(
+    finetuned_model: AutoModelForCausalLM,
+    reference_model: AutoModelForCausalLM,
+    eval_dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    max_length: int,
+) -> list[float]:
+    """DPO loss per preference pair, for the paired boss-round comparison.
+
+    Computed directly from policy and reference log-probabilities rather than through TRL, because
+    TRL is unpinned - it comes from the axolotl base image - so reaching into its internals would
+    break silently on a base bump. The caller asserts the mean of this against TRL's reported
+    eval_loss, which is what catches a wrong formula on code that cannot be run locally.
+    """
+    finetuned_model.eval()
+    reference_model.eval()
+
+    losses: list[float] = []
+    for row in eval_dataset:
+        prompt_ids = tokenizer(row[cst.TRL_DPO_FIELD_PROMPT], add_special_tokens=False).input_ids
+        chosen_ids = tokenizer(row[cst.TRL_DPO_FIELD_CHOSEN], add_special_tokens=False).input_ids
+        rejected_ids = tokenizer(row[cst.TRL_DPO_FIELD_REJECTED], add_special_tokens=False).input_ids
+
+        policy_chosen = _completion_logprob(finetuned_model, prompt_ids, chosen_ids, max_length)
+        policy_rejected = _completion_logprob(finetuned_model, prompt_ids, rejected_ids, max_length)
+        reference_chosen = _completion_logprob(reference_model, prompt_ids, chosen_ids, max_length)
+        reference_rejected = _completion_logprob(reference_model, prompt_ids, rejected_ids, max_length)
+
+        if None in (policy_chosen, policy_rejected, reference_chosen, reference_rejected):
+            losses.append(float("nan"))
+            continue
+
+        logits = (policy_chosen - reference_chosen) - (policy_rejected - reference_rejected)
+        losses.append(-F.logsigmoid(torch.tensor(cst.BETA_DPO * logits)).item())
+
+        torch.cuda.empty_cache()
+
+    return losses
+
+
 def evaluate_dpo_model(
     evaluation_config: DictDefault,
     finetuned_model: AutoModelForCausalLM,
     reference_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     evaluation_args: EvaluationArgs,
-) -> dict[str, float]:
+) -> dict[str, float | list[float] | str]:
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
@@ -189,6 +272,38 @@ def evaluate_dpo_model(
     evaluation_results = {
         "eval_loss": eval_results["eval_loss"],
     }
+
+    if os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) != "1":
+        return evaluation_results
+
+    per_pair_losses = _compute_per_pair_dpo_losses(
+        finetuned_model=finetuned_model,
+        reference_model=reference_model,
+        eval_dataset=eval_dataset,
+        tokenizer=tokenizer,
+        max_length=max_length,
+    )
+    finite = [loss for loss in per_pair_losses if math.isfinite(loss)]
+    if not finite:
+        logger.error("PER_EXAMPLE_LOSSES: no finite per-pair DPO losses - the paired comparison will have nothing to use")
+    else:
+        mean_loss = sum(finite) / len(finite)
+        # DPO loss is a flat per-pair mean and eval batch size is pinned to 1, so this should agree
+        # closely. A divergence means the formula or the tokenization does not match TRL's.
+        if not math.isclose(mean_loss, eval_results["eval_loss"], rel_tol=5e-3, abs_tol=1e-3):
+            logger.error(
+                f"PER_EXAMPLE_LOSSES MISMATCH: mean of {len(finite)} per-pair DPO losses is {mean_loss:.8f} "
+                f"but TRL reported eval_loss={eval_results['eval_loss']:.8f}. The vector does not measure the "
+                f"same quantity as the scalar - do not trust boss-round verdicts built on it."
+            )
+        else:
+            logger.info(
+                f"PER_EXAMPLE_LOSSES: {len(finite)} pairs, mean {mean_loss:.8f} matches "
+                f"eval_loss {eval_results['eval_loss']:.8f}"
+            )
+
+    evaluation_results["per_example_losses"] = per_pair_losses
+    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset)
     return evaluation_results
 
 

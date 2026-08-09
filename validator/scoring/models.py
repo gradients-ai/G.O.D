@@ -106,6 +106,10 @@ class MinerResults(BaseModel):
     submission: Submission | None = None
     score_reason: str | None = None
     adjusted_loss: float | None = None
+    # Held-out loss per example, in eval-set order, for the paired boss-round comparison. Only
+    # carried for instruct/DPO; None everywhere else. Never used for ranking - test_loss is.
+    per_example_losses: list[float] | None = None
+    eval_set_fingerprint: str | None = None
 
 
 class MinerResultsText(MinerResults):

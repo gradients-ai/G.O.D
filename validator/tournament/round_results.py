@@ -7,6 +7,7 @@ from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import get_tournament
@@ -30,6 +31,7 @@ from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
+from validator.tournament.thresholds import compare_paired_losses
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
 
 
@@ -204,6 +206,80 @@ def did_winner_change(previous_tournament: TournamentData | None, latest_tournam
         return True
 
     return False
+
+async def _resolve_boss_round_task_winner(
+    task_id,
+    task_object,
+    boss_hotkey: str,
+    opponent_hotkey: str,
+    boss_loss: float,
+    opponent_loss: float,
+    threshold_percentage: float,
+    psql_db: PSQLDB,
+) -> str:
+    """Decide one boss-round task, preferring the paired per-example comparison.
+
+    Instruct and DPO losses are log-likelihoods, where a relative margin is the wrong scale and a
+    scalar mean cannot separate a real win from held-out sampling noise. Where both sides have
+    per-example vectors those are compared example by example; everything else (GRPO, env, and any
+    task evaluated before the evaluators emitted vectors) keeps the relative margin.
+    """
+    higher_is_better = task_object.task_type in (TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK)
+
+    if task_object.task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        boss_losses, boss_fingerprint = await get_per_example_losses(task_id, boss_hotkey, psql_db)
+        opponent_losses, opponent_fingerprint = await get_per_example_losses(task_id, opponent_hotkey, psql_db)
+
+        fingerprints_disagree = (
+            boss_fingerprint is not None and opponent_fingerprint is not None and boss_fingerprint != opponent_fingerprint
+        )
+        if boss_losses is None or opponent_losses is None:
+            # Nothing was emitted: pre-existing tasks and the rollout window. Falling back keeps
+            # the round resolvable.
+            logger.warning(
+                f"Boss round task {task_id}: no per-example losses for "
+                f"{'boss' if boss_losses is None else 'challenger'} - falling back to the "
+                f"{threshold_percentage * 100:.1f}% margin"
+            )
+        elif fingerprints_disagree or len(boss_losses) != len(opponent_losses):
+            # Vectors exist but cannot be paired. The eval row set is a function of the candidate
+            # model's max_position_embeddings, so the two models were scored on different data and
+            # no comparison between them is valid. Resolved as not a win rather than falling back
+            # to a comparison of two means taken over different example sets.
+            logger.error(
+                f"Boss round task {task_id}: per-example vectors present but not pairable "
+                f"(boss_fingerprint={boss_fingerprint} challenger_fingerprint={opponent_fingerprint} "
+                f"boss_n={len(boss_losses)} challenger_n={len(opponent_losses)}) - not counted as a win"
+            )
+            return boss_hotkey
+        else:
+            comparison = compare_paired_losses(boss_losses, opponent_losses)
+            # Logged whether the challenger won or lost: the observed win rate across real boss
+            # rounds is the only data that can calibrate BOSS_ROUND_MIN_WIN_RATE.
+            logger.info(
+                f"BOSS_ROUND_PAIRED task={task_id} type={task_object.task_type} "
+                f"challenger_won={comparison.challenger_won} "
+                f"win_rate={comparison.win_rate:.4f} win_rate_lb={comparison.win_rate_lower_bound:.4f} "
+                f"mean_gap_nats={comparison.mean_gap_nats:.6f} mean_gap_lb={comparison.mean_gap_lower_bound:.6f} "
+                f"decided={comparison.n_decided}/{comparison.n_examples} "
+                f"required_win_rate={t_cst.BOSS_ROUND_MIN_WIN_RATE} "
+                f"required_mean_gap={t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS} :: {comparison.reason}"
+            )
+            return opponent_hotkey if comparison.challenger_won else boss_hotkey
+
+    task_winner = (
+        opponent_hotkey
+        if challenger_beats_boss(boss_loss, opponent_loss, higher_is_better, threshold_percentage)
+        else boss_hotkey
+    )
+    direction = "higher is better" if higher_is_better else "lower is better"
+    winner_label = "opponent" if task_winner == opponent_hotkey else "boss"
+    logger.info(
+        f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
+        f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
+    )
+    return task_winner
+
 
 def determine_boss_round_winner(
     task_winners: list[str],
@@ -394,18 +470,17 @@ async def get_knockout_winners(
 
             logger.info(f"Boss round task {task.task_id}: Boss loss: {boss_loss:.6f}, Opponent loss: {opponent_loss:.6f}")
 
-            higher_is_better = task_object.task_type in (TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK)
-            if challenger_beats_boss(boss_loss, opponent_loss, higher_is_better, threshold_percentage):
-                task_winner = opponent_hotkey
-            else:
-                task_winner = boss_hotkey
-            _award(task_winner, task_object)
-            direction = "higher is better" if higher_is_better else "lower is better"
-            winner_label = "opponent" if task_winner == opponent_hotkey else "boss"
-            logger.info(
-                f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
-                f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
+            task_winner = await _resolve_boss_round_task_winner(
+                task_id=task.task_id,
+                task_object=task_object,
+                boss_hotkey=boss_hotkey,
+                opponent_hotkey=opponent_hotkey,
+                boss_loss=boss_loss,
+                opponent_loss=opponent_loss,
+                threshold_percentage=threshold_percentage,
+                psql_db=psql_db,
             )
+            _award(task_winner, task_object)
 
             await update_threshold_adjusted_quality_scores_for_task(
                 task_id=task.task_id,

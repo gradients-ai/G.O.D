@@ -191,6 +191,8 @@ GPU_COUNT = "gpu_count"
 
 TEST_LOSS = "test_loss"
 SYNTH_LOSS = "synth_loss"
+PER_EXAMPLE_LOSSES = "per_example_losses"
+EVAL_SET_FINGERPRINT = "eval_set_fingerprint"
 SCORE_REASON = "score_reason"
 
 # Offer Responses Table Columns
