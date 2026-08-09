@@ -308,11 +308,29 @@ class PvPIndividualEnvScore(BaseModel):
     score: float
 
 
+class PairedExampleWins(BaseModel):
+    """How a two-way task split example by example, for the two competitors that were scored on it.
+
+    Reporting only - the winner is decided in round_results.py. Null on tasks with no stored
+    per-example vectors, which is every task before the paired rollout and every task type outside
+    PAIRED_BOSS_ROUND_TASK_TYPES, so consumers must keep their mean-loss view for those.
+    """
+
+    hotkey_a: str
+    hotkey_b: str
+    hotkey_a_wins: int
+    hotkey_b_wins: int
+    ties: int  # examples inside the dead zone, won by neither
+    n_examples: int
+    deadzone_nats: float
+
+
 class DetailedTournamentTaskScore(TournamentTaskScore):
     task_type: TaskType | None = None
     environment_names: list[str] | None = None
     pvp_pair_results: list[PvPPairEnvResult] | None = None
     pvp_individual_scores: list[PvPIndividualEnvScore] | None = None
+    paired_example_wins: PairedExampleWins | None = None
 
 
 class TournamentRoundResult(BaseModel):
@@ -364,6 +382,10 @@ class PairedLossComparison(BaseModel):
     # it as a boss win misdescribes what happened.
     is_draw: bool = False
     reason: str
+    # The bars this verdict was judged against, carried with it so a reader does not have to guess
+    # which constants were in force when the round ran.
+    required_win_rate: float
+    required_mean_gap_nats: float
 
 
 class TaskPerformanceDifference(BaseModel):
@@ -376,6 +398,13 @@ class TaskPerformanceDifference(BaseModel):
     threshold_used: float  # boss-round win margin (BOSS_ROUND_WIN_MARGIN)
     performance_difference: float | None  # Percentage difference (positive = challenger better)
     challenger_won: bool
+    # Set when the task was decided on per-example win rate rather than the margin above. Null
+    # means challenger_won came from threshold_used, as it did for every pre-rollout tournament.
+    paired_comparison: PairedLossComparison | None = None
+    # Why the task went the way it did, when the paired path decided it. Not the same as
+    # paired_comparison.reason: the KL scalar gate can overturn a won paired comparison, so
+    # challenger_won may be False while the comparison inside it says the challenger won.
+    decision_reason: str | None = None
 
 
 class TournamentPerformanceData(BaseModel):
