@@ -262,13 +262,20 @@ BOSS_ROUND_WIN_MARGIN = 0.01
 # Per-example gap below which neither side won that example. 0.01 nats ~= 1% more probability
 # assigned to it — trivial. Without a dead zone the win count is decided at the 5th decimal.
 BOSS_ROUND_TIE_DEADZONE_NATS = 0.01
-# Challenger must win this share of *decided* examples. Not a noise threshold — at ~1000 examples
-# the standard error on a win rate is ~1.6%, so this is ~9 sigma; the bootstrap below is what
-# handles noise. This is the policy statement of how much better "substantially better" means:
-# roughly two examples won for every one lost. Provisional — see the win-rate logging in
-# round_results.py, which records the observed rate on every boss task (won or lost) so this can
-# be recalibrated against real matchups rather than reasoning.
-BOSS_ROUND_MIN_WIN_RATE = 0.65
+# Challenger must win this share of *decided* examples, at the bootstrap lower bound - so the
+# observed rate has to run a little above it. Not a noise threshold: at ~1000 examples the standard
+# error on a win rate is ~1.6%, and the bootstrap below is what handles noise. This is the policy
+# statement of how much more *consistent* a challenger has to be.
+#
+# It deliberately does not carry the "never weaker than the old rule" job - the mean-gap floor
+# below does that, since it scales to the old relative margin on high-loss tasks. That leaves this
+# free to be tuned for consistency alone. A genuinely better model with a wide per-example spread
+# can sit near 55% and still be the better model; demanding much more of it selects for
+# low-variance submissions rather than good ones.
+#
+# Provisional - see the win-rate logging in round_results.py, which records the observed rate on
+# every task, won or lost, so this can be recalibrated against real matchups rather than reasoning.
+BOSS_ROUND_MIN_WIN_RATE = 0.55
 # Challenger must also be better on average by this much, so it cannot win on a majority of
 # hairline examples while being materially worse where it loses.
 BOSS_ROUND_MIN_MEAN_GAP_NATS = 0.02

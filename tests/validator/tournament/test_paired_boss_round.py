@@ -58,17 +58,17 @@ def test_saturated_task_goes_to_the_boss():
 
 
 def test_win_rate_just_under_the_bar_is_rejected():
-    """A real but insufficient edge: better on ~60% of examples, short of the 65% required."""
+    """A real but insufficient edge: better on ~52% of examples, short of the 55% required."""
     rng = np.random.default_rng(3)
     boss = _losses()
     challenger = boss.copy()
     idx = rng.permutation(boss.size)
-    challenger[idx[:600]] -= 0.05
-    challenger[idx[600:]] += 0.05
+    challenger[idx[:520]] -= 0.05
+    challenger[idx[520:]] += 0.05
 
     result = compare_paired_losses(list(boss), list(challenger))
 
-    assert 0.55 < result.win_rate < 0.65
+    assert 0.50 < result.win_rate < 0.55
     assert result.challenger_won is False
     assert "win rate" in result.reason
 
