@@ -342,7 +342,7 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
     a rejection band.
     """
     try:
-        losses = await get_dataset_test_losses(ds_name, psql_db, synth_cst.DEGENERATE_LOSS_LOOKBACK_DAYS)
+        losses = await get_dataset_test_losses(ds_name, psql_db, synth_cst.DEGENERATE_LOSS_LOOKBACK_DAYS, task_type)
     except Exception as e:
         logger.warning(f"Failed to query historical losses for {ds_name}, allowing dataset: {e}")
         return False

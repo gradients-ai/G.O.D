@@ -13,7 +13,7 @@ def stub_losses(monkeypatch):
     """Stub the DB lookup so the filter can be exercised on fixed loss histories."""
 
     def _stub(losses: list[float]) -> None:
-        async def fake_get_dataset_test_losses(ds_name: str, psql_db, lookback_days: int) -> list[float]:
+        async def fake_get_dataset_test_losses(ds_name: str, psql_db, lookback_days: int, task_type) -> list[float]:
             assert lookback_days == synth_cst.DEGENERATE_LOSS_LOOKBACK_DAYS
             return losses
 
@@ -78,7 +78,7 @@ async def test_instruct_unlearnable_data_is_rejected(stub_losses):
 
 @pytest.mark.asyncio
 async def test_db_failure_allows_the_dataset(monkeypatch):
-    async def boom(ds_name: str, psql_db, lookback_days: int) -> list[float]:
+    async def boom(ds_name: str, psql_db, lookback_days: int, task_type) -> list[float]:
         raise RuntimeError("connection reset")
 
     monkeypatch.setattr(scheduler, "get_dataset_test_losses", boom)

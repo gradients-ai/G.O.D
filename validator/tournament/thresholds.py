@@ -223,8 +223,13 @@ async def update_threshold_adjusted_quality_scores_for_task(
     threshold_percentage: float,
     psql_db: PSQLDB,
     compared_hotkeys: list[str] | None = None,
+    basis: str | None = None,
 ) -> None:
-    """Persist threshold-adjusted task scores while preserving raw losses."""
+    """Persist threshold-adjusted task scores while preserving raw losses.
+
+    ``basis`` describes what decided the task, for the stored score_reason. Callers that decide on
+    something other than the win margin pass their own, so the persisted reason matches reality.
+    """
     miner_results = await get_task_results_for_ranking(task_id, psql_db)
     if not miner_results:
         logger.warning(f"No valid results for threshold-adjusted scoring on task {task_id}")
@@ -239,6 +244,7 @@ async def update_threshold_adjusted_quality_scores_for_task(
         return
 
     threshold_pct = threshold_percentage * 100
+    decided_by = basis if basis is not None else f"{threshold_pct:.1f}% boss-round win margin"
     for result in miner_results:
         if allowed_hotkeys is not None and result.hotkey not in allowed_hotkeys:
             continue
@@ -246,9 +252,7 @@ async def update_threshold_adjusted_quality_scores_for_task(
         is_winner = result.hotkey == winner_hotkey
         quality_score = 3.0 if is_winner else 0.0
         score_reason = (
-            f"Winner at {threshold_pct:.1f}% boss-round win margin"
-            if is_winner
-            else f"Lost to winner {winner_hotkey} at {threshold_pct:.1f}% boss-round win margin"
+            f"Winner at {decided_by}" if is_winner else f"Lost to winner {winner_hotkey} at {decided_by}"
         )
         await update_task_node_quality_score_only(
             task_id=task_id,
@@ -260,5 +264,5 @@ async def update_threshold_adjusted_quality_scores_for_task(
 
     logger.info(
         f"Updated threshold-adjusted quality scores for task {task_id}: winner={winner_hotkey}, "
-        f"threshold={threshold_pct:.1f}%"
+        f"decided by {decided_by}"
     )

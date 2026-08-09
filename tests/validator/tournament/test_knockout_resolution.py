@@ -38,6 +38,15 @@ def wire(monkeypatch):
         monkeypatch.setattr(rr, "get_per_example_losses", fake_vectors)
         monkeypatch.setattr(rr, "get_task", fake_task)
         monkeypatch.setattr(rr, "get_task_winner", fake_fallback)
+
+        persisted = {}
+
+        async def fake_persist(task_id, winner_hotkey, threshold_percentage, psql_db, compared_hotkeys=None, basis=None):
+            persisted["winner"] = winner_hotkey
+            persisted["basis"] = basis
+
+        monkeypatch.setattr(rr, "update_threshold_adjusted_quality_scores_for_task", fake_persist)
+        return persisted
     return _wire
 
 
@@ -50,6 +59,21 @@ async def test_paired_path_is_reached_for_a_two_way_contest(wire):
     wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, float(a.mean())), (B, float(b.mean()))])
 
     assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == A
+
+
+@pytest.mark.asyncio
+async def test_paired_verdict_is_persisted(wire):
+    """Audit data reads task_nodes, so a paired verdict that is not written back would contradict
+    actual advancement."""
+    rng = np.random.default_rng(4)
+    a = rng.gamma(2.0, 0.5, 1000)
+    b = a + 0.05
+    persisted = wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, float(a.mean())), (B, float(b.mean()))])
+
+    await rr._resolve_knockout_task_winner(_task(), psql_db=None)
+
+    assert persisted["winner"] == A
+    assert "per-example win rate" in persisted["basis"]
 
 
 @pytest.mark.asyncio

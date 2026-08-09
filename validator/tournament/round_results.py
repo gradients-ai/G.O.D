@@ -429,6 +429,19 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
         f"KNOCKOUT_PAIRED task={task.task_id} type={task_object.task_type} winner={winner} :: {description} "
         f"(mean losses {first.hotkey}={first.test_loss:.6f} {second.hotkey}={second.test_loss:.6f})"
     )
+
+    # Persist the verdict. Everything that reconstructs a bracket after the fact - audit data,
+    # get_task_winners - reads task_nodes.quality_score, which still holds the mean-loss ranking.
+    # Without this an auditor recomputing the round disagrees with the validator on exactly the
+    # tasks where win rate and mean loss diverge, which is the whole point of the change.
+    await update_threshold_adjusted_quality_scores_for_task(
+        task_id=task.task_id,
+        winner_hotkey=winner,
+        threshold_percentage=0.0,
+        compared_hotkeys=[first.hotkey, second.hotkey],
+        psql_db=psql_db,
+        basis=f"per-example win rate ({description})",
+    )
     return winner
 
 
