@@ -20,6 +20,7 @@ from validator.tournament.models import TournamentPerformanceData
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.tournament.thresholds import challenger_beats_boss
+from validator.tournament.thresholds import challenger_takes_paired_task
 from validator.tournament.thresholds import compare_paired_losses
 
 
@@ -55,7 +56,9 @@ async def _challenger_won_task(
             )
         )
         if pairable:
-            return compare_paired_losses(boss_losses, challenger_losses).challenger_won
+            comparison = compare_paired_losses(boss_losses, challenger_losses)
+            challenger_won, _ = challenger_takes_paired_task(comparison, boss_score, challenger_score)
+            return challenger_won
 
         if boss_losses is not None and challenger_losses is not None:
             # Present but unpairable: crowning does not count these as a win, so report the same

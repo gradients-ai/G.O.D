@@ -223,7 +223,9 @@ def _completion_logprob(
     log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
     targets = input_ids[:, 1:]
     token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
-    return token_log_probs[0, prompt_len - 1 :].sum().item()
+    # max() because prompt_len == 0 (empty prompt on a tokenizer that adds no BOS) would make this
+    # [-1:], silently scoring only the final token instead of the whole completion.
+    return token_log_probs[0, max(prompt_len - 1, 0) :].sum().item()
 
 
 def _compute_per_pair_dpo_losses(

@@ -127,6 +127,32 @@ def compare_paired_losses(
     )
 
 
+def challenger_takes_paired_task(
+    comparison: PairedLossComparison,
+    boss_scalar_loss: float,
+    challenger_scalar_loss: float,
+) -> tuple[bool, str]:
+    """Final verdict for a paired boss-round task. Returns (challenger_won, reason).
+
+    Two conditions. The paired comparison runs on RAW per-example losses; the ranking scalar can
+    additionally carry a per-model KL penalty, which is a constant and so cannot be folded into the
+    vector without fabricating a 100% win rate. So the challenger must win on the examples AND not
+    be worse once its penalty is counted. For non-KL tasks the scalar is the vector mean and the
+    second condition is already implied by the first.
+
+    Shared by crowning and by the emission projection: if these two disagreed, analytics would
+    report a challenger win on a task the tournament recorded as a loss.
+    """
+    if not comparison.challenger_won:
+        return False, comparison.reason
+    if challenger_scalar_loss > boss_scalar_loss:
+        return False, (
+            f"won the paired comparison but is worse on the ranking scalar "
+            f"({challenger_scalar_loss:.6f} vs {boss_scalar_loss:.6f})"
+        )
+    return True, comparison.reason
+
+
 def paired_head_to_head_winner(
     hotkey_a: str,
     a_losses: list[float],

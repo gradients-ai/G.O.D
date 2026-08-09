@@ -31,6 +31,7 @@ from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
+from validator.tournament.thresholds import challenger_takes_paired_task
 from validator.tournament.thresholds import compare_paired_losses
 from validator.tournament.thresholds import paired_head_to_head_winner
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
@@ -266,22 +267,10 @@ async def _resolve_boss_round_task_winner(
                 f"required_win_rate={t_cst.BOSS_ROUND_MIN_WIN_RATE} "
                 f"required_mean_gap={t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS} :: {comparison.reason}"
             )
-            if not comparison.challenger_won:
-                return boss_hotkey
-
-            # The paired test runs on RAW per-example losses. On a KL-weighted task the ranking
-            # scalar also carries a per-model KL penalty, which is a constant and so cannot be
-            # folded into the vector without fabricating a 100% win rate. Apply it here instead:
-            # the challenger must win on the examples AND not be worse once its penalty is counted.
-            # For non-KL tasks the scalars are the vector means, so this is already implied.
-            if opponent_loss > boss_loss:
-                logger.info(
-                    f"Boss round task {task_id}: challenger won the paired comparison but is worse on the "
-                    f"ranking scalar ({opponent_loss:.6f} vs {boss_loss:.6f}) - not counted as a win"
-                )
-                return boss_hotkey
-
-            return opponent_hotkey
+            challenger_won, verdict_reason = challenger_takes_paired_task(comparison, boss_loss, opponent_loss)
+            if not challenger_won:
+                logger.info(f"Boss round task {task_id}: {verdict_reason}")
+            return opponent_hotkey if challenger_won else boss_hotkey
 
     task_winner = (
         opponent_hotkey
