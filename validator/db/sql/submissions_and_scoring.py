@@ -178,7 +178,7 @@ async def set_task_node_losses(
     """Persist raw evaluation outputs without final ranking.
 
     The only write of raw evaluator losses, and so the only place the per-example vector is stored.
-    Passed only for boss-round tasks (see is_final_round_task) since the paired comparison is its
+    Passed only for head-to-head tasks (see is_paired_comparison_task) since those are its
     only consumer. The list binds directly: a jsonb codec is registered on every pooled connection
     (validator/db/database.py), so serialising here would double-encode it.
     """
@@ -461,25 +461,34 @@ async def get_all_node_stats_batched(hotkeys: list[str], psql_db: PSQLDB) -> dic
 
 
 async def get_eligible_hotkeys_for_task(task_id: UUID, psql_db: PSQLDB) -> set[str]:
-    """Hotkeys whose submission is eligible to win a task: a positive persisted quality score.
+    """Hotkeys whose submission is eligible to win a task: a NON-NEGATIVE persisted quality score.
 
-    Mirrors get_task_winner's filter. A submission rejected as a non-finetune carries SCORE_PENALTY
-    and must not be able to advance, and that state lives only in the persisted score - the ranking
-    results rebuilt from task_nodes hardcode is_finetune=True.
+    The discriminator is the penalty, not the win. A submission rejected as a non-finetune carries
+    SCORE_PENALTY (-1); the legitimate runner-up of a two-way contest carries 0.0, because
+    calculate_miner_ranking_and_scores awards FIRST_PLACE_SCORE to rank 1 and leaves everyone else
+    untouched below MIN_IDEAL_NUM_MINERS_IN_POOL. So `> 0` would drop the runner-up of every
+    knockout and make the paired path unreachable, while `>= 0` separates penalised from merely
+    second exactly.
+
+    Returns nothing when no submission scored above zero: calculate_miner_ranking_and_scores
+    returns early with everyone at 0.0 when there are no valid finetunes at all, and that must not
+    read as two eligible competitors.
     """
     async with await psql_db.connection() as connection:
         connection: Connection
         rows = await connection.fetch(
             f"""
-            SELECT {cst.HOTKEY}
+            SELECT {cst.HOTKEY}, {cst.TASK_NODE_QUALITY_SCORE}
             FROM {cst.TASK_NODES_TABLE}
             WHERE {cst.TASK_ID} = $1
             AND {cst.NETUID} = $2
-            AND {cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL AND {cst.TASK_NODE_QUALITY_SCORE} > 0
+            AND {cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL AND {cst.TASK_NODE_QUALITY_SCORE} >= 0
             """,
             task_id,
             NETUID,
         )
+        if not any(row[cst.TASK_NODE_QUALITY_SCORE] > 0 for row in rows):
+            return set()
         return {row[cst.HOTKEY] for row in rows}
 
 

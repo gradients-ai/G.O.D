@@ -394,6 +394,9 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
         # Byes, failed evaluations and anything that is not a clean two-way contest.
         return await get_task_winner(task.task_id, psql_db)
 
+    # Sorted, not left in DB row order: paired_head_to_head_winner breaks an exact tie on mean loss
+    # in favour of its first argument, so row order would otherwise decide the task.
+    ranked.sort(key=lambda result: (result.test_loss, result.hotkey))
     first, second = ranked[0], ranked[1]
     first_losses, first_fingerprint = await get_per_example_losses(task.task_id, first.hotkey, psql_db)
     second_losses, second_fingerprint = await get_per_example_losses(task.task_id, second.hotkey, psql_db)
@@ -433,7 +436,8 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
             f"KNOCKOUT_PAIRED task={task.task_id} sample winner {winner} is worse on the ranking loss "
             f"({winner_scalar:.6f} vs {loser_scalar:.6f}) - advancing {fallback} on mean loss instead"
         )
-        winner, description = fallback, f"mean loss ({winner_scalar:.6f} vs {loser_scalar:.6f})"
+        # Operands ordered winner-first: this string is persisted as the winner's score_reason.
+        winner, description = fallback, f"mean loss ({loser_scalar:.6f} vs {winner_scalar:.6f})"
 
     logger.info(
         f"KNOCKOUT_PAIRED task={task.task_id} type={task_object.task_type} winner={winner} :: {description} "

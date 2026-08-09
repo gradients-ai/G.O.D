@@ -209,10 +209,15 @@ def _completion_logprob(
     pair's loss scales with its completion length. That is fine for pairing - example i is only
     ever compared against example i - but per-pair values are not comparable across pairs.
     """
+    # Truncate the PROMPT from the left, keeping the completion whole - TRL's default
+    # truncation_mode is keep_end. Truncating the concatenation from the right would instead drop
+    # the completion, which is the only part being scored, and return nothing for the pair.
+    keep_prompt = max(0, max_length - len(completion_ids))
+    prompt_ids = prompt_ids[len(prompt_ids) - keep_prompt :] if keep_prompt else []
     ids = (prompt_ids + completion_ids)[:max_length]
-    prompt_len = min(len(prompt_ids), max_length)
+    prompt_len = len(prompt_ids)
     if len(ids) <= prompt_len:
-        # Truncation ate the whole completion; nothing to score.
+        # Even with the prompt fully dropped there is no completion left to score.
         return None
 
     input_ids = torch.tensor([ids], device=model.device)

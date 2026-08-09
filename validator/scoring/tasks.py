@@ -31,7 +31,6 @@ from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
-from validator.db.sql.tournament_performance import is_final_round_task
 from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name

@@ -29,7 +29,16 @@ def wire(monkeypatch):
                 for h, l in losses
             ]
         async def fake_eligible(task_id, psql_db):
-            return {h for h, _ in losses} if eligible is None else set(eligible)
+            if eligible is not None:
+                return set(eligible)
+            # Mirror what _update_scores actually persists for a two-way contest: rank 1 gets
+            # FIRST_PLACE_SCORE, the runner-up stays at 0.0, and both are eligible. Defaulting to
+            # "everyone" here is what let a > 0 filter pass its tests while killing the feature.
+            ranked = sorted(losses, key=lambda pair: pair[1])
+            persisted = {hotkey: (3.0 if i == 0 else 0.0) for i, (hotkey, _) in enumerate(ranked)}
+            if not any(score > 0 for score in persisted.values()):
+                return set()
+            return {hotkey for hotkey, score in persisted.items() if score >= 0}
 
         async def fake_vectors(task_id, hotkey, psql_db):
             return vectors.get(hotkey, (None, None))
@@ -144,3 +153,16 @@ async def test_sample_winner_worse_on_the_ranking_loss_does_not_advance(wire):
     wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, 1.30), (B, 1.02)])
 
     assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == B
+
+
+@pytest.mark.asyncio
+async def test_runner_up_at_zero_is_still_eligible(wire):
+    """Regression: the runner-up of every two-way contest persists quality_score 0.0, so a > 0
+    eligibility filter leaves one competitor and silently kills the paired path."""
+    rng = np.random.default_rng(12)
+    a = rng.gamma(2.0, 0.5, 1000)
+    b = a + 0.05
+    wire({A: (list(a), "fp"), B: (list(b), "fp")}, [(A, float(a.mean())), (B, float(b.mean()))])
+
+    # Reaches the paired path rather than falling back to the mean-loss ranking.
+    assert await rr._resolve_knockout_task_winner(_task(), psql_db=None) == A
