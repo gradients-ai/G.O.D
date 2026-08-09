@@ -54,9 +54,6 @@ GRPO_KL_BATCH_SIZE = 1
 # than an approximation, and it avoids any dependence on padding being neutral across a batch.
 # Do not raise this.
 PER_EXAMPLE_LOSS_BATCH_SIZE = 1
-# Positions per fp32 slice when summing DPO completion log-probabilities. Bounds the upcast to
-# CHUNK x vocab floats instead of the whole sequence, which at a large vocab is gigabytes.
-DPO_LOGPROB_CHUNK_TOKENS = 256
 GRPO_DEFAULT_NUM_GENERATIONS = 2
 GRPO_KL_SEQUENCE_LENGTH = 512
 

@@ -217,23 +217,13 @@ def _completion_logprob(
 
     input_ids = torch.tensor([ids], device=model.device)
     with torch.no_grad():
-        logits = model(input_ids=input_ids).logits
+        logits = model(input_ids=input_ids).logits.float()
 
-    # Position t predicts token t+1, so the completion token at index prompt_len is predicted at
-    # t = prompt_len - 1. Only those positions are scored; prompt tokens contribute nothing.
-    targets = input_ids[0, 1:]
-    total = 0.0
-    for start in range(prompt_len - 1, targets.shape[0], cst.DPO_LOGPROB_CHUNK_TOKENS):
-        end = min(start + cst.DPO_LOGPROB_CHUNK_TOKENS, targets.shape[0])
-        # Upcast a bounded slice rather than the whole [1, L, V] tensor: at a 150k vocab a full
-        # fp32 copy is gigabytes, and max_length comes from max_position_embeddings unbounded.
-        chunk = logits[0, start:end, :].float()
-        chunk_targets = targets[start:end]
-        picked = chunk.gather(-1, chunk_targets.unsqueeze(-1)).squeeze(-1)
-        total += float((picked - torch.logsumexp(chunk, dim=-1)).sum().item())
-        del chunk
-
-    return total
+    # Position t predicts token t+1, so completion token at index prompt_len is predicted at t=prompt_len-1.
+    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
+    targets = input_ids[:, 1:]
+    token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    return token_log_probs[0, prompt_len - 1 :].sum().item()
 
 
 def _compute_per_pair_dpo_losses(
