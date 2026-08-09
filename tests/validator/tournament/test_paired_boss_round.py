@@ -176,3 +176,18 @@ def test_flat_floor_still_applies_below_the_crossover():
     boss = _losses(n=1000, seed=21)  # mean ~1.0
     result = compare_paired_losses(list(boss), list(boss - 0.05))
     assert result.challenger_won is True
+
+
+def test_a_draw_needs_as_much_evidence_as_a_difference():
+    """All examples tied only means "equivalent" if there were enough of them for a real gap to
+    have shown up. Below the floor it is the same cannot-tell case as too few decided."""
+    for n_examples in (1, 20, 99):
+        boss = np.random.default_rng(31).uniform(0.02, 0.03, n_examples)
+        result = compare_paired_losses(list(boss), list(boss - 0.002))
+        assert result.n_decided == 0
+        assert result.is_draw is False, f"{n_examples} examples should be too few to call a draw"
+        assert result.challenger_won is False
+
+    boss = np.random.default_rng(31).uniform(0.02, 0.03, 100)
+    result = compare_paired_losses(list(boss), list(boss - 0.002))
+    assert result.is_draw is True

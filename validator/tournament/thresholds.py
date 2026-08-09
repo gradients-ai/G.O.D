@@ -89,7 +89,11 @@ def compare_paired_losses(
         seed=seed,
     )
 
-    is_draw = n_decided == 0
+    # A draw needs as much evidence as a difference does. "Everything landed in the dead zone" only
+    # says the models are equivalent if there were enough examples that a real gap would have shown
+    # up - on a handful of examples a genuinely better model lands inside the dead zone by luck.
+    # Below the floor this is the same "cannot tell" case as too few decided, not a finding.
+    is_draw = n_decided == 0 and n_examples >= min_decided
     if is_draw:
         reason = (
             f"Draw - all {n_examples} comparable examples fell inside the {deadzone_nats} nat dead "
