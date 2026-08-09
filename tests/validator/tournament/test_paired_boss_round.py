@@ -145,3 +145,29 @@ def test_ties_count_for_neither_side():
     assert result.n_decided == 500
     assert result.challenger_example_wins == 500
     assert result.boss_example_wins == 0
+
+
+def test_mean_gap_floor_scales_with_the_loss():
+    """The floor is never weaker than the relative margin it replaces.
+
+    A flat 0.02 nats is looser than 1% of the loss once the loss exceeds 2.0, which would have let
+    a uniformly-but-slightly-better challenger take a high-loss task the old rule would have
+    refused.
+    """
+    rng = np.random.default_rng(20)
+    boss = rng.gamma(2.0, 5.0, 1000)  # mean loss ~10, so the floor scales to ~0.1 nats
+    challenger = boss - 0.05  # clears the flat 0.02 but is under 1% of the loss
+
+    result = compare_paired_losses(list(boss), list(challenger))
+
+    assert result.win_rate == 1.0  # better on every single example
+    assert result.mean_gap_nats > t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS
+    assert result.challenger_won is False
+    assert "mean gap" in result.reason
+
+
+def test_flat_floor_still_applies_below_the_crossover():
+    """Under a boss loss of 2.0 the scaling is a no-op and the flat 0.02 governs."""
+    boss = _losses(n=1000, seed=21)  # mean ~1.0
+    result = compare_paired_losses(list(boss), list(boss - 0.05))
+    assert result.challenger_won is True

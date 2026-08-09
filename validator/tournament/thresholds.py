@@ -69,7 +69,15 @@ def compare_paired_losses(
     n_decided = int(decided.sum())
     n_challenger_wins = int(challenger_wins.sum())
     win_rate = n_challenger_wins / n_decided if n_decided else 0.0
+    # Mean gap is over every comparable example, ties included: it asks whether the challenger is
+    # better overall, and near-identical examples legitimately dilute that. The win rate above uses
+    # only decided examples, where the two models actually differ.
     mean_gap = float(gaps.mean())
+
+    # Never a weaker requirement than the relative margin it replaces. A flat floor is looser than
+    # 1% of the loss once the loss exceeds 2.0, which would have let a uniformly-but-slightly
+    # better challenger take a high-loss task it would have lost under the old rule.
+    required_mean_gap = max(min_mean_gap_nats, t_cst.BOSS_ROUND_WIN_MARGIN * abs(float(boss.mean())))
 
     win_rate_lb, mean_gap_lb = _bootstrap_lower_bounds(
         gaps=gaps,
@@ -92,10 +100,10 @@ def compare_paired_losses(
             f"{min_win_rate:.1%} of {n_decided} decided examples"
         )
         challenger_won = False
-    elif mean_gap_lb < min_mean_gap_nats:
+    elif mean_gap_lb < required_mean_gap:
         reason = (
             f"Challenger mean gap {mean_gap:.4f} nats (bound {mean_gap_lb:.4f}) below required "
-            f"{min_mean_gap_nats} nats"
+            f"{required_mean_gap:.4f} nats"
         )
         challenger_won = False
     else:
