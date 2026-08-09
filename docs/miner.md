@@ -416,7 +416,9 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
   - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
   - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.02 nats that scales to 1% of the loss on high-loss tasks, so it is never a weaker requirement than the old margin.
 
-  Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. A task with fewer than `BOSS_ROUND_MIN_DECIDED_EXAMPLES` (100) decided samples cannot separate the two models and is not a win. The bootstrap seed is fixed, so every validator reaches the same verdict.
+  Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. The bootstrap seed is fixed, so every validator reaches the same verdict.
+
+  There is no minimum number of decided samples. The mean gap is taken over the *whole* held-out set, so it is a requirement on total improvement rather than on a count: improving 20 of 800 samples by 0.5 nats averages 0.014 and fails, while improving the same 20 by 1.5 nats averages 0.039 and passes. A saturated task — where the models differ on few samples and by little — fails on that gap regardless.
 
   On KL-weighted instruct tasks the per-sample comparison uses raw cross-entropy, and the challenger must additionally not be worse once the KL penalty is applied.
 

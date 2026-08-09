@@ -283,11 +283,6 @@ BOSS_ROUND_MIN_MEAN_GAP_NATS = 0.02
 # land here naturally. Interlocks with the bootstrap: at exactly this many decided examples
 # the standard error is ~5%, so a bare 65% will fail the bound and a much larger observed margin
 # is needed — the gate is automatically stricter when it has less to go on.
-# Reachable in practice: DATASET_BINS_TO_SAMPLE floors every dataset at MINIMUM_DATASET_ROWS
-# (8,000), and the split is min(10% of rows, 1000), so the smallest possible held-out set is 800
-# examples. No separate task-creation guard is needed - and if a task ever does fall short, the
-# BOSS_ROUND_PAIRED log line reports n_decided against this minimum on every boss task.
-BOSS_ROUND_MIN_DECIDED_EXAMPLES = 100
 # Both statistics must clear their bar at this one-sided bootstrap bound, not on the point estimate.
 BOSS_ROUND_BOOTSTRAP_CONFIDENCE = 0.99
 BOSS_ROUND_BOOTSTRAP_RESAMPLES = 10_000

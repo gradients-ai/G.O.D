@@ -17,7 +17,6 @@ def compare_paired_losses(
     deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
     min_win_rate: float = t_cst.BOSS_ROUND_MIN_WIN_RATE,
     min_mean_gap_nats: float = t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS,
-    min_decided: int = t_cst.BOSS_ROUND_MIN_DECIDED_EXAMPLES,
     confidence: float = t_cst.BOSS_ROUND_BOOTSTRAP_CONFIDENCE,
     resamples: int = t_cst.BOSS_ROUND_BOOTSTRAP_RESAMPLES,
     seed: int = t_cst.BOSS_ROUND_BOOTSTRAP_SEED,
@@ -93,17 +92,17 @@ def compare_paired_losses(
     # says the models are equivalent if there were enough examples that a real gap would have shown
     # up - on a handful of examples a genuinely better model lands inside the dead zone by luck.
     # Below the floor this is the same "cannot tell" case as too few decided, not a finding.
-    is_draw = n_decided == 0 and n_examples >= min_decided
+    # No minimum on the decided count. The mean gap is taken over every example, so a handful of
+    # decided ones cannot move it: 20 of 800 improved by 0.5 nats averages 0.014 and fails, while
+    # 20 improved by 1.5 averages 0.039 and passes. That makes the gate a requirement on total
+    # improvement rather than on a count, and it already rejects the saturated case a decided-count
+    # floor was meant to catch - tiny decided set AND tiny gaps means a tiny mean gap. A floor on
+    # top only threw out tasks where the challenger did move the average decisively.
+    is_draw = n_decided == 0
     if is_draw:
         reason = (
             f"Draw - all {n_examples} comparable examples fell inside the {deadzone_nats} nat dead "
             f"zone, so the two models are indistinguishable on this task"
-        )
-        challenger_won = False
-    elif n_decided < min_decided:
-        reason = (
-            f"Only {n_decided} decided examples (need {min_decided}) - too few to distinguish the "
-            f"two models on this task"
         )
         challenger_won = False
     elif win_rate_lb < min_win_rate:

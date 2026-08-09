@@ -12,7 +12,7 @@ def _losses(n: int = 1000, seed: int = 0) -> np.ndarray:
     return np.random.default_rng(seed).gamma(2.0, 0.5, n)
 
 
-def test_identical_models_leave_everything_undecided():
+def test_identical_models_are_a_draw():
     boss = _losses()
     result = compare_paired_losses(list(boss), list(boss))
     assert result.n_decided == 0
@@ -76,18 +76,31 @@ def test_win_rate_just_under_the_bar_is_rejected():
     assert "win rate" in result.reason
 
 
-def test_too_few_decided_examples_goes_to_the_boss():
-    """A large per-example edge on too small a decided set still fails - the gate is stricter
-    when it has less to go on."""
-    boss = _losses(n=1000, seed=4)
+def test_few_decided_examples_fail_on_the_mean_gap_not_a_count():
+    """No decided-count floor: a handful of decided examples cannot move an 800-example average."""
+    boss = _losses(n=800, seed=4)
     challenger = boss.copy()
-    challenger[:50] -= 0.5  # only 50 decided, below the 100 minimum
+    challenger[:20] -= 0.5  # 20 decisive wins, diluted across 800 -> ~0.014 nats
 
     result = compare_paired_losses(list(boss), list(challenger))
 
-    assert result.n_decided == 50
+    assert result.n_decided == 20
+    assert result.win_rate == 1.0
     assert result.challenger_won is False
-    assert "decided examples" in result.reason
+    assert "mean gap" in result.reason
+
+
+def test_few_decided_examples_can_win_if_the_improvement_is_large():
+    """The same 20 examples improved by enough to move the average do take the task - the gate is
+    on total improvement, not on how many examples carried it."""
+    boss = _losses(n=800, seed=4)
+    challenger = boss.copy()
+    challenger[:20] -= 2.0
+
+    result = compare_paired_losses(list(boss), list(challenger))
+
+    assert result.n_decided == 20
+    assert result.challenger_won is True
 
 
 def test_bootstrap_rejects_what_the_point_estimate_would_pass():
@@ -96,7 +109,7 @@ def test_bootstrap_rejects_what_the_point_estimate_would_pass():
     challenger = boss.copy()
     challenger[:120] -= 0.06
 
-    result = compare_paired_losses(list(boss), list(challenger), min_decided=10)
+    result = compare_paired_losses(list(boss), list(challenger))
 
     assert result.win_rate == 1.0
     assert result.win_rate_lower_bound == 1.0
@@ -178,16 +191,18 @@ def test_flat_floor_still_applies_below_the_crossover():
     assert result.challenger_won is True
 
 
-def test_a_draw_needs_as_much_evidence_as_a_difference():
-    """All examples tied only means "equivalent" if there were enough of them for a real gap to
-    have shown up. Below the floor it is the same cannot-tell case as too few decided."""
-    for n_examples in (1, 20, 99):
-        boss = np.random.default_rng(31).uniform(0.02, 0.03, n_examples)
-        result = compare_paired_losses(list(boss), list(boss - 0.002))
-        assert result.n_decided == 0
-        assert result.is_draw is False, f"{n_examples} examples should be too few to call a draw"
-        assert result.challenger_won is False
+def test_a_single_catastrophic_outlier_cannot_win_a_task():
+    """The mean gap alone would hand this over - 12.5 nats against a 0.13 requirement - but it
+    rests on one example, and ~37% of resamples do not contain it at all."""
+    rng = np.random.default_rng(3)
+    boss = rng.uniform(0.5, 0.6, 800)
+    challenger = boss - 0.002
+    boss[0], challenger[0] = 10000.0, 0.1
 
-    boss = np.random.default_rng(31).uniform(0.02, 0.03, 100)
-    result = compare_paired_losses(list(boss), list(boss - 0.002))
-    assert result.is_draw is True
+    result = compare_paired_losses(list(boss), list(challenger))
+
+    assert result.n_decided == 1
+    assert result.win_rate == 1.0
+    assert result.mean_gap_nats > 10
+    assert result.win_rate_lower_bound == 0.0
+    assert result.challenger_won is False
