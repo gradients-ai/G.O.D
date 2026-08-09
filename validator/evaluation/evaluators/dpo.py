@@ -148,6 +148,44 @@ def _dpo_eval_set_fingerprint(eval_dataset: Dataset) -> str:
     )
 
 
+def _tokenize_dpo_pair(
+    tokenizer: AutoTokenizer, row: dict, dataset_index: int
+) -> tuple[list[int], list[int], list[int]]:
+    """Prompt / chosen-completion / rejected-completion token ids for one preference pair.
+
+    Mirrors DPO preprocessing rather than tokenizing the three fields independently:
+
+    - EOS is appended to a completion that lacks it, so the model is scored on stopping as well.
+    - Prompt and prompt+completion are tokenized as whole strings with special tokens on, and the
+      completion is taken as the suffix past the prompt's length. Tokenizing the completion on its
+      own would differ wherever the tokenizer merges across the prompt/completion boundary, and
+      would drop the leading BOS from the prompt.
+    """
+    prompt = row[cst.TRL_DPO_FIELD_PROMPT]
+    chosen = row[cst.TRL_DPO_FIELD_CHOSEN]
+    rejected = row[cst.TRL_DPO_FIELD_REJECTED]
+
+    eos_token = tokenizer.eos_token
+    if eos_token is not None:
+        if not chosen.endswith(eos_token):
+            chosen = chosen + eos_token
+        if not rejected.endswith(eos_token):
+            rejected = rejected + eos_token
+
+    prompt_ids = tokenizer(text=prompt)["input_ids"]
+    prompt_chosen_ids = tokenizer(text=prompt + chosen)["input_ids"]
+    prompt_rejected_ids = tokenizer(text=prompt + rejected)["input_ids"]
+
+    prompt_len = len(prompt_ids)
+    if prompt_chosen_ids[:prompt_len] != prompt_ids or prompt_rejected_ids[:prompt_len] != prompt_ids:
+        logger.warning(
+            f"Row {dataset_index}: tokenized prompt is not a prefix of tokenized prompt+completion "
+            "(tokenizer merged across the boundary); splitting on prompt length anyway"
+        )
+
+    return prompt_ids, prompt_chosen_ids[prompt_len:], prompt_rejected_ids[prompt_len:]
+
+
 def _completion_logprob(
     model: AutoModelForCausalLM,
     prompt_ids: list[int],
@@ -195,10 +233,8 @@ def _compute_per_pair_dpo_losses(
     reference_model.eval()
 
     losses: list[float] = []
-    for row in eval_dataset:
-        prompt_ids = tokenizer(row[cst.TRL_DPO_FIELD_PROMPT], add_special_tokens=False).input_ids
-        chosen_ids = tokenizer(row[cst.TRL_DPO_FIELD_CHOSEN], add_special_tokens=False).input_ids
-        rejected_ids = tokenizer(row[cst.TRL_DPO_FIELD_REJECTED], add_special_tokens=False).input_ids
+    for index, row in enumerate(eval_dataset):
+        prompt_ids, chosen_ids, rejected_ids = _tokenize_dpo_pair(tokenizer, row, index)
 
         policy_chosen = _completion_logprob(finetuned_model, prompt_ids, chosen_ids, max_length)
         policy_rejected = _completion_logprob(finetuned_model, prompt_ids, rejected_ids, max_length)
