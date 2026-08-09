@@ -119,6 +119,43 @@ def compare_paired_losses(
     )
 
 
+def paired_head_to_head_winner(
+    hotkey_a: str,
+    a_losses: list[float],
+    a_mean_loss: float,
+    hotkey_b: str,
+    b_losses: list[float],
+    b_mean_loss: float,
+    deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+) -> tuple[str, str]:
+    """Pick the winner of a knockout task on per-example win rate. Returns (winner, description).
+
+    Same pairing as the boss round and for the same reasons, but a knockout must always advance
+    someone, so this is a bare majority of decided examples with no significance requirement: a
+    confidence bound has nothing to add when one of the two has to go through either way. Equal
+    wins, or nothing decided, falls back to the lower mean loss.
+    """
+    a = np.asarray(a_losses, dtype=np.float64)
+    b = np.asarray(b_losses, dtype=np.float64)
+
+    usable = np.isfinite(a) & np.isfinite(b)
+    gaps = b[usable] - a[usable]  # positive = a assigned more probability to that example
+    a_wins = int((gaps > deadzone_nats).sum())
+    b_wins = int((gaps < -deadzone_nats).sum())
+    decided = a_wins + b_wins
+
+    if a_wins == b_wins:
+        winner = hotkey_a if a_mean_loss <= b_mean_loss else hotkey_b
+        return winner, (
+            f"tied on {a_wins}/{decided} decided examples, broken on mean loss "
+            f"({a_mean_loss:.6f} vs {b_mean_loss:.6f})"
+        )
+
+    winner = hotkey_a if a_wins > b_wins else hotkey_b
+    win_rate = max(a_wins, b_wins) / decided
+    return winner, f"won {max(a_wins, b_wins)}/{decided} decided examples ({win_rate:.1%})"
+
+
 def _bootstrap_lower_bounds(
     gaps: np.ndarray,
     challenger_wins: np.ndarray,

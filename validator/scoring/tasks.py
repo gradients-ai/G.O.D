@@ -32,6 +32,7 @@ from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
 from validator.db.sql.tournament_performance import is_final_round_task
+from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
@@ -346,17 +347,17 @@ async def _evaluate_submissions(
         use_kl, kl_coef = (task.use_kl, task.kl_coef) if isinstance(task, InstructTextRawTask) else (False, None)
         continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task.ds)
 
-        # Per-example loss vectors are only read by the paired boss-round comparison, and computing
-        # them costs an extra pass over the eval set (four extra forward passes per pair for DPO),
-        # so only ask for them where they are used.
+        # Per-example loss vectors are only read by the head-to-head comparisons (boss and knockout
+        # rounds), and computing them costs an extra pass over the eval set - four extra forward
+        # passes per pair for DPO - so only ask for them where they are used.
         emit_per_example_losses = (
             task.task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES
             and config is not None
             and task.task_id is not None
-            and await is_final_round_task(task.task_id, config.psql_db)
+            and await is_paired_comparison_task(task.task_id, config.psql_db)
         )
         if emit_per_example_losses:
-            logger.info(f"Boss-round task {task.task_id}: requesting per-example losses for the paired comparison")
+            logger.info(f"Head-to-head task {task.task_id}: requesting per-example losses for the paired comparison")
 
         evaluation_params = {
             "file_format": FileFormat.JSON,
@@ -472,7 +473,7 @@ async def _persist_raw_task_results(
 
     # The paired boss-round comparison is the only consumer of the per-example vectors, so they are
     # only stored for boss-round tasks. Checked once per task rather than once per miner.
-    keep_per_example_losses = await is_final_round_task(task.task_id, psql_db)
+    keep_per_example_losses = await is_paired_comparison_task(task.task_id, psql_db)
 
     for result in task_results:
         with LogContext(miner_hotkey=result.hotkey):

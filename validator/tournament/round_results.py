@@ -32,6 +32,7 @@ from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import compare_paired_losses
+from validator.tournament.thresholds import paired_head_to_head_winner
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
 
 
@@ -362,6 +363,57 @@ def determine_boss_round_winner(
             logger.info(f"{tournament_type.value} tournament: Boss retains title by default")
         return boss_hotkey
 
+async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -> str | None:
+    """Decide one knockout task, preferring per-example win rate over the mean loss.
+
+    A knockout is a straight head to head between two competitors, so the winner is whichever won
+    more of the examples both were scored on. Falls back to the mean-loss ranking when the task is
+    not a paired type, when either side has no vector, or when the two vectors cannot be lined up.
+    """
+    task_object = await get_task(task.task_id, psql_db)
+    if task_object is None or task_object.task_type not in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        return await get_task_winner(task.task_id, psql_db)
+
+    ranked = [
+        result
+        for result in calculate_miner_ranking_and_scores(await get_task_results_for_ranking(task.task_id, psql_db))
+        if result.score and result.score > 0 and not np.isnan(result.test_loss)
+    ]
+    if len(ranked) != 2:
+        # Byes, failed evaluations and anything that is not a clean two-way contest.
+        return await get_task_winner(task.task_id, psql_db)
+
+    first, second = ranked[0], ranked[1]
+    first_losses, first_fingerprint = await get_per_example_losses(task.task_id, first.hotkey, psql_db)
+    second_losses, second_fingerprint = await get_per_example_losses(task.task_id, second.hotkey, psql_db)
+
+    pairable = (
+        first_losses is not None
+        and second_losses is not None
+        and len(first_losses) == len(second_losses)
+        and not (
+            first_fingerprint is not None and second_fingerprint is not None and first_fingerprint != second_fingerprint
+        )
+    )
+    if not pairable:
+        logger.info(f"Knockout task {task.task_id}: no usable per-example vectors, ranking on mean loss")
+        return await get_task_winner(task.task_id, psql_db)
+
+    winner, description = paired_head_to_head_winner(
+        hotkey_a=first.hotkey,
+        a_losses=first_losses,
+        a_mean_loss=first.test_loss,
+        hotkey_b=second.hotkey,
+        b_losses=second_losses,
+        b_mean_loss=second.test_loss,
+    )
+    logger.info(
+        f"KNOCKOUT_PAIRED task={task.task_id} type={task_object.task_type} winner={winner} :: {description} "
+        f"(mean losses {first.hotkey}={first.test_loss:.6f} {second.hotkey}={second.test_loss:.6f})"
+    )
+    return winner
+
+
 async def get_knockout_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
 ) -> list[str]:
@@ -369,9 +421,8 @@ async def get_knockout_winners(
     winners = []
 
     if not completed_round.is_final_round:
-        # Use simple quality score comparison for regular knockout rounds
         for task in round_tasks:
-            winner = await get_task_winner(task.task_id, psql_db)
+            winner = await _resolve_knockout_task_winner(task, psql_db)
             if winner:
                 winners.append(winner)
     else:
