@@ -5,6 +5,7 @@ import numpy as np
 import validator.scoring.constants as cts
 from core.logging import get_logger
 from core.models.task_models import TaskType
+from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
@@ -19,7 +20,6 @@ from validator.tournament.models import PairedLossComparison
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentPerformanceData
 from validator.tournament.task_results import get_task_results_for_ranking
-from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import challenger_takes_paired_task
 from validator.tournament.thresholds import compare_paired_losses
