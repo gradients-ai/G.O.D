@@ -19,6 +19,7 @@ from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
+from validator.db import constants as db_cst
 from validator.db.sql import benchmark_tasks
 from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
@@ -41,6 +42,7 @@ from validator.tournament.models import DetailedTournamentTaskScore
 from validator.tournament.models import LatestTournamentsDetailsResponse
 from validator.tournament.models import NextTournamentDates
 from validator.tournament.models import NextTournamentInfo
+from validator.tournament.models import PairedExampleWins
 from validator.tournament.models import PvPIndividualEnvScore
 from validator.tournament.models import PvPPairEnvResult
 from validator.tournament.models import TournamentDetailsResponse
@@ -53,6 +55,7 @@ from validator.tournament.models import TournamentType
 from validator.tournament.models import WeeklyTournamentGpuCostsResponse
 from validator.tournament.performance_calculator import calculate_boss_round_performance_differences
 from validator.tournament.performance_calculator import get_tournament_performance_data
+from validator.tournament.thresholds import summarise_paired_examples
 from validator.tournament.tournament_manager import _calculate_next_tournament_start_time
 from validator.tournament.tournament_manager import _get_tournament_schedule
 from validator.tournament.tournament_manager import get_tournament_completion_time
@@ -65,6 +68,34 @@ logger = get_logger(__name__)
 def _participants_without_github_tokens(participants: list[TournamentParticipant]) -> list[TournamentParticipant]:
     """Strip PATs before HTTP/Redis; internal DB/orchestration still uses full TournamentParticipant."""
     return [p.model_copy(update={"github_token": None}) for p in participants]
+
+
+async def _get_paired_example_wins(
+    task_id: str, task_details, participant_scores: list[dict], psql_db
+) -> PairedExampleWins | None:
+    """Per-example split for a head-to-head task, or None where the winner came from the mean loss.
+
+    Only asked for on knockout and boss rounds, and only for the task types that store per-example
+    vectors - everything else, including every task run before the vectors existed, reports None
+    and leaves its consumer on the losses.
+    """
+    if task_details is None or task_details.task_type not in tourn_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        return None
+
+    # Must be the same two submissions the winner logic compared, or this reports a split between
+    # a pair that never contested the task. A submission rejected as a non-finetune carries
+    # SCORE_PENALTY (-1) and is excluded from winning; the read-time test for that is a
+    # non-negative score, since the resolved loser is persisted at 0.0 and has to stay in.
+    eligible = [
+        score[db_cst.HOTKEY]
+        for score in participant_scores
+        if score.get(db_cst.TEST_LOSS) is not None and (score.get(db_cst.TASK_NODE_QUALITY_SCORE) or 0) >= 0
+    ]
+    if len(eligible) != 2:
+        # Byes, failed evaluations and penalised submissions: nothing to pair against.
+        return None
+
+    return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db)
 
 
 GET_TOURNAMENT_DETAILS_ENDPOINT = "/v1/tournaments/{tournament_id}/details"
@@ -144,6 +175,19 @@ async def get_tournament_details(
                 pvp_pairs_results = await asyncio.gather(*pvp_pairs_tasks) if pvp_pairs_tasks else []
                 pvp_individual_results = await asyncio.gather(*pvp_individual_tasks) if pvp_individual_tasks else []
 
+                # Group rounds rank N miners on the mean loss and store no vectors, so the reads
+                # are only worth doing on the rounds that are decided head to head.
+                paired_wins_results: list[PairedExampleWins | None] = [None] * len(tasks)
+                if round_data.round_type != "group":
+                    paired_wins_results = await asyncio.gather(
+                        *[
+                            _get_paired_example_wins(
+                                str(task.task_id), task_details_results[i], scores_results[i], config.psql_db
+                            )
+                            for i, task in enumerate(tasks)
+                        ]
+                    )
+
                 for i, task in enumerate(tasks):
                     task_details = task_details_results[i]
                     participant_scores = scores_results[i]
@@ -187,6 +231,7 @@ async def get_tournament_details(
                         environment_names=environment_names,
                         pvp_pair_results=pvp_pair_results,
                         pvp_individual_scores=pvp_individual_scores,
+                        paired_example_wins=paired_wins_results[i],
                     )
                     detailed_tasks.append(detailed_task)
 

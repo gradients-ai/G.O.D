@@ -3,7 +3,9 @@ import numpy as np
 import validator.tournament.constants as t_cst
 from core.logging import get_logger
 from validator.db.database import PSQLDB
+from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
+from validator.tournament.models import PairedExampleWins
 from validator.tournament.models import PairedLossComparison
 from validator.tournament.task_results import get_task_results_for_ranking
 
@@ -58,6 +60,9 @@ def compare_paired_losses(
             challenger_won=False,
             is_draw=False,
             reason="No comparable examples between the two vectors",
+            required_win_rate=min_win_rate,
+            required_mean_gap_nats=min_mean_gap_nats,
+            deadzone_nats=deadzone_nats,
         )
 
     # Positive gap = challenger assigned more probability to that example than the boss did.
@@ -136,6 +141,62 @@ def compare_paired_losses(
         challenger_won=challenger_won,
         is_draw=is_draw,
         reason=reason,
+        required_win_rate=min_win_rate,
+        # The bar actually applied, not the floor it was derived from - on a high-loss task the
+        # scaled requirement is the one the challenger had to clear.
+        required_mean_gap_nats=required_mean_gap,
+        deadzone_nats=deadzone_nats,
+    )
+
+
+def count_example_wins(
+    a_losses: list[float],
+    b_losses: list[float],
+    deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+) -> tuple[int, int, int]:
+    """Split two aligned loss vectors into (a wins, b wins, comparable examples).
+
+    Comparable means both sides produced a finite loss for that example; the remainder of
+    n_examples after the two win counts is the dead zone, won by neither.
+    """
+    a = np.asarray(a_losses, dtype=np.float64)
+    b = np.asarray(b_losses, dtype=np.float64)
+
+    usable = np.isfinite(a) & np.isfinite(b)
+    gaps = b[usable] - a[usable]  # positive = a assigned more probability to that example
+    return int((gaps > deadzone_nats).sum()), int((gaps < -deadzone_nats).sum()), int(gaps.size)
+
+
+async def summarise_paired_examples(
+    task_id: str,
+    hotkey_a: str,
+    hotkey_b: str,
+    psql_db: PSQLDB,
+    deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+) -> PairedExampleWins | None:
+    """Report how a two-way task split example by example, or None if it cannot be paired.
+
+    Read-only view for analytics. Returns None on exactly the cases the winner logic falls back to
+    the mean loss for - no stored vector on either side, or vectors that do not line up - so a
+    consumer that gets None should show the mean losses instead.
+    """
+    a_losses, a_fingerprint = await get_per_example_losses(task_id, hotkey_a, psql_db)
+    b_losses, b_fingerprint = await get_per_example_losses(task_id, hotkey_b, psql_db)
+
+    if a_losses is None or b_losses is None or len(a_losses) != len(b_losses):
+        return None
+    if a_fingerprint is not None and b_fingerprint is not None and a_fingerprint != b_fingerprint:
+        return None
+
+    a_wins, b_wins, n_examples = count_example_wins(a_losses, b_losses, deadzone_nats)
+    return PairedExampleWins(
+        hotkey_a=hotkey_a,
+        hotkey_b=hotkey_b,
+        hotkey_a_wins=a_wins,
+        hotkey_b_wins=b_wins,
+        ties=n_examples - a_wins - b_wins,
+        n_examples=n_examples,
+        deadzone_nats=deadzone_nats,
     )
 
 
@@ -183,13 +244,7 @@ def paired_head_to_head_winner(
     confidence bound has nothing to add when one of the two has to go through either way. Equal
     wins, or nothing decided, falls back to the lower mean loss.
     """
-    a = np.asarray(a_losses, dtype=np.float64)
-    b = np.asarray(b_losses, dtype=np.float64)
-
-    usable = np.isfinite(a) & np.isfinite(b)
-    gaps = b[usable] - a[usable]  # positive = a assigned more probability to that example
-    a_wins = int((gaps > deadzone_nats).sum())
-    b_wins = int((gaps < -deadzone_nats).sum())
+    a_wins, b_wins, _ = count_example_wins(a_losses, b_losses, deadzone_nats)
     decided = a_wins + b_wins
 
     if a_wins == b_wins:
