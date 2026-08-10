@@ -41,6 +41,7 @@ BENCHMARK_TASK_COPIES_TABLE = "benchmark_task_copies"
 TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE = "tournament_task_hotkey_trainings"
 PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
 TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
+TOURNAMENT_TASK_FAILURE_REVIEWS_TABLE = "tournament_task_failure_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 
 # Continuous-SFT lineage state (one row per lineage slug): the monotonic train_index cursor passed
