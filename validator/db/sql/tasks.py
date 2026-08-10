@@ -1,3 +1,4 @@
+import math
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
@@ -36,8 +37,14 @@ from validator.tasks.models import NetworkStats
 logger = get_logger(__name__)
 
 
-async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
-    """Get all historical test_loss values for tasks that used a given dataset."""
+async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB, lookback_days: int) -> list[float]:
+    """Get recent historical test_loss values for tasks that used a given dataset.
+
+    Failed evals are persisted as NaN, which passes ``IS NOT NULL`` — a single one poisons any
+    downstream mean and silently disables loss-based dataset filtering, so they are excluded here
+    (Postgres compares NaN = NaN as true) alongside a final ``isfinite`` guard for infinities.
+    Losses older than ``lookback_days`` predate the current eval methodology and are dropped.
+    """
     async with await psql_db.connection() as connection:
         connection: Connection
         rows = await connection.fetch(
@@ -47,10 +54,13 @@ async def get_dataset_test_losses(ds_name: str, psql_db: PSQLDB) -> list[float]:
             JOIN {cst.TASKS_TABLE} t ON tn.{cst.TASK_ID}::text = t.{cst.TASK_ID}::text
             WHERE t.{cst.DS} = $1
             AND tn.{cst.TEST_LOSS} IS NOT NULL
+            AND tn.{cst.TEST_LOSS} <> 'NaN'
+            AND t.{cst.CREATED_AT} > NOW() - make_interval(days => $2)
             """,
             ds_name,
+            lookback_days,
         )
-        return [float(row[cst.TEST_LOSS]) for row in rows]
+        return [loss for loss in (float(row[cst.TEST_LOSS]) for row in rows) if math.isfinite(loss)]
 
 
 async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str | None:

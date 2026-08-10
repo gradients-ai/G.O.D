@@ -94,6 +94,17 @@ PROMPT_GEN_ENDPOINT = "https://llm.chutes.ai/v1/chat/completions"
 IMAGE_GEN_ENDPOINT = "https://image.chutes.ai/generate"
 NINETEEN_API_KEY = os.getenv("NINETEEN_API_KEY")
 
+# Degenerate-dataset filtering (see _is_dataset_degenerate). Only losses from the last
+# DEGENERATE_LOSS_LOOKBACK_DAYS count — older ones predate the current eval methodology.
+DEGENERATE_LOSS_LOOKBACK_DAYS = 90
+DEGENERATE_COLLAPSE_LOSS = 0.01
+# DPO pairs that are trivially separable bottom out around 0.02-0.05 rather than collapsing to 0,
+# so the generic floor never fires for them and boss rounds kept drawing near-zero-loss datasets.
+DEGENERATE_DPO_COLLAPSE_LOSS = 0.05
+DEGENERATE_INSTRUCT_MAX_BEST_LOSS = 2.0
+# Around ln(2) ~= 0.6931: the DPO loss of a model making random preference predictions.
+DEGENERATE_DPO_NOISE_BAND = (0.68, 0.71)
+
 MIN_NUM_REWARD_FUNCTIONS = 2
 MAX_NUM_REWARD_FUNCTIONS = 4
 
