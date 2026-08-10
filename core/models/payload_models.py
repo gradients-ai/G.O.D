@@ -185,6 +185,12 @@ class EvaluationResultImage(BaseModel):
 class EvaluationResultText(BaseModel):
     is_finetune: bool
     eval_loss: float
+    # Held-out loss per example, in eval-set order. Emitted by the instruct and DPO evaluators
+    # alongside eval_loss, which is unchanged and remains the ranking metric. Consumed only by the
+    # paired boss-round comparison. Absent for evaluators that do not produce it, and for results
+    # produced before the evaluator emitted it.
+    per_example_losses: list[float] | None = None
+    eval_set_fingerprint: str | None = None
 
 
 class DockerEvaluationResults(BaseModel):

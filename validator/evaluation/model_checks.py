@@ -112,13 +112,39 @@ def model_is_a_finetune(
         if getattr(original_config, attr, None) is not None:
             if not hasattr(finetuned_config, attr):
                 architecture_same = False
+                logger.info(f"Architecture mismatch: {attr} missing from the submitted config")
                 break
             if getattr(original_config, attr) != getattr(finetuned_config, attr):
                 architecture_same = False
+                logger.info(
+                    f"Architecture mismatch on {attr}: base={getattr(original_config, attr)} "
+                    f"submitted={getattr(finetuned_config, attr)}"
+                )
                 break
 
-    logger.info(f"Architecture same: {architecture_same}, Architecture classes match: {architecture_classes_match}")
-    return architecture_same and architecture_classes_match
+    # Context window is checked directionally rather than for equality. Declaring a SMALLER context
+    # than the base lowers the eval sequence_len (_load_and_update_evaluation_config only ever
+    # shrinks it), which makes axolotl drop the longer held-out rows - so the submission is scored
+    # on a shorter subset than everyone else and the mean losses stop being comparable. A LARGER
+    # declared context cannot shrink anyone's eval set, and rejecting it would fail benign pipelines
+    # that rewrite the field when applying rope scaling. YaRN tasks are unaffected either way: the
+    # validator bakes the extended value into the base model miners receive.
+    context_window_ok = True
+    original_max_pos = getattr(original_config, "max_position_embeddings", None)
+    finetuned_max_pos = getattr(finetuned_config, "max_position_embeddings", None)
+    if isinstance(original_max_pos, int) and isinstance(finetuned_max_pos, int):
+        if finetuned_max_pos < original_max_pos:
+            context_window_ok = False
+            logger.info(
+                f"Context window shrunk: base max_position_embeddings={original_max_pos} "
+                f"submitted={finetuned_max_pos} - this would shorten the evaluation set"
+            )
+
+    logger.info(
+        f"Architecture same: {architecture_same}, Architecture classes match: {architecture_classes_match}, "
+        f"Context window ok: {context_window_ok}"
+    )
+    return architecture_same and architecture_classes_match and context_window_ok
 
 
 @retry_on_5xx()

@@ -7,6 +7,8 @@ from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql.submissions_and_scoring import get_eligible_hotkeys_for_task
+from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import get_task_winner
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import get_tournament
@@ -30,6 +32,9 @@ from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import _get_scores_for_task
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
+from validator.tournament.thresholds import challenger_takes_paired_task
+from validator.tournament.thresholds import compare_paired_losses
+from validator.tournament.thresholds import paired_head_to_head_winner
 from validator.tournament.thresholds import update_threshold_adjusted_quality_scores_for_task
 
 
@@ -205,6 +210,90 @@ def did_winner_change(previous_tournament: TournamentData | None, latest_tournam
 
     return False
 
+async def _resolve_boss_round_task_winner(
+    task_id,
+    task_object,
+    boss_hotkey: str,
+    opponent_hotkey: str,
+    boss_loss: float,
+    opponent_loss: float,
+    threshold_percentage: float,
+    psql_db: PSQLDB,
+) -> tuple[str, str | None]:
+    """Decide one boss-round task, preferring the paired per-example comparison.
+
+    Returns (winner, basis) - basis describes what decided it, for the persisted score_reason, and
+    is None when the relative margin decided it (the caller's default wording already says that).
+
+    Instruct and DPO losses are log-likelihoods, where a relative margin is the wrong scale and a
+    scalar mean cannot separate a real win from held-out sampling noise. Where both sides have
+    per-example vectors those are compared example by example; everything else (GRPO, env, and any
+    task evaluated before the evaluators emitted vectors) keeps the relative margin.
+    """
+    higher_is_better = task_object.task_type in (TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK)
+
+    if task_object.task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        boss_losses, boss_fingerprint = await get_per_example_losses(task_id, boss_hotkey, psql_db)
+        opponent_losses, opponent_fingerprint = await get_per_example_losses(task_id, opponent_hotkey, psql_db)
+
+        fingerprints_disagree = (
+            boss_fingerprint is not None and opponent_fingerprint is not None and boss_fingerprint != opponent_fingerprint
+        )
+        if boss_losses is None or opponent_losses is None:
+            # Nothing was emitted: pre-existing tasks and the rollout window. Falling back keeps
+            # the round resolvable.
+            logger.warning(
+                f"Boss round task {task_id}: no per-example losses for "
+                f"{'boss' if boss_losses is None else 'challenger'} - falling back to the "
+                f"{threshold_percentage * 100:.1f}% margin"
+            )
+        elif fingerprints_disagree or len(boss_losses) != len(opponent_losses):
+            # Vectors exist but cannot be paired. The eval row set is a function of the candidate
+            # model's max_position_embeddings, so the two models were scored on different data and
+            # no comparison between them is valid. Resolved as not a win rather than falling back
+            # to a comparison of two means taken over different example sets.
+            logger.error(
+                f"Boss round task {task_id}: per-example vectors present but not pairable "
+                f"(boss_fingerprint={boss_fingerprint} challenger_fingerprint={opponent_fingerprint} "
+                f"boss_n={len(boss_losses)} challenger_n={len(opponent_losses)}) - not counted as a win"
+            )
+            return boss_hotkey, "unpairable per-example vectors"
+        else:
+            comparison = compare_paired_losses(boss_losses, opponent_losses)
+            # Logged whether the challenger won or lost: the observed win rate across real boss
+            # rounds is the only data that can calibrate BOSS_ROUND_MIN_WIN_RATE.
+            logger.info(
+                f"BOSS_ROUND_PAIRED task={task_id} type={task_object.task_type} "
+                f"challenger_won={comparison.challenger_won} draw={comparison.is_draw} "
+                f"win_rate={comparison.win_rate:.4f} win_rate_lb={comparison.win_rate_lower_bound:.4f} "
+                f"mean_gap_nats={comparison.mean_gap_nats:.6f} mean_gap_lb={comparison.mean_gap_lower_bound:.6f} "
+                f"decided={comparison.n_decided}/{comparison.n_examples} "
+                f"required_win_rate={t_cst.BOSS_ROUND_MIN_WIN_RATE} "
+                f"required_mean_gap={t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS} :: {comparison.reason}"
+            )
+            challenger_won, verdict_reason = challenger_takes_paired_task(comparison, boss_loss, opponent_loss)
+            if not challenger_won:
+                logger.info(f"Boss round task {task_id}: {verdict_reason}")
+            # A draw is recorded as such. The defender still holds the task for the dethrone tally,
+            # but nobody outperformed anybody and the stored reason should not claim otherwise.
+            if comparison.is_draw:
+                return boss_hotkey, f"a draw ({verdict_reason})"
+            return (opponent_hotkey if challenger_won else boss_hotkey), f"per-example win rate ({verdict_reason})"
+
+    task_winner = (
+        opponent_hotkey
+        if challenger_beats_boss(boss_loss, opponent_loss, higher_is_better, threshold_percentage)
+        else boss_hotkey
+    )
+    direction = "higher is better" if higher_is_better else "lower is better"
+    winner_label = "opponent" if task_winner == opponent_hotkey else "boss"
+    logger.info(
+        f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
+        f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
+    )
+    return task_winner, None
+
+
 def determine_boss_round_winner(
     task_winners: list[str],
     boss_hotkey: str,
@@ -286,6 +375,97 @@ def determine_boss_round_winner(
             logger.info(f"{tournament_type.value} tournament: Boss retains title by default")
         return boss_hotkey
 
+async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -> str | None:
+    """Decide one knockout task, preferring per-example win rate over the mean loss.
+
+    A knockout is a straight head to head between two competitors, so the winner is whichever won
+    more of the examples both were scored on. Falls back to the mean-loss ranking when the task is
+    not a paired type, when either side has no vector, or when the two vectors cannot be lined up.
+    """
+    task_object = await get_task(task.task_id, psql_db)
+    if task_object is None or task_object.task_type not in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+        return await get_task_winner(task.task_id, psql_db)
+
+    # Eligibility comes from the PERSISTED quality score, which is what get_task_winner used and
+    # what carries SCORE_PENALTY for a submission rejected as a non-finetune. It cannot come from
+    # the results themselves: get_task_results_for_ranking hardcodes is_finetune=True, and the
+    # scores calculate_miner_ranking_and_scores recomputes award only the rank-1 miner - a score>0
+    # filter on those would drop the runner-up of every two-way contest and kill this path.
+    eligible = await get_eligible_hotkeys_for_task(task.task_id, psql_db)
+    ranked = [
+        result
+        for result in calculate_miner_ranking_and_scores(await get_task_results_for_ranking(task.task_id, psql_db))
+        if result.hotkey in eligible and not np.isnan(result.test_loss)
+    ]
+    if len(ranked) != 2:
+        # Byes, failed evaluations and anything that is not a clean two-way contest.
+        return await get_task_winner(task.task_id, psql_db)
+
+    # Sorted, not left in DB row order: paired_head_to_head_winner breaks an exact tie on mean loss
+    # in favour of its first argument, so row order would otherwise decide the task.
+    ranked.sort(key=lambda result: (result.test_loss, result.hotkey))
+    first, second = ranked[0], ranked[1]
+    first_losses, first_fingerprint = await get_per_example_losses(task.task_id, first.hotkey, psql_db)
+    second_losses, second_fingerprint = await get_per_example_losses(task.task_id, second.hotkey, psql_db)
+
+    pairable = (
+        first_losses is not None
+        and second_losses is not None
+        and len(first_losses) == len(second_losses)
+        and not (
+            first_fingerprint is not None and second_fingerprint is not None and first_fingerprint != second_fingerprint
+        )
+    )
+    if not pairable:
+        logger.info(f"Knockout task {task.task_id}: no usable per-example vectors, ranking on mean loss")
+        return await get_task_winner(task.task_id, psql_db)
+
+    winner, description = paired_head_to_head_winner(
+        hotkey_a=first.hotkey,
+        a_losses=first_losses,
+        a_mean_loss=first.test_loss,
+        hotkey_b=second.hotkey,
+        b_losses=second_losses,
+        b_mean_loss=second.test_loss,
+    )
+
+    # The vectors are raw cross-entropy, but from round 2 knockout instruct tasks are KL-weighted
+    # (task_creator: enable_kl=round_number != 1) and test_loss then carries a per-model penalty
+    # the vectors deliberately exclude. Advancing on raw-CE win rate alone would promote a model
+    # that is clearly worse on the metric the task actually ranks on, so the sample winner must
+    # also not be worse on the ranking scalar. The boss round guards this the same way.
+    winner_scalar, loser_scalar = (
+        (first.test_loss, second.test_loss) if winner == first.hotkey else (second.test_loss, first.test_loss)
+    )
+    if winner_scalar > loser_scalar:
+        fallback = first.hotkey if first.test_loss <= second.test_loss else second.hotkey
+        logger.info(
+            f"KNOCKOUT_PAIRED task={task.task_id} sample winner {winner} is worse on the ranking loss "
+            f"({winner_scalar:.6f} vs {loser_scalar:.6f}) - advancing {fallback} on mean loss instead"
+        )
+        # Operands ordered winner-first: this string is persisted as the winner's score_reason.
+        winner, description = fallback, f"mean loss ({loser_scalar:.6f} vs {winner_scalar:.6f})"
+
+    logger.info(
+        f"KNOCKOUT_PAIRED task={task.task_id} type={task_object.task_type} winner={winner} :: {description} "
+        f"(mean losses {first.hotkey}={first.test_loss:.6f} {second.hotkey}={second.test_loss:.6f})"
+    )
+
+    # Persist the verdict. Everything that reconstructs a bracket after the fact - audit data,
+    # get_task_winners - reads task_nodes.quality_score, which still holds the mean-loss ranking.
+    # Without this an auditor recomputing the round disagrees with the validator on exactly the
+    # tasks where win rate and mean loss diverge, which is the whole point of the change.
+    await update_threshold_adjusted_quality_scores_for_task(
+        task_id=task.task_id,
+        winner_hotkey=winner,
+        threshold_percentage=0.0,
+        compared_hotkeys=[first.hotkey, second.hotkey],
+        psql_db=psql_db,
+        basis=f"per-example win rate ({description})",
+    )
+    return winner
+
+
 async def get_knockout_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
 ) -> list[str]:
@@ -293,9 +473,8 @@ async def get_knockout_winners(
     winners = []
 
     if not completed_round.is_final_round:
-        # Use simple quality score comparison for regular knockout rounds
         for task in round_tasks:
-            winner = await get_task_winner(task.task_id, psql_db)
+            winner = await _resolve_knockout_task_winner(task, psql_db)
             if winner:
                 winners.append(winner)
     else:
@@ -394,18 +573,17 @@ async def get_knockout_winners(
 
             logger.info(f"Boss round task {task.task_id}: Boss loss: {boss_loss:.6f}, Opponent loss: {opponent_loss:.6f}")
 
-            higher_is_better = task_object.task_type in (TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK)
-            if challenger_beats_boss(boss_loss, opponent_loss, higher_is_better, threshold_percentage):
-                task_winner = opponent_hotkey
-            else:
-                task_winner = boss_hotkey
-            _award(task_winner, task_object)
-            direction = "higher is better" if higher_is_better else "lower is better"
-            winner_label = "opponent" if task_winner == opponent_hotkey else "boss"
-            logger.info(
-                f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
-                f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
+            task_winner, decided_by = await _resolve_boss_round_task_winner(
+                task_id=task.task_id,
+                task_object=task_object,
+                boss_hotkey=boss_hotkey,
+                opponent_hotkey=opponent_hotkey,
+                boss_loss=boss_loss,
+                opponent_loss=opponent_loss,
+                threshold_percentage=threshold_percentage,
+                psql_db=psql_db,
             )
+            _award(task_winner, task_object)
 
             await update_threshold_adjusted_quality_scores_for_task(
                 task_id=task.task_id,
@@ -413,6 +591,7 @@ async def get_knockout_winners(
                 threshold_percentage=threshold_percentage,
                 compared_hotkeys=[boss_hotkey, opponent_hotkey],
                 psql_db=psql_db,
+                basis=decided_by,
             )
 
         boss_round_winner = determine_boss_round_winner(

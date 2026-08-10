@@ -49,6 +49,11 @@ BETA_GRPO = 0.5
 # GRPO evaluation
 GRPO_INITIAL_BATCH_SIZE = 16
 GRPO_KL_BATCH_SIZE = 1
+# Per-example loss extraction must run one example per forward. The reported eval_loss is produced
+# at eval batch size 1, so this is what makes mean(per_example_losses) == eval_loss exact rather
+# than an approximation, and it avoids any dependence on padding being neutral across a batch.
+# Do not raise this.
+PER_EXAMPLE_LOSS_BATCH_SIZE = 1
 GRPO_DEFAULT_NUM_GENERATIONS = 2
 GRPO_KL_SEQUENCE_LENGTH = 512
 

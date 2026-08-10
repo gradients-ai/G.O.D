@@ -1,10 +1,246 @@
+import numpy as np
+
+import validator.tournament.constants as t_cst
 from core.logging import get_logger
 from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
+from validator.tournament.models import PairedLossComparison
 from validator.tournament.task_results import get_task_results_for_ranking
 
 
 logger = get_logger(__name__)
+
+
+def compare_paired_losses(
+    boss_losses: list[float],
+    challenger_losses: list[float],
+    deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+    min_win_rate: float = t_cst.BOSS_ROUND_MIN_WIN_RATE,
+    min_mean_gap_nats: float = t_cst.BOSS_ROUND_MIN_MEAN_GAP_NATS,
+    confidence: float = t_cst.BOSS_ROUND_BOOTSTRAP_CONFIDENCE,
+    resamples: int = t_cst.BOSS_ROUND_BOOTSTRAP_RESAMPLES,
+    seed: int = t_cst.BOSS_ROUND_BOOTSTRAP_SEED,
+) -> PairedLossComparison:
+    """Decide a boss-round task by comparing losses example by example on the same held-out set.
+
+    Lower-is-better log-likelihood losses only (instruct, DPO). Both models must have been scored
+    on the identical examples in the identical order — index i is the same example for both.
+
+    The challenger takes the task only if it wins a clear majority of decided examples AND is
+    better on average, with both statistics clearing their bar at the one-sided bootstrap bound
+    rather than on the point estimate. Ties and tasks with too few decided examples are not wins.
+    """
+    if len(boss_losses) != len(challenger_losses):
+        raise ValueError(
+            f"Paired comparison needs equal-length loss vectors, got boss={len(boss_losses)} "
+            f"challenger={len(challenger_losses)}"
+        )
+
+    boss = np.asarray(boss_losses, dtype=np.float64)
+    challenger = np.asarray(challenger_losses, dtype=np.float64)
+
+    # An example is only usable if both sides scored it; a non-finite loss on either side means
+    # that example carries no comparison and pairing requires dropping it from both.
+    usable = np.isfinite(boss) & np.isfinite(challenger)
+    boss, challenger = boss[usable], challenger[usable]
+    n_examples = int(boss.size)
+
+    if n_examples == 0:
+        return PairedLossComparison(
+            n_examples=0,
+            n_decided=0,
+            challenger_example_wins=0,
+            boss_example_wins=0,
+            win_rate=0.0,
+            win_rate_lower_bound=0.0,
+            mean_gap_nats=0.0,
+            mean_gap_lower_bound=0.0,
+            challenger_won=False,
+            is_draw=False,
+            reason="No comparable examples between the two vectors",
+        )
+
+    # Positive gap = challenger assigned more probability to that example than the boss did.
+    gaps = boss - challenger
+    challenger_wins = gaps > deadzone_nats
+    boss_wins = gaps < -deadzone_nats
+    decided = challenger_wins | boss_wins
+
+    n_decided = int(decided.sum())
+    n_challenger_wins = int(challenger_wins.sum())
+    win_rate = n_challenger_wins / n_decided if n_decided else 0.0
+    # Mean gap is over every comparable example, ties included: it asks whether the challenger is
+    # better overall, and near-identical examples legitimately dilute that. The win rate above uses
+    # only decided examples, where the two models actually differ.
+    mean_gap = float(gaps.mean())
+
+    # Never a weaker requirement than the relative margin it replaces. A flat floor is looser than
+    # 1% of the loss once the loss exceeds 2.0, which would have let a uniformly-but-slightly
+    # better challenger take a high-loss task it would have lost under the old rule.
+    required_mean_gap = max(min_mean_gap_nats, t_cst.BOSS_ROUND_WIN_MARGIN * abs(float(boss.mean())))
+
+    win_rate_lb, mean_gap_lb = _bootstrap_lower_bounds(
+        gaps=gaps,
+        challenger_wins=challenger_wins,
+        decided=decided,
+        confidence=confidence,
+        resamples=resamples,
+        seed=seed,
+    )
+
+    # A draw needs as much evidence as a difference does. "Everything landed in the dead zone" only
+    # says the models are equivalent if there were enough examples that a real gap would have shown
+    # up - on a handful of examples a genuinely better model lands inside the dead zone by luck.
+    # Below the floor this is the same "cannot tell" case as too few decided, not a finding.
+    # No minimum on the decided count. The mean gap is taken over every example, so a handful of
+    # decided ones cannot move it: 20 of 800 improved by 0.5 nats averages 0.014 and fails, while
+    # 20 improved by 1.5 averages 0.039 and passes. That makes the gate a requirement on total
+    # improvement rather than on a count, and it already rejects the saturated case a decided-count
+    # floor was meant to catch - tiny decided set AND tiny gaps means a tiny mean gap. A floor on
+    # top only threw out tasks where the challenger did move the average decisively.
+    is_draw = n_decided == 0
+    if is_draw:
+        reason = (
+            f"Draw - all {n_examples} comparable examples fell inside the {deadzone_nats} nat dead "
+            f"zone, so the two models are indistinguishable on this task"
+        )
+        challenger_won = False
+    elif win_rate_lb < min_win_rate:
+        reason = (
+            f"Challenger win rate {win_rate:.1%} (bound {win_rate_lb:.1%}) below required "
+            f"{min_win_rate:.1%} of {n_decided} decided examples"
+        )
+        challenger_won = False
+    elif mean_gap_lb < required_mean_gap:
+        reason = (
+            f"Challenger mean gap {mean_gap:.4f} nats (bound {mean_gap_lb:.4f}) below required "
+            f"{required_mean_gap:.4f} nats"
+        )
+        challenger_won = False
+    else:
+        reason = (
+            f"Challenger won {win_rate:.1%} of {n_decided} decided examples (bound "
+            f"{win_rate_lb:.1%}) by {mean_gap:.4f} nats (bound {mean_gap_lb:.4f})"
+        )
+        challenger_won = True
+
+    return PairedLossComparison(
+        n_examples=n_examples,
+        n_decided=n_decided,
+        challenger_example_wins=n_challenger_wins,
+        boss_example_wins=int(boss_wins.sum()),
+        win_rate=win_rate,
+        win_rate_lower_bound=win_rate_lb,
+        mean_gap_nats=mean_gap,
+        mean_gap_lower_bound=mean_gap_lb,
+        challenger_won=challenger_won,
+        is_draw=is_draw,
+        reason=reason,
+    )
+
+
+def challenger_takes_paired_task(
+    comparison: PairedLossComparison,
+    boss_scalar_loss: float,
+    challenger_scalar_loss: float,
+) -> tuple[bool, str]:
+    """Final verdict for a paired boss-round task. Returns (challenger_won, reason).
+
+    Two conditions. The paired comparison runs on RAW per-example losses; the ranking scalar can
+    additionally carry a per-model KL penalty, which is a constant and so cannot be folded into the
+    vector without fabricating a 100% win rate. So the challenger must win on the examples AND not
+    be worse once its penalty is counted. For non-KL tasks the scalar is the vector mean and the
+    second condition is already implied by the first.
+
+    Shared by crowning and by the emission projection: if these two disagreed, analytics would
+    report a challenger win on a task the tournament recorded as a loss.
+    """
+    if comparison.is_draw:
+        return False, comparison.reason
+    if not comparison.challenger_won:
+        return False, comparison.reason
+    if challenger_scalar_loss > boss_scalar_loss:
+        return False, (
+            f"won the paired comparison but is worse on the ranking scalar "
+            f"({challenger_scalar_loss:.6f} vs {boss_scalar_loss:.6f})"
+        )
+    return True, comparison.reason
+
+
+def paired_head_to_head_winner(
+    hotkey_a: str,
+    a_losses: list[float],
+    a_mean_loss: float,
+    hotkey_b: str,
+    b_losses: list[float],
+    b_mean_loss: float,
+    deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+) -> tuple[str, str]:
+    """Pick the winner of a knockout task on per-example win rate. Returns (winner, description).
+
+    Same pairing as the boss round and for the same reasons, but a knockout must always advance
+    someone, so this is a bare majority of decided examples with no significance requirement: a
+    confidence bound has nothing to add when one of the two has to go through either way. Equal
+    wins, or nothing decided, falls back to the lower mean loss.
+    """
+    a = np.asarray(a_losses, dtype=np.float64)
+    b = np.asarray(b_losses, dtype=np.float64)
+
+    usable = np.isfinite(a) & np.isfinite(b)
+    gaps = b[usable] - a[usable]  # positive = a assigned more probability to that example
+    a_wins = int((gaps > deadzone_nats).sum())
+    b_wins = int((gaps < -deadzone_nats).sum())
+    decided = a_wins + b_wins
+
+    if a_wins == b_wins:
+        winner = hotkey_a if a_mean_loss <= b_mean_loss else hotkey_b
+        return winner, (
+            f"tied on {a_wins}/{decided} decided examples, broken on mean loss "
+            f"({a_mean_loss:.6f} vs {b_mean_loss:.6f})"
+        )
+
+    winner = hotkey_a if a_wins > b_wins else hotkey_b
+    win_rate = max(a_wins, b_wins) / decided
+    return winner, f"won {max(a_wins, b_wins)}/{decided} decided examples ({win_rate:.1%})"
+
+
+def _bootstrap_lower_bounds(
+    gaps: np.ndarray,
+    challenger_wins: np.ndarray,
+    decided: np.ndarray,
+    confidence: float,
+    resamples: int,
+    seed: int,
+) -> tuple[float, float]:
+    """One-sided lower bounds on the win rate and mean gap, resampling examples with replacement.
+
+    Resamples the full example set rather than only the decided ones: which examples land in the
+    dead zone is itself a property of the sample, so holding it fixed would understate the spread.
+    Seeded, so two validators scoring the same boss round reach the same verdict.
+    """
+    n = gaps.size
+    rng = np.random.default_rng(seed)
+    win_arr = challenger_wins.astype(np.float64)
+    decided_arr = decided.astype(np.float64)
+
+    win_rates = np.empty(resamples, dtype=np.float64)
+    mean_gaps = np.empty(resamples, dtype=np.float64)
+
+    # Chunked so the index matrix stays bounded regardless of eval-set size.
+    chunk = max(1, min(resamples, 2_000_000 // max(n, 1)))
+    for start in range(0, resamples, chunk):
+        size = min(chunk, resamples - start)
+        idx = rng.integers(0, n, size=(size, n))
+        decided_counts = decided_arr[idx].sum(axis=1)
+        win_counts = win_arr[idx].sum(axis=1)
+        # A resample that decided nothing is not evidence for the challenger.
+        win_rates[start : start + size] = np.divide(
+            win_counts, decided_counts, out=np.zeros(size), where=decided_counts > 0
+        )
+        mean_gaps[start : start + size] = gaps[idx].mean(axis=1)
+
+    percentile = (1.0 - confidence) * 100.0
+    return float(np.percentile(win_rates, percentile)), float(np.percentile(mean_gaps, percentile))
 
 
 def challenger_beats_boss(boss_loss: float, challenger_loss: float, higher_is_better: bool, margin: float) -> bool:
@@ -27,8 +263,13 @@ async def update_threshold_adjusted_quality_scores_for_task(
     threshold_percentage: float,
     psql_db: PSQLDB,
     compared_hotkeys: list[str] | None = None,
+    basis: str | None = None,
 ) -> None:
-    """Persist threshold-adjusted task scores while preserving raw losses."""
+    """Persist threshold-adjusted task scores while preserving raw losses.
+
+    ``basis`` describes what decided the task, for the stored score_reason. Callers that decide on
+    something other than the win margin pass their own, so the persisted reason matches reality.
+    """
     miner_results = await get_task_results_for_ranking(task_id, psql_db)
     if not miner_results:
         logger.warning(f"No valid results for threshold-adjusted scoring on task {task_id}")
@@ -43,6 +284,7 @@ async def update_threshold_adjusted_quality_scores_for_task(
         return
 
     threshold_pct = threshold_percentage * 100
+    decided_by = basis if basis is not None else f"{threshold_pct:.1f}% boss-round win margin"
     for result in miner_results:
         if allowed_hotkeys is not None and result.hotkey not in allowed_hotkeys:
             continue
@@ -50,9 +292,7 @@ async def update_threshold_adjusted_quality_scores_for_task(
         is_winner = result.hotkey == winner_hotkey
         quality_score = 3.0 if is_winner else 0.0
         score_reason = (
-            f"Winner at {threshold_pct:.1f}% boss-round win margin"
-            if is_winner
-            else f"Lost to winner {winner_hotkey} at {threshold_pct:.1f}% boss-round win margin"
+            f"Winner at {decided_by}" if is_winner else f"Lost to winner {winner_hotkey} at {decided_by}"
         )
         await update_task_node_quality_score_only(
             task_id=task_id,
@@ -64,5 +304,5 @@ async def update_threshold_adjusted_quality_scores_for_task(
 
     logger.info(
         f"Updated threshold-adjusted quality scores for task {task_id}: winner={winner_hotkey}, "
-        f"threshold={threshold_pct:.1f}%"
+        f"decided by {decided_by}"
     )

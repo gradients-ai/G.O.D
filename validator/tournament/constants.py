@@ -249,6 +249,62 @@ MODEL_PARAMS_TO_BILLIONS = 1e9
 # agree with crowning. See challenger_beats_boss in thresholds.py.
 BOSS_ROUND_WIN_MARGIN = 0.01
 
+# Paired per-example boss-round gate (instruct + DPO only; GRPO/env keep the relative margin
+# above). A relative margin is the wrong scale for a log-likelihood loss: a difference of D nats
+# is D nats of evidence whether the loss is 0.02 or 2.0, so `abs(boss) * 1%` collapses to nothing
+# exactly where the task is most saturated. Worse, a scalar mean carries no information about its
+# own uncertainty, so no threshold on it can separate a real win from held-out sampling noise.
+#
+# Instead both models are scored on the identical held-out set and compared example by example.
+# Example difficulty dominates the variance in both losses and cancels in the pairing.
+# See compare_paired_losses in thresholds.py.
+
+# Per-example gap below which neither side won that example. 0.01 nats ~= 1% more probability
+# assigned to it — trivial. Without a dead zone the win count is decided at the 5th decimal.
+BOSS_ROUND_TIE_DEADZONE_NATS = 0.01
+# Challenger must win this share of *decided* examples, at the bootstrap lower bound - so the
+# observed rate has to run a little above it. Not a noise threshold: at ~1000 examples the standard
+# error on a win rate is ~1.6%, and the bootstrap below is what handles noise. This is the policy
+# statement of how much more *consistent* a challenger has to be.
+#
+# It deliberately does not carry the "never weaker than the old rule" job - the mean-gap floor
+# below does that, since it scales to the old relative margin on high-loss tasks. That leaves this
+# free to be tuned for consistency alone. A genuinely better model with a wide per-example spread
+# can sit near 55% and still be the better model; demanding much more of it selects for
+# low-variance submissions rather than good ones.
+#
+# Provisional - see the win-rate logging in round_results.py, which records the observed rate on
+# every task, won or lost, so this can be recalibrated against real matchups rather than reasoning.
+BOSS_ROUND_MIN_WIN_RATE = 0.55
+# Challenger must also be better on average by this much, so it cannot win on a majority of
+# hairline examples while being materially worse where it loses. Deliberately the same value as
+# the tie dead zone: that constant already defines the smallest per-sample difference the rule
+# treats as meaningful, and a second, larger answer to the same question is what made a model
+# better by 0.011 nats on ALL 800 samples - 100% win rate - lose the task.
+#
+# Calibrated against 62 boss-round text tasks over 120 days, where the median separation between
+# the two competitors was 0.0094 nats: at 0.02 only a quarter of matchups were close enough to
+# even be winnable, which compounded over 4-of-5 tasks makes the crown near-permanent.
+#
+# Saturated tasks stay unwinnable through the dead zone rather than through this floor - at losses
+# around 0.02 essentially no per-sample difference clears 0.01, so nothing is decided.
+BOSS_ROUND_MIN_MEAN_GAP_NATS = 0.01
+# Below this many decided examples the task cannot distinguish the two models. Saturated tasks
+# land here naturally. Interlocks with the bootstrap: at exactly this many decided examples
+# the standard error is ~5%, so a bare 65% will fail the bound and a much larger observed margin
+# is needed — the gate is automatically stricter when it has less to go on.
+# Both statistics must clear their bar at this one-sided bootstrap bound, not on the point estimate.
+BOSS_ROUND_BOOTSTRAP_CONFIDENCE = 0.99
+BOSS_ROUND_BOOTSTRAP_RESAMPLES = 10_000
+# Fixed so two validators scoring the same boss round always agree. Never vary this.
+BOSS_ROUND_BOOTSTRAP_SEED = 20260808
+# Task types whose loss is a log-likelihood, and so eligible for the paired gate. GRPO rewards and
+# env scores are on an arbitrary scale where a relative margin is not obviously wrong, and keep it.
+# CHATTASK is here because the continuous-SFT boss tasks are ChatRawTask and route to the instruct
+# evaluator - and they carry the "challenger must win EVERY continuous-SFT task" dethrone gate, so
+# leaving them on the relative margin would leave the strictest rule resting on the weakest test.
+PAIRED_BOSS_ROUND_TASK_TYPES = (TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.CHATTASK)
+
 # Obfuscation detection constants
 OBFUSCATION_DETECTION_PATH = "./validator/tournament/obfuscation_detection/anti_obfuscation"
 

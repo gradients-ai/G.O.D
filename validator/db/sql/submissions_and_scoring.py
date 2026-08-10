@@ -1,3 +1,4 @@
+import math
 from uuid import UUID
 
 from asyncpg.connection import Connection
@@ -61,7 +62,13 @@ async def set_task_node_quality_score(
     psql_db: PSQLDB,
     score_reason: str | None = None,
 ) -> None:
-    """Set quality score, losses and zero score reason for a node's task submission"""
+    """Set quality score, losses and zero score reason for a node's task submission.
+
+    Deliberately does NOT touch the per-example loss columns. This runs later in the lifecycle than
+    set_task_node_losses, and on the finalize path its results are rebuilt from the DB row without
+    the vector - writing it here would NULL out what the raw-loss write persisted, leaving the boss
+    round to silently fall back to the scalar margin.
+    """
     async with await psql_db.connection() as connection:
         connection: Connection
         query = f"""
@@ -94,6 +101,27 @@ async def set_task_node_quality_score(
         )
 
 
+async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) -> tuple[list[float] | None, str | None]:
+    """Read back a node's per-example loss vector and the fingerprint of the set it was scored on."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT {cst.PER_EXAMPLE_LOSSES}, {cst.EVAL_SET_FINGERPRINT}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+        )
+        if row is None or row[cst.PER_EXAMPLE_LOSSES] is None:
+            return None, None
+
+        losses = [float("nan") if loss is None else float(loss) for loss in row[cst.PER_EXAMPLE_LOSSES]]
+        return losses, row[cst.EVAL_SET_FINGERPRINT]
+
+
 async def update_task_node_quality_score_only(
     task_id: UUID,
     hotkey: str,
@@ -123,6 +151,20 @@ async def update_task_node_quality_score_only(
         )
 
 
+def _json_safe_losses(losses: list[float] | None) -> list[float | None] | None:
+    """Replace non-finite entries with JSON null.
+
+    The list binds through the pooled jsonb codec, which uses json.dumps - and json.dumps emits a
+    bare NaN token that PostgreSQL's json parser rejects outright. A single unscorable example
+    would otherwise fail the whole INSERT, and the exception propagates far enough to mark every
+    hotkey in the batch as an evaluation failure, discarding a completed GPU run. Nulls read back
+    as NaN and the paired comparison already drops non-finite entries from both sides.
+    """
+    if losses is None:
+        return None
+    return [loss if math.isfinite(loss) else None for loss in losses]
+
+
 async def set_task_node_losses(
     task_id: UUID,
     hotkey: str,
@@ -130,8 +172,16 @@ async def set_task_node_losses(
     synth_loss: float | None,
     psql_db: PSQLDB,
     score_reason: str | None = None,
+    per_example_losses: list[float] | None = None,
+    eval_set_fingerprint: str | None = None,
 ) -> None:
-    """Persist raw evaluation outputs without final ranking."""
+    """Persist raw evaluation outputs without final ranking.
+
+    The only write of raw evaluator losses, and so the only place the per-example vector is stored.
+    Passed only for head-to-head tasks (see is_paired_comparison_task) since those are its
+    only consumer. The list binds directly: a jsonb codec is registered on every pooled connection
+    (validator/db/database.py), so serialising here would double-encode it.
+    """
     async with await psql_db.connection() as connection:
         connection: Connection
         query = f"""
@@ -141,14 +191,18 @@ async def set_task_node_losses(
                 {cst.NETUID},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.PER_EXAMPLE_LOSSES},
+                {cst.EVAL_SET_FINGERPRINT}
             )
-            VALUES ($1, $2, $3, $4, $5, $6)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
             ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO UPDATE
             SET
                 {cst.TEST_LOSS} = $4,
                 {cst.SYNTH_LOSS} = $5,
-                {cst.SCORE_REASON} = $6
+                {cst.SCORE_REASON} = $6,
+                {cst.PER_EXAMPLE_LOSSES} = $7::jsonb,
+                {cst.EVAL_SET_FINGERPRINT} = $8
         """
         await connection.execute(
             query,
@@ -158,6 +212,8 @@ async def set_task_node_losses(
             test_loss,
             synth_loss,
             score_reason,
+            _json_safe_losses(per_example_losses),
+            eval_set_fingerprint,
         )
 
 
@@ -402,6 +458,38 @@ async def get_all_node_stats_batched(hotkeys: list[str], psql_db: PSQLDB) -> dic
             results[hotkey][period_name] = stats
 
         return {hotkey: AllNodeStats(**stats) for hotkey, stats in results.items()}
+
+
+async def get_eligible_hotkeys_for_task(task_id: UUID, psql_db: PSQLDB) -> set[str]:
+    """Hotkeys whose submission is eligible to win a task: a NON-NEGATIVE persisted quality score.
+
+    The discriminator is the penalty, not the win. A submission rejected as a non-finetune carries
+    SCORE_PENALTY (-1); the legitimate runner-up of a two-way contest carries 0.0, because
+    calculate_miner_ranking_and_scores awards FIRST_PLACE_SCORE to rank 1 and leaves everyone else
+    untouched below MIN_IDEAL_NUM_MINERS_IN_POOL. So `> 0` would drop the runner-up of every
+    knockout and make the paired path unreachable, while `>= 0` separates penalised from merely
+    second exactly.
+
+    Returns nothing when no submission scored above zero: calculate_miner_ranking_and_scores
+    returns early with everyone at 0.0 when there are no valid finetunes at all, and that must not
+    read as two eligible competitors.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.HOTKEY}, {cst.TASK_NODE_QUALITY_SCORE}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            AND {cst.NETUID} = $2
+            AND {cst.TASK_NODE_QUALITY_SCORE} IS NOT NULL AND {cst.TASK_NODE_QUALITY_SCORE} >= 0
+            """,
+            task_id,
+            NETUID,
+        )
+        if not any(row[cst.TASK_NODE_QUALITY_SCORE] > 0 for row in rows):
+            return set()
+        return {row[cst.HOTKEY] for row in rows}
 
 
 async def get_task_winner(task_id: UUID, psql_db: PSQLDB) -> str | None:

@@ -409,12 +409,26 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
   - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
   - More than 14 (or more than 8 in later rounds): a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
+- **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
 - The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) always plays a single instruct task on a forced model: `PRE_BOSS_MODEL` (currently `Qwen/Qwen3-32B`), with augmentation, KL and YaRN disabled so both competitors train the exact published model.
 - The final boss round creates 5 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
-- Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative GRPO rewards).
+- **Boss-round instruct, DPO and continuous-SFT (chat) tasks are decided per held-out sample.** Both models are scored on the identical held-out set and compared sample by sample. To take a task the challenger must clear **both** of:
+  - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
+  - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.01 nats, the same value as the tie dead zone, that scales to 1% of the loss above a boss loss of 1.0 so it is never a weaker requirement than the old margin.
+
+  Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. The bootstrap seed is fixed, so every validator reaches the same verdict.
+
+  There is no minimum number of decided samples. The mean gap is taken over the *whole* held-out set, so it is a requirement on total improvement rather than on a count: improving 20 of 800 samples by 0.25 nats averages 0.007 and fails, while improving the same 20 by 1.0 nats averages 0.026 and passes. A saturated task — where the models differ on few samples and by little — fails on that gap regardless.
+
+  On KL-weighted instruct tasks the per-sample comparison uses raw cross-entropy, and the challenger must additionally not be worse once the KL penalty is applied.
+
+  If *every* sample falls inside the dead zone the two models are indistinguishable on that task and it is recorded as a **draw**, not as a win for the defending champion. The defender still holds the task for the purposes of the win count, but no one outperformed anyone.
+- **GRPO boss-round tasks** keep the previous rule: beat the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative rewards).
 - The challenger must win at least 4 of the 5 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
 
 For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
+
+Your submission's `config.json` must not declare a smaller `max_position_embeddings` than the base model the task specifies. A smaller value shortens the evaluation sequence length, which drops the longer held-out rows and would score you on a different, shorter subset than everyone else — so it is treated as not a fine-tune of the task model and scores zero. A larger value is fine.
 
 ### Image Tournaments
 

@@ -1,3 +1,4 @@
+import math
 import os
 import subprocess
 import tempfile
@@ -9,6 +10,7 @@ import urllib.request
 os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 
 import torch
+import torch.nn.functional as F
 from accelerate.utils import find_executable_batch_size
 from axolotl.utils.dict import DictDefault
 from datasets import Dataset
@@ -19,6 +21,7 @@ from transformers import AutoTokenizer
 from trl import DPOConfig
 from trl import DPOTrainer
 
+import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
 from core.models.dataset_models import DpoDatasetType
@@ -26,6 +29,7 @@ from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
+from validator.evaluation.common import eval_set_fingerprint
 from validator.evaluation.common import count_model_parameters
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
@@ -134,13 +138,147 @@ def _collate_dpo_batch(batch: list[dict[str, list[int]]], tokenizer: AutoTokeniz
         raise
 
 
+def _dpo_eval_set_fingerprint(eval_dataset: Dataset) -> str:
+    """Fingerprint the preference pairs in the order they are scored, plus what shapes the scoring.
+
+    Deliberately NOT keyed on max_length. It comes from the candidate's own
+    max_position_embeddings, which two honest submissions are allowed to differ on - a larger
+    declared context is legal - so including it would make their fingerprints disagree and cost the
+    challenger the task outright, for a truncation that only bites on pairs longer than the context
+    window. beta is mixed in so a change to the loss definition invalidates stored vectors rather
+    than silently comparing across two of them.
+    """
+
+    def _parts():
+        yield f"beta={cst.BETA_DPO}".encode("utf-8")
+        for row in eval_dataset:
+            yield "\x00".join(
+                (row[cst.TRL_DPO_FIELD_PROMPT], row[cst.TRL_DPO_FIELD_CHOSEN], row[cst.TRL_DPO_FIELD_REJECTED])
+            ).encode("utf-8")
+
+    return eval_set_fingerprint(_parts())
+
+
+def _tokenize_dpo_pair(
+    tokenizer: AutoTokenizer, row: dict, dataset_index: int
+) -> tuple[list[int], list[int], list[int]]:
+    """Prompt / chosen-completion / rejected-completion token ids for one preference pair.
+
+    Mirrors DPO preprocessing rather than tokenizing the three fields independently:
+
+    - EOS is appended to a completion that lacks it, so the model is scored on stopping as well.
+    - Prompt and prompt+completion are tokenized as whole strings with special tokens on, and the
+      completion is taken as the suffix past the prompt's length. Tokenizing the completion on its
+      own would differ wherever the tokenizer merges across the prompt/completion boundary, and
+      would drop the leading BOS from the prompt.
+    """
+    prompt = row[cst.TRL_DPO_FIELD_PROMPT]
+    chosen = row[cst.TRL_DPO_FIELD_CHOSEN]
+    rejected = row[cst.TRL_DPO_FIELD_REJECTED]
+
+    eos_token = tokenizer.eos_token
+    if eos_token is not None:
+        if not chosen.endswith(eos_token):
+            chosen = chosen + eos_token
+        if not rejected.endswith(eos_token):
+            rejected = rejected + eos_token
+
+    prompt_ids = tokenizer(text=prompt)["input_ids"]
+    prompt_chosen_ids = tokenizer(text=prompt + chosen)["input_ids"]
+    prompt_rejected_ids = tokenizer(text=prompt + rejected)["input_ids"]
+
+    prompt_len = len(prompt_ids)
+    if prompt_chosen_ids[:prompt_len] != prompt_ids or prompt_rejected_ids[:prompt_len] != prompt_ids:
+        logger.warning(
+            f"Row {dataset_index}: tokenized prompt is not a prefix of tokenized prompt+completion "
+            "(tokenizer merged across the boundary); splitting on prompt length anyway"
+        )
+
+    return prompt_ids, prompt_chosen_ids[prompt_len:], prompt_rejected_ids[prompt_len:]
+
+
+def _completion_logprob(
+    model: AutoModelForCausalLM,
+    prompt_ids: list[int],
+    completion_ids: list[int],
+    max_length: int,
+) -> float | None:
+    """Sum of log P(token) over the completion tokens only, prompt tokens masked out.
+
+    SUMMED rather than averaged, matching TRL's default DPO loss (no length normalisation), so a
+    pair's loss scales with its completion length. That is fine for pairing - example i is only
+    ever compared against example i - but per-pair values are not comparable across pairs.
+    """
+    # Truncate the PROMPT from the left, keeping the completion whole - TRL's default
+    # truncation_mode is keep_end. Truncating the concatenation from the right would instead drop
+    # the completion, which is the only part being scored, and return nothing for the pair.
+    keep_prompt = max(0, max_length - len(completion_ids))
+    prompt_ids = prompt_ids[len(prompt_ids) - keep_prompt :] if keep_prompt else []
+    ids = (prompt_ids + completion_ids)[:max_length]
+    prompt_len = len(prompt_ids)
+    if len(ids) <= prompt_len:
+        # Even with the prompt fully dropped there is no completion left to score.
+        return None
+
+    input_ids = torch.tensor([ids], device=model.device)
+    with torch.no_grad():
+        logits = model(input_ids=input_ids).logits.float()
+
+    # Position t predicts token t+1, so completion token at index prompt_len is predicted at t=prompt_len-1.
+    log_probs = F.log_softmax(logits[:, :-1, :], dim=-1)
+    targets = input_ids[:, 1:]
+    token_log_probs = log_probs.gather(-1, targets.unsqueeze(-1)).squeeze(-1)
+    # max() because prompt_len == 0 (empty prompt on a tokenizer that adds no BOS) would make this
+    # [-1:], silently scoring only the final token instead of the whole completion.
+    return token_log_probs[0, max(prompt_len - 1, 0) :].sum().item()
+
+
+def _compute_per_pair_dpo_losses(
+    finetuned_model: AutoModelForCausalLM,
+    reference_model: AutoModelForCausalLM,
+    eval_dataset: Dataset,
+    tokenizer: AutoTokenizer,
+    max_length: int,
+) -> list[float]:
+    """DPO loss per preference pair, for the paired boss-round comparison.
+
+    Computed directly from policy and reference log-probabilities rather than through TRL, because
+    TRL is unpinned - it comes from the axolotl base image - so reaching into its internals would
+    break silently on a base bump. The caller asserts the mean of this against TRL's reported
+    eval_loss, which is what catches a wrong formula on code that cannot be run locally.
+    """
+    finetuned_model.eval()
+    reference_model.eval()
+
+    losses: list[float] = []
+    for index, row in enumerate(eval_dataset):
+        prompt_ids, chosen_ids, rejected_ids = _tokenize_dpo_pair(tokenizer, row, index)
+
+        policy_chosen = _completion_logprob(finetuned_model, prompt_ids, chosen_ids, max_length)
+        policy_rejected = _completion_logprob(finetuned_model, prompt_ids, rejected_ids, max_length)
+        reference_chosen = _completion_logprob(reference_model, prompt_ids, chosen_ids, max_length)
+        reference_rejected = _completion_logprob(reference_model, prompt_ids, rejected_ids, max_length)
+
+        if None in (policy_chosen, policy_rejected, reference_chosen, reference_rejected):
+            losses.append(float("nan"))
+            continue
+
+        logits = (policy_chosen - reference_chosen) - (policy_rejected - reference_rejected)
+        losses.append(-F.logsigmoid(torch.tensor(cst.BETA_DPO * logits)).item())
+
+    # No empty_cache() per pair: it synchronises the device and forces reallocation, on top of the
+    # four sequential forwards each pair already costs. That time lands against
+    # EVAL_BASILICA_TIMEOUT, and a timeout fails the whole eval batch.
+    return losses
+
+
 def evaluate_dpo_model(
     evaluation_config: DictDefault,
     finetuned_model: AutoModelForCausalLM,
     reference_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     evaluation_args: EvaluationArgs,
-) -> dict[str, float]:
+) -> dict[str, float | list[float] | str]:
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
@@ -189,6 +327,44 @@ def evaluate_dpo_model(
     evaluation_results = {
         "eval_loss": eval_results["eval_loss"],
     }
+
+    if os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) != "1":
+        return evaluation_results
+
+    try:
+        per_pair_losses = _compute_per_pair_dpo_losses(
+            finetuned_model=finetuned_model,
+            reference_model=reference_model,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            max_length=max_length,
+        )
+    except Exception as e:
+        # Optional add-on: never let it discard the eval_loss the trainer already produced.
+        logger.error(f"Per-pair DPO loss extraction failed, continuing without the vector: {e}", exc_info=True)
+        return evaluation_results
+
+    finite = [loss for loss in per_pair_losses if math.isfinite(loss)]
+    if not finite:
+        logger.error("PER_EXAMPLE_LOSSES: no finite per-pair DPO losses - the paired comparison will have nothing to use")
+    else:
+        mean_loss = sum(finite) / len(finite)
+        # DPO loss is a flat per-pair mean and eval batch size is pinned to 1, so this should agree
+        # closely. A divergence means the formula or the tokenization does not match TRL's.
+        if not math.isclose(mean_loss, eval_results["eval_loss"], rel_tol=5e-3, abs_tol=1e-3):
+            logger.error(
+                f"PER_EXAMPLE_LOSSES MISMATCH: mean of {len(finite)} per-pair DPO losses is {mean_loss:.8f} "
+                f"but TRL reported eval_loss={eval_results['eval_loss']:.8f}. The vector does not measure the "
+                f"same quantity as the scalar - do not trust boss-round verdicts built on it."
+            )
+        else:
+            logger.info(
+                f"PER_EXAMPLE_LOSSES: {len(finite)} pairs, mean {mean_loss:.8f} matches "
+                f"eval_loss {eval_results['eval_loss']:.8f}"
+            )
+
+    evaluation_results["per_example_losses"] = per_pair_losses
+    evaluation_results["eval_set_fingerprint"] = _dpo_eval_set_fingerprint(eval_dataset)
     return evaluation_results
 
 

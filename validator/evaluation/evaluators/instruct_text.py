@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -12,6 +13,7 @@ from pydantic import TypeAdapter
 # Allow torch.load for transformers 4.46+ security check
 os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from accelerate.utils import find_executable_batch_size
@@ -31,6 +33,7 @@ from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
+from validator.evaluation.common import eval_set_fingerprint
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
 from validator.evaluation.common import load_results_dict
@@ -154,6 +157,75 @@ def _collate_evaluation_batch(batch: list[dict[str, list[int]]], tokenizer: Auto
     return {"input_ids": input_ids, "attention_mask": attention_mask, "labels": labels}
 
 
+def _instruct_eval_set_fingerprint(eval_dataset: list) -> str:
+    """Fingerprint the tokenized eval set in its final, post-filter, post-sort order."""
+    return eval_set_fingerprint(
+        np.asarray(sample["input_ids"], dtype=np.int64).tobytes()
+        + b"|"
+        + np.asarray(sample["labels"], dtype=np.int64).tobytes()
+        for sample in eval_dataset
+    )
+
+
+def _compute_per_example_losses(
+    language_model: AutoModelForCausalLM,
+    eval_dataset: list,
+    tokenizer: AutoTokenizer,
+    batch_size: int,
+) -> list[float]:
+    """Cross-entropy per eval example, token-averaged within each example.
+
+    Matches what the reported eval_loss aggregates: per_device_eval_batch_size is pinned to 1
+    (test_axolotl.yml sets starting_batch_size: 1 and find_executable_batch_size only shrinks), so
+    HF's eval_loss is a flat mean over examples of exactly this quantity. That identity is asserted
+    by the caller and is the only check available on code that cannot be run outside the eval image.
+
+    Iterates eval_dataset in its given order, so index i here is index i of the fingerprint.
+    """
+    language_model.eval()
+    losses: list[float] = []
+
+    for start in range(0, len(eval_dataset), batch_size):
+        batch = eval_dataset[start : start + batch_size]
+        collated = _collate_evaluation_batch(batch, tokenizer)
+        input_ids = collated["input_ids"].cuda()
+        attention_mask = collated["attention_mask"].cuda()
+        labels = collated["labels"].cuda()
+
+        with torch.no_grad():
+            logits = language_model(input_ids=input_ids, attention_mask=attention_mask).logits
+            # Next-token prediction: position t predicts label t+1.
+            shift_logits = logits[:, :-1, :].float()
+            shift_labels = labels[:, 1:]
+
+            per_token = F.cross_entropy(
+                shift_logits.transpose(1, 2),
+                shift_labels,
+                ignore_index=-100,
+                reduction="none",
+            )
+            supervised = (shift_labels != -100).float()
+            summed = (per_token * supervised).sum(dim=1)
+            # Denominator is the SHIFTED supervised-token count. Trainer.prediction_step takes
+            # outputs.loss, i.e. ForCausalLMLoss with num_items_in_batch=None, which means-reduces
+            # over non-ignored labels AFTER the shift. Verified directly against ForCausalLMLoss:
+            # the unshifted count is wrong by n/(n-1) on any example whose first token is
+            # supervised, which is every row of a completion-only dataset - enough to make the
+            # mean-vs-eval_loss check fire permanently and stop being a signal.
+            token_counts = supervised.sum(dim=1)
+            # No supervised tokens means no comparable loss; NaN so the pairing drops it rather
+            # than dividing by zero. _load_evaluation_dataset already filters these out.
+            per_example = torch.where(token_counts > 0, summed / token_counts, torch.full_like(summed, float("nan")))
+            losses.extend(per_example.tolist())
+
+    # No empty_cache() in this loop. Batch size is pinned to 1, so it would fire once per example -
+    # roughly a thousand times per repo - and each call synchronises the device and hands blocks
+    # back to the driver, forcing reallocation every iteration. The cost lands against
+    # EVAL_BASILICA_TIMEOUT, and a timeout fails the whole eval batch rather than just dropping the
+    # optional vector this pass produces.
+    return losses
+
+
 def _calculate_instruct_kl_divergence(
     base_model: AutoModelForCausalLM,
     finetuned_model: AutoModelForCausalLM,
@@ -209,7 +281,7 @@ def evaluate_instruct_text_model(
     tokenizer: AutoTokenizer,
     base_model: AutoModelForCausalLM | None = None,
     kl_coef: float | None = None,
-) -> dict[str, float]:
+) -> dict[str, float | list[float] | str]:
     evaluation_config.tokenizer_config = tokenizer.name_or_path
     logger.info(f"Config: {evaluation_config}")
 
@@ -250,6 +322,28 @@ def evaluate_instruct_text_model(
         "eval_loss": eval_loss,
     }
 
+    # Per-example vector for the paired boss-round comparison. eval_loss is unchanged and remains
+    # the ranking metric; this is carried alongside it. Costs a second pass over the eval set, so
+    # it is only computed when the validator asked for it (boss-round tasks).
+    emit_per_example = os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) == "1"
+    per_example_losses: list[float] = []
+    if emit_per_example:
+        # Isolated: this is an optional add-on running after the trainer has already produced
+        # eval_loss. An OOM or a tokenizer edge case here must not discard a completed GPU
+        # evaluation - the caller's except would record the repo as failed and hand the task away.
+        try:
+            per_example_losses = _compute_per_example_losses(
+                language_model=language_model,
+                eval_dataset=eval_dataset,
+                tokenizer=tokenizer,
+                batch_size=eval_cst.PER_EXAMPLE_LOSS_BATCH_SIZE,
+            )
+            _warn_if_per_example_mean_diverges(per_example_losses, eval_loss)
+        except Exception as e:
+            logger.error(f"Per-example loss extraction failed, continuing without the vector: {e}", exc_info=True)
+            per_example_losses = []
+            emit_per_example = False
+
     # When the task was trained with a KL term, weight the eval loss by the KL divergence
     # against the base model so the ranking metric rewards staying close to the base.
     if base_model is not None and kl_coef:
@@ -267,8 +361,43 @@ def evaluate_instruct_text_model(
         evaluation_results["eval_loss"] = weighted_loss
         evaluation_results["eval_loss_raw"] = eval_loss
         evaluation_results["kl_divergence"] = kl_divergence
+        # The per-example vector stays RAW cross-entropy and is deliberately NOT shifted by the KL
+        # penalty. A constant offset would hand the paired test a fake result: every example moves
+        # the same way, so if the offset exceeds the tie dead zone the challenger "wins" 100% of
+        # examples with a bootstrap bound of 1.0 on no per-example evidence at all. The premise of
+        # the paired test is that example difficulty cancels and the remaining spread is evidence;
+        # a constant has no spread. The KL penalty is applied instead as a separate scalar gate on
+        # test_loss in _resolve_boss_round_task_winner, where it belongs.
+
+    if emit_per_example:
+        evaluation_results["per_example_losses"] = per_example_losses
+        evaluation_results["eval_set_fingerprint"] = _instruct_eval_set_fingerprint(eval_dataset)
 
     return evaluation_results
+
+
+def _warn_if_per_example_mean_diverges(per_example_losses: list[float], eval_loss: float) -> None:
+    """The vector must average to the scalar the trainer reported.
+
+    This is the only correctness check available on code that cannot run outside the eval image,
+    and it is exact rather than approximate because eval batch size is pinned to 1. Logged rather
+    than raised: a divergence means the vector is untrustworthy, not that the task should fail, and
+    the boss-round comparison already refuses to pair anything it cannot line up.
+    """
+    finite = [loss for loss in per_example_losses if math.isfinite(loss)]
+    if not finite:
+        logger.error("PER_EXAMPLE_LOSSES: no finite values computed - the paired comparison will have nothing to use")
+        return
+
+    mean_loss = sum(finite) / len(finite)
+    if not math.isclose(mean_loss, eval_loss, rel_tol=1e-3, abs_tol=1e-4):
+        logger.error(
+            f"PER_EXAMPLE_LOSSES MISMATCH: mean of {len(finite)} per-example losses is {mean_loss:.8f} "
+            f"but the trainer reported eval_loss={eval_loss:.8f}. The vector does not measure the same "
+            f"quantity as the scalar - do not trust boss-round verdicts built on it."
+        )
+    else:
+        logger.info(f"PER_EXAMPLE_LOSSES: {len(finite)} values, mean {mean_loss:.8f} matches eval_loss {eval_loss:.8f}")
 
 
 def evaluate_finetuned_model(
@@ -277,7 +406,7 @@ def evaluate_finetuned_model(
     tokenizer: AutoTokenizer,
     base_model: AutoModelForCausalLM | None = None,
     kl_coef: float | None = None,
-) -> dict[str, float]:
+) -> dict[str, float | list[float] | str]:
     evaluation_config = _load_and_update_evaluation_config(
         evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
     )
