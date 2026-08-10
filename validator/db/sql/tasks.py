@@ -393,11 +393,11 @@ async def get_tasks_with_status(
     else:
         backend_clause = ""
         query_params = [status.value]
-        
+
 
     async with await psql_db.connection() as connection:
         connection: Connection
-        
+
         base_query = f"""
             SELECT * FROM {cst.TASKS_TABLE}
             WHERE {cst.STATUS} = $1
