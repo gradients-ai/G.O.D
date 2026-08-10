@@ -41,6 +41,7 @@ from trainer.host import extract_container_error
 from trainer.job_state import complete_task
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
+from trainer.job_state import update_training_started_at
 from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.telemetry import logger
@@ -1029,6 +1030,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             )
 
         await update_container_name(training_data.task_id, task.hotkey, container.name)
+        # Align cleanup's stale-timeout clock with container.wait (not job-accept time).
+        await update_training_started_at(training_data.task_id, task.hotkey)
         await log_task(training_data.task_id, task.hotkey, f"Container started: {container.name}")
         await log_task(training_data.task_id, task.hotkey, f"Waiting for container to finish (timeout={timeout_seconds})...")
         wait_task = asyncio.create_task(asyncio.to_thread(container.wait))

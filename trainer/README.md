@@ -5,12 +5,12 @@ Service that receives work from the validator, clones miner repositories, builds
 ## Contents
 
 - `asgi.py`: FastAPI app factory, startup cleanup, and service entrypoint.
-- `cleanup.py`: background cleanup loop for stale trainer state and cache.
+- `cleanup.py`: background cleanup loop for stale trainer state and cache (training stale timeout uses `started_at`, refreshed when the train container starts).
 - `constants.py`: trainer Docker images, volumes, resource defaults, and container paths.
 - `containers/`: downloader, uploader, cache cleanup, and miner dataset cache helpers.
 - `endpoints.py`: trainer API routes called by validators.
 - `host.py`: host/GPU inspection, repository cloning, and Docker host helpers.
-- `job_state.py`: persisted trainer task/model-prep state.
+- `job_state.py`: persisted trainer task/model-prep state (`started_at` is set on accept and refreshed at container start for training jobs).
 - `dataset_adapters.py`: text dataset column adapters used by training entrypoints.
 - `diffusion_dataset.py`: diffusion image dataset extraction/arrangement helpers.
 - `model_artifacts.py`: model artifact path and metadata helpers.
