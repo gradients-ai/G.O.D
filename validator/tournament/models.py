@@ -226,6 +226,14 @@ class MatchRanking(BaseModel):
     ranked_hotkeys: list[str]
 
 
+class EmptyScoreGroup(BaseModel):
+    """A group whose task produced no usable scores — evaluation data is missing, not merely bad."""
+
+    group_id: str
+    task_id: str
+    participants: int
+
+
 class GroupMatchStanding(BaseModel):
     """A competitor's standing across all matches in a small tournament group."""
 

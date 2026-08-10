@@ -68,6 +68,7 @@ from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
+from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
@@ -92,6 +93,7 @@ from validator.tournament.participants import get_latest_tournament_winner_parti
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.round_results import determine_env_tournament_winner
+from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -100,6 +102,10 @@ from validator.tournament.task_creator import replace_tournament_task
 
 
 logger = get_logger(__name__)
+
+# Rounds we have already pinged Discord about for having zero-score groups. Process-local on
+# purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
+_EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -589,6 +595,14 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             return
 
         logger.info(f"Advancing tournament {tournament.tournament_id} from round {completed_round.round_id}")
+
+        # A group with zero usable scores means its evaluation data is missing, not that its
+        # miners lost. Advancing would silently drop that group and promote a smaller field, so
+        # refuse to advance at all and let a human sort the data out first.
+        empty_score_groups = await find_groups_with_no_valid_scores(completed_round, psql_db)
+        if empty_score_groups:
+            await _alert_empty_score_groups(tournament, completed_round, empty_score_groups, config)
+            return
 
         winners = await get_round_winners(completed_round, psql_db, config)
         logger.info(f"Round winners: {winners}")
@@ -1311,6 +1325,41 @@ async def process_active_tournaments(config: Config):
             logger.error(f"Error processing active tournaments: {e}", exc_info=True)
         finally:
             await asyncio.sleep(t_cst.TOURNAMENT_ACTIVE_CYCLE_INTERVAL)
+
+
+async def _alert_empty_score_groups(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    empty_score_groups: list[EmptyScoreGroup],
+    config: Config,
+) -> None:
+    """Shout about a round we refuse to advance, once per round per process.
+
+    The log line repeats every cycle so the wedge stays visible in `pm2 logs`; the Discord ping
+    does not, because this fires on a 60s loop and would otherwise hammer the webhook until
+    someone intervenes.
+    """
+    detail = "\n".join(
+        f"  {group.group_id} (task {group.task_id}, {group.participants} participants)" for group in empty_score_groups
+    )
+    logger.error(
+        f"REFUSING TO ADVANCE tournament {tournament.tournament_id} from round {completed_round.round_id}: "
+        f"{len(empty_score_groups)} group(s) finished with no valid scores.\n{detail}"
+    )
+
+    if completed_round.round_id in _EMPTY_SCORE_ROUNDS_ALERTED:
+        return
+    _EMPTY_SCORE_ROUNDS_ALERTED.add(completed_round.round_id)
+
+    await _notify_discord(
+        f"Tournament advancement BLOCKED\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"{len(empty_score_groups)} group(s) completed with no valid scores:\n{detail}\n"
+        f"The next round has NOT been created and no one has been eliminated. "
+        f"Evaluation data is missing for these groups — fix the scores, then the cycle will advance on its own.",
+        config,
+    )
 
 
 async def _notify_discord(message: str, config: Config) -> None:
