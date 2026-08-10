@@ -3,6 +3,8 @@ import json
 import os
 import re
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 import docker
 from docker.errors import APIError
@@ -95,14 +97,23 @@ def build_docker_image(
     is_image_task: bool = False,
     tag: str = None,
     no_cache: bool = True,
+    timeout_seconds: int | None = None,
 ) -> tuple[str, str | None]:
     client: docker.DockerClient = docker.from_env()
 
     if tag is None:
         tag = f"standalone-image-trainer:{uuid.uuid4()}" if is_image_task else f"standalone-text-trainer:{uuid.uuid4()}"
 
-    logger.info(f"Building Docker image '{tag}'...", extra=log_labels)
+    if timeout_seconds is None:
+        timeout_seconds = cst.DOCKER_BUILD_TIMEOUT_MINUTES * 60
 
+    logger.info(
+        f"Building Docker image '{tag}' (timeout={timeout_seconds}s)...",
+        extra=log_labels,
+    )
+
+    build_output = None
+    executor = None
     try:
         build_output = client.api.build(
             path=context_path,
@@ -111,13 +122,28 @@ def build_docker_image(
             nocache=no_cache,
             decode=True,
         )
-        stream_image_build_logs(build_output, logger=logger, log_context=log_labels)
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(stream_image_build_logs, build_output, logger, log_labels)
+        try:
+            future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError:
+            message = f"Docker image build exceeded {timeout_seconds} seconds"
+            logger.error(message, extra=log_labels)
+            if build_output is not None:
+                try:
+                    build_output.close()
+                except Exception:
+                    pass
+            return None, message
 
         logger.info("Docker image built successfully.", extra=log_labels)
         return tag, None
     except (BuildError, APIError) as e:
         logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
         return None, str(e)
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
 
 def delete_image_and_cleanup(tag: str):
