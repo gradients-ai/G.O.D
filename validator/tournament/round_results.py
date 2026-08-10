@@ -20,6 +20,7 @@ from validator.evaluation.pvp.models import GameOutcome
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import GroupMatchStanding
 from validator.tournament.models import MatchRanking
 from validator.tournament.models import RoundType
@@ -601,6 +602,52 @@ async def get_knockout_winners(
         winners = [boss_round_winner]
 
     return winners
+
+
+async def find_groups_with_no_valid_scores(
+    completed_round: TournamentRoundData, psql_db: PSQLDB
+) -> list[EmptyScoreGroup]:
+    """Group tasks that finished with participants but not a single usable score.
+
+    A group can legitimately advance nobody — the boss retains, everyone is eliminated on a
+    tie — but it can never legitimately produce *no scores at all*. That means the evaluation
+    data was lost or never written, so any winner set derived from this round is wrong: the
+    silent `continue` in the winner functions below would just drop the group and advance a
+    smaller field. Callers use this to refuse advancement instead.
+
+    Knockout rounds are decided per-pair rather than per-group, so they are not covered here.
+    """
+    if completed_round.round_type != RoundType.GROUP:
+        return []
+
+    round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
+    empty_groups: list[EmptyScoreGroup] = []
+
+    for task in round_tasks:
+        if not task.group_id:
+            continue
+
+        participants = await get_tournament_group_members(task.group_id, psql_db)
+        if not participants:
+            continue
+
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+        ranked_results = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
+        has_valid_score = any(
+            result.adjusted_loss is not None and not np.isnan(result.adjusted_loss) for result in ranked_results
+        )
+
+        if not has_valid_score:
+            empty_groups.append(
+                EmptyScoreGroup(
+                    group_id=task.group_id,
+                    task_id=task.task_id,
+                    participants=len(participants),
+                )
+            )
+
+    return empty_groups
+
 
 async def get_environment_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
