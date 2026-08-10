@@ -124,6 +124,31 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
             logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
 
 
+async def update_training_started_at(task_id: str, hotkey: str, started_at: datetime | None = None) -> None:
+    """Refresh started_at when the training container actually starts.
+
+    Job accept sets an initial started_at (before download/image build). Cleanup's stale-timeout
+    clock uses started_at, so without this refresh it can mark FAILURE while container.wait is
+    still inside hours_to_complete. Align the clock with the container.wait budget.
+    """
+    async with _task_lock:
+        load_task_history()
+
+        task = get_task(task_id, hotkey)
+        if task is None:
+            logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
+            return
+        if task.status != TaskStatus.TRAINING:
+            logger.warning(
+                f"Refusing to refresh started_at for task {task_id} hotkey={hotkey}: status={task.status}"
+            )
+            return
+
+        task.started_at = started_at or datetime.utcnow()
+        await save_task_history()
+        logger.info(f"Updated started_at for task {task_id} to {task.started_at.isoformat()}")
+
+
 # ---------------------------------------------------------------------------
 # Model prep job helpers
 # ---------------------------------------------------------------------------

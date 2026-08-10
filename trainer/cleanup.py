@@ -38,8 +38,13 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                 if job.status != TaskStatus.TRAINING or not job.started_at:
                     continue
 
+                # Training jobs refresh started_at when the train container starts (see
+                # update_training_started_at), so this deadline tracks container.wait rather than
+                # download/image-build time. Status-only: does not kill the container.
                 if isinstance(job, TrainerTaskLog):
-                    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
+                    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(
+                        minutes=cst.STALE_TASK_GRACE_MINUTES
+                    )
                 else:
                     timeout = timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
 
@@ -68,7 +73,7 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                     detach=True,
                 )
 
-                log_task = asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
+                asyncio.create_task(asyncio.to_thread(stream_container_logs, container, get_all_context_tags()))
 
                 logger.info("Cleanup container finished.")
 
