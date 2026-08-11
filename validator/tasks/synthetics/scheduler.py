@@ -416,11 +416,17 @@ async def get_dataset(
 @retry_with_backoff
 async def create_synthetic_dpo_task(
     config: Config,
-    models: AsyncGenerator[str, None],
+    models: AsyncGenerator[str, None] | None,
     datasets: AsyncGenerator[Dataset, None],
+    model_id_override: str | None = None,
 ) -> RawTask:
+    """models may be None only with model_id_override set (the pool is never drawn from then)."""
     logger.info("DPO task")
-    model_id = await anext(models)
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        assert models is not None, "a models pool is required when model_id_override is not set"
+        model_id = await anext(models)
     logger.info(f"We picked {model_id}")
 
     dataset = await get_dataset(datasets, task_type=TaskType.DPOTASK, keypair=config.keypair, psql_db=config.psql_db)
@@ -498,10 +504,16 @@ def _randomize_reward_weights(reward_functions: list[RewardFunction]) -> list[Re
 @retry_with_backoff
 async def create_synthetic_grpo_task(
     config: Config,
-    models: AsyncGenerator[str, None],
+    models: AsyncGenerator[str, None] | None,
     datasets: AsyncGenerator[Dataset, None],
+    model_id_override: str | None = None,
 ) -> RawTask:
-    model_id = await anext(models)
+    """models may be None only with model_id_override set (the pool is never drawn from then)."""
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        assert models is not None, "a models pool is required when model_id_override is not set"
+        model_id = await anext(models)
 
     dataset = await get_dataset(
         datasets,
