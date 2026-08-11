@@ -675,7 +675,6 @@ async def get_environment_group_winners(
         logger.warning(f"No tasks found for environment round {completed_round.round_id}")
         return []
 
-    single_group = len(round_tasks) == 1
     all_winners: list[str] = []
 
     for task in round_tasks:
@@ -710,13 +709,21 @@ async def get_environment_group_winners(
         boss_score = participant_scores.get(boss_hotkey)
         non_boss_sorted = [(hotkey, score) for hotkey, score in sorted_participants if hotkey != boss_hotkey]
 
-        # Boss retains only when down to a single group and boss wins/ties
-        if single_group and boss_score is not None and non_boss_sorted:
+        # Wherever the boss actually played, it must be beaten to get past it. Advancing a
+        # challenger the boss just beat sends someone to the next round on survivorship rather
+        # than merit - in tourn_10592fcefa2f37ad_20260810 round 1 that promoted a miner who lost
+        # both environments to the boss (78-94 clobber, 11-18 othello) and scored 0.0, purely
+        # because the other three in its group failed training. A tie keeps the incumbent, as
+        # everywhere else in the boss-round logic.
+        #
+        # This only bites in the one group the boss was drawn into; groups it never played have
+        # boss_score None and are unaffected.
+        if boss_score is not None and non_boss_sorted:
             top_challenger_score = non_boss_sorted[0][1]
             if boss_score >= top_challenger_score:
                 logger.info(
-                    f"Environment group {group_id}: boss score {boss_score} >= top challenger {top_challenger_score} "
-                    f"— single group, boss retains"
+                    f"Environment group {group_id}: boss score {boss_score} >= top challenger "
+                    f"{top_challenger_score} — boss retains, group advances nobody"
                 )
                 continue
 
