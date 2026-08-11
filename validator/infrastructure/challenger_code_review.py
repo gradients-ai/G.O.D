@@ -30,9 +30,19 @@ def _load_config() -> dict[str, Any]:
 
 
 def _parse_verdict(text: str) -> IntegrityVerdict:
+    """Extract the integrity JSON object from Claude's reply.
+
+    Claude often prepends prose that itself contains braces (e.g. `{task_id}`),
+    so we must not take the first `{` — locate the object that contains
+    `"verdict"` (preferring the last match) and parse from there.
+    """
     cleaned = re.sub(r"```(?:json)?", "", text)
-    start, end = cleaned.find("{"), cleaned.rfind("}")
-    if start == -1 or end <= start:
+    matches = list(re.finditer(r'\{\s*"verdict"\s*:', cleaned))
+    if not matches:
+        raise ValueError("Claude returned no JSON verdict")
+    start = matches[-1].start()
+    end = cleaned.rfind("}")
+    if end <= start:
         raise ValueError("Claude returned no JSON verdict")
     value = json.loads(cleaned[start : end + 1])
     verdict = str(value.get("verdict", "")).lower()
