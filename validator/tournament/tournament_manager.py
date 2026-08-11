@@ -23,6 +23,7 @@ from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import advance_continuous_sft_state
+from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
 from validator.db.sql.tournaments import add_tournament_participants
@@ -74,6 +75,7 @@ from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import RespondingNode
 from validator.tournament.models import Round
+from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
@@ -81,6 +83,7 @@ from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentTask
+from validator.tournament.models import TournamentTaskFailureReview
 from validator.tournament.models import TournamentType
 from validator.tournament.models import generate_round_id
 from validator.tournament.models import generate_tournament_id
@@ -1374,25 +1377,63 @@ async def _notify_discord(message: str, config: Config) -> None:
             logger.error(f"Failed to send Discord notification: {e}")
 
 
-async def _more_than_half_failures(tournament_task: TournamentTask, config: Config) -> bool:
-    """
-    Check if more than half of the trainings failed and handle Discord notification.
+async def _majority_failure_blocks_completion(tournament_task: TournamentTask, config: Config) -> bool:
+    """Hold a mostly-failed task behind a manual review gate.
 
-    Returns True if majority failure detected, False otherwise.
+    Returns True while the task must not be treated as complete.
+
+    The failed trainings are terminal, so the failure ratio never improves on its own. Without
+    a gate the round wedges forever and the Discord warning re-fires every cycle. Instead we
+    open one review row per task and alert once; a human decides whether the failures are the
+    miners' own (approve, and the round advances) or an infrastructure fault (reset the
+    trainings instead, and the gate clears itself once they pass).
     """
     trainings = await get_training_status_for_task(tournament_task.task_id, config.psql_db)
-    is_more_than_half_failure = exceeds_failure_threshold(trainings)
+    if not exceeds_failure_threshold(trainings):
+        return False
 
-    if is_more_than_half_failure:
-        logger.info(f"More than half of the trainings for task {tournament_task.task_id} failed. Please investigate.")
-        message = (
-            f"Warning: Task {tournament_task.task_id} in Tournament Round {tournament_task.round_id} "
-            f"has more than half tasks failed, please investigate."
+    review = await task_failure_reviews_sql.get_task_failure_review(tournament_task.task_id, config.psql_db)
+    if review and review.status == TaskFailureReviewStatus.APPROVED:
+        logger.info(
+            f"Task {tournament_task.task_id} has majority training failures but was manually approved "
+            f"at {review.reviewed_at}; allowing it to complete."
         )
-        await _notify_discord(message, config)
-        return True
+        return False
 
-    return False
+    failed_hotkeys = [
+        hotkey
+        for hotkey, status in trainings.items()
+        if status in {TaskStatus.FAILURE.value, TaskStatus.PREP_TASK_FAILURE.value}
+    ]
+    logger.info(
+        f"More than half of the trainings for task {tournament_task.task_id} failed "
+        f"({len(failed_hotkeys)}/{len(trainings)}); awaiting manual review."
+    )
+
+    newly_opened = await task_failure_reviews_sql.insert_task_failure_review(
+        TournamentTaskFailureReview(
+            task_id=tournament_task.task_id,
+            tournament_id=tournament_task.tournament_id,
+            round_id=tournament_task.round_id,
+            failed_hotkeys=failed_hotkeys,
+            total_trainings=len(trainings),
+        ),
+        config.psql_db,
+    )
+
+    # Only ping on the cycle that opened the gate; it is re-checked every ~60s thereafter.
+    if newly_opened:
+        await _notify_discord(
+            f"Warning: Task {tournament_task.task_id} in Tournament Round {tournament_task.round_id} "
+            f"has more than half tasks failed, please investigate.\n"
+            f"Failed {len(failed_hotkeys)}/{len(trainings)}: {', '.join(hk[:8] for hk in failed_hotkeys)}\n"
+            f"The round will NOT advance until this is reviewed. If the failures are legitimate, approve with:\n"
+            f"UPDATE tournament_task_failure_reviews SET status='approved', reviewed_at=now() "
+            f"WHERE task_id='{tournament_task.task_id}';",
+            config,
+        )
+
+    return True
 
 
 async def is_tourn_task_completed(
@@ -1409,8 +1450,8 @@ async def is_tourn_task_completed(
     """
 
     if task_obj.status == TaskStatus.SUCCESS.value:
-        if await _more_than_half_failures(tournament_task, config):
-            return False, "More than half of the trainings failed"
+        if await _majority_failure_blocks_completion(tournament_task, config):
+            return False, "More than half of the trainings failed - awaiting manual review"
         return True, "Task completed successfully"
 
     elif task_obj.status == TaskStatus.FAILURE.value:

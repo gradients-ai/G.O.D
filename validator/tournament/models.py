@@ -709,6 +709,29 @@ class DedupReviewStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class TaskFailureReviewStatus(str, Enum):
+    PENDING_REVIEW = "pending_review"
+    APPROVED = "approved"
+
+
+class TournamentTaskFailureReview(BaseModel):
+    """Manual gate for a task whose trainings mostly failed.
+
+    Held at PENDING_REVIEW until a human confirms the failures are the miners' own and not
+    an infrastructure fault, at which point the task is allowed to complete.
+    """
+
+    task_id: str
+    tournament_id: str
+    round_id: str
+    status: TaskFailureReviewStatus = TaskFailureReviewStatus.PENDING_REVIEW
+    failed_hotkeys: list[str] = []
+    total_trainings: int = 0
+    notes: str | None = None
+    created_at: datetime | None = None
+    reviewed_at: datetime | None = None
+
+
 class IntegrityVerdict(BaseModel):
     flagged: bool
     confidence: float = 0.0

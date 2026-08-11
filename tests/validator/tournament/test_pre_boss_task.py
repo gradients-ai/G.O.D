@@ -17,6 +17,8 @@ from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
 from validator.tournament import tournament_manager
 from validator.tournament.models import KnockoutRound
+from validator.tournament.models import TaskFailureReviewStatus
+from validator.tournament.models import TournamentTaskFailureReview
 
 
 def _knockout(pairs: list[tuple[str, str]]) -> KnockoutRound:
@@ -182,13 +184,41 @@ class TestPreBossCompletionGate:
     def _patch_trainings(self, monkeypatch, statuses: dict[str, str]):
         monkeypatch.setattr(tournament_manager, "get_training_status_for_task", AsyncMock(return_value=statuses))
 
+    def _patch_failure_reviews(self, monkeypatch, existing=None, newly_opened=True):
+        """Stub the majority-failure review gate's DB access."""
+        reviews = SimpleNamespace(
+            get_task_failure_review=AsyncMock(return_value=existing),
+            insert_task_failure_review=AsyncMock(return_value=newly_opened),
+        )
+        monkeypatch.setattr(tournament_manager, "task_failure_reviews_sql", reviews)
+        monkeypatch.setattr(tournament_manager, "_notify_discord", AsyncMock())
+        return reviews
+
     async def test_both_failed_stalls_for_investigation(self, monkeypatch):
         self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
+        reviews = self._patch_failure_reviews(monkeypatch)
         completed, reason = await tournament_manager.is_tourn_task_completed(
             self._tournament_task(), self._task_obj(TaskStatus.SUCCESS.value), self._config()
         )
         assert completed is False
-        assert reason == "More than half of the trainings failed"
+        assert reason == "More than half of the trainings failed - awaiting manual review"
+        reviews.insert_task_failure_review.assert_awaited_once()
+
+    async def test_both_failed_completes_once_manually_approved(self, monkeypatch):
+        # A human confirmed the failures are the miners' own, so the round is allowed through.
+        self._patch_trainings(monkeypatch, {"miner-a": "failure", "miner-b": "failure"})
+        approved = TournamentTaskFailureReview(
+            task_id="task-1",
+            tournament_id="tourn",
+            round_id="round-3",
+            status=TaskFailureReviewStatus.APPROVED,
+        )
+        self._patch_failure_reviews(monkeypatch, existing=approved)
+        completed, reason = await tournament_manager.is_tourn_task_completed(
+            self._tournament_task(), self._task_obj(TaskStatus.SUCCESS.value), self._config()
+        )
+        assert completed is True
+        assert reason == "Task completed successfully"
 
     async def test_single_failure_keeps_normal_completion(self, monkeypatch):
         # One survivor: round completes normally and the survivor challenges the boss.
