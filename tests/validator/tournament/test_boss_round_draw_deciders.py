@@ -12,21 +12,32 @@ import numpy as np
 import pytest
 from pydantic import ValidationError
 
+from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.tournament import constants as t_cst
 from validator.tournament import round_results
 from validator.tournament import tournament_manager
 from validator.tournament.models import BossRoundDrawResolution
+from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
+from validator.tournament.models import TrainingStatus
 from validator.tournament.round_results import _resolve_boss_round_draws
 from validator.tournament.round_results import determine_boss_round_winner
 from validator.tournament.thresholds import compare_paired_losses
+
+
+async def _async(value):
+    return value
+
+
+async def _async_none(**_kwargs):
+    return None
 
 
 BOSS = "boss_hotkey"
@@ -359,3 +370,86 @@ async def test_orphaned_task_defers_the_round_instead_of_scoring_it(monkeypatch)
     assert outcome.is_deferred is True
     assert outcome.unassigned_task_ids == [orphan_id]
     assert outcome.winners == []
+
+
+@pytest.mark.asyncio
+async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
+    """A continuous-SFT task that produced no comparison must stay in its own gate.
+
+    Registration used to ride on the award path, but several branches bail out with a bare
+    `continue` - "both evaluation failed or both succeeded but missing results" among them - so the
+    lineage never entered the outcomes dict, the gate's count fell to zero, and the strictest rule in
+    the tournament switched itself off. Driven through get_knockout_winners rather than
+    determine_boss_round_winner directly, because the defect was in what the caller collected, not
+    in the arithmetic over it - which is exactly why unit-testing the arithmetic alone missed it.
+    """
+    csft_task, instruct_task = _round_tasks(2)
+
+    def _result(hotkey, adjusted_loss):
+        return SimpleNamespace(hotkey=hotkey, adjusted_loss=adjusted_loss)
+
+    # Neither side has a usable loss on the continuous-SFT task, and both trained successfully, so
+    # it lands in the "both evaluation failed" branch and is skipped without ever being awarded.
+    results = {
+        csft_task.task_id: [_result(BOSS, None), _result(CHALLENGER, None)],
+        instruct_task.task_id: [_result(BOSS, 0.5), _result(CHALLENGER, 0.4)],
+    }
+    tasks = {
+        csft_task.task_id: SimpleNamespace(
+            task_id=csft_task.task_id,
+            task_type=TaskType.CHATTASK,
+            training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+            ds="continuous-sft:qwen:chunk",
+        ),
+        instruct_task.task_id: SimpleNamespace(
+            task_id=instruct_task.task_id,
+            task_type=TaskType.INSTRUCTTEXTTASK,
+            training_start_point=None,
+            ds="some/dataset",
+        ),
+    }
+    captured: dict = {}
+
+    async def _tournament(_tournament_id, _psql_db):
+        return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
+
+    async def _nodes(_task_id, _psql_db):
+        return ["node_boss", "node_challenger"]
+
+    async def _resolve(task_id, **_kwargs):
+        assert task_id != csft_task.task_id, "the continuous-SFT task should have been skipped"
+        return BossRoundTaskVerdict(winner_hotkey=CHALLENGER)
+
+    async def _training_status(_task_id, _hotkeys, _psql_db):
+        return {BOSS: TrainingStatus.SUCCESS, CHALLENGER: TrainingStatus.SUCCESS}
+
+    def _winner(_task_winners, boss_hotkey, _tournament_type, outcomes=None, **_kwargs):
+        captured["outcomes"] = outcomes
+        return boss_hotkey
+
+    monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
+    monkeypatch.setattr(round_results, "get_tournament", _tournament)
+    monkeypatch.setattr(round_results, "get_nodes_assigned_to_task", _nodes)
+    monkeypatch.setattr(round_results, "get_task", lambda task_id, _psql_db: _async(tasks[task_id]))
+    monkeypatch.setattr(round_results, "get_task_results_for_ranking", lambda tid, _db: _async(results[tid]))
+    monkeypatch.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
+    monkeypatch.setattr(round_results, "get_training_status_for_task_and_hotkeys", _training_status)
+    monkeypatch.setattr(round_results, "_resolve_boss_round_task_winner", _resolve)
+    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", _async_none)
+    monkeypatch.setattr(round_results, "determine_boss_round_winner", _winner)
+
+    completed_round = TournamentRoundData(
+        round_id="tourn_1_round_004",
+        tournament_id="tourn_1",
+        round_number=4,
+        round_type=RoundType.KNOCKOUT,
+        is_final_round=True,
+        status=RoundStatus.PENDING,
+    )
+
+    await round_results.get_knockout_winners(completed_round, [csft_task, instruct_task], psql_db=None, config=None)
+
+    outcomes = captured["outcomes"]
+    assert [outcome.lineage for outcome in outcomes] == ["qwen"], "the skipped lineage must stay in the gate"
+    assert outcomes[0].satisfied_by(CHALLENGER) is False
+    assert outcomes[0].is_draw is False

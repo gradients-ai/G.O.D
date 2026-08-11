@@ -587,7 +587,11 @@ async def get_knockout_winners(
             return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
 
         def _lineage_outcome(task_obj) -> ContinuousSftLineageOutcome | None:
-            """Register this lineage as present in the round, defaulting it to no result."""
+            """Register this lineage as present in the round, defaulting it to no result.
+
+            Idempotent, so it is safe to call unconditionally per task and again when the task is
+            awarded or recorded as a draw.
+            """
             if not _is_continuous_sft(task_obj):
                 return None
             lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
@@ -650,6 +654,14 @@ async def get_knockout_winners(
             logger.info(f"Processing boss round task {task.task_id}")
 
             task_object = await get_task(task.task_id, psql_db)
+
+            # Register the lineage before anything can skip the task. Several branches below bail
+            # out with a bare `continue` - notably "both evaluation failed" - and if registration
+            # rode on the award path those would leave the lineage out of continuous_sft_outcomes
+            # entirely, taking the gate's count to zero and switching the strictest rule in the
+            # tournament off. A lineage is in its own gate the moment its task exists; all that
+            # varies afterwards is whether it ends up satisfied.
+            _lineage_outcome(task_object)
 
             miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
             if not miner_results:
