@@ -773,7 +773,6 @@ async def create_boss_round_decider_tasks(
     round_id: str,
     config: Config,
     decider_task_types: list[TaskType],
-    continuous_sft_lineages: list[str | None],
 ) -> list[RawTask]:
     """Add one replacement task per drawn boss-round task.
 
@@ -782,15 +781,21 @@ async def create_boss_round_decider_tasks(
     us whether the tie dead zone is set too wide. It is simply excluded from the dethrone tally, and
     these tasks restore the count of decided results the tally runs over.
 
-    Each decider mirrors the type that drew, so the boss round keeps the mix it was built with.
-    Continuous-SFT draws get another continuous-SFT task of the same lineage rather than a plain
-    instruct task, because the dethrone rule requires the challenger to *win* every continuous-SFT
-    task and a draw cannot satisfy that.
+    Each decider mirrors the type that drew, so the boss round keeps the mix it was built with -
+    except a drawn continuous-SFT task, which the caller maps to a plain instruct task on a fresh
+    dataset pull. A drawn lineage has already cleared its own dethrone gate, so a second chunk of it
+    would buy nothing while putting two tasks on one sequential train_index.
 
     Nodes are deliberately not copied from the drawn task: the round returns to PENDING and
     assign_nodes_to_tournament_tasks assigns both sides afresh, which gives each decider its own
     expected_repo_name. Copying the drawn task's name would point evaluation at the model that was
     already trained and uploaded for it.
+
+    All-or-nothing. Each decider is registered in tournament_tasks as it is created, so a failure
+    partway through would otherwise leave the round holding tasks nobody will ever assign nodes to -
+    and since the decider cap keys off the round's task count, that surplus permanently blocks the
+    retry from completing the batch, leaving a task that never ran to be scored against somebody.
+    On failure the partial batch is deleted so the count is restored and the next cycle starts clean.
     """
     standard_models = _get_text_models(config.keypair)
     big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
@@ -799,26 +804,33 @@ async def create_boss_round_decider_tasks(
     pair_id = f"{round_id}_pair_001"
 
     tasks: list[RawTask] = []
-    for task_type, lineage in zip(decider_task_types, continuous_sft_lineages):
-        if lineage is not None:
-            seed_model = t_cst.continuous_sft_seed_repo(lineage)
-            if not seed_model:
-                raise ValueError(f"Cannot create a decider for unknown continuous-SFT lineage {lineage!r}")
-            logger.info(f"Creating continuous-SFT boss-round decider for lineage {lineage}")
-            tasks.append(await _create_continuous_sft_boss_task(tournament_id, round_id, pair_id, config, lineage, seed_model))
-            continue
-
-        models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
-        logger.info(f"Creating {task_type.value} boss-round decider")
-        task = await _create_single_new_text_task(
-            task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets
-        )
-        # _create_single_new_text_task swallows its errors and returns None. A missing decider would
-        # leave the round one decided result short and resolve it on a smaller field than intended,
-        # so raise instead and let the next cycle retry with the round still deferred.
-        if task is None:
-            raise RuntimeError(f"Failed to create {task_type.value} boss-round decider for round {round_id}")
-        tasks.append(task)
+    try:
+        for task_type in decider_task_types:
+            models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
+            logger.info(f"Creating {task_type.value} boss-round decider")
+            task = await _create_single_new_text_task(
+                task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets
+            )
+            # _create_single_new_text_task swallows its errors and returns None. A missing decider
+            # would leave the round one decided result short and resolve it on a smaller field than
+            # intended, so raise instead and let the next cycle retry the whole batch.
+            if task is None:
+                raise RuntimeError(f"Failed to create {task_type.value} boss-round decider for round {round_id}")
+            tasks.append(task)
+    except Exception:
+        for created in tasks:
+            try:
+                # Cascades to the tournament_tasks row, which is what restores the count.
+                await task_sql.delete_task(created.task_id, config.psql_db)
+                logger.info(f"Rolled back partially-created decider task {created.task_id}")
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Could not roll back decider task {created.task_id} for round {round_id}: {cleanup_error}. "
+                    f"The round now holds a task that will never be assigned nodes - resolution will "
+                    f"refuse to advance until it is removed.",
+                    exc_info=True,
+                )
+        raise
 
     logger.info(f"Created {len(tasks)} boss-round decider task(s) for round {round_id}")
     return tasks

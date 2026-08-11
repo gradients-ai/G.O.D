@@ -111,6 +111,9 @@ logger = get_logger(__name__)
 # Rounds we have already pinged Discord about for having zero-score groups. Process-local on
 # purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
 _EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
+# Rounds already pinged about a failed draw-decider creation. Same reason as the set above: the
+# retry runs on a 60s loop and would otherwise hammer the webhook until someone intervenes.
+_DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -349,13 +352,12 @@ async def _carry_forward_continuous_sft(
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
     and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
     """
-    # A lineage can hold more than one task in a round: a drawn continuous-SFT task is excluded from
-    # the dethrone tally and given a replacement of the same lineage, so both sit here. The last one
-    # created is the one that decided the lineage, and advance_continuous_sft_state is idempotent on
-    # source_round_id - so without picking deliberately, whichever the query returned first would
-    # win and the lineage could carry forward the drawn task's model. get_tournament_tasks orders by
-    # created_at for exactly this reason.
-    latest_task_per_lineage: dict[str, str] = {}
+    # Exactly one task per lineage, which is why this can carry forward the first it finds. A drawn
+    # continuous-SFT task is stood in for by a plain instruct task rather than a second chunk of the
+    # same lineage, precisely so that stays true: two tasks sharing one sequential train_index would
+    # leave this picking between them, with advance_continuous_sft_state idempotent on
+    # source_round_id so whichever came first would silently win.
+    found = False
     for round_task in round_tasks:
         task_obj = await task_sql.get_task(round_task.task_id, psql_db)
         if not task_obj:
@@ -368,26 +370,20 @@ async def _carry_forward_continuous_sft(
                 f"Continuous-SFT task {round_task.task_id} has no lineage in ds={task_obj.ds}; skipping carry-forward"
             )
             continue
-        if lineage in latest_task_per_lineage:
-            logger.info(
-                f"Continuous-SFT lineage {lineage} has an earlier task {latest_task_per_lineage[lineage]} in this "
-                f"round (a draw that was given a decider); carrying forward from {round_task.task_id} instead"
-            )
-        latest_task_per_lineage[lineage] = round_task.task_id
+        found = True
 
-    found = bool(latest_task_per_lineage)
-    for lineage, task_id in latest_task_per_lineage.items():
         # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
         # had no scored winner, in which case advance preserves the prior repo.
-        winner_repo = await task_sql.get_lowest_loss_repo_for_task(task_id, psql_db)
+        winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
         logger.info(
-            f"Continuous-SFT carry-forward: lineage={lineage} task={task_id} carried_winner={winner_repo}"
+            f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
+            f"carried_winner={winner_repo}"
         )
         try:
             await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
         except Exception as e:
             logger.error(
-                f"Failed to advance continuous_sft_state[{lineage}] for task {task_id}: {e}", exc_info=True
+                f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
             )
 
     if not found:
@@ -1367,8 +1363,29 @@ async def _add_boss_round_deciders(
     after which the round completes and advances normally. Boss-round task creation is idempotent on
     the task count, so the pending pass will not add a second set.
 
-    Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries.
+    Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries. The
+    partial batch is rolled back by the creator, so the retry starts from the same state this one did.
     """
+    # Nothing to create - the round already holds tasks that never got nodes (a crash between
+    # creating deciders and this status flip). PENDING is the whole fix: node assignment picks them
+    # up and the round runs them.
+    if outcome.unassigned_task_ids:
+        await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+        logger.warning(
+            f"Round {completed_round.round_id} returned to PENDING to assign nodes to "
+            f"{len(outcome.unassigned_task_ids)} orphaned task(s): {outcome.unassigned_task_ids}"
+        )
+        await _notify_discord(
+            f"Boss round returned for node assignment\n"
+            f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+            f"Round: {completed_round.round_id}\n"
+            f"{outcome.deferred_reason}\n"
+            f"Most likely a crash between creating a draw decider and returning the round to PENDING. "
+            f"No action needed unless it repeats.",
+            config,
+        )
+        return
+
     resolution = outcome.draw_resolution
     if resolution is None:
         logger.error(f"Round {completed_round.round_id} deferred with no draw resolution attached; not advancing")
@@ -1385,13 +1402,26 @@ async def _add_boss_round_deciders(
             completed_round.round_id,
             config,
             resolution.decider_task_types,
-            resolution.continuous_sft_lineages,
         )
     except Exception as e:
         logger.error(
             f"Failed to create boss-round decider tasks for round {completed_round.round_id}: {e}. "
             f"Round stays completed and unadvanced; retrying next cycle.",
             exc_info=True,
+        )
+        # Some causes retry out of it (a flaky content service), some never will - an unknown
+        # continuous-SFT lineage, or a drawn task whose type has no creation route. Those spin
+        # silently on a 60s loop forever, so say so once, as every other blocking path here does.
+        await _alert_once(
+            completed_round.round_id,
+            _DECIDER_CREATION_FAILED_ROUNDS,
+            f"Boss round decider creation FAILED\n"
+            f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+            f"Round: {completed_round.round_id}\n"
+            f"Error: {e}\n"
+            f"Types requested: {[t.value for t in resolution.decider_task_types]}\n"
+            f"The round will retry every cycle but will NOT advance until this succeeds.",
+            config,
         )
         return
 
@@ -1429,11 +1459,9 @@ async def _alert_empty_score_groups(
         f"{len(empty_score_groups)} group(s) finished with no valid scores.\n{detail}"
     )
 
-    if completed_round.round_id in _EMPTY_SCORE_ROUNDS_ALERTED:
-        return
-    _EMPTY_SCORE_ROUNDS_ALERTED.add(completed_round.round_id)
-
-    await _notify_discord(
+    await _alert_once(
+        completed_round.round_id,
+        _EMPTY_SCORE_ROUNDS_ALERTED,
         f"Tournament advancement BLOCKED\n"
         f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
         f"Round: {completed_round.round_id}\n"
@@ -1442,6 +1470,14 @@ async def _alert_empty_score_groups(
         f"Evaluation data is missing for these groups — fix the scores, then the cycle will advance on its own.",
         config,
     )
+
+
+async def _alert_once(round_id: str, already_alerted: set[str], message: str, config: Config) -> None:
+    """Ping Discord once per round per process for a condition that retries on a 60s loop."""
+    if round_id in already_alerted:
+        return
+    already_alerted.add(round_id)
+    await _notify_discord(message, config)
 
 
 async def _notify_discord(message: str, config: Config) -> None:

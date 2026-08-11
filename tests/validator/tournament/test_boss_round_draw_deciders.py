@@ -6,12 +6,23 @@ so it must not consume the one task the challenger is allowed to drop. Each draw
 excluded from the tally and replaced, so the round still resolves over a full set of decided results.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.tournament import constants as t_cst
+from validator.tournament import round_results
+from validator.tournament import tournament_manager
+from validator.tournament.models import BossRoundDrawResolution
+from validator.tournament.models import ContinuousSftLineageOutcome
+from validator.tournament.models import RoundStatus
+from validator.tournament.models import RoundType
+from validator.tournament.models import TournamentData
+from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
 from validator.tournament.round_results import _resolve_boss_round_draws
 from validator.tournament.round_results import determine_boss_round_winner
@@ -60,8 +71,7 @@ def test_chris_scenario_challenger_takes_the_crown_after_winning_the_decider():
         decided_winners,
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_winners=[CHALLENGER],
-        num_continuous_sft_tasks=1,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
     )
 
     assert len(decided_winners) == TEXT_BOSS_ROUND_SIZE
@@ -79,8 +89,7 @@ def test_a_dead_task_never_lowers_the_dethrone_bar():
         [BOSS, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_winners=[CHALLENGER],
-        num_continuous_sft_tasks=1,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert three_of_four == BOSS
@@ -89,8 +98,7 @@ def test_a_dead_task_never_lowers_the_dethrone_bar():
         [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_winners=[CHALLENGER],
-        num_continuous_sft_tasks=1,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert swept_all_four == CHALLENGER
@@ -115,8 +123,7 @@ def test_bar_is_not_pinned_when_nothing_drew():
 def test_draws_earn_one_decider_each_mirroring_the_type_that_drew():
     resolution = _resolve_boss_round_draws(
         drawn_task_ids=["task_a", "task_b"],
-        drawn_task_types=[TaskType.DPOTASK, TaskType.INSTRUCTTEXTTASK],
-        drawn_continuous_sft_lineages=[None, None],
+        decider_task_types=[TaskType.DPOTASK, TaskType.INSTRUCTTEXTTASK],
         round_tasks=_round_tasks(TEXT_BOSS_ROUND_SIZE),
         tournament_type=TournamentType.TEXT,
     )
@@ -125,19 +132,61 @@ def test_draws_earn_one_decider_each_mirroring_the_type_that_drew():
     assert resolution.decider_task_types == [TaskType.DPOTASK, TaskType.INSTRUCTTEXTTASK]
 
 
-def test_continuous_sft_draw_is_mirrored_by_lineage_not_downgraded():
-    """The dethrone rule needs continuous-SFT tasks *won*, so a draw must be replaced in kind."""
+def test_continuous_sft_draw_is_stood_in_for_by_an_instruct_task():
+    """A drawn lineage gets a plain instruct task, not a second chunk of itself.
+
+    The lineage has already cleared its own dethrone gate by drawing, so a second continuous-SFT
+    task would buy nothing - while putting two tasks on one sequential train_index and leaving the
+    chain's carry-forward to pick between them. The stand-in only tops the tally back up.
+    """
     resolution = _resolve_boss_round_draws(
         drawn_task_ids=["task_a"],
-        drawn_task_types=[TaskType.CHATTASK],
-        drawn_continuous_sft_lineages=["qwen"],
+        decider_task_types=[TaskType.INSTRUCTTEXTTASK],
         round_tasks=_round_tasks(TEXT_BOSS_ROUND_SIZE),
         tournament_type=TournamentType.TEXT,
     )
 
     assert resolution.needs_deciders is True
-    assert resolution.decider_task_types == [TaskType.CHATTASK]
-    assert resolution.continuous_sft_lineages == ["qwen"]
+    assert resolution.decider_task_types == [TaskType.INSTRUCTTEXTTASK]
+
+
+def test_a_drawn_lineage_satisfies_its_own_gate():
+    """A draw is the task failing to separate the models, not the challenger failing to beat them.
+
+    So it clears the lineage gate. The challenger still has to win the rest of the round - this only
+    stops an undecidable continuous-SFT task costing them the crown on its own.
+    """
+    winner = determine_boss_round_winner(
+        [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+    assert winner == CHALLENGER
+
+    # But a draw is not a free pass on the rest: still only 3 of 5 decided won.
+    short_elsewhere = determine_boss_round_winner(
+        [BOSS, BOSS, CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+    assert short_elsewhere == BOSS
+
+
+def test_a_lineage_the_boss_won_still_blocks():
+    """A loss is not a draw: the boss demonstrably held that lineage, so the gate blocks."""
+    winner = determine_boss_round_winner(
+        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=BOSS)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+
+    assert winner == BOSS
 
 
 def test_deciders_are_capped_at_one_round_of_them():
@@ -148,8 +197,7 @@ def test_deciders_are_capped_at_one_round_of_them():
     """
     resolution = _resolve_boss_round_draws(
         drawn_task_ids=["task_a"],
-        drawn_task_types=[TaskType.INSTRUCTTEXTTASK],
-        drawn_continuous_sft_lineages=[None],
+        decider_task_types=[TaskType.INSTRUCTTEXTTASK],
         round_tasks=_round_tasks(TEXT_BOSS_ROUND_SIZE + 1),
         tournament_type=TournamentType.TEXT,
     )
@@ -162,14 +210,95 @@ def test_deciders_are_capped_at_one_round_of_them():
 def test_no_draws_means_nothing_to_do():
     resolution = _resolve_boss_round_draws(
         drawn_task_ids=[],
-        drawn_task_types=[],
-        drawn_continuous_sft_lineages=[],
+        decider_task_types=[],
         round_tasks=_round_tasks(TEXT_BOSS_ROUND_SIZE),
         tournament_type=TournamentType.TEXT,
     )
 
     assert resolution.needs_deciders is False
     assert resolution.drawn_task_ids == []
+
+
+def test_bar_is_clamped_so_it_can_never_be_unreachable():
+    """Two draws outliving the single decider batch left 3 decided against a built size of 5.
+
+    That asked for 4 wins out of 3 - a bar meant to stop draws helping the challenger had turned
+    into draws guaranteeing the boss, the exact inversion this whole rule exists to prevent.
+    Sweeping every task that measured anything is always enough.
+    """
+    winner = determine_boss_round_winner(
+        [CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+    assert winner == CHALLENGER
+
+    # Clamping must not soften the ordinary case: one real loss out of three still fails.
+    lost_one = determine_boss_round_winner(
+        [BOSS, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+    assert lost_one == BOSS
+
+
+def test_a_lineage_that_never_decides_blocks_the_dethrone():
+    """A lineage whose task AND decider both drew must not remove itself from its own gate.
+
+    Counting per task and subtracting the drawn ones took the total to zero, which switched the
+    strictest rule in the tournament off exactly when it had the least evidence - the challenger was
+    crowned having won no continuous-SFT task at all. Counted per lineage, an undecided lineage is a
+    None entry that fails the "won every lineage" check.
+    """
+    winner = determine_boss_round_winner(
+        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen")],  # no result at all
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+
+    assert winner == BOSS
+
+
+def test_a_decider_settles_the_lineage_its_predecessor_drew():
+    """The flip side: winning the lineage's decider does satisfy the gate."""
+    winner = determine_boss_round_winner(
+        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
+        BOSS,
+        TournamentType.TEXT,
+        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
+        expected_task_count=TEXT_BOSS_ROUND_SIZE,
+    )
+
+    assert winner == CHALLENGER
+
+
+def test_draw_resolution_rejects_unknown_fields():
+    """A mistyped field name silently dropped the decider types and stayed inert only by luck."""
+    with pytest.raises(ValidationError):
+        BossRoundDrawResolution(drawn_task_ids=["a"], drawn_task_types=[TaskType.DPOTASK])
+
+
+def test_capped_resolution_still_reports_what_drew():
+    """The capped path must carry its decider types, not silently blank them.
+
+    It was passing them under the wrong keyword, which pydantic dropped - inert only because the
+    capped path short-circuits before anything reads the field.
+    """
+    resolution = _resolve_boss_round_draws(
+        drawn_task_ids=["task_a"],
+        decider_task_types=[TaskType.INSTRUCTTEXTTASK],
+        round_tasks=_round_tasks(TEXT_BOSS_ROUND_SIZE + 1),
+        tournament_type=TournamentType.TEXT,
+    )
+
+    assert resolution.can_add_deciders is False
+    assert resolution.decider_task_types == [TaskType.INSTRUCTTEXTTASK]
 
 
 @pytest.mark.parametrize(
@@ -192,3 +321,41 @@ def test_only_text_task_types_can_draw():
         TaskType.DPOTASK,
         TaskType.CHATTASK,
     }
+
+
+@pytest.mark.asyncio
+async def test_orphaned_task_defers_the_round_instead_of_scoring_it(monkeypatch):
+    """A boss-round task with no assigned nodes never ran, so it must not be scored against anyone.
+
+    One gets here when a decider is created but the round never makes it back to PENDING - a crash,
+    or a failure partway through creating a batch. The old path fell through to "no valid results ->
+    winner is base contestant", charging the challenger a loss on a task that never happened, while
+    the decider cap (round now holds more tasks than its built size) blocked any repair. Deferring
+    sends the round back for node assignment instead.
+    """
+    round_tasks = _round_tasks(TEXT_BOSS_ROUND_SIZE + 1)
+    orphan_id = round_tasks[-1].task_id
+
+    async def fake_get_tournament(_tournament_id, _psql_db):
+        return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
+
+    async def fake_get_nodes_assigned_to_task(task_id, _psql_db):
+        return [] if task_id == orphan_id else ["node_boss", "node_challenger"]
+
+    monkeypatch.setattr(round_results, "get_tournament", fake_get_tournament)
+    monkeypatch.setattr(round_results, "get_nodes_assigned_to_task", fake_get_nodes_assigned_to_task)
+
+    completed_round = TournamentRoundData(
+        round_id="tourn_1_round_004",
+        tournament_id="tourn_1",
+        round_number=4,
+        round_type=RoundType.KNOCKOUT,
+        is_final_round=True,
+        status=RoundStatus.PENDING,
+    )
+
+    outcome = await round_results.get_knockout_winners(completed_round, round_tasks, psql_db=None, config=None)
+
+    assert outcome.is_deferred is True
+    assert outcome.unassigned_task_ids == [orphan_id]
+    assert outcome.winners == []

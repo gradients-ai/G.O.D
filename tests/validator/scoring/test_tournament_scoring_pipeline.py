@@ -22,6 +22,7 @@ from validator.scoring.tournaments import individual_scores_to_pairwise
 from validator.scoring.tournaments import pvp_results_to_pairwise
 from validator.scoring.tournaments import tournament_scores_to_weights
 from validator.scoring.weights import apply_tournament_weights
+from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import EnvironmentWeight
 from validator.tournament.models import PairwiseOutcome
 from validator.tournament.models import TournamentResultsWithWinners
@@ -434,49 +435,78 @@ class TestDetermineBossRoundWinnerEnv:
         assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT) == "challenger"
 
 
+def _won(lineage: str, hotkey: str) -> ContinuousSftLineageOutcome:
+    return ContinuousSftLineageOutcome(lineage=lineage, winner_hotkey=hotkey)
+
+
+def _drew(lineage: str) -> ContinuousSftLineageOutcome:
+    return ContinuousSftLineageOutcome(lineage=lineage, is_draw=True)
+
+
+def _no_result(lineage: str) -> ContinuousSftLineageOutcome:
+    return ContinuousSftLineageOutcome(lineage=lineage)
+
+
 class TestDetermineBossRoundWinnerContinuousSft:
-    """Text boss round with continuous-SFT tasks: on top of the overall 5/6 threshold, the
-    challenger must win EVERY continuous-SFT task to dethrone. num_continuous_sft_tasks is the
-    total continuous-SFT tasks in the round; continuous_sft_winners are the decided ones.
+    """Text boss round with continuous-SFT lineages: on top of the overall 5/6 threshold, the
+    challenger must satisfy EVERY lineage to dethrone.
+
+    Satisfied means won it or drew it. A draw is the task failing to separate the two models rather
+    than the challenger failing to beat the boss, so it should not cost the crown. A loss, or no
+    result at all, blocks — the latter because absence of evidence is not parity.
     """
 
     OVERALL_5_OF_6 = ["challenger"] * 5 + ["boss"]
 
     def test_wins_overall_and_all_continuous_dethrones(self):
         assert determine_boss_round_winner(
-            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "challenger"), _won("b", "challenger")]
         ) == "challenger"
 
     def test_wins_overall_but_loses_one_continuous_boss_retains(self):
         assert determine_boss_round_winner(
-            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger", "boss"], 2
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "challenger"), _won("b", "boss")]
         ) == "boss"
 
     def test_wins_overall_but_loses_both_continuous_boss_retains(self):
         assert determine_boss_round_winner(
-            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["boss", "boss"], 2
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "boss"), _won("b", "boss")]
         ) == "boss"
 
     def test_wins_all_continuous_but_fails_overall_boss_retains(self):
         winners = ["challenger"] * 4 + ["boss", "boss"]  # only 4/6
-        assert determine_boss_round_winner(winners, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2) == "boss"
+        assert determine_boss_round_winner(
+            winners, "boss", TournamentType.TEXT, [_won("a", "challenger"), _won("b", "challenger")]
+        ) == "boss"
 
     def test_skipped_continuous_task_counts_against_challenger(self):
-        # Only one of two continuous tasks produced a decided winner -> count 1 != 2 -> boss retains.
-        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger"], 2) == "boss"
+        # One lineage produced no comparison at all -> not satisfied -> boss retains.
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "challenger"), _no_result("b")]
+        ) == "boss"
+
+    def test_drawn_continuous_task_does_not_count_against_challenger(self):
+        # A draw is not a skip: both sides were scored and came out level, which satisfies the gate.
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "challenger"), _drew("b")]
+        ) == "challenger"
 
     def test_six_of_six_with_both_continuous_dethrones(self):
         assert determine_boss_round_winner(
-            ["challenger"] * 6, "boss", TournamentType.TEXT, ["challenger", "challenger"], 2
+            ["challenger"] * 6, "boss", TournamentType.TEXT, [_won("a", "challenger"), _won("b", "challenger")]
         ) == "challenger"
 
     def test_no_continuous_tasks_falls_back_to_overall_rule(self):
-        # num_continuous_sft_tasks=0 (e.g. image rounds / back-compat) leaves the rule untouched.
-        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.IMAGE, [], 0) == "challenger"
+        # No lineages (e.g. image rounds / back-compat) leaves the rule untouched.
+        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.IMAGE, []) == "challenger"
 
     def test_single_continuous_task_must_be_won(self):
-        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["challenger"], 1) == "challenger"
-        assert determine_boss_round_winner(self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, ["boss"], 1) == "boss"
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "challenger")]
+        ) == "challenger"
+        assert determine_boss_round_winner(
+            self.OVERALL_5_OF_6, "boss", TournamentType.TEXT, [_won("a", "boss")]
+        ) == "boss"
 
 
 # --- 1j: get_real_winner_hotkey ---
