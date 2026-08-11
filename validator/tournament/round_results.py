@@ -10,7 +10,7 @@ from validator.db.database import PSQLDB
 from validator.db.sql.submissions_and_scoring import get_eligible_hotkeys_for_task
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import get_task_winner
-from validator.db.sql.tasks import get_nodes_assigned_to_task
+from validator.db.sql.tasks import count_hotkeys_assigned_to_task
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_group_members
@@ -619,6 +619,13 @@ async def get_knockout_winners(
             outcome = _lineage_outcome(task_obj)
             if outcome is not None:
                 outcome.is_draw = True
+            # Branch on what the task IS, not on whether its lineage parsed. _lineage_outcome
+            # returns None for both "not continuous-SFT" and "continuous-SFT whose lineage is no
+            # longer recognised" - a state warn_orphaned_continuous_sft_state exists to flag, and
+            # one an edit to CONTINUOUS_SFT_LINEAGES between rounds produces. Treating the second as
+            # the first queues a CHATTASK decider, which has no creation route, so the round retries
+            # a task it can never build every 60 seconds forever.
+            if _is_continuous_sft(task_obj):
                 decider_task_types.append(TaskType.INSTRUCTTEXTTASK)
             else:
                 decider_task_types.append(task_obj.task_type)
@@ -638,8 +645,15 @@ async def get_knockout_winners(
         # only way one gets here is a decider that was created but never made it back to PENDING for
         # node assignment (a crash, or a failure partway through creating a batch). Defer instead and
         # let the caller return the round to PENDING, which is what assigns them.
+        #
+        # Counted from task_nodes rather than get_nodes_assigned_to_task, which joins nodes: that
+        # table is emptied and rebuilt for the netuid on every metagraph refresh, so a competitor
+        # deregistering mid-tournament would make its tasks read as never assigned. This check would
+        # then send the round back to PENDING, where assignment cannot find the missing node either,
+        # and the round would stall for good - turning a guard against mis-scoring one task into a
+        # wedge on the whole tournament.
         unassigned_task_ids = [
-            task.task_id for task in round_tasks if not await get_nodes_assigned_to_task(task.task_id, psql_db)
+            task.task_id for task in round_tasks if not await count_hotkeys_assigned_to_task(task.task_id, psql_db)
         ]
         if unassigned_task_ids:
             reason = (

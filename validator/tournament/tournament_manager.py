@@ -21,9 +21,9 @@ from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import advance_continuous_sft_state
-from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
 from validator.db.sql.tournaments import add_tournament_participants
@@ -76,9 +76,9 @@ from validator.tournament.models import KnockoutRound
 from validator.tournament.models import RespondingNode
 from validator.tournament.models import Round
 from validator.tournament.models import RoundOutcome
-from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
+from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentRoundData

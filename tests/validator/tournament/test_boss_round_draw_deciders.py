@@ -17,7 +17,6 @@ from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.tournament import constants as t_cst
 from validator.tournament import round_results
-from validator.tournament import tournament_manager
 from validator.tournament.models import BossRoundDrawResolution
 from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import ContinuousSftLineageOutcome
@@ -350,11 +349,11 @@ async def test_orphaned_task_defers_the_round_instead_of_scoring_it(monkeypatch)
     async def fake_get_tournament(_tournament_id, _psql_db):
         return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
 
-    async def fake_get_nodes_assigned_to_task(task_id, _psql_db):
-        return [] if task_id == orphan_id else ["node_boss", "node_challenger"]
+    async def fake_count_hotkeys_assigned_to_task(task_id, _psql_db):
+        return 0 if task_id == orphan_id else 2
 
     monkeypatch.setattr(round_results, "get_tournament", fake_get_tournament)
-    monkeypatch.setattr(round_results, "get_nodes_assigned_to_task", fake_get_nodes_assigned_to_task)
+    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", fake_count_hotkeys_assigned_to_task)
 
     completed_round = TournamentRoundData(
         round_id="tourn_1_round_004",
@@ -413,8 +412,8 @@ async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
     async def _tournament(_tournament_id, _psql_db):
         return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
 
-    async def _nodes(_task_id, _psql_db):
-        return ["node_boss", "node_challenger"]
+    async def _assigned(_task_id, _psql_db):
+        return 2
 
     async def _resolve(task_id, **_kwargs):
         assert task_id != csft_task.task_id, "the continuous-SFT task should have been skipped"
@@ -429,7 +428,7 @@ async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
 
     monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
     monkeypatch.setattr(round_results, "get_tournament", _tournament)
-    monkeypatch.setattr(round_results, "get_nodes_assigned_to_task", _nodes)
+    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", _assigned)
     monkeypatch.setattr(round_results, "get_task", lambda task_id, _psql_db: _async(tasks[task_id]))
     monkeypatch.setattr(round_results, "get_task_results_for_ranking", lambda tid, _db: _async(results[tid]))
     monkeypatch.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
@@ -453,3 +452,62 @@ async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
     assert [outcome.lineage for outcome in outcomes] == ["qwen"], "the skipped lineage must stay in the gate"
     assert outcomes[0].satisfied_by(CHALLENGER) is False
     assert outcomes[0].is_draw is False
+
+
+@pytest.mark.asyncio
+async def test_a_drawn_continuous_sft_task_with_an_unparseable_lineage_gets_a_buildable_decider(monkeypatch):
+    """The decider type must follow what the task IS, not whether its lineage parsed.
+
+    _lineage_outcome returns None both for "not continuous-SFT" and for "continuous-SFT whose
+    lineage no longer parses" - the latter reachable by editing CONTINUOUS_SFT_LINEAGES between
+    rounds, which is why warn_orphaned_continuous_sft_state exists. Branching on it queued a
+    CHATTASK decider, and _create_single_new_text_task has no route for CHATTASK, so the round
+    retried a task it could never build every 60 seconds forever.
+    """
+    (csft_task,) = _round_tasks(1)
+    orphaned = SimpleNamespace(
+        task_id=csft_task.task_id,
+        task_type=TaskType.CHATTASK,
+        training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+        ds="continuous-sft-but-unparseable",
+    )
+    assert t_cst.is_continuous_sft_task(orphaned) is True
+    assert t_cst.continuous_sft_lineage_from_ds(orphaned.ds) is None, "premise: the lineage does not parse"
+
+    async def _tournament(_tournament_id, _psql_db):
+        return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
+
+    async def _resolve(**_kwargs):
+        return BossRoundTaskVerdict(winner_hotkey=BOSS, decided_by="a draw", is_draw=True)
+
+    monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
+    monkeypatch.setattr(round_results, "get_tournament", _tournament)
+    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", lambda _tid, _db: _async(2))
+    monkeypatch.setattr(round_results, "get_task", lambda _tid, _db: _async(orphaned))
+    monkeypatch.setattr(
+        round_results,
+        "get_task_results_for_ranking",
+        lambda _tid, _db: _async([SimpleNamespace(hotkey=BOSS), SimpleNamespace(hotkey=CHALLENGER)]),
+    )
+    monkeypatch.setattr(
+        round_results,
+        "calculate_miner_ranking_and_scores",
+        lambda ranked: [SimpleNamespace(hotkey=r.hotkey, adjusted_loss=0.5) for r in ranked],
+    )
+    monkeypatch.setattr(round_results, "_resolve_boss_round_task_winner", _resolve)
+    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", _async_none)
+
+    completed_round = TournamentRoundData(
+        round_id="tourn_1_round_004",
+        tournament_id="tourn_1",
+        round_number=4,
+        round_type=RoundType.KNOCKOUT,
+        is_final_round=True,
+        status=RoundStatus.PENDING,
+    )
+
+    outcome = await round_results.get_knockout_winners(completed_round, [csft_task], psql_db=None, config=None)
+
+    assert outcome.is_deferred is True
+    # CHATTASK here would be a decider nothing can build.
+    assert outcome.draw_resolution.decider_task_types == [TaskType.INSTRUCTTEXTTASK]

@@ -347,6 +347,28 @@ async def get_nodes_assigned_to_task(task_id: str, psql_db: PSQLDB) -> list[Node
         return [Node(**{k: v for k, v in dict(row).items() if k != cst.TRUST}) for row in rows]
 
 
+async def count_hotkeys_assigned_to_task(task_id: str, psql_db: PSQLDB) -> int:
+    """How many hotkeys are assigned to a task, read from task_nodes alone.
+
+    Deliberately does not join nodes, unlike get_nodes_assigned_to_task: migrate_nodes_to_history
+    DELETEs every row for the netuid on each metagraph refresh and reinserts only currently
+    registered ones, so a competitor that deregisters mid-tournament loses its nodes row for good
+    and the joined query then reports its tasks as never assigned. Callers asking "did this task
+    ever get participants" need the assignment record, which survives, not the node's current
+    registration, which does not.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        return await connection.fetchval(
+            f"""
+            SELECT COUNT(*) FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
+            """,
+            task_id,
+            NETUID,
+        )
+
+
 async def get_tasks_with_status(
     status: TaskStatus,
     psql_db: PSQLDB,
