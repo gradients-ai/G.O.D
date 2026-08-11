@@ -75,6 +75,7 @@ from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import RespondingNode
 from validator.tournament.models import Round
+from validator.tournament.models import RoundOutcome
 from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
@@ -98,6 +99,7 @@ from validator.tournament.reports import generate_diff_report_and_notify_tournam
 from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_round_winners
+from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
@@ -347,7 +349,13 @@ async def _carry_forward_continuous_sft(
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
     and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
     """
-    found = False
+    # A lineage can hold more than one task in a round: a drawn continuous-SFT task is excluded from
+    # the dethrone tally and given a replacement of the same lineage, so both sit here. The last one
+    # created is the one that decided the lineage, and advance_continuous_sft_state is idempotent on
+    # source_round_id - so without picking deliberately, whichever the query returned first would
+    # win and the lineage could carry forward the drawn task's model. get_tournament_tasks orders by
+    # created_at for exactly this reason.
+    latest_task_per_lineage: dict[str, str] = {}
     for round_task in round_tasks:
         task_obj = await task_sql.get_task(round_task.task_id, psql_db)
         if not task_obj:
@@ -360,20 +368,26 @@ async def _carry_forward_continuous_sft(
                 f"Continuous-SFT task {round_task.task_id} has no lineage in ds={task_obj.ds}; skipping carry-forward"
             )
             continue
-        found = True
+        if lineage in latest_task_per_lineage:
+            logger.info(
+                f"Continuous-SFT lineage {lineage} has an earlier task {latest_task_per_lineage[lineage]} in this "
+                f"round (a draw that was given a decider); carrying forward from {round_task.task_id} instead"
+            )
+        latest_task_per_lineage[lineage] = round_task.task_id
 
+    found = bool(latest_task_per_lineage)
+    for lineage, task_id in latest_task_per_lineage.items():
         # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
         # had no scored winner, in which case advance preserves the prior repo.
-        winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        winner_repo = await task_sql.get_lowest_loss_repo_for_task(task_id, psql_db)
         logger.info(
-            f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
-            f"carried_winner={winner_repo}"
+            f"Continuous-SFT carry-forward: lineage={lineage} task={task_id} carried_winner={winner_repo}"
         )
         try:
             await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
         except Exception as e:
             logger.error(
-                f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
+                f"Failed to advance continuous_sft_state[{lineage}] for task {task_id}: {e}", exc_info=True
             )
 
     if not found:
@@ -607,7 +621,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await _alert_empty_score_groups(tournament, completed_round, empty_score_groups, config)
             return
 
-        winners = await get_round_winners(completed_round, psql_db, config)
+        outcome = await get_round_winners(completed_round, psql_db, config)
+
+        # A boss-round task that separated nothing is excluded from the dethrone tally and earns the
+        # round one extra task in its place, so the tally still runs over a full set of decided
+        # results. Adding those tasks puts the round back to PENDING; it advances on a later pass.
+        if outcome.is_deferred:
+            await _add_boss_round_deciders(tournament, completed_round, outcome, config, psql_db)
+            return
+
+        winners = outcome.winners
         logger.info(f"Round winners: {winners}")
         logger.info(f"Number of winners: {len(winners)}")
 
@@ -1328,6 +1351,62 @@ async def process_active_tournaments(config: Config):
             logger.error(f"Error processing active tournaments: {e}", exc_info=True)
         finally:
             await asyncio.sleep(t_cst.TOURNAMENT_ACTIVE_CYCLE_INTERVAL)
+
+
+async def _add_boss_round_deciders(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    outcome: RoundOutcome,
+    config: Config,
+    psql_db: PSQLDB,
+) -> None:
+    """Add the boss round's decider tasks and put the round back to PENDING.
+
+    PENDING is what gets the tasks trained: process_pending_rounds assigns nodes to anything in the
+    round without them (giving each decider its own expected_repo_name) and flips it back to ACTIVE,
+    after which the round completes and advances normally. Boss-round task creation is idempotent on
+    the task count, so the pending pass will not add a second set.
+
+    Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries.
+    """
+    resolution = outcome.draw_resolution
+    if resolution is None:
+        logger.error(f"Round {completed_round.round_id} deferred with no draw resolution attached; not advancing")
+        return
+
+    logger.info(
+        f"Boss round {completed_round.round_id} drew {len(resolution.drawn_task_ids)} task(s) "
+        f"({resolution.drawn_task_ids}); adding deciders before it can be resolved"
+    )
+
+    try:
+        tasks = await create_boss_round_decider_tasks(
+            tournament.tournament_id,
+            completed_round.round_id,
+            config,
+            resolution.decider_task_types,
+            resolution.continuous_sft_lineages,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to create boss-round decider tasks for round {completed_round.round_id}: {e}. "
+            f"Round stays completed and unadvanced; retrying next cycle.",
+            exc_info=True,
+        )
+        return
+
+    await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+    logger.info(f"Round {completed_round.round_id} returned to PENDING with {len(tasks)} decider task(s)")
+
+    await _notify_discord(
+        f"Boss round extended - drawn task(s)\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"{resolution.reason}\n"
+        f"Added {len(tasks)} task(s): {[str(task.task_id) for task in tasks]}\n"
+        f"The drawn task(s) keep their results but do not count toward the dethrone tally.",
+        config,
+    )
 
 
 async def _alert_empty_score_groups(

@@ -20,9 +20,12 @@ from validator.evaluation.pvp.models import GameOutcome
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.models import BossRoundDrawResolution
+from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import GroupMatchStanding
 from validator.tournament.models import MatchRanking
+from validator.tournament.models import RoundOutcome
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentResultsWithWinners
@@ -220,11 +223,12 @@ async def _resolve_boss_round_task_winner(
     opponent_loss: float,
     threshold_percentage: float,
     psql_db: PSQLDB,
-) -> tuple[str, str | None]:
+) -> BossRoundTaskVerdict:
     """Decide one boss-round task, preferring the paired per-example comparison.
 
-    Returns (winner, basis) - basis describes what decided it, for the persisted score_reason, and
-    is None when the relative margin decided it (the caller's default wording already says that).
+    ``decided_by`` describes what decided it, for the persisted score_reason, and is None when the
+    relative margin decided it (the caller's default wording already says that). ``is_draw`` marks
+    the task as carrying no result at all, which excludes it from the dethrone tally.
 
     Instruct and DPO losses are log-likelihoods, where a relative margin is the wrong scale and a
     scalar mean cannot separate a real win from held-out sampling noise. Where both sides have
@@ -258,7 +262,7 @@ async def _resolve_boss_round_task_winner(
                 f"(boss_fingerprint={boss_fingerprint} challenger_fingerprint={opponent_fingerprint} "
                 f"boss_n={len(boss_losses)} challenger_n={len(opponent_losses)}) - not counted as a win"
             )
-            return boss_hotkey, "unpairable per-example vectors"
+            return BossRoundTaskVerdict(winner_hotkey=boss_hotkey, decided_by="unpairable per-example vectors")
         else:
             comparison = compare_paired_losses(boss_losses, opponent_losses)
             # Logged whether the challenger won or lost: the observed win rate across real boss
@@ -275,11 +279,18 @@ async def _resolve_boss_round_task_winner(
             challenger_won, verdict_reason = challenger_takes_paired_task(comparison, boss_loss, opponent_loss)
             if not challenger_won:
                 logger.info(f"Boss round task {task_id}: {verdict_reason}")
-            # A draw is recorded as such. The defender still holds the task for the dethrone tally,
-            # but nobody outperformed anybody and the stored reason should not claim otherwise.
+            # A draw carries no result. The defender is named so the persisted score row has a
+            # holder, but is_draw takes the task out of the dethrone tally entirely and earns the
+            # round an extra task in its place - nothing here separated the two models, and that is
+            # a fact about the dataset rather than about the challenger.
             if comparison.is_draw:
-                return boss_hotkey, f"a draw ({verdict_reason})"
-            return (opponent_hotkey if challenger_won else boss_hotkey), f"per-example win rate ({verdict_reason})"
+                return BossRoundTaskVerdict(
+                    winner_hotkey=boss_hotkey, decided_by=f"a draw ({verdict_reason})", is_draw=True
+                )
+            return BossRoundTaskVerdict(
+                winner_hotkey=(opponent_hotkey if challenger_won else boss_hotkey),
+                decided_by=f"per-example win rate ({verdict_reason})",
+            )
 
     task_winner = (
         opponent_hotkey
@@ -292,7 +303,7 @@ async def _resolve_boss_round_task_winner(
         f"{task_object.task_type} task ({direction}): {winner_label} wins at {threshold_percentage * 100:.1f}% "
         f"margin (boss={boss_loss:.6f}, opponent={opponent_loss:.6f})"
     )
-    return task_winner, None
+    return BossRoundTaskVerdict(winner_hotkey=task_winner)
 
 
 def determine_boss_round_winner(
@@ -301,18 +312,24 @@ def determine_boss_round_winner(
     tournament_type: TournamentType,
     continuous_sft_winners: list[str] | None = None,
     num_continuous_sft_tasks: int = 0,
+    expected_task_count: int | None = None,
 ) -> str:
     """
     Determine the winner of a boss round based on task results and tournament type.
 
     Args:
-        task_winners: List of hotkeys that won each task in the boss round
+        task_winners: List of hotkeys that won each task in the boss round. Drawn tasks are not in
+            here - nothing separated the two models on them, so they carry no result.
         boss_hotkey: The defending champion's hotkey
         tournament_type: Type of tournament (TEXT or IMAGE)
         continuous_sft_winners: Hotkeys that won each *decided* continuous-SFT task.
-        num_continuous_sft_tasks: Total continuous-SFT tasks (decided or not). When >0 (text boss
-            round), the challenger must win EVERY one to dethrone, on top of the overall threshold —
-            so a failed/skipped continuous-SFT task blocks the dethrone. 0 (image) leaves the rule off.
+        num_continuous_sft_tasks: Decided continuous-SFT tasks. When >0 (text boss round), the
+            challenger must win EVERY one to dethrone, on top of the overall threshold — so a
+            failed/skipped continuous-SFT task blocks the dethrone. 0 (image) leaves the rule off.
+        expected_task_count: The size the boss round was built to. Sets the bar when draws left
+            fewer decided tasks than that, so an undecidable task never *lowers* what it takes to
+            dethrone — a challenger with two dead tasks must sweep the four that worked rather than
+            getting in on three. Defaults to however many tasks actually decided.
 
     Returns:
         Hotkey of the boss round winner
@@ -335,9 +352,11 @@ def determine_boss_round_winner(
 
     opponent_wins = win_counts.get(opponent_hotkey, 0) if opponent_hotkey else 0
 
-    # Both IMAGE and TEXT tournaments: challenger may lose at most one
-    # boss-round task. Each task requires beating the boss by BOSS_ROUND_WIN_MARGIN.
-    required_wins = max(1, total_tasks - 1)
+    # Both IMAGE and TEXT tournaments: challenger may lose at most one boss-round task. Each task
+    # requires beating the boss by BOSS_ROUND_WIN_MARGIN. Measured against the round's built size
+    # rather than the decided count so draws cannot slide the bar downward - they take a task out of
+    # the numerator, and the challenger has to make it up on the ones that did decide.
+    required_wins = max(1, max(total_tasks, expected_task_count or 0) - 1)
 
     # Continuous-SFT gate: challenger must win EVERY continuous-SFT task; only enforced when >0.
     challenger_continuous_wins = (
@@ -467,11 +486,62 @@ async def _resolve_knockout_task_winner(task: TournamentTask, psql_db: PSQLDB) -
     return winner
 
 
+def _resolve_boss_round_draws(
+    drawn_task_ids: list[str],
+    drawn_task_types: list[TaskType],
+    drawn_continuous_sft_lineages: list[str | None],
+    round_tasks: list[TournamentTask],
+    tournament_type: TournamentType,
+) -> BossRoundDrawResolution:
+    """Decide whether a boss round's draws earn it replacement tasks.
+
+    One replacement per drawn task, added in a single batch, and only once. The cap needs no state
+    of its own: the boss round is built to a fixed size and prep-failure replacement swaps tasks
+    without changing the count, so a round holding more tasks than its type calls for is a round
+    that has already had its deciders added. A decider that itself draws is therefore just excluded
+    and the round resolves on whatever was decided.
+    """
+    if not drawn_task_ids:
+        return BossRoundDrawResolution(reason="No drawn tasks")
+
+    expected = t_cst.expected_boss_round_task_count(tournament_type)
+    already_added = len(round_tasks) > expected if expected else False
+
+    if already_added:
+        return BossRoundDrawResolution(
+            drawn_task_ids=drawn_task_ids,
+            drawn_task_types=drawn_task_types,
+            can_add_deciders=False,
+            reason=(
+                f"{len(drawn_task_ids)} drawn task(s) excluded from the tally; the round already holds "
+                f"{len(round_tasks)} tasks against an expected {expected}, so its deciders were already "
+                f"added and it resolves on what was decided"
+            ),
+        )
+
+    return BossRoundDrawResolution(
+        drawn_task_ids=drawn_task_ids,
+        decider_task_types=drawn_task_types,
+        continuous_sft_lineages=drawn_continuous_sft_lineages,
+        can_add_deciders=True,
+        reason=(
+            f"{len(drawn_task_ids)} boss-round task(s) drew - nothing separated the two models on "
+            f"them - so each is excluded from the tally and gets one replacement task: "
+            f"{[t.value for t in drawn_task_types]}"
+        ),
+    )
+
+
 async def get_knockout_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
-) -> list[str]:
-    """Get winners from knockout round."""
+) -> RoundOutcome:
+    """Get winners from knockout round.
+
+    Returns a deferred outcome when a boss round drew tasks and needs replacements added before it
+    can be resolved; the caller must add those tasks rather than advance.
+    """
     winners = []
+    draw_resolution: BossRoundDrawResolution | None = None
 
     if not completed_round.is_final_round:
         for task in round_tasks:
@@ -487,6 +557,13 @@ async def get_knockout_winners(
         # "challenger must win ALL continuous-SFT tasks" dethrone gate.
         continuous_sft_winners: list[str] = []
         num_continuous_sft_tasks = 0
+        # Tasks that separated nothing. Excluded from every tally below and handed to the caller,
+        # which adds one replacement task per draw so the round still resolves on a full set of
+        # decided results. See BossRoundDrawResolution.
+        drawn_task_ids: list[str] = []
+        drawn_task_types: list[TaskType] = []
+        drawn_continuous_sft_lineages: list[str | None] = []
+        drawn_continuous_sft_task_ids: list[str] = []
 
         def _is_continuous_sft(task_obj) -> bool:
             return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
@@ -496,11 +573,28 @@ async def get_knockout_winners(
             if winner is not None and _is_continuous_sft(task_obj):
                 continuous_sft_winners.append(winner)
 
+        def _record_draw(task_id: str, task_obj) -> None:
+            """Take a drawn task out of the tally and queue a replacement of the same kind.
+
+            The replacement mirrors the drawn task's type so the boss round keeps the mix it was
+            built with. Continuous-SFT is mirrored by lineage rather than downgraded to a plain
+            instruct task: the dethrone rule requires the challenger to *win* every continuous-SFT
+            task, and a draw does not satisfy that, so the challenger must be given another
+            continuous-SFT task of that same lineage to win.
+            """
+            drawn_task_ids.append(task_id)
+            drawn_task_types.append(task_obj.task_type)
+            if _is_continuous_sft(task_obj):
+                drawn_continuous_sft_task_ids.append(task_id)
+                drawn_continuous_sft_lineages.append(t_cst.continuous_sft_lineage_from_ds(task_obj.ds))
+            else:
+                drawn_continuous_sft_lineages.append(None)
+
         # Get tournament info to determine the current champion and their consecutive wins
         tournament = await get_tournament(completed_round.tournament_id, psql_db)
         if not tournament:
             logger.error(f"Could not find tournament {completed_round.tournament_id}")
-            return []
+            return RoundOutcome()
 
         # Challenger must beat the boss by BOSS_ROUND_WIN_MARGIN on each task to win it.
         threshold_percentage = t_cst.BOSS_ROUND_WIN_MARGIN
@@ -574,7 +668,7 @@ async def get_knockout_winners(
 
             logger.info(f"Boss round task {task.task_id}: Boss loss: {boss_loss:.6f}, Opponent loss: {opponent_loss:.6f}")
 
-            task_winner, decided_by = await _resolve_boss_round_task_winner(
+            verdict = await _resolve_boss_round_task_winner(
                 task_id=task.task_id,
                 task_object=task_object,
                 boss_hotkey=boss_hotkey,
@@ -584,24 +678,60 @@ async def get_knockout_winners(
                 threshold_percentage=threshold_percentage,
                 psql_db=psql_db,
             )
-            _award(task_winner, task_object)
+            if verdict.is_draw:
+                _record_draw(task.task_id, task_object)
+            else:
+                _award(verdict.winner_hotkey, task_object)
 
+            # Persisted even for a draw: the score row still needs a holder, and the reason says it
+            # was a draw. Only the dethrone tally ignores it.
             await update_threshold_adjusted_quality_scores_for_task(
                 task_id=task.task_id,
-                winner_hotkey=task_winner,
+                winner_hotkey=verdict.winner_hotkey,
                 threshold_percentage=threshold_percentage,
                 compared_hotkeys=[boss_hotkey, opponent_hotkey],
                 psql_db=psql_db,
-                basis=decided_by,
+                basis=verdict.decided_by,
             )
 
+        # A drawn continuous-SFT task is not one the challenger can be asked to have won - its
+        # replacement is the one that has to be won. Leaving it in the total would make the
+        # "win ALL continuous-SFT tasks" gate unsatisfiable, since only the replacement can be won.
+        num_continuous_sft_tasks -= len(drawn_continuous_sft_task_ids)
+
+        draw_resolution = _resolve_boss_round_draws(
+            drawn_task_ids=drawn_task_ids,
+            drawn_task_types=drawn_task_types,
+            drawn_continuous_sft_lineages=drawn_continuous_sft_lineages,
+            round_tasks=round_tasks,
+            tournament_type=tournament.tournament_type,
+        )
+        if draw_resolution.needs_deciders:
+            logger.info(
+                f"Boss round {completed_round.round_id} deferred: {draw_resolution.reason}"
+            )
+            return RoundOutcome(deferred_reason=draw_resolution.reason, draw_resolution=draw_resolution)
+
+        if draw_resolution.drawn_task_ids:
+            logger.info(f"Boss round {completed_round.round_id}: {draw_resolution.reason}")
+
+        # Pinned only when tasks were actually dropped for drawing, which by construction is text
+        # only. Everything else keeps deriving the bar from its own resolved task count.
+        expected_task_count = (
+            t_cst.expected_boss_round_task_count(tournament.tournament_type) if draw_resolution.drawn_task_ids else None
+        )
         boss_round_winner = determine_boss_round_winner(
-            task_winners, boss_hotkey, tournament.tournament_type, continuous_sft_winners, num_continuous_sft_tasks
+            task_winners,
+            boss_hotkey,
+            tournament.tournament_type,
+            continuous_sft_winners,
+            num_continuous_sft_tasks,
+            expected_task_count=expected_task_count,
         )
 
         winners = [boss_round_winner]
 
-    return winners
+    return RoundOutcome(winners=winners, draw_resolution=draw_resolution)
 
 
 async def find_groups_with_no_valid_scores(
@@ -879,19 +1009,29 @@ async def get_group_winners(
 
     return all_winners
 
-async def get_round_winners(completed_round: TournamentRoundData, psql_db: PSQLDB, config: Config) -> list[str]:
-    """Get winners from the completed round."""
+async def get_round_winners(completed_round: TournamentRoundData, psql_db: PSQLDB, config: Config) -> RoundOutcome:
+    """Get winners from the completed round.
+
+    A deferred outcome means the round gained tasks and is not resolvable yet - the caller must add
+    them and wait, not advance. Distinguishing that from an empty winner list matters: an empty list
+    means the boss retained by default and ends the tournament.
+    """
     round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
 
     if completed_round.round_type == RoundType.KNOCKOUT:
-        winners = await get_knockout_winners(completed_round, round_tasks, psql_db, config)
+        outcome = await get_knockout_winners(completed_round, round_tasks, psql_db, config)
     else:
-        winners = await get_group_winners(completed_round, round_tasks, psql_db, config)
+        outcome = RoundOutcome(winners=await get_group_winners(completed_round, round_tasks, psql_db, config))
 
-    unique_winners = list(dict.fromkeys(winners))
-    if len(winners) != len(unique_winners):
-        logger.info(f"Removed {len(winners) - len(unique_winners)} duplicate winners from round {completed_round.round_id}")
-        logger.info(f"Original winners: {winners}")
+    if outcome.is_deferred:
+        return outcome
+
+    unique_winners = list(dict.fromkeys(outcome.winners))
+    if len(outcome.winners) != len(unique_winners):
+        logger.info(
+            f"Removed {len(outcome.winners) - len(unique_winners)} duplicate winners from round {completed_round.round_id}"
+        )
+        logger.info(f"Original winners: {outcome.winners}")
         logger.info(f"Unique winners: {unique_winners}")
 
-    return unique_winners
+    return outcome.model_copy(update={"winners": unique_winners})

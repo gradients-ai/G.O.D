@@ -396,6 +396,65 @@ class PairedLossComparison(BaseModel):
     required_mean_gap_nats: float
 
 
+class BossRoundTaskVerdict(BaseModel):
+    """How one boss-round task resolved.
+
+    ``is_draw`` is carried separately from ``winner_hotkey`` because a draw is not a result: nothing
+    separated the two models, so the task tells the dethrone tally nothing and is excluded from it.
+    ``winner_hotkey`` still names the defender on a draw, since the persisted score row needs
+    somebody to hold the task.
+    """
+
+    winner_hotkey: str
+    # What decided it, for the persisted score_reason. None when the relative margin decided it.
+    decided_by: str | None = None
+    is_draw: bool = False
+
+
+class BossRoundDrawResolution(BaseModel):
+    """What the draws in a completed boss round mean for advancing it.
+
+    A boss-round task draws when every held-out example landed inside the tie dead zone (see
+    compare_paired_losses), which happens when the randomly drawn dataset simply does not
+    discriminate between the two models. That is a property of the task, not of the challenger, so
+    it must not consume the one task the challenger is allowed to drop. Instead each drawn task is
+    excluded from the tally and one additional task is added to the round to take its place, so the
+    round still resolves on the full number of decided results.
+    """
+
+    drawn_task_ids: list[str] = Field(default_factory=list)
+    # Task types to add, one per drawn task, mirroring what drew. Continuous-SFT draws mirror as
+    # continuous-SFT (keyed by lineage in continuous_sft_lineages) because the dethrone rule
+    # requires the challenger to *win* every continuous-SFT task - a draw cannot satisfy it.
+    decider_task_types: list[TaskType] = Field(default_factory=list)
+    continuous_sft_lineages: list[str | None] = Field(default_factory=list)
+    # False once deciders have already been added for this round, which caps them at one per drawn
+    # task. A decider that itself draws is simply excluded and the round resolves on what is left.
+    can_add_deciders: bool = True
+    reason: str = ""
+
+    @property
+    def needs_deciders(self) -> bool:
+        return bool(self.drawn_task_ids) and self.can_add_deciders
+
+
+class RoundOutcome(BaseModel):
+    """Result of resolving a completed round.
+
+    ``deferred_reason`` is set when the round cannot be resolved yet because tasks were added to it
+    (a boss-round draw decider). The caller must not advance on a deferred outcome: ``winners`` is
+    empty then, and an empty winner list otherwise means the boss retained by default.
+    """
+
+    winners: list[str] = Field(default_factory=list)
+    deferred_reason: str | None = None
+    draw_resolution: BossRoundDrawResolution | None = None
+
+    @property
+    def is_deferred(self) -> bool:
+        return self.deferred_reason is not None
+
+
 class TaskPerformanceDifference(BaseModel):
     """Performance difference data for a single task"""
 

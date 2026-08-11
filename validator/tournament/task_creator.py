@@ -768,6 +768,62 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
     return tasks
 
 
+async def create_boss_round_decider_tasks(
+    tournament_id: str,
+    round_id: str,
+    config: Config,
+    decider_task_types: list[TaskType],
+    continuous_sft_lineages: list[str | None],
+) -> list[RawTask]:
+    """Add one replacement task per drawn boss-round task.
+
+    Additive, not a replacement in the replace_tournament_task sense: the drawn task keeps its
+    training, its eval rows and its per-example loss vectors, which are the only data that can tell
+    us whether the tie dead zone is set too wide. It is simply excluded from the dethrone tally, and
+    these tasks restore the count of decided results the tally runs over.
+
+    Each decider mirrors the type that drew, so the boss round keeps the mix it was built with.
+    Continuous-SFT draws get another continuous-SFT task of the same lineage rather than a plain
+    instruct task, because the dethrone rule requires the challenger to *win* every continuous-SFT
+    task and a draw cannot satisfy that.
+
+    Nodes are deliberately not copied from the drawn task: the round returns to PENDING and
+    assign_nodes_to_tournament_tasks assigns both sides afresh, which gives each decider its own
+    expected_repo_name. Copying the drawn task's name would point evaluation at the model that was
+    already trained and uploaded for it.
+    """
+    standard_models = _get_text_models(config.keypair)
+    big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    dpo_datasets = _get_dpo_datasets(config.keypair)
+    pair_id = f"{round_id}_pair_001"
+
+    tasks: list[RawTask] = []
+    for task_type, lineage in zip(decider_task_types, continuous_sft_lineages):
+        if lineage is not None:
+            seed_model = t_cst.continuous_sft_seed_repo(lineage)
+            if not seed_model:
+                raise ValueError(f"Cannot create a decider for unknown continuous-SFT lineage {lineage!r}")
+            logger.info(f"Creating continuous-SFT boss-round decider for lineage {lineage}")
+            tasks.append(await _create_continuous_sft_boss_task(tournament_id, round_id, pair_id, config, lineage, seed_model))
+            continue
+
+        models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
+        logger.info(f"Creating {task_type.value} boss-round decider")
+        task = await _create_single_new_text_task(
+            task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets
+        )
+        # _create_single_new_text_task swallows its errors and returns None. A missing decider would
+        # leave the round one decided result short and resolve it on a smaller field than intended,
+        # so raise instead and let the next cycle retry with the round still deferred.
+        if task is None:
+            raise RuntimeError(f"Failed to create {task_type.value} boss-round decider for round {round_id}")
+        tasks.append(task)
+
+    logger.info(f"Created {len(tasks)} boss-round decider task(s) for round {round_id}")
+    return tasks
+
+
 async def _create_continuous_sft_boss_task(
     tournament_id: str, round_id: str, pair_id: str, config: Config, lineage: str, seed_model: str
 ) -> RawTask:
