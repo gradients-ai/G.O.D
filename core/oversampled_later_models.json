@@ -1,0 +1,17 @@
+{
+  "_comment": "Temporary in-repo pool of 2026+ base models that text tournaments oversample — one guaranteed R1 task and one boss-round instruct task play on a model drawn from here. The content service does not serve these yet (its /get_random_models pool only goes up to 2025), so we keep the list here and sample it directly. Move to the content service and delete this file once it can filter by release date. Every entry is verified ungated, safetensors-only, no auto_map / no .py in the repo (so trust_remote_code=False loads it), no quantization_config, <14B params, and its model_type is in transformers 5.12.x MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.",
+  "models": [
+    {"model_id": "Qwen/Qwen3.5-0.8B", "params_b": 0.87, "model_type": "qwen3_5"},
+    {"model_id": "Qwen/Qwen3.5-2B", "params_b": 2.27, "model_type": "qwen3_5"},
+    {"model_id": "Qwen/Qwen3.5-4B", "params_b": 4.66, "model_type": "qwen3_5"},
+    {"model_id": "Qwen/Qwen3.5-9B", "params_b": 9.65, "model_type": "qwen3_5"},
+    {"model_id": "google/gemma-4-E2B-it", "params_b": 5.12, "model_type": "gemma4"},
+    {"model_id": "google/gemma-4-E4B-it", "params_b": 8.0, "model_type": "gemma4"},
+    {"model_id": "LiquidAI/LFM2.5-1.2B-Instruct", "params_b": 1.17, "model_type": "lfm2"},
+    {"model_id": "LiquidAI/LFM2.5-2.6B", "params_b": 2.7, "model_type": "lfm2"},
+    {"model_id": "LiquidAI/LFM2.5-8B-A1B", "params_b": 8.47, "model_type": "lfm2_moe"},
+    {"model_id": "ibm-granite/granite-4.1-3b", "params_b": 3.4, "model_type": "granite"},
+    {"model_id": "ibm-granite/granite-4.1-8b", "params_b": 8.79, "model_type": "granite"},
+    {"model_id": "openbmb/MiniCPM5-1B", "params_b": 1.08, "model_type": "llama"}
+  ]
+}

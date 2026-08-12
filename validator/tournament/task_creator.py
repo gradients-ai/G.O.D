@@ -5,6 +5,8 @@ from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
+from core.oversampled_later_models import OVERSAMPLED_LATER_MODELS
+from core.oversampled_later_models import sample_oversampled_later_model
 from validator.app.config import Config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import warn_orphaned_continuous_sft_state
@@ -431,22 +433,37 @@ async def _create_single_image_task_with_retry(
 
 
 async def _create_task_by_type(
-    task_type: TaskType, config: Config, models: list, instruct_datasets: list, dpo_datasets: list
+    task_type: TaskType,
+    config: Config,
+    models: list,
+    instruct_datasets: list,
+    dpo_datasets: list,
+    model_id_override: str | None = None,
 ) -> RawTask:
-    """Create a synthetic task of the specified type."""
+    """Create a synthetic task of the specified type.
+
+    model_id_override applies to instruct tasks only — it is the oversampled-later-model slot,
+    and the other task types draw from the content service pool as usual.
+    """
     if task_type == TaskType.IMAGETASK:
         return await create_synthetic_image_task(config, models)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
+        return await create_synthetic_instruct_text_task(
+            config, models, instruct_datasets, enable_kl=True, model_id_override=model_id_override
+        )
     elif task_type == TaskType.DPOTASK:
-        return await create_synthetic_dpo_task(config, models, dpo_datasets)
+        return await create_synthetic_dpo_task(config, models, dpo_datasets, model_id_override=model_id_override)
     elif task_type == TaskType.GRPOTASK:
-        return await create_synthetic_grpo_task(config, models, instruct_datasets)
+        return await create_synthetic_grpo_task(
+            config, models, instruct_datasets, model_id_override=model_id_override
+        )
     elif task_type == TaskType.ENVIRONMENTTASK:
         return await create_synthetic_env_task(config, models, instruct_datasets)
     else:
         # Default to instruct text task
-        return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=True)
+        return await create_synthetic_instruct_text_task(
+            config, models, instruct_datasets, enable_kl=True, model_id_override=model_id_override
+        )
 
 
 async def _get_existing_tasks(existing_tournament_tasks: list, config: Config) -> list[RawTask]:
@@ -518,6 +535,14 @@ async def _create_group_text_tasks(
     )
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
+    # Exactly one R1 task plays on a 2026+ model from OVERSAMPLED_LATER_MODELS (1 of N, whatever N is).
+    # The slot and the model both come from a round_id-seeded rng so a resumed round lands on the
+    # same choice, and the round is re-checked for an existing pool-model task so a task minted
+    # outside this loop can't lead to a second one.
+    oversampled_slot = _oversampled_model_slot(round_data, tasks_per_group)
+    if oversampled_slot is not None and await _round_already_has_oversampled_task(round_data.round_id, config):
+        oversampled_slot = None
+
     tasks = []
     for i, group in enumerate(round_data.groups):
         logger.info(f"  Group {i + 1} ({len(group.member_ids)} members): creating {tasks_per_group} instruct task(s)")
@@ -532,10 +557,57 @@ async def _create_group_text_tasks(
             dpo_datasets,
             tasks_per_group,
             enable_kl=round_data.round_number != 1,
+            oversampled_model_task_index=(
+                oversampled_slot - i * tasks_per_group if oversampled_slot is not None else None
+            ),
         )
         tasks.extend(group_tasks)
 
     return tasks
+
+
+def _oversampled_boss_task_type(round_id: str) -> TaskType:
+    """Which boss-round task type carries the oversampled model, drawn from a round_id-seeded rng.
+
+    Uniform over the round's task *slots* rather than over types, so with a 2/1/1 instruct/dpo/grpo
+    mix the model lands on an instruct task half the time. Seeded so a resumed round re-picks the
+    same type, and paired with the has-a-pool-task guard so a re-pick cannot add a second one.
+    """
+    slots = [
+        task_type
+        for task_type, count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items()
+        for _ in range(count)
+    ]
+    return random.Random(f"{round_id}:oversampled_type").choice(slots)
+
+
+async def _round_already_has_oversampled_task(round_id: str, config: Config) -> bool:
+    """Whether this round already plays a task on a model from OVERSAMPLED_LATER_MODELS.
+
+    The guard is the round's own task list rather than a creation-order index, so any task minted
+    outside the main creation loop — a draw decider, a replacement for a failed task — cannot hand
+    out a second oversampled slot.
+    """
+    pool_ids = {model.model_id for model in OVERSAMPLED_LATER_MODELS}
+    for tourn_task in await _get_existing_tasks_by_identifier(round_id, config):
+        task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
+        if task_obj and task_obj.model_id in pool_ids:
+            return True
+    return False
+
+
+def _oversampled_model_slot(round_data: GroupRound, tasks_per_group: int) -> int | None:
+    """Index of the single R1 task that plays on an oversampled later model, across all groups.
+
+    None outside round 1: a large tournament can still be in a group round later on, and the
+    oversampled-model slot is a round-1-only rule.
+    """
+    if round_data.round_number != 1:
+        return None
+    total_tasks = len(round_data.groups) * tasks_per_group
+    if total_tasks == 0:
+        return None
+    return random.Random(f"{round_data.round_id}:oversampled_slot").randrange(total_tasks)
 
 
 async def _create_single_group_text_tasks(
@@ -549,7 +621,10 @@ async def _create_single_group_text_tasks(
     dpo_datasets: list,
     tasks_per_group: int,
     enable_kl: bool,
+    oversampled_model_task_index: int | None = None,
 ) -> list[RawTask]:
+    """oversampled_model_task_index is this group's task index that plays on an oversampled later
+    model, or None/out-of-range when the round's single slot belongs to another group."""
     group_id = f"{round_id}_group_{group_index + 1:03d}"
 
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
@@ -560,9 +635,22 @@ async def _create_single_group_text_tasks(
         return await _get_existing_tasks(existing_tasks, config)
 
     created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
-    for _ in range(tasks_per_group - existing_count):
+    for task_index in range(existing_count, tasks_per_group):
         logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
-        task = await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=enable_kl)
+        model_id_override = (
+            sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
+            if task_index == oversampled_model_task_index
+            else None
+        )
+        if model_id_override:
+            logger.info(f"    Group {group_index + 1} task {task_index + 1} uses oversampled later model {model_id_override}")
+        task = await create_synthetic_instruct_text_task(
+            config,
+            models,
+            instruct_datasets,
+            enable_kl=enable_kl,
+            model_id_override=model_id_override,
+        )
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
 
@@ -738,10 +826,26 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
         tasks.append(task_obj)
 
     # Fixed mix: 2 instruct + 1 dpo + 1 grpo (FINAL_ROUND_TEXT_TASK_DISTRIBUTION) + continuous-SFT.
+    # One of those tasks — any type, drawn uniformly over the slots — plays on a 2026+ model from
+    # OVERSAMPLED_LATER_MODELS. The gate is "this round has no pool-model task yet", not a
+    # creation-order index, so a task minted outside this loop (draw decider, replacement) cannot
+    # produce a second one. Continuous-SFT is excluded: its model is the carried lineage winner.
+    oversampled_done = await _round_already_has_oversampled_task(round_id, config)
+    oversampled_type = _oversampled_boss_task_type(round_id)
     for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
         already = existing_task_type_counts.get(task_type.value, 0)
         for _ in range(target_count - already):
             models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
+            model_id_override = (
+                sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
+                if task_type == oversampled_type and not oversampled_done
+                else None
+            )
+            if model_id_override:
+                oversampled_done = True
+                logger.info(
+                    f"Boss round {task_type.value} task uses oversampled later model {model_id_override}"
+                )
             task = await _create_single_new_text_task(
                 task_type,
                 tournament_id,
@@ -751,6 +855,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
                 models,
                 instruct_datasets,
                 dpo_datasets,
+                model_id_override=model_id_override,
             )
             if task:
                 tasks.append(task)
@@ -865,6 +970,7 @@ async def _create_single_new_text_task(
     models: list,
     instruct_datasets: list,
     dpo_datasets: list,
+    model_id_override: str | None = None,
 ) -> RawTask | None:
     """Create a single new synthetic text task of a specific type."""
     try:
@@ -872,7 +978,9 @@ async def _create_single_new_text_task(
             logger.error(f"Unknown task type {task_type} for boss round text task")
             return None
 
-        task = await _create_task_by_type(task_type, config, models, instruct_datasets, dpo_datasets)
+        task = await _create_task_by_type(
+            task_type, config, models, instruct_datasets, dpo_datasets, model_id_override=model_id_override
+        )
         await _create_and_register_tournament_task(
             task, tournament_id, round_id, config, pair_id=pair_id
         )
