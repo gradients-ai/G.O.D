@@ -421,6 +421,7 @@ async def get_tournament_tasks(round_id: str, psql_db: PSQLDB) -> list[Tournamen
             SELECT {cst.TOURNAMENT_ID}, {cst.ROUND_ID}, {cst.TASK_ID}, {cst.GROUP_ID}, {cst.PAIR_ID}
             FROM {cst.TOURNAMENT_TASKS_TABLE}
             WHERE {cst.ROUND_ID} = $1
+            ORDER BY {cst.CREATED_AT}, {cst.TASK_ID}
         """
         results = await connection.fetch(query, round_id)
         return [

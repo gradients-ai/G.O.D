@@ -31,7 +31,7 @@ def stub_vectors(monkeypatch):
 
 
 async def _resolve(task_type: TaskType, boss_loss: float, challenger_loss: float) -> str:
-    winner, _basis = await round_results._resolve_boss_round_task_winner(
+    verdict = await round_results._resolve_boss_round_task_winner(
         task_id=TASK_ID,
         task_object=StubTask(task_type=task_type),
         boss_hotkey=BOSS,
@@ -41,7 +41,7 @@ async def _resolve(task_type: TaskType, boss_loss: float, challenger_loss: float
         threshold_percentage=0.01,
         psql_db=None,
     )
-    return winner
+    return verdict.winner_hotkey
 
 
 def _paired(gap: float, n: int = 1000, seed: int = 0, noise: float = 0.0):
@@ -144,12 +144,16 @@ async def test_continuous_sft_chat_tasks_use_the_paired_gate(stub_vectors):
 
 @pytest.mark.asyncio
 async def test_all_in_dead_zone_is_reported_as_a_draw(stub_vectors):
-    """The defender holds the task, but the recorded basis says draw rather than claiming a win."""
+    """The defender holds the score row, but the verdict is flagged a draw rather than a win.
+
+    is_draw is what takes the task out of the dethrone tally and earns the round a decider, so it
+    has to be set structurally - not just mentioned in the reason text.
+    """
     boss = np.random.default_rng(30).uniform(0.02, 0.03, 1000)
     challenger = boss - 0.002  # every gap inside the dead zone
     stub_vectors({BOSS: (list(boss), "fp"), CHALLENGER: (list(challenger), "fp")})
 
-    winner, basis = await round_results._resolve_boss_round_task_winner(
+    verdict = await round_results._resolve_boss_round_task_winner(
         task_id=TASK_ID,
         task_object=StubTask(task_type=TaskType.DPOTASK),
         boss_hotkey=BOSS,
@@ -160,5 +164,6 @@ async def test_all_in_dead_zone_is_reported_as_a_draw(stub_vectors):
         psql_db=None,
     )
 
-    assert winner == BOSS
-    assert "draw" in basis.lower()
+    assert verdict.winner_hotkey == BOSS
+    assert verdict.is_draw is True
+    assert "draw" in verdict.decided_by.lower()

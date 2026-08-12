@@ -21,9 +21,9 @@ from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import advance_continuous_sft_state
-from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
 from validator.db.sql.tournaments import add_tournament_participants
@@ -75,9 +75,10 @@ from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import RespondingNode
 from validator.tournament.models import Round
-from validator.tournament.models import TaskFailureReviewStatus
+from validator.tournament.models import RoundOutcome
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
+from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentRoundData
@@ -98,6 +99,7 @@ from validator.tournament.reports import generate_diff_report_and_notify_tournam
 from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_round_winners
+from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
@@ -109,6 +111,9 @@ logger = get_logger(__name__)
 # Rounds we have already pinged Discord about for having zero-score groups. Process-local on
 # purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
 _EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
+# Rounds already pinged about a failed draw-decider creation. Same reason as the set above: the
+# retry runs on a 60s loop and would otherwise hammer the webhook until someone intervenes.
+_DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -347,6 +352,11 @@ async def _carry_forward_continuous_sft(
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
     and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
     """
+    # Exactly one task per lineage, which is why this can carry forward the first it finds. A drawn
+    # continuous-SFT task is stood in for by a plain instruct task rather than a second chunk of the
+    # same lineage, precisely so that stays true: two tasks sharing one sequential train_index would
+    # leave this picking between them, with advance_continuous_sft_state idempotent on
+    # source_round_id so whichever came first would silently win.
     found = False
     for round_task in round_tasks:
         task_obj = await task_sql.get_task(round_task.task_id, psql_db)
@@ -607,7 +617,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await _alert_empty_score_groups(tournament, completed_round, empty_score_groups, config)
             return
 
-        winners = await get_round_winners(completed_round, psql_db, config)
+        outcome = await get_round_winners(completed_round, psql_db, config)
+
+        # A boss-round task that separated nothing is excluded from the dethrone tally and earns the
+        # round one extra task in its place, so the tally still runs over a full set of decided
+        # results. Adding those tasks puts the round back to PENDING; it advances on a later pass.
+        if outcome.is_deferred:
+            await _add_boss_round_deciders(tournament, completed_round, outcome, config, psql_db)
+            return
+
+        winners = outcome.winners
         logger.info(f"Round winners: {winners}")
         logger.info(f"Number of winners: {len(winners)}")
 
@@ -1330,6 +1349,96 @@ async def process_active_tournaments(config: Config):
             await asyncio.sleep(t_cst.TOURNAMENT_ACTIVE_CYCLE_INTERVAL)
 
 
+async def _add_boss_round_deciders(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    outcome: RoundOutcome,
+    config: Config,
+    psql_db: PSQLDB,
+) -> None:
+    """Add the boss round's decider tasks and put the round back to PENDING.
+
+    PENDING is what gets the tasks trained: process_pending_rounds assigns nodes to anything in the
+    round without them (giving each decider its own expected_repo_name) and flips it back to ACTIVE,
+    after which the round completes and advances normally. Boss-round task creation is idempotent on
+    the task count, so the pending pass will not add a second set.
+
+    Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries. The
+    partial batch is rolled back by the creator, so the retry starts from the same state this one did.
+    """
+    # Nothing to create - the round already holds tasks that never got nodes (a crash between
+    # creating deciders and this status flip). PENDING is the whole fix: node assignment picks them
+    # up and the round runs them.
+    if outcome.unassigned_task_ids:
+        await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+        logger.warning(
+            f"Round {completed_round.round_id} returned to PENDING to assign nodes to "
+            f"{len(outcome.unassigned_task_ids)} orphaned task(s): {outcome.unassigned_task_ids}"
+        )
+        await _notify_discord(
+            f"Boss round returned for node assignment\n"
+            f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+            f"Round: {completed_round.round_id}\n"
+            f"{outcome.deferred_reason}\n"
+            f"Most likely a crash between creating a draw decider and returning the round to PENDING. "
+            f"No action needed unless it repeats.",
+            config,
+        )
+        return
+
+    resolution = outcome.draw_resolution
+    if resolution is None:
+        logger.error(f"Round {completed_round.round_id} deferred with no draw resolution attached; not advancing")
+        return
+
+    logger.info(
+        f"Boss round {completed_round.round_id} drew {len(resolution.drawn_task_ids)} task(s) "
+        f"({resolution.drawn_task_ids}); adding deciders before it can be resolved"
+    )
+
+    try:
+        tasks = await create_boss_round_decider_tasks(
+            tournament.tournament_id,
+            completed_round.round_id,
+            config,
+            resolution.decider_task_types,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to create boss-round decider tasks for round {completed_round.round_id}: {e}. "
+            f"Round stays completed and unadvanced; retrying next cycle.",
+            exc_info=True,
+        )
+        # Some causes retry out of it (a flaky content service), some never will - an unknown
+        # continuous-SFT lineage, or a drawn task whose type has no creation route. Those spin
+        # silently on a 60s loop forever, so say so once, as every other blocking path here does.
+        await _alert_once(
+            completed_round.round_id,
+            _DECIDER_CREATION_FAILED_ROUNDS,
+            f"Boss round decider creation FAILED\n"
+            f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+            f"Round: {completed_round.round_id}\n"
+            f"Error: {e}\n"
+            f"Types requested: {[t.value for t in resolution.decider_task_types]}\n"
+            f"The round will retry every cycle but will NOT advance until this succeeds.",
+            config,
+        )
+        return
+
+    await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+    logger.info(f"Round {completed_round.round_id} returned to PENDING with {len(tasks)} decider task(s)")
+
+    await _notify_discord(
+        f"Boss round extended - drawn task(s)\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"{resolution.reason}\n"
+        f"Added {len(tasks)} task(s): {[str(task.task_id) for task in tasks]}\n"
+        f"The drawn task(s) keep their results but do not count toward the dethrone tally.",
+        config,
+    )
+
+
 async def _alert_empty_score_groups(
     tournament: TournamentData,
     completed_round: TournamentRoundData,
@@ -1350,11 +1459,9 @@ async def _alert_empty_score_groups(
         f"{len(empty_score_groups)} group(s) finished with no valid scores.\n{detail}"
     )
 
-    if completed_round.round_id in _EMPTY_SCORE_ROUNDS_ALERTED:
-        return
-    _EMPTY_SCORE_ROUNDS_ALERTED.add(completed_round.round_id)
-
-    await _notify_discord(
+    await _alert_once(
+        completed_round.round_id,
+        _EMPTY_SCORE_ROUNDS_ALERTED,
         f"Tournament advancement BLOCKED\n"
         f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
         f"Round: {completed_round.round_id}\n"
@@ -1363,6 +1470,14 @@ async def _alert_empty_score_groups(
         f"Evaluation data is missing for these groups — fix the scores, then the cycle will advance on its own.",
         config,
     )
+
+
+async def _alert_once(round_id: str, already_alerted: set[str], message: str, config: Config) -> None:
+    """Ping Discord once per round per process for a condition that retries on a 60s loop."""
+    if round_id in already_alerted:
+        return
+    already_alerted.add(round_id)
+    await _notify_discord(message, config)
 
 
 async def _notify_discord(message: str, config: Config) -> None:

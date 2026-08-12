@@ -4,6 +4,7 @@ from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
+from core.models.tournament_models import TournamentType
 
 
 TOURNAMENT_INTERVAL_HOURS = 120
@@ -304,6 +305,21 @@ BOSS_ROUND_BOOTSTRAP_SEED = 20260808
 # evaluator - and they carry the "challenger must win EVERY continuous-SFT task" dethrone gate, so
 # leaving them on the relative margin would leave the strictest rule resting on the weakest test.
 PAIRED_BOSS_ROUND_TASK_TYPES = (TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.CHATTASK)
+
+def expected_boss_round_task_count(tournament_type: TournamentType) -> int:
+    """How many tasks a boss round is built with, for the types that can draw. 0 for the rest.
+
+    Only text qualifies: PAIRED_BOSS_ROUND_TASK_TYPES is text-only, so image and environment boss
+    rounds are decided on the relative margin, which has no draw. They return 0 and every
+    draw-related rule keyed off this value stays switched off for them - in particular the dethrone
+    bar keeps deriving from their own resolved task count, unchanged by any of this.
+
+    Two uses, both needing the round's *built* size rather than its current one: capping deciders
+    (a round holding more tasks than this has already had them, and prep-failure replacement swaps
+    tasks without changing the count), and pinning the dethrone bar so a drawn task cannot lower it.
+    """
+    return FINAL_ROUND_TEXT_TASKS if tournament_type == TournamentType.TEXT else 0
+
 
 # Obfuscation detection constants
 OBFUSCATION_DETECTION_PATH = "./validator/tournament/obfuscation_detection/anti_obfuscation"

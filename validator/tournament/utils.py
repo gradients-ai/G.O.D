@@ -21,6 +21,7 @@ from validator.tournament.participants import get_latest_commit_hash_from_github
 from validator.tournament.participants import get_latest_tournament_winner_participant
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.reports import generate_diff_report_for_result
+from validator.tournament.round_results import _resolve_boss_round_draws
 from validator.tournament.round_results import determine_boss_round_winner
 from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import did_winner_change
@@ -38,6 +39,7 @@ from validator.tournament.thresholds import update_threshold_adjusted_quality_sc
 __all__ = [
     "_get_final_round_participants",
     "_get_scores_for_task",
+    "_resolve_boss_round_draws",
     "deduplicate_by_github_account",
     "deduplicate_by_ip_address",
     "determine_boss_round_winner",
