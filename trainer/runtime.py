@@ -1082,8 +1082,11 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 await log_task(training_data.task_id, task.hotkey, f"Training failed with status code {status_code}")
         else:
             await log_task(training_data.task_id, task.hotkey, f"Timeout reached ({timeout_seconds}s). Killing container...")
+            # Report completion from _final_cleanup only, after the checkpoint upload, exactly like the
+            # clean-exit path above. Calling complete_task(success=True) here marked the task SUCCESS
+            # before upload_repo_to_hf ran, so the validator could start evaluating a repo whose weights
+            # had not finished uploading yet.
             success = True
-            await complete_task(training_data.task_id, task.hotkey, success=success)
 
     except asyncio.CancelledError as cancel:
         cancel_log_message = "[INFO] Training cancelled."
