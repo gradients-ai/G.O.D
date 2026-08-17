@@ -84,6 +84,29 @@ class PvPEvaluationExhaustedError(RuntimeError):
         self.deployment_ids = deployment_ids or []
 
 
+# Score reasons produced by ranking below. Unlike failure/exclusion reasons (e.g. "Evaluation
+# failed", "Non-finetuned submission"), these are recomputed on every finalize from the current
+# pool, so they must not be treated as pre-set reasons when rebuilding results from persisted rows.
+RANKED_FIRST_REASON_PREFIX = "Ranked 1st by "
+RANKED_BELOW_REASON_PREFIX = "Ranked below top 1 by "
+BOTTOM_PENALTY_REASON_PREFIX = "Bottom 25% ranked by "
+
+
+def _is_ranking_derived_reason(reason: str | None) -> bool:
+    """True for score reasons assigned by calculate_miner_ranking_and_scores from the ranking.
+
+    These reasons encode a prior ranking, not an intrinsic reason to exclude a miner. When a task is
+    re-finalized (e.g. after re-evaluating one hotkey), rebuilding results must drop these so every
+    valid miner re-enters the ranking pool. Otherwise calculate_miner_ranking_and_scores skips every
+    already-scored miner and crowns whichever hotkey was freshly evaluated.
+    """
+    if not reason:
+        return False
+    return reason.startswith(
+        (RANKED_FIRST_REASON_PREFIX, RANKED_BELOW_REASON_PREFIX, BOTTOM_PENALTY_REASON_PREFIX)
+    )
+
+
 def calculate_miner_ranking_and_scores(
     miner_results: list[MinerResultsText | MinerResultsImage],
 ) -> list[MinerResultsText | MinerResultsImage]:
@@ -151,7 +174,7 @@ def calculate_miner_ranking_and_scores(
         top_result, top_metric = ranked_results[0]
         with LogContext(miner_hotkey=top_result.hotkey):
             top_result.score = scoring_cst.FIRST_PLACE_SCORE
-            top_result.score_reason = f"Ranked 1st by {ranking_type}"
+            top_result.score_reason = f"{RANKED_FIRST_REASON_PREFIX}{ranking_type}"
             logger.info(
                 f"Miner {top_result.hotkey} (finetuned):"
                 f" test_loss={top_result.test_loss:.4f}"
@@ -167,7 +190,7 @@ def calculate_miner_ranking_and_scores(
 
         for result, metric in ranked_results[1:penalty_start_idx]:
             with LogContext(miner_hotkey=result.hotkey):
-                result.score_reason = f"Ranked below top 1 by {ranking_type}"
+                result.score_reason = f"{RANKED_BELOW_REASON_PREFIX}{ranking_type}"
                 logger.info(
                     f"Miner {result.hotkey} (finetuned):"
                     f" test_loss={result.test_loss:.4f}"
@@ -179,7 +202,7 @@ def calculate_miner_ranking_and_scores(
         for result, metric in ranked_results[penalty_start_idx:]:
             with LogContext(miner_hotkey=result.hotkey):
                 result.score = scoring_cst.SCORE_PENALTY
-                result.score_reason = f"Bottom 25% ranked by {ranking_type}"
+                result.score_reason = f"{BOTTOM_PENALTY_REASON_PREFIX}{ranking_type}"
                 logger.info(
                     f"Miner {result.hotkey} (finetuned):"
                     f" test_loss={result.test_loss:.4f}"
@@ -190,7 +213,7 @@ def calculate_miner_ranking_and_scores(
     else:
         for result, metric in ranked_results[1:]:
             with LogContext(miner_hotkey=result.hotkey):
-                result.score_reason = f"Ranked below top 1 by {ranking_type}"
+                result.score_reason = f"{RANKED_BELOW_REASON_PREFIX}{ranking_type}"
                 logger.info(
                     f"Miner {result.hotkey} (finetuned):"
                     f" test_loss={result.test_loss:.4f}"
@@ -505,13 +528,18 @@ def _result_from_persisted_row(task: AnyTypeRawTask, hotkey: str, row: dict | No
             task_type=task.task_type,
         )
 
+    # Drop reasons that merely encode a prior ranking so this valid submission re-enters the pool on
+    # re-finalize. Genuine exclusion reasons (e.g. "Non-finetuned submission") are preserved because
+    # calculate_miner_ranking_and_scores keys off score_reason to keep such rows out of the ranking.
+    reason_for_ranking = None if _is_ranking_derived_reason(score_reason) else score_reason
+
     if task.task_type == TaskType.IMAGETASK:
         return MinerResultsImage(
             hotkey=hotkey,
             test_loss=float(test_loss),
             synth_loss=float(synth_loss),
             is_finetune=True,
-            score_reason=score_reason,
+            score_reason=reason_for_ranking,
         )
 
     return MinerResultsText(
@@ -519,7 +547,7 @@ def _result_from_persisted_row(task: AnyTypeRawTask, hotkey: str, row: dict | No
         test_loss=float(test_loss),
         synth_loss=float(synth_loss),
         is_finetune=True,
-        score_reason=score_reason,
+        score_reason=reason_for_ranking,
         task_type=task.task_type,
     )
 
