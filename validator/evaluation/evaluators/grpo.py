@@ -211,7 +211,7 @@ def evaluate_grpo_model(
             per_device_eval_batch_size=batch_size,
             report_to="none",
             bf16=True,
-            beta=cst.BETA_GRPO,
+            beta=0.0,
             num_generations=num_generations,
         )
         grpo_trainer = GRPOTrainer(
