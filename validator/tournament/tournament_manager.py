@@ -865,6 +865,7 @@ async def create_basic_tournament(tournament_type: TournamentType, psql_db: PSQL
             hotkey=base_contestant.hotkey,  # This will be EMISSION_BURN_HOTKEY
             training_repo=base_contestant.training_repo,
             training_commit_hash=base_contestant.training_commit_hash,
+            requested_datasets=base_contestant.requested_datasets,
         )
         await add_tournament_participants([base_participant], psql_db)
 

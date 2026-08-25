@@ -1,12 +1,13 @@
 import aiohttp
 
+from core.datasets.whitelist import validate_requested_datasets
 from core.logging import get_logger
+from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_pairs
 from validator.db.sql.tournaments import get_tournament_participant
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
-from validator.app.config import Config
 from validator.tournament.constants import DEFAULT_PARTICIPANT_COMMIT
 from validator.tournament.constants import DEFAULT_PARTICIPANT_REPO
 from validator.tournament.models import RoundType
@@ -79,6 +80,9 @@ async def get_base_contestant(psql_db: PSQLDB, tournament_type: TournamentType, 
     latest_winner = await get_latest_tournament_winner_participant(psql_db, tournament_type, config)
     if latest_winner:
         logger.info(f"Using latest tournament winner as BASE: {latest_winner.hotkey}")
+        requested_datasets = validate_requested_datasets(latest_winner.requested_datasets) or None
+        if requested_datasets:
+            logger.info(f"Base contestant requested datasets: {requested_datasets}")
 
         if latest_winner.backup_repo:
             logger.info(f"Previous winner has backup repo: {latest_winner.backup_repo}")
@@ -91,6 +95,7 @@ async def get_base_contestant(psql_db: PSQLDB, tournament_type: TournamentType, 
                 hotkey=EMISSION_BURN_HOTKEY,
                 training_repo=latest_winner.backup_repo,
                 training_commit_hash=commit_hash,
+                requested_datasets=requested_datasets,
             )
         else:
             logger.warning("Could not determine tournament ID for uploaded repo, falling back to original training_repo")
@@ -100,6 +105,7 @@ async def get_base_contestant(psql_db: PSQLDB, tournament_type: TournamentType, 
                 hotkey=EMISSION_BURN_HOTKEY,
                 training_repo=latest_winner.training_repo,
                 training_commit_hash=latest_winner.training_commit_hash,
+                requested_datasets=requested_datasets,
             )
 
     logger.info(

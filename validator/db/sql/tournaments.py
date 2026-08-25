@@ -185,8 +185,9 @@ async def add_tournament_participants(participants: list[TournamentParticipant],
         async with connection.transaction():
             query = f"""
                 INSERT INTO {cst.TOURNAMENT_PARTICIPANTS_TABLE}
-                ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.CREATED_AT})
-                VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+                ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
+                 {cst.REQUESTED_DATASETS}, {cst.CREATED_AT})
+                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
                 ON CONFLICT ({cst.TOURNAMENT_ID}, {cst.HOTKEY}) DO NOTHING
             """
             for participant in participants:
@@ -196,6 +197,7 @@ async def add_tournament_participants(participants: list[TournamentParticipant],
                     participant.hotkey,
                     participant.training_repo,
                     participant.training_commit_hash,
+                    json.dumps(participant.requested_datasets) if participant.requested_datasets else None,
                 )
             logger.info(f"Added {len(participants)} participants to tournament")
 
