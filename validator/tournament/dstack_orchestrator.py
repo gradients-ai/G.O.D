@@ -308,7 +308,13 @@ async def _create_dstack_request(
         gpu_count = _get_h200_count_from_requirement(required_gpus)
         logger.info(f"Task {task.task_id} is text task (type={task.task_type}), using {gpu_count}x{gpu_name}")
     
-    timeout_seconds = int(task.hours_to_complete * 3600) + 3600 # Add 1 hour for provisioning/download/upload
+    training_timeout_seconds = int(task.hours_to_complete * 3600)
+    model_prep_timeout_seconds = (
+        0
+        if task.task_type == TaskType.IMAGETASK
+        else int(os.getenv("DSTACK_TEXT_MODEL_PREP_TIMEOUT_SECONDS", "5400"))
+    )
+    timeout_seconds = training_timeout_seconds + model_prep_timeout_seconds + 3600
     
     task_env = {
         "TASK_ID": str(task.task_id),
@@ -340,6 +346,8 @@ async def _create_dstack_request(
         
     if task.task_type == TaskType.IMAGETASK:
         docker_image = os.getenv("DSTACK_IMAGE_TASK_DOCKER_IMAGE", "diagonalge/image-winner-single:latest")
+    elif task.task_type == TaskType.ENVIRONMENTTASK:
+        docker_image = os.getenv("DSTACK_ENV_TASK_DOCKER_IMAGE", "diagonalge/env-winner-single:latest")
     else:
         docker_image = os.getenv("DSTACK_TEXT_TASK_DOCKER_IMAGE", "diagonalge/text-winner-single:latest")
     
