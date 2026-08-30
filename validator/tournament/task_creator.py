@@ -566,19 +566,15 @@ async def _create_group_text_tasks(
     return tasks
 
 
-def _oversampled_boss_task_type(round_id: str) -> TaskType:
-    """Which boss-round task type carries the oversampled model, drawn from a round_id-seeded rng.
-
-    Uniform over the round's task *slots* rather than over types, so with a 2/1/1 instruct/dpo/grpo
-    mix the model lands on an instruct task half the time. Seeded so a resumed round re-picks the
-    same type, and paired with the has-a-pool-task guard so a re-pick cannot add a second one.
-    """
-    slots = [
-        task_type
-        for task_type, count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items()
-        for _ in range(count)
-    ]
-    return random.Random(f"{round_id}:oversampled_type").choice(slots)
+async def _round_oversampled_task_count(round_id: str, config: Config) -> int:
+    """How many tasks in this round already play a model from OVERSAMPLED_LATER_MODELS."""
+    pool_ids = {model.model_id for model in OVERSAMPLED_LATER_MODELS}
+    count = 0
+    for tourn_task in await _get_existing_tasks_by_identifier(round_id, config):
+        task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
+        if task_obj and task_obj.model_id in pool_ids:
+            count += 1
+    return count
 
 
 async def _round_already_has_oversampled_task(round_id: str, config: Config) -> bool:
@@ -588,12 +584,29 @@ async def _round_already_has_oversampled_task(round_id: str, config: Config) -> 
     outside the main creation loop — a draw decider, a replacement for a failed task — cannot hand
     out a second oversampled slot.
     """
-    pool_ids = {model.model_id for model in OVERSAMPLED_LATER_MODELS}
-    for tourn_task in await _get_existing_tasks_by_identifier(round_id, config):
-        task_obj = await task_sql.get_task(tourn_task.task_id, config.psql_db)
-        if task_obj and task_obj.model_id in pool_ids:
-            return True
-    return False
+    return (await _round_oversampled_task_count(round_id, config)) > 0
+
+
+def _oversampled_boss_task_type_counts(
+    round_id: str, pending_slots: list[TaskType], num_oversampled_tasks: int
+) -> dict[TaskType, int]:
+    """Pick up to num_oversampled_tasks pending boss slots and return oversampled counts per type.
+
+    Selection is round_id-seeded so retries are stable for the same pending-slot layout.
+    """
+    if num_oversampled_tasks <= 0 or not pending_slots:
+        return {}
+
+    picks = min(num_oversampled_tasks, len(pending_slots))
+    indices = list(range(len(pending_slots)))
+    random.Random(f"{round_id}:oversampled_slots").shuffle(indices)
+    chosen = indices[:picks]
+
+    per_type: dict[TaskType, int] = {}
+    for index in chosen:
+        task_type = pending_slots[index]
+        per_type[task_type] = per_type.get(task_type, 0) + 1
+    return per_type
 
 
 def _oversampled_model_slot(round_data: GroupRound, tasks_per_group: int) -> int | None:
@@ -826,26 +839,26 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
         tasks.append(task_obj)
 
     # Fixed mix: 2 instruct + 1 dpo + 1 grpo (FINAL_ROUND_TEXT_TASK_DISTRIBUTION) + continuous-SFT.
-    # One of those tasks — any type, drawn uniformly over the slots — plays on a 2026+ model from
-    # OVERSAMPLED_LATER_MODELS. The gate is "this round has no pool-model task yet", not a
-    # creation-order index, so a task minted outside this loop (draw decider, replacement) cannot
-    # produce a second one. Continuous-SFT is excluded: its model is the carried lineage winner.
-    oversampled_done = await _round_already_has_oversampled_task(round_id, config)
-    oversampled_type = _oversampled_boss_task_type(round_id)
+    # Continuous-SFT is excluded: its model is the carried lineage winner.
+    pending_slots: list[TaskType] = []
+    for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
+        already = existing_task_type_counts.get(task_type.value, 0)
+        pending_slots.extend([task_type] * max(0, target_count - already))
+
+    existing_oversampled = await _round_oversampled_task_count(round_id, config)
+    oversampled_remaining = max(0, t_cst.FINAL_ROUND_OVERSAMPLED_TASKS - existing_oversampled)
+    oversampled_type_counts = _oversampled_boss_task_type_counts(round_id, pending_slots, oversampled_remaining)
+
     for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
         already = existing_task_type_counts.get(task_type.value, 0)
         for _ in range(target_count - already):
             models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
-            model_id_override = (
-                sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
-                if task_type == oversampled_type and not oversampled_done
-                else None
-            )
-            if model_id_override:
-                oversampled_done = True
-                logger.info(
-                    f"Boss round {task_type.value} task uses oversampled later model {model_id_override}"
-                )
+            model_id_override = None
+            remaining_for_type = oversampled_type_counts.get(task_type, 0)
+            if remaining_for_type > 0:
+                model_id_override = sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
+                oversampled_type_counts[task_type] = remaining_for_type - 1
+                logger.info(f"Boss round {task_type.value} task uses oversampled later model {model_id_override}")
             task = await _create_single_new_text_task(
                 task_type,
                 tournament_id,

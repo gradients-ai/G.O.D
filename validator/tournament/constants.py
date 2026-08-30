@@ -108,7 +108,9 @@ ENV_ENVS_PER_ROUND_MULTIPLIER = 2  # R1=2, R2=4, R3=6 (capped at total available
 ENV_TRAINING_HOURS = 1.5
 ENV_TRAINING_HOURS_SWE_INFINITE = ENV_TRAINING_HOURS + 1.0
 ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
-ENV_TARGET_TOURN_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+# Clean copy of the retired qwen (Qwen3-8B-Base) continuous-SFT final winner; base for the
+# guaranteed swe_infinite boss task (TrainingStartPoint.PREVIOUS_WINNER / target-model start).
+ENV_TARGET_TOURN_MODEL = "gradients-io-tournaments/swe-base-qwen3-8b-continuous"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
 FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
@@ -161,6 +163,9 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 }
 
 PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
+# Number of boss-round text tasks (from FINAL_ROUND_TEXT_TASK_DISTRIBUTION) to force onto
+# OVERSAMPLED_LATER_MODELS. Set to 0 to disable without removing the wiring.
+FINAL_ROUND_OVERSAMPLED_TASKS = 0
 
 # --- Continuous-SFT boss task ---------------------------------------------------------------
 # Chat-SFT lineages carried across tournaments; each round trains the next stage-1 chunk from the
@@ -171,7 +176,7 @@ PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
 # Seeds must be standard architectures: eval and model-prep load miner-controlled repos with
 # trust_remote_code off, so a custom-arch seed would not load.
 CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
-    "qwen": "Qwen/Qwen3-8B-Base",
+    "qwen3-14b": "Qwen/Qwen3-14B",
 }
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
 

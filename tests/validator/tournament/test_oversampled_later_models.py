@@ -1,10 +1,10 @@
-"""Text tournaments oversample the 2026+ model pool into two guaranteed slots.
+"""Text tournaments oversample the 2026+ model pool in configured slots.
 
 Round 1: exactly one task across all groups plays on a model from OVERSAMPLED_LATER_MODELS,
-whatever the group count is. Boss round: the first of the two instruct tasks does.
+whatever the group count is.
 
-Both slots are drawn from a round_id-seeded rng, so a partially created round that gets retried
-resumes onto the same slot and the same model rather than minting a second oversampled task.
+All oversampled picks are round_id-seeded so a partially created round that gets retried
+resumes onto the same slot/model pattern rather than minting extras.
 """
 
 from types import SimpleNamespace
@@ -131,70 +131,26 @@ def _patch_boss_seams(monkeypatch) -> AsyncMock:
     return created
 
 
-async def test_boss_round_gives_exactly_one_task_an_oversampled_model(monkeypatch):
+async def test_boss_round_with_zero_configured_oversampled_tasks_sets_no_override(monkeypatch):
+    monkeypatch.setattr(t_cst, "FINAL_ROUND_OVERSAMPLED_TASKS", 0)
+    created = _patch_boss_seams(monkeypatch)
+
+    await task_creator._create_new_text_boss_round_tasks("tourn", "tourn_round_009", MagicMock())
+
+    assert [c.kwargs.get("model_id_override") for c in created.call_args_list] == [None, None, None, None]
+
+
+async def test_boss_round_with_one_configured_oversampled_task_sets_exactly_one_override(monkeypatch):
+    monkeypatch.setattr(t_cst, "FINAL_ROUND_OVERSAMPLED_TASKS", 1)
     created = _patch_boss_seams(monkeypatch)
 
     await task_creator._create_new_text_boss_round_tasks("tourn", "tourn_round_009", MagicMock())
 
     overrides = [c.kwargs.get("model_id_override") for c in created.call_args_list]
-    assert len(overrides) == sum(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values())
     picked = [o for o in overrides if o is not None]
+    assert len(overrides) == sum(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values())
     assert len(picked) == 1
     assert picked[0] in POOL_IDS
-
-
-async def test_boss_round_oversampled_slot_is_not_always_instruct(monkeypatch):
-    """The slot is drawn over instruct/dpo/grpo, not pinned to instruct."""
-    seen: set[TaskType] = set()
-    for round_number in range(40):
-        created = _patch_boss_seams(monkeypatch)
-        await task_creator._create_new_text_boss_round_tasks(
-            "tourn", f"tourn_round_{round_number:03d}", MagicMock()
-        )
-        seen.update(
-            call.args[0] for call in created.call_args_list if call.kwargs.get("model_id_override")
-        )
-
-    assert seen == set(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION)
-
-
-@pytest.mark.parametrize(
-    "existing_model_id, expected_picks",
-    [
-        (next(iter(POOL_IDS)), 0),  # the oversampled task already exists -> don't mint a second
-        ("Qwen/Qwen2.5-7B-Instruct", 1),  # a normal draw exists -> the round still owes one
-    ],
-)
-async def test_boss_round_resume_keeps_exactly_one_oversampled_task(
-    monkeypatch, existing_model_id, expected_picks
-):
-    """A partially created round is completed by looking at what it already plays, not at how many
-    tasks have been created."""
-    existing = [SimpleNamespace(task_id="existing")]
-    monkeypatch.setattr(task_creator, "_get_existing_tasks_by_identifier", AsyncMock(return_value=existing))
-    monkeypatch.setattr(
-        task_creator.task_sql,
-        "get_task",
-        AsyncMock(
-            return_value=SimpleNamespace(
-                task_id="existing", task_type=TaskType.INSTRUCTTEXTTASK, ds="ds", model_id=existing_model_id
-            )
-        ),
-    )
-    monkeypatch.setattr(t_cst, "is_continuous_sft_task", lambda task: False)
-    for name in ("_get_text_models", "_get_instruct_text_datasets", "_get_dpo_datasets"):
-        monkeypatch.setattr(task_creator, name, lambda *a, **k: MagicMock())
-    monkeypatch.setattr(task_creator, "warn_orphaned_continuous_sft_state", AsyncMock())
-    monkeypatch.setattr(task_creator, "_create_continuous_sft_boss_task", AsyncMock(return_value=MagicMock()))
-    created = AsyncMock(side_effect=lambda task_type, *a, **k: SimpleNamespace(task_id="t", task_type=task_type))
-    monkeypatch.setattr(task_creator, "_create_single_new_text_task", created)
-
-    await task_creator._create_new_text_boss_round_tasks("tourn", "tourn_round_009", MagicMock())
-
-    instruct_calls = [c for c in created.call_args_list if c.args[0] == TaskType.INSTRUCTTEXTTASK]
-    assert len(instruct_calls) == 1  # the round had one already
-    picks = [c for c in created.call_args_list if c.kwargs.get("model_id_override") in POOL_IDS]
-    assert len(picks) == expected_picks
 
 
 async def test_draw_deciders_never_get_an_oversampled_model(monkeypatch):

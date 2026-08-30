@@ -411,7 +411,7 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
 - **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
 - The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) always plays a single instruct task on a forced model: `PRE_BOSS_MODEL` (currently `Qwen/Qwen3-32B`), with augmentation, KL and YaRN disabled so both competitors train the exact published model.
-- The final boss round creates 5 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
+- The final boss round creates 5 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen3-14b`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
 - **Boss-round instruct, DPO and continuous-SFT (chat) tasks are decided per held-out sample.** Both models are scored on the identical held-out set and compared sample by sample. To take a task the challenger must clear **both** of:
   - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
   - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.01 nats, the same value as the tie dead zone, that scales to 1% of the loss above a boss loss of 1.0 so it is never a weaker requirement than the old margin.
@@ -571,7 +571,7 @@ validator database access:
 ```bash
 uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
   --model YOUR_HF_MODEL_OR_LORA_REPO \
-  --base-model Qwen/Qwen2.5-7B-Instruct \
+  --base-model gradients-io-tournaments/swe-base-qwen3-8b-continuous \
   --num-seeds 2 \
   --seed 42
 ```

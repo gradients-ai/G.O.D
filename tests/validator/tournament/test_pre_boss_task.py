@@ -96,7 +96,7 @@ class TestReplacementRouting:
             task_id="orig-task",
             task_type=TaskType.CHATTASK,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-            ds="continuous-sft:qwen:chunk-00003",
+            ds="continuous-sft:qwen3-14b:chunk-00003",
             status=TaskStatus.PREP_TASK_FAILURE.value,
             model_id="miner-org/carried-winner",
             model_params_count=0,
@@ -112,8 +112,8 @@ class TestReplacementRouting:
         same_type_mock.assert_not_awaited()
         assert new_task_id == "new-task"
         _, lineage, seed_model = recreate_mock.call_args.args
-        assert lineage == "qwen"
-        assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen"]
+        assert lineage == "qwen3-14b"
+        assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen3-14b"]
 
     async def test_pre_boss_replacement_reforces_the_model(self, monkeypatch):
         original = SimpleNamespace(
