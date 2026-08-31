@@ -41,6 +41,12 @@ from validator.tournament.models import TournamentType
 logger = get_logger(__name__)
 
 
+def _is_oversampled_later_model_task(task) -> bool:
+    """Whether this task is pinned to one of the enforced oversampled later models."""
+    pool_ids = {model.model_id for model in OVERSAMPLED_LATER_MODELS}
+    return getattr(task, "model_id", None) in pool_ids
+
+
 def _env_names_excluding_forced_boss() -> list[EnvironmentName]:
     forced = t_cst.FORCED_BOSS_ENVIRONMENT
     return [env for env in EnvironmentName if env != forced]
@@ -432,6 +438,13 @@ async def _create_single_image_task_with_retry(
     return task
 
 
+async def _image_models_of_type(config: Config, model_type: ImageModelType):
+    """Yield only models matching model_type from the image pool."""
+    async for model in _get_image_models(config.keypair):
+        if model.model_type == model_type:
+            yield model
+
+
 async def _create_task_by_type(
     task_type: TaskType,
     config: Config,
@@ -754,15 +767,38 @@ async def _create_single_probability_task(
         return await create_synthetic_grpo_task(config, models, instruct_datasets)
 
 
-async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask:
+async def _create_environment_replacement_task(task: EnvRawTask, config: Config) -> RawTask:
+    """Recreate an environment task preserving all enforced identity fields."""
+    models = _get_text_models(config.keypair)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
+    return await create_synthetic_env_task(
+        config,
+        models,
+        instruct_datasets,
+        num_environments=len(task.environment_names),
+        model_id_override=task.model_id,
+        training_start_point=task.training_start_point,
+        environment_names_override=task.environment_names,
+        eval_seed_override=task.eval_seed,
+        hours_override=task.hours_to_complete,
+    )
+
+
+async def create_new_task_of_same_type(task: RawTask, config: Config, model_id_override: str | None = None) -> RawTask:
     if task.task_type == TaskType.IMAGETASK:
-        models = _get_image_models(config.keypair)
+        model_type = getattr(task, "model_type", None)
+        models = _image_models_of_type(config, model_type) if model_type is not None else _get_image_models(config.keypair)
         return await _create_task_by_type(task.task_type, config, models, [], [])
+
+    if task.task_type == TaskType.ENVIRONMENTTASK and isinstance(task, EnvRawTask):
+        return await _create_environment_replacement_task(task, config)
 
     model_params_b = int(task.model_params_count / t_cst.MODEL_PARAMS_TO_BILLIONS)
 
     # Handle case where model params is 0 or very small
-    if model_params_b < t_cst.DEFAULT_MODEL_MIN_SIZE_B:
+    if model_id_override:
+        models = None
+    elif model_params_b < t_cst.DEFAULT_MODEL_MIN_SIZE_B:
         logger.warning(
             f"Original task has very small model params ({task.model_params_count}), "
             f"using default range {t_cst.DEFAULT_MODEL_MIN_SIZE_B}-"
@@ -780,7 +816,14 @@ async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
-    return await _create_task_by_type(task.task_type, config, models, instruct_datasets, dpo_datasets)
+    return await _create_task_by_type(
+        task.task_type,
+        config,
+        models,
+        instruct_datasets,
+        dpo_datasets,
+        model_id_override=model_id_override,
+    )
 
 
 def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | None, pair_id: str | None) -> bool:
@@ -793,14 +836,20 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
     )
 
 
-async def _create_round_one_group_text_replacement_task(config: Config) -> RawTask:
+async def _create_round_one_group_text_replacement_task(config: Config, model_id_override: str | None = None) -> RawTask:
     """
     Create a replacement task that matches round-1 group text constraints:
     - small text model pool (0.1B-4.0B)
     """
-    models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
+    models = None if model_id_override else _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=True)
-    return await create_synthetic_instruct_text_task(config, models, instruct_datasets, enable_kl=False)
+    return await create_synthetic_instruct_text_task(
+        config,
+        models,
+        instruct_datasets,
+        enable_kl=False,
+        model_id_override=model_id_override,
+    )
 
 
 async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:
@@ -1024,18 +1073,13 @@ async def _create_new_image_boss_round_tasks(tournament_id: str, round_id: str, 
         for model_type in t_cst.FINAL_ROUND_IMAGE_TASK_DISTRIBUTION
     }
 
-    async def filtered_models(model_type: ImageModelType):
-        async for model in _get_image_models(config.keypair):
-            if model.model_type == model_type:
-                yield model
-
     for model_type, target_count in t_cst.FINAL_ROUND_IMAGE_TASK_DISTRIBUTION.items():
         remaining_slots = t_cst.FINAL_ROUND_IMAGE_TASKS - len(tasks)
         if remaining_slots <= 0:
             break
         already_created = existing_counts_by_model_type.get(model_type, 0)
         num_to_create = min(max(target_count - already_created, 0), remaining_slots)
-        model_gen = filtered_models(model_type)
+        model_gen = _image_models_of_type(config, model_type)
         for i in range(num_to_create):
             try:
                 task = await _create_single_image_task_with_retry(config, model_gen, i, is_final=True)
@@ -1073,7 +1117,12 @@ async def replace_tournament_task(
     try:
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
-            new_task = await _create_round_one_group_text_replacement_task(config)
+            replacement_model_override = (
+                original_task_obj.model_id if _is_oversampled_later_model_task(original_task_obj) else None
+            )
+            new_task = await _create_round_one_group_text_replacement_task(
+                config, model_id_override=replacement_model_override
+            )
         elif t_cst.is_continuous_sft_task(original_task_obj):
             # Same lineage, same carried base model; the content service re-materializes the chunk
             # at fresh S3 URLs. Without this branch, create_new_task_of_same_type has no CHATTASK
@@ -1095,8 +1144,18 @@ async def replace_tournament_task(
             # and silently stripped of augmentation/KL/YaRN on the round that decides the title.
             logger.info("Detected pre-boss task replacement; re-forcing the pre-boss model")
             new_task = await _create_pre_boss_task(config, _get_instruct_text_datasets(config.keypair))
+        elif isinstance(original_task_obj, EnvRawTask):
+            logger.info("Detected environment task replacement; preserving start point/model/envs/seed/hours")
+            new_task = await _create_environment_replacement_task(original_task_obj, config)
         else:
-            new_task = await create_new_task_of_same_type(original_task_obj, config)
+            replacement_model_override = (
+                original_task_obj.model_id if _is_oversampled_later_model_task(original_task_obj) else None
+            )
+            new_task = await create_new_task_of_same_type(
+                original_task_obj,
+                config,
+                model_id_override=replacement_model_override,
+            )
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")
     except Exception as e:
         logger.error(f"Failed to create new task of type {original_task_obj.task_type}: {str(e)}", exc_info=True)
