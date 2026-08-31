@@ -202,6 +202,94 @@ async def add_tournament_participants(participants: list[TournamentParticipant],
             logger.info(f"Added {len(participants)} participants to tournament")
 
 
+class _InsufficientTournamentBalance(Exception):
+    pass
+
+
+async def enroll_tournament_participant_with_fee(
+    participant: TournamentParticipant,
+    coldkey: str,
+    fee_amount_rao: int,
+    psql_db: PSQLDB,
+) -> bool:
+    """Atomically enroll a participant and charge their tournament fee.
+
+    The participant primary key is the idempotency guard. If a restart retries
+    the same tournament/hotkey, the existing row prevents another deduction.
+    """
+    try:
+        async with await psql_db.connection() as connection:
+            async with connection.transaction():
+                inserted = await connection.fetchrow(
+                    f"""
+                    INSERT INTO {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+                    ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.TRAINING_REPO},
+                     {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
+                     {cst.REQUESTED_DATASETS}, {cst.CREATED_AT})
+                    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                    ON CONFLICT ({cst.TOURNAMENT_ID}, {cst.HOTKEY}) DO NOTHING
+                    RETURNING {cst.HOTKEY}
+                    """,
+                    participant.tournament_id,
+                    participant.hotkey,
+                    participant.training_repo,
+                    participant.training_commit_hash,
+                    participant.github_token,
+                    json.dumps(participant.requested_datasets) if participant.requested_datasets else None,
+                )
+
+                if inserted is None:
+                    logger.info(
+                        f"Participant {participant.hotkey} is already enrolled in "
+                        f"tournament {participant.tournament_id}; skipping fee"
+                    )
+                    return True
+
+                debit_result = await connection.execute(
+                    """
+                    UPDATE coldkey_balances
+                    SET balance_rao = balance_rao - $2,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE coldkey = $1
+                      AND balance_rao >= $2
+                    """,
+                    coldkey,
+                    fee_amount_rao,
+                )
+                if debit_result != "UPDATE 1":
+                    raise _InsufficientTournamentBalance
+
+                await connection.execute(
+                    """
+                    INSERT INTO balance_events
+                    (tournament_id, coldkey, event_type, amount_rao, description)
+                    VALUES ($1, $2, 'participation_fee', $3, $4)
+                    """,
+                    participant.tournament_id,
+                    coldkey,
+                    -fee_amount_rao,
+                    f"Tournament participation fee for {participant.tournament_id}",
+                )
+
+        logger.info(
+            f"Enrolled {participant.hotkey} and deducted {fee_amount_rao:,} RAO "
+            f"for tournament {participant.tournament_id}"
+        )
+        return True
+    except _InsufficientTournamentBalance:
+        logger.warning(
+            f"Insufficient balance for {coldkey} to pay {fee_amount_rao:,} RAO "
+            f"for participant {participant.hotkey}"
+        )
+        return False
+    except Exception as e:
+        logger.error(
+            f"Failed to enroll {participant.hotkey} in tournament "
+            f"{participant.tournament_id}: {e}"
+        )
+        return False
+
+
 async def add_tournament_tasks(tasks: list[TournamentTask], psql_db: PSQLDB):
     async with await psql_db.connection() as connection:
         async with connection.transaction():
@@ -506,6 +594,27 @@ async def update_tournament_status(tournament_id: str, status: str, psql_db: PSQ
         """
         await connection.execute(query, tournament_id, status)
         logger.info(f"Updated tournament {tournament_id} status to {status}")
+
+
+async def activate_pending_tournament(tournament_id: str, psql_db: PSQLDB) -> bool:
+    """Activate once, returning whether this call performed the transition."""
+    async with await psql_db.connection() as connection:
+        result = await connection.fetchrow(
+            f"""
+            UPDATE {cst.TOURNAMENTS_TABLE}
+            SET {cst.TOURNAMENT_STATUS} = $2, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TOURNAMENT_ID} = $1
+              AND {cst.TOURNAMENT_STATUS} = $3
+            RETURNING {cst.TOURNAMENT_ID}
+            """,
+            tournament_id,
+            TournamentStatus.ACTIVE,
+            TournamentStatus.PENDING,
+        )
+    if result:
+        logger.info(f"Activated pending tournament {tournament_id}")
+        return True
+    return False
 
 
 async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str, psql_db: PSQLDB):

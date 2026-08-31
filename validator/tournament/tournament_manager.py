@@ -26,9 +26,11 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import advance_continuous_sft_state
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
+from validator.db.sql.tournaments import activate_pending_tournament
 from validator.db.sql.tournaments import add_tournament_participants
 from validator.db.sql.tournaments import create_tournament
 from validator.db.sql.tournaments import eliminate_tournament_participants
+from validator.db.sql.tournaments import enroll_tournament_participant_with_fee
 from validator.db.sql.tournaments import get_active_tournament
 from validator.db.sql.tournaments import get_latest_tournament_with_created_at
 from validator.db.sql.tournaments import get_tournament
@@ -47,13 +49,9 @@ from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
-from validator.db.sql.tournaments import update_tournament_participant_training_repo
 from validator.db.sql.tournaments import update_tournament_placements
-from validator.db.sql.tournaments import update_tournament_status
 from validator.db.sql.tournaments import update_tournament_winner_hotkey
 from validator.db.sql.tournaments import update_tournament_winner_model
-from validator.db.sql.transfers import deduct_tournament_participation_fee
-from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.infrastructure.content_service import process_non_stream_fiber_get
 from validator.infrastructure.service_constants import TRAINING_REPO_ENDPOINT
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
@@ -898,11 +896,33 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
     logger.info(f"Tournament type: {tournament.tournament_type.value}, participation fee: {fee_description}")
 
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        min_required_miners = t_cst.MIN_MINERS_FOR_ENV_TOURN
+    else:
+        min_required_miners = t_cst.MIN_MINERS_FOR_TOURN
+
     while True:
+        persisted_participants = await get_tournament_participants(tournament_id, psql_db)
+        persisted_hotkeys = {
+            participant.hotkey
+            for participant in persisted_participants
+            if participant.hotkey != EMISSION_BURN_HOTKEY
+        }
+        if len(persisted_hotkeys) >= min_required_miners:
+            logger.info(
+                f"Tournament {tournament_id} already has sufficient persisted miners "
+                f"({len(persisted_hotkeys)} >= {min_required_miners})"
+            )
+            return len(persisted_hotkeys)
+
         all_nodes = await get_all_nodes(psql_db)
 
-        # Get all nodes except base contestant
-        eligible_nodes = [node for node in all_nodes if node.hotkey != EMISSION_BURN_HOTKEY]
+        # Existing participant rows are durable proof that their fee was already charged.
+        eligible_nodes = [
+            node
+            for node in all_nodes
+            if node.hotkey != EMISSION_BURN_HOTKEY and node.hotkey not in persisted_hotkeys
+        ]
 
         if not eligible_nodes:
             logger.warning("No eligible nodes found for tournament")
@@ -954,7 +974,7 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
         logger.info(f"Processing {len(responding_nodes)} responding nodes")
 
-        logger.info("Validating obfuscation, license, and balance for participants...")
+        logger.info("Validating obfuscation and license for participants...")
         validated_nodes: list[RespondingNode] = []
 
         for responding_node in responding_nodes:
@@ -992,44 +1012,18 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                     )
                     continue
 
-                balance = await get_coldkey_balance_by_address(psql_db, responding_node.node.coldkey)
-
-                if not balance or balance.balance_rao < participation_fee_rao:
-                    logger.warning(
-                        f"Skipping {responding_node.node.hotkey} - insufficient balance. "
-                        f"Required: {participation_fee_rao:,} RAO, "
-                        f"Available: {balance.balance_rao if balance else 0:,} RAO"
-                    )
-                    continue
-
-                fee_deducted = await deduct_tournament_participation_fee(
-                    psql_db, responding_node.node.coldkey, participation_fee_rao, tournament_id
-                )
-
-                if not fee_deducted:
-                    logger.warning(f"Failed to deduct participation fee for {responding_node.node.hotkey}. Skipping node.")
-                    continue
-
                 validated_nodes.append(responding_node)
                 logger.info(
-                    f"Repository {repo_url} passed obfuscation, license, and balance checks for hotkey "
-                    f"{responding_node.node.hotkey} (deducted {participation_fee_rao:,} RAO participation fee)"
+                    f"Repository {repo_url} passed obfuscation and license checks for hotkey "
+                    f"{responding_node.node.hotkey}"
                 )
 
         logger.info(
             f"Validation complete: {len(validated_nodes)} participants selected from {len(responding_nodes)} responding nodes"
         )
 
-        miners_that_accept_and_give_repos = 0
-
         for responding_node in validated_nodes:
             with LogContext(node_hotkey=responding_node.node.hotkey):
-                participant = TournamentParticipant(
-                    tournament_id=tournament_id,
-                    hotkey=responding_node.node.hotkey,
-                )
-                await add_tournament_participants([participant], psql_db)
-
                 miner_datasets = validate_requested_datasets(
                     responding_node.training_repo_response.requested_datasets
                 ) or None
@@ -1038,35 +1032,44 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
                         f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"
                     )
 
-                await update_tournament_participant_training_repo(
-                    tournament_id,
-                    responding_node.node.hotkey,
-                    responding_node.training_repo_response.github_repo,
-                    responding_node.training_repo_response.commit_hash,
-                    responding_node.training_repo_response.github_token,
-                    miner_datasets,
+                participant = TournamentParticipant(
+                    tournament_id=tournament_id,
+                    hotkey=responding_node.node.hotkey,
+                    training_repo=responding_node.training_repo_response.github_repo,
+                    training_commit_hash=responding_node.training_repo_response.commit_hash,
+                    github_token=responding_node.training_repo_response.github_token,
+                    requested_datasets=miner_datasets,
+                )
+                enrolled = await enroll_tournament_participant_with_fee(
+                    participant,
+                    responding_node.node.coldkey,
+                    participation_fee_rao,
                     psql_db,
                 )
+                if enrolled:
+                    logger.info(f"Added {responding_node.node.hotkey} to tournament {tournament_id}")
+                else:
+                    logger.warning(
+                        f"Could not enroll {responding_node.node.hotkey}; "
+                        "the participant and fee were both left unchanged"
+                    )
 
-                miners_that_accept_and_give_repos += 1
-                logger.info(f"Added {responding_node.node.hotkey} to tournament {tournament_id}")
+        persisted_participants = await get_tournament_participants(tournament_id, psql_db)
+        persisted_miner_count = sum(
+            participant.hotkey != EMISSION_BURN_HOTKEY
+            for participant in persisted_participants
+        )
+        logger.info(f"Tournament {tournament_id} now has {persisted_miner_count} persisted miners")
 
-        logger.info(f"Successfully populated {miners_that_accept_and_give_repos} participants for tournament {tournament_id}")
-
-        if tournament.tournament_type == TournamentType.ENVIRONMENT:
-            min_required_miners = t_cst.MIN_MINERS_FOR_ENV_TOURN
-        else:
-            min_required_miners = t_cst.MIN_MINERS_FOR_TOURN
-
-        if miners_that_accept_and_give_repos >= min_required_miners:
+        if persisted_miner_count >= min_required_miners:
             logger.info(
                 f"Tournament {tournament_id} has sufficient miners "
-                f"({miners_that_accept_and_give_repos} >= {min_required_miners})"
+                f"({persisted_miner_count} >= {min_required_miners})"
             )
-            return miners_that_accept_and_give_repos
+            return persisted_miner_count
 
         logger.warning(
-            f"Tournament {tournament_id} only has {miners_that_accept_and_give_repos} miners that accept and give repos, "
+            f"Tournament {tournament_id} only has {persisted_miner_count} miners that accept and give repos, "
             f"need at least {min_required_miners}. Waiting 30 minutes and retrying..."
         )
         await asyncio.sleep(30 * 60)
@@ -1178,13 +1181,19 @@ async def process_pending_tournaments(config: Config) -> list[str]:
                     num_participants = await populate_tournament_participants(tournament.tournament_id, config, config.psql_db)
 
                     if num_participants > 0:
-                        await update_tournament_status(tournament.tournament_id, TournamentStatus.ACTIVE, config.psql_db)
-                        activated_tournaments.append(tournament.tournament_id)
-                        logger.info(f"Activated tournament {tournament.tournament_id} with {num_participants} participants")
-
-                        await notify_tournament_started(
-                            tournament.tournament_id, tournament.tournament_type.value, num_participants, config.discord_url
-                        )
+                        activated = await activate_pending_tournament(tournament.tournament_id, config.psql_db)
+                        if activated:
+                            activated_tournaments.append(tournament.tournament_id)
+                            logger.info(
+                                f"Activated tournament {tournament.tournament_id} "
+                                f"with {num_participants} participants"
+                            )
+                            await notify_tournament_started(
+                                tournament.tournament_id,
+                                tournament.tournament_type.value,
+                                num_participants,
+                                config.discord_url,
+                            )
                     else:
                         logger.warning(f"Tournament {tournament.tournament_id} has no participants, skipping activation")
 
