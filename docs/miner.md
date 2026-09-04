@@ -95,9 +95,9 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 
 | Tournament type | Fee |
 | --- | --- |
-| Text | 0.35 TAO |
-| Image | 0.20 TAO |
-| Environment | 0.30 TAO |
+| Text | 0.7 TAO |
+| Image | 0.4 TAO |
+| Environment | 0.6 TAO |
 
 Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
 
