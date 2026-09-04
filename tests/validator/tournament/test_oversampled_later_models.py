@@ -137,7 +137,7 @@ async def test_boss_round_with_zero_configured_oversampled_tasks_sets_no_overrid
 
     await task_creator._create_new_text_boss_round_tasks("tourn", "tourn_round_009", MagicMock())
 
-    assert [c.kwargs.get("model_id_override") for c in created.call_args_list] == [None, None, None, None]
+    assert [c.kwargs.get("model_id_override") for c in created.call_args_list] == [None, None, None, None, None]
 
 
 async def test_boss_round_with_one_configured_oversampled_task_sets_exactly_one_override(monkeypatch):

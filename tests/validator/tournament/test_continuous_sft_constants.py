@@ -14,9 +14,9 @@ from validator.tournament import constants as t_cst
 
 
 class TestFinalRoundComposition:
-    def test_distribution_is_2_instruct_1_dpo_1_grpo(self):
+    def test_distribution_is_3_instruct_1_dpo_1_grpo(self):
         assert t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION == {
-            TaskType.INSTRUCTTEXTTASK: 2,
+            TaskType.INSTRUCTTEXTTASK: 3,
             TaskType.DPOTASK: 1,
             TaskType.GRPOTASK: 1,
         }
@@ -26,9 +26,9 @@ class TestFinalRoundComposition:
 
     def test_final_round_total_is_derived_sum_not_stale_literal(self):
         # The completeness gate compares against this; it must stay = standard mix + continuous.
-        # 5 tasks means the challenger may drop one and still dethrone (4/5).
+        # 6 tasks means the challenger may drop one and still dethrone (5/6).
         expected = sum(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + t_cst.FINAL_ROUND_CONTINUOUS_SFT_TASKS
-        assert t_cst.FINAL_ROUND_TEXT_TASKS == expected == 5
+        assert t_cst.FINAL_ROUND_TEXT_TASKS == expected == 6
 
     def test_boss_round_oversampled_task_count_default_is_disabled(self):
         assert t_cst.FINAL_ROUND_OVERSAMPLED_TASKS == 0

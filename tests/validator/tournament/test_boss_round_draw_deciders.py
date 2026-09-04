@@ -69,13 +69,13 @@ def test_all_examples_inside_dead_zone_is_a_draw():
 
 
 def test_chris_scenario_challenger_takes_the_crown_after_winning_the_decider():
-    """Boss 1, draw 1, challenger 3 -> add a task -> challenger wins it -> challenger is the boss.
+    """Boss 1, draw 1, challenger 4 -> add a task -> challenger wins it -> challenger is the boss.
 
     The draw never enters the tally, so the decider brings the decided count back to the boss round's
-    full size and the usual "lose at most one" rule applies over those five.
+    full size and the usual "lose at most one" rule applies over those six.
     """
-    # The four decided tasks from the original round, plus the decider the challenger then won.
-    decided_winners = [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER]
+    # The five decided tasks from the original round, plus the decider the challenger then won.
+    decided_winners = [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER]
 
     winner = determine_boss_round_winner(
         decided_winners,
@@ -89,7 +89,7 @@ def test_chris_scenario_challenger_takes_the_crown_after_winning_the_decider():
 
 
 def test_a_dead_task_never_lowers_the_dethrone_bar():
-    """Reached only when a decider itself draws, leaving four decided tasks instead of five.
+    """Reached only when a decider itself draws, leaving four decided tasks instead of six.
 
     The bar stays pinned at the round's built size, so the challenger must sweep the four that
     worked rather than getting in on three. Excluding a draw takes it out of the numerator; it must
@@ -167,7 +167,7 @@ def test_a_drawn_lineage_satisfies_its_own_gate():
     stops an undecidable continuous-SFT task costing them the crown on its own.
     """
     winner = determine_boss_round_winner(
-        [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
+        [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
         continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],
@@ -175,9 +175,9 @@ def test_a_drawn_lineage_satisfies_its_own_gate():
     )
     assert winner == CHALLENGER
 
-    # But a draw is not a free pass on the rest: still only 3 of 5 decided won.
+    # But a draw is not a free pass on the rest: still only 4 of 6 decided won.
     short_elsewhere = determine_boss_round_winner(
-        [BOSS, BOSS, CHALLENGER, CHALLENGER, CHALLENGER],
+        [BOSS, BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
         continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],

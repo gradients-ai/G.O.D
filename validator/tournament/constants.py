@@ -156,13 +156,18 @@ FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
 }
 
 # Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
+# One of the 3 instruct-text tasks is always forced onto a large model (see
+# BOSS_ROUND_LARGE_INSTRUCT_MIN/MAX_SIZE_B below); the other tasks draw from the standard pool.
 FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
-    TaskType.INSTRUCTTEXTTASK: 2,
+    TaskType.INSTRUCTTEXTTASK: 3,
     TaskType.DPOTASK: 1,
     TaskType.GRPOTASK: 1,
 }
 
-PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
+# One boss-round instruct-text task is always forced onto a model in this size band,
+# instead of the normal standard-pool draw.
+BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 35.0
+BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 71.0
 # Number of boss-round text tasks (from FINAL_ROUND_TEXT_TASK_DISTRIBUTION) to force onto
 # OVERSAMPLED_LATER_MODELS. Set to 0 to disable without removing the wiring.
 FINAL_ROUND_OVERSAMPLED_TASKS = 0
