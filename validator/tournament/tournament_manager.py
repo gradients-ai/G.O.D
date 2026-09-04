@@ -166,26 +166,16 @@ def organise_tournament_round(
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
 
-    # Text tournament round 1 is always a single group, regardless of field size: small
-    # fields play the small-tournament format (is_small_tournament_group's own participant-
-    # count check picks SMALL_TOURNAMENT_GROUP_TASKS matches / SMALL_TOURNAMENT_ADVANCE
-    # winners); larger fields fall through to the normal one-task/top-8 group path, since
-    # that check keys off group size, not group count.
-    text_round_one_single_group = (
+    # Small text/image tournament: at round 1 with 3..9 competitors, run a single
+    # group that plays multiple matches and advances only the top few, rather than
+    # a thin knockout (<=8) or a tiny group that still advances 8. Only applies to
+    # the first round so later rounds (e.g. a large group advancing 8 into a round
+    # of 8) are never mistaken for this format.
+    if (
         round_number == 1
-        and tournament_type == TournamentType.TEXT
-        and len(nodes_copy) >= t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS
-    )
-    # Small image tournament: at round 1 with 3..14 competitors, run a single group that
-    # plays multiple matches and advances only the top few, rather than a thin knockout
-    # (<=8) or a tiny group that still advances 8. Only applies to the first round so later
-    # rounds (e.g. a large group advancing 8 into a round of 8) are never mistaken for this.
-    small_image_round_one = (
-        round_number == 1
-        and tournament_type == TournamentType.IMAGE
+        and tournament_type in (TournamentType.TEXT, TournamentType.IMAGE)
         and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
-    )
-    if text_round_one_single_group or small_image_round_one:
+    ):
         group_hotkeys = [node.hotkey for node in nodes_copy]
         single_group = Group(member_ids=group_hotkeys, task_ids=[])
         return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)

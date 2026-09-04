@@ -404,10 +404,10 @@ Requested datasets are mounted read-only.
 
 Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 
-- Round 1 for text tournaments is always a single group, regardless of field size (`validator/tournament/constants.py`):
-  - 3-14 miners: a "small tournament" — the group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance.
-  - More than 14 miners: the group plays a single instruct task, and up to `TOP_WINNERS_TO_ADVANCE` (8) advance.
-  - Later rounds (round 2 onward) use field-size-based bracket formation instead: pairwise knockout at 8 or fewer competitors, otherwise a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
+- Round 1 bracket formation depends on field size (`validator/tournament/constants.py`):
+  - 3-14 miners: a "small tournament" — a single group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance.
+  - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
+  - More than 14 (or more than 8 in later rounds): a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
 - **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
 - The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) always plays a single instruct task on a forced model: `PRE_BOSS_MODEL` (currently `Qwen/Qwen3-32B`), with augmentation, KL and YaRN disabled so both competitors train the exact published model.
@@ -434,7 +434,7 @@ Your submission's `config.json` must not declare a smaller `max_position_embeddi
 
 Image tournaments use `ImageTask`.
 
-- Round 1 bracket formation depends on field size (`validator/tournament/constants.py`): 3-14 miners run a single group ("small tournament") that plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) image tasks, with only the top `SMALL_TOURNAMENT_ADVANCE` (2) advancing; outside that band it's pairwise knockout at 8 or fewer competitors, otherwise a group round (groups sized around `EXPECTED_GROUP_SIZE`/`MIN_GROUP_SIZE`, one image task per group).
+- Round 1 bracket formation follows the same field-size rules as text tournaments (see above), with one image task per group/small-tournament match instead of an instruct task.
 - Knockout pairs receive one image task.
 - The final boss round creates 6 image tasks. Up to 3 can be Z-Image or Qwen-Image tasks.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
