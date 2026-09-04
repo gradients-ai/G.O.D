@@ -527,6 +527,8 @@ Rules for environment tournaments:
 - Do not bundle your own dataset in the Docker image.
 - Do not bundle a pretrained model in the Docker image.
 - SFT is allowed only with whitelisted requested datasets or with self-generated data.
+- You must actually train the model. Submitting an untrained or only superficially modified base model does not count as training.
+- Do not embed solvers in the chat template (or anywhere else) to bypass the environment instead of the model actually solving it. This results in disqualification.
 
 ## Image Tournament Tips
 
