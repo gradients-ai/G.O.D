@@ -4,12 +4,16 @@ from core.datasets.whitelist import validate_requested_datasets
 from core.logging import get_logger
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_pairs
 from validator.db.sql.tournaments import get_tournament_participant
+from validator.db.sql.tournaments import get_tournament_rounds
+from validator.db.sql.tournaments import get_tournament_tasks
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.constants import DEFAULT_PARTICIPANT_COMMIT
 from validator.tournament.constants import DEFAULT_PARTICIPANT_REPO
+from validator.tournament.constants import is_pre_boss_task
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
@@ -30,6 +34,49 @@ async def _get_final_round_participants(completed_round: TournamentRoundData, ps
 
     pair = pairs[0]
     return pair.hotkey1, pair.hotkey2
+
+
+async def get_pre_boss_knockout_loser(
+    tournament: TournamentData,
+    final_round: TournamentRoundData,
+    challenger_hotkey: str,
+    psql_db: PSQLDB,
+) -> str | None:
+    """Return the loser of a clean, single-pair knockout pre-boss round as 3rd place.
+
+    Only returns a hotkey when the pre-boss round is unambiguous: exactly one
+    KNOCKOUT round immediately preceding the final round, with exactly one pair
+    and a decided winner_hotkey, and - for TEXT tournaments - every task in that
+    round pinned to PRE_BOSS_MODEL. Anything less structurally clean returns None
+    so the caller falls back to top-2-only payout.
+    """
+    rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
+    pre_boss = next((r for r in rounds if r.round_number == final_round.round_number - 1), None)
+    if not pre_boss or pre_boss.round_type != RoundType.KNOCKOUT:
+        return None
+
+    pairs = await get_tournament_pairs(pre_boss.round_id, psql_db)
+    if len(pairs) != 1:
+        return None
+
+    pair = pairs[0]
+    if not pair.winner_hotkey or pair.winner_hotkey not in (pair.hotkey1, pair.hotkey2):
+        return None
+
+    loser = pair.hotkey2 if pair.winner_hotkey == pair.hotkey1 else pair.hotkey1
+    if loser in (EMISSION_BURN_HOTKEY, challenger_hotkey, pair.winner_hotkey):
+        return None
+
+    if tournament.tournament_type == TournamentType.TEXT:
+        round_tasks = await get_tournament_tasks(pre_boss.round_id, psql_db)
+        if not round_tasks:
+            return None
+        tasks_full = [await get_task(task.task_id, psql_db) for task in round_tasks]
+        if not all(task and is_pre_boss_task(task) for task in tasks_full):
+            return None
+
+    return loser
+
 
 async def get_challenger_participant_for_retained_boss(
     tournament: TournamentData,

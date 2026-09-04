@@ -92,10 +92,12 @@ from validator.tournament.notifications import send_to_discord
 from validator.tournament.participants import get_base_contestant
 from validator.tournament.participants import get_challenger_participant_for_retained_boss
 from validator.tournament.participants import get_latest_tournament_winner_participant
+from validator.tournament.participants import get_pre_boss_knockout_loser
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import find_groups_with_no_valid_scores
+from validator.tournament.round_results import get_pre_boss_group_runner_up
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_environment_tournament_tasks
@@ -760,10 +762,28 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             if tournament.tournament_type == TournamentType.TEXT and not integrity.disqualified:
                 await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
 
+            third_place: str | None = None
+            if tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
+                third_place = await get_pre_boss_knockout_loser(
+                    tournament, completed_round, challenger.hotkey, psql_db
+                )
+            elif tournament.tournament_type == TournamentType.ENVIRONMENT:
+                third_place = await get_pre_boss_group_runner_up(
+                    tournament.tournament_id, completed_round, challenger.hotkey, psql_db
+                )
+
+            if third_place is not None and third_place in {winner, second_place}:
+                logger.warning(
+                    f"Computed 3rd place {third_place} collides with winner/second_place "
+                    f"for tournament {tournament.tournament_id}; omitting 3rd place"
+                )
+                third_place = None
+
             await update_tournament_placements(
                 tournament.tournament_id,
                 winner,
                 second_place,
+                third_place,
                 psql_db,
             )
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)

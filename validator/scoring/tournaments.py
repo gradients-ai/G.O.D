@@ -379,6 +379,12 @@ def tournament_scores_to_weights(
     return weights
 
 
+# The final_positions-empty fallback below has no positional data at all - it derives
+# "finalists" from the final round's raw task participant_scores, which for ENVIRONMENT
+# can contain more than 2 hotkeys. It must stay capped at 2 regardless of TOURNAMENT_PAID_RANKS.
+_LEGACY_FALLBACK_MAX_PAID_RANKS = 2
+
+
 def _resolve_burn_placeholder(hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
     """Map the EMISSION_BURN_HOTKEY placeholder to the real defending champion when known."""
     if hotkey == cts.EMISSION_BURN_HOTKEY and base_winner_hotkey:
@@ -399,19 +405,23 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
     base_winner = tournament_data.base_winner_hotkey
     champion = _resolve_burn_placeholder(tournament_data.winner_hotkey, base_winner)
     if tournament_data.final_positions:
-        resolved_positions = [
-            _resolve_burn_placeholder(hotkey, base_winner)
-            for hotkey, _position in sorted(
-                tournament_data.final_positions.items(), key=lambda item: item[1]
-            )
-        ]
-        paid = list(dict.fromkeys(hotkey for hotkey in resolved_positions if hotkey))[
-            : cts.TOURNAMENT_PAID_RANKS
-        ]
-        return {
-            hotkey: exponential_decline_mapping(len(paid), rank)
-            for rank, hotkey in enumerate(paid, start=1)
-        }
+        # Sum by resolved hotkey rather than dedup-then-reindex: a hotkey occupying more than
+        # one nominal position (e.g. the defending champion's hotkey is also the literal
+        # bracket entry that fought through as boss-round challenger) must receive the SUM of
+        # those positions' weights. Reindexing after dropping the duplicate would shift every
+        # later rank's weight up, overpaying the next real entrant at the collapsed hotkey's
+        # expense - invisible with 2 paid ranks (a lone rank-1-of-1 happens to equal rank1+rank2),
+        # but a real distortion once a 3rd rank is added.
+        total_participants = min(len(tournament_data.final_positions), cts.TOURNAMENT_PAID_RANKS)
+        weights: dict[str, float] = {}
+        for hotkey, position in tournament_data.final_positions.items():
+            if position > cts.TOURNAMENT_PAID_RANKS:
+                continue
+            resolved = _resolve_burn_placeholder(hotkey, base_winner)
+            if not resolved:
+                continue
+            weights[resolved] = weights.get(resolved, 0.0) + exponential_decline_mapping(total_participants, position)
+        return weights
 
     final_round = next((round_result for round_result in tournament_data.rounds if round_result.is_final_round), None)
     if final_round is None:
@@ -429,13 +439,13 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
         paid.append(champion)
     paid.extend(hotkey for hotkey in finalists if hotkey != champion)
 
-    if len(paid) > cts.TOURNAMENT_PAID_RANKS:
+    if len(paid) > _LEGACY_FALLBACK_MAX_PAID_RANKS:
         logger.warning(
             f"Boss round resolved {len(paid)} paid participants {paid}; expected "
-            f"{cts.TOURNAMENT_PAID_RANKS}. Paying the top {cts.TOURNAMENT_PAID_RANKS} by placement."
+            f"{_LEGACY_FALLBACK_MAX_PAID_RANKS}. Paying the top {_LEGACY_FALLBACK_MAX_PAID_RANKS} by placement."
         )
 
-    total = min(len(paid), cts.TOURNAMENT_PAID_RANKS)
+    total = min(len(paid), _LEGACY_FALLBACK_MAX_PAID_RANKS)
     return {hotkey: exponential_decline_mapping(total, rank) for rank, hotkey in enumerate(paid, start=1)}
 
 

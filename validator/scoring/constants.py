@@ -24,7 +24,7 @@ PVP_PERF_DIFF_SLOPE = 0.125
 
 # Tournament score and weight distribution
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
-TOURNAMENT_PAID_RANKS = 2
+TOURNAMENT_PAID_RANKS = 3
 TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
 # Uniform hard cap on any single tournament type's final (base + boost) weight.
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.50

@@ -933,6 +933,71 @@ async def get_environment_group_winners(
     return all_winners
 
 
+async def get_pre_boss_group_runner_up(
+    tournament_id: str,
+    final_round: TournamentRoundData,
+    challenger_hotkey: str,
+    psql_db: PSQLDB,
+) -> str | None:
+    """Return the single best-scoring non-boss, non-challenger miner across every group
+    in the pre-boss round, as 3rd place for ENVIRONMENT tournaments.
+
+    Pre-boss = the last non-final GROUP round. Every group in a round is built from the
+    same reference task - same model, environments, and eval seed (see
+    _create_environment_group_tasks) - so scores are directly comparable across groups.
+    Whichever group the boss lands in only ever contributes the boss's own placeholder or
+    (if the boss retains there) nobody at all, per the "boss must be beaten" guard in
+    get_environment_group_winners - it never yields a genuine near-miss. So 3rd place is
+    the round-wide runner-up, not restricted to whichever group happened to produce the
+    challenger. Returns None on any ambiguity: missing/wrong-typed pre-boss round,
+    challenger not found in any pre-boss group, no non-boss non-challenger candidate
+    anywhere in the round, or a tie at the top.
+    """
+    boss_hotkey = EMISSION_BURN_HOTKEY
+
+    rounds = await get_tournament_rounds(tournament_id, psql_db)
+    pre_boss = next((r for r in rounds if r.round_number == final_round.round_number - 1), None)
+    if not pre_boss or pre_boss.round_type != RoundType.GROUP or pre_boss.is_final_round:
+        return None
+
+    pre_boss_tasks = await get_tournament_tasks(pre_boss.round_id, psql_db)
+    if not pre_boss_tasks:
+        return None
+
+    challenger_found = False
+    candidates: list[tuple[str, float]] = []
+    for task in pre_boss_tasks:
+        if not task.group_id:
+            continue
+        members = await get_tournament_group_members(task.group_id, psql_db)
+        if challenger_hotkey in {member.hotkey for member in members}:
+            challenger_found = True
+
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+        if not miner_results:
+            continue
+
+        for result in calculate_miner_ranking_and_scores(miner_results):
+            if result.hotkey in (boss_hotkey, challenger_hotkey):
+                continue
+            if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
+                continue
+            candidates.append((result.hotkey, result.adjusted_loss))
+
+    if not challenger_found or not candidates:
+        return None
+
+    candidates.sort(key=lambda item: item[1], reverse=True)
+    runner_up_hotkey, runner_up_score = candidates[0]
+
+    # Tie guard: if a second non-boss, non-challenger competitor anywhere in the round ties
+    # the top score, the #3 spot is ambiguous - omit rather than guess.
+    if len(candidates) > 1 and candidates[1][1] == runner_up_score:
+        return None
+
+    return runner_up_hotkey
+
+
 async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
     """Rank competitors across the multi-match small-tournament group."""
     match_rankings: list[MatchRanking] = []
