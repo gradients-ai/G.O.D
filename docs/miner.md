@@ -462,31 +462,30 @@ for `2.5` hours total. The from-scratch boss-round task uses `3.0` hours.
 
 ## Scoring And Weights
 
-The subnet is tournament-based. Emissions are split between tournament champions, active tournament participants, and burn.
+The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
 
-Current base and cap weights in `validator/scoring/constants.py`:
+Anchor base and cap weights in `validator/scoring/constants.py`. The base per type is adjusted from this anchor by a participation-driven balancer (an oversubscribed type sheds weight, down to `EMISSION_BALANCE_FLOOR`, toward a starved one — see `validator/scoring/emission_balance.py`), and the resulting per-type pools are always scaled so text + image + environment sum to exactly 1.0 (scaled up if their raw sum is below 1.0, not just capped when above):
 
-| Tournament type | Base weight | Max weight |
+| Tournament type | Anchor base weight | Max weight |
 | --- | --- | --- |
-| Text | 0.35 | 0.48 |
-| Image | 0.275 | 0.32 |
-| Environment | 0.125 | 0.175 |
+| Text | 0.35 | 0.50 |
+| Image | 0.25 | 0.50 |
+| Environment | 0.25 | 0.50 |
 
-Active tournament participants receive `0.0001` weight each. Undistributed weight goes to the burn hotkey.
+Active tournament participants receive `0.0001` weight each.
 
-Within a tournament, only the top two ranks are paid, distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` for an 80/20 split.
+Within a tournament, up to the top three ranks are paid (`TOURNAMENT_PAID_RANKS`), distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` — roughly a 76/19/5 split across three paid ranks, or 80/20 if a clean 3rd place can't be identified (see "3rd Place" below).
 
-Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.10` performance threshold (`EMISSION_MULTIPLIER_THRESHOLD`). The excess is multiplied by `2.0` (`EMISSION_MULTIPLIER_RATE`) and capped by tournament type.
+Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.10` performance threshold (`EMISSION_MULTIPLIER_THRESHOLD`). The excess is multiplied by `2.0` (`EMISSION_MULTIPLIER_RATE`) and capped by tournament type. A champion's weight does not decay over time — a long-reigning champion earns the same as a freshly-crowned one.
 
-The boost/base weight is then reduced by time-based champion decay: a piecewise-linear retention curve on the number of days since the champion's reign started (or since `EMISSION_TIME_DECAY_START_DATE` for champions who first won before that date), applied multiplicatively:
+### 3rd Place
 
-```text
-days_as_champion -> retention
-0   -> 100%
-7   -> 50%
-30  -> 30%
-40+ -> 15%   (floor, held indefinitely — champions no longer decay to zero)
-```
+A tournament pays a 3rd place only when it can be identified unambiguously:
+
+- **Text/Image**: the loser of the last single-pair knockout round before the boss round.
+- **Environment**: the single best-scoring non-boss, non-challenger miner across every group in the pre-boss round (valid since a round's groups all share the same model, environments, and eval seed).
+
+If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
 
 ## Environment Tournament Requirements
 
@@ -636,4 +635,4 @@ It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the r
 - `validator/tournament/task_creator.py`: task creation by tournament type.
 - `validator/tournament/gpu_requirements.py`: GPU requirement logic.
 - `validator/tournament/constants.py`: tournament structure, fees, and environment round constants.
-- `validator/scoring/constants.py`: scoring weights, decay, and emissions constants.
+- `validator/scoring/constants.py`: scoring weights and emissions constants.
