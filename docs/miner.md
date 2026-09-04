@@ -35,6 +35,7 @@ Before a tournament starts, make sure:
 - Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
 - Your training script writes the final model to `/app/checkpoints/{task_id}/{expected_repo_name}`.
 - Your coldkey has enough tournament balance for the tournament type.
+- Only one hotkey per coldkey will be enrolled in a given tournament.
 - You have tested the exact Dockerfile and entrypoint locally with the example scripts.
 
 ## What Miners Do
@@ -99,7 +100,7 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 | Image | 0.20 TAO |
 | Environment | 0.30 TAO |
 
-Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Transfer TAO from your coldkey to the collection address:
+Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Only **one tournament entry is allowed per coldkey**: if multiple hotkeys under the same coldkey respond during registration, one is kept and the rest are rejected (no second fee is charged). Transfer TAO from your coldkey to the collection address:
 
 ```text
 5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo
@@ -187,7 +188,7 @@ Important details:
 - Use `git rev-parse HEAD` to get the commit you want validators to run.
 - The repository and commit must remain accessible until the tournament completes.
 - You may return different repositories or commits for `text`, `image`, and `environment`.
-- One miner is kept per duplicate IP address and one miner is kept per duplicate GitHub account. If duplicates exist, entries with a valid token are preferred.
+- One miner is kept per coldkey, per IP address, and per GitHub account. Multiple hotkeys under the same coldkey cannot all enter the same tournament: only one entry is kept, and the others are rejected. If duplicates exist, entries with a valid GitHub token are preferred; otherwise the first kept candidate in the registration pass wins.
 
 ### Private Repositories
 
