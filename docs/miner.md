@@ -449,7 +449,7 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - Participants are split into groups of 2 to 6.
 - The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
 - Non-final rounds create one environment task per group.
-- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments.
+- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments. `intercode` is always one of round 1's environments (`FORCED_R1_ENVIRONMENT`).
 - Round 2 and later can continue from each miner's previous-round model.
 - Up to one non-boss winner advances per group, with ties at the cutoff allowed.
 - If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.

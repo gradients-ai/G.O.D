@@ -114,6 +114,9 @@ ENV_TARGET_TOURN_MODEL = "gradients-io-tournaments/swe-base-qwen3-8b-continuous"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
 FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
+# If set, guarantees this game is one of round 1's environments (all groups share round 1's
+# environment set). Set to None to let round 1's environments be picked without any forcing.
+FORCED_R1_ENVIRONMENT: EnvironmentName | None = EnvironmentName.INTERCODE
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"

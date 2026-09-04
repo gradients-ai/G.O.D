@@ -179,7 +179,16 @@ def _select_r1_env_names(
     seen = [env for env in all_envs if env in seen_last_tournament]
     random.shuffle(unseen)
     random.shuffle(seen)
-    return (unseen + seen)[:num_envs]
+    ordered = unseen + seen
+
+    # FORCED_R1_ENVIRONMENT always plays in round 1: pull it to the front before truncating to
+    # num_envs, rather than leaving it to chance in the unseen/seen shuffle above.
+    forced = t_cst.FORCED_R1_ENVIRONMENT
+    if forced is not None and forced in ordered:
+        ordered.remove(forced)
+        ordered.insert(0, forced)
+
+    return ordered[:num_envs]
 
 
 async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
