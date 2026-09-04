@@ -1,19 +1,12 @@
-from datetime import datetime
-from datetime import timezone
-
 import validator.scoring.constants as cts
-from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
-from validator.db.sql.tournaments import get_tournament_where_champion_first_won
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tournaments import exponential_decline_mapping
 from validator.scoring.weights import calculate_emission_boost_from_perf
 from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
-from validator.scoring.weights import calculate_hybrid_decays
-from validator.scoring.weights import calculate_tournament_weight_with_decay
-from validator.scoring.weights import emission_time_decay_fraction
+from validator.scoring.weights import calculate_tournament_weight
 from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
@@ -89,7 +82,7 @@ def get_top_ranked_miners(
                 final_weight = base_weight * scaled_base_weight
         else:
             final_weight = base_weight
-        
+
         real_hotkey_weights[real_hotkey] = final_weight
 
     all_sorted_miners = sorted(real_hotkey_weights.items(), key=lambda x: x[1], reverse=True)
@@ -125,23 +118,10 @@ async def calculate_tournament_projection(
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
     runner-up (base-pool share, no champion boost, earning only until the next
-    tournament's results replace the standings).
+    tournament's results replace the standings). No time decay: a champion's
+    weight is constant over time, not a curve.
     """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
-    current_champion = get_real_tournament_winner(latest_tournament) if latest_tournament else None
-
-    current_champion_decay = 0.0
-    consecutive_wins = 0
-    if current_champion and latest_tournament:
-        consecutive_wins = await count_champion_consecutive_wins(psql_db, tournament_type, current_champion)
-        first_win_tournament = await get_tournament_where_champion_first_won(psql_db, tournament_type, current_champion)
-        if first_win_tournament and first_win_tournament.updated_at:
-            _, new_decay, _ = calculate_hybrid_decays(
-                first_win_tournament.updated_at,
-                consecutive_wins,
-                datetime.now(timezone.utc),
-            )
-            current_champion_decay = new_decay
 
     # Determine the challenger's performance diff and whether it dethrones the boss.
     if tournament_type == TournamentType.ENVIRONMENT:
@@ -171,45 +151,24 @@ async def calculate_tournament_projection(
     if dethrones:
         emission_boost = calculate_emission_boost_from_perf(performance_diff)
 
-        raw_initial_weight = calculate_tournament_weight_with_decay(
+        raw_initial_weight = calculate_tournament_weight(
             tournament_type=tournament_type,
             base_weight=base_weight,
             emission_boost=emission_boost,
-            old_decay=0.0,
-            new_decay=0.0,
-            apply_hybrid=False,
             max_weight=max_weight,
         )
-        # Winner's actual emission weight = winner_share * tournament_weight * scale_factor
+        # Winner's actual emission weight = winner_share * tournament_weight * scale_factor.
+        # No decay: this weight is constant, so alpha accrues linearly over time.
         initial_weight = winner_share * raw_initial_weight * scale_factor
 
-        def weight_on_day(day: int) -> float:
-            raw_weight = calculate_tournament_weight_with_decay(
-                tournament_type=tournament_type,
-                base_weight=base_weight,
-                emission_boost=emission_boost,
-                old_decay=0.0,
-                new_decay=emission_time_decay_fraction(day),
-                apply_hybrid=False,
-                max_weight=max_weight,
+        projections = [
+            WeightProjection(
+                days=days,
+                weight=initial_weight,
+                total_alpha=days * cts.DAILY_ALPHA_TO_MINERS * initial_weight,
             )
-            return winner_share * raw_weight * scale_factor
-
-        # Cumulative alpha must integrate the piecewise decay curve, not interpolate
-        # linearly between day 0 and the horizon: the weight falls to the curve's
-        # floor and accrues at that flat rate thereafter.
-        max_days = max(projection_days)
-        daily_weights = [weight_on_day(day) for day in range(max_days + 1)]
-        cumulative_weight_days = [0.0]
-        for day in range(1, max_days + 1):
-            cumulative_weight_days.append(cumulative_weight_days[-1] + (daily_weights[day - 1] + daily_weights[day]) / 2.0)
-
-        projections = []
-        for days in projection_days:
-            weight = daily_weights[days]
-            cumulative_alpha = cts.DAILY_ALPHA_TO_MINERS * cumulative_weight_days[days]
-
-            projections.append(WeightProjection(days=days, weight=weight, total_alpha=cumulative_alpha))
+            for days in projection_days
+        ]
 
         placement = "champion"
     else:
@@ -234,7 +193,7 @@ async def calculate_tournament_projection(
 
     return TournamentProjection(
         tournament_type=tournament_type.value,
-        current_champion_decay=current_champion_decay,
+        current_champion_decay=0.0,  # no more time decay; kept for API stability
         initial_weight=initial_weight,
         projections=projections,
         placement=placement,

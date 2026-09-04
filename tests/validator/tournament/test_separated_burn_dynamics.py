@@ -1,8 +1,10 @@
 """
 Test separated burn dynamics functionality.
 
-This test file validates the new separated burn system that applies different
-burn rates based on tournament participation and weekly task participation.
+This test file validates per-type tournament weight calculation and its application to
+node weights. There is no more time decay and no more burn: each type's pool (base +
+performance boost, capped) is normalized so text + image + environment always sum to
+exactly 1.0 - scaled up when their raw sum is below 1.0, not just scaled down when above.
 """
 
 from datetime import datetime
@@ -15,6 +17,7 @@ import pytest
 
 import validator.scoring.constants as cts
 from validator.scoring.weights import apply_tournament_weights
+from validator.scoring.weights import calculate_tournament_weight
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament.models import HotkeyTaskParticipation
@@ -179,7 +182,6 @@ class TestSeparatedBurnDynamics:
         with (
             patch("validator.scoring.weights.get_latest_completed_tournament") as mock_get_tournament,
             patch("validator.scoring.weights.calculate_performance_difference") as mock_calc_perf,
-            patch("validator.scoring.weights.count_champion_consecutive_wins") as mock_count_wins,
             patch("validator.scoring.weights.get_tournament_where_champion_first_won") as mock_first_win,
         ):
             mock_text_tournament = TournamentData(
@@ -218,7 +220,6 @@ class TestSeparatedBurnDynamics:
                 return 0.0
 
             mock_calc_perf.side_effect = mock_calc_perf_side_effect
-            mock_count_wins.return_value = 1
             mock_first_win.return_value = TournamentData(
                 tournament_id="first_win",
                 tournament_type=TournamentType.TEXT,
@@ -303,6 +304,36 @@ class TestSeparatedBurnDynamics:
             assert isinstance(result, NodeWeightsResult)
             assert len(result.node_ids) == 2
             assert len(result.node_weights) == 2
+
+    def test_calculate_tournament_weight_has_no_decay(self):
+        """The champion's pool is just base + boost, capped - constant regardless of time."""
+        weight = calculate_tournament_weight(TournamentType.TEXT, base_weight=0.2, emission_boost=0.1, max_weight=0.5)
+        assert weight == pytest.approx(0.3)
+        # Capped at max_weight even with a large boost.
+        capped_weight = calculate_tournament_weight(TournamentType.TEXT, base_weight=0.2, emission_boost=0.9, max_weight=0.5)
+        assert capped_weight == pytest.approx(0.5)
+
+    @pytest.mark.asyncio
+    async def test_no_champions_scales_anchor_split_up_to_one(self, mock_psql_db):
+        """With no tournament history anywhere, each type falls back to its static anchor
+        (0.35/0.25/0.25 = 0.85 raw) - these must scale UP to sum to exactly 1.0, not leave
+        0.15 unspent as burn. Ratios between types are preserved."""
+        with (
+            patch("validator.scoring.weights.get_latest_completed_tournament", return_value=None),
+        ):
+            result = await get_tournament_burn_details(mock_psql_db)
+
+            total = result.text_tournament_weight + result.image_tournament_weight + result.environment_tournament_weight
+            assert total == pytest.approx(1.0)
+            assert result.burn_weight == 0.0
+            # Ratios match the anchor split (0.35 : 0.25 : 0.25).
+            expected_ratio = cts.TOURNAMENT_TEXT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
+            assert result.text_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
+            assert result.image_tournament_weight == pytest.approx(result.environment_tournament_weight, rel=1e-6)
+            # Champion and runner-up pools are the same merged pool per type.
+            assert result.text_base_weight == pytest.approx(result.text_tournament_weight)
+            assert result.image_base_weight == pytest.approx(result.image_tournament_weight)
+            assert result.environment_base_weight == pytest.approx(result.environment_tournament_weight)
 
 
 if __name__ == "__main__":

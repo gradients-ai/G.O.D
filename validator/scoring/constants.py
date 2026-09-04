@@ -1,6 +1,3 @@
-from datetime import date
-
-
 EMISSION_BURN_HOTKEY = "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
 
 # General miner pool sizes
@@ -55,18 +52,6 @@ BURN_REDUCTION_RATE = 5.0
 MAX_BURN_REDUCTION = 0.8
 EMISSION_MULTIPLIER_THRESHOLD = 0.10
 EMISSION_MULTIPLIER_RATE = 2.0
-EMISSION_BOOST_DECAY_PER_WIN = 0.01
-# Champion emission decays on a piecewise-linear *retention* curve (multiplier on
-# the champion's full day-0 emission weight = base + boost). Fast early drop, a
-# plateau, then a floor of 15% held from day 40 onwards — a champion's emission
-# never drops below this. (days_since_reign_start, retention).
-EMISSION_TIME_DECAY_CURVE: tuple[tuple[float, float], ...] = (
-    (0.0, 1.00),
-    (7.0, 0.50),
-    (30.0, 0.30),
-    (40.0, 0.15),
-)
-EMISSION_TIME_DECAY_START_DATE = date(2025, 11, 26)
 SECONDS_PER_DAY = 86400.0
 
 ALPHA_PER_SECOND = 1.0 / 12.0
