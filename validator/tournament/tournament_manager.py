@@ -62,6 +62,7 @@ from validator.tournament.challenger_code_review import evaluate_challenger_code
 from validator.tournament.dedup_gate import apply_r1_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
+from validator.tournament.github_validation import deduplicate_by_coldkey
 from validator.tournament.github_validation import deduplicate_by_github_account
 from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
@@ -917,12 +918,26 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
         all_nodes = await get_all_nodes(psql_db)
 
+        persisted_coldkeys: set[str] = set()
+        for participant in persisted_participants:
+            if participant.hotkey == EMISSION_BURN_HOTKEY:
+                continue
+            enrolled_node = await get_node_by_hotkey(participant.hotkey, psql_db)
+            if enrolled_node and enrolled_node.coldkey:
+                persisted_coldkeys.add(enrolled_node.coldkey)
+
         # Existing participant rows are durable proof that their fee was already charged.
-        eligible_nodes = [
-            node
-            for node in all_nodes
-            if node.hotkey != EMISSION_BURN_HOTKEY and node.hotkey not in persisted_hotkeys
-        ]
+        eligible_nodes = []
+        for node in all_nodes:
+            if node.hotkey == EMISSION_BURN_HOTKEY or node.hotkey in persisted_hotkeys:
+                continue
+            if node.coldkey in persisted_coldkeys:
+                logger.warning(
+                    f"Rejecting {node.hotkey} — duplicate coldkey '{node.coldkey[:12]}…' "
+                    f"(coldkey already enrolled in tournament {tournament_id})"
+                )
+                continue
+            eligible_nodes.append(node)
 
         if not eligible_nodes:
             logger.warning("No eligible nodes found for tournament")
@@ -970,6 +985,13 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         if len(responding_nodes) < pre_dedup:
             logger.info(
                 f"Deduplicated GitHub accounts: {pre_dedup} -> {len(responding_nodes)} nodes"
+            )
+
+        pre_dedup_coldkey = len(responding_nodes)
+        responding_nodes = deduplicate_by_coldkey(responding_nodes)
+        if len(responding_nodes) < pre_dedup_coldkey:
+            logger.info(
+                f"Deduplicated coldkeys: {pre_dedup_coldkey} -> {len(responding_nodes)} nodes"
             )
 
         logger.info(f"Processing {len(responding_nodes)} responding nodes")

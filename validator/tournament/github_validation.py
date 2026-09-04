@@ -271,3 +271,36 @@ def deduplicate_by_ip_address(nodes: list[RespondingNode]) -> list[RespondingNod
             )
 
     return kept
+
+
+def deduplicate_by_coldkey(nodes: list[RespondingNode]) -> list[RespondingNode]:
+    """Keep a single tournament entry per coldkey (no multi-hotkey farming)."""
+    by_coldkey: defaultdict[str, list[RespondingNode]] = defaultdict(list)
+
+    for node in nodes:
+        by_coldkey[node.node.coldkey].append(node)
+
+    kept: list[RespondingNode] = []
+    for coldkey, group in by_coldkey.items():
+        if len(group) == 1:
+            kept.append(group[0])
+            continue
+
+        with_token = [n for n in group if n.training_repo_response.github_token]
+        without_token = [n for n in group if not n.training_repo_response.github_token]
+
+        if with_token:
+            winner = with_token[0]
+            rejected = with_token[1:] + without_token
+        else:
+            winner = without_token[0]
+            rejected = without_token[1:]
+
+        kept.append(winner)
+        for r in rejected:
+            logger.warning(
+                f"Rejecting {r.node.hotkey} — duplicate coldkey '{coldkey[:12]}…' "
+                f"(kept {winner.node.hotkey})"
+            )
+
+    return kept

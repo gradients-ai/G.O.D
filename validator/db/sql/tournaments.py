@@ -216,10 +216,58 @@ async def enroll_tournament_participant_with_fee(
 
     The participant primary key is the idempotency guard. If a restart retries
     the same tournament/hotkey, the existing row prevents another deduction.
+
+    Only one entry is allowed per coldkey: if this coldkey already paid a
+    participation fee for the tournament (via another hotkey), enrollment is refused.
     """
     try:
         async with await psql_db.connection() as connection:
             async with connection.transaction():
+                # Serialize enrollments for this coldkey so two hotkeys cannot race in.
+                await connection.fetchrow(
+                    """
+                    SELECT coldkey
+                    FROM coldkey_balances
+                    WHERE coldkey = $1
+                    FOR UPDATE
+                    """,
+                    coldkey,
+                )
+
+                existing_fee = await connection.fetchval(
+                    """
+                    SELECT 1
+                    FROM balance_events
+                    WHERE tournament_id = $1
+                      AND coldkey = $2
+                      AND event_type = 'participation_fee'
+                    LIMIT 1
+                    """,
+                    participant.tournament_id,
+                    coldkey,
+                )
+                if existing_fee is not None:
+                    already_enrolled = await connection.fetchval(
+                        f"""
+                        SELECT 1
+                        FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+                        WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2
+                        """,
+                        participant.tournament_id,
+                        participant.hotkey,
+                    )
+                    if already_enrolled is not None:
+                        logger.info(
+                            f"Participant {participant.hotkey} is already enrolled in "
+                            f"tournament {participant.tournament_id}; skipping fee"
+                        )
+                        return True
+                    logger.warning(
+                        f"Rejecting {participant.hotkey}: coldkey {coldkey[:12]}… already "
+                        f"has a tournament entry in {participant.tournament_id}"
+                    )
+                    return False
+
                 inserted = await connection.fetchrow(
                     f"""
                     INSERT INTO {cst.TOURNAMENT_PARTICIPANTS_TABLE}
