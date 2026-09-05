@@ -695,9 +695,10 @@ async def update_tournament_placements(
     tournament_id: str,
     winner_hotkey: str,
     second_place_hotkey: str | None,
+    third_place_hotkey: str | None,
     psql_db: PSQLDB,
 ) -> None:
-    """Persist official top-two positions without rewriting match history."""
+    """Persist official top-three positions without rewriting match history."""
     async with await psql_db.connection() as connection:
         async with connection.transaction():
             await connection.execute(
@@ -715,6 +716,7 @@ async def update_tournament_placements(
                 SET {cst.FINAL_POSITION} = CASE
                     WHEN {cst.HOTKEY} = $2 THEN 1
                     WHEN {cst.HOTKEY} = $3 THEN 2
+                    WHEN {cst.HOTKEY} = $4 THEN 3
                     ELSE NULL
                 END
                 WHERE {cst.TOURNAMENT_ID} = $1
@@ -722,9 +724,11 @@ async def update_tournament_placements(
                 tournament_id,
                 winner_hotkey,
                 second_place_hotkey,
+                third_place_hotkey,
             )
     logger.info(
-        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, second={second_place_hotkey}"
+        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, "
+        f"second={second_place_hotkey}, third={third_place_hotkey}"
     )
 
 

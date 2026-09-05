@@ -6,5 +6,5 @@ Tests for validator evaluation, scoring, and tournament behavior.
 
 - `evaluation/`: local evaluation and PvP tests.
 - `scoring/`: task/tournament scoring pipeline tests.
-- `tournament/`: tournament rounds, boss rounds, burn/decay, and analytics tests.
+- `tournament/`: tournament rounds, boss rounds, weight distribution, and analytics tests.
 - `__init__.py`: package marker.

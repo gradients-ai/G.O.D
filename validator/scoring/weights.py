@@ -5,7 +5,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 from validator.db.sql.auditing import store_latest_scores_url
-from validator.db.sql.tournaments import count_champion_consecutive_wins
 from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_full_results
@@ -28,7 +27,6 @@ from validator.tournament.round_results import get_real_tournament_winner
 load_dotenv(os.getenv("ENV_FILE", ".vali.env"))
 
 import json
-from datetime import timezone
 from uuid import UUID
 
 from async_substrate_interface import SubstrateInterface
@@ -103,118 +101,20 @@ def calculate_env_perf_diff_from_win_pct(win_pct: float) -> float:
     return cts.EMISSION_MULTIPLIER_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
 
 
-def calculate_tournament_weight_with_decay(
+def calculate_tournament_weight(
     tournament_type: TournamentType,
     base_weight: float,
     emission_boost: float,
-    old_decay: float,
-    new_decay: float,
-    apply_hybrid: bool,
     max_weight: float,
 ) -> float:
-    """
-    Apply hybrid decay logic and return final capped tournament weight.
-    """
-    if apply_hybrid:
-        # Pre-cutoff: old_decay only affects emission_boost (emission doesn't go below base), then apply cumulative/max logic
-        boost_after_old = max(0.0, emission_boost - old_decay)
-        if boost_after_old == 0.0:
-            final_weight = max(0.0, base_weight * (1.0 - new_decay))
-        else:
-            final_weight = max(0.0, base_weight + boost_after_old)
-    else:
-        # Old regime purely
-        if old_decay > 0.0:
-            boost_after_old = max(0.0, emission_boost - old_decay)
-            final_weight = max(0.0, base_weight + boost_after_old)
-        # New regime purely, we will default to this after a while or if both winners change after cutoff
-        elif new_decay > 0.0:
-            final_weight = max(0.0, (base_weight + emission_boost) * (1.0 - new_decay))
-        else:
-            final_weight = base_weight + emission_boost
-
-    final_weight = min(final_weight, max_weight)
+    """Champion's pool for a tournament type: base + performance boost, capped. No time decay."""
+    final_weight = min(base_weight + emission_boost, max_weight)
 
     logger.info(
-        f"{tournament_type}: base={base_weight:.4f} + boost={emission_boost:.4f}, "
-        f"old_decay={old_decay:.4f}, new_decay={new_decay:.4f}, "
-        f"apply_hybrid={apply_hybrid} → final={final_weight:.4f}"
+        f"{tournament_type}: base={base_weight:.4f} + boost={emission_boost:.4f} → final={final_weight:.4f}"
     )
 
     return final_weight
-
-
-def emission_time_retention(days_as_champion: float) -> float:
-    """
-    Piecewise-linear retention multiplier for a champion's emission weight.
-
-    Decays fast at first, plateaus, then holds at a floor. Anchored on
-    EMISSION_TIME_DECAY_CURVE (100% at day 0 -> 15% at day 40, held from then on).
-    Returns a value in [0, 1] applied multiplicatively to the champion's full
-    day-0 emission weight.
-    """
-    curve = cts.EMISSION_TIME_DECAY_CURVE
-    if days_as_champion <= curve[0][0]:
-        return curve[0][1]
-    if days_as_champion >= curve[-1][0]:
-        return curve[-1][1]
-    for (d0, r0), (d1, r1) in zip(curve, curve[1:]):
-        if d0 <= days_as_champion <= d1:
-            frac = (days_as_champion - d0) / (d1 - d0)
-            return r0 + frac * (r1 - r0)
-    return curve[-1][1]  # unreachable; guarded by the bounds checks above
-
-
-def emission_time_decay_fraction(days_as_champion: float) -> float:
-    """Fraction of the champion's emission weight removed by time decay (1 - retention)."""
-    return 1.0 - emission_time_retention(days_as_champion)
-
-
-def calculate_hybrid_decays(
-    first_championship_time: datetime, consecutive_wins: int, current_time: datetime | None = None
-) -> tuple[float, float, bool]:
-    """
-    Calculate time-based decay & previous consecutive wins decay for backwards compatibility.
-
-    Returns (old_decay, new_decay, apply_hybrid). `new_decay` is the *fraction* of the
-    champion's emission weight removed by time decay (0.0 = full weight, 1.0 = fully
-    burned), applied multiplicatively downstream. `old_decay` stays an absolute
-    boost reduction (legacy consecutive-wins regime).
-    """
-    if first_championship_time is None:
-        logger.error("First championship time is None, cannot calculate time-based decay.")
-        return (1.0, 1.0, False)
-
-    # timezone alignment
-    current_time_utc = current_time if current_time else datetime.now(timezone.utc)
-    if current_time_utc.tzinfo is None:
-        current_time_utc = current_time_utc.replace(tzinfo=timezone.utc)
-    cutoff_date = datetime.combine(cts.EMISSION_TIME_DECAY_START_DATE, datetime.min.time(), tzinfo=timezone.utc)
-    first_championship_time_utc = (
-        first_championship_time.replace(tzinfo=timezone.utc)
-        if first_championship_time.tzinfo is None
-        else first_championship_time
-    )
-
-    if current_time_utc < cutoff_date:
-        old_decay = max(0, consecutive_wins - 1) * cts.EMISSION_BOOST_DECAY_PER_WIN
-        return (old_decay, 0.0, False)
-
-    if first_championship_time_utc < cutoff_date:
-        old_decay = max(0, consecutive_wins - 1) * cts.EMISSION_BOOST_DECAY_PER_WIN
-        days_since_cutoff = (current_time_utc - cutoff_date).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = emission_time_decay_fraction(days_since_cutoff)
-
-        logger.debug(
-            f"Pre-cutoff champion: old_decay={old_decay:.4f}, new_decay={new_decay:.4f}, will apply hybrid logic downstream"
-        )
-        return (old_decay, new_decay, True)
-    else:
-        # Champion won AFTER cutoff - only new time-based decay
-        days_as_champion = (current_time_utc - first_championship_time_utc).total_seconds() / cts.SECONDS_PER_DAY
-        new_decay = emission_time_decay_fraction(days_as_champion)
-        logger.debug(f"Post-cutoff champion: new_decay={new_decay:.4f} (reign={days_as_champion:.1f} days)")
-        return (0.0, new_decay, False)
 
 
 def get_max_weight_by_tournament_type(tournament_type: TournamentType) -> float:
@@ -337,122 +237,48 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         f"(perf_diff={environment_performance_diff})"
     )
 
-    text_consecutive_wins = 0
-    image_consecutive_wins = 0
-    environment_consecutive_wins = 0
-
-    latest_text_tournament = await get_latest_completed_tournament(psql_db, TournamentType.TEXT)
-    text_old_decay, text_new_decay, apply_hybrid_to_text = 0.0, 0.0, False
-    text_champion_hotkey = get_real_tournament_winner(latest_text_tournament)
-    if text_champion_hotkey:
-        text_consecutive_wins = await count_champion_consecutive_wins(psql_db, TournamentType.TEXT, text_champion_hotkey)
-        first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.TEXT, text_champion_hotkey)
-
-        text_old_decay, text_new_decay, apply_hybrid_to_text = calculate_hybrid_decays(
-            first_win_tournament.updated_at, text_consecutive_wins
-        )
-        logger.info(
-            f"Text champion {text_champion_hotkey[:8]}... has {text_consecutive_wins} consecutive wins, "
-            f"first won at {first_win_tournament.updated_at}, "
-            f"old_decay={text_old_decay:.4f}, new_decay={text_new_decay:.4f}, apply_hybrid={apply_hybrid_to_text}"
-        )
-
-    latest_image_tournament = await get_latest_completed_tournament(psql_db, TournamentType.IMAGE)
-    image_old_decay, image_new_decay, apply_hybrid_to_image = 0.0, 0.0, False
-    image_champion_hotkey = get_real_tournament_winner(latest_image_tournament)
-    if image_champion_hotkey:
-        image_consecutive_wins = await count_champion_consecutive_wins(psql_db, TournamentType.IMAGE, image_champion_hotkey)
-        first_win_tournament = await get_tournament_where_champion_first_won(psql_db, TournamentType.IMAGE, image_champion_hotkey)
-
-        image_old_decay, image_new_decay, apply_hybrid_to_image = calculate_hybrid_decays(
-            first_win_tournament.updated_at, image_consecutive_wins
-        )
-        logger.info(
-            f"Image champion {image_champion_hotkey[:8]}... has {image_consecutive_wins} consecutive wins, "
-            f"first won at {first_win_tournament.updated_at}, "
-            f"old_decay={image_old_decay:.4f}, new_decay={image_new_decay:.4f}, apply_hybrid={apply_hybrid_to_image}"
-        )
-
-    text_tournament_weight = calculate_tournament_weight_with_decay(
+    # No time decay: a champion's pool is simply base + performance boost, capped. Champion and
+    # runners-up are paid from this SAME per-type pool (no separate, smaller "champion" pool) -
+    # the rank-decline fractions from get_boss_round_pair_weights already sum to 1.0 within a
+    # type, so paying every rank from one pool distributes it fully with nothing left over.
+    text_weight = calculate_tournament_weight(
         tournament_type=TournamentType.TEXT,
         base_weight=text_base_weight,
         emission_boost=text_innovation_incentive,
-        old_decay=text_old_decay,
-        new_decay=text_new_decay,
-        apply_hybrid=apply_hybrid_to_text,
         max_weight=cts.MAX_TEXT_TOURNAMENT_WEIGHT,
     )
-
-    image_tournament_weight = calculate_tournament_weight_with_decay(
+    image_weight = calculate_tournament_weight(
         tournament_type=TournamentType.IMAGE,
         base_weight=image_base_weight,
         emission_boost=image_innovation_incentive,
-        old_decay=image_old_decay,
-        new_decay=image_new_decay,
-        apply_hybrid=apply_hybrid_to_image,
         max_weight=cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
     )
-
-    latest_environment_tournament = await get_latest_completed_tournament(psql_db, TournamentType.ENVIRONMENT)
-    environment_old_decay, environment_new_decay, apply_hybrid_to_environment = 0.0, 0.0, False
-    environment_champion_hotkey = get_real_tournament_winner(latest_environment_tournament)
-    if environment_champion_hotkey:
-        environment_consecutive_wins = await count_champion_consecutive_wins(
-            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
-        )
-        first_win_tournament = await get_tournament_where_champion_first_won(
-            psql_db, TournamentType.ENVIRONMENT, environment_champion_hotkey
-        )
-
-        environment_old_decay, environment_new_decay, apply_hybrid_to_environment = calculate_hybrid_decays(
-            first_win_tournament.updated_at, environment_consecutive_wins
-        )
-        logger.info(
-            f"Environment champion {environment_champion_hotkey[:8]}... has {environment_consecutive_wins} consecutive wins, "
-            f"first won at {first_win_tournament.updated_at}, "
-            f"old_decay={environment_old_decay:.4f}, new_decay={environment_new_decay:.4f}, "
-            f"apply_hybrid={apply_hybrid_to_environment}"
-        )
-
-    environment_tournament_weight = calculate_tournament_weight_with_decay(
+    environment_weight = calculate_tournament_weight(
         tournament_type=TournamentType.ENVIRONMENT,
         base_weight=environment_base_weight,
         emission_boost=environment_innovation_incentive,
-        old_decay=environment_old_decay,
-        new_decay=environment_new_decay,
-        apply_hybrid=apply_hybrid_to_environment,
         max_weight=cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
     )
 
-    # With a dynamic base plus a uniform 0.50 cap the three boosted weights could, in an extreme
-    # all-oversubscribed-and-all-innovating case, sum past 1.0. Scale the winner AND base weights
-    # back together so the tournament pool never exceeds 1.0 (burn floors at 0, ordering preserved).
-    tournament_weight_sum = text_tournament_weight + image_tournament_weight + environment_tournament_weight
-    if tournament_weight_sum > 1.0:
-        logger.warning(
-            f"Tournament weights sum to {tournament_weight_sum:.4f} > 1.0; scaling back to keep burn >= 0"
-        )
-        scale = 1.0 / tournament_weight_sum
-        text_tournament_weight *= scale
-        image_tournament_weight *= scale
-        environment_tournament_weight *= scale
-        text_base_weight *= scale
-        image_base_weight *= scale
-        environment_base_weight *= scale
+    # No burn: the three type pools always fill the entire emission pie, scaled up OR down as
+    # needed (previously this only ever scaled down, leaving a burn remainder).
+    weight_sum = text_weight + image_weight + environment_weight
+    if weight_sum > 0:
+        scale = 1.0 / weight_sum
+        text_weight *= scale
+        image_weight *= scale
+        environment_weight *= scale
 
-    burn_weight = 1.0 - text_tournament_weight - image_tournament_weight - environment_tournament_weight
-
-    text_burn_proportion = (cts.MAX_TEXT_TOURNAMENT_WEIGHT - text_tournament_weight) / cts.MAX_TEXT_TOURNAMENT_WEIGHT
-    image_burn_proportion = (cts.MAX_IMAGE_TOURNAMENT_WEIGHT - image_tournament_weight) / cts.MAX_IMAGE_TOURNAMENT_WEIGHT
+    text_burn_proportion = (cts.MAX_TEXT_TOURNAMENT_WEIGHT - text_weight) / cts.MAX_TEXT_TOURNAMENT_WEIGHT
+    image_burn_proportion = (cts.MAX_IMAGE_TOURNAMENT_WEIGHT - image_weight) / cts.MAX_IMAGE_TOURNAMENT_WEIGHT
     environment_burn_proportion = (
-        cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_tournament_weight
+        cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT - environment_weight
     ) / cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT
 
     logger.info(
-        f"Weights - Text tournament: {text_tournament_weight}, Image tournament: {image_tournament_weight}, "
-        f"Environment tournament: {environment_tournament_weight}"
+        f"Weights (normalized, no burn) - Text: {text_weight}, Image: {image_weight}, "
+        f"Environment: {environment_weight}"
     )
-    logger.info(f"Total burn weight: {burn_weight}")
 
     return TournamentBurnData(
         text_performance_diff=text_performance_diff,
@@ -461,13 +287,13 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         text_burn_proportion=text_burn_proportion,
         image_burn_proportion=image_burn_proportion,
         environment_burn_proportion=environment_burn_proportion,
-        text_tournament_weight=text_tournament_weight,
-        image_tournament_weight=image_tournament_weight,
-        environment_tournament_weight=environment_tournament_weight,
-        text_base_weight=text_base_weight,
-        image_base_weight=image_base_weight,
-        environment_base_weight=environment_base_weight,
-        burn_weight=burn_weight,
+        text_tournament_weight=text_weight,
+        image_tournament_weight=image_weight,
+        environment_tournament_weight=environment_weight,
+        text_base_weight=text_weight,
+        image_base_weight=image_weight,
+        environment_base_weight=environment_weight,
+        burn_weight=0.0,
     )
 
 

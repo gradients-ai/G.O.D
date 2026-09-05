@@ -320,10 +320,11 @@ class TestExponentialDeclineMapping:
         for i in range(len(weights) - 1):
             assert weights[i] >= weights[i + 1]
 
-    def test_only_top_two_ranks_paid(self):
-        assert exponential_decline_mapping(5, 1) == pytest.approx(0.8)
-        assert exponential_decline_mapping(5, 2) == pytest.approx(0.2)
-        assert exponential_decline_mapping(5, 3) == 0.0
+    def test_only_top_three_ranks_paid(self):
+        assert exponential_decline_mapping(5, 1) == pytest.approx(16 / 21)
+        assert exponential_decline_mapping(5, 2) == pytest.approx(4 / 21)
+        assert exponential_decline_mapping(5, 3) == pytest.approx(1 / 21)
+        assert exponential_decline_mapping(5, 4) == 0.0
         assert exponential_decline_mapping(5, 5) == 0.0
 
     def test_single_participant(self):
@@ -840,6 +841,104 @@ class TestGetBossRoundPairWeights:
         weights = get_boss_round_pair_weights(data)
 
         assert weights == {cts.EMISSION_BURN_HOTKEY: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+
+
+class TestGetBossRoundPairWeightsThirdPlace:
+    """final_positions carrying a clean rank 3 pays it out, renormalized over 3 ranks;
+    absent or degenerate rank 3 falls back to today's top-2-only renormalization."""
+
+    def _tournament_with_positions(self, final_positions: dict[str, int], winner_hotkey: str, base_winner_hotkey=None):
+        return TournamentResultsWithWinners(
+            tournament_id="t",
+            rounds=[],
+            winner_hotkey=winner_hotkey,
+            base_winner_hotkey=base_winner_hotkey,
+            final_positions=final_positions,
+        )
+
+    def test_valid_third_place_paid_and_renormalized_over_three(self):
+        data = self._tournament_with_positions(
+            {BOSS: 1, CHALLENGER: 2, DAVE: 3}, winner_hotkey=BOSS, base_winner_hotkey=BOSS
+        )
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights == {
+            BOSS: pytest.approx(16 / 21),
+            CHALLENGER: pytest.approx(4 / 21),
+            DAVE: pytest.approx(1 / 21),
+        }
+        assert sum(weights.values()) == pytest.approx(1.0)
+
+    def test_champion_and_challenger_same_hotkey_sums_not_reindexes(self):
+        """Regression: the defending champion's hotkey can also be the literal bracket entry
+        that fought through as boss-round challenger (real production case, image tournament
+        tourn_6fc87d43d3a35dc7_20260831). That hotkey must get the SUM of rank1+rank2's
+        weights, not get reindexed down to a lone rank-1-of-2 while DAVE inherits rank-2's
+        share it never earned."""
+        data = self._tournament_with_positions(
+            {cts.EMISSION_BURN_HOTKEY: 1, CHALLENGER: 2, DAVE: 3},
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=CHALLENGER,
+        )
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights == {
+            CHALLENGER: pytest.approx(16 / 21 + 4 / 21),
+            DAVE: pytest.approx(1 / 21),
+        }
+        assert sum(weights.values()) == pytest.approx(1.0)
+
+    def test_champion_and_challenger_same_hotkey_no_third_place_pays_full_pool(self):
+        """Same collision, but with no valid #3 - matches today's top-2-only behavior exactly."""
+        data = self._tournament_with_positions(
+            {cts.EMISSION_BURN_HOTKEY: 1, CHALLENGER: 2},
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=CHALLENGER,
+        )
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights == {CHALLENGER: pytest.approx(1.0)}
+
+    def test_no_third_place_falls_back_to_top_two_renormalized(self):
+        """Only positions 1/2 written (no valid #3 identified) -> unchanged 80/20 split."""
+        data = self._tournament_with_positions({BOSS: 1, CHALLENGER: 2}, winner_hotkey=BOSS, base_winner_hotkey=BOSS)
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
+
+    def test_third_place_burn_placeholder_resolves_to_base_winner(self):
+        data = self._tournament_with_positions(
+            {cts.EMISSION_BURN_HOTKEY: 1, CHALLENGER: 2, DAVE: 3},
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=BOSS,
+        )
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights[BOSS] == pytest.approx(16 / 21)
+        assert weights[DAVE] == pytest.approx(1 / 21)
+        assert cts.EMISSION_BURN_HOTKEY not in weights
+
+    def test_legacy_fallback_still_capped_at_two_ranks(self):
+        """Regression: with TOURNAMENT_PAID_RANKS bumped to 3, the legacy fallback path
+        (final_positions empty, deriving finalists from raw final-round task participants -
+        which for ENVIRONMENT can list more than 2 hotkeys) must still pay only 2, since it
+        has no verified positional data to trust a 3rd place from."""
+        data = _boss_round_tournament(
+            final_participants=[cts.EMISSION_BURN_HOTKEY, CHALLENGER, DAVE],
+            winner_hotkey=cts.EMISSION_BURN_HOTKEY,
+            base_winner_hotkey=BOSS,
+        )
+
+        weights = get_boss_round_pair_weights(data)
+
+        assert weights[BOSS] == pytest.approx(0.8)
+        assert weights[CHALLENGER] == pytest.approx(0.2)
+        assert weights[DAVE] == 0.0
 
 
 class TestBossRoundEmissionsProductionPath:
