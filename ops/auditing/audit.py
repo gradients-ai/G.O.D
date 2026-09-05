@@ -136,6 +136,7 @@ async def main():
     if uid is None:
         raise ValueError(f"Can't find hotkey {config.keypair.ss58_address} for our keypair on netuid: {config.netuid}.")
 
+    consecutive_failures = 0
     while True:
         substrate, current_block = query_substrate(substrate, "System", "Number", [], return_value=True)
         substrate, last_updated_value = query_substrate(
@@ -155,9 +156,21 @@ async def main():
             await asyncio.sleep(sleep_duration)
             continue
 
-        success = await audit_weights(config)
+        try:
+            success = await audit_weights(config)
+        except Exception as e:
+            logger.error(f"Failed to audit and set weights: {e}")
+            logger.exception(e)
+            success = False
+
         if success:
-            break
+            consecutive_failures = 0
+            logger.info("Successfully audited and set weights! Sleeping for 25 blocks before next check...")
+            await asyncio.sleep(12 * 25)
+        else:
+            consecutive_failures += 1
+            logger.info(f"Failed to audit and set weights {consecutive_failures} times in a row - sleeping for a bit...")
+            await asyncio.sleep(12 * 25)
 
 
 if __name__ == "__main__":
