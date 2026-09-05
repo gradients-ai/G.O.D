@@ -468,11 +468,9 @@ Anchor base and cap weights in `validator/scoring/constants.py`. The base per ty
 
 | Tournament type | Anchor base weight | Max weight |
 | --- | --- | --- |
-| Text | 0.50 | 0.50 |
+| Text | 0.35 | 0.50 |
 | Image | 0.25 | 0.50 |
 | Environment | 0.25 | 0.50 |
-
-Text's anchor sits at its own cap, so a text champion's performance boost (below) has no headroom to add anything until the balancer or a future cap change makes room.
 
 Active tournament participants receive `0.0001` weight each.
 
