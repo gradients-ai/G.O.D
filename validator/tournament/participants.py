@@ -1,3 +1,5 @@
+from collections import Counter
+
 import aiohttp
 
 from core.datasets.whitelist import validate_requested_datasets
@@ -19,6 +21,7 @@ from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentType
+from validator.tournament.round_results import _resolve_knockout_task_winner
 
 
 logger = get_logger(__name__)
@@ -46,9 +49,14 @@ async def get_pre_boss_knockout_loser(
 
     Only returns a hotkey when the pre-boss round is unambiguous: exactly one
     KNOCKOUT round immediately preceding the final round, with exactly one pair
-    and a decided winner_hotkey, and - for TEXT tournaments - every task in that
-    round pinned to PRE_BOSS_MODEL. Anything less structurally clean returns None
-    so the caller falls back to top-2-only payout.
+    and a decided winner, and - for TEXT tournaments - every task in that round
+    pinned to PRE_BOSS_MODEL. Anything less structurally clean returns None so
+    the caller falls back to top-2-only payout.
+
+    The pair's winner is resolved from its tasks via ``_resolve_knockout_task_winner``
+    (majority across tasks if there's more than one) rather than read off
+    ``tournament_pairs.winner_hotkey`` - nothing in the tournament pipeline ever
+    writes that column, so it is always NULL.
     """
     rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     pre_boss = next((r for r in rounds if r.round_number == final_round.round_number - 1), None)
@@ -58,20 +66,26 @@ async def get_pre_boss_knockout_loser(
     pairs = await get_tournament_pairs(pre_boss.round_id, psql_db)
     if len(pairs) != 1:
         return None
-
     pair = pairs[0]
-    if not pair.winner_hotkey or pair.winner_hotkey not in (pair.hotkey1, pair.hotkey2):
+
+    round_tasks = await get_tournament_tasks(pre_boss.round_id, psql_db)
+    pair_tasks = [task for task in round_tasks if task.pair_id == pair.pair_id]
+    if not pair_tasks:
         return None
 
-    loser = pair.hotkey2 if pair.winner_hotkey == pair.hotkey1 else pair.hotkey1
-    if loser in (EMISSION_BURN_HOTKEY, challenger_hotkey, pair.winner_hotkey):
+    task_winners = [w for w in [await _resolve_knockout_task_winner(task, psql_db) for task in pair_tasks] if w]
+    if not task_winners:
+        return None
+    winner_hotkey = Counter(task_winners).most_common(1)[0][0]
+    if winner_hotkey not in (pair.hotkey1, pair.hotkey2):
+        return None
+
+    loser = pair.hotkey2 if winner_hotkey == pair.hotkey1 else pair.hotkey1
+    if loser in (EMISSION_BURN_HOTKEY, challenger_hotkey, winner_hotkey):
         return None
 
     if tournament.tournament_type == TournamentType.TEXT:
-        round_tasks = await get_tournament_tasks(pre_boss.round_id, psql_db)
-        if not round_tasks:
-            return None
-        tasks_full = [await get_task(task.task_id, psql_db) for task in round_tasks]
+        tasks_full = [await get_task(task.task_id, psql_db) for task in pair_tasks]
         if not all(task and is_pre_boss_task(task) for task in tasks_full):
             return None
 
