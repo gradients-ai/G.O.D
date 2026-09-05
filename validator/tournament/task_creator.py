@@ -179,7 +179,16 @@ def _select_r1_env_names(
     seen = [env for env in all_envs if env in seen_last_tournament]
     random.shuffle(unseen)
     random.shuffle(seen)
-    return (unseen + seen)[:num_envs]
+    ordered = unseen + seen
+
+    # FORCED_R1_ENVIRONMENT always plays in round 1: pull it to the front before truncating to
+    # num_envs, rather than leaving it to chance in the unseen/seen shuffle above.
+    forced = t_cst.FORCED_R1_ENVIRONMENT
+    if forced is not None and forced in ordered:
+        ordered.remove(forced)
+        ordered.insert(0, forced)
+
+    return ordered[:num_envs]
 
 
 async def _get_prev_tourn_winner_model(tournament_id: str, config: Config) -> str:
@@ -866,7 +875,11 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
     logger.info("Creating boss round text tasks using new synthetic tasks")
 
     standard_models = _get_text_models(config.keypair)
-    big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
+    large_instruct_models = _get_text_models(
+        config.keypair,
+        smallest_size_b=t_cst.BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B,
+        largest_size_b=t_cst.BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B,
+    )
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
@@ -887,7 +900,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
             existing_task_type_counts[task_type_value] = existing_task_type_counts.get(task_type_value, 0) + 1
         tasks.append(task_obj)
 
-    # Fixed mix: 2 instruct + 1 dpo + 1 grpo (FINAL_ROUND_TEXT_TASK_DISTRIBUTION) + continuous-SFT.
+    # Fixed mix: 3 instruct + 1 dpo + 1 grpo (FINAL_ROUND_TEXT_TASK_DISTRIBUTION) + continuous-SFT.
     # Continuous-SFT is excluded: its model is the carried lineage winner.
     pending_slots: list[TaskType] = []
     for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
@@ -898,16 +911,24 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
     oversampled_remaining = max(0, t_cst.FINAL_ROUND_OVERSAMPLED_TASKS - existing_oversampled)
     oversampled_type_counts = _oversampled_boss_task_type_counts(round_id, pending_slots, oversampled_remaining)
 
+    instruct_target = t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.get(TaskType.INSTRUCTTEXTTASK, 0)
     for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
         already = existing_task_type_counts.get(task_type.value, 0)
-        for _ in range(target_count - already):
-            models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
+        for slot_index in range(already, target_count):
+            # The last instruct-text slot is always a large (35B+) model, not the usual
+            # standard/big-pool probability draw, and isn't eligible for the oversampled
+            # override below since that model pool isn't guaranteed to be large.
+            is_forced_large_instruct = task_type == TaskType.INSTRUCTTEXTTASK and slot_index == instruct_target - 1
             model_id_override = None
-            remaining_for_type = oversampled_type_counts.get(task_type, 0)
-            if remaining_for_type > 0:
-                model_id_override = sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
-                oversampled_type_counts[task_type] = remaining_for_type - 1
-                logger.info(f"Boss round {task_type.value} task uses oversampled later model {model_id_override}")
+            if is_forced_large_instruct:
+                models = large_instruct_models
+            else:
+                models = standard_models
+                remaining_for_type = oversampled_type_counts.get(task_type, 0)
+                if remaining_for_type > 0:
+                    model_id_override = sample_oversampled_later_model(random.Random(f"{round_id}:oversampled_model"))
+                    oversampled_type_counts[task_type] = remaining_for_type - 1
+                    logger.info(f"Boss round {task_type.value} task uses oversampled later model {model_id_override}")
             task = await _create_single_new_text_task(
                 task_type,
                 tournament_id,
@@ -965,7 +986,6 @@ async def create_boss_round_decider_tasks(
     On failure the partial batch is deleted so the count is restored and the next cycle starts clean.
     """
     standard_models = _get_text_models(config.keypair)
-    big_models = _get_text_models(config.keypair, smallest_size_b=12.0, largest_size_b=71.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
     pair_id = f"{round_id}_pair_001"
@@ -973,7 +993,7 @@ async def create_boss_round_decider_tasks(
     tasks: list[RawTask] = []
     try:
         for task_type in decider_task_types:
-            models = big_models if random.random() < t_cst.PROBABILITY_OF_A_BIG_TEXT_MODEL else standard_models
+            models = standard_models
             logger.info(f"Creating {task_type.value} boss-round decider")
             task = await _create_single_new_text_task(
                 task_type, tournament_id, round_id, pair_id, config, models, instruct_datasets, dpo_datasets

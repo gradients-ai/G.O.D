@@ -412,7 +412,7 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 - Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
 - **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
 - The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) always plays a single instruct task on a forced model: `PRE_BOSS_MODEL` (currently `Qwen/Qwen3-32B`), with augmentation, KL and YaRN disabled so both competitors train the exact published model.
-- The final boss round creates 5 tasks: 2 instruct, 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen3-14b`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run). Some final tasks may use larger models.
+- The final boss round creates 6 tasks: 3 instruct (one of which always trains a large model, between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (35B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (71B)), 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen3-14b`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run).
 - **Boss-round instruct, DPO and continuous-SFT (chat) tasks are decided per held-out sample.** Both models are scored on the identical held-out set and compared sample by sample. To take a task the challenger must clear **both** of:
   - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
   - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.01 nats, the same value as the tie dead zone, that scales to 1% of the loss above a boss loss of 1.0 so it is never a weaker requirement than the old margin.
@@ -425,7 +425,7 @@ Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
 
   If *every* sample falls inside the dead zone the two models are indistinguishable on that task and it is recorded as a **draw**, not as a win for the defending champion. The defender still holds the task for the purposes of the win count, but no one outperformed anyone.
 - **GRPO boss-round tasks** keep the previous rule: beat the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative rewards).
-- The challenger must win at least 4 of the 5 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
+- The challenger must win at least 5 of the 6 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
 
 For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
 
@@ -450,7 +450,7 @@ Environment tournaments use `EnvTask` and PvP or environment-specific evaluation
 - Participants are split into groups of 2 to 6.
 - The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
 - Non-final rounds create one environment task per group.
-- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments.
+- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments. `intercode` is always one of round 1's environments (`FORCED_R1_ENVIRONMENT`).
 - Round 2 and later can continue from each miner's previous-round model.
 - Up to one non-boss winner advances per group, with ties at the cutoff allowed.
 - If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
@@ -527,6 +527,8 @@ Rules for environment tournaments:
 - Do not bundle your own dataset in the Docker image.
 - Do not bundle a pretrained model in the Docker image.
 - SFT is allowed only with whitelisted requested datasets or with self-generated data.
+- You must actually train the model. Submitting an untrained or only superficially modified base model does not count as training.
+- Do not embed a solver in the resulting model — its chat template or anywhere else in the submitted model — to bypass the environment instead of the model actually solving it. This results in disqualification.
 
 ## Image Tournament Tips
 

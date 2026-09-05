@@ -114,6 +114,9 @@ ENV_TARGET_TOURN_MODEL = "gradients-io-tournaments/swe-base-qwen3-8b-continuous"
 # If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
 # Set to None to let any game randomly be the boss round.
 FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
+# If set, guarantees this game is one of round 1's environments (all groups share round 1's
+# environment set). Set to None to let round 1's environments be picked without any forcing.
+FORCED_R1_ENVIRONMENT: EnvironmentName | None = EnvironmentName.INTERCODE
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
@@ -156,13 +159,18 @@ FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
 }
 
 # Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
+# One of the 3 instruct-text tasks is always forced onto a large model (see
+# BOSS_ROUND_LARGE_INSTRUCT_MIN/MAX_SIZE_B below); the other tasks draw from the standard pool.
 FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
-    TaskType.INSTRUCTTEXTTASK: 2,
+    TaskType.INSTRUCTTEXTTASK: 3,
     TaskType.DPOTASK: 1,
     TaskType.GRPOTASK: 1,
 }
 
-PROBABILITY_OF_A_BIG_TEXT_MODEL = 0.2
+# One boss-round instruct-text task is always forced onto a model in this size band,
+# instead of the normal standard-pool draw.
+BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 35.0
+BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 71.0
 # Number of boss-round text tasks (from FINAL_ROUND_TEXT_TASK_DISTRIBUTION) to force onto
 # OVERSAMPLED_LATER_MODELS. Set to 0 to disable without removing the wiring.
 FINAL_ROUND_OVERSAMPLED_TASKS = 0
