@@ -316,8 +316,8 @@ class TestSeparatedBurnDynamics:
     @pytest.mark.asyncio
     async def test_no_champions_scales_anchor_split_up_to_one(self, mock_psql_db):
         """With no tournament history anywhere, each type falls back to its static anchor
-        (0.35/0.25/0.25 = 0.85 raw) - these must scale UP to sum to exactly 1.0, not leave
-        0.15 unspent as burn. Ratios between types are preserved."""
+        (0.50/0.25/0.25 = 1.0 raw) - these must scale UP to sum to exactly 1.0, not leave
+        anything unspent as burn. Ratios between types are preserved."""
         with (
             patch("validator.scoring.weights.get_latest_completed_tournament", return_value=None),
         ):

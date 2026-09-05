@@ -31,7 +31,7 @@ MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.50
 # Anchor base split (text / image / env). These are the *neutral* bases used when
 # participation is balanced across the anchor ratio; they double as the fallback base
 # for a type with no completed-tournament history. Their sum is the balancer pool.
-TOURNAMENT_TEXT_WEIGHT = 0.35
+TOURNAMENT_TEXT_WEIGHT = 0.50
 TOURNAMENT_IMAGE_WEIGHT = 0.25
 TOURNAMENT_ENVIRONMENT_WEIGHT = 0.25
 
