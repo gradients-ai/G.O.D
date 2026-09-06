@@ -11,8 +11,57 @@ import trainer.constants as cst
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
 from core.models.trainer_contract_models import GPUInfo
+from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
 from trainer.job_state import get_running_jobs
+
+
+def _gpu_has_nvlink(pynvml, handle) -> bool:
+    """Return True if any NVLink link is enabled. Older pynvml builds may lack these APIs."""
+    get_state = getattr(pynvml, "nvmlDeviceGetNvLinkState", None)
+    if get_state is None:
+        return False
+    max_links = getattr(pynvml, "NVML_NVLINK_MAX_LINKS", 18)
+    enabled = getattr(pynvml, "NVML_FEATURE_ENABLED", 1)
+    for link in range(max_links):
+        try:
+            if get_state(handle, link) == enabled:
+                return True
+        except Exception:
+            # Links past the device's max raise; stop scanning.
+            break
+    return False
+
+
+def _detect_interconnect(pynvml, handle, product_name: str) -> tuple[GPUInterconnect, bool]:
+    """Infer SXM / PCIe / NVL from product name, multi-GPU board bit, and NVLink state.
+
+    Product names usually encode the form factor (e.g. "H100 PCIe", "H100 NVL",
+    "A100-SXM4-80GB"). Plain "H100 80GB HBM3" on NVLink is typically SXM/HGX.
+    """
+    upper = product_name.upper()
+    has_nvlink = _gpu_has_nvlink(pynvml, handle)
+
+    multi_gpu_board = False
+    try:
+        multi_gpu_board = bool(pynvml.nvmlDeviceGetMultiGpuBoard(handle))
+    except Exception:
+        pass
+
+    if "NVL" in upper or multi_gpu_board:
+        return GPUInterconnect.NVL, has_nvlink
+    if "PCIE" in upper or "PCI-E" in upper:
+        return GPUInterconnect.PCIE, has_nvlink
+    if "SXM" in upper:
+        return GPUInterconnect.SXM, has_nvlink
+    # H100 SXM usually reports as "NVIDIA H100 80GB HBM3" (no "SXM"/"PCIe" token).
+    if "H100" in upper and "HBM3" in upper:
+        return GPUInterconnect.SXM, has_nvlink
+    if has_nvlink:
+        return GPUInterconnect.SXM, has_nvlink
+    if "H100" in upper or "A100" in upper:
+        return GPUInterconnect.PCIE, has_nvlink
+    return GPUInterconnect.UNKNOWN, has_nvlink
 
 
 def clone_repo(
@@ -72,11 +121,15 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
 
     index_to_type: dict[int, GPUType] = {}
     index_to_vram: dict[int, int] = {}
+    index_to_product_name: dict[int, str] = {}
+    index_to_interconnect: dict[int, GPUInterconnect] = {}
+    index_to_nvlink: dict[int, bool] = {}
 
     for i in range(device_count):
         handle = pynvml.nvmlDeviceGetHandleByIndex(i)
         raw_name = pynvml.nvmlDeviceGetName(handle)
-        name = (raw_name.decode("utf-8") if isinstance(raw_name, bytes) else raw_name).upper()
+        product_name = raw_name.decode("utf-8") if isinstance(raw_name, bytes) else raw_name
+        name = product_name.upper()
         mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
         total_vram_gb = int(mem_info.total / 1024 / 1024 / 1024)
 
@@ -84,6 +137,10 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
             if gpu_type.value in name:
                 index_to_type[i] = gpu_type
                 index_to_vram[i] = total_vram_gb
+                index_to_product_name[i] = product_name
+                interconnect, has_nvlink = _detect_interconnect(pynvml, handle, product_name)
+                index_to_interconnect[i] = interconnect
+                index_to_nvlink[i] = has_nvlink
                 break
 
     busy_gpu_ids: set[int] = set()
@@ -104,6 +161,9 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
             gpu_type=index_to_type[gpu_id],
             vram_gb=index_to_vram[gpu_id],
             available=gpu_id not in busy_gpu_ids,
+            product_name=index_to_product_name[gpu_id],
+            interconnect=index_to_interconnect[gpu_id],
+            nvlink=index_to_nvlink[gpu_id],
         )
         gpu_infos.append(gpu_info)
 

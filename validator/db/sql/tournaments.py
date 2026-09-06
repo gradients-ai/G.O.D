@@ -7,6 +7,7 @@ import validator.db.constants as cst
 from core.logging import get_logger
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
+from core.models.trainer_contract_models import GPUInterconnect
 from validator.db.database import PSQLDB
 from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
@@ -223,7 +224,6 @@ async def enroll_tournament_participant_with_fee(
     try:
         async with await psql_db.connection() as connection:
             async with connection.transaction():
-                # Serialize enrollments for this coldkey so two hotkeys cannot race in.
                 await connection.fetchrow(
                     """
                     SELECT coldkey
@@ -695,10 +695,9 @@ async def update_tournament_placements(
     tournament_id: str,
     winner_hotkey: str,
     second_place_hotkey: str | None,
-    third_place_hotkey: str | None,
     psql_db: PSQLDB,
 ) -> None:
-    """Persist official top-three positions without rewriting match history."""
+    """Persist official top-two positions without rewriting match history."""
     async with await psql_db.connection() as connection:
         async with connection.transaction():
             await connection.execute(
@@ -716,7 +715,6 @@ async def update_tournament_placements(
                 SET {cst.FINAL_POSITION} = CASE
                     WHEN {cst.HOTKEY} = $2 THEN 1
                     WHEN {cst.HOTKEY} = $3 THEN 2
-                    WHEN {cst.HOTKEY} = $4 THEN 3
                     ELSE NULL
                 END
                 WHERE {cst.TOURNAMENT_ID} = $1
@@ -724,11 +722,9 @@ async def update_tournament_placements(
                 tournament_id,
                 winner_hotkey,
                 second_place_hotkey,
-                third_place_hotkey,
             )
     logger.info(
-        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, "
-        f"second={second_place_hotkey}, third={third_place_hotkey}"
+        f"Updated tournament {tournament_id} placements: winner={winner_hotkey}, second={second_place_hotkey}"
     )
 
 
@@ -927,12 +923,16 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
 
             insert_query = f"""
                 INSERT INTO {cst.TRAINERS_GPUS_TABLE}
-                ({cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL})
-                VALUES ($1, $2, $3, $4, $5)
+                ({cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL},
+                 {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK})
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 ON CONFLICT ({cst.TRAINER_IP}, {cst.GPU_ID}) DO UPDATE SET
                     {cst.GPU_TYPE} = EXCLUDED.{cst.GPU_TYPE},
                     {cst.VRAM_GB} = EXCLUDED.{cst.VRAM_GB},
                     {cst.USED_UNTIL} = EXCLUDED.{cst.USED_UNTIL},
+                    {cst.PRODUCT_NAME} = EXCLUDED.{cst.PRODUCT_NAME},
+                    {cst.INTERCONNECT} = EXCLUDED.{cst.INTERCONNECT},
+                    {cst.NVLINK} = EXCLUDED.{cst.NVLINK},
                     {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             """
 
@@ -942,7 +942,15 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
                     used_until = datetime.now(timezone.utc) + timedelta(hours=48)
 
                 await connection.execute(
-                    insert_query, trainer_ip, gpu_info.gpu_id, gpu_info.gpu_type, gpu_info.vram_gb, used_until
+                    insert_query,
+                    trainer_ip,
+                    gpu_info.gpu_id,
+                    gpu_info.gpu_type,
+                    gpu_info.vram_gb,
+                    used_until,
+                    gpu_info.product_name,
+                    gpu_info.interconnect.value if hasattr(gpu_info.interconnect, "value") else gpu_info.interconnect,
+                    gpu_info.nvlink,
                 )
 
             logger.info(f"Added {len(gpu_infos)} GPUs for trainer {trainer_ip}")
@@ -965,7 +973,8 @@ async def get_trainers(psql_db: PSQLDB) -> list[TrainerInfo]:
     """Get all trainers and their GPU information from the database"""
     async with await psql_db.connection() as connection:
         query = f"""
-            SELECT {cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL}, {cst.UPDATED_AT}
+            SELECT {cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL}, {cst.UPDATED_AT},
+                   {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}
             FROM {cst.TRAINERS_GPUS_TABLE}
             ORDER BY {cst.TRAINER_IP}, {cst.GPU_ID}
         """
@@ -982,6 +991,12 @@ async def get_trainers(psql_db: PSQLDB) -> list[TrainerInfo]:
             used_until = row[cst.USED_UNTIL]
             available = used_until is None or used_until < datetime.now(timezone.utc)
 
+            interconnect_raw = row[cst.INTERCONNECT] or GPUInterconnect.UNKNOWN.value
+            try:
+                interconnect = GPUInterconnect(interconnect_raw)
+            except ValueError:
+                interconnect = GPUInterconnect.UNKNOWN
+
             trainers[trainer_ip].gpus.append(
                 GPUInfo(
                     gpu_id=row[cst.GPU_ID],
@@ -990,6 +1005,9 @@ async def get_trainers(psql_db: PSQLDB) -> list[TrainerInfo]:
                     available=available,
                     used_until=used_until,
                     updated_at=row[cst.UPDATED_AT],
+                    product_name=row[cst.PRODUCT_NAME],
+                    interconnect=interconnect,
+                    nvlink=bool(row[cst.NVLINK]),
                 )
             )
 

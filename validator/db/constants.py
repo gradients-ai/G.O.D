@@ -240,6 +240,9 @@ GPU_ID = "gpu_id"
 GPU_TYPE = "gpu_type"
 VRAM_GB = "vram_gb"
 USED_UNTIL = "used_until"
+PRODUCT_NAME = "product_name"
+INTERCONNECT = "interconnect"
+NVLINK = "nvlink"
 
 
 # Common Column Names (shared between tables)

@@ -5,6 +5,7 @@ from fastapi import HTTPException
 from fastapi import Response
 
 from core.logging import get_logger
+from core.models.trainer_contract_models import GPUInfo
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
@@ -26,17 +27,27 @@ GET_TRAINING_STATS_ENDPOINT = "/v1/tournament_orchestrator/training_stats"
 async def add_trainer(
     trainer_ip: str,
     config: Config = Depends(get_config),
-) -> Response:
+) -> list[GPUInfo]:
     """
     Add a trainer to the tournament system by fetching its GPU availability
     and storing the information in the database.
+
+    Returns the GPU list (including interconnect / product name) so callers can
+    see what was registered.
     """
     try:
         gpu_infos = await fetch_trainer_gpus(trainer_ip)
         await tournament_sql.add_trainer_gpus(trainer_ip, gpu_infos, config.psql_db)
 
-        logger.info(f"Successfully added trainer {trainer_ip} with {len(gpu_infos)} GPUs")
-        return Response(content="Trainer added successfully", status_code=200)
+        logger.info(
+            f"Successfully added trainer {trainer_ip} with {len(gpu_infos)} GPUs: "
+            + ", ".join(
+                f"#{g.gpu_id} {g.gpu_type.value}/{g.interconnect.value}"
+                f"{'+NVLink' if g.nvlink else ''}"
+                for g in gpu_infos
+            )
+        )
+        return gpu_infos
 
     except httpx.RequestError as e:
         logger.error(f"Failed to contact trainer {trainer_ip}: {str(e)}")

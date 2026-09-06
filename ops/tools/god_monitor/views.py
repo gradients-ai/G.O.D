@@ -460,14 +460,22 @@ def trainers_table(trainers) -> None:
     table = Table(title="Trainers / GPUs")
     table.add_column("Trainer IP", style="cyan", no_wrap=True)
     table.add_column("GPU", style="magenta")
+    table.add_column("Interconnect", style="blue")
     table.add_column("VRAM (GB)", justify="right")
     table.add_column("Available", justify="center")
     table.add_column("Used Until", style="yellow")
     for tr in trainers:
         for gpu in tr.gpus:
+            interconnect = getattr(gpu, "interconnect", None)
+            interconnect_label = (
+                interconnect.value if hasattr(interconnect, "value") else (interconnect or "unknown")
+            )
+            if getattr(gpu, "nvlink", False):
+                interconnect_label = f"{interconnect_label}+NVLink"
             table.add_row(
                 tr.trainer_ip,
                 f"{gpu.gpu_type} #{gpu.gpu_id}",
+                interconnect_label,
                 str(gpu.vram_gb),
                 "[green]yes[/green]" if gpu.available else "[red]no[/red]",
                 fmt_dt(gpu.used_until),
