@@ -1002,6 +1002,9 @@ class WeeklyTournamentGpuCostsResponse(BaseModel):
     first_tournament_started_at: datetime | None = None
     last_tournament_completed_at: datetime | None = None
     h100_8x_hourly_rate_usd: float
+    h100_sxm_8x_hourly_rate_usd: float = 34.4
+    h100_nvl_8x_hourly_rate_usd: float = 32.0
+    h100_other_8x_hourly_rate_usd: float = 29.0
     a100_hourly_rate_usd: float
     tao_price_usd: float | None = None
     totals: TournamentGpuCostTotals
