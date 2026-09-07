@@ -151,8 +151,41 @@ _HF_CONTAINER_ENV_BASE = {
     "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
     "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
 }
-HF_CONTAINER_ENV = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "1"}
-HF_CONTAINER_ENV_IMAGE = {**_HF_CONTAINER_ENV_BASE, "HF_HUB_ENABLE_HF_TRANSFER": "0"}
+
+
+def _hf_auth_env_from_host() -> dict[str, str]:
+    """Pass HF_READ_ONLY_TOKEN into Basilica/eval containers.
+
+    huggingface_hub authenticates via HF_TOKEN (or HUGGING_FACE_HUB_TOKEN). Our
+    evaluators also read HUGGINGFACE_TOKEN. Only the read-only token is used.
+    """
+    import os
+
+    token = (os.environ.get("HF_READ_ONLY_TOKEN") or "").strip()
+    if not token:
+        return {}
+    return {
+        "HF_TOKEN": token,
+        "HUGGING_FACE_HUB_TOKEN": token,
+        "HUGGINGFACE_TOKEN": token,
+    }
+
+
+def hf_container_env(*, enable_hf_transfer: bool = True) -> dict[str, str]:
+    return {
+        **_HF_CONTAINER_ENV_BASE,
+        "HF_HUB_ENABLE_HF_TRANSFER": "1" if enable_hf_transfer else "0",
+        **_hf_auth_env_from_host(),
+    }
+
+
+def __getattr__(name: str):
+    # Resolve at access time so .vali.env tokens loaded after import are picked up.
+    if name == "HF_CONTAINER_ENV":
+        return hf_container_env(enable_hf_transfer=True)
+    if name == "HF_CONTAINER_ENV_IMAGE":
+        return hf_container_env(enable_hf_transfer=False)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Eval-deployment reconciler: a live Basilica deployment with no backing eval row, or an
 # active eval row whose deployment is gone, must be older/staler than this grace window
