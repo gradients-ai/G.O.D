@@ -185,13 +185,20 @@ def calculate_weekly_costs(
     )
     billing_start = first_tournament_started_at or window_start
     provisioned_gpu_seconds = Decimal(0)
+    provisioned_cost = Decimal(0)
     for row in rows["capacity"]:
         if "H100" not in row["gpu_type"].upper():
             continue
         start = max(row["started_at"], billing_start)
         end = min(row["ended_at"] or window_end, window_end)
         if end > start:
-            provisioned_gpu_seconds += Decimal(str((end - start).total_seconds()))
+            gpu_seconds = Decimal(str((end - start).total_seconds()))
+            provisioned_gpu_seconds += gpu_seconds
+            provisioned_cost += (
+                gpu_seconds
+                * cost_constants.h100_hourly_usd_for_interconnect(row.get("interconnect"))
+                / Decimal(3600)
+            )
 
     attributed_h100_gpu_seconds = sum(
         Decimal(task[category]["gpu_seconds"])
@@ -229,10 +236,8 @@ def calculate_weekly_costs(
     )
     evaluation_cost = sum(Decimal(task["evaluation"]["cost_usd"]) for task in task_totals.values())
     idle_gpu_seconds = max(Decimal(0), provisioned_gpu_seconds - attributed_h100_gpu_seconds)
-    provisioned_cost = (
-        provisioned_gpu_seconds * cost_constants.H100_HOURLY_USD / Decimal(3600)
-    )
-    idle_cost = idle_gpu_seconds * cost_constants.H100_HOURLY_USD / Decimal(3600)
+    # Residual dollar cost after attributed training/prep (handles mixed interconnect rates).
+    idle_cost = max(Decimal(0), provisioned_cost - attributed_h100_cost)
 
     completed_times = [
         row["updated_at"] for row in tournament_rows.values() if str(row["status"]) == "completed"
@@ -245,6 +250,9 @@ def calculate_weekly_costs(
         first_tournament_started_at=first_tournament_started_at,
         last_tournament_completed_at=max(completed_times, default=None),
         h100_8x_hourly_rate_usd=float(cost_constants.H100_8X_HOURLY_USD),
+        h100_sxm_8x_hourly_rate_usd=float(cost_constants.H100_SXM_8X_HOURLY_USD),
+        h100_nvl_8x_hourly_rate_usd=float(cost_constants.H100_NVL_8X_HOURLY_USD),
+        h100_other_8x_hourly_rate_usd=float(cost_constants.H100_OTHER_8X_HOURLY_USD),
         a100_hourly_rate_usd=float(cost_constants.A100_HOURLY_USD),
         tao_price_usd=tao_price_usd,
         totals=TournamentGpuCostTotals(

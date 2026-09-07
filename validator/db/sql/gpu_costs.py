@@ -13,10 +13,10 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament import cost_constants
 
 
-def hourly_rate_for_gpu(gpu_type: str) -> Decimal:
+def hourly_rate_for_gpu(gpu_type: str, interconnect: str | None = None) -> Decimal:
     normalized = gpu_type.upper()
     if "H100" in normalized:
-        return cost_constants.H100_HOURLY_USD
+        return cost_constants.h100_hourly_usd_for_interconnect(interconnect)
     if "A100" in normalized:
         return cost_constants.A100_HOURLY_USD
     return Decimal(0)
@@ -34,6 +34,7 @@ async def start_cost_run(
     metadata: dict[str, Any] | None = None,
     started_at: datetime | None = None,
     run_id: UUID | None = None,
+    interconnect: str | None = None,
 ) -> bool:
     """Start a run, closing any stale run for the same logical work first."""
     if category not in cost_constants.COST_CATEGORIES:
@@ -71,6 +72,11 @@ async def start_cost_run(
             # A manual retry or restart may leave an old run open. Close it at
             # the new run's start so time is never double counted.
             await _finish_active_run(connection, run_key, False, started_at)
+            # Snapshot the interconnect into metadata so historical runs stay auditable.
+            run_metadata = dict(metadata or {})
+            if interconnect:
+                run_metadata.setdefault("interconnect", interconnect)
+
             run_id = await connection.fetchval(
                 """
                 INSERT INTO gpu_usage_runs
@@ -86,9 +92,9 @@ async def start_cost_run(
                 category,
                 gpu_type.upper(),
                 gpu_count,
-                hourly_rate_for_gpu(gpu_type),
+                hourly_rate_for_gpu(gpu_type, interconnect),
                 started_at,
-                metadata or {},
+                run_metadata,
             )
             return run_id is not None
 
@@ -233,7 +239,7 @@ async def reconcile_trainer_capacity(
     current = {gpu.gpu_id: gpu for gpu in gpu_infos}
     open_rows = await connection.fetch(
         """
-        SELECT id, gpu_id, gpu_type, vram_gb
+        SELECT id, gpu_id, gpu_type, vram_gb, interconnect
         FROM trainer_gpu_capacity_intervals
         WHERE trainer_ip = $1 AND ended_at IS NULL
         FOR UPDATE
@@ -242,9 +248,20 @@ async def reconcile_trainer_capacity(
     )
     open_by_gpu = {row["gpu_id"]: row for row in open_rows}
 
+    def _interconnect_value(gpu: GPUInfo) -> str:
+        interconnect = getattr(gpu, "interconnect", None)
+        if interconnect is None:
+            return "unknown"
+        return interconnect.value if hasattr(interconnect, "value") else str(interconnect)
+
     for gpu_id, row in open_by_gpu.items():
         gpu = current.get(gpu_id)
-        if gpu is None or gpu.gpu_type != row["gpu_type"] or gpu.vram_gb != row["vram_gb"]:
+        if (
+            gpu is None
+            or gpu.gpu_type != row["gpu_type"]
+            or gpu.vram_gb != row["vram_gb"]
+            or _interconnect_value(gpu) != (row["interconnect"] or "unknown")
+        ):
             await connection.execute(
                 "UPDATE trainer_gpu_capacity_intervals SET ended_at = $2 WHERE id = $1",
                 row["id"],
@@ -253,18 +270,25 @@ async def reconcile_trainer_capacity(
 
     for gpu_id, gpu in current.items():
         row = open_by_gpu.get(gpu_id)
-        if row is not None and gpu.gpu_type == row["gpu_type"] and gpu.vram_gb == row["vram_gb"]:
+        interconnect = _interconnect_value(gpu)
+        if (
+            row is not None
+            and gpu.gpu_type == row["gpu_type"]
+            and gpu.vram_gb == row["vram_gb"]
+            and interconnect == (row["interconnect"] or "unknown")
+        ):
             continue
         await connection.execute(
             """
             INSERT INTO trainer_gpu_capacity_intervals
-                (trainer_ip, gpu_id, gpu_type, vram_gb, started_at)
-            VALUES ($1, $2, $3, $4, $5)
+                (trainer_ip, gpu_id, gpu_type, vram_gb, interconnect, started_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
             """,
             trainer_ip,
             gpu_id,
             gpu.gpu_type,
             gpu.vram_gb,
+            interconnect,
             now,
         )
 
@@ -358,7 +382,7 @@ async def get_weekly_cost_rows(
 
         capacity_rows = await connection.fetch(
             """
-            SELECT trainer_ip, gpu_id, gpu_type, vram_gb, started_at, ended_at
+            SELECT trainer_ip, gpu_id, gpu_type, vram_gb, interconnect, started_at, ended_at
             FROM trainer_gpu_capacity_intervals
             WHERE started_at < $2 AND COALESCE(ended_at, $2) > $1
             """,

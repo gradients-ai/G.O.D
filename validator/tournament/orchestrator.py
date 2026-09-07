@@ -23,6 +23,7 @@ from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
+from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
 from validator.app.config import Config
 from validator.app.config import load_config
@@ -72,6 +73,7 @@ async def _start_prep_cost_run(
     trainer_ip: str,
     gpu_ids: list[int],
     config: Config,
+    interconnect: str | None = None,
 ) -> None:
     try:
         await gpu_cost_sql.start_cost_run(
@@ -80,6 +82,7 @@ async def _start_prep_cost_run(
             category="prep",
             gpu_type="H100",
             gpu_count=len(gpu_ids),
+            interconnect=interconnect,
             psql_db=config.psql_db,
             metadata={
                 "prep_identity": prep_identity,
@@ -520,7 +523,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 await asyncio.sleep(1)  # TODO: put in constant or even remove
                 continue
 
-            trainer_ip, gpu_ids = suitable_gpus_result
+            trainer_ip, gpu_ids, interconnect = suitable_gpus_result
 
         try:
             training_task = pending_training_tasks[-1]
@@ -559,6 +562,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                             category="training",
                             gpu_type="H100",
                             gpu_count=len(gpu_ids),
+                            interconnect=interconnect,
                             psql_db=config.psql_db,
                             metadata={
                                 "hotkey": training_task.hotkey,
@@ -626,7 +630,9 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     logger.info(f"Completed scheduling cycle, {len(pending_training_tasks)} tasks remaining")
 
 
-async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) -> tuple[str, list[int]] | None:
+async def _check_suitable_gpus(
+    config: Config, required_gpus: GpuRequirement
+) -> tuple[str, list[int], str] | None:
     """
     Check if there are any suitable GPUs across all trainers for the given GPU requirement.
     Optimizes allocation by selecting the trainer that maximizes the ratio:
@@ -640,7 +646,8 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
         required_gpus: Required GPU specification
 
     Returns:
-        tuple[str, list[int]] | None: (trainer_ip, gpu_ids) if suitable GPUs found, None otherwise
+        tuple[str, list[int], str] | None: (trainer_ip, gpu_ids, interconnect) if suitable
+        GPUs found, None otherwise
     """
     try:
         trainers = await tournament_sql.get_trainers(config.psql_db)
@@ -648,28 +655,31 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
 
         best_trainer = None
         best_gpu_ids = None
+        best_interconnect = GPUInterconnect.UNKNOWN.value
         best_ratio = -1.0
         for trainer in trainers:
             gpu_ids = _trainer_has_sufficient_gpus(trainer.gpus, required_gpus)
             if gpu_ids:
                 free_gpu_count = sum(1 for gpu in trainer.gpus if gpu.available)
                 ratio = required_gpu_count / free_gpu_count
+                interconnect = _interconnect_for_gpu_ids(trainer.gpus, gpu_ids)
                 logger.info(
                     f"Trainer {trainer.trainer_ip}: {len(gpu_ids)} GPUs available for requirement {required_gpus.value}, "
-                    f"{free_gpu_count} total free GPUs, ratio: {ratio:.2f}"
+                    f"{free_gpu_count} total free GPUs, ratio: {ratio:.2f}, interconnect: {interconnect}"
                 )
 
                 if ratio > best_ratio:
                     best_ratio = ratio
                     best_trainer = trainer.trainer_ip
                     best_gpu_ids = gpu_ids
+                    best_interconnect = interconnect
 
         if best_trainer:
             logger.info(
                 f"Selected trainer {best_trainer} with best utilization ratio {best_ratio:.2f} "
-                f"for requirement {required_gpus.value}"
+                f"for requirement {required_gpus.value} (interconnect={best_interconnect})"
             )
-            return best_trainer, best_gpu_ids
+            return best_trainer, best_gpu_ids, best_interconnect
 
         logger.info(f"No suitable GPUs found for requirement {required_gpus.value}")
         return None
@@ -677,6 +687,18 @@ async def _check_suitable_gpus(config: Config, required_gpus: GpuRequirement) ->
     except Exception as e:
         logger.error(f"Error checking suitable GPUs: {str(e)}")
         return None
+
+
+def _interconnect_for_gpu_ids(gpus: list[GPUInfo], gpu_ids: list[int]) -> str:
+    id_set = set(gpu_ids)
+    for gpu in gpus:
+        if gpu.gpu_id not in id_set:
+            continue
+        interconnect = getattr(gpu, "interconnect", None)
+        if interconnect is None:
+            return GPUInterconnect.UNKNOWN.value
+        return interconnect.value if hasattr(interconnect, "value") else str(interconnect)
+    return GPUInterconnect.UNKNOWN.value
 
 
 
@@ -1355,7 +1377,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
     # Track per-miner preps independently: "task_id:hotkey"
     _miner_prep_in_progress: set[str] = set()
 
-    async def _run_miner_prep(task, hotkey, starting_model, trainer_ip, gpu_ids):
+    async def _run_miner_prep(task, hotkey, starting_model, trainer_ip, gpu_ids, interconnect=None):
         """Run model prep for a single miner's starting model. Releases GPUs when done."""
         task_id_str = str(task.task_id)
         prep_key = f"{task_id_str}:{hotkey}"
@@ -1373,6 +1395,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 trainer_ip,
                 gpu_ids,
                 config,
+                interconnect=interconnect,
             )
             reward_fns = getattr(task, "reward_functions", None)
             prep_result = await dispatch_augmentation_and_stats(
@@ -1431,7 +1454,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
             environment_names=task.environment_names if isinstance(task, EnvRawTask) else None,
         )
 
-    async def _run_task_prep(task, trainer_ip, gpu_ids):
+    async def _run_task_prep(task, trainer_ip, gpu_ids, interconnect=None):
         """Standard task-level model prep (text tasks, env round-1)."""
         task_id_str = str(task.task_id)
         cost_run_key = _prep_cost_run_key(task_id_str)
@@ -1444,6 +1467,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                 trainer_ip,
                 gpu_ids,
                 config,
+                interconnect=interconnect,
             )
             prep_result = await _run_single_prep(
                 task_id_str, task.model_id, task, trainer_ip, gpu_ids,
@@ -1542,13 +1566,15 @@ async def process_awaiting_model_prep_tasks(config: Config):
                                 suitable = await _check_suitable_gpus(config, gpu_req)
                                 if suitable is None:
                                     continue
-                                trainer_ip, gpu_ids = suitable
+                                trainer_ip, gpu_ids, interconnect = suitable
                                 await tournament_sql.update_gpu_availability(
                                     trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
                                 )
                                 _miner_prep_in_progress.add(prep_key)
                                 asyncio.create_task(
-                                    _run_miner_prep(task, hotkey, starting_model, trainer_ip, gpu_ids)
+                                    _run_miner_prep(
+                                        task, hotkey, starting_model, trainer_ip, gpu_ids, interconnect
+                                    )
                                 )
                             continue
 
@@ -1582,14 +1608,14 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         )
                         continue
 
-                    trainer_ip, gpu_ids = suitable
+                    trainer_ip, gpu_ids, interconnect = suitable
                     await tournament_sql.update_gpu_availability(
                         trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
                     )
 
                     _model_prep_in_progress.add(task_id_str)
                     try:
-                        asyncio.create_task(_run_task_prep(task, trainer_ip, gpu_ids))
+                        asyncio.create_task(_run_task_prep(task, trainer_ip, gpu_ids, interconnect))
                     except Exception:
                         _model_prep_in_progress.discard(task_id_str)
                         await tournament_sql.update_gpu_availability(
