@@ -896,6 +896,7 @@ async def _run_environment_evaluation(
 
 async def run_evaluation_docker_image(
     test_split_url: str,
+    training_split_url: str,
     original_model_repo: str,
     models: list[str],
     model_type: ImageModelType,
@@ -909,33 +910,19 @@ async def run_evaluation_docker_image(
     container_dataset_path = "/workspace/input_data"
 
     client = docker.from_env()
-    base_path = "/app/validator/evaluation/ComfyUI/models"
     mounts = [
         Mount(target=container_dataset_path, source=dataset_dir, type="bind", read_only=True),
-        Mount(target=f"{base_path}/checkpoints", source=CACHE_DIR_HUB, type="bind", read_only=False),
-        Mount(target=f"{base_path}/diffusers", source=CACHE_DIR_HUB, type="bind", read_only=False),
+        Mount(target="/root/.cache/huggingface/hub", source=CACHE_DIR_HUB, type="bind", read_only=False),
     ]
     environment = {
         "DATASET": container_dataset_path,
+        "TRAIN_SPLIT_URL": training_split_url,
         "MODELS": ",".join(models),
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
+        **vcst.HF_CONTAINER_ENV_IMAGE,
     }
-    command = [
-        "bash",
-        "-lc",
-        "\n".join(
-            [
-                "python - <<'PY'",
-                "import os",
-                "from validator.evaluation.image_model_downloads import prepare_required_image_models",
-                "prepare_required_image_models(os.environ.get('MODEL_TYPE', ''))",
-                "PY",
-                "exec /app/start.sh",
-            ]
-        ),
-    ]
+    command = ["/app/start.sh"]
 
     container = None
     retry_delay = 5.0

@@ -163,6 +163,7 @@ async def run_evaluation_from_task_id(
         try:
             results = await run_evaluation_docker_image(
                 test_split_url=test_data_url,
+                training_split_url=task_details.training_data,
                 original_model_repo=original_model,
                 models=models_to_evaluate,
                 model_type=task_details.model_type,

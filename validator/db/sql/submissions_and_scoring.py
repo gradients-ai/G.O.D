@@ -227,7 +227,8 @@ async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
                 {cst.TASK_NODE_QUALITY_SCORE},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.EVAL_SET_FINGERPRINT}
             FROM {cst.TASK_NODES_TABLE}
             WHERE {cst.TASK_ID} = $1
             AND {cst.NETUID} = $2
@@ -249,6 +250,7 @@ async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
                 cst.TEST_LOSS: clean_float(row[cst.TEST_LOSS]),
                 cst.SYNTH_LOSS: clean_float(row[cst.SYNTH_LOSS]),
                 cst.SCORE_REASON: row[cst.SCORE_REASON],
+                "eval_set_fingerprint": row[cst.EVAL_SET_FINGERPRINT],
             }
             for row in rows
         ]

@@ -94,10 +94,18 @@ def process_evaluation_results(results: dict, is_image: bool = False) -> DockerE
             processed_results[repo] = Exception(result)
         else:
             if is_image:
-                result["is_finetune"] = True
-                processed_results[repo] = EvaluationResultImage.model_validate(result)
+                # Require the versioned prediction contract; never reinterpret old pixel losses.
+                try:
+                    processed_results[repo] = EvaluationResultImage.model_validate(result)
+                except ValueError as error:
+                    raise ValueError("Invalid or legacy image evaluation result; replace evaluator and re-evaluate") from error
             else:
                 processed_results[repo] = EvaluationResultText.model_validate(result)
+
+    if is_image:
+        fingerprints = {r.eval_set_fingerprint for r in processed_results.values() if isinstance(r, EvaluationResultImage)}
+        if len(fingerprints) > 1:
+            raise ValueError("Image candidates were evaluated on different cases or configurations")
 
     return DockerEvaluationResults(
         results=processed_results,

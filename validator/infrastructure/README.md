@@ -6,7 +6,6 @@ Clients and adapters for external systems used by the validator.
 
 - `cache.py`: Redis/cache helpers.
 - `cache_policy.py`: cache keys and TTL policy.
-- `comfy_gateway.py`: ComfyUI gateway integration.
 - `content_service.py`: Gradients/content-service API calls.
 - `fal_client.py`: Fal client integration.
 - `llm.py`: LLM client helpers.

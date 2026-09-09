@@ -19,6 +19,7 @@ from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import ImageTextPair
 from core.models.dataset_models import TextDatasetType
+from core.models.image_models import EvaluationResultImage as EvaluationResultImage
 from core.models.image_models import ImageModelType
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
@@ -170,16 +171,6 @@ class ModelPrepRequest(BaseModel):
 class ModelPrepResponse(BaseModel):
     augmented_model_id: str | None = None
     baseline_stats: BaselineStats | None = None
-
-
-class DiffusionLosses(BaseModel):
-    text_guided_losses: list[float]
-    no_text_losses: list[float]
-
-
-class EvaluationResultImage(BaseModel):
-    eval_loss: DiffusionLosses | float
-    is_finetune: bool | None = None
 
 
 class EvaluationResultText(BaseModel):

@@ -91,12 +91,14 @@ jobs:
               {
                   "id": "image-evaluator",
                   "image": "gradientsio/image-evaluator",
-                  "channel_tag": "basilica",
+                  "channel_tag": "latent-l2-v1",
                   "dockerfile": "ops/docker/validator-diffusion.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",
                       "ops/docker/validator-diffusion.dockerfile",
-                      "ops/docker/requirements/validator.txt",
+                      "ops/docker/requirements/image-evaluator.txt",
+                      "ops/docker/scripts/image_eval_entrypoint.sh",
+                      "core/models/**",
                       ".dockerignore",
                   ],
                   "exclude_patterns": [

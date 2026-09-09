@@ -342,6 +342,7 @@ async def run_evaluation_basilica_grpo(
 
 async def run_evaluation_basilica_image(
     test_split_url: str,
+    training_split_url: str,
     original_model_repo: str,
     models: list[str],
     model_type: ImageModelType,
@@ -358,11 +359,14 @@ async def run_evaluation_basilica_image(
         deployment_ids_by_repo.setdefault(repo, dep_info)
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
+    if not training_split_url or not training_split_url.startswith(("http://", "https://")):
+        raise ValueError("Basilica image eval requires TRAIN_SPLIT_URL for duplicate screening.")
+    if model_type == ImageModelType.SDXL:
+        raise ValueError("SDXL is not supported by image prediction L2 evaluation")
     command = ["/app/start.sh"]
     source = create_basilica_eval_runner_source(
         command,
         CONTAINER_EVAL_RESULTS_PATH,
-        prepare_image_models=True,
     )
 
     base_env = {
@@ -379,6 +383,7 @@ async def run_evaluation_basilica_image(
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
         repo_env["TEST_SPLIT_URL"] = test_split_url
+        repo_env["TRAIN_SPLIT_URL"] = training_split_url
         return repo_env
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
@@ -405,7 +410,10 @@ async def run_evaluation_basilica_image(
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
-    return process_evaluation_results(evaluation_results, is_image=True)
+    try:
+        return process_evaluation_results(evaluation_results, is_image=True)
+    except ValueError as error:
+        raise EvaluationRetryableError("Incompatible image results; re-evaluate with matching evaluator and cases") from error
 
 async def _release_pvp_pair_gpus_reservation(
     *,

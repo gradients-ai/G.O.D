@@ -337,6 +337,7 @@ Tournament system overview
 - Miners expose GET /training_repo/{task_type} from their miner.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
 - Tournament types include text, image, and environment.
+- Image evaluation ranks held-out flow-prediction L2, with 50% captioned and 50% empty-caption loss; it does not rank by generated pixel similarity. Supported evaluation families are Flux, Z-Image, Qwen-Image, Ideogram 4 and Krea 2 Raw.
 - Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
 - The final-round `swe_infinite` task has a 2.5-hour training budget, one hour longer than standard environment tasks.
 - An environment boss-round challenger dethrones the champion when they have no boss-round losses and at least tie the champion on `swe_infinite`.

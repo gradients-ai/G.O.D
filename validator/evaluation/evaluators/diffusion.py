@@ -1,429 +1,215 @@
+"""Production image L2: shared held-out prediction cases, 50/50 captioned/empty caption."""
+
+import gc
+import hashlib
 import json
+import math
 import os
-import random
-import re
+import sys
 import tempfile
-import urllib.request
-import zipfile
+import traceback
+from pathlib import Path
 
 import numpy as np
-import safetensors.torch
-from diffusers import StableDiffusionPipeline
-from fiber.logging_utils import get_logger
-from huggingface_hub import HfApi
-from huggingface_hub import snapshot_download
-from PIL import Image
+import torch
 
-import validator.evaluation.constants as cst
-from core.models.image_models import ImageModelType
-from validator.evaluation.image_io import adjust_image_size
-from validator.evaluation.image_io import base64_to_image
-from validator.evaluation.image_io import download_from_huggingface
-from validator.evaluation.image_io import image_to_base64
-from validator.evaluation.image_io import list_supported_images
-from validator.evaluation.image_io import read_prompt_file
-from validator.evaluation.models import Img2ImgPayload
-from validator.infrastructure import comfy_gateway as api_gate
-from validator.infrastructure.retries import retry_on_5xx
-from validator.tasks.datasets.constants import SUPPORTED_IMAGE_FILE_EXTENSIONS
+from validator.evaluation.denoising_mse import flow_cases
+from validator.evaluation.denoising_mse import flow_prediction_mse
+from validator.evaluation.image_artifacts import atomic_json
+from validator.evaluation.image_artifacts import materialize_model
+from validator.evaluation.image_artifacts import prepare_base
+from validator.evaluation.image_denoising import FlowPredictionSampler
+from validator.evaluation.image_encoder import DeterministicVAE
+from validator.evaluation.image_flow_adapter import FAMILIES
+from validator.evaluation.image_flow_adapter import ImageFlowAdapter
+from validator.evaluation.image_test_data import decoded_images
+from validator.evaluation.image_test_data import held_out_images
+from validator.evaluation.image_test_data import read_dataset
 
 
-logger = get_logger(__name__)
-hf_api = HfApi()
+VERSION = "image-denoising-l2-v1"
+TEXT_WEIGHT = 0.5
+DEFAULT_STRATA = 16
+DEFAULT_NOISES = 16
 
 
-def generate_reproducible_seeds(master_seed: int, n: int = 10) -> list[int]:
-    random.seed(master_seed) 
-    return [random.randint(0, 2**32 - 1) for _ in range(n)]
+def positive_env(name, default):
+    value = int(os.environ.get(name, default))
+    if value < 1:
+        raise ValueError(f"{name} must be positive")
+    return value
 
-def load_comfy_workflows(model_type: str):
-    if model_type == ImageModelType.SDXL.value:
-        with open(cst.LORA_SDXL_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
 
-        with open(cst.LORA_SDXL_WORKFLOW_PATH_DIFFUSERS, "r") as file:
-            lora_template_diffusers = json.load(file)
+def scalar_score(text, no_text):
+    if not text or len(text) != len(no_text) or any(not math.isfinite(v) or v < 0 for v in [*text, *no_text]):
+        raise ValueError("Aligned nonempty finite nonnegative image losses required")
+    return TEXT_WEIGHT * float(np.mean(text)) + (1 - TEXT_WEIGHT) * float(np.mean(no_text))
 
-        return lora_template, lora_template_diffusers
-    elif model_type == ImageModelType.FLUX.value:
-        with open(cst.LORA_FLUX_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
 
-        return lora_template, None
-    elif model_type == ImageModelType.Z_IMAGE.value:
-        with open(cst.LORA_ZIMAGE_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
+def load_base(api, repo, family, root):
+    """Load the task checkpoint with the validated family contract."""
+    import nodes
 
-        return lora_template, None
-    elif model_type == ImageModelType.QWEN_IMAGE.value:
-        with open(cst.LORA_QWEN_IMAGE_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
+    adapter = ImageFlowAdapter(family, api, root)
+    name, provenance = prepare_base(api, {"model_id": repo, "model_type": family}, root)
+    model = adapter.configure(nodes.UNETLoader().load_unet(name, "default")[0])
+    clip = adapter.load_clip()
+    if family == "z-image":
+        from diffusers import AutoencoderKL
 
-        return lora_template, None
-    elif model_type == ImageModelType.KREA2.value:
-        with open(cst.LORA_KREA2_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
-
-        return lora_template, None
-    elif model_type == ImageModelType.IDEOGRAM4.value:
-        with open(cst.LORA_IDEOGRAM4_WORKFLOW_PATH, "r") as file:
-            lora_template = json.load(file)
-
-        return lora_template, None
+        encoder = DeterministicVAE(AutoencoderKL.from_pretrained(
+            repo, subfolder="vae", revision=provenance["revision"], torch_dtype=torch.float32
+        ))
+        adapter.provenance["evaluation_vae"] = {"repo": repo, "revision": provenance["revision"], "subfolder": "vae"}
     else:
-        raise ValueError(f"Unsupported model type: {model_type}")
+        encoder = adapter.load_vae()
+    return adapter, model, clip, encoder, {"base": provenance, "adapter": adapter.provenance}
 
 
-def contains_image_files(directory: str) -> str:
-    try:
-        return any(file.lower().endswith(SUPPORTED_IMAGE_FILE_EXTENSIONS) for file in os.listdir(directory))
-    except FileNotFoundError:
-        return False
+@torch.inference_mode()
+def evaluate(config, output):
+    from huggingface_hub import HfApi
 
+    family = config["family"]
+    if family not in FAMILIES:
+        raise ValueError("Unsupported image model family")
+    sys.path.insert(0, str(config["comfy_root"]))
+    import comfy.model_management
+    import comfy.samplers
 
-def validate_dataset_path(dataset_path: str) -> str:
-    if os.path.isdir(dataset_path):
-        if contains_image_files(dataset_path):
-            return dataset_path
-        subdirectories = [
-            os.path.join(dataset_path, d) for d in os.listdir(dataset_path) if os.path.isdir(os.path.join(dataset_path, d))
-        ]
-        for subdirectory in subdirectories:
-            if contains_image_files(subdirectory):
-                return subdirectory
-    return dataset_path
-
-
-@retry_on_5xx()
-def find_latest_lora_submission_name(repo_id: str) -> str:
-    repo_files = hf_api.list_repo_files(repo_id)
-    model_files = [file for file in repo_files if file.startswith(cst.DIFFUSION_HF_DEFAULT_FOLDER)]
-
-    for file in model_files:
-        if file.endswith(cst.DIFFUSION_HF_DEFAULT_CKPT_NAME):
-            return file
-
-    epoch_files = []
-    
-    for file in model_files:
-        if file.endswith(".safetensors"):
-            epoch = None
-            match = re.search(r'[-_](\d+)\.safetensors$', file)
-            if match:
-                try:
-                    epoch = int(match.group(1))
-                except ValueError:
-                    pass
-            else:
-                match = re.search(r'(\d+)\.safetensors$', file)
-                if match:
-                    try:
-                        epoch = int(match.group(1))
-                    except ValueError:
-                        pass
-            
-            if epoch is None:
-                return file
-            else:
-                epoch_files.append((epoch, file))
-
-    if epoch_files:
-        epoch_files.sort(reverse=True, key=lambda x: x[0])
-        return epoch_files[0][1]
-
-    return None
-
-
-@retry_on_5xx()
-def is_safetensors_available(repo_id: str, model_type: str) -> tuple[bool, str | None]:    
-    files_metadata = hf_api.list_repo_tree(repo_id=repo_id, repo_type="model")
-    check_size_in_gb = 6 if model_type == "sdxl" else 10
-    total_check_size = check_size_in_gb * 1024 * 1024 * 1024
-    largest_file = None
-    for file in files_metadata:
-        if hasattr(file, "size") and file.size is not None:
-            if file.path.endswith(".safetensors") and file.size > total_check_size:
-                if largest_file is None or file.size > largest_file.size:
-                    largest_file = file
-
-    if largest_file:
-        return True, largest_file.path
-    return False, None
-
-
-def download_base_model(repo_id: str, model_type: str, safetensors_filename: str | None = None) -> str:
-    if model_type == ImageModelType.SDXL.value:
-        download_dir = cst.CHECKPOINTS_SAVE_PATH
-    elif model_type == ImageModelType.FLUX.value:
-        download_dir = cst.UNET_SAVE_PATH
-    else:
-        download_dir = cst.DIFFUSION_MODELS_PATH
-
-    if safetensors_filename:
-        model_path = download_from_huggingface(repo_id, safetensors_filename, download_dir)
-        model_name = os.path.basename(model_path)
-    else:
-        model_name = f"models--{repo_id.replace('/', '--')}"
-        save_dir = f"{cst.DIFFUSERS_PATH}/{model_name}"
-        model_path = snapshot_download(repo_id=repo_id, local_dir=save_dir, repo_type="model")
-    return model_name, model_path
-
-
-def resolve_eval_base_model(repo_id: str, model_type: str) -> tuple[str, str | None]:
-    if model_type == ImageModelType.KREA2.value:
-        logger.info(
-            "Using Comfy-Org Krea 2 raw model for evaluation instead of task base repo %s",
-            repo_id,
-        )
-        return cst.KREA2_EVAL_REPO_ID, cst.KREA2_EVAL_DIFFUSION_MODEL
-    if model_type == ImageModelType.IDEOGRAM4.value:
-        logger.info(
-            "Using Comfy-Org Ideogram 4 model for evaluation instead of task base repo %s",
-            repo_id,
-        )
-        return cst.IDEOGRAM4_EVAL_REPO_ID, cst.IDEOGRAM4_EVAL_DIFFUSION_MODEL
-
-    is_safetensors, safetensors_filename = is_safetensors_available(repo_id, model_type)
-    return repo_id, safetensors_filename if is_safetensors else None
-
-
-def download_lora(repo_id: str) -> str:
-    lora_save_name = repo_id.split("/")[-1]
-    if not os.path.exists(f"{cst.LORAS_SAVE_PATH}/{lora_save_name}.safetensors"):
-        lora_filename = find_latest_lora_submission_name(repo_id)
-        local_path = download_from_huggingface(repo_id, lora_filename, cst.LORAS_SAVE_PATH)
-        unique_path = f"{cst.LORAS_SAVE_PATH}/{lora_save_name}.safetensors"
-        os.rename(local_path, unique_path)
-        logger.info(f"Downloaded {unique_path}")
-        return unique_path
-    else:
-        return f"{cst.LORAS_SAVE_PATH}/{lora_save_name}.safetensors"
-
-
-def calculate_l2_loss(test_image: Image.Image, generated_image: Image.Image) -> float:
-    test_image = np.array(test_image.convert("RGB")) / 255.0
-    generated_image = np.array(generated_image.convert("RGB")) / 255.0
-    if test_image.shape != generated_image.shape:
-        raise ValueError("Images must have the same dimensions to calculate L2 loss.")
-    l2_loss = np.mean((test_image - generated_image) ** 2)
-    return l2_loss
-
-
-def edit_workflow(
-    payload: dict, edit_elements: Img2ImgPayload, text_guided: bool, model_type: str, seed: int, is_safetensors: bool = True
-) -> dict:
-    if model_type == ImageModelType.SDXL.value:
-        if is_safetensors:
-            payload["Checkpoint_loader"]["inputs"]["ckpt_name"] = edit_elements.ckpt_name
-        else:
-            payload["Checkpoint_loader"]["inputs"]["model_path"] = edit_elements.ckpt_name
-        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg        
-    elif model_type == ImageModelType.FLUX.value:
-        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
-        payload["CFG"]["inputs"]["guidance"] = edit_elements.cfg
-    elif model_type == ImageModelType.IDEOGRAM4.value:
-        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
-        payload["Scheduler"]["inputs"]["steps"] = edit_elements.steps
-        payload["Scheduler"]["inputs"]["width"] = edit_elements.width
-        payload["Scheduler"]["inputs"]["height"] = edit_elements.height
-        payload["Noise"]["inputs"]["noise_seed"] = edit_elements.seed
-        payload["Sigma_split_denoise"]["inputs"]["denoise"] = edit_elements.denoise
-        payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
-        payload["Image_resize"]["inputs"]["width"] = edit_elements.width
-        payload["Image_resize"]["inputs"]["height"] = edit_elements.height
-        payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
-        payload["Dual_model_guider"]["inputs"]["cfg"] = edit_elements.cfg
-        payload["CFG_override"]["inputs"]["cfg"] = max(edit_elements.cfg - 3, 1)
-        payload["Prompt"]["inputs"]["text"] = edit_elements.prompt if text_guided else ""
-        return payload
-    elif model_type == ImageModelType.KREA2.value:
-        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
-        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
-        payload["Sampler"]["inputs"]["steps"] = edit_elements.steps
-        payload["Sampler"]["inputs"]["seed"] = edit_elements.seed
-        payload["Sampler"]["inputs"]["denoise"] = edit_elements.denoise
-        payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
-        payload["Image_resize"]["inputs"]["width"] = edit_elements.width
-        payload["Image_resize"]["inputs"]["height"] = edit_elements.height
-        payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
-        payload["Prompt"]["inputs"]["text"] = edit_elements.prompt if text_guided else ""
-        return payload
-    else:
-        payload["Checkpoint_loader"]["inputs"]["unet_name"] = edit_elements.ckpt_name
-        payload["Sampler"]["inputs"]["cfg"] = edit_elements.cfg
-
-    payload["Sampler"]["inputs"]["steps"] = edit_elements.steps
-    payload["Sampler"]["inputs"]["seed"] = edit_elements.seed
-    payload["Sampler"]["inputs"]["denoise"] = edit_elements.denoise
-    payload["Image_loader"]["inputs"]["image"] = edit_elements.base_image
-    payload["Lora_loader"]["inputs"]["lora_name"] = edit_elements.lora_name
-    if text_guided:
-        payload["Prompt"]["inputs"]["text"] = edit_elements.prompt
-    else:
-        payload["Prompt"]["inputs"]["text"] = ""
-
-    return payload
-
-
-def inference(image_base64: str, params: Img2ImgPayload, use_prompt: bool = False, prompt: str = None) -> tuple[float, float]:
-    if use_prompt and prompt:
-        params.prompt = prompt
-
-    params.base_image = image_base64
-
-    lora_payload = edit_workflow(
-        payload=params.comfy_template,
-        edit_elements=params,
-        text_guided=use_prompt,
-        model_type=params.model_type,
-        seed=params.seed,
-        is_safetensors=params.is_safetensors,
-    )
-    lora_gen = api_gate.generate(lora_payload)[0]
-    lora_gen_loss = calculate_l2_loss(base64_to_image(image_base64), lora_gen)
-    logger.info(f"Loss: {lora_gen_loss}")
-
-    return lora_gen_loss
-
-
-def eval_loop(dataset_path: str, params: Img2ImgPayload, generations: int = 10) -> dict[str, list[float]]:
-    total_text_guided_losses = []
-    total_no_text_losses = []
-
-    test_images_list = list_supported_images(dataset_path, SUPPORTED_IMAGE_FILE_EXTENSIONS)
-
-    for file_name in test_images_list:
-        logger.info(f"Calculating losses for {file_name}")
-
-        base_name = os.path.splitext(file_name)[0]
-        png_path = os.path.join(dataset_path, file_name)
-        txt_path = os.path.join(dataset_path, f"{base_name}.txt")
-        test_image = Image.open(png_path)
-        test_image = adjust_image_size(test_image)
-        params.width, params.height = test_image.size
-        image_base64 = image_to_base64(test_image)
-        prompt = read_prompt_file(txt_path)
-
-        params.prompt = prompt
-        seeds = generate_reproducible_seeds(master_seed=42, n=generations)
-        text_guided_losses = []
-        no_text_losses = []
-        for seed in seeds:
-            params.seed = seed
-            text_guided_losses.append(inference(image_base64, params, use_prompt=True))
-            no_text_losses.append(inference(image_base64, params, use_prompt=False))
-        total_text_guided_losses.append(np.mean(text_guided_losses))
-        total_no_text_losses.append(np.mean(no_text_losses))
-
-    return {"text_guided_losses": total_text_guided_losses, "no_text_losses": total_no_text_losses}
-
-
-def _count_model_parameters(model_path: str, is_safetensors: bool) -> int:
-    try:
-        if is_safetensors:
-            state_dict = safetensors.torch.load_file(model_path)
-            return sum(p.numel() for p in state_dict.values()) or 0
-        else:
-            pipe = StableDiffusionPipeline.from_pretrained(model_path)
-            total_params = 0
-            for attr in pipe.__dict__.values():
-                if hasattr(attr, "parameters"):
-                    total_params += sum(p.numel() for p in attr.parameters())
-            return total_params
-    except Exception as e:
-        logger.error(f"Failed to count model parameters: {e}")
-        return 0
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="image-l2-") as scratch:
+        scratch = Path(scratch)
+        validation = decoded_images(read_dataset(config["dataset"], scratch / "test.zip"))
+        training = decoded_images(read_dataset(config["training_dataset"], scratch / "train.zip", require_captions=False))
+        validation, excluded = held_out_images(training, validation)
+        # Bound only manual/container smoke runs. Production evaluates every retained test image.
+        if config.get("max_images"):
+            validation = validation[:config["max_images"]]
+        del training
+        api = HfApi()
+        adapter, base, clip, encoder, provenance = load_base(api, config["repo"], family, config["comfy_root"])
+        kind = "flow_prediction_mse"
+        cases = []
+        for item in validation:
+            latent = encoder.encode(item["image"])
+            scaled = base.model.process_latent_in(latent.clone()).float().cpu()
+            cache = scratch / f"{item['sha256']}.pt"
+            torch.save({"latent": latent, "scaled": scaled}, cache)
+            cases.append({"id": item["sha256"], "caption": item["caption"], "cache": cache,
+                          "latent_hash": hashlib.sha256(scaled.numpy().tobytes()).hexdigest()})
+        # Hash tensor content independently of torch archive filenames/serialization.
+        fingerprint_payload = {
+            "version": VERSION, "metric": kind, "family": family, "provenance": provenance,
+            "image_ids": [c["id"] for c in cases],
+            "latent_hashes": [c["latent_hash"] for c in cases],
+            "captions": [hashlib.sha256(c["caption"].encode()).hexdigest() for c in cases],
+            "strata": config["strata"], "noises": config["noises"], "batch_size": config["batch_size"],
+            "text_weight": TEXT_WEIGHT, "seed": 42,
+            "comfy_commit": (config["comfy_root"] / ".git/HEAD").read_text().strip(),
+            "torch": torch.__version__,
+        }
+        fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode()).hexdigest()
+        # The VAE is shared and never part of a candidate's patches. Free it before scoring.
+        del encoder, validation
+        gc.collect()
+        comfy.model_management.unload_all_models()
+        result = {"model_params_count": sum(p.numel() for p in base.model.diffusion_model.parameters())}
+        conditioning_cache = {}
+        for repo in config["models"]:
+            try:
+                name, artifact = materialize_model(api, repo, None, config["comfy_root"] / "models/loras")
+                model, candidate_clip = adapter.apply_lora(base, clip, name)
+                candidate_conditioning = {} if candidate_clip.patcher.patches else conditioning_cache
+                vectors = {"text": [], "no_text": []}
+                per_case = []
+                first_check = None
+                for item in cases:
+                    data = torch.load(item["cache"], map_location="cpu", weights_only=True)
+                    questions = flow_cases(
+                        data["scaled"], item["id"], config["strata"], config["noises"]
+                    )
+                    for mode in vectors:
+                        prompt = item["caption"] if mode == "text" else ""
+                        if prompt not in candidate_conditioning:
+                            candidate_conditioning[prompt] = adapter.conditioning(candidate_clip, prompt)
+                        sampler = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
+                        guider = comfy.samplers.CFGGuider(model)
+                        guider.set_conds(candidate_conditioning[prompt], [])
+                        guider.set_cfg(1.0)
+                        schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
+                        guider.sample(torch.zeros_like(data["latent"]), data["latent"], sampler, schedule,
+                                      disable_pbar=True, seed=42)
+                        losses = [row["mse"] for row in sampler.rows]
+                        if len(losses) != config["strata"] * config["noises"]:
+                            raise ValueError("Incomplete prediction cases")
+                        vectors[mode].append(float(np.mean(losses)))
+                        per_case.extend({**row, "image_id": item["id"], "mode": mode} for row in sampler.rows)
+                        if first_check is None:
+                            first_check = (data, questions, candidate_conditioning[prompt], losses)
+                data, questions, cond, original = first_check
+                repeated = FlowPredictionSampler(questions, config["batch_size"], flow_prediction_mse)
+                guider = comfy.samplers.CFGGuider(model)
+                guider.set_conds(cond, [])
+                guider.set_cfg(1.0)
+                schedule = torch.tensor([q["sigma"] for q in reversed(questions)] + [0.0])
+                guider.sample(torch.zeros_like(data["latent"]), data["latent"], repeated, schedule, disable_pbar=True, seed=42)
+                if not np.allclose(original, [r["mse"] for r in repeated.rows], rtol=1e-5, atol=1e-7):
+                    raise ValueError("Prediction scores failed repeatability check")
+                score = scalar_score(vectors["text"], vectors["no_text"])
+                result[repo] = {
+                    "eval_loss": score, "is_finetune": True, "metric_version": VERSION,
+                    "metric": kind, "text_weight": TEXT_WEIGHT, "eval_set_fingerprint": fingerprint,
+                    "text_guided_losses": vectors["text"], "no_text_losses": vectors["no_text"],
+                    "image_ids": [c["id"] for c in cases], "strata": config["strata"], "noises": config["noises"],
+                }
+                if config.get("audit_dir"):
+                    audit = config["audit_dir"]
+                    audit.mkdir(parents=True, exist_ok=True)
+                    atomic_json(audit / (hashlib.sha256(repo.encode()).hexdigest() + ".json"), {
+                        "result": result[repo], "cases": per_case, "artifact": artifact,
+                        "provenance": provenance, "excluded_count": len(excluded),
+                    })
+                print(f"Image prediction evaluation completed: {len(vectors['text'])} images, loss={score:.6f}", flush=True)
+            except Exception as error:
+                # Exceptions from remote downloads can contain signed URLs; never serialize their message.
+                result[repo] = f"Image prediction evaluation failed ({type(error).__name__})"
+                print(result[repo], flush=True)
+                for frame in traceback.extract_tb(error.__traceback__):
+                    print(f"  {Path(frame.filename).name}:{frame.lineno} in {frame.name}", flush=True)
+                if isinstance(error, RuntimeError):
+                    message = str(error).splitlines()[0]
+                    if message.startswith(("mat1 and mat2", "expected scalar type", "Input type", "The size of tensor", "shape '",
+                                           "CUDA out of memory", "Expected all tensors", "Expected tensor")):
+                        print(message, flush=True)
+            finally:
+                atomic_json(output, result)
+                comfy.model_management.unload_all_models()
+                gc.collect()
+        return result
 
 
 def main():
-    test_dataset_path = os.environ.get("DATASET")
-    test_split_url = os.environ.get("TEST_SPLIT_URL")
-    base_model_repo = os.environ.get("ORIGINAL_MODEL_REPO")
-    trained_lora_model_repos = os.environ.get("MODELS", "")
-    model_type = os.environ.get("MODEL_TYPE")
-    if not test_dataset_path and test_split_url:
-        tmp_dir = tempfile.mkdtemp(prefix="eval_diffusion_")
-        zip_path = os.path.join(tmp_dir, "test_split.zip")
-        extract_dir = os.path.join(tmp_dir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-        urllib.request.urlretrieve(test_split_url, zip_path)
-        with zipfile.ZipFile(zip_path, "r") as zip_ref:
-            zip_ref.extractall(extract_dir)
-        test_dataset_path = extract_dir
-        logger.info(f"Downloaded and extracted TEST_SPLIT_URL to {extract_dir}")
-
-    if not all([test_dataset_path, base_model_repo, trained_lora_model_repos, model_type]):
-        logger.error("Missing required environment variables.")
-        exit(1)
-
-    base_model_repo, safetensors_filename = resolve_eval_base_model(base_model_repo, model_type)
-    is_safetensors = safetensors_filename is not None
-    # Base model download
-    logger.info("Downloading base model")
-    model_name_or_path, model_path = download_base_model(
-        base_model_repo, model_type=model_type, safetensors_filename=safetensors_filename
-    )
-    logger.info("Base model downloaded")
-
-    logger.info(f"test_dataset_path: {test_dataset_path}")
-    logger.info(f"base_model_repo: {base_model_repo}")
-    logger.info(f"trained_lora_model_repos: {trained_lora_model_repos}")
-    logger.info(f"model_type: {model_type}")
-    logger.info(f"is_safetensors: {is_safetensors}")
-    logger.info(f"safetensors_filename: {safetensors_filename}")
-    logger.info(f"model_name_or_path: {model_name_or_path}")
-    logger.info(f"model_path: {model_path}")
-
-    lora_repos = [m.strip() for m in trained_lora_model_repos.split(",") if m.strip()]
-
-    test_dataset_path = validate_dataset_path(test_dataset_path)
-
-    lora_comfy_template, diffusers_comfy_template = load_comfy_workflows(model_type)
-    api_gate.connect()
-
-    results = {"model_params_count": _count_model_parameters(model_path, is_safetensors)}
-
-    generation_params = cst.EVAL_DEFAULTS.get(model_type, cst.EVAL_DEFAULTS[ImageModelType.FLUX.value])
-
-    for repo_id in lora_repos:
-        try:
-            lora_local_path = download_lora(repo_id)
-            img2img_payload = Img2ImgPayload(
-                ckpt_name=model_name_or_path,
-                lora_name=os.path.basename(lora_local_path),
-                steps=generation_params["steps"],
-                cfg=generation_params["cfg"],
-                denoise=generation_params["denoise"],
-                comfy_template=lora_comfy_template if is_safetensors else diffusers_comfy_template,
-                is_safetensors=is_safetensors,
-                model_type=model_type,
-            )
-
-            loss_data = eval_loop(
-                test_dataset_path,
-                img2img_payload,
-                generations=generation_params.get("generations", 10),
-            )
-            results[repo_id] = {"eval_loss": loss_data}
-
-            if os.path.exists(lora_local_path):
-                os.remove(lora_local_path)
-        except Exception as e:
-            logger.error(f"Error evaluating repo {repo_id}: {str(e)}")
-            results[repo_id] = str(e)
-
-    output_file = os.environ.get("EVALUATION_RESULTS_PATH", "/aplp/evaluation_results.json")
-    output_dir = os.path.dirname(output_file)
-
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    with open(output_file, "w") as f:
-        json.dump(results, f)
-
-    logger.info(f"Evaluation results saved to {output_file}")
-
-    logger.info(json.dumps(results))
+    output = Path(os.environ.get("EVALUATION_RESULTS_PATH", "/aplp/evaluation_results.json"))
+    models = [m.strip() for m in os.environ.get("MODELS", "").split(",") if m.strip()]
+    config = {
+        "dataset": os.environ.get("DATASET") or os.environ.get("TEST_SPLIT_URL"),
+        "training_dataset": os.environ.get("TRAINING_DATASET") or os.environ.get("TRAIN_SPLIT_URL"),
+        "repo": os.environ.get("ORIGINAL_MODEL_REPO"), "family": os.environ.get("MODEL_TYPE"), "models": models,
+        "comfy_root": Path(os.environ.get("COMFY_ROOT", "/app/validator/evaluation/ComfyUI")),
+        "strata": positive_env("IMAGE_EVAL_STRATA", DEFAULT_STRATA),
+        "noises": positive_env("IMAGE_EVAL_NOISES", DEFAULT_NOISES),
+        "batch_size": positive_env("IMAGE_EVAL_NOISE_BATCH_SIZE", 2),
+        "max_images": int(os.environ.get("IMAGE_EVAL_MAX_IMAGES", "0")),
+        "audit_dir": Path(os.environ["IMAGE_EVAL_AUDIT_DIR"]) if os.environ.get("IMAGE_EVAL_AUDIT_DIR") else None,
+    }
+    if not all(config[k] for k in ("dataset", "training_dataset", "repo", "family", "models")) or config["max_images"] < 0:
+        raise SystemExit("Image evaluation requires test data, training data, base repo, family and submitted models")
+    try:
+        evaluate(config, output)
+    except Exception as error:
+        print(f"Image evaluation setup failed ({type(error).__name__})", flush=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
-VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
+VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:latent-l2-v1"
 VALIDATOR_DOCKER_IMAGE_ENV = "gradientsio/env-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_INTERCODE = "gradientsio/env-eval-intercode:basilica"
 VALIDATOR_DOCKER_IMAGE_SWE_INFINITE = "gradientsio/env-eval-swe-infinite:basilica"

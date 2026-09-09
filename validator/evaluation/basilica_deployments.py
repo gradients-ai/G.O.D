@@ -61,7 +61,6 @@ async def cleanup_basilica_deployments_by_name(deployment_names: set[str]) -> No
 def create_basilica_eval_runner_source(
     command: list[str],
     result_path: str,
-    prepare_image_models: bool = False,
 ) -> str:
     """Create a generic eval runner source with health and result endpoints.
 
@@ -70,7 +69,6 @@ def create_basilica_eval_runner_source(
     """
     command_json = json.dumps(command)
     result_path_json = json.dumps(result_path)
-    prepare_image_models_literal = repr(prepare_image_models)
     return f"""import json
 import os
 import subprocess
@@ -80,7 +78,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 COMMAND = {command_json}
 RESULT_PATH = {result_path_json}
 RESULT_STATUS_PATH = "{EVAL_RESULT_STATUS_PATH}"
-PREPARE_IMAGE_MODELS = {prepare_image_models_literal}
 
 _state = {{
     "status": "running",
@@ -108,17 +105,8 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         return
 
-def _prepare_image_models():
-    if not PREPARE_IMAGE_MODELS:
-        return
-    print("[eval_runner] preparing required image models...", flush=True)
-    from validator.evaluation.image_model_downloads import prepare_required_image_models
-    prepare_required_image_models(os.environ.get("MODEL_TYPE", ""))
-    print("[eval_runner] image model prep complete", flush=True)
-
 def _run_eval():
     try:
-        _prepare_image_models()
         print("[eval_runner] starting eval command:", " ".join(COMMAND), flush=True)
         proc = subprocess.run(COMMAND, text=True)
         print(f"[eval_runner] eval command finished exit_code={{proc.returncode}}", flush=True)
