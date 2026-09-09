@@ -60,6 +60,12 @@ The scheduler only starts a new tournament when there is no active or pending to
 
 The first tournament of a type can be created immediately when no previous tournament exists. After that, the previous tournament must be completed and the next scheduled window must arrive.
 
+### Weekly Completion Deadline
+
+Every tournament, regardless of type, is expected to be completed by **Friday at 14:00 UTC** of the week it started. This deadline is independent of training time and GPU availability during the week, and a round being reverted does not push the deadline out — it only shrinks the time left to finish, as long as the tournament still fits before Friday.
+
+Completion itself is a manual step: once a winner is decided, the team reviews the winning submission's code to check for exploits and confirm it reflects a genuine training improvement before marking the tournament completed. To make sure that review doesn't slip past the deadline, the validator posts a Discord reminder 30 minutes before the Friday 14:00 UTC cutoff for any tournament that is still active at that point.
+
 ## Registration Requirements
 
 ### Subnet Registration

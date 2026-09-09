@@ -115,6 +115,9 @@ _EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
 # Rounds already pinged about a failed draw-decider creation. Same reason as the set above: the
 # retry runs on a 60s loop and would otherwise hammer the webhook until someone intervenes.
 _DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
+# Tournaments already pinged about being close to the Friday completion deadline. Process-local
+# for the same reason as the sets above: a restart re-alerts, which is fine for a once-a-week ping.
+_DEADLINE_ALERTED_TOURNAMENTS: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -1361,6 +1364,32 @@ async def process_pending_rounds(config: Config):
             await asyncio.sleep(t_cst.TOURNAMENT_PENDING_ROUND_CYCLE_INTERVAL)
 
 
+async def _alert_if_near_weekly_deadline(tournament: TournamentData, config: Config) -> None:
+    """Ping Discord once if this tournament is still active within the alert window before the
+    Friday completion deadline (see TOURNAMENT_DEADLINE_* in constants.py).
+
+    Completion is a manual step, so this is a reminder only - it never forces a tournament to
+    finish, and it doesn't try to guess whether the deadline will actually be missed.
+    """
+    now = datetime.now(timezone.utc)
+    if now.weekday() != t_cst.TOURNAMENT_DEADLINE_DAY_OF_WEEK:
+        return
+    deadline = now.replace(hour=t_cst.TOURNAMENT_DEADLINE_HOUR, minute=0, second=0, microsecond=0)
+    alert_start = deadline - timedelta(minutes=t_cst.TOURNAMENT_DEADLINE_ALERT_MINUTES_BEFORE)
+    if not (alert_start <= now < deadline):
+        return
+
+    await _alert_once(
+        tournament.tournament_id,
+        _DEADLINE_ALERTED_TOURNAMENTS,
+        f"Tournament deadline approaching\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Still ACTIVE with under {t_cst.TOURNAMENT_DEADLINE_ALERT_MINUTES_BEFORE} minutes left before the "
+        f"{t_cst.TOURNAMENT_DEADLINE_HOUR}:00 UTC Friday deadline. If it's actually finished, complete it manually now.",
+        config,
+    )
+
+
 async def process_active_tournaments(config: Config):
     """
     Process all active tournaments by advancing them if needed.
@@ -1373,6 +1402,7 @@ async def process_active_tournaments(config: Config):
             for tournament in active_tournaments:
                 with LogContext(tournament_id=tournament.tournament_id):
                     logger.info(f"Processing active tournament {tournament.tournament_id}")
+                    await _alert_if_near_weekly_deadline(tournament, config)
                     rounds = await get_tournament_rounds(tournament.tournament_id, config.psql_db)
                     if not rounds:
                         logger.info(f"Tournament {tournament.tournament_id} has no rounds, creating first round...")

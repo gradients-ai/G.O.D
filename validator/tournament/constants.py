@@ -21,6 +21,14 @@ TOURNAMENT_SCHEDULE_TEXT_HOUR = 11
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_IMAGE_HOUR = 13
 
+# Every tournament (any type) is expected to be completed by this day/hour, independent of
+# training time, GPU availability, and round reverts during the week. Completion is a manual
+# step (see advance_tournament's "update DB manually" note), so this deadline only drives the
+# Discord reminder below - it never forces a tournament to finish.
+TOURNAMENT_DEADLINE_DAY_OF_WEEK = 4  # Friday
+TOURNAMENT_DEADLINE_HOUR = 14
+TOURNAMENT_DEADLINE_ALERT_MINUTES_BEFORE = 30
+
 # Tournament start requirements
 MIN_MINERS_FOR_ENV_TOURN = 5
 MIN_MINERS_FOR_TOURN = 4  # within the small-tournament band (3..9): round 1 is a single group, top 2 advance
