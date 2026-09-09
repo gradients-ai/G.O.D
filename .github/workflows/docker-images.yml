@@ -91,7 +91,7 @@ jobs:
               {
                   "id": "image-evaluator",
                   "image": "gradientsio/image-evaluator",
-                  "channel_tag": "latent-l2-v1",
+                  "channel_tag": "basilica",
                   "dockerfile": "ops/docker/validator-diffusion.dockerfile",
                   "patterns": [
                       "validator/evaluation/**",

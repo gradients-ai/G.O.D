@@ -896,7 +896,6 @@ async def _run_environment_evaluation(
 
 async def run_evaluation_docker_image(
     test_split_url: str,
-    training_split_url: str,
     original_model_repo: str,
     models: list[str],
     model_type: ImageModelType,
@@ -916,7 +915,6 @@ async def run_evaluation_docker_image(
     ]
     environment = {
         "DATASET": container_dataset_path,
-        "TRAIN_SPLIT_URL": training_split_url,
         "MODELS": ",".join(models),
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,

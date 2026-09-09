@@ -1,7 +1,6 @@
 """Production image-family encoders and strict flow/LoRA contracts."""
 
 import logging
-from dataclasses import asdict
 from dataclasses import dataclass
 
 import numpy as np
@@ -15,9 +14,6 @@ class FlowFamily:
     clip_type: str
     encoders: tuple
     vae: tuple
-    # Retained checkpoint metadata forms part of the versioned case fingerprint.
-    steps: int
-    cfg: float
     shift: float | None = None
     guidance: float | None = None
 
@@ -27,38 +23,28 @@ FAMILIES = {
         "lumina2",
         (("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors"),),
         ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
-        10,
-        1.0,
     ),
     "flux": FlowFamily(
         "flux",
         tuple(("comfyanonymous/flux_text_encoders", f) for f in ("t5xxl_fp16.safetensors", "clip_l.safetensors")),
         ("rayonlabs/FLUX.1-dev", "ae.safetensors"),
-        28,
-        1.0,
         guidance=3.5,
     ),
     "qwen-image": FlowFamily(
         "qwen_image",
         (("Comfy-Org/Qwen-Image_ComfyUI", "split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors"),),
         ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
-        30,
-        4.0,
         shift=3.0,
     ),
     "krea2": FlowFamily(
         "krea2",
         (("Comfy-Org/Krea-2", "text_encoders/qwen3vl_4b_fp8_scaled.safetensors"),),
         ("Comfy-Org/Krea-2", "vae/qwen_image_vae.safetensors"),
-        30,
-        4.0,
     ),
     "ideogram4": FlowFamily(
         "ideogram4",
         (("Comfy-Org/Ideogram-4", "text_encoders/qwen3vl_8b_fp8_scaled.safetensors"),),
         ("Comfy-Org/Ideogram-4", "vae/flux2-vae.safetensors"),
-        30,
-        8.0,
     ),
 }
 
@@ -88,13 +74,11 @@ class ImageFlowAdapter:
             raise ValueError(f"No validated flow contract for {family}")
         self.family = family
         self.spec = FAMILIES[family]
-        self.encoders, encoder_metadata = [], []
+        self.encoders = []
         for repo, filename in self.spec.encoders:
-            name, metadata = materialize_model(api, repo, filename, root / "models/text_encoders")
+            name, _ = materialize_model(api, repo, filename, root / "models/text_encoders")
             self.encoders.append(name)
-            encoder_metadata.append(metadata)
-        self.vae_name, vae_metadata = materialize_model(api, *self.spec.vae, root / "models/vae")
-        self.provenance = {"family": family, "settings": asdict(self.spec), "encoders": encoder_metadata, "vae": vae_metadata}
+        self.vae_name, _ = materialize_model(api, *self.spec.vae, root / "models/vae")
 
     def load_clip(self):
         import nodes

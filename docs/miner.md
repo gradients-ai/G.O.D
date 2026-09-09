@@ -556,7 +556,7 @@ You can also re-evaluate recent tasks locally after building the validator image
 
 ```bash
 docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
-docker build -f ops/docker/validator-diffusion.dockerfile -t gradientsio/image-evaluator:latent-l2-v1 .
+docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
 
 python -m ops.validator_ops.run_evaluation --help
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID
@@ -639,10 +639,3 @@ It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the r
 - `validator/tournament/gpu_requirements.py`: GPU requirement logic.
 - `validator/tournament/constants.py`: tournament structure, fees, and environment round constants.
 - `validator/scoring/constants.py`: scoring weights and emissions constants.
-
-Image evaluation uses held-out flow-prediction L2 with equal captioned and
-empty-caption weighting. Lower loss ranks higher. It tests the submitted LoRA on
-shared corrupted test latents; it does not compare generated RGB pixels. Supported
-families are Z-Image, FLUX, Qwen-Image, Krea-2 Raw and Ideogram-4. The submitted
-adapter must load completely against the task base. The training dataset is used
-for duplicate screening, not as a reward target.

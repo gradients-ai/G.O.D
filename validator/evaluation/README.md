@@ -4,6 +4,7 @@ Evaluation runtimes and helpers used after miner training completes.
 
 ## Contents
 
+- `comfy_workflows/`: ComfyUI workflow JSON files for image evaluation.
 - `evaluators/`: task-specific evaluator entrypoints.
 - `pvp/`: PvP environment evaluation runtime.
 - `basilica.py`: Basilica client integration.
@@ -15,12 +16,6 @@ Evaluation runtimes and helpers used after miner training completes.
 - `docker_evaluation.py`: Docker/Basilica evaluation orchestration.
 - `evaluation_logging.py`: evaluation logging helpers.
 - `image_io.py`: image loading and encoding helpers.
-- `image_flow_adapter.py`: family-specific encoders, deterministic VAEs, strict LoRA loading and model contracts.
-- `image_denoising.py`: direct sampler for shared prediction cases.
-- `image_test_data.py`: nested dataset readers, deterministic preprocessing and duplicate screening.
-- `denoising_mse.py`: shared rectified-flow cases and prediction MSE.
-- `image_artifacts.py`: pinned base-model and LoRA artifact loading.
-- `image_encoder.py`: deterministic float32 VAE encoding.
 - `intercode_server.py`: InterCode server wrapper.
 - `local_evaluation.py`: local evaluation runner.
 - `model_checks.py`: model architecture and LoRA checks.
@@ -28,18 +23,6 @@ Evaluation runtimes and helpers used after miner training completes.
 - `result_processing.py`: conversion of raw eval output into persisted results.
 - `runtime.py`: evaluation runtime helpers.
 - `utils.py`: evaluation utility helpers.
-
-Production image evaluation uses **flow-prediction L2**, averaging captioned and
-empty-caption losses equally across held-out images and shared 16 × 16 noise cases.
-Z-Image, FLUX, Qwen-Image, Krea-2 Raw and Ideogram-4 are supported; SDXL is excluded.
-`evaluators/diffusion.py` loads Comfy libraries directly, with no HTTP server,
-image reconstruction or pixel-scoring path. Training data is required only for
-duplicate screening. Every candidate uses the same deterministic VAE, base model
-and noise cases; full LoRA loading is checked. Results include the version
-`image-denoising-l2-v1`, component losses and a case fingerprint. The validator
-checks the scalar equals the 50/50 mean and rejects incompatible comparisons.
-
-See `ops/docker/README.md` for the Docker build and production environment contract.
 
 SWE Infinite evaluation runs as an individual environment tournament eval. The
 candidate model is served by SGLang inside Basilica, and the evaluator calls an

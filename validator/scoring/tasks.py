@@ -21,6 +21,7 @@ from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.dataset_models import TextDatasetType
+from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
 from core.models.task_models import TaskType
@@ -150,9 +151,6 @@ def calculate_miner_ranking_and_scores(
             logger.info(f"Processing {valid_results[0].task_type} - using test_loss for ranking")
 
     logger.info("Using test loss for ranking")
-    image_fingerprints = [r.eval_set_fingerprint for r in valid_results if isinstance(r, MinerResultsImage)]
-    if any(image_fingerprints) and (None in image_fingerprints or len(set(image_fingerprints)) != 1):
-        raise ValueError("Image scores use different evaluation cases or mix legacy and prediction metrics; re-evaluate the task")
     ranked_results = []
     for result in valid_results:
         result.adjusted_loss = result.test_loss
@@ -303,6 +301,29 @@ def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskT
         )
 
 
+def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) -> float:
+    if isinstance(eval_result.eval_loss, DiffusionLosses):
+        text_guided_avg = (
+            sum(eval_result.eval_loss.text_guided_losses) / len(eval_result.eval_loss.text_guided_losses)
+            if eval_result.eval_loss.text_guided_losses
+            else 0
+        )
+
+        no_text_avg = (
+            sum(eval_result.eval_loss.no_text_losses) / len(eval_result.eval_loss.no_text_losses)
+            if eval_result.eval_loss.no_text_losses
+            else 0
+        )
+
+        weighted_loss = (
+            eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg
+            + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
+        )
+        return weighted_loss
+
+    return None
+
+
 async def _evaluate_submissions(
     task: AnyTypeRawTask,
     submission_repos: list[str],
@@ -398,7 +419,9 @@ async def _evaluate_submissions(
         for repo in unique_repos:
             if repo == base_model:
                 logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
-                results[repo] = Exception("Non-finetuned submission: repository matches base model")
+                results[repo] = EvaluationResultImage(
+                    eval_loss=DiffusionLosses(text_guided_losses=[0], no_text_losses=[0]), is_finetune=False
+                )
             else:
                 repos_to_evaluate.append(repo)
 
@@ -407,7 +430,6 @@ async def _evaluate_submissions(
 
         evaluation_params = {
             "test_split_url": task.test_data,
-            "training_split_url": task.training_data,
             "original_model_repo": base_model,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
@@ -472,8 +494,7 @@ async def _persist_raw_task_results(
     assert task.task_id is not None, "task id needs to be set to persist losses"
 
     # The paired boss-round comparison is the only consumer of the per-example vectors, so they are
-    # only stored for boss-round tasks. Image fingerprints are also stored for ordinary tasks
-    # to prevent comparisons between incompatible metrics/cases after restart.
+    # only stored for boss-round tasks. Checked once per task rather than once per miner.
     keep_per_example_losses = await is_paired_comparison_task(task.task_id, psql_db)
 
     for result in task_results:
@@ -488,8 +509,7 @@ async def _persist_raw_task_results(
                 score_reason=result.score_reason,
                 psql_db=psql_db,
                 per_example_losses=result.per_example_losses if keep_per_example_losses else None,
-                eval_set_fingerprint=result.eval_set_fingerprint
-                if keep_per_example_losses or task.task_type == TaskType.IMAGETASK else None,
+                eval_set_fingerprint=result.eval_set_fingerprint if keep_per_example_losses else None,
             )
 
             if result.submission:
@@ -520,7 +540,6 @@ def _result_from_persisted_row(task: AnyTypeRawTask, hotkey: str, row: dict | No
             synth_loss=float(synth_loss),
             is_finetune=True,
             score_reason=reason_for_ranking,
-            eval_set_fingerprint=row.get("eval_set_fingerprint"),
         )
 
     return MinerResultsText(
@@ -692,7 +711,9 @@ async def process_miners_pool(
                     ]:
                         test_result = eval_result
                     elif task.task_type == TaskType.IMAGETASK:
-                        test_result = eval_result
+                        test_result = eval_result.model_copy(
+                            update={"eval_loss": _calculate_weighted_loss_for_image_eval(eval_result)}
+                        )
                     else:
                         raise ValueError(f"Unknown task type: {task.task_type}")
 
@@ -735,7 +756,6 @@ async def process_miners_pool(
                             synth_loss=float(test_result.eval_loss),
                             is_finetune=test_result.is_finetune,
                             submission=submission,
-                            eval_set_fingerprint=test_result.eval_set_fingerprint,
                         )
                     )
                 else:

@@ -3,6 +3,9 @@ from core.constants.environments import EnvironmentName
 from core.pvp import constants as pvp_cst
 
 
+DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.5
+
+
 DOCKER_EVAL_HF_CACHE_DIR = "/root/.cache/huggingface"
 
 # DPO evaluation

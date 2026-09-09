@@ -16,6 +16,7 @@ Manual evaluation utilities and reward-function management scripts.
 - `pvp_anthropic_match.py`: run a PvP matchup with Anthropic models.
 - `pvp_play.py`: manual PvP tool-calling harness stepper.
 - `run_grpo_evaluation.py`: standalone GRPO evaluation runner.
+- `run_image_evaluation_probe.py`: image evaluation probe.
 - `run_text_evaluation_probe.py`: text evaluation probe.
 - `simple_eval_grpo.sh`: shell GRPO evaluation example.
 - `upload_grpo_model.sh`: upload helper for GRPO models.
