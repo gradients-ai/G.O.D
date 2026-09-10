@@ -16,6 +16,7 @@ services:
       GF_AUTH_ANONYMOUS_ORG_NAME: "Main Org."
       GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
       GF_AUTH_BASIC_ENABLED: "true"
+      GF_DATAPROXY_TIMEOUT: "30"
     ports:
       - "3001:3001"
     volumes:
