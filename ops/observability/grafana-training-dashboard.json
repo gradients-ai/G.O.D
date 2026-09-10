@@ -15,10 +15,11 @@
       }
     ]
   },
+  "description": "Trainer Docker logs from Loki Training. Filter with Task ID / Hotkey textboxes (pipeline filters — safe for multi-day ranges). Extra LogQL goes in Line filter. Top activity panels are last 6h only; log panels follow the dashboard time range.",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 2,
+  "id": null,
   "links": [],
   "panels": [
     {
@@ -88,7 +89,7 @@
           "refId": "A"
         }
       ],
-      "title": "Task Types Activity",
+      "title": "Task Types Activity (last 6h)",
       "type": "piechart"
     },
     {
@@ -191,7 +192,7 @@
           "refId": "A"
         }
       ],
-      "title": "Active Training Tasks",
+      "title": "Active Training Tasks (last 6h)",
       "type": "table"
     },
     {
@@ -215,8 +216,8 @@
         "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
-        "showCommonLabels": false,
-        "showLabels": false,
+        "showCommonLabels": true,
+        "showLabels": true,
         "showTime": true,
         "sortOrder": "Descending",
         "wrapLogMessage": true
@@ -230,8 +231,8 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{job=\"docker-training-containers\"} ${search}",
-          "maxLines": 200,
+          "expr": "{job=\"docker-training-containers\"} | task_id =~ \"${task_id_search}\" | hotkey =~ \"${hotkey_search}\" | model =~ \"${model}\" | task_type =~ \"${task_type:pipe}\" ${search}",
+          "maxLines": 500,
           "queryType": "range",
           "refId": "A"
         }
@@ -331,7 +332,7 @@
           "refId": "A"
         }
       ],
-      "title": "Log Levels Over Time",
+      "title": "Log Levels Over Time (last 6h)",
       "type": "timeseries"
     },
     {
@@ -355,7 +356,7 @@
         "enableInfiniteScrolling": false,
         "enableLogDetails": true,
         "prettifyLogMessage": false,
-        "showCommonLabels": false,
+        "showCommonLabels": true,
         "showLabels": true,
         "showTime": true,
         "sortOrder": "Descending",
@@ -368,8 +369,11 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"docker-training-containers\"} |~ \"(?i)error\"",
-          "maxLines": 100,
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "{job=\"docker-training-containers\"} | task_id =~ \"${task_id_search}\" | hotkey =~ \"${hotkey_search}\" | model =~ \"${model}\" | task_type =~ \"${task_type:pipe}\" |~ \"(?i)error\" ${search}",
+          "maxLines": 200,
+          "queryType": "range",
           "refId": "A"
         }
       ],
@@ -402,27 +406,10 @@
       },
       {
         "current": {
-          "text": "",
-          "value": ""
-        },
-        "label": "Line filter (optional LogQL, e.g. |~ \"loss\" or | task_id =~ \"uuid\")",
-        "name": "search",
-        "options": [
-          {
-            "selected": true,
-            "text": "",
-            "value": ""
-          }
-        ],
-        "query": "",
-        "type": "textbox"
-      },
-      {
-        "current": {
           "text": ".*",
           "value": ".*"
         },
-        "label": "Task ID Search",
+        "label": "Task ID (regex, default .*)",
         "name": "task_id_search",
         "options": [
           {
@@ -439,7 +426,7 @@
           "text": ".*",
           "value": ".*"
         },
-        "label": "Hotkey Search",
+        "label": "Hotkey (regex, default .*)",
         "name": "hotkey_search",
         "options": [
           {
@@ -456,7 +443,7 @@
           "text": ".*",
           "value": ".*"
         },
-        "label": "Model",
+        "label": "Model (regex, default .*)",
         "name": "model",
         "options": [
           {
@@ -483,16 +470,33 @@
         "options": [],
         "query": "EnvTask,InstructTextTask,GrpoTask,ChatTask,DpoTask,ImageTask,app",
         "type": "custom"
+      },
+      {
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "label": "Extra LogQL (optional, e.g. |~ \"loss\")",
+        "name": "search",
+        "options": [
+          {
+            "selected": true,
+            "text": "",
+            "value": ""
+          }
+        ],
+        "query": "",
+        "type": "textbox"
       }
     ]
   },
   "time": {
-    "from": "now-2d",
+    "from": "now-7d",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "Training Runs Dashboard",
   "uid": "training-runs",
-  "version": 19
+  "version": 20
 }
