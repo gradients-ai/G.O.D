@@ -998,6 +998,69 @@ async def get_pre_boss_group_runner_up(
     return runner_up_hotkey
 
 
+async def get_boss_retention_runners_up(
+    completed_round: TournamentRoundData,
+    psql_db: PSQLDB,
+) -> tuple[str | None, str | None]:
+    """Rank non-boss challengers of a boss-retention round for 2nd/3rd place.
+
+    Used when an environment round yields no winners because the boss beat every
+    co-group challenger (and no other group advanced anyone). Champion stays 1st;
+    the best non-boss score in this round is 2nd, the next is 3rd.
+
+    Returns ``(second, third)``. Either may be None when no clean unique placement
+    exists: no valid challenger scores, a tie at the top (ambiguous 2nd), or a tie
+    at the 3rd-place cutoff (omit 3rd only). Scores are comparable across groups in
+    the same round (shared model, environments, and eval seed).
+    """
+    boss_hotkey = EMISSION_BURN_HOTKEY
+    round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
+    if not round_tasks:
+        return (None, None)
+
+    candidates: list[tuple[str, float]] = []
+    for task in round_tasks:
+        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+        if not miner_results:
+            continue
+        for result in calculate_miner_ranking_and_scores(miner_results):
+            if result.hotkey == boss_hotkey:
+                continue
+            if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
+                continue
+            candidates.append((result.hotkey, result.adjusted_loss))
+
+    if not candidates:
+        return (None, None)
+
+    candidates.sort(key=lambda item: item[1], reverse=True)
+
+    # Tie at the top: cannot identify a unique 2nd place.
+    if len(candidates) > 1 and candidates[0][1] == candidates[1][1]:
+        logger.info(
+            f"Boss-retention round {completed_round.round_id}: top challengers tied at "
+            f"{candidates[0][1]}; omitting 2nd/3rd placements"
+        )
+        return (None, None)
+
+    second = candidates[0][0]
+    third: str | None = None
+    if len(candidates) >= 2:
+        # Tie at the 3rd-place cutoff: omit 3rd rather than guess.
+        if len(candidates) >= 3 and candidates[1][1] == candidates[2][1]:
+            logger.info(
+                f"Boss-retention round {completed_round.round_id}: 3rd-place cutoff tied at "
+                f"{candidates[1][1]}; paying 2nd={second} only"
+            )
+        else:
+            third = candidates[1][0]
+
+    logger.info(
+        f"Boss-retention round {completed_round.round_id}: placements second={second}, third={third}"
+    )
+    return (second, third)
+
+
 async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
     """Rank competitors across the multi-match small-tournament group."""
     match_rankings: list[MatchRanking] = []

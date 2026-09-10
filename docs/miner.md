@@ -490,7 +490,8 @@ Champions can earn boosted tournament allocation when boss-round performance exc
 A tournament pays a 3rd place only when it can be identified unambiguously:
 
 - **Text/Image**: the loser of the last single-pair knockout round before the boss round.
-- **Environment**: the single best-scoring non-boss, non-challenger miner across every group in the pre-boss round (valid since a round's groups all share the same model, environments, and eval seed).
+- **Environment (normal boss round)**: the single best-scoring non-boss, non-challenger miner across every group in the pre-boss round (valid since a round's groups all share the same model, environments, and eval seed).
+- **Environment (boss retains in the final group round)**: when the boss beats every co-group challenger and no single-challenger boss round is created, the top two non-boss challengers of that retention round are paid 2nd and 3rd by score (higher is better). A tie at the top omits both; a tie at the 3rd-place cutoff omits only 3rd.
 
 If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
 

@@ -98,6 +98,7 @@ from validator.tournament.repo_uploader import upload_tournament_participant_rep
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import find_groups_with_no_valid_scores
+from validator.tournament.round_results import get_boss_retention_runners_up
 from validator.tournament.round_results import get_pre_boss_group_runner_up
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.task_creator import create_boss_round_decider_tasks
@@ -666,9 +667,26 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             # Keep EMISSION_BURN_HOTKEY as the winner when defending champion wins by default
             winner = EMISSION_BURN_HOTKEY
-            await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
+            second_place: str | None = None
+            third_place: str | None = None
+            if tournament.tournament_type == TournamentType.ENVIRONMENT:
+                # Boss retained in this round: pay the top non-boss challengers of the
+                # retention round as 2nd/3rd so the environment pool is not 100% champion-only.
+                second_place, third_place = await get_boss_retention_runners_up(completed_round, psql_db)
+                await update_tournament_placements(
+                    tournament.tournament_id,
+                    winner,
+                    second_place,
+                    third_place,
+                    psql_db,
+                )
+            else:
+                await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
-            logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
+            logger.info(
+                f"Tournament {tournament.tournament_id} completed with winner: {winner}, "
+                f"second={second_place}, third={third_place}. Please update DB manually."
+            )
 
             asyncio.create_task(
                 notify_tournament_completed(
