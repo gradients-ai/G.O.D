@@ -16,6 +16,7 @@ from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import RawTask
+from validator.tasks.requests import get_model_num_params
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
@@ -461,17 +462,25 @@ async def _create_task_by_type(
     instruct_datasets: list,
     dpo_datasets: list,
     model_id_override: str | None = None,
+    allow_augmentation: bool = True,
 ) -> RawTask:
     """Create a synthetic task of the specified type.
 
     model_id_override applies to instruct tasks only — it is the oversampled-later-model slot,
     and the other task types draw from the content service pool as usual.
+    allow_augmentation is instruct-only: the large boss-round instruct slot never republishes a
+    70B copy during model-prep.
     """
     if task_type == TaskType.IMAGETASK:
         return await create_synthetic_image_task(config, models)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
         return await create_synthetic_instruct_text_task(
-            config, models, instruct_datasets, enable_kl=True, model_id_override=model_id_override
+            config,
+            models,
+            instruct_datasets,
+            enable_kl=True,
+            model_id_override=model_id_override,
+            allow_augmentation=allow_augmentation,
         )
     elif task_type == TaskType.DPOTASK:
         return await create_synthetic_dpo_task(config, models, dpo_datasets, model_id_override=model_id_override)
@@ -484,7 +493,12 @@ async def _create_task_by_type(
     else:
         # Default to instruct text task
         return await create_synthetic_instruct_text_task(
-            config, models, instruct_datasets, enable_kl=True, model_id_override=model_id_override
+            config,
+            models,
+            instruct_datasets,
+            enable_kl=True,
+            model_id_override=model_id_override,
+            allow_augmentation=allow_augmentation,
         )
 
 
@@ -835,6 +849,30 @@ async def create_new_task_of_same_type(task: RawTask, config: Config, model_id_o
     )
 
 
+def _task_params_count(task) -> int:
+    """Persisted param count, or a Hugging Face lookup when prep never wrote one (still 0)."""
+    count = int(getattr(task, "model_params_count", 0) or 0)
+    if count:
+        return count
+    model_id = getattr(task, "model_id", None)
+    if not model_id:
+        return 0
+    try:
+        fetched = get_model_num_params(model_id)
+    except Exception:
+        logger.warning(f"Could not fetch param count for {model_id} during replacement routing")
+        return 0
+    return int(fetched or 0)
+
+
+def _is_boss_round_large_instruct_task(task, is_final_round: bool) -> bool:
+    """The boss-round instruct slot that was forced onto the 35B–71B pool."""
+    if not is_final_round or task.task_type != TaskType.INSTRUCTTEXTTASK:
+        return False
+    params_b = _task_params_count(task) / t_cst.MODEL_PARAMS_TO_BILLIONS
+    return t_cst.BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B <= params_b <= t_cst.BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B
+
+
 def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | None, pair_id: str | None) -> bool:
     """Return True when task should follow round-1 group text constraints."""
     return (
@@ -858,6 +896,26 @@ async def _create_round_one_group_text_replacement_task(config: Config, model_id
         instruct_datasets,
         enable_kl=False,
         model_id_override=model_id_override,
+    )
+
+
+async def _create_boss_round_large_instruct_replacement_task(config: Config) -> RawTask:
+    """Redraw the boss-round large instruct slot from the 35B–71B pool.
+
+    Does not pin the failed model: that model is why we are replacing. Augmentation stays off so
+    model-prep does not upload a full 70B copy.
+    """
+    models = _get_text_models(
+        config.keypair,
+        smallest_size_b=t_cst.BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B,
+        largest_size_b=t_cst.BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B,
+    )
+    return await create_synthetic_instruct_text_task(
+        config,
+        models,
+        _get_instruct_text_datasets(config.keypair),
+        enable_kl=True,
+        allow_augmentation=False,
     )
 
 
@@ -918,6 +976,8 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
             # The last instruct-text slot is always a large (35B+) model, not the usual
             # standard/big-pool probability draw, and isn't eligible for the oversampled
             # override below since that model pool isn't guaranteed to be large.
+            # Augmentation is forced off: republishing a 70B copy during model-prep
+            # regularly exceeds the 90-minute prep timeout.
             is_forced_large_instruct = task_type == TaskType.INSTRUCTTEXTTASK and slot_index == instruct_target - 1
             model_id_override = None
             if is_forced_large_instruct:
@@ -939,6 +999,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
                 instruct_datasets,
                 dpo_datasets,
                 model_id_override=model_id_override,
+                allow_augmentation=not is_forced_large_instruct,
             )
             if task:
                 tasks.append(task)
@@ -1053,6 +1114,7 @@ async def _create_single_new_text_task(
     instruct_datasets: list,
     dpo_datasets: list,
     model_id_override: str | None = None,
+    allow_augmentation: bool = True,
 ) -> RawTask | None:
     """Create a single new synthetic text task of a specific type."""
     try:
@@ -1061,7 +1123,13 @@ async def _create_single_new_text_task(
             return None
 
         task = await _create_task_by_type(
-            task_type, config, models, instruct_datasets, dpo_datasets, model_id_override=model_id_override
+            task_type,
+            config,
+            models,
+            instruct_datasets,
+            dpo_datasets,
+            model_id_override=model_id_override,
+            allow_augmentation=allow_augmentation,
         )
         await _create_and_register_tournament_task(
             task, tournament_id, round_id, config, pair_id=pair_id
@@ -1167,6 +1235,12 @@ async def replace_tournament_task(
         elif isinstance(original_task_obj, EnvRawTask):
             logger.info("Detected environment task replacement; preserving start point/model/envs/seed/hours")
             new_task = await _create_environment_replacement_task(original_task_obj, config)
+        elif _is_boss_round_large_instruct_task(original_task_obj, is_final_round):
+            # The 35B–71B instruct slot is identified by size, not model id: pinning the failed
+            # repo would retry the model that just failed prep. Redraw from the large pool and
+            # keep augmentation off (a 70B republish blows the model-prep timeout).
+            logger.info("Detected boss-round large instruct replacement; redrawing from the 35-71B pool")
+            new_task = await _create_boss_round_large_instruct_replacement_task(config)
         else:
             replacement_model_override = (
                 original_task_obj.model_id if _is_oversampled_later_model_task(original_task_obj) else None

@@ -179,6 +179,7 @@ class IndividualEvalResult(BaseModel):
 
     environment_name: EnvironmentName
     scores_by_hotkey: dict[str, float]
+    deferred_hotkeys: list[str] = Field(default_factory=list)
 
 
 class IndividualScoresByEnv(BaseModel):

@@ -31,6 +31,13 @@ def seeded_intensity(aug_type: AugmentationType, rng: random.Random) -> float:
     return rng.uniform(low, high)
 
 
+def skip_augmentation_for_params(num_params: int | None) -> bool:
+    """True when an augmented copy would be too large to publish during model-prep."""
+    if not num_params:
+        return False
+    return num_params >= int(vcst.AUGMENTATION_SKIP_MIN_SIZE_B * 1_000_000_000)
+
+
 def maybe_get_augmentation_config(task_type: TaskType) -> AugmentationConfig | None:
     """Randomly decide whether to augment a model and return the full config.
 

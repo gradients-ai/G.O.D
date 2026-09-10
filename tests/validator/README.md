@@ -4,6 +4,7 @@ Tests for validator evaluation, scoring, and tournament behavior.
 
 ## Contents
 
+- `db/`: SQL helper tests (continuous SFT state, placement persistence).
 - `evaluation/`: local evaluation and PvP tests.
 - `scoring/`: task/tournament scoring pipeline tests.
 - `tournament/`: tournament rounds, boss rounds, weight distribution, and analytics tests.
