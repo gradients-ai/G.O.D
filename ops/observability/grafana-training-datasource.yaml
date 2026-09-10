@@ -3,14 +3,15 @@ apiVersion: 1
 datasources:
   - name: Loki Training
     type: loki
+    uid: PABAB4B93E00F8D83
     access: proxy
     url: http://loki-training:3100
     basicAuth: false
     isDefault: true
     editable: true
     jsonData:
-      timeout: 60
-      maxLines: 5000
+      timeout: 30
+      maxLines: 1000
 
   - name: Prometheus Training
     type: prometheus

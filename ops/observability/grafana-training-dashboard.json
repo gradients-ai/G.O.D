@@ -49,6 +49,7 @@
         "y": 0
       },
       "id": 1,
+      "timeFrom": "now-6h",
       "options": {
         "displayLabels": [
           "name"
@@ -81,7 +82,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by(task_type) (count_over_time({job=\"docker-training-containers\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\", task_type=~\"${task_type:pipe}\"}[10m]))",
+          "expr": "sum by(task_type) (count_over_time({job=\"docker-training-containers\"}[10m]))",
           "instant": false,
           "legendFormat": "{{task_type}}",
           "refId": "A"
@@ -164,6 +165,7 @@
         "y": 0
       },
       "id": 2,
+      "timeFrom": "now-6h",
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -183,7 +185,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "sum by (task_id) (count_over_time({job=\"docker-training-containers\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\", task_type=~\"${task_type:pipe}\"}[10m]))",
+          "expr": "sum by (task_id) (count_over_time({job=\"docker-training-containers\"}[10m]))",
           "instant": true,
           "legendFormat": "{{task_id}}",
           "refId": "A"
@@ -228,7 +230,8 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "{job=\"docker-training-containers\", task_id=~\"${task_id_search}\", hotkey=~\"${hotkey_search}\", model=~\"${model:pipe}\", task_type=~\"${task_type:pipe}\"} |~ \"${search}\"",
+          "expr": "{job=\"docker-training-containers\"} ${search}",
+          "maxLines": 200,
           "queryType": "range",
           "refId": "A"
         }
@@ -303,6 +306,7 @@
         "y": 20
       },
       "id": 4,
+      "timeFrom": "now-6h",
       "options": {
         "legend": {
           "calcs": [],
@@ -364,7 +368,8 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "{job=\"docker-training-containers\", task_id=~\".*${task_id_search}.*\", hotkey=~\".*${hotkey_search}.*\", model=~\"${model:pipe}\", task_type=~\"${task_type:pipe}\"} |~ \"(?i)error\"",
+          "expr": "{job=\"docker-training-containers\"} |~ \"(?i)error\"",
+          "maxLines": 100,
           "refId": "A"
         }
       ],
@@ -400,7 +405,7 @@
           "text": "",
           "value": ""
         },
-        "label": "Search",
+        "label": "Line filter (optional LogQL, e.g. |~ \"loss\" or | task_id =~ \"uuid\")",
         "name": "search",
         "options": [
           {
@@ -448,59 +453,46 @@
       },
       {
         "current": {
-          "text": "All",
-          "value": [
-            "$__all"
-          ]
+          "text": ".*",
+          "value": ".*"
         },
-        "datasource": {
-          "type": "loki",
-          "uid": "${datasource}"
-        },
-        "definition": "label_values(model)",
-        "includeAll": true,
         "label": "Model",
-        "multi": true,
         "name": "model",
-        "options": [],
-        "query": "label_values(model)",
-        "refresh": 1,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
+        "options": [
+          {
+            "selected": true,
+            "text": ".*",
+            "value": ".*"
+          }
+        ],
+        "query": ".*",
+        "type": "textbox"
       },
       {
+        "allValue": ".*",
         "current": {
           "text": "All",
           "value": [
             "$__all"
           ]
         },
-        "datasource": {
-          "type": "loki",
-          "uid": "${datasource}"
-        },
-        "definition": "label_values(task_type)",
         "includeAll": true,
         "label": "Task Type",
         "multi": true,
         "name": "task_type",
         "options": [],
-        "query": "label_values(task_type)",
-        "refresh": 1,
-        "regex": "",
-        "sort": 1,
-        "type": "query"
+        "query": "EnvTask,InstructTextTask,GrpoTask,ChatTask,DpoTask,ImageTask,app",
+        "type": "custom"
       }
     ]
   },
   "time": {
-    "from": "now-7d",
+    "from": "now-2d",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "Training Runs Dashboard",
   "uid": "training-runs",
-  "version": 16
+  "version": 19
 }

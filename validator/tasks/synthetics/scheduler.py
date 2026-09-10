@@ -18,6 +18,7 @@ from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
 from core.models.image_models import ImageModelType
+from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
@@ -43,6 +44,7 @@ from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.prep.augmentation import maybe_get_augmentation_config
+from validator.tasks.prep.augmentation import skip_augmentation_for_params
 from validator.tasks.requests import get_model_num_params
 from validator.tasks.rewards.templates import sample_template_groups
 from validator.tournament import constants as t_cst
@@ -413,6 +415,22 @@ async def get_dataset(
             return dataset
 
 
+def _augmentation_config_for_model(
+    task_type: TaskType, model_id: str, allow_augmentation: bool = True
+) -> AugmentationConfig | None:
+    """Roll augmentation unless the caller disabled it or the base is too large to republish."""
+    if not allow_augmentation:
+        return None
+    num_params = get_model_num_params(model_id)
+    if skip_augmentation_for_params(num_params):
+        size_b = (num_params or 0) / 1_000_000_000
+        logger.info(
+            f"Skipping augmentation for {model_id} ({size_b:.1f}B >= {prep_cst.AUGMENTATION_SKIP_MIN_SIZE_B}B)"
+        )
+        return None
+    return maybe_get_augmentation_config(task_type)
+
+
 @retry_with_backoff
 async def create_synthetic_dpo_task(
     config: Config,
@@ -442,7 +460,7 @@ async def create_synthetic_dpo_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.DPOTASK)
+    augmentation_config = _augmentation_config_for_model(TaskType.DPOTASK, model_id)
     task = DpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -531,7 +549,7 @@ async def create_synthetic_grpo_task(
     reward_functions = _get_generic_reward_functions()
 
     yarn_factor = maybe_get_yarn_factor()
-    augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
+    augmentation_config = _augmentation_config_for_model(TaskType.GRPOTASK, model_id)
     task = GrpoRawTask(
         model_id=model_id,
         ds=dataset.dataset_id,
@@ -673,7 +691,7 @@ async def create_synthetic_affine_grpo_task(
         end_timestamp = current_time + timedelta(hours=number_of_hours)
 
         yarn_factor = maybe_get_yarn_factor()
-        augmentation_config = maybe_get_augmentation_config(TaskType.GRPOTASK)
+        augmentation_config = _augmentation_config_for_model(TaskType.GRPOTASK, model_id)
         task = GrpoRawTask(
             model_id=model_id,
             ds=s3_url,
@@ -729,7 +747,9 @@ async def create_synthetic_instruct_text_task(
     end_timestamp = current_time + timedelta(hours=number_of_hours)
 
     yarn_factor = maybe_get_yarn_factor() if allow_yarn else None
-    augmentation_config = maybe_get_augmentation_config(TaskType.INSTRUCTTEXTTASK) if allow_augmentation else None
+    augmentation_config = _augmentation_config_for_model(
+        TaskType.INSTRUCTTEXTTASK, model_id, allow_augmentation=allow_augmentation
+    )
     use_kl, kl_coef = maybe_get_kl_config() if enable_kl else (False, None)
     task = InstructTextRawTask(
         model_id=model_id,

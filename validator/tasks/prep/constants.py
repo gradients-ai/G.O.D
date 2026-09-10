@@ -24,6 +24,9 @@ AUGMENTATION_ENABLED_TEXT = True
 AUGMENTATION_ENABLED_IMAGE = False
 AUGMENTATION_ENABLED_ENV = False
 AUGMENTATION_PROBABILITY = 0.5
+# Skip publishing an augmented copy once the base is this large: model-prep would
+# upload a full 35B–70B repo and regularly blow the 90-minute prep timeout.
+AUGMENTATION_SKIP_MIN_SIZE_B = 35.0
 
 AUGMENTATION_TYPE_WEIGHTS: dict[AugmentationType, float] = {
     AugmentationType.GAUSSIAN_NOISE: 0.20,

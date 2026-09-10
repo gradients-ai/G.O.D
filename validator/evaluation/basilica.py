@@ -1062,7 +1062,8 @@ async def run_basilica_eval_repos(
     persist_deployment_ids: bool = True,
     deployment_id_persister: Callable[[str, str], Awaitable[None]] | None = None,
     reserve_deployment_id: bool = False,
-) -> dict[str, dict | str]:
+    propagate_retryable: bool = True,
+) -> dict[str, dict | str | EvaluationRetryableError]:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
 
     async def default_deployment_id_persister(repo: str, deployment_name: str) -> None:
@@ -1100,10 +1101,13 @@ async def run_basilica_eval_repos(
         ],
         return_exceptions=True,
     )
-    out: dict[str, dict | str] = {}
+    out: dict[str, dict | str | EvaluationRetryableError] = {}
     for repo, result in zip(repos, task_results):
         if isinstance(result, EvaluationRetryableError):
-            raise result
+            if propagate_retryable:
+                raise result
+            logger.info(f"[{repo}] eval deferred (retryable): {result}")
+            out[repo] = result
         elif isinstance(result, Exception):
             out[repo] = f"Evaluation failed: {result}"
         else:

@@ -862,9 +862,11 @@ async def run_evaluation_individual(
         persist_deployment_ids=False,
         deployment_id_persister=persist_individual_deployment_id,
         reserve_deployment_id=False,
+        propagate_retryable=False,
     )
 
     scores: dict[str, float] = {}
+    deferred_hotkeys: list[str] = []
     for repo, result in repo_results.items():
         hotkey = repo_to_hotkey.get(repo, repo)
         if isinstance(result, dict):
@@ -873,12 +875,16 @@ async def run_evaluation_individual(
                 scores[hotkey] = float(inner.get("eval_loss", 0.0))
             else:
                 logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
+        elif isinstance(result, EvaluationRetryableError):
+            logger.info(f"Individual eval deferred for {repo}: {result}")
+            deferred_hotkeys.append(hotkey)
         else:
             logger.warning(f"Individual eval failed for {repo}: {result}")
 
     return IndividualEvalResult(
         environment_name=environment_name,
         scores_by_hotkey=scores,
+        deferred_hotkeys=deferred_hotkeys,
     )
 
 

@@ -176,7 +176,9 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 }
 
 # One boss-round instruct-text task is always forced onto a model in this size band,
-# instead of the normal standard-pool draw.
+# instead of the normal standard-pool draw. Augmentation is skipped for this slot:
+# publishing a full 70B copy during model-prep regularly exceeds the prep timeout.
+# Prep-failure replacement redraws from this same band (it does not pin the failed model).
 BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 35.0
 BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 71.0
 # Number of boss-round text tasks (from FINAL_ROUND_TEXT_TASK_DISTRIBUTION) to force onto

@@ -23,7 +23,7 @@ Tournament state machine, participant management, task creation, scoring support
 - `reports.py`: tournament report generation.
 - `round_results.py`: round winner and elimination logic.
 - `runner.py`: tournament loop runner.
-- `task_creator.py`: tournament task creation.
+- `task_creator.py`: tournament task creation. The boss-round large instruct slot (35B–71B) skips augmentation so model-prep does not upload a full 70B copy. Prep-failure replacement of that slot redraws from the same size band.
 - `task_results.py`: task result loading for rankings.
 - `thresholds.py`: boss/champion threshold helpers.
 - `tournament_manager.py`: high-level tournament lifecycle manager.

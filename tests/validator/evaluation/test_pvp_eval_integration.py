@@ -232,6 +232,50 @@ async def test_individual_env_eval_requests_one_h100(monkeypatch):
     assert captured_kwargs["base_chains"] == {"hk_a": ["org/hk_a-round1"]}
 
 
+@pytest.mark.asyncio
+async def test_individual_env_gpu_cap_does_not_alert_or_consume_attempts(monkeypatch):
+    notified = []
+    incremented = []
+
+    async def fake_run_evaluation_individual(**kwargs):
+        return IndividualEvalResult(
+            environment_name=kwargs["environment_name"],
+            scores_by_hotkey={"hk_a": 0.75},
+            deferred_hotkeys=["hk_b"],
+        )
+
+    async def fake_save_individual_score(*args, **kwargs):
+        return None
+
+    async def fake_notify(*args, **kwargs):
+        notified.append(kwargs)
+
+    async def fake_increment(task_id, hotkey, environment_name, psql_db):
+        incremented.append(hotkey)
+
+    monkeypatch.setattr(scoring, "run_evaluation_individual", fake_run_evaluation_individual)
+    monkeypatch.setattr(scoring.tournament_sql, "save_individual_score", fake_save_individual_score)
+    monkeypatch.setattr(scoring, "notify_evaluation_exception", fake_notify)
+    monkeypatch.setattr(scoring.tournament_sql, "increment_individual_score_attempts", fake_increment)
+
+    scores = await scoring._dispatch_missing_individual(
+        env=EnvironmentName.INTERCODE,
+        task_id=uuid4(),
+        task_id_str="task-id",
+        miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a", "hk_b": "org/repo-b"}),
+        base_model="Qwen/Qwen2.5-72B-Instruct",
+        model_params=72_000_000_000,
+        seed=42,
+        config=SimpleNamespace(psql_db=object()),
+        scores=IndividualScoresByEnv(),
+        db_scores=[],
+    )
+
+    assert scores.results[EnvironmentName.INTERCODE].scores_by_hotkey == {"hk_a": 0.75}
+    assert notified == []
+    assert incremented == []
+
+
 def test_tournament_group_slot_envs_include_individual_envs():
     from validator.lifecycle import tasks
 

@@ -623,6 +623,10 @@ async def process_miners_pool(
             results.extend(await _run_env_tournament_eval(task, miner_repos, config))
         except PvPIncompleteError:
             raise
+        except EvaluationRetryableError:
+            # GPU cap / transient infra — same as pairwise PvP and instruct-text batches.
+            # Do not Discord-alert; lifecycle resets to pending for the next cycle.
+            raise
         except PvPEvaluationExhaustedError as e:
             logger.error(f"PvP pairwise evaluation exhausted attempts: {e}", exc_info=True)
             await notify_evaluation_exception(
@@ -1208,8 +1212,11 @@ async def _dispatch_missing_individual(
             environment_name=env.value, score=score, psql_db=config.psql_db,
         )
 
-    # Increment attempts only for hotkeys that were dispatched but didn't produce a score
-    failed_hotkeys = [hk for hk in to_run if hk not in eval_result.scores_by_hotkey]
+    deferred_hotkeys = set(eval_result.deferred_hotkeys)
+    failed_hotkeys = [
+        hk for hk in to_run
+        if hk not in eval_result.scores_by_hotkey and hk not in deferred_hotkeys
+    ]
     if failed_hotkeys:
         await notify_evaluation_exception(
             config,
@@ -1227,6 +1234,10 @@ async def _dispatch_missing_individual(
         )
     for hk in failed_hotkeys:
         await tournament_sql.increment_individual_score_attempts(task_id_str, hk, env.value, config.psql_db)
+    if deferred_hotkeys:
+        logger.info(
+            f"Individual eval {env.value}: deferred {len(deferred_hotkeys)} miners without consuming attempts"
+        )
 
     if env not in scores.results:
         scores.results[env] = IndividualEvalResult(environment_name=env, scores_by_hotkey={})
