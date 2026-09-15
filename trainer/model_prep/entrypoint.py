@@ -153,7 +153,15 @@ def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", required=True, help="HuggingFace model ID")
+    parser.add_argument("--model", required=True, help="HuggingFace model ID or local cache path")
+    parser.add_argument(
+        "--source-model-id",
+        default=None,
+        help=(
+            "Original HuggingFace repo id before local download/merge. Used to key the "
+            "merged-base publish when --model is already a flattened cache directory."
+        ),
+    )
     parser.add_argument("--training-data", required=True, help="S3 URL or local path to training data")
     parser.add_argument(
         "--task-type", default=TaskType.INSTRUCTTEXTTASK.value,
@@ -201,6 +209,36 @@ def generate_merged_repo_name(model_id: str) -> str:
     hf_username = os.environ.get("HUGGINGFACE_USERNAME", "gradients-io")
     repo_hash = hashlib.sha256(f"{model_id}:lora-merge".encode()).hexdigest()[:16]
     return f"{hf_username}/merged-{repo_hash}"
+
+
+def remote_repo_is_adapter(repo_id: str, hf_token: str) -> bool:
+    """True if a remote HF repo contains adapter_config.json (i.e. is a LoRA adapter)."""
+    if not repo_id or os.path.isdir(repo_id):
+        return False
+    try:
+        files = HfApi(token=hf_token).list_repo_files(repo_id, token=hf_token)
+    except Exception as exc:
+        print(f"[model_prep] Could not list {repo_id} for LoRA check ({exc})", flush=True)
+        return False
+    return LORA_ADAPTER_CONFIG_FILE in files
+
+
+def merge_publish_target(
+    model_arg: str,
+    source_model_id: str | None,
+    was_lora: bool,
+    source_is_adapter: bool,
+) -> str | None:
+    """HF repo to publish a flat merged base to, or None if no publish is needed.
+
+    Keyed on the original source repo id (not the anonymized local cache path) so
+    retries reuse one deterministic name and two different sources never collide.
+    Fires when either the local path was still a LoRA at detect time, or the
+    source HF repo is an adapter that the downloader already flattened in place.
+    """
+    if not (was_lora or source_is_adapter):
+        return None
+    return generate_merged_repo_name(source_model_id or model_arg)
 
 
 def load_training_data(path: str) -> list[dict]:
@@ -352,18 +390,27 @@ def main():
             print(f"[model_prep] Upload done in {time.time() - t0:.1f}s", flush=True)
             augmented_model_id = repo_id
 
-    # No-augmentation continuation (e.g. continuous-SFT) merged the LoRA only locally. Publish it so
-    # eval (on another box) gets a flat base, not the raw adapter. `model` is already the merged model.
-    if augmented_model_id is None and prep_result.was_lora:
-        repo_id = generate_merged_repo_name(args.model)
-        if _published_repo_is_complete(repo_id, hf_token):
-            print(f"[model_prep] Merged LoRA base already published at {repo_id}, skipping upload", flush=True)
-        else:
-            t0 = time.time()
-            print(f"[model_prep] Publishing merged LoRA base to {repo_id}...", flush=True)
-            upload_augmented_model(model, tokenizer, repo_id, hf_token)
-            print(f"[model_prep] Merged-base upload done in {time.time() - t0:.1f}s", flush=True)
-        augmented_model_id = repo_id
+    # No-augmentation continuation (e.g. continuous-SFT): the downloader may already have
+    # flattened a LoRA seed into the local cache, so was_lora can be False even when the
+    # source HF repo is an adapter. Publish a flat merged base keyed on the source repo id
+    # so eval (on another box) never sees a raw adapter. `model` is already the merged weights.
+    if augmented_model_id is None:
+        source_is_adapter = remote_repo_is_adapter(args.source_model_id or "", hf_token)
+        repo_id = merge_publish_target(
+            args.model,
+            args.source_model_id,
+            prep_result.was_lora,
+            source_is_adapter,
+        )
+        if repo_id is not None:
+            if _published_repo_is_complete(repo_id, hf_token):
+                print(f"[model_prep] Merged LoRA base already published at {repo_id}, skipping upload", flush=True)
+            else:
+                t0 = time.time()
+                print(f"[model_prep] Publishing merged LoRA base to {repo_id}...", flush=True)
+                upload_augmented_model(model, tokenizer, repo_id, hf_token)
+                print(f"[model_prep] Merged-base upload done in {time.time() - t0:.1f}s", flush=True)
+            augmented_model_id = repo_id
 
     # --- Baseline stats ---
     print("[model_prep] Computing baseline stats...", flush=True)
