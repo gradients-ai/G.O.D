@@ -643,6 +643,9 @@ def run_model_prep_container(
         "--model", model_cache_path,
         "--training-data", training_data_url,
         "--task-type", task_type,
+        # Original HF repo id: the anonymized --model path may already be a flat
+        # merge (downloader flattened the adapter), so merge-publish keys on this.
+        "--source-model-id", model_id,
     ]
 
     if augmentation_config is not None:
