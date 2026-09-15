@@ -144,8 +144,6 @@ def main():
         "dataset": os.environ.get("DATASET") or os.environ.get("TEST_SPLIT_URL"),
         "repo": os.environ.get("ORIGINAL_MODEL_REPO"), "family": os.environ.get("MODEL_TYPE"), "models": models,
         "comfy_root": Path(os.environ.get("COMFY_ROOT", "/app/validator/evaluation/ComfyUI")),
-        # Production remains 16x16. Explicit overrides support convergence and
-        # runtime studies without maintaining a fork of the scoring loop.
         "strata": int(os.environ.get("IMAGE_EVAL_STRATA", DEFAULT_STRATA)),
         "noises": int(os.environ.get("IMAGE_EVAL_NOISES", DEFAULT_NOISES)),
         "batch_size": int(os.environ.get("IMAGE_EVAL_BATCH_SIZE", 2)),

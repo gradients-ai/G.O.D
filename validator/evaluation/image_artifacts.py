@@ -58,9 +58,6 @@ def materialize_model(api, repo, filename, directory):
 def prepare_base(api, task, root):
     model_type = task["model_type"]
     if model_type == "ideogram4":
-        # The tournament repository is Diffusers-sharded rather than a
-        # loadable root-level Comfy checkpoint. Training uses this exact
-        # scaled-FP8 conversion as its diffusion checkpoint.
         repo = "Comfy-Org/Ideogram-4"
         filename = "diffusion_models/ideogram4_fp8_scaled.safetensors"
     else:
