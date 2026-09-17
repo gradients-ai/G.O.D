@@ -1,0 +1,6 @@
+# Numerical/model-loading stack validated by the image-family GPU pilots.
+diffusers==0.39.0
+transformers==5.10.2
+huggingface-hub==1.18.0
+safetensors==0.8.0
+pydantic==2.13.4

@@ -358,11 +358,12 @@ async def run_evaluation_basilica_image(
         deployment_ids_by_repo.setdefault(repo, dep_info)
     if not test_split_url.startswith("http://") and not test_split_url.startswith("https://"):
         raise ValueError("Basilica image eval expects TEST_SPLIT_URL to be an S3/HTTP URL.")
+    if model_type == ImageModelType.SDXL:
+        raise ValueError("SDXL is not supported by image prediction L2 evaluation")
     command = ["/app/start.sh"]
     source = create_basilica_eval_runner_source(
         command,
         CONTAINER_EVAL_RESULTS_PATH,
-        prepare_image_models=True,
     )
 
     base_env = {
