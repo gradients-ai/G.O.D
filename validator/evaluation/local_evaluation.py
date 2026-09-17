@@ -695,6 +695,78 @@ def _get_shared_pvp_eval_image(environment_names: list[env_cst.EnvironmentName])
     return image
 
 
+def _warn_pvp_env_overrides() -> None:
+    """Warn when env overrides would diverge from production PvP defaults."""
+    extra_cli = os.getenv("SGLANG_ENV_EVAL_EXTRA_CLI")
+    if extra_cli is not None and extra_cli.strip() != vcst.SGLANG_ENV_EVAL_EXTRA_CLI.strip():
+        logger.warning(
+            "SGLANG_ENV_EVAL_EXTRA_CLI is set to %r; production default is %r. "
+            "Non-default SGLang flags can change local PvP results.",
+            extra_cli,
+            vcst.SGLANG_ENV_EVAL_EXTRA_CLI,
+        )
+
+    time_budget_override = os.getenv("PVP_MATCHUP_TIME_BUDGET_SECONDS")
+    if time_budget_override is not None:
+        try:
+            override_value = float(time_budget_override)
+        except ValueError:
+            logger.warning(
+                "PVP_MATCHUP_TIME_BUDGET_SECONDS=%r is not a valid float; "
+                "falling back to production default %s.",
+                time_budget_override,
+                vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS,
+            )
+        else:
+            if override_value != float(vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS):
+                logger.warning(
+                    "PVP_MATCHUP_TIME_BUDGET_SECONDS=%s differs from production default %s; "
+                    "game counts will diverge from official evaluation.",
+                    override_value,
+                    vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS,
+                )
+
+
+def _build_pvp_pair_config(
+    model_a_repo: str,
+    model_b_repo: str,
+    base_model: str,
+    environment_names: list[env_cst.EnvironmentName],
+    seed: int,
+    temperature: float = 0.0,
+    base_chain_a: list[str] | None = None,
+    base_chain_b: list[str] | None = None,
+    time_budget_seconds: float | None = None,
+) -> PvPEvalConfig:
+    """Build the same PvPEvalConfig shape production passes to the PvP container."""
+    time_budget = (
+        float(vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS) if time_budget_seconds is None else float(time_budget_seconds)
+    )
+    matchups = {
+        environment_name: PvPMatchupConfig(time_budget_seconds=time_budget) for environment_name in environment_names
+    }
+    return PvPEvalConfig(
+        mode=PvPMode.PAIR,
+        model_a=PvPModelSpec(
+            repo=model_a_repo,
+            original_model=base_model,
+            base_chain=base_chain_a or [],
+            gpu_id=0,
+            port=vcst.PVP_SGLANG_PORT_A,
+        ),
+        model_b=PvPModelSpec(
+            repo=model_b_repo,
+            original_model=base_model,
+            base_chain=base_chain_b or [],
+            gpu_id=1,
+            port=vcst.PVP_SGLANG_PORT_B,
+        ),
+        matchups=matchups,
+        seed=seed,
+        temperature=temperature,
+    )
+
+
 async def run_evaluation_local_pvp_pair(
     model_a_repo: str,
     model_b_repo: str,
@@ -706,6 +778,8 @@ async def run_evaluation_local_pvp_pair(
     seed: int,
     image: str | None = None,
     temperature: float = 0.0,
+    base_chain_a: list[str] | None = None,
+    base_chain_b: list[str] | None = None,
 ) -> PvPGroupResults:
     """Run one PvP pair locally using the same PvP evaluator container as production."""
     if len(gpu_ids) < 2:
@@ -715,34 +789,32 @@ async def run_evaluation_local_pvp_pair(
     if not pvp_envs:
         raise ValueError("At least one PvP environment is required")
 
+    _warn_pvp_env_overrides()
     image = image or _get_shared_pvp_eval_image(pvp_envs)
     time_budget = float(os.getenv("PVP_MATCHUP_TIME_BUDGET_SECONDS", str(vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS)))
-    matchups = {environment_name: PvPMatchupConfig(time_budget_seconds=time_budget) for environment_name in pvp_envs}
-    pvp_config = PvPEvalConfig(
-        mode=PvPMode.PAIR,
-        model_a=PvPModelSpec(
-            repo=model_a_repo,
-            original_model=base_model,
-            gpu_id=0,
-            port=vcst.PVP_SGLANG_PORT_A,
-        ),
-        model_b=PvPModelSpec(
-            repo=model_b_repo,
-            original_model=base_model,
-            gpu_id=1,
-            port=vcst.PVP_SGLANG_PORT_B,
-        ),
-        matchups=matchups,
+    chain_a = base_chain_a or []
+    chain_b = base_chain_b or []
+    pvp_config = _build_pvp_pair_config(
+        model_a_repo=model_a_repo,
+        model_b_repo=model_b_repo,
+        base_model=base_model,
+        environment_names=pvp_envs,
         seed=seed,
         temperature=temperature,
+        base_chain_a=chain_a,
+        base_chain_b=chain_b,
+        time_budget_seconds=time_budget,
     )
 
     logger.info(
-        "Prepared local PvP pair: hotkey_a=%s repo_a=%s hotkey_b=%s repo_b=%s envs=%s seed=%s temperature=%s image=%s GPUs=%s",
+        "Prepared local PvP pair: hotkey_a=%s repo_a=%s base_chain_a=%s hotkey_b=%s repo_b=%s "
+        "base_chain_b=%s envs=%s seed=%s temperature=%s image=%s GPUs=%s",
         hotkey_a,
         model_a_repo,
+        chain_a,
         hotkey_b,
         model_b_repo,
+        chain_b,
         [env.value for env in pvp_envs],
         seed,
         temperature,
@@ -813,6 +885,7 @@ async def run_evaluation_local_pvp_pairs(
     gpu_ids: list[int],
     eval_seed: int | None = None,
     temperature: float | None = None,
+    base_chains: dict[str, list[str]] | None = None,
 ) -> PvPGroupResults:
     """Run local round-robin PvP evaluation for every hotkey pair in miner_repos."""
     if len(miner_repos) < 2:
@@ -835,8 +908,10 @@ async def run_evaluation_local_pvp_pairs(
     )
     image = _get_shared_pvp_eval_image(pvp_envs)
     pair_results: list[PvPPairResult] = []
+    resolved_base_chains = base_chains or {}
 
-    hotkeys = list(miner_repos.keys())
+    # Match production: pairs use lexicographically sorted hotkeys as (A, B).
+    hotkeys = sorted(miner_repos)
     pair_count = len(list(itertools.combinations(hotkeys, 2)))
     logger.info(
         "Prepared local PvP evaluation: hotkeys=%s envs=%s base_model=%s seed=%s temperature=%s image=%s pair_count=%d",
@@ -860,6 +935,8 @@ async def run_evaluation_local_pvp_pairs(
             seed=seed,
             image=image,
             temperature=eval_temperature,
+            base_chain_a=resolved_base_chains.get(hotkey_a, []),
+            base_chain_b=resolved_base_chains.get(hotkey_b, []),
         )
         pair_results.extend(pair_group.pair_results)
 

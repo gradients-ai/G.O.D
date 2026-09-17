@@ -569,7 +569,19 @@ python -m ops.validator_ops.run_evaluation --help
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
+
+# Continuation-round PvP: pass each miner's previous-round adapter as base_chain.
+# Pairs use lexicographically sorted hotkeys as model_a/model_b (order of --hotkeys does not matter).
+python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 \
+  --hotkeys HOTKEY_A HOTKEY_B \
+  --base_chain HOTKEY_A=org/previous-adapter-a \
+  --base_chain HOTKEY_B=org/previous-adapter-b
 ```
+
+PvP local evaluation matches production seed, temperature, A/B ordering, and
+`base_chain` when you supply `--base_chain`. Production runs on Basilica A100
+80GB GPUs with a 900s per-environment wall-clock budget, so absolute game counts
+can differ on other hardware even when win rates are comparable.
 
 ### Local SWE Infinite Evaluation Smoke Test
 
