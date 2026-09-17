@@ -9,8 +9,12 @@
 # so it refuses to load if the old packages are still around). `pip install -e .`
 # won't remove those on its own since they're no longer required by anything, so an
 # in-place upgrade from an older checkout needs them cleared out first.
-pip uninstall -y substrate-interface scalecodec cyscale || true
+# Only uninstall the *old* packages here — do NOT uninstall cyscale, or the next
+# `pip install -e .` can leave the venv without `import scalecodec` and crash the API.
+pip uninstall -y substrate-interface scalecodec || true
 pip install -e .
+# Ensure cyscale is present (provides the scalecodec import namespace for ASI 2.x).
+pip install -U 'cyscale>=0.3.3,<1.0.0'
 
 task validator
 
