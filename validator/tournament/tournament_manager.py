@@ -119,6 +119,9 @@ _DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
 # Tournaments already pinged about being close to the Friday completion deadline. Process-local
 # for the same reason as the sets above: a restart re-alerts, which is fine for a once-a-week ping.
 _DEADLINE_ALERTED_TOURNAMENTS: set[str] = set()
+# Tasks already pinged for a terminal `failure` status. The completion check re-runs every ~60s
+# and would otherwise re-fire the same Discord warning until a human changes the task.
+_FAILED_TASKS_ALERTED: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -1657,7 +1660,7 @@ async def is_tourn_task_completed(
     """
     Checks if the tournament task is completed.
     If completed successfully, checks if majority trainings failed.
-    If completed with failure, notifies via Discord.
+    If completed with failure, notifies via Discord once and keeps the round blocked.
     If completed with prep task failure, creates a replacement immediately.
     If not completed, returns False.
 
@@ -1670,11 +1673,13 @@ async def is_tourn_task_completed(
         return True, "Task completed successfully"
 
     elif task_obj.status == TaskStatus.FAILURE.value:
-        discord_message = (
+        await _alert_once(
+            str(tournament_task.task_id),
+            _FAILED_TASKS_ALERTED,
             f"Warning: Task {tournament_task.task_id} in Tournament Round {tournament_task.round_id} "
-            f"has failed, please investigate."
+            f"has failed, please investigate.",
+            config,
         )
-        await _notify_discord(discord_message, config)
         return False, "Tournament task failed."
 
     elif task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:

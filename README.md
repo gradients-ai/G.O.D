@@ -68,6 +68,15 @@ To re-evaluate a PvP environment task for selected hotkeys, run:
 python -m ops.validator_ops.run_evaluation --task_id <task_id> --gpu_ids 0 1 --hotkeys <hotkey_a> <hotkey_b>
 ```
 
+For continuation-round PvP (previous-round adapter as `base_chain`), run:
+
+```bash
+python -m ops.validator_ops.run_evaluation --task_id <task_id> --gpu_ids 0 1 \
+  --hotkeys <hotkey_a> <hotkey_b> \
+  --base_chain <hotkey_a>=<prev_repo_a> \
+  --base_chain <hotkey_b>=<prev_repo_b>
+```
+
 To run a non-submitted model, run:
 
 ```bash

@@ -111,11 +111,40 @@ def _get_hotkey_repo_map(task_details, hotkeys: Optional[List[str]] = None) -> d
     return miner_repos
 
 
+def _parse_base_chain_args(values: Optional[List[str]], miner_repos: dict[str, str]) -> dict[str, list[str]]:
+    """Parse repeatable --base_chain HOTKEY=REPO[,REPO...] flags into a per-hotkey map."""
+    if not values:
+        return {}
+
+    base_chains: dict[str, list[str]] = {}
+    for raw_value in values:
+        if "=" not in raw_value:
+            raise ValueError(
+                f"Invalid --base_chain value {raw_value!r}. Expected HOTKEY=REPO or HOTKEY=REPO1,REPO2"
+            )
+        hotkey, repos_raw = raw_value.split("=", 1)
+        hotkey = hotkey.strip()
+        repos = [repo.strip() for repo in repos_raw.split(",") if repo.strip()]
+        if not hotkey or not repos:
+            raise ValueError(
+                f"Invalid --base_chain value {raw_value!r}. Expected HOTKEY=REPO or HOTKEY=REPO1,REPO2"
+            )
+        if hotkey not in miner_repos:
+            raise ValueError(
+                f"Unknown hotkey in --base_chain: {hotkey}. Valid hotkeys: {sorted(miner_repos)}"
+            )
+        if hotkey in base_chains:
+            raise ValueError(f"Duplicate --base_chain entry for hotkey {hotkey}")
+        base_chains[hotkey] = repos
+    return base_chains
+
+
 async def run_evaluation_from_task_id(
     task_id: str,
     gpu_ids: List[int] = [0],
     models: Optional[List[str]] = None,
     hotkeys: Optional[List[str]] = None,
+    base_chain: Optional[List[str]] = None,
 ):
     """
     Run model evaluation based on task ID and log the results
@@ -125,6 +154,7 @@ async def run_evaluation_from_task_id(
         gpu_ids: List of GPU IDs to use for evaluation
         models: Optional list of specific models to evaluate instead of using hotkey details
         hotkeys: Optional list of hotkeys to evaluate from task details
+        base_chain: Optional repeatable HOTKEY=REPO[,REPO...] entries for continuation adapters
     """
     task_details = await fetch_task_details(task_id)
     logger.info(f"Retrieved task details for task {task_id}")
@@ -223,7 +253,15 @@ async def run_evaluation_from_task_id(
                 raise ValueError("PvP local evaluation needs task hotkeys. Use --hotkeys to filter contestants.")
 
             miner_repos = _get_hotkey_repo_map(task_details, hotkeys)
+            base_chains = _parse_base_chain_args(base_chain, miner_repos)
+            if not base_chains:
+                logger.warning(
+                    "No --base_chain supplied. Continuation-round miners need the previous round's "
+                    "adapter repo (HOTKEY=PREVIOUS_REPO) or scores will not match production. "
+                    "The auditing API does not expose starting_model_repo, so this cannot be inferred."
+                )
             logger.info("Selected PvP miner repos: %s", miner_repos)
+            logger.info("Selected PvP base chains: %s", base_chains)
             logger.info(
                 "Running local PvP evaluation for %d hotkeys across environments: %s",
                 len(miner_repos),
@@ -235,6 +273,7 @@ async def run_evaluation_from_task_id(
                 environment_names=pvp_environment_names,
                 gpu_ids=gpu_ids,
                 eval_seed=task_details.eval_seed,
+                base_chains=base_chains,
             )
             logger.info(f"PvP evaluation results: {json.dumps(pvp_results.model_dump(mode='json'), indent=2)}")
             return
@@ -327,11 +366,19 @@ Examples:
   python -m ops.validator_ops.run_evaluation --task_id task_12345 --models huggingface/model1 huggingface/model2
 
   # Run PvP environment evaluation for selected hotkeys from task details
+  # Pairs are ordered by sorted hotkey (canonical A/B), so --hotkeys order does not matter.
   python -m ops.validator_ops.run_evaluation --task_id task_12345 --gpu_ids 0 1 --hotkeys hotkey1 hotkey2
+
+  # Continuation-round PvP: pass each miner's previous-round adapter as base_chain
+  python -m ops.validator_ops.run_evaluation --task_id task_12345 --gpu_ids 0 1 \\
+    --hotkeys hotkey1 hotkey2 \\
+    --base_chain hotkey1=org/prev-adapter-hotkey1 \\
+    --base_chain hotkey2=org/prev-adapter-hotkey2
 
 Notes:
   Environment tasks use the environment_names returned by the auditing API.
   PvP environment evaluation requires two GPUs because each pair starts two SGLang servers.
+  For continuation tasks, --base_chain HOTKEY=PREVIOUS_REPO is required for production-matching scores.
         """,
     )
     parser.add_argument("--task_id", type=str, required=True, help="Task ID to fetch details from the Gradients API")
@@ -342,7 +389,22 @@ Notes:
         "--models", nargs="+", help="Optional list of specific models to evaluate instead of using models from task details"
     )
     parser.add_argument(
-        "--hotkeys", nargs="+", help="Optional list of hotkeys to evaluate from task details"
+        "--hotkeys",
+        nargs="+",
+        help=(
+            "Optional list of hotkeys to evaluate from task details. "
+            "PvP pairs use lexicographically sorted hotkeys as model_a/model_b, so argument order does not matter."
+        ),
+    )
+    parser.add_argument(
+        "--base_chain",
+        action="append",
+        dest="base_chain",
+        metavar="HOTKEY=REPO[,REPO...]",
+        help=(
+            "Continuation adapter lineage for a hotkey: HOTKEY=PREVIOUS_REPO "
+            "(repeatable). Required for continuation-round PvP fidelity."
+        ),
     )
     args = parser.parse_args()
 
