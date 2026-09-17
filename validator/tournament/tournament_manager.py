@@ -929,16 +929,14 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
     if tournament.tournament_type == TournamentType.TEXT:
         participation_fee_rao = t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO
-        fee_description = "0.2 TAO"
     elif tournament.tournament_type == TournamentType.IMAGE:
         participation_fee_rao = t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO
-        fee_description = "0.15 TAO"
     elif tournament.tournament_type == TournamentType.ENVIRONMENT:
         participation_fee_rao = t_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO
-        fee_description = "0.20 TAO"
     else:
         raise ValueError(f"Unknown tournament type: {tournament.tournament_type}")
 
+    fee_description = f"{participation_fee_rao / 1_000_000_000:g} TAO"
     logger.info(f"Tournament type: {tournament.tournament_type.value}, participation fee: {fee_description}")
 
     if tournament.tournament_type == TournamentType.ENVIRONMENT:
