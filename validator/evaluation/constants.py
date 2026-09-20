@@ -80,14 +80,14 @@ SGLANG_FLASHINFER_WORKSPACE_MIN_BYTES = 4 * 1024 * 1024 * 1024
 
 EVAL_BASILICA_CPU = "4"
 EVAL_BASILICA_MEMORY = "64Gi"
-EVAL_BASILICA_TTL_SECONDS = 16000
+EVAL_BASILICA_TTL_SECONDS = 28800
 EVAL_BASILICA_TIMEOUT = 14400
 EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX = "god-eval-"
 EVAL_BASILICA_CREATE_SPACING_SECONDS = 5
-EVAL_BASILICA_MAX_RETRIES = 3
-EVAL_BASILICA_RETRY_DELAY_SECONDS = 900
+EVAL_BASILICA_MAX_RETRIES = 1
+EVAL_BASILICA_RETRY_DELAY_SECONDS = 0
 EVAL_BASILICA_POLL_INTERVAL_SECONDS = 300
-EVAL_BASILICA_MAX_POLL_SECONDS = 16000
+EVAL_BASILICA_MAX_POLL_SECONDS = 28800
 EVAL_BASILICA_MAX_CONSECUTIVE_POLL_FAILURES = 5
 EVAL_BASILICA_FAILED_POLL_RECHECK_SECONDS = 30
 EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS = 1800
@@ -191,7 +191,7 @@ def __getattr__(name: str):
 # active eval row whose deployment is gone, must be older/staler than this grace window
 # before the reconciler acts on it. Protects the brief reserve -> deploy -> persist window
 # (and any list() staleness) so an in-flight eval is never reaped mid-startup.
-EVAL_ORPHAN_GRACE_SECONDS = 1800
+EVAL_ORPHAN_GRACE_SECONDS = 7200
 
 # Grace for RELEASING a ghost reservation whose deployment is provably absent from a fresh Basilica
 # list(). This is the opposite direction from orphan reaping: a reservation only becomes a ghost

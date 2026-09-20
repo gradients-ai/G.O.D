@@ -37,7 +37,10 @@ from validator.evaluation.swe_infinite_config import DEFAULT_SWE_INFINITE_MODEL_
 from validator.evaluation.swe_infinite_config import SWE_INFINITE_AGENT_NAME
 from validator.evaluation.swe_infinite_config import SWE_INFINITE_MODEL_API_KEY_ENV
 from validator.evaluation.swe_infinite_config import SWE_INFINITE_MODEL_BASE_URL_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_PROXY_ACTIVITY_ENV
 from validator.evaluation.swe_infinite_config import SWE_INFINITE_SERVER_BASE_URL_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_STALL_TIMEOUT_ENV
+from validator.evaluation.swe_infinite_config import SWE_INFINITE_STALL_TIMEOUT_SECONDS
 from validator.evaluation.swe_infinite_config import SWE_INFINITE_VETTED_TASK_IDS
 from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
 from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
@@ -56,6 +59,26 @@ SWE_VETTED_TASK_IDS = SWE_INFINITE_VETTED_TASK_IDS
 def _with_v1(base_url: str) -> str:
     base = base_url.rstrip("/")
     return base if base.endswith("/v1") else f"{base}/v1"
+
+
+def _force_https_public_model_url(base_url: str) -> str:
+    """Affinetes calls this URL from outside the pod; Basilica public ingress is HTTPS.
+
+    Prefer https whenever the host is not loopback so we never hand Affinetes an
+    http://deployments.basilica.ai URL (those land on :80 and 404/reset).
+    """
+    raw = (base_url or "").strip().rstrip("/")
+    if not raw:
+        return raw
+    if raw.startswith("https://"):
+        return raw
+    if raw.startswith("http://"):
+        rest = raw[len("http://") :]
+        host = rest.split("/", 1)[0].split(":", 1)[0].lower()
+        if host in {"127.0.0.1", "localhost"} or host.startswith("127."):
+            return raw
+        return f"https://{rest}"
+    return raw
 
 
 def _parse_environment_name() -> env_cst.EnvironmentName:
@@ -239,6 +262,68 @@ async def _post_affinetes_evaluate(
         return _unwrap_affinetes_response(json.loads(raw_text))
 
 
+def _stall_timeout_seconds() -> int:
+    raw = os.getenv(SWE_INFINITE_STALL_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return SWE_INFINITE_STALL_TIMEOUT_SECONDS
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid %s=%r; using %s", SWE_INFINITE_STALL_TIMEOUT_ENV, raw, SWE_INFINITE_STALL_TIMEOUT_SECONDS)
+        return SWE_INFINITE_STALL_TIMEOUT_SECONDS
+
+
+def _read_proxy_activity() -> tuple[int, float] | None:
+    """Inbound request count published by the public SGLang proxy, if available."""
+    path = os.getenv(SWE_INFINITE_PROXY_ACTIVITY_ENV, "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        return int(payload["count"]), float(payload["ts"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+async def _await_unless_model_never_called(
+    pending: asyncio.Task,
+    *,
+    stall_timeout: int,
+    label: str,
+    poll_interval: float = 15.0,
+):
+    """Await `pending`, giving up early if the model is never called.
+
+    A SWE server that accepts the job but never reaches our model leaves the call
+    hanging for the whole task timeout. Once any request arrives the task is making
+    progress, so the full timeout applies from then on.
+    """
+    baseline = _read_proxy_activity()
+    if baseline is None or stall_timeout <= 0:
+        return await pending
+
+    started = time.monotonic()
+    while True:
+        done, _ = await asyncio.wait({pending}, timeout=poll_interval)
+        if done:
+            return pending.result()
+        current = _read_proxy_activity()
+        if current is not None and current[0] > baseline[0]:
+            return await pending
+        waited = time.monotonic() - started
+        if waited >= stall_timeout:
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
+            raise TimeoutError(
+                f"{label}: no model request reached the proxy within {stall_timeout}s "
+                f"(proxy inbound count still {baseline[0]}); abandoning task"
+            )
+
+
 async def _post_affinetes_evaluate_with_connect_retries(
     session: aiohttp.ClientSession,
     swe_server_url: str,
@@ -324,13 +409,31 @@ async def _run_swe_evaluation(
         )
         start = time.time()
         try:
-            logger.info("eval_swe %s/%s start task_id=%s seed=%s", index + 1, total_tasks, task_id, seed)
-            result = await _post_affinetes_evaluate_with_connect_retries(
-                session,
+            # Log correspondence to Affinetes without leaking the model API key.
+            safe_payload = {k: v for k, v in payload.items() if k != "api_key"}
+            safe_payload["api_key_set"] = bool(payload.get("api_key"))
+            logger.info(
+                "eval_swe %s/%s start task_id=%s seed=%s swe_server=%s affinetes_payload=%s",
+                index + 1,
+                total_tasks,
+                task_id,
+                seed,
                 swe_server_url,
-                payload,
-                task_timeout,
-                eval_config,
+                safe_payload,
+            )
+            call = asyncio.ensure_future(
+                _post_affinetes_evaluate_with_connect_retries(
+                    session,
+                    swe_server_url,
+                    payload,
+                    task_timeout,
+                    eval_config,
+                )
+            )
+            result = await _await_unless_model_never_called(
+                call,
+                stall_timeout=_stall_timeout_seconds(),
+                label=f"eval_swe {index + 1}/{total_tasks} task_id={task_id}",
             )
             latency = float(result.get("time_taken", time.time() - start))
             score = float(result.get("score", 0.0))
@@ -517,12 +620,16 @@ async def _run() -> None:
 
         sglang_health_timeout = int(os.getenv("SGLANG_HEALTH_TIMEOUT", "1800"))
         sglang_base_url = os.getenv("SGLANG_BASE_URL", "http://127.0.0.1:30000")
-        model_base_url = eval_config.model_base_url or os.getenv(SWE_INFINITE_MODEL_BASE_URL_ENV) or _with_v1(sglang_base_url)
+        model_base_url = _force_https_public_model_url(
+            eval_config.model_base_url or os.getenv(SWE_INFINITE_MODEL_BASE_URL_ENV) or _with_v1(sglang_base_url)
+        )
         logger.info(
-            "eval_setup launching SGLang: model_path=%s inference_model_name=%s public_model_base_url=%s",
+            "eval_setup launching SGLang: model_path=%s inference_model_name=%s public_model_base_url=%s "
+            "swe_server=%s",
             model_path_for_sglang,
             inference_model_name,
             model_base_url,
+            swe_server_url,
         )
         logger.info("eval_setup SGLang command: %s", sglang_command)
 
