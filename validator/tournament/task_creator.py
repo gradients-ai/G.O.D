@@ -59,14 +59,24 @@ def _task_includes_environment(task: RawTask, environment: EnvironmentName | Non
     return environment in task.environment_names
 
 
-def is_small_tournament_group(round_data: GroupRound) -> bool:
-    """Whether a group round is the small text/image tournament round-1 format.
+def is_single_group_text_round_one(round_data: GroupRound) -> bool:
+    """Whether a text group round is round 1 with everyone in one group.
+
+    Text R1 always uses this format (see organise_tournament_round). The round-1
+    guard is load-bearing: a later text round can still be a single group, and must
+    keep getting one task per group rather than SMALL_TOURNAMENT_GROUP_TASKS.
+    """
+    return round_data.round_number == 1 and len(round_data.groups) == 1
+
+
+def is_small_image_tournament_group(round_data: GroupRound) -> bool:
+    """Whether a group round is the small image tournament round-1 format.
 
     Identified by round 1 (the only round the small format is ever created in — see
     organise_tournament_round) plus a single group whose membership is in the
-    small-tournament band (3..9). The round-1 guard is load-bearing: a normal large
-    tournament can narrow to a single group of 9 in a *later* round (a reduced group can
-    be 9..19 members), which would otherwise match the structural check.
+    small-tournament band (3..14). The round-1 and size guards are load-bearing: an
+    image R1 with 15-39 miners already produces a single group via the normal path
+    and must keep getting one task, and a later round can also be a single group.
     """
     if round_data.round_number != 1 or len(round_data.groups) != 1:
         return False
@@ -357,7 +367,7 @@ async def _create_group_image_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, image_models: list
 ) -> list[RawTask]:
     # Small image tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS matches.
-    is_small = is_small_tournament_group(round_data)
+    is_small = is_small_image_tournament_group(round_data)
     tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.IMAGE_TASKS_PER_GROUP
 
     num_groups = len(round_data.groups)
@@ -559,16 +569,13 @@ async def _create_and_register_tournament_task(
 async def _create_group_text_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, is_final_round: bool
 ) -> list[RawTask]:
-    # Small text tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS instruct
-    # matches (rather than one). It keeps the broader dataset range, but all R1 models stay <=4B.
-    is_small = is_small_tournament_group(round_data)
-    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.TEXT_TASKS_PER_GROUP
+    # Text round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS instruct matches
+    # (rather than one). It keeps the broader dataset range, but all R1 models stay <=4B.
+    is_multi_task = is_single_group_text_round_one(round_data)
+    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_multi_task else t_cst.TEXT_TASKS_PER_GROUP
 
     models = _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
-    instruct_datasets = _get_instruct_text_datasets(
-        config.keypair,
-        small_only=round_data.round_number == 1 and not is_small,
-    )
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
 
     # Exactly one R1 task plays on a 2026+ model from OVERSAMPLED_LATER_MODELS (1 of N, whatever N is).
@@ -887,9 +894,10 @@ async def _create_round_one_group_text_replacement_task(config: Config, model_id
     """
     Create a replacement task that matches round-1 group text constraints:
     - small text model pool (0.1B-4.0B)
+    - broad dataset bins (same as R1 creation)
     """
     models = None if model_id_override else _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
-    instruct_datasets = _get_instruct_text_datasets(config.keypair, small_only=True)
+    instruct_datasets = _get_instruct_text_datasets(config.keypair)
     return await create_synthetic_instruct_text_task(
         config,
         models,

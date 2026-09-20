@@ -8,12 +8,31 @@ from dataclasses import fields
 from dataclasses import replace
 
 import validator.evaluation.constants as vcst
+from core.logging import get_logger
+
+
+logger = get_logger(__name__)
 
 
 SWE_INFINITE_SERVER_BASE_URL_ENV = "SWE_INFINITE_SERVER_BASE_URL"
 SWE_INFINITE_MODEL_BASE_URL_ENV = "SWE_INFINITE_MODEL_BASE_URL"
 SWE_INFINITE_MODEL_API_KEY_ENV = "SWE_INFINITE_MODEL_API_KEY"
 SWE_INFINITE_EVAL_CONFIG_ENV = "SWE_INFINITE_EVAL_CONFIG_JSON"
+# Written by the Basilica public SGLang proxy, read by the evaluator subprocess so it
+# can tell "the SWE server never called the model" from "the model call is slow".
+SWE_INFINITE_PROXY_ACTIVITY_ENV = "SWE_INFINITE_PROXY_ACTIVITY_FILE"
+SWE_INFINITE_PROXY_ACTIVITY_PATH = "/tmp/god_swe_proxy_activity.json"
+# Per-turn generation ceiling applied by the proxy when the agent does not send one.
+# A MiniSWE turn is a short reasoning block plus one shell command; adapters that never
+# emit a stop token otherwise generate tens of thousands of tokens and no task can finish.
+# Measured decode rate is ~20 tok/s, so 1024 tokens is ~50s per turn.
+# Applied uniformly to every miner, so it does not advantage any submission.
+SWE_INFINITE_MAX_COMPLETION_TOKENS = 1024
+# Abandon a task whose model was never called instead of waiting out the full task
+# timeout. Passed as its own env var rather than a config field: the eval image bakes
+# its own copy of this module, and an older image rejects unknown config fields.
+SWE_INFINITE_STALL_TIMEOUT_ENV = "SWE_INFINITE_STALL_TIMEOUT_SECONDS"
+SWE_INFINITE_STALL_TIMEOUT_SECONDS = 300
 SWE_INFINITE_TASK_SELECTION_OVERRIDE_ENV = "SWE_INFINITE_TASK_SELECTION_OVERRIDE_JSON"
 DEFAULT_SWE_INFINITE_MODEL_API_KEY = "x"
 SWE_INFINITE_AGENT_NAME = "miniswe"
@@ -34,6 +53,9 @@ class SweInfiniteEvalConfig:
     metadata_url: str = "https://pub-7882418a56434a479bf9a7febd660b36.r2.dev/bugs/metadata.json"
     affinetes_call_path: str = "/call"
     max_iterations: int = 25
+    # 900s at the measured ~50s/turn is ~18 agent turns, the same number a 1800s
+    # budget bought at a 2048-token cap, for half the wall-clock and half the
+    # context growth. Raise this only alongside the per-turn token cap.
     task_timeout_seconds: int = 900
     session_timeout_seconds: int = vcst.ENV_EVAL_SESSION_TIMEOUT
     max_concurrent_requests: int = 1
@@ -62,7 +84,11 @@ class SweInfiniteEvalConfig:
         allowed_fields = {field.name for field in fields(cls)}
         unknown_fields = sorted(set(payload) - allowed_fields)
         if unknown_fields:
-            raise ValueError(f"Unknown SWE Infinite eval config fields: {unknown_fields}")
+            # The eval image bakes its own copy of this module, so a validator that is
+            # newer than the image will send fields this build has never heard of.
+            # Dropping them keeps old images runnable instead of failing the eval.
+            logger.warning("Ignoring unknown SWE Infinite eval config fields: %s", unknown_fields)
+            payload = {key: value for key, value in payload.items() if key in allowed_fields}
         return cls(**payload)
 
 
@@ -130,8 +156,10 @@ def build_swe_infinite_container_env(
         raise ValueError(f"{SWE_INFINITE_SERVER_BASE_URL_ENV} is required for SWE Infinite evaluation")
 
     env = {SWE_INFINITE_SERVER_BASE_URL_ENV: server_url}
-    if eval_config is not None:
-        env[SWE_INFINITE_EVAL_CONFIG_ENV] = eval_config.to_json()
+    # Always inject config so validator-side defaults (e.g. task_timeout_seconds) reach
+    # the container without requiring an image rebuild.
+    effective_config = eval_config if eval_config is not None else load_swe_infinite_eval_config()
+    env[SWE_INFINITE_EVAL_CONFIG_ENV] = effective_config.to_json()
     if task_selection_override is not None and not task_selection_override.is_empty():
         env[SWE_INFINITE_TASK_SELECTION_OVERRIDE_ENV] = task_selection_override.to_json()
     return env

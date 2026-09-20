@@ -1062,14 +1062,14 @@ async def get_boss_retention_runners_up(
 
 
 async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
-    """Rank competitors across the multi-match small-tournament group."""
+    """Rank competitors across a multi-match single-group round (text R1; small image R1)."""
     match_rankings: list[MatchRanking] = []
     match_losses: list[dict[str, float]] = []
     competitors: set[str] = set()
     for task in round_tasks:
         miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
         if not miner_results:
-            logger.warning(f"No valid results for small-tournament task {task.task_id}")
+            logger.warning(f"No valid results for multi-match group task {task.task_id}")
             continue
 
         ranked_results = calculate_miner_ranking_and_scores(miner_results)
@@ -1079,7 +1079,7 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
             if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
         ]
         if not scored:
-            logger.warning(f"Small-tournament task {task.task_id} has no valid scores")
+            logger.warning(f"Multi-match group task {task.task_id} has no valid scores")
             continue
 
         scored.sort(key=lambda item: item[1])
@@ -1118,7 +1118,7 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
     )
     winners = [standing.hotkey for standing in ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]]
     logger.info(
-        f"Small-tournament standings "
+        f"Multi-match group standings "
         f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}; "
         f"advancing top {len(winners)}: {winners}"
     )

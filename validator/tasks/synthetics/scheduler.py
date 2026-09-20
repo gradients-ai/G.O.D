@@ -170,10 +170,10 @@ async def _get_datasets_for_bin(min_rows: int, max_rows: int, keypair: Keypair, 
             await asyncio.sleep(5)
 
 
-async def _get_instruct_text_datasets(keypair: Keypair, small_only: bool = False) -> AsyncGenerator[Dataset, None]:
+async def _get_instruct_text_datasets(keypair: Keypair) -> AsyncGenerator[Dataset, None]:
     """Round-robin generator that cycles through all dataset size bins."""
 
-    bins = [t_cst.R1_TEXT_DATASET_BIN] if small_only else data_cst.DATASET_BINS_TO_SAMPLE
+    bins = data_cst.DATASET_BINS_TO_SAMPLE
     bin_generators = [
         _get_datasets_for_bin(min_rows, max_rows, keypair, False) for min_rows, max_rows in bins
     ]
