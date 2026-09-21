@@ -8,6 +8,8 @@ import torch
 
 from validator.evaluation.image_artifacts import materialize_model
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class FlowFamily:
@@ -75,25 +77,33 @@ class ImageFlowAdapter:
         self.family = family
         self.spec = FAMILIES[family]
         self.encoders = []
+        logger.info("materializing %s text encoder(s) for family=%s", len(self.spec.encoders), family)
         for repo, filename in self.spec.encoders:
             name, _ = materialize_model(api, repo, filename, root / "models/text_encoders")
             self.encoders.append(name)
+        logger.info("materializing VAE for family=%s", family)
         self.vae_name, _ = materialize_model(api, *self.spec.vae, root / "models/vae")
 
     def load_clip(self):
         import nodes
 
+        logger.info("loading CLIP family=%s encoders=%s", self.family, len(self.encoders))
         if len(self.encoders) == 2:
-            return nodes.DualCLIPLoader().load_clip(*self.encoders, self.spec.clip_type)[0]
-        return nodes.CLIPLoader().load_clip(self.encoders[0], self.spec.clip_type)[0]
+            clip = nodes.DualCLIPLoader().load_clip(*self.encoders, self.spec.clip_type)[0]
+        else:
+            clip = nodes.CLIPLoader().load_clip(self.encoders[0], self.spec.clip_type)[0]
+        logger.info("CLIP loaded family=%s", self.family)
+        return clip
 
     def load_vae(self):
         import comfy.sd
         import comfy.utils
         import folder_paths
 
+        logger.info("loading VAE family=%s", self.family)
         path = folder_paths.get_full_path_or_raise("vae", self.vae_name)
         vae = comfy.sd.VAE(sd=comfy.utils.load_torch_file(path), dtype=torch.float32)
+        logger.info("VAE loaded family=%s", self.family)
         return ComfyImageEncoder(vae)
 
     def conditioning(self, clip, caption):
@@ -129,14 +139,16 @@ class ImageFlowAdapter:
                     missing.append(message)
 
         handler = CaptureMissing()
-        logger = logging.getLogger()
-        logger.addHandler(handler)
+        root_logger = logging.getLogger()
+        root_logger.addHandler(handler)
+        logger.info("applying LoRA name=%s", name)
         try:
             patched, patched_clip = nodes.LoraLoader().load_lora(model, clip, name, 1.0, 1.0)
         finally:
-            logger.removeHandler(handler)
+            root_logger.removeHandler(handler)
         if missing or not patched.patches:
             raise ValueError(
                 f"Incomplete LoRA application: {len(missing)} unmatched entries; {len(patched.patches)} model patches"
             )
+        logger.info("applied LoRA name=%s patches=%s", name, len(patched.patches))
         return patched, patched_clip
