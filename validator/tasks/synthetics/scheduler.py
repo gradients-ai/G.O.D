@@ -32,6 +32,7 @@ from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.continuous_sft import get_continuous_sft_state
 from validator.db.sql.tasks import add_task
+from validator.db.sql.tasks import get_dataset_near_duplicate_rates
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
 from validator.scoring.models import EnvironmentWeight
@@ -379,6 +380,29 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
     return False
 
 
+async def _has_known_high_near_duplicate_rate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
+    """Skip datasets whose persisted near_duplicate_rate already exceeded the gate, before paying for prep."""
+    try:
+        rates = await get_dataset_near_duplicate_rates(
+            ds_name, psql_db, synth_cst.NEAR_DUP_HISTORY_LOOKBACK_DAYS, task_type
+        )
+    except Exception as e:
+        logger.warning(f"Failed to query near-duplicate history for {ds_name}, allowing dataset: {e}")
+        return False
+
+    if not rates:
+        return False
+
+    worst = max(rates)
+    if worst >= t_cst.MAX_NEAR_DUPLICATE_RATE:
+        logger.warning(
+            f"Dataset {ds_name} rejected: near_duplicate_rate {worst:.3f} >= {t_cst.MAX_NEAR_DUPLICATE_RATE} "
+            f"in {len(rates)} prior model-prep(s), skipping before prep"
+        )
+        return True
+    return False
+
+
 async def get_dataset(
     datasets_generator: AsyncGenerator[Dataset, None],
     task_type: TaskType | None = None,
@@ -395,6 +419,8 @@ async def get_dataset(
 
         if task_type and psql_db:
             if await _is_dataset_degenerate(dataset.dataset_id, task_type, psql_db):
+                continue
+            if await _has_known_high_near_duplicate_rate(dataset.dataset_id, task_type, psql_db):
                 continue
 
         if task_type and keypair and task_type != TaskType.DPOTASK:
