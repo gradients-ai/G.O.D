@@ -6,6 +6,7 @@ import validator.tasks.synthetics.constants as synth_cst
 import validator.tasks.synthetics.scheduler as scheduler
 import validator.tournament  # noqa: F401  (import-order: tournament package must init before scheduler)
 from core.models.task_models import TaskType
+from validator.tournament import constants as t_cst
 
 
 @pytest.fixture
@@ -83,3 +84,49 @@ async def test_db_failure_allows_the_dataset(monkeypatch):
 
     monkeypatch.setattr(scheduler, "get_dataset_test_losses", boom)
     assert await _is_degenerate(TaskType.DPOTASK) is False
+
+
+@pytest.fixture
+def stub_near_dup_rates(monkeypatch):
+    def _stub(rates: list[float]) -> None:
+        async def fake_get_rates(ds_name: str, psql_db, lookback_days: int, task_type) -> list[float]:
+            assert lookback_days == synth_cst.NEAR_DUP_HISTORY_LOOKBACK_DAYS
+            return rates
+
+        monkeypatch.setattr(scheduler, "get_dataset_near_duplicate_rates", fake_get_rates)
+
+    return _stub
+
+
+async def _has_high_near_dup(task_type: TaskType = TaskType.INSTRUCTTEXTTASK) -> bool:
+    return await scheduler._has_known_high_near_duplicate_rate("some/dataset", task_type, psql_db=None)
+
+
+@pytest.mark.asyncio
+async def test_near_dup_no_history_is_allowed(stub_near_dup_rates):
+    stub_near_dup_rates([])
+    assert await _has_high_near_dup() is False
+
+
+@pytest.mark.asyncio
+async def test_near_dup_uses_max_not_latest_or_mean(stub_near_dup_rates):
+    stub_near_dup_rates([0.05, t_cst.MAX_NEAR_DUPLICATE_RATE + 0.01, 0.04])
+    assert await _has_high_near_dup() is True
+
+
+@pytest.mark.asyncio
+async def test_near_dup_boundary_mirrors_orchestrator_gte(stub_near_dup_rates):
+    stub_near_dup_rates([t_cst.MAX_NEAR_DUPLICATE_RATE])
+    assert await _has_high_near_dup() is True
+
+    stub_near_dup_rates([t_cst.MAX_NEAR_DUPLICATE_RATE - 0.001])
+    assert await _has_high_near_dup() is False
+
+
+@pytest.mark.asyncio
+async def test_near_dup_db_error_is_allowed(monkeypatch):
+    async def boom(ds_name: str, psql_db, lookback_days: int, task_type) -> list[float]:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(scheduler, "get_dataset_near_duplicate_rates", boom)
+    assert await _has_high_near_dup() is False

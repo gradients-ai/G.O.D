@@ -55,7 +55,7 @@ MODEL_PREP_GPU_RESERVE_HOURS = 1.0
 
 # Reject a task whose dataset near-duplicate rate (from baseline_stats) is at or above this
 # fraction. Only applies to text tasks (instruct/dpo/grpo); env tasks have no dataset stats.
-MAX_NEAR_DUPLICATE_RATE = 0.20
+MAX_NEAR_DUPLICATE_RATE = 0.10
 
 TOURNAMENT_PENDING_CYCLE_INTERVAL = 60  # 1 minute
 TOURNAMENT_ACTIVE_CYCLE_INTERVAL = 60
