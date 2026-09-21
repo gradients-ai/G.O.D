@@ -17,6 +17,6 @@ COPY core core
 COPY validator validator
 COPY ops/docker/scripts/image_eval_entrypoint.sh /app/start.sh
 RUN chmod +x /app/start.sh && mkdir -p /aplp && \
-    python -c "import torch, diffusers, transformers; assert torch.__version__.startswith('2.9.1')"
+    python -c "import torch, diffusers, transformers, accelerate; assert torch.__version__.startswith('2.9.1')"
 ENV PYTHONUNBUFFERED=1 HF_HUB_DISABLE_PROGRESS_BARS=1
 CMD ["/app/start.sh"]
