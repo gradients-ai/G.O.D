@@ -126,7 +126,7 @@ async def test_large_instruct_slot_disables_augmentation(monkeypatch):
 def _patch_replace_seams(monkeypatch, original):
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original))
     monkeypatch.setattr(task_creator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
-    monkeypatch.setattr(task_creator.task_sql, "delete_task", AsyncMock())
+    monkeypatch.setattr(task_creator.task_sql, "detach_task_from_tournament", AsyncMock())
     monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", AsyncMock())
     monkeypatch.setattr(task_creator, "_get_instruct_text_datasets", lambda *a, **k: MagicMock())
     same_type_mock = AsyncMock()

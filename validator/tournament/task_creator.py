@@ -1286,7 +1286,7 @@ async def replace_tournament_task(
         else:
             logger.warning(f"No expected repo name found for node {node.hotkey} in original task {original_task_id}")
 
-    await task_sql.delete_task(original_task_id, config.psql_db)
-    logger.info(f"Deleted original task {original_task_id} from db.")
+    await task_sql.detach_task_from_tournament(original_task_id, tournament_id, config.psql_db)
+    logger.info(f"Detached original task {original_task_id} from tournament {tournament_id}; task row kept.")
 
     return new_task.task_id
