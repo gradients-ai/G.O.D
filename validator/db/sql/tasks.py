@@ -995,6 +995,28 @@ async def delete_task(task_id: UUID, psql_db: PSQLDB) -> None:
             )
 
 
+async def detach_task_from_tournament(task_id: UUID, tournament_id: str, psql_db: PSQLDB) -> None:
+    """Drop a task's tournament slot and node assignments but keep the task row (and its baseline_stats)."""
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                f"""
+                DELETE FROM {cst.TASK_NODES_TABLE}
+                WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
+                """,
+                task_id,
+                NETUID,
+            )
+            await connection.execute(
+                f"""
+                DELETE FROM {cst.TOURNAMENT_TASKS_TABLE}
+                WHERE {cst.TASK_ID} = $1 AND {cst.TOURNAMENT_ID} = $2
+                """,
+                task_id,
+                tournament_id,
+            )
+
+
 async def get_miners_for_task(task_id: UUID, psql_db: PSQLDB) -> list[Node]:
     """Retrieve all miners assigned to a specific task."""
     async with await psql_db.connection() as connection:

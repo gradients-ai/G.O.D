@@ -16,7 +16,7 @@ from validator.tournament import task_creator
 def _patch_replace_seams(monkeypatch, original_task):
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original_task))
     monkeypatch.setattr(task_creator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
-    monkeypatch.setattr(task_creator.task_sql, "delete_task", AsyncMock())
+    monkeypatch.setattr(task_creator.task_sql, "detach_task_from_tournament", AsyncMock())
     monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", AsyncMock())
 
 
@@ -140,3 +140,30 @@ async def test_environment_replacement_preserves_identity_fields(monkeypatch):
     assert kwargs["eval_seed_override"] == original.eval_seed
     assert kwargs["hours_override"] == original.hours_to_complete
     assert kwargs["num_environments"] == len(original.environment_names)
+
+
+async def test_replacement_detaches_original_instead_of_deleting(monkeypatch):
+    original = SimpleNamespace(
+        task_id="orig-task",
+        task_type=TaskType.INSTRUCTTEXTTASK,
+        status=TaskStatus.PREP_TASK_FAILURE.value,
+        model_id="Qwen/Qwen2.5-3B",
+        model_params_count=3_000_000_000,
+    )
+    _patch_replace_seams(monkeypatch, original)
+    delete_mock = AsyncMock()
+    monkeypatch.setattr(task_creator.task_sql, "delete_task", delete_mock)
+    monkeypatch.setattr(
+        task_creator,
+        "_create_round_one_group_text_replacement_task",
+        AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.INSTRUCTTEXTTASK)),
+    )
+
+    await task_creator.replace_tournament_task(
+        "orig-task", "tourn", "tourn_round_001", "tourn_round_001_group_001", None, MagicMock()
+    )
+
+    delete_mock.assert_not_awaited()
+    task_creator.task_sql.detach_task_from_tournament.assert_awaited_once()
+    args = task_creator.task_sql.detach_task_from_tournament.call_args.args
+    assert args[:2] == ("orig-task", "tourn")
