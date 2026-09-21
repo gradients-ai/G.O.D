@@ -71,6 +71,33 @@ async def get_dataset_test_losses(
         return [loss for loss in (float(row[cst.TEST_LOSS]) for row in rows) if math.isfinite(loss)]
 
 
+async def get_dataset_near_duplicate_rates(
+    ds_name: str, psql_db: PSQLDB, lookback_days: int, task_type: TaskType
+) -> list[float]:
+    """Persisted near_duplicate_rate values from every recent model-prep of a dataset.
+
+    Scoped to one task type because the stat is computed over different text per type (instruct
+    hashes every column, DPO/GRPO only the prompts), so a dataset's rate is not comparable across
+    types. Tasks that never reached model prep have no baseline_stats and contribute nothing.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT ({cst.BASELINE_STATS}->'dataset'->>'near_duplicate_rate')::float AS rate
+            FROM {cst.TASKS_TABLE}
+            WHERE {cst.DS} = $1
+            AND {cst.TASK_TYPE} = $2
+            AND {cst.BASELINE_STATS}->'dataset'->>'near_duplicate_rate' IS NOT NULL
+            AND {cst.CREATED_AT} > NOW() - make_interval(days => $3)
+            """,
+            ds_name,
+            task_type.value,
+            lookback_days,
+        )
+        return [rate for rate in (float(row["rate"]) for row in rows) if math.isfinite(rate)]
+
+
 async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str | None:
     """Return the submission repo with the strictly lowest eval (test) loss for a task, or None.
 
