@@ -292,7 +292,10 @@ async def _create_basilica_deployment(client, deploy_kwargs: dict):
     name = create_kwargs.pop("name")
     source = create_kwargs.pop("source", None)
     pip_packages = create_kwargs.pop("pip_packages", None)
-    storage = create_kwargs.pop("storage", False)
+    # Basilica FUSE/R2 storage (`storage=True` / PersistentStorageSpec.enabled)
+    # adds a storage_sync startup phase and slows large HF downloads. Evals are
+    # ephemeral and already write caches to local disk, so always disable it.
+    create_kwargs.pop("storage", None)
 
     command = None
     if source is not None:
@@ -302,11 +305,6 @@ async def _create_basilica_deployment(client, deploy_kwargs: dict):
             else basilica.SourcePackager(source)
         )
         command = packager.build_command(pip_packages=pip_packages)
-
-    if storage is True:
-        storage = "/data"
-    elif storage is False:
-        storage = None
 
     create_deployment = getattr(client, "create_deployment_async", None)
     if create_deployment is None:
@@ -327,7 +325,7 @@ async def _create_basilica_deployment(client, deploy_kwargs: dict):
     response = await create_deployment(
         instance_name=name,
         command=command,
-        storage=storage,
+        storage=None,
         **create_kwargs,
     )
     return await client.get_async(response.instance_name)
