@@ -47,24 +47,6 @@ class ModelData(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
 
-class Img2ImgPayload(BaseModel):
-    ckpt_name: str
-    lora_name: str
-    steps: int
-    cfg: float
-    denoise: float
-    comfy_template: dict
-    height: int = 1024
-    width: int = 1024
-    model_type: str = "flux"
-    seed: int | None = None
-    is_safetensors: bool = True
-    prompt: str | None = None
-    base_image: str | None = None
-
-    model_config = ConfigDict(protected_namespaces=())
-
-
 class EvaluationArgs(BaseModel):
     dataset: str
     original_model: str

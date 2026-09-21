@@ -31,11 +31,11 @@ from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_quality_score
-from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.db.sql.tasks import get_env_task_eval_seed
 from validator.db.sql.tasks import get_expected_repo_name
 from validator.db.sql.tasks import get_nodes_assigned_to_task
 from validator.db.sql.tasks import get_starting_model_repo
+from validator.db.sql.tournament_performance import is_paired_comparison_task
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_image
 from validator.evaluation.docker_evaluation import run_evaluation_basilica_text
@@ -420,7 +420,7 @@ async def _evaluate_submissions(
             if repo == base_model:
                 logger.warning(f"Repository {repo} matches base model ID - marking as non-finetuned")
                 results[repo] = EvaluationResultImage(
-                    eval_losses=DiffusionLosses(text_guided_losses=[0], no_text_losses=[0]), is_finetune=False
+                    eval_loss=DiffusionLosses(text_guided_losses=[0], no_text_losses=[0]), is_finetune=False
                 )
             else:
                 repos_to_evaluate.append(repo)
@@ -715,8 +715,9 @@ async def process_miners_pool(
                     ]:
                         test_result = eval_result
                     elif task.task_type == TaskType.IMAGETASK:
-                        test_result = eval_result
-                        test_result.eval_loss = _calculate_weighted_loss_for_image_eval(test_result)
+                        test_result = eval_result.model_copy(
+                            update={"eval_loss": _calculate_weighted_loss_for_image_eval(eval_result)}
+                        )
                     else:
                         raise ValueError(f"Unknown task type: {task.task_type}")
 
