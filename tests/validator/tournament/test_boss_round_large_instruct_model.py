@@ -1,4 +1,4 @@
-"""The boss round always forces one of its instruct-text tasks onto a large (35B+) model.
+"""The boss round always forces one of its instruct-text tasks onto a large (30B+) model.
 
 The other two instruct-text tasks (and the DPO/GRPO tasks) draw from the normal standard
 model pool - there's no more probabilistic "big model" draw now that one slot is guaranteed.
@@ -148,7 +148,7 @@ def _large_instruct_original(**overrides):
 
 
 async def test_large_instruct_replacement_redraws_from_large_pool_without_pinning(monkeypatch):
-    """Prep failure on the 70B slot must redraw from 35-71B, not retry the failed model or the 1-10B default."""
+    """Prep failure on the 70B slot must redraw from 30-72B, not retry the failed model or the 1-10B default."""
     original = _large_instruct_original()
     same_type_mock = _patch_replace_seams(monkeypatch, original)
     monkeypatch.setattr(task_creator, "get_model_num_params", lambda model_id: 68_976_648_192)

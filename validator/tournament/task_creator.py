@@ -729,12 +729,6 @@ async def _create_probability_based_text_tasks(
     instruct_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT / text_total
     dpo_prob = PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO / text_total
 
-    # The pre-boss round is the knockout with exactly 2 competitors left: its winner becomes the
-    # boss challenger, and its task plays on the forced pre-boss model (see _create_pre_boss_task).
-    # Keyed on competitor count, not task count — other rounds can also create a single task.
-    competitors = {hotkey for pair in round_data.pairs for hotkey in pair}
-    is_pre_boss_round = len(competitors) == 2
-
     tasks = []
     for i in range(num_tasks):
         pair = round_data.pairs[i]
@@ -755,34 +749,15 @@ async def _create_probability_based_text_tasks(
             continue
 
         logger.info(f"    Pair {i + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
-        if is_pre_boss_round:
-            task = await _create_pre_boss_task(config, instruct_datasets)
-        else:
-            task = await _create_single_probability_task(
-                config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob
-            )
+        task = await _create_single_probability_task(
+            config, models, instruct_datasets, dpo_datasets, instruct_prob, dpo_prob
+        )
 
         await _create_and_register_tournament_task(
             task, tournament_id, round_data.round_id, config, pair_id=pair_id
         )
         tasks.append(task)
     return tasks
-
-
-async def _create_pre_boss_task(config: Config, instruct_datasets) -> RawTask:
-    """Create the pre-boss round's single task: a standard instruct task (normal dataset pull,
-    computed hours, param-based GPU sizing) with only the model forced to PRE_BOSS_MODEL.
-    Augmentation, KL and YaRN are disabled so both competitors train the exact published model.
-    """
-    return await create_synthetic_instruct_text_task(
-        config,
-        None,  # no model pool: the model is forced
-        instruct_datasets,
-        enable_kl=False,
-        model_id_override=t_cst.PRE_BOSS_MODEL,
-        allow_augmentation=False,
-        allow_yarn=False,
-    )
 
 
 async def _create_single_probability_task(
@@ -873,7 +848,7 @@ def _task_params_count(task) -> int:
 
 
 def _is_boss_round_large_instruct_task(task, is_final_round: bool) -> bool:
-    """The boss-round instruct slot that was forced onto the 35B–71B pool."""
+    """The boss-round instruct slot that was forced onto the 30B–72B pool."""
     if not is_final_round or task.task_type != TaskType.INSTRUCTTEXTTASK:
         return False
     params_b = _task_params_count(task) / t_cst.MODEL_PARAMS_TO_BILLIONS
@@ -908,7 +883,7 @@ async def _create_round_one_group_text_replacement_task(config: Config, model_id
 
 
 async def _create_boss_round_large_instruct_replacement_task(config: Config) -> RawTask:
-    """Redraw the boss-round large instruct slot from the 35B–71B pool.
+    """Redraw the boss-round large instruct slot from the 30B–72B pool.
 
     Does not pin the failed model: that model is why we are replacing. Augmentation stays off so
     model-prep does not upload a full 70B copy.
@@ -981,7 +956,7 @@ async def _create_new_text_boss_round_tasks(tournament_id: str, round_id: str, c
     for task_type, target_count in t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.items():
         already = existing_task_type_counts.get(task_type.value, 0)
         for slot_index in range(already, target_count):
-            # The last instruct-text slot is always a large (35B+) model, not the usual
+            # The last instruct-text slot is always a large (30B+) model, not the usual
             # standard/big-pool probability draw, and isn't eligible for the oversampled
             # override below since that model pool isn't guaranteed to be large.
             # Augmentation is forced off: republishing a 70B copy during model-prep
@@ -1232,22 +1207,14 @@ async def replace_tournament_task(
                 )
             logger.info(f"Detected continuous-SFT task replacement; recreating lineage {lineage}")
             new_task = await create_continuous_sft_task(config, lineage, seed_model)
-        elif not is_final_round and t_cst.is_pre_boss_task(original_task_obj):
-            # PRE_BOSS_MODEL is a public model that the boss round's own 12-71B pool can also draw,
-            # so the model id alone does not identify the pre-boss task — the round must not be the
-            # final one. Without this guard a boss-round instruct task that happened to draw
-            # PRE_BOSS_MODEL would be replaced by a copy pinned to the model that just failed prep,
-            # and silently stripped of augmentation/KL/YaRN on the round that decides the title.
-            logger.info("Detected pre-boss task replacement; re-forcing the pre-boss model")
-            new_task = await _create_pre_boss_task(config, _get_instruct_text_datasets(config.keypair))
         elif isinstance(original_task_obj, EnvRawTask):
             logger.info("Detected environment task replacement; preserving start point/model/envs/seed/hours")
             new_task = await _create_environment_replacement_task(original_task_obj, config)
         elif _is_boss_round_large_instruct_task(original_task_obj, is_final_round):
-            # The 35B–71B instruct slot is identified by size, not model id: pinning the failed
+            # The 30B–72B instruct slot is identified by size, not model id: pinning the failed
             # repo would retry the model that just failed prep. Redraw from the large pool and
             # keep augmentation off (a 70B republish blows the model-prep timeout).
-            logger.info("Detected boss-round large instruct replacement; redrawing from the 35-71B pool")
+            logger.info("Detected boss-round large instruct replacement; redrawing from the large-instruct pool")
             new_task = await _create_boss_round_large_instruct_replacement_task(config)
         else:
             replacement_model_override = (

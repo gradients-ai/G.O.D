@@ -88,17 +88,3 @@ class TestSeedRouting:
     def test_seed_repo_none_for_non_continuous_ds(self):
         assert t_cst.continuous_sft_seed_repo_for_ds("tatsu-lab/alpaca") is None
         assert t_cst.continuous_sft_seed_repo(None) is None
-
-
-class TestPreBossRouting:
-    def test_pre_boss_model_is_qwen3_32b(self):
-        assert t_cst.PRE_BOSS_MODEL == "Qwen/Qwen3-32B"
-
-    def test_is_pre_boss_task_requires_instruct_type_and_forced_model(self):
-        def _task(task_type, model_id):
-            return SimpleNamespace(task_type=task_type, model_id=model_id)
-
-        assert t_cst.is_pre_boss_task(_task(TaskType.INSTRUCTTEXTTASK, t_cst.PRE_BOSS_MODEL))
-        # The continuous-SFT boss task is CHATTASK — must not match, its replacement/routing differs.
-        assert not t_cst.is_pre_boss_task(_task(TaskType.CHATTASK, t_cst.PRE_BOSS_MODEL))
-        assert not t_cst.is_pre_boss_task(_task(TaskType.INSTRUCTTEXTTASK, "unsloth/Llama-3.2-3B"))

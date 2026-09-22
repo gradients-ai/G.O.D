@@ -177,8 +177,8 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 # instead of the normal standard-pool draw. Augmentation is skipped for this slot:
 # publishing a full 70B copy during model-prep regularly exceeds the prep timeout.
 # Prep-failure replacement redraws from this same band (it does not pin the failed model).
-BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 35.0
-BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 71.0
+BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 30.0
+BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 72.0
 # Number of boss-round text tasks (from FINAL_ROUND_TEXT_TASK_DISTRIBUTION) to force onto
 # OVERSAMPLED_LATER_MODELS. Set to 0 to disable without removing the wiring.
 FINAL_ROUND_OVERSAMPLED_TASKS = 0
@@ -232,19 +232,6 @@ def continuous_sft_seed_repo(lineage: str | None) -> str | None:
 def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
     """Seed model for a task's ds (pins the eval tokenizer); None for non-continuous tasks."""
     return continuous_sft_seed_repo(continuous_sft_lineage_from_ds(ds))
-
-
-# --- Pre-boss task --------------------------------------------------------------------------
-# The last knockout before the boss round (a single pair — its winner becomes the boss challenger)
-# is a standard instruct task with a normal dataset pull, computed hours and param-based GPU
-# sizing, where only the model is forced to PRE_BOSS_MODEL. Augmentation, KL and YaRN stay off so
-# both competitors train the exact published model.
-PRE_BOSS_MODEL = "Qwen/Qwen3-32B"
-
-
-def is_pre_boss_task(task) -> bool:
-    """True for the pre-boss forced-model instruct task."""
-    return task.task_type == TaskType.INSTRUCTTEXTTASK and task.model_id == PRE_BOSS_MODEL
 
 
 # Initial/fallback budget only: GPUs stay forced at 4xH100 (gpu_requirements.py), but hours are
