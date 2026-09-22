@@ -151,6 +151,8 @@ async def _start_evaluation_cost_run(
     deployment_name: str,
     gpu_count: int,
     ctx: _BasilicaEvalContext,
+    backend: str = "basilica",
+    gpu_type: str = "A100",
 ) -> str | None:
     if task_id is None or psql_db is None or gpu_count <= 0:
         return None
@@ -163,11 +165,16 @@ async def _start_evaluation_cost_run(
                 run_key=run_key,
                 task_id=str(task_id),
                 category="evaluation",
-                gpu_type="A100",
+                gpu_type=gpu_type,
                 gpu_count=gpu_count,
                 psql_db=psql_db,
                 run_id=run_id,
-                metadata={"deployment_name": deployment_name, "repo": ctx.repo},
+                metadata={
+                    "deployment_name": deployment_name,
+                    "repo": ctx.repo,
+                    "backend": backend,
+                    "gpu_type": gpu_type,
+                },
             ),
             "start_evaluation_cost_run",
             ctx.eval_logger,

@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime
 from datetime import timezone
 
-import httpx
 from dotenv import load_dotenv
 
 import validator.tournament.constants as cst
@@ -20,8 +19,8 @@ from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.infrastructure.service_constants import DSTACK_RUNS_APPLY_ENDPOINT
-from validator.infrastructure.service_constants import DSTACK_RUNS_GET_ENDPOINT
+from validator.infrastructure.dstack_client import DstackClient
+from validator.infrastructure.dstack_client import load_dstack_config as load_shared_dstack_config
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import _get_dataset_type
 from validator.tasks.details import try_db_connections
@@ -37,6 +36,9 @@ logger = get_logger(__name__)
 
 def load_dstack_config() -> dict:
     """Load dstack configuration from environment variables"""
+    config = load_shared_dstack_config(required=False)
+    if config is not None:
+        return {"url": config.url, "token": config.token, "project": config.project}
     return {
         'url': os.getenv("DSTACK_URL"),
         'token': os.getenv("DSTACK_TOKEN"),
@@ -54,29 +56,10 @@ async def submit_dstack_run(task_config: dict) -> str:
     Returns:
         Run name from the response
     """
-    dstack_config = load_dstack_config()
-    dstack_url = dstack_config['url']
-    dstack_token = dstack_config['token']
-    dstack_project = dstack_config['project']
-    
-    request_url = f"{dstack_url}{DSTACK_RUNS_APPLY_ENDPOINT.format(project=dstack_project)}"
-    
-    headers = {
-        "Authorization": f"Bearer {dstack_token}",
-        "Content-Type": "application/json"
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(request_url, headers=headers, json=task_config)
-        if response.status_code != 200:
-            error_detail = response.text
-            logger.error(f"dstack API error ({response.status_code}): {error_detail}")
-            logger.error(f"Request payload: {task_config}")
-            response.raise_for_status()
-        result = response.json()
-        run_name = result.get("run_spec", {}).get("run_name") or result.get("run_name")
-        logger.info(f"Submitted dstack run: {run_name}")
-        return run_name
+    result = await DstackClient().apply_run(task_config)
+    run_name = result.get("run_spec", {}).get("run_name") or result.get("run_name")
+    logger.info(f"Submitted dstack run: {run_name}")
+    return run_name
 
 
 async def get_dstack_run_status(run_name: str) -> DstackRunStatus:
@@ -89,23 +72,7 @@ async def get_dstack_run_status(run_name: str) -> DstackRunStatus:
     Returns:
         DstackRunStatus: Parsed run status information
     """
-    dstack_config = load_dstack_config()
-    dstack_url = dstack_config['url']
-    dstack_token = dstack_config['token']
-    dstack_project = dstack_config['project']
-    
-    request_url = f"{dstack_url}{DSTACK_RUNS_GET_ENDPOINT.format(project=dstack_project)}"
-    
-    headers = {
-        "Authorization": f"Bearer {dstack_token}",
-        "Content-Type": "application/json"
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(request_url, headers=headers, json={"run_name": run_name})
-        response.raise_for_status()
-        response_data = response.json()
-        return DstackRunStatus.model_validate(response_data)
+    return await DstackClient().get_run_status(run_name)
 
 
 async def fetch_organic_tasks_ready_to_train(config: Config):

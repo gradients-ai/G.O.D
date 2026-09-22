@@ -1,6 +1,10 @@
 FROM phoenixbeaudry/game:mcts-api AS mcts_runtime
 
-FROM lmsysorg/sglang:v0.5.14
+FROM lmsysorg/sglang:v0.5.3-cu129
+
+# Accept host CUDA 12.9+ (driver ~575). 0.5.3 is the first release with
+# --enable-deterministic-inference; official images for that cut start at cu129.
+ENV NVIDIA_REQUIRE_CUDA=cuda>=12.9
 
 WORKDIR /app
 

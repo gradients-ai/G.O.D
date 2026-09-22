@@ -3,6 +3,7 @@ import datetime
 import json
 import random
 import uuid
+from urllib.parse import urlparse
 from uuid import UUID
 
 import core.constants.docker as docker_cst
@@ -35,7 +36,6 @@ from validator.evaluation.basilica import _finish_evaluation_cost_run
 from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
 from validator.evaluation.basilica import _poll_eval_deployment
 from validator.evaluation.basilica import _start_evaluation_cost_run
-from validator.evaluation.basilica import run_basilica_eval_repos
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
 from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
@@ -47,6 +47,9 @@ from validator.evaluation.pvp.models import PvPMatchupConfig
 from validator.evaluation.pvp.models import PvPMode
 from validator.evaluation.pvp.models import PvPModelSpec
 from validator.evaluation.pvp.models import PvPPairResult
+from validator.evaluation.remote import EvalBackend
+from validator.evaluation.remote import get_eval_backend
+from validator.evaluation.remote import run_remote_eval_repos
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
 from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
@@ -64,6 +67,18 @@ except ImportError:
 
 
 logger = get_logger(__name__)
+
+
+def _effective_remote_file_format(dataset: str, file_format: FileFormat) -> FileFormat:
+    """Map an S3 transport URL to the downloaded file's parser format."""
+    if file_format != FileFormat.S3:
+        return file_format
+    path = urlparse(dataset).path.lower()
+    if path.endswith((".json", ".jsonl")):
+        return FileFormat.JSON
+    if path.endswith(".csv"):
+        return FileFormat.CSV
+    return file_format
 
 
 def _deployment_url(deployment) -> str | None:
@@ -200,10 +215,11 @@ async def run_evaluation_basilica_text(
     else:
         source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
+    effective_file_format = _effective_remote_file_format(dataset, file_format)
     base_env = {
         "ORIGINAL_MODEL": original_model,
         "DATASET_TYPE": dataset_type_str,
-        "FILE_FORMAT": file_format.value,
+        "FILE_FORMAT": effective_file_format.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         **vcst.HF_CONTAINER_ENV,
     }
@@ -243,7 +259,7 @@ async def run_evaluation_basilica_text(
         if isinstance(v, str) and not is_environment_eval
     }
 
-    repo_results = await run_basilica_eval_repos(
+    repo_results = await run_remote_eval_repos(
         repos=models,
         model_name=original_model,
         task_type=task_type,
@@ -297,10 +313,11 @@ async def run_evaluation_basilica_grpo(
     dataset_type_str = dataset_type.model_dump_json()
     source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
+    effective_file_format = _effective_remote_file_format(dataset, file_format)
     base_environment = {
         "ORIGINAL_MODEL": original_model,
         "DATASET_TYPE": dataset_type_str,
-        "FILE_FORMAT": file_format.value,
+        "FILE_FORMAT": effective_file_format.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         **vcst.HF_CONTAINER_ENV,
     }
@@ -315,7 +332,7 @@ async def run_evaluation_basilica_grpo(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-    repo_results = await run_basilica_eval_repos(
+    repo_results = await run_remote_eval_repos(
         repos=models,
         model_name=original_model,
         task_type="grpo",
@@ -385,7 +402,7 @@ async def run_evaluation_basilica_image(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
-    repo_results = await run_basilica_eval_repos(
+    repo_results = await run_remote_eval_repos(
         repos=models,
         model_name=original_model_repo,
         task_type="image",
@@ -528,6 +545,103 @@ async def _deploy_pvp_eval(
         deleted_deployment_names=set(),
         log_eval_step=log_step,
     )
+
+    if get_eval_backend() == EvalBackend.RUNPOD:
+        update_environment_logger_labels(eval_logger, eval_backend="runpod")
+        reserved_pair = False
+        release_pair_on_exit = True
+        try:
+            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
+                if existing_deployment_name:
+                    await _db_call_with_retry(
+                        lambda: tasks_sql.reserve_pvp_pair_gpus_unconditional(
+                            task_id,
+                            hotkeys[0],
+                            hotkeys[1],
+                            gpu_count,
+                            psql_db,
+                        ),
+                        "reserve_pvp_pair_gpus_unconditional",
+                        ctx.eval_logger,
+                        ctx.repo,
+                    )
+                    reserved_pair = True
+                else:
+                    reserved_pair = await _db_call_with_retry(
+                        lambda: tasks_sql.try_reserve_pvp_pair_gpus(
+                            task_id,
+                            hotkeys[0],
+                            hotkeys[1],
+                            gpu_count,
+                            psql_db,
+                        ),
+                        "try_reserve_pvp_pair_gpus",
+                        ctx.eval_logger,
+                        ctx.repo,
+                    )
+                if not reserved_pair:
+                    raise EvaluationCapacityUnavailable(
+                        f"Not enough evaluation GPU capacity for PvP {label} ({gpu_count} GPUs)"
+                    )
+
+            async def persist_runpod_pvp_id(_repo: str, deployment_id: str) -> None:
+                await _persist_pvp_deployment_id(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    deployment_name=deployment_id,
+                    verified=False,
+                    ctx=ctx,
+                )
+
+            pseudo_repo = f"pvp-{label}"
+            raw_results = await run_remote_eval_repos(
+                repos=[pseudo_repo],
+                model_name=pvp_config.base_model or "",
+                task_type=TaskType.ENVIRONMENTTASK.value,
+                image=image,
+                source=source,
+                build_env_for_repo=lambda _repo: env,
+                gpu_count=gpu_count,
+                gpu_models=["A100"],
+                min_gpu_memory_gb=80,
+                storage=False,
+                task_id=task_id,
+                psql_db=psql_db,
+                # PvP owns its reservation in pvp_pair_results, so the generic
+                # evaluations-table reservation path must remain disabled.
+                repo_to_hotkey={},
+                deployment_ids_by_repo=(
+                    {pseudo_repo: existing_deployment_name}
+                    if isinstance(existing_deployment_name, str)
+                    else {}
+                ),
+                persist_deployment_ids=False,
+                deployment_id_persister=persist_runpod_pvp_id,
+                reserve_deployment_id=False,
+                propagate_retryable=True,
+            )
+            result = raw_results.get(pseudo_repo)
+            if not isinstance(result, dict):
+                raise RuntimeError(str(result))
+            return result
+        except EvaluationCapacityUnavailable:
+            # No-offers cleanup was verified by the backend; release and let
+            # the lifecycle defer without consuming an evaluation attempt.
+            raise
+        except EvaluationRetryableError:
+            # Fail closed: the backend raises this when deletion could not be
+            # verified. Keep the deployment ID and reservation for reconciliation.
+            release_pair_on_exit = False
+            raise
+        finally:
+            if reserved_pair and release_pair_on_exit:
+                await _release_pvp_pair_gpus_reservation(
+                    task_id=task_id,
+                    psql_db=psql_db,
+                    hotkeys=hotkeys,
+                    ctx=ctx,
+                )
 
     if existing_deployment_name:
         resume_deployment = await _get_healthy_existing_basilica_deployment(
@@ -849,7 +963,7 @@ async def run_evaluation_individual(
             repo_env["BASE_CHAIN"] = json.dumps(chain)
         return repo_env
 
-    repo_results = await run_basilica_eval_repos(
+    repo_results = await run_remote_eval_repos(
         repos=miners.repos,
         model_name=base_model,
         task_type=f"ITournEval[{environment_name.value}]",

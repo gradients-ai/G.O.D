@@ -53,3 +53,7 @@ GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
 # Dstack API endpoints
 DSTACK_RUNS_APPLY_ENDPOINT = "/api/project/{project}/runs/apply"
 DSTACK_RUNS_GET_ENDPOINT = "/api/project/{project}/runs/get"
+DSTACK_RUNS_STOP_ENDPOINT = "/api/project/{project}/runs/stop"
+DSTACK_RUNS_DELETE_ENDPOINT = "/api/project/{project}/runs/delete"
+DSTACK_RUNS_LIST_ENDPOINT = "/api/runs/list"
+DSTACK_LOGS_POLL_ENDPOINT = "/api/project/{project}/logs/poll"
