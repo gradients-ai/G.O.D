@@ -4,11 +4,7 @@
 # Build manually:
 #   docker build -f ops/docker/validator-swe-infinite.dockerfile -t gradientsio/env-eval-swe-infinite:basilica .
 
-FROM lmsysorg/sglang:v0.5.3-cu129
-
-# Accept host CUDA 12.9+ (driver ~575). 0.5.3 is the first release with
-# --enable-deterministic-inference; official images for that cut start at cu129.
-ENV NVIDIA_REQUIRE_CUDA=cuda>=12.9
+FROM lmsysorg/sglang:v0.5.14
 
 WORKDIR /app
 
@@ -25,8 +21,8 @@ RUN pip install --no-cache-dir --upgrade-strategy only-if-needed .
 # FastAPI-era dependency set over the SGLang image can otherwise leave a newer
 # pydantic package calling an older pydantic-core API.
 #
-# SGLang v0.5.3-cu129 is the CUDA 12.9 pin. Keep PEFT new enough that
-# _maybe_shard_state_dict_for_tp exists if transformers imports it.
+# SGLang v0.5.14 ships transformers 5.8.1, whose PEFT integration imports
+# _maybe_shard_state_dict_for_tp. PEFT 0.18.1 does not provide that helper.
 RUN pip install --no-cache-dir --upgrade-strategy only-if-needed \
     pydantic==2.12.5 pydantic-core==2.41.5 \
     peft==0.19.1 accelerate==1.6.0

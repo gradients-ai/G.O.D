@@ -22,11 +22,7 @@ RUN chmod +x /opt/intercode-build/build_fs.sh && /opt/intercode-build/build_fs.s
 
 
 # ── Stage 2: runtime image (SGLang + python deps + baked-in snapshots/data).
-FROM lmsysorg/sglang:v0.5.3-cu129
-
-# Accept host CUDA 12.9+ (driver ~575). 0.5.3 is the first release with
-# --enable-deterministic-inference; official images for that cut start at cu129.
-ENV NVIDIA_REQUIRE_CUDA=cuda>=12.9
+FROM lmsysorg/sglang:v0.5.14
 
 WORKDIR /app
 
