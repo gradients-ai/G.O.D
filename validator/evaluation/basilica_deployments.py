@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from string import Template
 
 import basilica
@@ -11,6 +12,18 @@ from core.logging import get_logger
 logger = get_logger(__name__)
 
 EVAL_RESULT_STATUS_PATH = "/result"
+
+
+def _create_remote_runner_launcher_source(command: list[str], result_path: str, mode: str) -> str:
+    """Embed the runner so existing evaluator images need no rebuild."""
+    runner_source = Path(__file__).with_name("remote_runner.py").read_text(encoding="utf-8")
+    return (
+        "import os\n"
+        f"os.environ['EVAL_RUNNER_COMMAND'] = {json.dumps(json.dumps(command))}\n"
+        f"os.environ['EVAL_RUNNER_RESULT_PATH'] = {json.dumps(result_path)}\n"
+        f"os.environ['EVAL_RUNNER_MODE'] = {json.dumps(mode)}\n"
+        f"{runner_source}\n"
+    )
 
 
 def deployment_is_healthy(deployment, health_path: str = "/health", timeout: int = 8) -> bool:
@@ -67,6 +80,8 @@ def create_basilica_eval_runner_source(
     The runner executes a single eval command, then serves the parsed
     `evaluation_results.json` payload on `/result`.
     """
+    return _create_remote_runner_launcher_source(command, result_path, "standard")
+
     command_json = json.dumps(command)
     result_path_json = json.dumps(result_path)
     return f"""import json
@@ -146,6 +161,8 @@ def create_basilica_public_sglang_eval_runner_source(
     for the candidate model, while the validator still needs `/health` and
     `/result` on the same exposed Basilica port.
     """
+    return _create_remote_runner_launcher_source(command, result_path, "public_sglang")
+
     return Template(
         r'''import http.client
 import json

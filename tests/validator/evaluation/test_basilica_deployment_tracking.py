@@ -152,12 +152,12 @@ async def test_environment_text_eval_does_not_persist_to_evaluations(monkeypatch
     async def fake_load_eval_pair_state_for_models(*_args, **_kwargs):
         return {"org/repo-a": "stale-eval-table-deployment"}, {"org/repo-a": "hk_a"}
 
-    async def fake_run_basilica_eval_repos(**kwargs):
+    async def fake_run_remote_eval_repos(**kwargs):
         captured.update(kwargs)
         return {"org/repo-a": {"org/repo-a": {"eval_loss": 1.0, "is_finetune": True}}}
 
     monkeypatch.setattr(docker_evaluation, "load_eval_pair_state_for_models", fake_load_eval_pair_state_for_models)
-    monkeypatch.setattr(docker_evaluation, "run_basilica_eval_repos", fake_run_basilica_eval_repos)
+    monkeypatch.setattr(docker_evaluation, "run_remote_eval_repos", fake_run_remote_eval_repos)
 
     await docker_evaluation.run_evaluation_basilica_text(
         dataset="proxy",
@@ -186,7 +186,7 @@ async def test_individual_env_eval_uses_individual_score_deployment_owner(monkey
     async def fake_set_individual_score_deployment_id(*args):
         persisted.append(args)
 
-    async def fake_run_basilica_eval_repos(**kwargs):
+    async def fake_run_remote_eval_repos(**kwargs):
         captured.update(kwargs)
         await kwargs["deployment_id_persister"]("org/repo-a", "verified-new-deployment")
         return {"org/repo-a": {"org/repo-a": {"eval_loss": 0.25}}}
@@ -201,7 +201,7 @@ async def test_individual_env_eval_uses_individual_score_deployment_owner(monkey
         "set_individual_score_deployment_id",
         fake_set_individual_score_deployment_id,
     )
-    monkeypatch.setattr(docker_evaluation, "run_basilica_eval_repos", fake_run_basilica_eval_repos)
+    monkeypatch.setattr(docker_evaluation, "run_remote_eval_repos", fake_run_remote_eval_repos)
 
     task_id = uuid4()
     await docker_evaluation.run_evaluation_individual(
@@ -228,7 +228,7 @@ async def test_individual_env_eval_without_db_skips_deployment_lookup(monkeypatc
     async def exploding_get_individual_deployment_ids(*_args, **_kwargs):
         raise AssertionError("DB deployment lookup should not run without psql_db")
 
-    async def fake_run_basilica_eval_repos(**kwargs):
+    async def fake_run_remote_eval_repos(**kwargs):
         captured.update(kwargs)
         return {"org/repo-a": {"org/repo-a": {"eval_loss": 0.25}}}
 
@@ -237,7 +237,7 @@ async def test_individual_env_eval_without_db_skips_deployment_lookup(monkeypatc
         "get_individual_deployment_ids",
         exploding_get_individual_deployment_ids,
     )
-    monkeypatch.setattr(docker_evaluation, "run_basilica_eval_repos", fake_run_basilica_eval_repos)
+    monkeypatch.setattr(docker_evaluation, "run_remote_eval_repos", fake_run_remote_eval_repos)
 
     result = await docker_evaluation.run_evaluation_individual(
         miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a"}),
@@ -263,10 +263,8 @@ def test_public_sglang_runner_source_compiles_and_exposes_proxy():
     )
 
     compile(source, "<swe-runner>", "exec")
-    assert "SWE_INFINITE_MODEL_BASE_URL" in source
-    assert "SWE_INFINITE_MODEL_API_KEY" in source
-    assert "startsWith" not in source
-    assert 'self.path == "/v1"' in source
+    assert 'EVAL_RUNNER_MODE\'] = "public_sglang"' in source
+    assert "class Handler(BaseHTTPRequestHandler)" in source
 
 
 @pytest.mark.asyncio
@@ -276,7 +274,7 @@ async def test_individual_swe_eval_uses_public_sglang_runner(monkeypatch):
     async def fake_get_individual_deployment_ids(*_args, **_kwargs):
         return {}
 
-    async def fake_run_basilica_eval_repos(**kwargs):
+    async def fake_run_remote_eval_repos(**kwargs):
         captured.update(kwargs)
         return {"org/repo-a": {"org/repo-a": {"eval_loss": 0.5}}}
 
@@ -286,7 +284,7 @@ async def test_individual_swe_eval_uses_public_sglang_runner(monkeypatch):
         "get_individual_deployment_ids",
         fake_get_individual_deployment_ids,
     )
-    monkeypatch.setattr(docker_evaluation, "run_basilica_eval_repos", fake_run_basilica_eval_repos)
+    monkeypatch.setattr(docker_evaluation, "run_remote_eval_repos", fake_run_remote_eval_repos)
 
     result = await docker_evaluation.run_evaluation_individual(
         miners=MinerRepos(by_hotkey={"hk_a": "org/repo-a"}),
@@ -301,6 +299,6 @@ async def test_individual_swe_eval_uses_public_sglang_runner(monkeypatch):
 
     repo_env = captured["build_env_for_repo"]("org/repo-a")
     assert result.scores_by_hotkey == {"hk_a": 0.5}
-    assert "SWE_INFINITE_MODEL_BASE_URL" in captured["source"]
+    assert 'EVAL_RUNNER_MODE\'] = "public_sglang"' in captured["source"]
     assert repo_env["SWE_INFINITE_SERVER_BASE_URL"] == "https://swe.example"
     assert repo_env["ENVIRONMENT_NAME"] == EnvironmentName.SWE_INFINITE.value

@@ -12,6 +12,27 @@ Each completed row saves raw evaluation output into `task_nodes`: `test_loss` an
 
 ## Main Debugging Commands
 
+The production remote backend is selected globally:
+
+```bash
+# default
+EVAL_BACKEND=basilica
+
+# dstack services scheduled on Runpod
+EVAL_BACKEND=runpod
+```
+
+Runpod evaluation configuration reuses `DSTACK_URL`, `DSTACK_TOKEN`, and
+`DSTACK_PROJECT`. It requests A100 GPUs, 200GB disk, and all regions by
+default. Runpod evaluation services have a two-hour dstack `max_duration`.
+Optional overrides are:
+
+- `EVAL_RUNPOD_DISK_SIZE` (for example `100GB`)
+- `EVAL_RUNPOD_REGIONS` (comma-separated; unset means all regions)
+- `EVAL_RUNPOD_GATEWAY`
+- `EVAL_RUNPOD_SERVICE_URL_TEMPLATE` (required for SWE Infinite with a
+  gateway; supports `{run_name}`)
+
 List live Basilica deployments:
 
 ```bash
@@ -38,6 +59,11 @@ In Grafana, search validator logs by:
 
 Turn on Basilica logs in Grafana when you need container output.
 
+Runpod services use dstack run names shaped as `god-eval-<uuid hex>`. Inspect
+them with `dstack ps`, `dstack logs <run_name>`, and `dstack run get
+<run_name> --json`. The validator relays their logs to the same evaluation
+dashboard as `[REMOTE_EVAL_LOG]` entries.
+
 ## Database Checks
 
 Start with `evaluations`. This tells you whether the row is waiting, running, done, or failed.
@@ -52,7 +78,9 @@ order by created_at;
 Useful fields:
 
 - `evaluation_status`: `pending`, `evaluating`, `success`, or `failure`.
-- `deployment_id`: Basilica deployment for a live or recently live evaluation.
+- `deployment_id`: remote deployment for a live or recently live evaluation.
+  Runpod IDs are stored as `runpod:<run_name>`; legacy/unqualified IDs are
+  Basilica deployments.
 - `created_at` / `updated_at`: tells you how long the row has been waiting.
 
 Check saved losses in `task_nodes`:
@@ -78,6 +106,11 @@ Failed evaluation attempts retry up to `3` times, with `900` seconds between ret
 
 ## Startup Recovery
 
-On startup, the validator protects deployments already stored on `pending` or `evaluating` rows and deletes other lingering Basilica deployments.
+On startup, the validator protects deployments already stored on `pending` or
+`evaluating` rows and reconciles both Basilica deployments and dstack Runpod
+services. Normal completion and every failure/cancellation path stop and delete
+the Runpod service. The reconciler is the crash-recovery backstop: unowned
+Runpod services are reaped after their startup grace, and missing services
+release their DB GPU reservations.
 
 Rows that remain `evaluating` (usually happens if they were interrupted in event of a validator restart) are picked up by the loop and if the stored deployment is healthy, polling resumes. If it is missing or unhealthy, the validator redeploys and saves the new deployment id.

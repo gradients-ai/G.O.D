@@ -32,6 +32,10 @@ from core.logging import get_logger
 from validator.db.database import PSQLDB
 from validator.db.sql import gpu_costs
 from validator.evaluation.basilica_deployments import cleanup_basilica_deployments_by_name
+from validator.evaluation.runpod import cleanup_runpod_deployments_by_id
+from validator.evaluation.runpod import is_runpod_deployment_id
+from validator.evaluation.runpod import list_live_runpod_eval_deployments
+from validator.infrastructure.dstack_client import load_dstack_config
 
 
 logger = get_logger(__name__)
@@ -138,12 +142,14 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
     reflects reality. Best-effort: never raises to the caller (the eval loop must keep running).
     Returns the plan that was applied, or None if the live deployments could not be listed.
     """
+    basilica_available = True
     try:
         client = basilica.BasilicaClient()
         raw_deployments = await asyncio.to_thread(client.list)
     except Exception as e:
-        logger.warning(f"eval reconcile: could not list Basilica deployments, skipping: {e}")
-        return None
+        basilica_available = False
+        raw_deployments = []
+        logger.warning(f"eval reconcile: could not list Basilica deployments: {e}")
 
     observed_at = datetime.datetime.now(datetime.timezone.utc)
     live: list[LiveDeployment] = []
@@ -162,11 +168,36 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
             ):
                 managed_deployment_names.add(name)
 
+    runpod_available = False
+    if load_dstack_config(required=False) is not None:
+        try:
+            runpod_deployments = await list_live_runpod_eval_deployments()
+            runpod_available = True
+            for deployment in runpod_deployments:
+                live.append(
+                    LiveDeployment(
+                        name=deployment.deployment_id,
+                        created_at=deployment.created_at,
+                    )
+                )
+                managed_deployment_names.add(deployment.deployment_id)
+        except Exception as e:
+            logger.warning(f"eval reconcile: could not list Runpod deployments: {e}")
+
+    if not basilica_available and not runpod_available:
+        logger.warning("eval reconcile: no deployment provider could be listed; skipping")
+        return None
+
     active_rows = await tasks_sql.get_active_evaluation_deployments(psql_db)
     active = [
         ActiveEvalRow(deployment_id=row["deployment_id"], updated_at=row["updated_at"])
         for row in active_rows
-        if row.get("deployment_id") and row.get("updated_at")
+        if row.get("deployment_id")
+        and row.get("updated_at")
+        and (
+            (is_runpod_deployment_id(row["deployment_id"]) and runpod_available)
+            or (not is_runpod_deployment_id(row["deployment_id"]) and basilica_available)
+        )
     ]
 
     # PvP evals track their live deployment id + GPU reservation on pvp_pair_results (per-pair), not
@@ -192,6 +223,10 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         )
         for row in pvp_reservation_rows
         if row.get("updated_at")
+        and (
+            (is_runpod_deployment_id(row.get("deployment_id")) and runpod_available)
+            or (not is_runpod_deployment_id(row.get("deployment_id")) and basilica_available)
+        )
     ]
 
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -207,6 +242,21 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         ghost_grace,
         managed_deployment_names,
     )
+    runpod_orphan_grace = datetime.timedelta(seconds=vcst.EVAL_RUNPOD_ORPHAN_GRACE_SECONDS)
+    runpod_orphans = {
+        deployment.name
+        for deployment in live
+        if is_runpod_deployment_id(deployment.name)
+        and deployment.name in managed_deployment_names
+        and deployment.name not in backed_ids
+        and (now - deployment.created_at) >= runpod_orphan_grace
+    }
+    if runpod_orphans - plan.orphan_deployments:
+        plan = ReconcilePlan(
+            orphan_deployments=plan.orphan_deployments | runpod_orphans,
+            ghost_deployment_ids=plan.ghost_deployment_ids,
+            ghost_pvp_pairs=plan.ghost_pvp_pairs,
+        )
     try:
         closed_cost_runs = await gpu_costs.close_stale_evaluation_runs(
             live_deployment_names={deployment.name for deployment in live},
@@ -219,11 +269,18 @@ async def reconcile_eval_deployments(psql_db: PSQLDB) -> ReconcilePlan | None:
         logger.warning(f"eval reconcile: could not close stale evaluation cost runs: {e}")
 
     if plan.orphan_deployments:
+        basilica_orphans = {
+            deployment_id
+            for deployment_id in plan.orphan_deployments
+            if not is_runpod_deployment_id(deployment_id)
+        }
+        runpod_orphans = plan.orphan_deployments - basilica_orphans
         logger.warning(
-            f"eval reconcile: reaping {len(plan.orphan_deployments)} orphaned Basilica deployment(s) "
+            f"eval reconcile: reaping {len(plan.orphan_deployments)} orphaned remote deployment(s) "
             f"with no active eval row: {sorted(plan.orphan_deployments)}"
         )
-        await cleanup_basilica_deployments_by_name(plan.orphan_deployments)
+        await cleanup_basilica_deployments_by_name(basilica_orphans)
+        await cleanup_runpod_deployments_by_id(runpod_orphans)
 
     for deployment_id in plan.ghost_deployment_ids:
         logger.warning(

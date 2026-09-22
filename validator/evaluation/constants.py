@@ -174,3 +174,6 @@ EVAL_ORPHAN_GRACE_SECONDS = 7200
 # orphan grace instead. So this can be short: release a dead deployment's GPUs in ~2 reconcile
 # cycles rather than making the cap wait the full 30 min.
 EVAL_GHOST_GRACE_SECONDS = 240
+
+EVAL_RUNPOD_ORPHAN_GRACE_SECONDS = 2100
+EVAL_RUNPOD_MAX_DURATION_SECONDS = 7200

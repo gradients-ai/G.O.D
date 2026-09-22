@@ -236,6 +236,7 @@ def get_environment_logger(
     hotkey_b: str = None,
     deployment_id: str = None,
     deployment_url: str = None,
+    eval_backend: str = None,
     enable_console_output: bool = False,
 ) -> Logger:
     """Get a logger configured to send environment evaluation logs to Vector/Loki.
@@ -267,6 +268,7 @@ def get_environment_logger(
         "hotkey_b": hotkey_b or "unknown",
         "deployment_id": deployment_id or "unknown",
         "deployment_url": deployment_url or "unknown",
+        "eval_backend": eval_backend or "basilica",
     }
     logger.addHandler(VectorHandler(default_labels=labels))
     logger.propagate = False
