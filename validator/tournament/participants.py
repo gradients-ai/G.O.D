@@ -6,7 +6,6 @@ from core.datasets.whitelist import validate_requested_datasets
 from core.logging import get_logger
 from validator.app.config import Config
 from validator.db.database import PSQLDB
-from validator.db.sql.tasks import get_task
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_pairs
 from validator.db.sql.tournaments import get_tournament_participant
@@ -15,7 +14,6 @@ from validator.db.sql.tournaments import get_tournament_tasks
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.constants import DEFAULT_PARTICIPANT_COMMIT
 from validator.tournament.constants import DEFAULT_PARTICIPANT_REPO
-from validator.tournament.constants import is_pre_boss_task
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
@@ -49,9 +47,8 @@ async def get_pre_boss_knockout_loser(
 
     Only returns a hotkey when the pre-boss round is unambiguous: exactly one
     KNOCKOUT round immediately preceding the final round, with exactly one pair
-    and a decided winner, and - for TEXT tournaments - every task in that round
-    pinned to PRE_BOSS_MODEL. Anything less structurally clean returns None so
-    the caller falls back to top-2-only payout.
+    and a decided winner. Anything less structurally clean returns None so the
+    caller falls back to top-2-only payout.
 
     The pair's winner is resolved from its tasks via ``_resolve_knockout_task_winner``
     (majority across tasks if there's more than one) rather than read off
@@ -83,11 +80,6 @@ async def get_pre_boss_knockout_loser(
     loser = pair.hotkey2 if winner_hotkey == pair.hotkey1 else pair.hotkey1
     if loser in (EMISSION_BURN_HOTKEY, challenger_hotkey, winner_hotkey):
         return None
-
-    if tournament.tournament_type == TournamentType.TEXT:
-        tasks_full = [await get_task(task.task_id, psql_db) for task in pair_tasks]
-        if not all(task and is_pre_boss_task(task) for task in tasks_full):
-            return None
 
     return loser
 

@@ -10,6 +10,7 @@ from core.models.image_models import ImageModelType
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.tasks.models import EnvRawTask
+from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
 
 
@@ -83,6 +84,36 @@ async def test_final_round_oversampled_replacement_passes_override_to_same_type(
     assert new_task_id == "new-task"
     same_type_mock.assert_awaited_once()
     assert same_type_mock.call_args.kwargs["model_id_override"] == original.model_id
+
+
+async def test_continuous_sft_replacement_recreates_the_same_lineage(monkeypatch):
+    """Same lineage, same carried base; only the chunk is re-materialized. Falling through to
+    create_new_task_of_same_type would drop the lineage (no CHATTASK route there) and weaken the
+    win-all-continuous-SFT dethrone gate."""
+    original = SimpleNamespace(
+        task_id="orig-task",
+        task_type=TaskType.CHATTASK,
+        training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+        ds="continuous-sft:qwen3-14b:chunk-00003",
+        status=TaskStatus.PREP_TASK_FAILURE.value,
+        model_id="miner-org/carried-winner",
+        model_params_count=0,
+    )
+    _patch_replace_seams(monkeypatch, original)
+    same_type_mock = AsyncMock()
+    monkeypatch.setattr(task_creator, "create_new_task_of_same_type", same_type_mock)
+    recreate_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.CHATTASK))
+    monkeypatch.setattr(task_creator, "create_continuous_sft_task", recreate_mock)
+
+    new_task_id = await task_creator.replace_tournament_task(
+        "orig-task", "tourn", "tourn_round_004", None, "tourn_round_004_pair_001", MagicMock()
+    )
+
+    same_type_mock.assert_not_awaited()
+    assert new_task_id == "new-task"
+    _, lineage, seed_model = recreate_mock.call_args.args
+    assert lineage == "qwen3-14b"
+    assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen3-14b"]
 
 
 async def test_image_replacement_filters_to_original_model_type(monkeypatch):
