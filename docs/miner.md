@@ -439,12 +439,15 @@ Your submission's `config.json` must not declare a smaller `max_position_embeddi
 
 Image tournaments use `ImageTask`.
 
-- Round 1 bracket formation depends on field size (`validator/tournament/constants.py`), with one image task per group/small-tournament match instead of an instruct task:
-  - 3-14 miners: a "small tournament" — a single group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) image tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance.
-  - 4-8 miners outside that band, or later rounds down to 8 or fewer: pairwise knockout.
-  - More than 14 (or more than 8 in later rounds): a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one image task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**, so the total advancing can exceed 8 when there are multiple groups.
-- Knockout pairs receive one image task.
-- The final boss round creates 6 image tasks. Up to 3 can be Z-Image or Qwen-Image tasks.
+- Round 1 always uses one group and three smaller image tasks: one Flux,
+  one Ideogram, and one Z-Image task. These tasks use at most 30 source
+  image/text pairs (at most 45 minutes of competition time and three held-out
+  evaluation images). Average rank across the three tasks determines the top
+  two miners.
+- Round 2 is one pairwise knockout task, randomly using Qwen-Image or Krea.
+  Its winner advances to the boss round.
+- The final boss round remains 6 image tasks: Krea x2, Ideogram x2,
+  Qwen-Image x1, and Z-Image x1.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
 - The challenger must win all but at most one of the 6 boss-round tasks to dethrone the defending champion (no separate continuous-SFT gate for image).
 
