@@ -14,6 +14,7 @@ from huggingface_hub import repo_exists
 from core.constants.credentials import HUGGINGFACE_TOKEN
 from core.constants.credentials import RAYONLABS_HF_USERNAME
 from core.constants.environments import TrainingStartPoint
+from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.datasets.whitelist import validate_requested_datasets
 from core.logging import LogContext
 from core.logging import get_logger
@@ -109,6 +110,10 @@ from validator.tournament.task_creator import replace_tournament_task
 
 
 logger = get_logger(__name__)
+
+# Hops to follow when walking a LoRA lineage back to its foundation. Matches MAX_CHAIN_DEPTH in
+# validator/evaluation/pvp/materialize.py and the guard in trainer/containers/downloader.py.
+MAX_LORA_CHAIN_DEPTH = 10
 
 # Rounds we have already pinged Discord about for having zero-score groups. Process-local on
 # purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
@@ -301,19 +306,43 @@ async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQ
     return None
 
 
-async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
-    """Return the winner model's real foundation base model."""
+async def _declared_adapter_base(repo: str) -> str | None:
+    """Return a repo's declared LoRA base, or None if it is not an adapter."""
     try:
         cfg_path = await asyncio.to_thread(
-            hf_hub_download, winner_repo, "adapter_config.json", token=HUGGINGFACE_TOKEN,
+            hf_hub_download, repo, LORA_ADAPTER_CONFIG_FILE, token=HUGGINGFACE_TOKEN,
         )
         with open(cfg_path) as f:
-            base = json.load(f).get("base_model_name_or_path")
-        if base:
-            return base
+            return json.load(f).get("base_model_name_or_path") or None
     except Exception:
-        pass
-    return fallback_model_id
+        return None
+
+
+async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
+    """Return the winner model's real foundation base model.
+
+    A multi-round winner is an adapter whose declared base is itself an adapter, so walk the
+    lineage rather than trusting the first hop. The uploader records the immediate parent
+    (trainer/containers/uploader.py), which is what makes that walk possible; the callers of
+    this function want the foundation, so the flattening happens here instead.
+    """
+    base = await _declared_adapter_base(winner_repo)
+    if base is None:
+        return fallback_model_id
+
+    seen = {winner_repo, base}
+    for _ in range(MAX_LORA_CHAIN_DEPTH):
+        parent = await _declared_adapter_base(base)
+        if parent is None or parent in seen:
+            break
+        seen.add(parent)
+        base = parent
+    else:
+        logger.warning(
+            f"LoRA lineage for {winner_repo} exceeds {MAX_LORA_CHAIN_DEPTH} hops; "
+            f"treating {base} as the foundation"
+        )
+    return base
 
 
 async def _save_winner_model_repo(
