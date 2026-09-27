@@ -69,19 +69,9 @@ def is_single_group_text_round_one(round_data: GroupRound) -> bool:
     return round_data.round_number == 1 and len(round_data.groups) == 1
 
 
-def is_small_image_tournament_group(round_data: GroupRound) -> bool:
-    """Whether a group round is the small image tournament round-1 format.
-
-    Identified by round 1 (the only round the small format is ever created in — see
-    organise_tournament_round) plus a single group whose membership is in the
-    small-tournament band (3..14). The round-1 and size guards are load-bearing: an
-    image R1 with 15-39 miners already produces a single group via the normal path
-    and must keep getting one task, and a later round can also be a single group.
-    """
-    if round_data.round_number != 1 or len(round_data.groups) != 1:
-        return False
-    size = len(round_data.groups[0].member_ids)
-    return t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= size <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
+def is_single_group_image_round_one(round_data: GroupRound) -> bool:
+    """Whether this is the universal three-task image opening round."""
+    return round_data.round_number == 1 and len(round_data.groups) == 1
 
 
 async def create_text_tournament_tasks(
@@ -118,21 +108,14 @@ async def create_image_tournament_tasks(
     tasks = []
 
     if isinstance(round_data, GroupRound):
-        if round_data.round_number == 1:
-            all_image_models = image_models
-            round_one_model_type = random.choice(t_cst.ROUND_ONE_IMAGE_MODEL_TYPES)
-            logger.info(f"Round 1 image tournament model type: {round_one_model_type.value}")
-
-            async def round_one_image_models():
-                async for model in all_image_models:
-                    if model.model_type == round_one_model_type:
-                        yield model
-
-            image_models = round_one_image_models()
         tasks = await _create_group_image_tasks(round_data, tournament_id, config, image_models)
     elif is_final_round:
         tasks = await _create_new_image_boss_round_tasks(tournament_id, round_id, config)
     else:
+        if round_data.round_number == 2:
+            round_two_model_type = random.choice(t_cst.ROUND_TWO_IMAGE_MODEL_TYPES)
+            logger.info(f"Round 2 image tournament model type: {round_two_model_type.value}")
+            image_models = _image_models_of_type(config, round_two_model_type)
         tasks = await _create_knockout_image_tasks(round_data, tournament_id, config, image_models)
 
     return [str(task.task_id) for task in tasks]
@@ -366,9 +349,8 @@ async def _create_environment_group_tasks(
 async def _create_group_image_tasks(
     round_data: GroupRound, tournament_id: str, config: Config, image_models: list
 ) -> list[RawTask]:
-    # Small image tournament round 1: a single group plays SMALL_TOURNAMENT_GROUP_TASKS matches.
-    is_small = is_small_image_tournament_group(round_data)
-    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_small else t_cst.IMAGE_TASKS_PER_GROUP
+    is_round_one = is_single_group_image_round_one(round_data)
+    tasks_per_group = t_cst.SMALL_TOURNAMENT_GROUP_TASKS if is_round_one else t_cst.IMAGE_TASKS_PER_GROUP
 
     num_groups = len(round_data.groups)
     logger.info(f"Creating image tournament for {num_groups} groups ({tasks_per_group} per group)")
@@ -376,7 +358,15 @@ async def _create_group_image_tasks(
 
     for i, group in enumerate(round_data.groups):
         group_tasks = await _create_single_group_image_tasks(
-            group, i, tournament_id, round_data.round_id, config, image_models, tasks_per_group
+            group,
+            i,
+            tournament_id,
+            round_data.round_id,
+            config,
+            image_models,
+            tasks_per_group,
+            image_model_types=t_cst.ROUND_ONE_IMAGE_MODEL_TYPES if is_round_one else None,
+            max_num_prompts=t_cst.ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS if is_round_one else None,
         )
         tasks.extend(group_tasks)
 
@@ -384,7 +374,15 @@ async def _create_group_image_tasks(
 
 
 async def _create_single_group_image_tasks(
-    group, group_index: int, tournament_id: str, round_id: str, config: Config, image_models: list, tasks_per_group: int
+    group,
+    group_index: int,
+    tournament_id: str,
+    round_id: str,
+    config: Config,
+    image_models: list,
+    tasks_per_group: int,
+    image_model_types: tuple[ImageModelType, ...] | None = None,
+    max_num_prompts: int | None = None,
 ) -> list[RawTask]:
     group_id = f"{round_id}_group_{group_index + 1:03d}"
     logger.info(f"  Group {group_index + 1} ({len(group.member_ids)} members):")
@@ -397,9 +395,20 @@ async def _create_single_group_image_tasks(
         return await _get_existing_tasks(existing_tasks, config)
 
     created: list[RawTask] = await _get_existing_tasks(existing_tasks, config)
-    for _ in range(tasks_per_group - existing_count):
+    for task_index in range(existing_count, tasks_per_group):
         logger.info(f"    Group {group_index + 1} has {len(created)}/{tasks_per_group} task(s), creating 1 more")
-        task = await _create_single_image_task_with_retry(config, image_models, 0, group_index)
+        task_models = (
+            _image_models_of_type(config, image_model_types[task_index])
+            if image_model_types
+            else image_models
+        )
+        task = await _create_single_image_task_with_retry(
+            config,
+            task_models,
+            task_index,
+            group_index,
+            max_num_prompts=max_num_prompts,
+        )
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
 
@@ -446,11 +455,20 @@ async def _create_single_knockout_image_task(
 
 
 async def _create_single_image_task_with_retry(
-    config: Config, image_models: list, task_num: int, group_index: int = None, is_final: bool = False
+    config: Config,
+    image_models: list,
+    task_num: int,
+    group_index: int = None,
+    is_final: bool = False,
+    max_num_prompts: int | None = None,
 ) -> RawTask:
     while True:
         try:
-            task = await create_synthetic_image_task(config, image_models)
+            task = await create_synthetic_image_task(
+                config,
+                image_models,
+                max_num_prompts=max_num_prompts,
+            )
             break
         except Exception as e:
             context = f"final image task {task_num + 1}" if is_final else f"image task {task_num + 1} for group {group_index + 1}"

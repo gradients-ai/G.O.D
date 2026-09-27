@@ -176,18 +176,13 @@ def organise_tournament_round(
             idx += size
         return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
 
-    # Text round 1 is always a single group (every participant) that plays multiple
-    # matches and advances only the top few. Image round 1 uses the same format only
-    # when the field is in the small-tournament band; larger image fields keep the
-    # normal group/knockout split. Only applies to the first round so later rounds
-    # (e.g. a large group advancing 8 into a round of 8) are never mistaken for this.
-    is_text_round_one = round_number == 1 and tournament_type == TournamentType.TEXT
-    is_small_image_round_one = (
-        round_number == 1
-        and tournament_type == TournamentType.IMAGE
-        and t_cst.SMALL_TOURNAMENT_MIN_PARTICIPANTS <= len(nodes_copy) <= t_cst.SMALL_TOURNAMENT_MAX_PARTICIPANTS
-    )
-    if is_text_round_one or is_small_image_round_one:
+    # Text and image round 1 always use one multi-match group. The top two
+    # advance into one knockout task, whose winner becomes the boss challenger.
+    is_single_group_round_one = round_number == 1 and tournament_type in {
+        TournamentType.TEXT,
+        TournamentType.IMAGE,
+    }
+    if is_single_group_round_one:
         single_group = Group(member_ids=[node.hotkey for node in nodes_copy], task_ids=[])
         return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
 
