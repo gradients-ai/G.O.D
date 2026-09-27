@@ -199,20 +199,41 @@ async def test_get_continuation_base_chains_only_for_lora(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_individual_env_eval_requests_one_h100(monkeypatch):
-    captured_kwargs = {}
+    import asyncio
+
+    captured_calls = []
+    saved_scores: dict[str, float] = {}
+    scoring._active_individual_jobs.clear()
 
     async def fake_run_evaluation_individual(**kwargs):
-        captured_kwargs.update(kwargs)
+        captured_calls.append(kwargs)
+        hotkeys = list(kwargs["miners"].hotkeys)
+        scores = {"hk_a": 0.75, "hk_b": 0.25}
         return IndividualEvalResult(
             environment_name=kwargs["environment_name"],
-            scores_by_hotkey={"hk_a": 0.75, "hk_b": 0.25},
+            scores_by_hotkey={hk: scores[hk] for hk in hotkeys},
         )
 
-    async def fake_save_individual_score(*args, **kwargs):
-        return None
+    async def fake_save_individual_score(*, task_id, hotkey, environment_name, score, psql_db):
+        saved_scores[hotkey] = score
+
+    async def fake_get_individual_scores(task_id, psql_db):
+        from validator.evaluation.pvp.models import PvPIndividualScoreDbRow
+
+        return [
+            PvPIndividualScoreDbRow(
+                task_id=task_id,
+                hotkey=hotkey,
+                environment_name=EnvironmentName.INTERCODE.value,
+                score=score,
+                status=PvPStatus.COMPLETE,
+            )
+            for hotkey, score in saved_scores.items()
+        ]
 
     monkeypatch.setattr(scoring, "run_evaluation_individual", fake_run_evaluation_individual)
     monkeypatch.setattr(scoring.tournament_sql, "save_individual_score", fake_save_individual_score)
+    monkeypatch.setattr(scoring.tournament_sql, "get_individual_scores", fake_get_individual_scores)
 
     await scoring._dispatch_missing_individual(
         env=EnvironmentName.INTERCODE,
@@ -227,25 +248,53 @@ async def test_individual_env_eval_requests_one_h100(monkeypatch):
         db_scores=[],
         base_chains={"hk_a": ["org/hk_a-round1"]},
     )
+    if scoring._active_individual_jobs:
+        await asyncio.gather(*list(scoring._active_individual_jobs.values()))
 
-    assert captured_kwargs["gpu_count"] == validator_cst.INDIVIDUAL_BASILICA_GPU_COUNT
-    assert captured_kwargs["base_chains"] == {"hk_a": ["org/hk_a-round1"]}
+    assert len(captured_calls) == 2
+    assert all(call["gpu_count"] == validator_cst.INDIVIDUAL_BASILICA_GPU_COUNT for call in captured_calls)
+    assert any(call["base_chains"] == {"hk_a": ["org/hk_a-round1"]} for call in captured_calls)
+    assert all(len(call["miners"].hotkeys) == 1 for call in captured_calls)
 
 
 @pytest.mark.asyncio
 async def test_individual_env_gpu_cap_does_not_alert_or_consume_attempts(monkeypatch):
+    import asyncio
+
     notified = []
     incremented = []
+    saved_scores: dict[str, float] = {}
+    scoring._active_individual_jobs.clear()
 
     async def fake_run_evaluation_individual(**kwargs):
+        hotkey = kwargs["miners"].hotkeys[0]
+        if hotkey == "hk_b":
+            return IndividualEvalResult(
+                environment_name=kwargs["environment_name"],
+                scores_by_hotkey={},
+                deferred_hotkeys=["hk_b"],
+            )
         return IndividualEvalResult(
             environment_name=kwargs["environment_name"],
             scores_by_hotkey={"hk_a": 0.75},
-            deferred_hotkeys=["hk_b"],
         )
 
-    async def fake_save_individual_score(*args, **kwargs):
-        return None
+    async def fake_save_individual_score(*, task_id, hotkey, environment_name, score, psql_db):
+        saved_scores[hotkey] = score
+
+    async def fake_get_individual_scores(task_id, psql_db):
+        from validator.evaluation.pvp.models import PvPIndividualScoreDbRow
+
+        return [
+            PvPIndividualScoreDbRow(
+                task_id=task_id,
+                hotkey=hotkey,
+                environment_name=EnvironmentName.INTERCODE.value,
+                score=score,
+                status=PvPStatus.COMPLETE,
+            )
+            for hotkey, score in saved_scores.items()
+        ]
 
     async def fake_notify(*args, **kwargs):
         notified.append(kwargs)
@@ -255,6 +304,7 @@ async def test_individual_env_gpu_cap_does_not_alert_or_consume_attempts(monkeyp
 
     monkeypatch.setattr(scoring, "run_evaluation_individual", fake_run_evaluation_individual)
     monkeypatch.setattr(scoring.tournament_sql, "save_individual_score", fake_save_individual_score)
+    monkeypatch.setattr(scoring.tournament_sql, "get_individual_scores", fake_get_individual_scores)
     monkeypatch.setattr(scoring, "notify_evaluation_exception", fake_notify)
     monkeypatch.setattr(scoring.tournament_sql, "increment_individual_score_attempts", fake_increment)
 
@@ -270,8 +320,12 @@ async def test_individual_env_gpu_cap_does_not_alert_or_consume_attempts(monkeyp
         scores=IndividualScoresByEnv(),
         db_scores=[],
     )
+    if scoring._active_individual_jobs:
+        await asyncio.gather(*list(scoring._active_individual_jobs.values()))
 
-    assert scores.results[EnvironmentName.INTERCODE].scores_by_hotkey == {"hk_a": 0.75}
+    refreshed = await fake_get_individual_scores("task-id", None)
+    assert {row.hotkey: row.score for row in refreshed} == {"hk_a": 0.75}
+    assert "hk_b" not in {row.hotkey for row in refreshed}
     assert notified == []
     assert incremented == []
 
