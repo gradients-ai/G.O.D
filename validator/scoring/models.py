@@ -220,3 +220,7 @@ class EvalHotkeyResults(BaseModel):
 
     evaluated: list[str] = Field(description="Hotkeys that were successfully evaluated")
     failed: list[str] = Field(default_factory=list, description="Hotkeys that failed evaluation")
+    deferred: list[str] = Field(
+        default_factory=list,
+        description="Hotkeys that could not get eval capacity and should retry next cycle",
+    )

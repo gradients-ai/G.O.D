@@ -283,10 +283,11 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
 
     try:
         eval_result = await evaluate_and_score_hotkeys(task, hotkeys, num_gpus, config)
-        not_evaluated_hotkeys = [h for h in hotkeys if h not in set(eval_result.evaluated)]
+        deferred_set = set(eval_result.deferred)
+        not_evaluated_hotkeys = [h for h in hotkeys if h not in set(eval_result.evaluated) and h not in deferred_set]
         failed_set = set(eval_result.failed)
         failed_set.update(not_evaluated_hotkeys)
-        success_hotkeys = [h for h in eval_result.evaluated if h not in failed_set]
+        success_hotkeys = [h for h in eval_result.evaluated if h not in failed_set and h not in deferred_set]
 
         await tasks_sql.update_task_evaluations_status(task.task_id, success_hotkeys, "success", config.psql_db)
         await tasks_sql.update_task_evaluations_status(
@@ -295,10 +296,23 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
             "failure",
             config.psql_db,
         )
+        if deferred_set:
+            logger.info(
+                f"Evaluation deferred for task {task.task_id} hotkeys={sorted(deferred_set)} — "
+                "resetting to pending for next-cycle retry"
+            )
+            await tasks_sql.update_task_evaluations_status(
+                task.task_id, list(deferred_set), "pending", config.psql_db
+            )
+            await tasks_sql.clear_task_evaluation_deployments(
+                task.task_id, list(deferred_set), config.psql_db
+            )
     except PvPIncompleteError as e:
+        # Tournament work may still be running in the background for pairs/miners
+        # that already got GPUs. Only mark rows pending so the next cycle can
+        # launch capacity-deferred units without waiting for those siblings.
         logger.info(f"PvP eval incomplete for task {task.task_id}: {e} — resetting to pending for retry")
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
-        await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
     except EvaluationRetryableError as e:
         logger.info(f"Evaluation retryable for task {task.task_id}: {e} — resetting to pending for retry")
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
@@ -326,6 +340,9 @@ async def _evaluate_pending_pairs_for_task(
 ):
     assert task.task_id is not None
 
+    # GRPO must evaluate all repos in one pass so normalize_rewards_and_compute_loss
+    # can cross-normalize raw rewards before writing eval_loss. Tournament env eval
+    # similarly needs one coordinated pass. Instruct/DPO/image stay per-hotkey.
     batch_together = task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task)
     if batch_together:
         training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
@@ -340,7 +357,7 @@ async def _evaluate_pending_pairs_for_task(
         if finalized:
             await _cleanup_basilica_deployments_if_no_active_evaluations(config)
         return
-    
+
     pending_hotkeys = [row["hotkey"] for row in pending_rows]
     evaluating_hotkeys = [row["hotkey"] for row in evaluating_rows]
     all_hotkeys = list(dict.fromkeys(pending_hotkeys + evaluating_hotkeys))
@@ -348,8 +365,8 @@ async def _evaluate_pending_pairs_for_task(
     hotkey_batches = [all_hotkeys] if batch_together else [[hotkey] for hotkey in all_hotkeys]
     pending_evaluations = []
     for hotkeys in hotkey_batches:
-        job_key = (str(task.task_id), hotkeys[0])
-        if not batch_together and active_evaluation_jobs is not None and job_key in active_evaluation_jobs:
+        job_key = (str(task.task_id), "__batch__" if batch_together else hotkeys[0])
+        if active_evaluation_jobs is not None and job_key in active_evaluation_jobs:
             continue
 
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
@@ -357,7 +374,10 @@ async def _evaluate_pending_pairs_for_task(
             await tasks_sql.update_task_evaluations_status(task.task_id, pending_batch, "evaluating", config.psql_db)
 
         evaluation = _evaluate_and_update_hotkeys(task, hotkeys, num_gpus, config)
-        if not batch_together and active_evaluation_jobs is not None:
+        if active_evaluation_jobs is not None:
+            # Fire-and-forget so processing_task_ids is released and the next
+            # cycle can start capacity-deferred hotkeys without waiting for
+            # in-flight GPU jobs from this pass.
             job = asyncio.create_task(evaluation)
             active_evaluation_jobs[job_key] = job
             job.add_done_callback(lambda _done, key=job_key: active_evaluation_jobs.pop(key, None))
