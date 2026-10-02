@@ -1,4 +1,4 @@
-"""Text tournaments oversample the 2026+ model pool in configured slots.
+"""Text tournaments oversample the recent-model pool in configured slots.
 
 Round 1: exactly one task across all groups plays on a model from OVERSAMPLED_LATER_MODELS,
 whatever the group count is.
@@ -180,3 +180,11 @@ def test_pool_is_sampled_uniformly_and_is_seedable():
     )
     drawn = {sample_oversampled_later_model(random.Random(i)) for i in range(500)}
     assert drawn == POOL_IDS
+
+
+def test_pool_stays_under_the_r1_size_cap():
+    """The R1 slot draws from the pool with no size filter while every other R1 task is capped at
+    4B (_get_text_models largest_size_b=4.0), so the pool must respect that cap itself."""
+    R1_MAX_PARAMS_B = 4.0
+    too_big = [m.model_id for m in OVERSAMPLED_LATER_MODELS if m.params_b > R1_MAX_PARAMS_B]
+    assert too_big == [], f"pool entries above the R1 cap: {too_big}"
