@@ -1,18 +1,17 @@
-"""Text round 1 is always a single group with SMALL_TOURNAMENT_GROUP_TASKS matches.
-
-Image keeps the field-size band for the multi-match format.
-"""
+"""Text and image round 1 use one group with three matches."""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
+from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 from core.oversampled_later_models import OVERSAMPLED_LATER_MODELS
 from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
+from validator.tournament.models import KnockoutRound
 from validator.tournament.models import TournamentType
 from validator.tournament.tournament_manager import organise_tournament_round
 
@@ -75,7 +74,7 @@ def test_text_round_one_always_single_group_even_with_large_field():
     assert len(result.groups[0].member_ids) == 40
 
 
-def test_image_round_one_large_field_still_splits():
+def test_image_round_one_large_field_is_single_group():
     result = organise_tournament_round(
         _make_nodes(40),
         MagicMock(),
@@ -84,11 +83,11 @@ def test_image_round_one_large_field_still_splits():
         round_number=1,
     )
     assert isinstance(result, GroupRound)
-    assert len(result.groups) > 1
-    assert sum(len(group.member_ids) for group in result.groups) == 40
+    assert len(result.groups) == 1
+    assert len(result.groups[0].member_ids) == 40
 
 
-def test_image_round_one_small_band_still_single_group():
+def test_image_round_one_small_field_is_single_group():
     result = organise_tournament_round(
         _make_nodes(10),
         MagicMock(),
@@ -128,15 +127,19 @@ async def test_text_later_single_group_still_creates_one_task(monkeypatch):
     assert len(instruct_mock.call_args_list) == t_cst.TEXT_TASKS_PER_GROUP
 
 
-async def test_image_round_one_single_large_group_creates_one_task(monkeypatch):
-    """Image R1 with 15-39 miners is already one group via the normal path — still 1 task."""
+async def test_image_round_one_single_large_group_creates_three_family_tasks(monkeypatch):
     image_mock = _patch_image_seams(monkeypatch)
+    monkeypatch.setattr(task_creator, "_image_models_of_type", lambda _config, model_type: model_type)
 
     await task_creator._create_group_image_tasks(
         _group_round(1, members_per_group=20), "tourn", MagicMock(), image_models=MagicMock()
     )
 
-    assert len(image_mock.call_args_list) == t_cst.IMAGE_TASKS_PER_GROUP
+    assert [call.args[1] for call in image_mock.call_args_list] == list(t_cst.ROUND_ONE_IMAGE_MODEL_TYPES)
+    assert all(
+        call.kwargs["max_num_prompts"] == t_cst.ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS
+        for call in image_mock.call_args_list
+    )
 
 
 async def test_image_round_one_small_band_creates_three_tasks(monkeypatch):
@@ -147,3 +150,31 @@ async def test_image_round_one_small_band_creates_three_tasks(monkeypatch):
     )
 
     assert len(image_mock.call_args_list) == t_cst.SMALL_TOURNAMENT_GROUP_TASKS
+
+
+async def test_image_round_two_uses_qwen_or_krea(monkeypatch):
+    round_data = KnockoutRound(
+        round_id="tourn_round_002",
+        round_number=2,
+        pairs=[("miner-a", "miner-b")],
+    )
+    selected_pool = object()
+    knockout_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(task_creator, "_get_image_models", lambda _keypair: MagicMock())
+    monkeypatch.setattr(task_creator.random, "choice", lambda choices: choices[0])
+    monkeypatch.setattr(
+        task_creator,
+        "_image_models_of_type",
+        lambda _config, model_type: selected_pool
+        if model_type == ImageModelType.QWEN_IMAGE
+        else None,
+    )
+    monkeypatch.setattr(task_creator, "_create_knockout_image_tasks", knockout_mock)
+
+    await task_creator.create_image_tournament_tasks(round_data, "tourn", MagicMock())
+
+    assert t_cst.ROUND_TWO_IMAGE_MODEL_TYPES == (
+        ImageModelType.QWEN_IMAGE,
+        ImageModelType.KREA2,
+    )
+    assert knockout_mock.await_args.args[3] is selected_pool

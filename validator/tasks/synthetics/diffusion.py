@@ -701,10 +701,20 @@ def _image_competition_hours_for_dataset_size(num_images: int) -> float:
     return math.ceil(hours * 4) / 4.0
 
 
-async def create_synthetic_image_task(config: Config, models: AsyncGenerator[ImageModelInfo, None]) -> RawTask:
+async def create_synthetic_image_task(
+    config: Config,
+    models: AsyncGenerator[ImageModelInfo, None],
+    *,
+    max_num_prompts: int | None = None,
+) -> RawTask:
     """Create a synthetic image task with a random image dataset category."""
     logger.info("Creating synthetic image task")
-    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
+    prompt_cap = min(max_num_prompts or synth_cst.MAX_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
+    if prompt_cap < synth_cst.MIN_IMAGE_SYNTH_PAIRS:
+        raise ValueError(
+            f"max_num_prompts must be at least {synth_cst.MIN_IMAGE_SYNTH_PAIRS}, got {prompt_cap}"
+        )
+    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
     model_info = await anext(models)
     use_higher_training_hours = model_info.model_type == ImageModelType.QWEN_IMAGE
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)

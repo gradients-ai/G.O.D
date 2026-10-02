@@ -87,15 +87,10 @@ MAX_NUMBER_OF_MINERS_FOR_KNOCKOUT_ROUND = 8
 EXPECTED_GROUP_SIZE = 32
 MIN_GROUP_SIZE = 20
 
-# Multi-match round-1 format (text always; image only in the size band below).
-# Text round 1 is always a single group that plays SMALL_TOURNAMENT_GROUP_TASKS
-# matches, and only the best SMALL_TOURNAMENT_ADVANCE advance (into the knockout
-# that decides the boss challenger). Image round 1 uses the same format when the
-# field is in [SMALL_TOURNAMENT_MIN_PARTICIPANTS, SMALL_TOURNAMENT_MAX_PARTICIPANTS];
-# below the min there aren't enough competitors for image, so it falls back to
-# the normal knockout.
-SMALL_TOURNAMENT_MIN_PARTICIPANTS = 3
-SMALL_TOURNAMENT_MAX_PARTICIPANTS = 14  # i.e. fewer than 15 at tournament start (image only)
+# Multi-match round-1 format. Text and image round 1 are always a single group
+# that plays SMALL_TOURNAMENT_GROUP_TASKS matches, and only the best
+# SMALL_TOURNAMENT_ADVANCE advance into the knockout that decides the boss
+# challenger.
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
 MIN_ENVIRONMENT_GROUP_SIZE = 2
@@ -149,10 +144,19 @@ TEXT_TASKS_PER_GROUP = 1
 IMAGE_TASKS_PER_GROUP = 1
 ENVIRONMENT_TASKS_PER_GROUP = 1
 
-# Round 1 uses one randomly selected high-capacity image architecture for every group.
+# Image R1 has one smaller task for each family. Thirty source pairs map to at
+# most three test images and at most 0.75 competition hours.
 ROUND_ONE_IMAGE_MODEL_TYPES = (
-    ImageModelType.KREA2,
+    ImageModelType.FLUX,
     ImageModelType.IDEOGRAM4,
+    ImageModelType.Z_IMAGE,
+)
+ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
+
+# The single R2 knockout task randomly uses one of these larger families.
+ROUND_TWO_IMAGE_MODEL_TYPES = (
+    ImageModelType.QWEN_IMAGE,
+    ImageModelType.KREA2,
 )
 
 # Final round task counts
