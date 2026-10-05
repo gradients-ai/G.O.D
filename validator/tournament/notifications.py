@@ -154,11 +154,11 @@ async def notify_challenger_code_review(
     report_url: str | None,
     discord_url: str,
 ):
-    """Boss-round integrity finding awaiting an operator decision."""
+    """Round-2 integrity finding awaiting an operator decision."""
     try:
         command = "python -m ops.tools.tournament.code_review"
         lines = [
-            "Boss-round integrity check flagged a candidate; tournament completion is paused.",
+            "Round-2 integrity check flagged a candidate; advancement to round 2 is paused.",
             f"Tournament: {tournament_id} ({tournament_type})",
             f"Candidate: {hotkey}",
             f"Reason: {reason}",
@@ -169,8 +169,8 @@ async def notify_challenger_code_review(
             [
                 "",
                 "Review the repository, then run one command:",
-                f"  agree: {command} agree {tournament_id} {hotkey}",
-                f"  skip:  {command} skip {tournament_id} {hotkey}",
+                f"  agree (eliminate before round 2): {command} agree {tournament_id} {hotkey}",
+                f"  skip (let them play):             {command} skip {tournament_id} {hotkey}",
             ]
         )
         await send_to_discord(discord_url, "\n".join(lines))

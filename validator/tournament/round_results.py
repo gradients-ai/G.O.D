@@ -1001,6 +1001,7 @@ async def get_pre_boss_group_runner_up(
 async def get_boss_retention_runners_up(
     completed_round: TournamentRoundData,
     psql_db: PSQLDB,
+    exclude_hotkeys: set[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Rank non-boss challengers of a boss-retention round for 2nd/3rd place.
 
@@ -1024,7 +1025,7 @@ async def get_boss_retention_runners_up(
         if not miner_results:
             continue
         for result in calculate_miner_ranking_and_scores(miner_results):
-            if result.hotkey == boss_hotkey:
+            if result.hotkey == boss_hotkey or result.hotkey in (exclude_hotkeys or ()):
                 continue
             if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
                 continue

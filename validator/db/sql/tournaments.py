@@ -676,6 +676,24 @@ async def update_tournament_winner_hotkey(tournament_id: str, winner_hotkey: str
         logger.info(f"Updated tournament {tournament_id} winner hotkey to {winner_hotkey}")
 
 
+async def update_participant_code_review(tournament_id: str, hotkey: str, status: str, psql_db: PSQLDB) -> None:
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+            SET {cst.CODE_REVIEW} = $3
+            WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2
+            """,
+            tournament_id,
+            hotkey,
+            status,
+        )
+    if result != "UPDATE 1":
+        raise RuntimeError(
+            f"Failed to persist code_review={status} for participant {hotkey} in tournament {tournament_id}"
+        )
+
+
 async def update_tournament_code_review(tournament_id: str, status: str, psql_db: PSQLDB) -> None:
     async with await psql_db.connection() as connection:
         result = await connection.execute(
@@ -825,7 +843,7 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
                    {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
-                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2
         """
@@ -841,6 +859,7 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
                 github_token=result[cst.GITHUB_TOKEN],
                 backup_repo=result[cst.BACKUP_REPO],
                 requested_datasets=_parse_requested_datasets(result[cst.REQUESTED_DATASETS]),
+                code_review=result[cst.CODE_REVIEW],
             )
         return None
 
@@ -851,7 +870,7 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
                    {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
-                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
         """
@@ -867,6 +886,7 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
                 github_token=row[cst.GITHUB_TOKEN],
                 backup_repo=row[cst.BACKUP_REPO],
                 requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
+                code_review=row[cst.CODE_REVIEW],
             )
             for row in results
         ]
