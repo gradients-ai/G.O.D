@@ -58,7 +58,8 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
-from validator.tournament.challenger_code_review import evaluate_challenger_code_review
+from validator.tournament.challenger_code_review import evaluate_round2_code_reviews
+from validator.tournament.challenger_code_review import resolve_legacy_boss_code_review
 from validator.tournament.dedup_gate import apply_r1_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
@@ -597,6 +598,48 @@ async def create_next_round(
         logger.info(f"Created next round {next_round_id}")
 
 
+async def _complete_with_defending_champion(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    config: Config,
+    psql_db: PSQLDB,
+    *,
+    reason: str,
+    exclude_hotkeys: set[str] | None = None,
+) -> None:
+    """Crown the defending champion and finish the tournament."""
+    winner = EMISSION_BURN_HOTKEY
+    second_place: str | None = None
+    third_place: str | None = None
+    logger.warning(reason)
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        second_place, third_place = await get_boss_retention_runners_up(
+            completed_round, psql_db, exclude_hotkeys=exclude_hotkeys
+        )
+        await update_tournament_placements(
+            tournament.tournament_id,
+            winner,
+            second_place,
+            third_place,
+            psql_db,
+        )
+    else:
+        await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
+    logger.info(
+        f"Tournament {tournament.tournament_id} completed with winner: {winner}, "
+        f"second={second_place}, third={third_place}. Please update DB manually."
+    )
+    asyncio.create_task(
+        notify_tournament_completed(
+            tournament.tournament_id,
+            tournament.tournament_type.value,
+            winner,
+            config.discord_url,
+        )
+    )
+    await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
+
+
 async def advance_tournament(tournament: TournamentData, completed_round: TournamentRoundData, config: Config, psql_db: PSQLDB):
     with LogContext(tournament_id=tournament.tournament_id, round_id=completed_round.round_id):
         logger.info("=== ADVANCE TOURNAMENT CALLED ===")
@@ -661,42 +704,18 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Final winners: {len(winners)} - {winners}")
 
         if len(winners) == 0:
-            logger.warning(
-                f"No winners found for round {completed_round.round_id}. Setting base contestant as winner of the tournament."
+            # Boss retained in this round. Environment pays the top non-boss challengers
+            # of the retention round as 2nd/3rd so the pool is not 100% champion-only.
+            await _complete_with_defending_champion(
+                tournament,
+                completed_round,
+                config,
+                psql_db,
+                reason=(
+                    f"No winners found for round {completed_round.round_id}. "
+                    "Setting base contestant as winner of the tournament."
+                ),
             )
-            # Keep EMISSION_BURN_HOTKEY as the winner when defending champion wins by default
-            winner = EMISSION_BURN_HOTKEY
-            second_place: str | None = None
-            third_place: str | None = None
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                # Boss retained in this round: pay the top non-boss challengers of the
-                # retention round as 2nd/3rd so the environment pool is not 100% champion-only.
-                second_place, third_place = await get_boss_retention_runners_up(completed_round, psql_db)
-                await update_tournament_placements(
-                    tournament.tournament_id,
-                    winner,
-                    second_place,
-                    third_place,
-                    psql_db,
-                )
-            else:
-                await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
-            # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
-            logger.info(
-                f"Tournament {tournament.tournament_id} completed with winner: {winner}, "
-                f"second={second_place}, third={third_place}. Please update DB manually."
-            )
-
-            asyncio.create_task(
-                notify_tournament_completed(
-                    tournament.tournament_id,
-                    tournament.tournament_type.value,
-                    winner,
-                    config.discord_url,
-                )
-            )
-
-            await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
             return
 
         if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
@@ -728,24 +747,18 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 )
                 return
 
-            integrity = await evaluate_challenger_code_review(
-                tournament,
-                completed_round,
-                challenger,
-                config,
-                psql_db,
+            # New tournaments are reviewed before round 2. This only finishes a review
+            # that the old boss-round gate already stored on the tournament row.
+            integrity = await resolve_legacy_boss_code_review(
+                tournament, completed_round, challenger, psql_db
             )
             if integrity.halt:
                 logger.info(
-                    f"Challenger code-review gate is holding tournament {tournament.tournament_id}; "
+                    f"Legacy boss-round code review is holding tournament {tournament.tournament_id}; "
                     "winner persistence, repository upload, and diff report will not run"
                 )
                 return
 
-            logger.info(
-                f"Challenger code-review gate resolved for tournament {tournament.tournament_id}; "
-                "continuing finalization"
-            )
             diff_candidate = challenger
             if integrity.disqualified:
                 winner = EMISSION_BURN_HOTKEY
@@ -761,7 +774,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     else None
                 )
                 logger.warning(
-                    f"Boss challenger {challenger.hotkey} disqualified; "
+                    f"Boss challenger {challenger.hotkey} disqualified by a legacy code review; "
                     f"boss retains and second place is {second_place}"
                 )
             else:
@@ -848,8 +861,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 result_summary = f"Winner changed; new winner hotkey: {winner}."
 
             asyncio.create_task(
-                # This is deliberately scheduled only after the awaited challenger code-review gate,
-                # placement persistence, and winner repository upload above have all completed.
+                # Scheduled only after placement persistence and winner repository upload.
                 generate_diff_report_and_notify_tournament_completed(
                     tournament,
                     challenger_repo,
@@ -873,6 +885,39 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 if decision.eliminate:
                     winners = [w for w in winners if w not in decision.eliminate]
                     logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
+            # Cheat check: before building round 2, review every non-boss entrant.
+            # A flag HALTS advancement until an operator agrees (eliminate) or skips.
+            if completed_round.round_number == 1:
+                review = await evaluate_round2_code_reviews(tournament, winners, config, psql_db)
+                if review.eliminate:
+                    await eliminate_tournament_participants(
+                        tournament.tournament_id,
+                        completed_round.round_id,
+                        sorted(review.eliminate),
+                        psql_db,
+                    )
+                    winners = [w for w in winners if w not in review.eliminate]
+                    logger.info(
+                        f"Code review eliminated {len(review.eliminate)} challenger(s) before round 2"
+                    )
+                if review.halt:
+                    logger.info(
+                        f"Code-review gate holding tournament {tournament.tournament_id} before round 2"
+                    )
+                    return
+                if review.eliminate and not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in winners):
+                    await _complete_with_defending_champion(
+                        tournament,
+                        completed_round,
+                        config,
+                        psql_db,
+                        reason=(
+                            f"No challengers left to enter round 2 of {tournament.tournament_id} "
+                            "after the code review; defending champion retains."
+                        ),
+                        exclude_hotkeys=set(review.eliminate),
+                    )
+                    return
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 

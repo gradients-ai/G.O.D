@@ -1,4 +1,4 @@
-"""Forensic code review for the boss-round challenger."""
+"""Forensic code review for a round-2 tournament entrant."""
 
 import asyncio
 import json

@@ -34,6 +34,7 @@ _job_adapter = TypeAdapter(TrainerTaskLog | ModelPrepJob)
 # Training job helpers
 # ---------------------------------------------------------------------------
 
+
 async def start_task(task: TrainerProxyRequest) -> tuple[str, str]:
     async with _task_lock:
         return await _start_task_unlocked(task)
@@ -139,9 +140,7 @@ async def update_training_started_at(task_id: str, hotkey: str, started_at: date
             logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
             return
         if task.status != TaskStatus.TRAINING:
-            logger.warning(
-                f"Refusing to refresh started_at for task {task_id} hotkey={hotkey}: status={task.status}"
-            )
+            logger.warning(f"Refusing to refresh started_at for task {task_id} hotkey={hotkey}: status={task.status}")
             return
 
         task.started_at = started_at or datetime.utcnow()
@@ -152,6 +151,7 @@ async def update_training_started_at(task_id: str, hotkey: str, started_at: date
 # ---------------------------------------------------------------------------
 # Model prep job helpers
 # ---------------------------------------------------------------------------
+
 
 async def _start_model_prep_unlocked(task_id: str, model_id: str, gpu_ids: list[int], hotkey: str | None = None) -> ModelPrepJob:
     load_task_history()
@@ -216,6 +216,7 @@ def get_model_prep_job(task_id: str, hotkey: str | None = None) -> ModelPrepJob 
 # Shared queries
 # ---------------------------------------------------------------------------
 
+
 def get_running_jobs() -> list[TrainerJob]:
     load_task_history()
     return [j for j in task_history if j.status == TaskStatus.TRAINING]
@@ -239,8 +240,26 @@ def get_recent_tasks(hours: float = 1.0) -> list[TrainerJob]:
 # Persistence
 # ---------------------------------------------------------------------------
 
+
+def _history_payload(job: TrainerJob) -> dict:
+    """Serialize a job for task_history.json.
+
+    Training jobs carry the full baseline stats only so the container can read them
+    at start. The history file does not need that payload. Model prep jobs keep it:
+    the validator reads result.baseline_stats back from this file after a restart.
+    """
+    if isinstance(job, TrainerTaskLog) and job.training_data.baseline_stats is not None:
+        job.training_data.baseline_stats = None
+    payload = job.model_dump()
+    if isinstance(job, TrainerTaskLog):
+        training_data = payload.get("training_data")
+        if isinstance(training_data, dict):
+            training_data.pop("baseline_stats", None)
+    return payload
+
+
 async def save_task_history():
-    data = json.dumps([t.model_dump() for t in task_history], indent=2, default=str)
+    data = json.dumps([_history_payload(t) for t in task_history], indent=2, default=str)
     await asyncio.to_thread(_atomic_write_task_history, data)
 
 

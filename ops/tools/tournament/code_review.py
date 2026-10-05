@@ -1,4 +1,4 @@
-"""Resolve a boss-round challenger code review.
+"""Resolve a round-2 challenger code review.
 
 Usage:
     python -m ops.tools.tournament.code_review agree <tournament_id> <hotkey>
@@ -27,7 +27,7 @@ def _database_url() -> str:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Resolve a boss-round challenger code review.")
+    parser = argparse.ArgumentParser(description="Resolve a round-2 challenger code review.")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for command in ("agree", "skip"):
         subparser = subparsers.add_parser(command)
@@ -40,24 +40,29 @@ async def main() -> None:
     connection = await asyncpg.connect(_database_url())
     try:
         if args.command == "show":
-            row = await connection.fetchrow(
-                "SELECT code_review FROM tournaments WHERE tournament_id = $1",
+            rows = await connection.fetch(
+                """
+                SELECT hotkey, code_review
+                FROM tournament_participants
+                WHERE tournament_id = $1 AND code_review IS NOT NULL
+                ORDER BY hotkey
+                """,
                 args.tournament_id,
             )
-            print(row["code_review"] if row else "tournament not found")
+            if not rows:
+                print("no round-2 code reviews")
+                return
+            for row in rows:
+                print(f"{row['hotkey']}\t{row['code_review']}")
             return
 
         status = "accepted" if args.command == "agree" else "rejected"
         reviewable_statuses = ["pending"] if args.command == "agree" else ["pending", "error"]
         result = await connection.execute(
             """
-            UPDATE tournaments
-            SET code_review = $3, updated_at = now()
-            WHERE tournament_id = $1 AND code_review = ANY($4::text[])
-              AND EXISTS (
-                  SELECT 1 FROM tournament_participants
-                  WHERE tournament_id = $1 AND hotkey = $2
-              )
+            UPDATE tournament_participants
+            SET code_review = $3
+            WHERE tournament_id = $1 AND hotkey = $2 AND code_review = ANY($4::text[])
             """,
             args.tournament_id,
             args.hotkey,
@@ -66,7 +71,7 @@ async def main() -> None:
         )
         if result != "UPDATE 1":
             raise SystemExit("No pending code review matched that tournament and hotkey.")
-        print(f"Code review marked {status}. Tournament completion will resume on the next validator cycle.")
+        print(f"Code review marked {status}. Round 2 will resume on the next validator cycle.")
     finally:
         await connection.close()
 

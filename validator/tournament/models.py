@@ -122,7 +122,8 @@ class TournamentData(BaseModel):
         "May be EMISSION_BURN_HOTKEY if the defending champion successfully defended.",
     )
     code_review: str | None = Field(
-        default=None, description="Boss-round challenger review: clean, pending, accepted, rejected, or error."
+        default=None,
+        description="Legacy boss-round review. The live cheat check is per participant and runs before round 2.",
     )
     winning_performance_difference: float | None = Field(
         default=None,
@@ -178,6 +179,10 @@ class TournamentParticipant(BaseModel):
     github_token: str | None = None
     backup_repo: str | None = None
     requested_datasets: list[str] | None = None
+    code_review: str | None = Field(
+        default=None,
+        description="Round-2 cheat review: clean, pending, accepted, rejected, or error.",
+    )
 
 
 class TournamentTask(BaseModel):
