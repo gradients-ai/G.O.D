@@ -22,7 +22,8 @@ DATASET_BINS_TO_SAMPLE = [
 ]
 
 # Training hours: throughput-based budget targeting TARGET_TRAINING_EPOCHS.
-TRAINING_HOURS_MIN = 0.75
+# One quarter-hour step: the size-band overhead below is the real floor for small tasks.
+TRAINING_HOURS_MIN = 0.25
 MAX_TRAINING_HOURS = 5.0
 TARGET_TRAINING_EPOCHS = 2.0
 H100_BF16_TFLOPS = 989.0
@@ -30,7 +31,14 @@ ASSUMED_TRAINING_MFU = 0.15
 ASSUMED_TOKENS_PER_ROW = 400
 EFFECTIVE_MIN_TOKENS_PER_ROW = 64
 DEFAULT_MODEL_PARAMS_FOR_HOURS = 8e9
-TRAINING_OVERHEAD_HOURS = 0.75
+# Fixed overhead (setup, model load, final save/upload) added on top of the token budget, by model
+# size band: (exclusive upper bound in B params, hours). Small models load and save in minutes.
+TRAINING_OVERHEAD_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
+    (0.5, 0.2),
+    (1.0, 0.4),
+    (4.0, 0.6),
+    (float("inf"), 0.75),
+]
 MEASURED_THROUGHPUT_MINER_RATIO = 1.0
 MEASURED_THROUGHPUT_CLAMP = (0.33, 3.0)
 # Per-token FLOPs multiplier. GRPO is excluded because it is step-budgeted,
