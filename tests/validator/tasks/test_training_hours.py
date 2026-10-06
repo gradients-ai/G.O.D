@@ -52,12 +52,13 @@ def _make_stats(total_tokens: int, num_records: int, tokens_per_sec: float | Non
 
 
 class TestComputeTrainingHours:
-    def test_floor_for_tiny_tasks(self):
-        assert compute_training_hours(8_000 * 200, 160e6, TaskType.INSTRUCTTEXTTASK) == data_cst.TRAINING_HOURS_MIN
+    def test_tiny_task_gets_band_overhead_plus_one_quarter_hour(self):
+        # Any training time on top of the 0.25h (<1B) overhead rounds up to the next quarter-hour.
+        assert compute_training_hours(8_000 * 200, 160e6, TaskType.INSTRUCTTEXTTASK) == 0.5
 
     def test_small_model_small_dataset_not_lifted_to_old_floor(self):
-        # llama-160m on a ~3.3M-token dataset: ~2 min of training + 0.2h overhead.
-        assert compute_training_hours(3.26e6, 160e6, TaskType.INSTRUCTTEXTTASK, measured_tokens_per_sec=35_788.0) == 0.25
+        # llama-160m on a ~3.3M-token dataset: ~2 min of training + 0.25h overhead.
+        assert compute_training_hours(3.26e6, 160e6, TaskType.INSTRUCTTEXTTASK, measured_tokens_per_sec=35_788.0) == 0.5
 
     def test_cap_for_huge_tasks(self):
         assert compute_training_hours(175_000 * 1500, 32e9, TaskType.INSTRUCTTEXTTASK) == data_cst.MAX_TRAINING_HOURS
@@ -110,11 +111,10 @@ class TestTrainingOverheadHours:
     @pytest.mark.parametrize(
         ("num_params", "expected"),
         [
-            (160e6, 0.2),
-            (499e6, 0.2),
-            (0.5e9, 0.4),
-            (1.1e9, 0.6),
-            (3.9e9, 0.6),
+            (160e6, 0.25),
+            (0.99e9, 0.25),
+            (1e9, 0.5),
+            (3.9e9, 0.5),
             (4e9, 0.75),
             (70e9, 0.75),
         ],

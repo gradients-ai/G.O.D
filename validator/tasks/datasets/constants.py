@@ -34,9 +34,8 @@ DEFAULT_MODEL_PARAMS_FOR_HOURS = 8e9
 # Fixed overhead (setup, model load, final save/upload) added on top of the token budget, by model
 # size band: (exclusive upper bound in B params, hours). Small models load and save in minutes.
 TRAINING_OVERHEAD_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
-    (0.5, 0.2),
-    (1.0, 0.4),
-    (4.0, 0.6),
+    (1.0, 0.25),
+    (4.0, 0.5),
     (float("inf"), 0.75),
 ]
 MEASURED_THROUGHPUT_MINER_RATIO = 1.0
