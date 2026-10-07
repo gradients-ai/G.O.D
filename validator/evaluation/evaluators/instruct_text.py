@@ -184,6 +184,9 @@ def _compute_per_example_losses(
     """
     language_model.eval()
     losses: list[float] = []
+    # Chunk CE over sequence positions so we never hold a full seq×vocab fp32 logits copy on top
+    # of the 70B bf16 weights (multi-GPU evals were OOMing / fragmenting on the longest examples).
+    ce_chunk_size = eval_cst.PER_EXAMPLE_LOSS_CE_CHUNK_SIZE
 
     for start in range(0, len(eval_dataset), batch_size):
         batch = eval_dataset[start : start + batch_size]
@@ -195,15 +198,25 @@ def _compute_per_example_losses(
         with torch.no_grad():
             logits = language_model(input_ids=input_ids, attention_mask=attention_mask).logits
             # Next-token prediction: position t predicts label t+1.
-            shift_logits = logits[:, :-1, :].float()
-            shift_labels = labels[:, 1:]
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = labels[:, 1:].contiguous()
+            del logits
 
-            per_token = F.cross_entropy(
-                shift_logits.transpose(1, 2),
-                shift_labels,
-                ignore_index=-100,
-                reduction="none",
-            )
+            batch_size_actual, seq_len, vocab = shift_logits.shape
+            per_token = shift_logits.new_empty(batch_size_actual, seq_len, dtype=torch.float32)
+            for pos in range(0, seq_len, ce_chunk_size):
+                end = min(pos + ce_chunk_size, seq_len)
+                chunk_logits = shift_logits[:, pos:end, :].reshape(-1, vocab).float()
+                chunk_labels = shift_labels[:, pos:end].reshape(-1)
+                per_token[:, pos:end] = F.cross_entropy(
+                    chunk_logits,
+                    chunk_labels,
+                    ignore_index=-100,
+                    reduction="none",
+                ).view(batch_size_actual, -1)
+                del chunk_logits
+
+            del shift_logits
             supervised = (shift_labels != -100).float()
             summed = (per_token * supervised).sum(dim=1)
             # Denominator is the SHIFTED supervised-token count. Trainer.prediction_step takes
@@ -217,6 +230,7 @@ def _compute_per_example_losses(
             # than dividing by zero. _load_evaluation_dataset already filters these out.
             per_example = torch.where(token_counts > 0, summed / token_counts, torch.full_like(summed, float("nan")))
             losses.extend(per_example.tolist())
+            del shift_labels, per_token, supervised, summed, token_counts, per_example
 
     # No empty_cache() in this loop. Batch size is pinned to 1, so it would fire once per example -
     # roughly a thousand times per repo - and each call synchronises the device and hands blocks
@@ -327,6 +341,7 @@ def evaluate_instruct_text_model(
     # it is only computed when the validator asked for it (boss-round tasks).
     emit_per_example = os.environ.get(core_cst.EMIT_PER_EXAMPLE_LOSSES_ENV) == "1"
     per_example_losses: list[float] = []
+    per_example_losses_failed = False
     if emit_per_example:
         # Isolated: this is an optional add-on running after the trainer has already produced
         # eval_loss. An OOM or a tokenizer edge case here must not discard a completed GPU
@@ -340,9 +355,16 @@ def evaluate_instruct_text_model(
             )
             _warn_if_per_example_mean_diverges(per_example_losses, eval_loss)
         except Exception as e:
-            logger.error(f"Per-example loss extraction failed, continuing without the vector: {e}", exc_info=True)
+            # Visible to the validator: without this flag the vector simply vanishes and the boss
+            # round silently falls back to the scalar 1% margin, looking identical to "never emitted".
+            logger.error(
+                "Per-example loss extraction FAILED after eval_loss was computed; "
+                "boss-round paired comparison will be unavailable for this repo: %s",
+                e,
+                exc_info=True,
+            )
             per_example_losses = []
-            emit_per_example = False
+            per_example_losses_failed = True
 
     # When the task was trained with a KL term, weight the eval loss by the KL divergence
     # against the base model so the ranking metric rewards staying close to the base.
@@ -369,9 +391,11 @@ def evaluate_instruct_text_model(
         # a constant has no spread. The KL penalty is applied instead as a separate scalar gate on
         # test_loss in _resolve_boss_round_task_winner, where it belongs.
 
-    if emit_per_example:
+    if emit_per_example and not per_example_losses_failed:
         evaluation_results["per_example_losses"] = per_example_losses
         evaluation_results["eval_set_fingerprint"] = _instruct_eval_set_fingerprint(eval_dataset)
+    elif per_example_losses_failed:
+        evaluation_results["per_example_losses_failed"] = True
 
     return evaluation_results
 

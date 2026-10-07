@@ -28,6 +28,10 @@ GRPO_KL_BATCH_SIZE = 1
 # than an approximation, and it avoids any dependence on padding being neutral across a batch.
 # Do not raise this.
 PER_EXAMPLE_LOSS_BATCH_SIZE = 1
+# Sequence-position chunk size for the per-example CE pass. Keeps the transient fp32
+# logits×vocab footprint bounded on long 70B examples instead of materialising the full
+# shifted logits tensor in float32 at once.
+PER_EXAMPLE_LOSS_CE_CHUNK_SIZE = 512
 GRPO_DEFAULT_NUM_GENERATIONS = 2
 GRPO_KL_SEQUENCE_LENGTH = 512
 
@@ -124,6 +128,9 @@ _HF_CONTAINER_ENV_BASE = {
     "TRANSFORMERS_CACHE": "/root/.cache/huggingface/hub",
     "HF_DATASETS_CACHE": "/root/.cache/huggingface/datasets",
     "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
+    # Avoid CUDA allocator fragmentation OOMs on long-sequence 70B multi-GPU evals when
+    # materialising per-example logits (boss-round paired loss vectors).
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
 }
 
 

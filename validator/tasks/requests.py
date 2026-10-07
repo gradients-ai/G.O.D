@@ -32,17 +32,33 @@ async def get_fake_text_dataset_size(task: AnyTextTypeRawTask) -> int:
     return 100_000
 
 
+def _parse_model_size_from_name(model_id: str) -> int:
+    """Best-effort size from a hub-style name like ``org/llama-70B-chat``.
+
+    Requires a path separator or dash/underscore before the number so UUID fragments
+    in continuous-SFT repo names (e.g. ``...c8068e356b7c...``) are not read as 356B.
+    """
+    match = re.search(r"(?:^|[-_/])(\d+(?:\.\d+)?)[bB](?:$|[-_/])", model_id)
+    if not match:
+        return 0
+    return int(float(match.group(1)) * 1_000_000_000)
+
+
 def get_model_num_params(model_id: str) -> int:
     try:
         model_info = hf_api.model_info(model_id)
         size = model_info.safetensors.total
-        return size
+        if size:
+            return int(size)
     except Exception as e:
         logger.warning(f"Error getting model size from safetensors: {e}")
-        model_size = re.search(r"(\d+)(?=[bB])", model_id)
-        model_size = int(model_size.group(1)) * 1_000_000_000 if model_size else None
-        logger.info(f"Model size from regex: {model_size}")
-        return model_size
+
+    model_size = _parse_model_size_from_name(model_id)
+    if model_size:
+        logger.info(f"Model size from name parse: {model_size}")
+    else:
+        logger.warning(f"Could not determine model size for {model_id}")
+    return model_size
 
 
 async def get_total_image_dataset_size(task: ImageRawTask) -> int:

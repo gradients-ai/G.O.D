@@ -552,13 +552,27 @@ def _load_and_update_evaluation_config(
 
 
 def check_and_log_base_model_size(original_model: str) -> None:
-    """Check if base model size is logged in results, if not load and log it."""
+    """Record base model param count without loading weights.
+
+    A second full 70B load after eval has segfaulted on 2xA100 (exit -11), which made the
+    remote runner discard an already-completed eval. Prefer HuggingFace safetensors metadata
+    (or a conservative name parse) over materialising the model again.
+    """
     results_dict = load_results_dict()
 
     if "model_params_count" not in results_dict:
-        logger.info("Base model size not logged, loading base model to calculate size")
-        base_model = load_model(original_model, is_base_model=True)
-        results_dict["model_params_count"] = count_model_parameters(base_model)
+        # Imported lazily: evaluation images always have huggingface_hub, and this keeps the
+        # common module importable in unit tests that stub HF away.
+        from validator.tasks.requests import get_model_num_params
+
+        logger.info("Base model size not logged; resolving from hub metadata (no weight load)")
+        params = get_model_num_params(original_model)
+        if not params:
+            logger.warning(
+                f"Could not resolve model_params_count for {original_model} without loading weights; leaving unset"
+            )
+            return
+        results_dict["model_params_count"] = params
         save_results_dict(results_dict)
         logger.info(f"Logged base model size: {results_dict['model_params_count']} parameters")
     else:

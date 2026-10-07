@@ -191,6 +191,9 @@ class EvaluationResultText(BaseModel):
     # produced before the evaluator emitted it.
     per_example_losses: list[float] | None = None
     eval_set_fingerprint: str | None = None
+    # True when EMIT_PER_EXAMPLE_LOSSES was requested but the vector pass failed after eval_loss
+    # succeeded. Distinguishes "attempted and failed" from "never emitted" for boss-round fallbacks.
+    per_example_losses_failed: bool = False
 
 
 class DockerEvaluationResults(BaseModel):
