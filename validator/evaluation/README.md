@@ -9,8 +9,10 @@ Evaluation runtimes and helpers used after miner training completes.
 - `pvp/`: PvP environment evaluation runtime.
 - `basilica.py`: Basilica client integration.
 - `basilica_deployments.py`: Basilica deployment helpers.
-- `common.py`: shared text evaluation helpers.
-- `constants.py`: evaluation constants.
+- `common.py`: shared text evaluation helpers (base param counts via hub metadata, no weight reload).
+- `constants.py`: evaluation constants (`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on all remote eval containers).
+- `remote_runner.py`: HTTP wrapper for Basilica/Runpod eval containers; serves `/result` even if a post-eval step exits non-zero when results already exist.
+- `runpod.py`: Runpod evaluation backend via dstack services.
 - `dataset_configs.py`: default dataset config discovery.
 - `db_utils.py`: evaluation persistence helpers.
 - `docker_evaluation.py`: Docker/Basilica evaluation orchestration.

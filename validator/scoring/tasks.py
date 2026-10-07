@@ -745,6 +745,13 @@ async def process_miners_pool(
                     # text evaluator leaves these None and the boss round falls back to the
                     # scalar margin.
                     is_text_result = isinstance(test_result, EvaluationResultText)
+                    if is_text_result and test_result.per_example_losses_failed:
+                        logger.error(
+                            "Repo %s: per-example loss extraction failed after eval_loss; "
+                            "boss-round paired comparison unavailable for hotkey %s",
+                            repo,
+                            miner.hotkey,
+                        )
                     results.append(
                         MinerResultsText(
                             hotkey=miner.hotkey,
@@ -755,6 +762,9 @@ async def process_miners_pool(
                             task_type=task.task_type,
                             per_example_losses=test_result.per_example_losses if is_text_result else None,
                             eval_set_fingerprint=test_result.eval_set_fingerprint if is_text_result else None,
+                            per_example_losses_failed=(
+                                test_result.per_example_losses_failed if is_text_result else False
+                            ),
                         )
                     )
                 elif task.task_type == TaskType.IMAGETASK:

@@ -110,6 +110,8 @@ class MinerResults(BaseModel):
     # carried for instruct/DPO; None everywhere else. Never used for ranking - test_loss is.
     per_example_losses: list[float] | None = None
     eval_set_fingerprint: str | None = None
+    # True when the evaluator attempted the vector pass and failed; False/default when absent or unused.
+    per_example_losses_failed: bool = False
 
 
 class MinerResultsText(MinerResults):

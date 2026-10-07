@@ -247,11 +247,13 @@ async def _resolve_boss_round_task_winner(
             boss_fingerprint is not None and opponent_fingerprint is not None and boss_fingerprint != opponent_fingerprint
         )
         if boss_losses is None or opponent_losses is None:
-            # Nothing was emitted: pre-existing tasks and the rollout window. Falling back keeps
-            # the round resolvable.
+            # Nothing was emitted: pre-existing tasks, the rollout window, or an eval-time vector
+            # failure (see EvaluationResultText.per_example_losses_failed). Falling back keeps
+            # the round resolvable, but paired significance is unavailable.
+            missing = "boss" if boss_losses is None else "challenger"
             logger.warning(
-                f"Boss round task {task_id}: no per-example losses for "
-                f"{'boss' if boss_losses is None else 'challenger'} - falling back to the "
+                f"Boss round task {task_id}: no per-example losses for {missing} "
+                f"(absent or extraction failed at eval) - falling back to the "
                 f"{threshold_percentage * 100:.1f}% margin"
             )
         elif fingerprints_disagree or len(boss_losses) != len(opponent_losses):

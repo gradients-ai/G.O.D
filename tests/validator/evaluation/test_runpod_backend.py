@@ -49,7 +49,7 @@ def test_service_plan_uses_all_regions_and_fixed_a100_by_default(monkeypatch):
         "name": ["A100"],
         "count": {"min": 2, "max": 2},
     }
-    assert config["resources"]["disk"]["size"] == "200GB"
+    assert config["resources"]["disk"]["size"] == {"min": "150GB"}
     assert config["max_duration"] == 7200
     assert "regions" not in config
 

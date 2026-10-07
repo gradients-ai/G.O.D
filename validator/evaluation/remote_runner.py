@@ -53,8 +53,17 @@ def _run_eval() -> None:
         print("[eval_runner] starting eval command:", " ".join(COMMAND), flush=True)
         proc = subprocess.run(COMMAND, text=True, env=os.environ.copy())
         print(f"[eval_runner] eval command finished exit_code={proc.returncode}", flush=True)
+        results_exist = os.path.isfile(RESULT_PATH)
         if proc.returncode != 0:
-            raise RuntimeError(f"Eval command failed with exit code {proc.returncode}")
+            # Eval subprocesses write results incrementally. A post-step crash (e.g. segfault
+            # while reloading the base model just to count params) must not discard a finished eval.
+            if results_exist:
+                print(
+                    f"[eval_runner] eval exited {proc.returncode} but {RESULT_PATH} exists; serving results",
+                    flush=True,
+                )
+            else:
+                raise RuntimeError(f"Eval command failed with exit code {proc.returncode}")
         with open(RESULT_PATH, encoding="utf-8") as result_file:
             _state["result"] = json.load(result_file)
         _state["status"] = "completed"

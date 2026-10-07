@@ -551,14 +551,48 @@ def _load_and_update_evaluation_config(
     return DictDefault(config_dict)
 
 
+def _model_num_params_from_hub(model_id: str) -> int:
+    """Resolve param count via hub safetensors metadata (no weight load, no validator DB deps).
+
+    Kept local to the eval image path: importing validator.tasks.requests pulls asyncpg/fiber
+    stacks that are not installed in text-evaluator containers.
+    """
+    from huggingface_hub import HfApi
+
+    try:
+        model_info = HfApi().model_info(model_id)
+        size = getattr(getattr(model_info, "safetensors", None), "total", None)
+        if size:
+            return int(size)
+    except Exception as e:
+        logger.warning(f"Error getting model size from safetensors for {model_id}: {e}")
+
+    # Same conservative name parse as validator.tasks.requests.get_model_num_params — requires a
+    # path separator / dash before the number so UUID hex (e.g. ...356b7c...) is not read as 356B.
+    match = re.search(r"(?:^|[-_/])(\d+(?:\.\d+)?)[bB](?:$|[-_/])", model_id)
+    if not match:
+        return 0
+    return int(float(match.group(1)) * 1_000_000_000)
+
+
 def check_and_log_base_model_size(original_model: str) -> None:
-    """Check if base model size is logged in results, if not load and log it."""
+    """Record base model param count without loading weights.
+
+    A second full 70B load after eval has segfaulted on 2xA100 (exit -11), which made the
+    remote runner discard an already-completed eval. Prefer HuggingFace safetensors metadata
+    (or a conservative name parse) over materialising the model again.
+    """
     results_dict = load_results_dict()
 
     if "model_params_count" not in results_dict:
-        logger.info("Base model size not logged, loading base model to calculate size")
-        base_model = load_model(original_model, is_base_model=True)
-        results_dict["model_params_count"] = count_model_parameters(base_model)
+        logger.info("Base model size not logged; resolving from hub metadata (no weight load)")
+        params = _model_num_params_from_hub(original_model)
+        if not params:
+            logger.warning(
+                f"Could not resolve model_params_count for {original_model} without loading weights; leaving unset"
+            )
+            return
+        results_dict["model_params_count"] = params
         save_results_dict(results_dict)
         logger.info(f"Logged base model size: {results_dict['model_params_count']} parameters")
     else:

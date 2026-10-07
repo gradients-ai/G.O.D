@@ -596,10 +596,8 @@ def compute_required_gpus(task: RawTask) -> int:
 
     if num_params < lifecycle_cst.MODEL_SIZE_REQUIRING_2_GPUS:
         return 1
-    elif num_params < lifecycle_cst.MODEL_SIZE_REQUIRING_3_GPUS:
-        return 2
     elif num_params < lifecycle_cst.MODEL_SIZE_REQUIRING_4_GPUS:
-        return 3
+        return 2
     else:
         return 4
 
