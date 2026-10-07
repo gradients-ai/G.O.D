@@ -26,5 +26,6 @@ ENV DATASET_TYPE=""
 ENV FILE_FORMAT=""
 ENV TRANSFORMERS_ALLOW_TORCH_LOAD="true"
 ENV PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+ENV PYTORCH_ALLOC_CONF="expandable_segments:True"
 
 RUN mkdir /aplp

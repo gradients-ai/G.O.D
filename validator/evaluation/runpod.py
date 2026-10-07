@@ -161,7 +161,9 @@ def _build_service_plan(
                 "name": ["A100"],
                 "count": {"min": gpu_count, "max": gpu_count},
             },
-            "disk": {"size": os.getenv("EVAL_RUNPOD_DISK_SIZE", "200GB")},
+            # Min only — a bare size string is treated by dstack as min=max and
+            # rejects otherwise-matching Runpod offers with larger disks.
+            "disk": {"size": {"min": os.getenv("EVAL_RUNPOD_DISK_SIZE", "150GB")}},
         },
         "max_duration": vcst.EVAL_RUNPOD_MAX_DURATION_SECONDS,
     }

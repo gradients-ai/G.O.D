@@ -551,6 +551,30 @@ def _load_and_update_evaluation_config(
     return DictDefault(config_dict)
 
 
+def _model_num_params_from_hub(model_id: str) -> int:
+    """Resolve param count via hub safetensors metadata (no weight load, no validator DB deps).
+
+    Kept local to the eval image path: importing validator.tasks.requests pulls asyncpg/fiber
+    stacks that are not installed in text-evaluator containers.
+    """
+    from huggingface_hub import HfApi
+
+    try:
+        model_info = HfApi().model_info(model_id)
+        size = getattr(getattr(model_info, "safetensors", None), "total", None)
+        if size:
+            return int(size)
+    except Exception as e:
+        logger.warning(f"Error getting model size from safetensors for {model_id}: {e}")
+
+    # Same conservative name parse as validator.tasks.requests.get_model_num_params — requires a
+    # path separator / dash before the number so UUID hex (e.g. ...356b7c...) is not read as 356B.
+    match = re.search(r"(?:^|[-_/])(\d+(?:\.\d+)?)[bB](?:$|[-_/])", model_id)
+    if not match:
+        return 0
+    return int(float(match.group(1)) * 1_000_000_000)
+
+
 def check_and_log_base_model_size(original_model: str) -> None:
     """Record base model param count without loading weights.
 
@@ -561,12 +585,8 @@ def check_and_log_base_model_size(original_model: str) -> None:
     results_dict = load_results_dict()
 
     if "model_params_count" not in results_dict:
-        # Imported lazily: evaluation images always have huggingface_hub, and this keeps the
-        # common module importable in unit tests that stub HF away.
-        from validator.tasks.requests import get_model_num_params
-
         logger.info("Base model size not logged; resolving from hub metadata (no weight load)")
-        params = get_model_num_params(original_model)
+        params = _model_num_params_from_hub(original_model)
         if not params:
             logger.warning(
                 f"Could not resolve model_params_count for {original_model} without loading weights; leaving unset"

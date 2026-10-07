@@ -23,11 +23,11 @@ EVAL_BACKEND=runpod
 ```
 
 Runpod evaluation configuration reuses `DSTACK_URL`, `DSTACK_TOKEN`, and
-`DSTACK_PROJECT`. It requests A100 GPUs, 200GB disk, and all regions by
-default. Runpod evaluation services have a two-hour dstack `max_duration`.
-Optional overrides are:
+`DSTACK_PROJECT`. It requests A100 GPUs, a 150GB minimum disk (no max), and all
+regions by default. Runpod evaluation services have a two-hour dstack
+`max_duration`. Optional overrides are:
 
-- `EVAL_RUNPOD_DISK_SIZE` (for example `100GB`)
+- `EVAL_RUNPOD_DISK_SIZE` (minimum disk size, for example `100GB`; default `150GB`)
 - `EVAL_RUNPOD_REGIONS` (comma-separated; unset means all regions)
 - `EVAL_RUNPOD_GATEWAY`
 - `EVAL_RUNPOD_SERVICE_URL_TEMPLATE` (required for SWE Infinite with a

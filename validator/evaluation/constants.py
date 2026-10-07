@@ -130,7 +130,9 @@ _HF_CONTAINER_ENV_BASE = {
     "HUGGINGFACE_HUB_CACHE": "/root/.cache/huggingface/hub",
     # Avoid CUDA allocator fragmentation OOMs on long-sequence 70B multi-GPU evals when
     # materialising per-example logits (boss-round paired loss vectors).
+    # PyTorch 2.9+ prefers PYTORCH_ALLOC_CONF; keep the legacy name for older images.
     "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "PYTORCH_ALLOC_CONF": "expandable_segments:True",
 }
 
 
