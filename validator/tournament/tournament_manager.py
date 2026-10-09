@@ -30,6 +30,7 @@ from validator.db.sql.tournaments import activate_pending_tournament
 from validator.db.sql.tournaments import add_tournament_participants
 from validator.db.sql.tournaments import create_tournament
 from validator.db.sql.tournaments import eliminate_tournament_participants
+from validator.db.sql.tournaments import reactivate_tournament_participants
 from validator.db.sql.tournaments import enroll_tournament_participant_with_fee
 from validator.db.sql.tournaments import get_active_tournament
 from validator.db.sql.tournaments import get_latest_tournament_with_created_at
@@ -61,6 +62,7 @@ from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tour
 from validator.tournament.challenger_code_review import evaluate_round2_code_reviews
 from validator.tournament.challenger_code_review import resolve_legacy_boss_code_review
 from validator.tournament.dedup_gate import apply_r1_eliminations
+from validator.tournament.dedup_gate import approved_r2_dedup_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
 from validator.tournament.github_validation import deduplicate_by_coldkey
@@ -102,6 +104,7 @@ from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_boss_retention_runners_up
 from validator.tournament.round_results import get_pre_boss_group_runner_up
 from validator.tournament.round_results import get_round_winners
+from validator.tournament.round_results import select_round2_entrants
 from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
@@ -640,6 +643,70 @@ async def _complete_with_defending_champion(
     await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
 
 
+async def _r2_gate_eliminations(
+    tournament: TournamentData, completed_round: TournamentRoundData, psql_db: PSQLDB
+) -> set[str]:
+    """Miners already confirmed out by an approved dedup wave or an accepted cheat review."""
+    eliminated = await approved_r2_dedup_eliminations(tournament, completed_round, psql_db)
+    for participant in await get_tournament_participants(tournament.tournament_id, psql_db):
+        if participant.code_review == "accepted":
+            eliminated.add(participant.hotkey)
+    return eliminated
+
+
+async def _resolve_r2_entry_after_integrity_gates(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    config: Config,
+    psql_db: PSQLDB,
+) -> tuple[list[str], set[str], bool]:
+    """Build the R2 challenger field, replacing gate-DQs from the R1 bench.
+
+    Replacements are themselves cheat- and dedup-checked (a changed cohort starts a
+    new dedup review wave). Returns ``(challengers, eliminated, halt)``.
+    """
+    eliminated: set[str] = set()
+    field: list[str] = []
+
+    while True:
+        eliminated = await _r2_gate_eliminations(tournament, completed_round, psql_db)
+        field = await select_round2_entrants(tournament, completed_round, eliminated, psql_db)
+        await reactivate_tournament_participants(tournament.tournament_id, field, psql_db)
+
+        if t_cst.TOURN_DEDUP_ENABLED:
+            decision = await evaluate_r2_dedup_gate(tournament, completed_round, field, config, psql_db)
+            if decision.halt:
+                logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
+                return field, eliminated | decision.eliminate, True
+            eliminated |= decision.eliminate
+
+        review = await evaluate_round2_code_reviews(tournament, field, config, psql_db)
+        if review.eliminate:
+            await eliminate_tournament_participants(
+                tournament.tournament_id,
+                completed_round.round_id,
+                sorted(review.eliminate),
+                psql_db,
+            )
+            logger.info(
+                f"Code review eliminated {len(review.eliminate)} challenger(s) before round 2"
+            )
+            eliminated |= review.eliminate
+        if review.halt:
+            logger.info(
+                f"Code-review gate holding tournament {tournament.tournament_id} before round 2"
+            )
+            return field, eliminated, True
+
+        next_field = await select_round2_entrants(tournament, completed_round, eliminated, psql_db)
+        if set(next_field) == set(field):
+            return field, eliminated, False
+        logger.info(
+            f"R2 field changed after integrity gates for {tournament.tournament_id}: "
+            f"{field} -> {next_field}; re-checking replacements"
+        )
+
+
 async def advance_tournament(tournament: TournamentData, completed_round: TournamentRoundData, config: Config, psql_db: PSQLDB):
     with LogContext(tournament_id=tournament.tournament_id, round_id=completed_round.round_id):
         logger.info("=== ADVANCE TOURNAMENT CALLED ===")
@@ -875,37 +942,23 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
         else:
-            # R2 gate: before building round 2, check the entrants for functional duplicates.
-            # On flags this HALTS advancement (returns) until a human approves in the DB.
-            if t_cst.TOURN_DEDUP_ENABLED and completed_round.round_number == 1:
-                decision = await evaluate_r2_dedup_gate(tournament, completed_round, winners, config, psql_db)
-                if decision.halt:
-                    logger.info(f"Dedup gate holding tournament {tournament.tournament_id} at R2 pending manual review")
-                    return
-                if decision.eliminate:
-                    winners = [w for w in winners if w not in decision.eliminate]
-                    logger.info(f"Dedup gate removed {len(decision.eliminate)} duplicate(s); {len(winners)} advance to R2")
-            # Cheat check: before building round 2, review every non-boss entrant.
-            # A flag HALTS advancement until an operator agrees (eliminate) or skips.
+            # R2 gates: before building round 2, check entrants for duplicates and cheating.
+            # Flags HALT until a human approves. Approved DQs are replaced from the R1 bench
+            # (text/image: next in cumulative rank; env: next in that group, or a boss-beater
+            # in the boss group). Replacements get both checks.
             if completed_round.round_number == 1:
-                review = await evaluate_round2_code_reviews(tournament, winners, config, psql_db)
-                if review.eliminate:
-                    await eliminate_tournament_participants(
-                        tournament.tournament_id,
-                        completed_round.round_id,
-                        sorted(review.eliminate),
-                        psql_db,
-                    )
-                    winners = [w for w in winners if w not in review.eliminate]
-                    logger.info(
-                        f"Code review eliminated {len(review.eliminate)} challenger(s) before round 2"
-                    )
-                if review.halt:
-                    logger.info(
-                        f"Code-review gate holding tournament {tournament.tournament_id} before round 2"
-                    )
+                challengers, eliminated, halt = await _resolve_r2_entry_after_integrity_gates(
+                    tournament, completed_round, config, psql_db
+                )
+                if tournament.tournament_type == TournamentType.ENVIRONMENT:
+                    winners = list(challengers)
+                    if EMISSION_BURN_HOTKEY not in winners:
+                        winners.append(EMISSION_BURN_HOTKEY)
+                else:
+                    winners = list(challengers)
+                if halt:
                     return
-                if review.eliminate and not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in winners):
+                if not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in winners):
                     await _complete_with_defending_champion(
                         tournament,
                         completed_round,
@@ -913,11 +966,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                         psql_db,
                         reason=(
                             f"No challengers left to enter round 2 of {tournament.tournament_id} "
-                            "after the code review; defending champion retains."
+                            "after integrity gates; defending champion retains."
                         ),
-                        exclude_hotkeys=set(review.eliminate),
+                        exclude_hotkeys=eliminated,
                     )
                     return
+                logger.info(f"R2 field after integrity gates: {winners}")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 

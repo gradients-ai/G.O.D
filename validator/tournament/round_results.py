@@ -842,6 +842,91 @@ async def find_groups_with_no_valid_scores(
     return empty_groups
 
 
+def environment_group_advancers(
+    non_boss_sorted: list[tuple[str, float]],
+    boss_score: float | None,
+) -> list[str]:
+    """Who this env group sends forward when nobody has been gate-eliminated."""
+    if boss_score is not None and non_boss_sorted:
+        top_challenger_score = non_boss_sorted[0][1]
+        if boss_score >= top_challenger_score:
+            return []
+
+    # Advance up to ENV_ADVANCE_PER_GROUP but always eliminate at least 1 to guarantee convergence
+    top_to_advance = max(1, min(t_cst.ENV_ADVANCE_PER_GROUP, len(non_boss_sorted) - 1))
+    if top_to_advance > 0 and len(non_boss_sorted) > top_to_advance:
+        cutoff_score = non_boss_sorted[top_to_advance - 1][1]
+        return [hotkey for hotkey, score in non_boss_sorted if score >= cutoff_score]
+    return [hotkey for hotkey, _ in non_boss_sorted[:top_to_advance]]
+
+
+def environment_group_r2_entrants(
+    non_boss_sorted: list[tuple[str, float]],
+    boss_score: float | None,
+    exclude: set[str],
+) -> list[str]:
+    """Fill this group's R2 slot(s) after cheat/dedup disqualifications.
+
+    Non-boss groups walk down the standings. A boss group only promotes someone
+    who also beat the boss. Groups the boss already retained send nobody.
+    """
+    slots = len(environment_group_advancers(non_boss_sorted, boss_score))
+    if slots == 0:
+        return []
+
+    picked: list[str] = []
+    for hotkey, score in non_boss_sorted:
+        if hotkey in exclude:
+            continue
+        if boss_score is not None and score <= boss_score:
+            continue
+        picked.append(hotkey)
+        if len(picked) >= slots:
+            break
+    return picked
+
+
+def take_standings_slots(ordered: list[str], exclude: set[str], slots: int) -> list[str]:
+    """Walk a cumulative ranking, skipping excluded hotkeys, until ``slots`` are filled."""
+    return [hotkey for hotkey in ordered if hotkey not in exclude][:slots]
+
+
+async def _environment_group_ranking(
+    task: TournamentTask, psql_db: PSQLDB
+) -> tuple[list[tuple[str, float]], float | None] | None:
+    """Return ``(non_boss_sorted, boss_score)`` for one env group task, or None if unusable."""
+    group_id = task.group_id
+    if not group_id:
+        logger.warning(f"No group_id on task {task.task_id}, skipping")
+        return None
+
+    participants = await get_tournament_group_members(group_id, psql_db)
+    if not participants:
+        logger.warning(f"Environment group {group_id} has no participants")
+        return None
+
+    miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
+    if not miner_results:
+        logger.warning(f"No valid results for task {task.task_id}")
+        return None
+
+    ranked_results = calculate_miner_ranking_and_scores(miner_results)
+    participant_scores: dict[str, float] = {}
+    for result in ranked_results:
+        if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
+            continue
+        participant_scores[result.hotkey] = result.adjusted_loss
+
+    if not participant_scores:
+        logger.warning(f"Group {group_id} has no valid scores")
+        return None
+
+    sorted_participants = sorted(participant_scores.items(), key=lambda item: item[1], reverse=True)
+    boss_score = participant_scores.get(EMISSION_BURN_HOTKEY)
+    non_boss_sorted = [(hotkey, score) for hotkey, score in sorted_participants if hotkey != EMISSION_BURN_HOTKEY]
+    return non_boss_sorted, boss_score
+
+
 async def get_environment_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB, config: Config
 ) -> list[str]:
@@ -871,64 +956,19 @@ async def get_environment_group_winners(
     all_winners: list[str] = []
 
     for task in round_tasks:
-        group_id = task.group_id
-        if not group_id:
-            logger.warning(f"No group_id on task {task.task_id}, skipping")
+        ranked = await _environment_group_ranking(task, psql_db)
+        if ranked is None:
+            continue
+        non_boss_sorted, boss_score = ranked
+        group_winners = environment_group_advancers(non_boss_sorted, boss_score)
+        if not group_winners and boss_score is not None and non_boss_sorted:
+            logger.info(
+                f"Environment group {task.group_id}: boss score {boss_score} >= top challenger "
+                f"{non_boss_sorted[0][1]} — boss retains, group advances nobody"
+            )
             continue
 
-        participants = await get_tournament_group_members(group_id, psql_db)
-        participant_hotkeys = [p.hotkey for p in participants]
-        if not participant_hotkeys:
-            logger.warning(f"Environment group {group_id} has no participants")
-            continue
-
-        miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
-        if not miner_results:
-            logger.warning(f"No valid results for task {task.task_id}")
-            continue
-
-        ranked_results = calculate_miner_ranking_and_scores(miner_results)
-        participant_scores: dict[str, float] = {}
-        for result in ranked_results:
-            if result.adjusted_loss is None or np.isnan(result.adjusted_loss):
-                continue
-            participant_scores[result.hotkey] = result.adjusted_loss
-
-        if not participant_scores:
-            logger.warning(f"Group {group_id} has no valid scores")
-            continue
-
-        sorted_participants = sorted(participant_scores.items(), key=lambda x: x[1], reverse=True)
-        boss_score = participant_scores.get(boss_hotkey)
-        non_boss_sorted = [(hotkey, score) for hotkey, score in sorted_participants if hotkey != boss_hotkey]
-
-        # Wherever the boss actually played, it must be beaten to get past it. Advancing a
-        # challenger the boss just beat sends someone to the next round on survivorship rather
-        # than merit - in tourn_10592fcefa2f37ad_20260810 round 1 that promoted a miner who lost
-        # both environments to the boss (78-94 clobber, 11-18 othello) and scored 0.0, purely
-        # because the other three in its group failed training. A tie keeps the incumbent, as
-        # everywhere else in the boss-round logic.
-        #
-        # This only bites in the one group the boss was drawn into; groups it never played have
-        # boss_score None and are unaffected.
-        if boss_score is not None and non_boss_sorted:
-            top_challenger_score = non_boss_sorted[0][1]
-            if boss_score >= top_challenger_score:
-                logger.info(
-                    f"Environment group {group_id}: boss score {boss_score} >= top challenger "
-                    f"{top_challenger_score} — boss retains, group advances nobody"
-                )
-                continue
-
-        # Advance up to ENV_ADVANCE_PER_GROUP but always eliminate at least 1 to guarantee convergence
-        top_to_advance = max(1, min(t_cst.ENV_ADVANCE_PER_GROUP, len(non_boss_sorted) - 1))
-        if top_to_advance > 0 and len(non_boss_sorted) > top_to_advance:
-            cutoff_score = non_boss_sorted[top_to_advance - 1][1]
-            group_winners = [h for h, s in non_boss_sorted if s >= cutoff_score]
-        else:
-            group_winners = [h for h, _ in non_boss_sorted[:top_to_advance]]
-
-        logger.info(f"Environment group {group_id}: advancing {len(group_winners)} winners: {group_winners}")
+        logger.info(f"Environment group {task.group_id}: advancing {len(group_winners)} winners: {group_winners}")
         all_winners.extend(group_winners)
 
     logger.info(f"Environment round {completed_round.round_number}: advancing {len(all_winners)} total non-boss winners")
@@ -1064,8 +1104,8 @@ async def get_boss_retention_runners_up(
     return (second, third)
 
 
-async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
-    """Rank competitors across a multi-match single-group round (text R1; small image R1)."""
+async def _small_tournament_ordered_hotkeys(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
+    """Full cumulative ranking for a multi-match single-group round (text R1; image R1)."""
     match_rankings: list[MatchRanking] = []
     match_losses: list[dict[str, float]] = []
     competitors: set[str] = set()
@@ -1096,6 +1136,8 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
 
     standings: dict[str, GroupMatchStanding] = {}
     for hotkey in competitors:
+        if hotkey == EMISSION_BURN_HOTKEY:
+            continue
         total_rank = 0.0
         matches_attended = 0
         summed_loss = 0.0
@@ -1119,13 +1161,61 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
         standings.values(),
         key=lambda standing: (standing.has_error, standing.average_rank, standing.summed_loss, standing.hotkey),
     )
-    winners = [standing.hotkey for standing in ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]]
     logger.info(
         f"Multi-match group standings "
-        f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}; "
-        f"advancing top {len(winners)}: {winners}"
+        f"{[(s.hotkey, round(s.average_rank, 3), round(s.summed_loss, 4), s.has_error) for s in ordered]}"
     )
+    return [standing.hotkey for standing in ordered]
+
+
+async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
+    """Rank competitors across a multi-match single-group round (text R1; small image R1)."""
+    ordered = await _small_tournament_ordered_hotkeys(round_tasks, psql_db)
+    winners = ordered[: t_cst.SMALL_TOURNAMENT_ADVANCE]
+    logger.info(f"advancing top {len(winners)}: {winners}")
     return winners
+
+
+async def select_round2_entrants(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    exclude_hotkeys: set[str],
+    psql_db: PSQLDB,
+) -> list[str]:
+    """R2 challenger field after removing gate-eliminated miners and backfilling.
+
+    Text/image: walk the R1 cumulative ranking until SMALL_TOURNAMENT_ADVANCE remain.
+    Env: each group keeps its original number of slots; a non-boss group walks down
+    its standings, and a boss group only promotes someone who also beat the boss.
+    """
+    exclude = set(exclude_hotkeys) | {EMISSION_BURN_HOTKEY}
+    round_tasks = await get_tournament_tasks(completed_round.round_id, psql_db)
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        return await _select_env_round2_entrants(round_tasks, exclude, psql_db)
+    ordered = await _small_tournament_ordered_hotkeys(round_tasks, psql_db)
+    selected = take_standings_slots(ordered, exclude, t_cst.SMALL_TOURNAMENT_ADVANCE)
+    logger.info(
+        f"R2 backfill for {tournament.tournament_id}: excluded={sorted(exclude_hotkeys)}, selected={selected}"
+    )
+    return selected
+
+
+async def _select_env_round2_entrants(
+    round_tasks: list[TournamentTask], exclude: set[str], psql_db: PSQLDB
+) -> list[str]:
+    selected: list[str] = []
+    for task in round_tasks:
+        ranked = await _environment_group_ranking(task, psql_db)
+        if ranked is None:
+            continue
+        non_boss_sorted, boss_score = ranked
+        group_selected = environment_group_r2_entrants(non_boss_sorted, boss_score, exclude)
+        logger.info(
+            f"R2 backfill env group {task.group_id}: "
+            f"boss_score={boss_score}, excluded={sorted(exclude)}, selected={group_selected}"
+        )
+        selected.extend(group_selected)
+    return selected
 
 
 async def get_group_winners(

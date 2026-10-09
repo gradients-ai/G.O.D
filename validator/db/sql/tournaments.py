@@ -1355,6 +1355,22 @@ async def eliminate_tournament_participants(tournament_id: str, round_id: str, h
         logger.info(f"Eliminated {len(hotkeys)} participants from tournament {tournament_id} in round {round_id}")
 
 
+async def reactivate_tournament_participants(tournament_id: str, hotkeys: list[str], psql_db: PSQLDB):
+    """Clear elimination so a backfilled R2 replacement can enter the next round."""
+    if not hotkeys:
+        return
+
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+            SET {cst.ELIMINATED_IN_ROUND_ID} = NULL
+            WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = ANY($2)
+            AND {cst.ELIMINATED_IN_ROUND_ID} IS NOT NULL
+        """
+        result = await connection.execute(query, tournament_id, hotkeys)
+        logger.info(f"Reactivated replacements in tournament {tournament_id}: {hotkeys} ({result})")
+
+
 async def get_active_tournament_participants(psql_db: PSQLDB) -> list[str]:
     """Get hotkeys of all active tournament participants for participation weights."""
     async with await psql_db.connection() as connection:
