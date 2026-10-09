@@ -15,7 +15,7 @@ from core.constants.credentials import BUCKET_NAME
 from core.logging import get_logger
 from validator.app.config import Config
 from validator.db.database import PSQLDB
-from validator.db.sql.dedup import get_dedup_review
+from validator.db.sql.dedup import get_dedup_reviews_for_gate
 from validator.db.sql.dedup import insert_dedup_review
 from validator.db.sql.dedup import mark_dedup_review_resolved
 from validator.db.sql.tournaments import eliminate_tournament_participants
@@ -126,43 +126,84 @@ async def apply_r1_eliminations(
 # --------------------------------------------------------------------------- #
 # R2: Claude pairwise gate with human approval
 # --------------------------------------------------------------------------- #
+def _next_dedup_wave_id(base_round_id: str, existing_reviews: list[TournamentDedupReview]) -> str:
+    return f"{base_round_id}_w{len(existing_reviews) + 1}"
+
+
+async def approved_r2_dedup_eliminations(
+    tournament: TournamentData, completed_round: TournamentRoundData, psql_db: PSQLDB
+) -> set[str]:
+    """Hotkeys already confirmed duplicate by an approved R2 review wave."""
+    next_round_id = generate_round_id(tournament.tournament_id, completed_round.round_number + 1)
+    reviews = await get_dedup_reviews_for_gate(next_round_id, psql_db)
+    eliminated: set[str] = set()
+    for review in reviews:
+        if review.status == DedupReviewStatus.APPROVED:
+            eliminated.update(hotkey for hotkey in review.approved_eliminations if hotkey != EMISSION_BURN_HOTKEY)
+    return eliminated
+
+
 async def evaluate_r2_dedup_gate(
     tournament: TournamentData, completed_round: TournamentRoundData, winners: list[str], config: Config, psql_db: PSQLDB
 ) -> GateDecision:
     next_round_id = generate_round_id(tournament.tournament_id, completed_round.round_number + 1)
-    existing = await get_dedup_review(next_round_id, psql_db)
+    reviews = await get_dedup_reviews_for_gate(next_round_id, psql_db)
+    latest = reviews[-1] if reviews else None
 
-    if existing is None:
-        if next_round_id in _GATE_FAILED:
-            # Failed earlier this process — hold without re-running the expensive T2 check.
-            logger.warning(f"Dedup gate {next_round_id}: held after earlier failure — restart or DB-skip to retry")
-            return GateDecision(halt=True)
-        try:
-            return await _run_and_record_gate(tournament, next_round_id, winners, config, psql_db)
-        except Exception as exc:
-            # Gate failed before writing a review row (clone/API/parse). Don't advance past an
-            # unevaluated gate, and don't re-run it every cycle — halt, remember, ping once.
-            _GATE_FAILED.add(next_round_id)
-            logger.error(f"Dedup gate {next_round_id} failed to evaluate — halting tournament: {exc}", exc_info=True)
-            if config.discord_url:
-                await notify_tournament_dedup_error(
-                    tournament.tournament_id, tournament.tournament_type.value, next_round_id, str(exc), config.discord_url
-                )
-            return GateDecision(halt=True)
+    current = {hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY}
+    evaluated: set[str] = set()
+    approved: set[str] = set()
+    for review in reviews:
+        evaluated.update(review.cohort)
+        if review.status == DedupReviewStatus.APPROVED:
+            approved.update(hotkey for hotkey in review.approved_eliminations if hotkey != EMISSION_BURN_HOTKEY)
+    new_members = current - evaluated
 
-    if existing.status == DedupReviewStatus.PENDING_REVIEW:
-        logger.info(f"Dedup gate {next_round_id}: still pending manual review — holding tournament")
+    if latest is None:
+        return await _start_dedup_wave(tournament, next_round_id, winners, config, psql_db)
+
+    if latest.status == DedupReviewStatus.PENDING_REVIEW:
+        logger.info(f"Dedup gate {latest.round_id}: still pending manual review — holding tournament")
         return GateDecision(halt=True)
 
-    if existing.status == DedupReviewStatus.SKIPPED:
-        return GateDecision(halt=False)
+    if latest.status == DedupReviewStatus.SKIPPED:
+        if not new_members:
+            return GateDecision(halt=False, eliminate=approved)
+        wave_id = _next_dedup_wave_id(next_round_id, reviews)
+        logger.info(f"Dedup gate {next_round_id}: new replacements {sorted(new_members)} — starting {wave_id}")
+        return await _start_dedup_wave(tournament, wave_id, winners, config, psql_db)
 
     # APPROVED
-    eliminate = {h for h in existing.approved_eliminations if h != EMISSION_BURN_HOTKEY}
-    if existing.resolved_at is not None:
-        return GateDecision(halt=False, eliminate=eliminate)
-    await _apply_approved_gate(tournament, completed_round, existing, eliminate, config, psql_db)
-    return GateDecision(halt=False, eliminate=eliminate)
+    eliminate = {hotkey for hotkey in latest.approved_eliminations if hotkey != EMISSION_BURN_HOTKEY}
+    if latest.resolved_at is None:
+        await _apply_approved_gate(tournament, completed_round, latest, eliminate, config, psql_db)
+        approved.update(eliminate)
+    if not new_members:
+        return GateDecision(halt=False, eliminate=approved)
+
+    wave_id = _next_dedup_wave_id(next_round_id, reviews)
+    logger.info(f"Dedup gate {next_round_id}: new replacements {sorted(new_members)} — starting {wave_id}")
+    return await _start_dedup_wave(tournament, wave_id, winners, config, psql_db)
+
+
+async def _start_dedup_wave(
+    tournament: TournamentData, review_id: str, winners: list[str], config: Config, psql_db: PSQLDB
+) -> GateDecision:
+    if review_id in _GATE_FAILED:
+        logger.warning(f"Dedup gate {review_id}: held after earlier failure — restart or DB-skip to retry")
+        return GateDecision(halt=True)
+    try:
+        return await _run_and_record_gate(tournament, review_id, winners, config, psql_db)
+    except Exception as exc:
+        # Gate failed before writing a review row (clone/API/parse). Don't advance past an
+        # unevaluated gate, and don't re-run it every cycle — halt, remember, ping once.
+        _GATE_FAILED.add(review_id)
+        logger.error(f"Dedup gate {review_id} failed to evaluate — halting tournament: {exc}", exc_info=True)
+        if config.discord_url:
+            await notify_tournament_dedup_error(
+                tournament.tournament_id, tournament.tournament_type.value, review_id, str(exc), config.discord_url
+            )
+        return GateDecision(halt=True)
 
 
 async def _run_and_record_gate(

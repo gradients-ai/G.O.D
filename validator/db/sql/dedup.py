@@ -75,6 +75,24 @@ async def get_dedup_review(round_id: str, psql_db: PSQLDB) -> TournamentDedupRev
         return _row_to_review(row) if row else None
 
 
+async def get_dedup_reviews_for_gate(round_id: str, psql_db: PSQLDB) -> list[TournamentDedupReview]:
+    """All review waves for an R2 gate, oldest first.
+
+    Wave 1 uses ``round_id`` (the would-be R2 id). Later waves use ``{round_id}_wN``.
+    """
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT * FROM {cst.TOURNAMENT_DEDUP_REVIEWS_TABLE}
+            WHERE round_id = $1 OR round_id LIKE $2
+            ORDER BY created_at ASC
+            """,
+            round_id,
+            f"{round_id}_w%",
+        )
+        return [_row_to_review(row) for row in rows]
+
+
 async def mark_dedup_review_resolved(
     round_id: str, published_repos: list[PublishedRepo], report_url: str | None, psql_db: PSQLDB
 ) -> None:
