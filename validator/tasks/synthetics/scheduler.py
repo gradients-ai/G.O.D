@@ -237,6 +237,12 @@ def _analytic_tokens_per_sec_per_gpu(num_params: float) -> float:
     return data_cst.H100_BF16_TFLOPS * 1e12 * data_cst.ASSUMED_TRAINING_MFU / (6.0 * num_params)
 
 
+def get_training_overhead_hours(num_params: float) -> float:
+    """Fixed per-task overhead on top of the token budget, scaled by model-size band."""
+    params_b = num_params / 1e9
+    return next(hours for bound_b, hours in data_cst.TRAINING_OVERHEAD_HOURS_BY_PARAMS_B if params_b < bound_b)
+
+
 def compute_training_hours(
     tokens_per_epoch: float,
     num_params: float,
@@ -260,7 +266,7 @@ def compute_training_hours(
 
     type_mult = data_cst.TASK_TYPE_HOURS_MULTIPLIER.get(task_type, 1.0)
     train_seconds = data_cst.TARGET_TRAINING_EPOCHS * tokens_per_epoch * type_mult / (per_gpu_tps * gpus)
-    hours = train_seconds / 3600 + data_cst.TRAINING_OVERHEAD_HOURS
+    hours = train_seconds / 3600 + get_training_overhead_hours(num_params)
 
     hours = max(data_cst.TRAINING_HOURS_MIN, math.ceil(hours * 4) / 4)
     return min(hours, data_cst.MAX_TRAINING_HOURS)
