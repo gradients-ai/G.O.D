@@ -1,7 +1,7 @@
 """
 Participation-driven emission base-split auto-balancer.
 
-Historically the text / image / env emission bases were hand-picked each week. This module
+Historically the text / image emission bases were hand-picked each week. This module
 derives them automatically from how many miners actually entered the last few tournaments of
 each type, so the split follows demand: a type that is oversubscribed relative to its anchor
 share sheds weight (down to a floor) and hands it to a starved type, driving miners toward the
@@ -27,14 +27,13 @@ from validator.db.sql.tournaments import get_recent_completed_entrant_counts
 
 logger = get_logger(__name__)
 
-_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT)
+_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.IMAGE)
 
 
 def _anchors() -> dict[TournamentType, float]:
     return {
         TournamentType.TEXT: cts.TOURNAMENT_TEXT_WEIGHT,
         TournamentType.IMAGE: cts.TOURNAMENT_IMAGE_WEIGHT,
-        TournamentType.ENVIRONMENT: cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
     }
 
 
@@ -42,7 +41,6 @@ def _cap(tournament_type: TournamentType) -> float:
     return {
         TournamentType.TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         TournamentType.IMAGE: cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
-        TournamentType.ENVIRONMENT: cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
     }[tournament_type]
 
 
@@ -105,11 +103,10 @@ async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
 
     weights = compute_dynamic_base_weights(counts)
     logger.info(
-        "Dynamic emission base split (rolling-%d entrants %s): text=%.4f image=%.4f env=%.4f",
+        "Dynamic emission base split (rolling-%d entrants %s): text=%.4f image=%.4f",
         cts.EMISSION_BALANCE_ROLLING_WINDOW,
         {t.value: counts[t] for t in _TYPES},
         weights[TournamentType.TEXT],
         weights[TournamentType.IMAGE],
-        weights[TournamentType.ENVIRONMENT],
     )
     return weights

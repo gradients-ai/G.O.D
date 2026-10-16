@@ -1,6 +1,8 @@
 # Miner Guide
 
-This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text, image, and environment tournaments.
+This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text and image tournaments.
+
+Environment tournaments have been retired: they are no longer scheduled, no longer accept entries, and no longer contribute to emissions. Historical environment tournaments remain queryable through the analytics endpoints.
 
 ## Table Of Contents
 
@@ -18,7 +20,6 @@ This guide is the single source of truth for miners who want to compete in G.O.D
 - [Requested Datasets](#requested-datasets)
 - [Tournament Formats](#tournament-formats)
 - [Scoring And Weights](#scoring-and-weights)
-- [Environment Tournament Requirements](#environment-tournament-requirements)
 - [Image Tournament Tips](#image-tournament-tips)
 - [Local Testing](#local-testing)
 - [Common Failure Modes](#common-failure-modes)
@@ -52,11 +53,10 @@ Tournament scheduling is weekly and independent for each tournament type. Times 
 
 | Tournament type | Scheduled start |
 | --- | --- |
-| Environment | Monday at 09:00 UTC (currently paused) |
 | Text | Monday at 11:00 UTC |
 | Image | Monday at 13:00 UTC |
 
-Environment tournaments are temporarily paused. No new environment tournament will be created, and the validator will not advance leftover environment tournaments. Text and image continue on the schedule above. Environment emission share remains until the full sunset.
+Environment tournaments are retired and are no longer scheduled.
 
 The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
 
@@ -106,7 +106,6 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 | --- | --- |
 | Text | 0.7 TAO |
 | Image | 0.4 TAO |
-| Environment | 0.6 TAO |
 
 Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Only **one tournament entry is allowed per coldkey**: if multiple hotkeys under the same coldkey respond during registration, one is kept and the rest are rejected (no second fee is charged). Transfer TAO from your coldkey to the collection address:
 
@@ -131,7 +130,6 @@ A pending tournament activates only after enough validated miners are available:
 | --- | --- |
 | Text | 4 |
 | Image | 4 |
-| Environment | 5 |
 
 If too few miners validate, the pending tournament waits and retries participant collection.
 
@@ -168,7 +166,7 @@ The miner exposes:
 GET /training_repo/{task_type}
 ```
 
-where `task_type` is one of `text`, `image`, or `environment`.
+where `task_type` is one of `text` or `image`. (`environment` is retired; requests for it are no longer made.)
 
 Requests are verified by Fiber dependencies in `miner/endpoints/training_repo.py`, including low-stake validator blacklisting.
 
@@ -195,7 +193,7 @@ Important details:
 - `commit_hash` must be a full 40-character hex commit SHA. Branch names such as `main` are rejected.
 - Use `git rev-parse HEAD` to get the commit you want validators to run.
 - The repository and commit must remain accessible until the tournament completes.
-- You may return different repositories or commits for `text`, `image`, and `environment`.
+- You may return different repositories or commits for `text` and `image`.
 - One miner is kept per coldkey, per IP address, and per GitHub account. Multiple hotkeys under the same coldkey cannot all enter the same tournament: only one entry is kept, and the others are rejected. If duplicates exist, entries with a valid GitHub token are preferred; otherwise the first kept candidate in the registration pass wins.
 
 ### Private Repositories
@@ -294,23 +292,23 @@ Training containers run with:
 - All Linux capabilities dropped.
 - `/cache` mounted read-only.
 - `/app/checkpoints/` mounted read-write.
-- An internal Docker bridge network. Treat this as no public internet; environment sidecars are reachable only when provided.
+- An internal Docker bridge network. Treat this as no public internet.
 - Dynamic resource limits of 110 GB RAM and 24 CPU cores per GPU.
 
 ## Runtime Arguments
 
 Your Dockerfile entrypoint receives standardized CLI arguments.
 
-### Text And Environment Trainer
+### Text Trainer
 
-Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
+Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, and `ChatTask`:
 
 ```bash
 --task-id             # Unique task UUID/string
 --model               # Base or starting model identifier
 --dataset             # Original task dataset URL
---dataset-type        # JSON string describing columns, rewards, or environments
---task-type           # InstructTextTask, DpoTask, GrpoTask, ChatTask, or EnvTask
+--dataset-type        # JSON string describing columns or rewards
+--task-type           # InstructTextTask, DpoTask, GrpoTask, or ChatTask
 --file-format         # Always s3 for tournament tasks
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
@@ -324,7 +322,6 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, and `EnvTask`:
 | `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
 | `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
 | `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
-| `EnvTask` | `environment_names`, such as `gin_rummy`, `liars_dice`, `leduc_poker`, `othello`, `clobber`, `goofspiel`, `intercode`, or `swe_infinite`. |
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
 
@@ -348,17 +345,14 @@ Your container may receive:
 
 | Variable | Tasks | Meaning |
 | --- | --- | --- |
-| `BASELINE_STATS_PATH` | Text, image, environment | Optional path to model/dataset baseline stats JSON. Safe to ignore. |
-| `WANDB_MODE` | Text, environment | Set to `offline`. |
-| `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | Text, environment | Point to the local WandB logs directory for later sync. |
+| `BASELINE_STATS_PATH` | Text, image | Optional path to model/dataset baseline stats JSON. Safe to ignore. |
+| `WANDB_MODE` | Text | Set to `offline`. |
+| `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | Text | Point to the local WandB logs directory for later sync. |
 | `TRANSFORMERS_CACHE` | Image | Points to the Hugging Face cache path. |
-| `ENVIRONMENT_SERVER_URLS` | Environment | Comma-separated URLs for environment sidecars when the task needs live environment servers. |
-| `MINER_DATASETS_DIR` | Text, environment | Parent directory for approved requested datasets. |
-| `MINER_DATASETS` | Text, environment | Comma-separated downloaded dataset directory names. |
+| `MINER_DATASETS_DIR` | Text | Parent directory for approved requested datasets. |
+| `MINER_DATASETS` | Text | Comma-separated downloaded dataset directory names. |
 | `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
 | `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
-
-For `intercode`-only or `swe_infinite`-only environment tasks, `ENVIRONMENT_SERVER_URLS` may be absent because no separate training sidecar is started during miner training.
 
 ## Cache And Output Paths
 
@@ -367,7 +361,7 @@ Use these paths or the helpers in `trainer/training_paths.py`. The uploader depe
 | Purpose | Path |
 | --- | --- |
 | Final model output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
-| Text/environment dataset | `/cache/datasets/{task_id}_train_data.json` |
+| Text dataset | `/cache/datasets/{task_id}_train_data.json` |
 | Image dataset zip | `/cache/datasets/{task_id}_tourn.zip` |
 | Cached models | `/cache/models/{model_id with "/" replaced by "--"}` |
 | Requested datasets | `/cache/miner_datasets/{dataset_id with "/" replaced by "--"}` |
@@ -455,35 +449,16 @@ Image tournaments use `ImageTask`.
 
 Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
-### Environment Tournaments
-
-Environment tournaments use `EnvTask` and PvP or environment-specific evaluation.
-
-- Participants are split into groups of 2 to 6.
-- The defending champion is represented by the burn hotkey and auto-advances through non-final rounds.
-- Non-final rounds create one environment task per group.
-- Round 1 uses 2 environments per task, round 2 uses 4, round 3 uses 6, capped by the number of supported non-SWE environments. `intercode` is always one of round 1's environments (`FORCED_R1_ENVIRONMENT`).
-- Round 2 and later can continue from each miner's previous-round model.
-- Up to one non-boss winner advances per group, with ties at the cutoff allowed.
-- If the boss is in the only group and scores at least as well as the top challenger, the boss can retain without a final challenger.
-- `swe_infinite` appears only in the final boss round. It is excluded from non-final environment tasks.
-- The final boss round has 3 tasks: continuation, from scratch, and previous-winner/target-model start. The previous-winner/target-model task is the guaranteed `swe_infinite` task; the continuation and from-scratch tasks use the other supported environments.
-- The contender wins the environment tournament only if they have no boss-round losses and at least tie the boss on the `swe_infinite` task. Draws are acceptable on every boss-round task; any loss or a lower `swe_infinite` score means the boss retains.
-
-Environment group tasks use `ENV_TRAINING_HOURS = 1.5`. The final-round `swe_infinite` task gets one additional hour,
-for `2.5` hours total. The from-scratch boss-round task uses `3.0` hours.
-
 ## Scoring And Weights
 
 The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
 
-Anchor base and cap weights in `validator/scoring/constants.py`. The base per type is adjusted from this anchor by a participation-driven balancer (an oversubscribed type sheds weight, down to `EMISSION_BALANCE_FLOOR`, toward a starved one — see `validator/scoring/emission_balance.py`), and the resulting per-type pools are always scaled so text + image + environment sum to exactly 1.0 (scaled up if their raw sum is below 1.0, not just capped when above):
+Anchor base and cap weights in `validator/scoring/constants.py`. The base per type is adjusted from this anchor by a participation-driven balancer (an oversubscribed type sheds weight, down to `EMISSION_BALANCE_FLOOR`, toward a starved one — see `validator/scoring/emission_balance.py`), and the resulting per-type pools are always scaled so text + image sum to exactly 1.0 (scaled up if their raw sum is below 1.0, not just capped when above):
 
 | Tournament type | Anchor base weight | Max weight |
 | --- | --- | --- |
 | Text | 0.35 | 0.50 |
 | Image | 0.25 | 0.50 |
-| Environment | 0.25 | 0.50 |
 
 Active tournament participants receive `0.0001` weight each.
 
@@ -496,52 +471,8 @@ Champions can earn boosted tournament allocation when boss-round performance exc
 A tournament pays a 3rd place only when it can be identified unambiguously:
 
 - **Text/Image**: the loser of the last single-pair knockout round before the boss round.
-- **Environment (normal boss round)**: the single best-scoring non-boss, non-challenger miner across every group in the pre-boss round (valid since a round's groups all share the same model, environments, and eval seed).
-- **Environment (boss retains in the final group round)**: when the boss beats every co-group challenger and no single-challenger boss round is created, the top two non-boss challengers of that retention round are paid 2nd and 3rd by score (higher is better). A tie at the top omits both; a tie at the 3rd-place cutoff omits only 3rd.
 
 If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
-
-## Environment Tournament Requirements
-
-Supported environment names are defined in `core/constants/environments.py`:
-
-- `gin_rummy`
-- `liars_dice`
-- `leduc_poker`
-- `othello`
-- `clobber`
-- `goofspiel`
-- `intercode`
-- `swe_infinite`
-
-For OpenSpiel-style environments, one environment sidecar is usually started per assigned GPU. The URLs are passed through `ENVIRONMENT_SERVER_URLS`. Parse them as a comma-separated list:
-
-```python
-import os
-
-server_urls = [
-    url.strip()
-    for url in os.environ.get("ENVIRONMENT_SERVER_URLS", "").split(",")
-    if url.strip()
-]
-```
-
-Environment tasks can use rollout logic that can interact with environment servers during GRPO training.
-
-A rollout function:
-
-- Generates completions from the model.
-- Sends actions or completions to the environment server.
-- Collects rewards and trajectory data.
-- Returns the prompt tokens, completion tokens, logprobs, and reward values expected by your trainer.
-
-Rules for environment tournaments:
-
-- Do not bundle your own dataset in the Docker image.
-- Do not bundle a pretrained model in the Docker image.
-- SFT is allowed only with whitelisted requested datasets or with self-generated data.
-- You must actually train the model. Submitting an untrained or only superficially modified base model does not count as training.
-- Do not embed a solver in the resulting model — its chat template or anywhere else in the submitted model — to bypass the environment instead of the model actually solving it. This results in disqualification.
 
 ## Image Tournament Tips
 
@@ -562,7 +493,6 @@ Example local runners are in `ops/examples/training`:
 ./ops/examples/training/run_dpo_task.sh
 ./ops/examples/training/run_grpo_task.sh
 ./ops/examples/training/run_image_task.sh
-./ops/examples/training/run_environment_task.sh
 ```
 
 You can also re-evaluate recent tasks locally after building the validator images:
@@ -574,52 +504,7 @@ docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_v
 python -m ops.validator_ops.run_evaluation --help
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID
 python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
-python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 --hotkeys HOTKEY_A HOTKEY_B
-
-# Continuation-round PvP: pass each miner's previous-round adapter as base_chain.
-# Pairs use lexicographically sorted hotkeys as model_a/model_b (order of --hotkeys does not matter).
-python -m ops.validator_ops.run_evaluation --task_id TASK_ID --gpu_ids 0 1 \
-  --hotkeys HOTKEY_A HOTKEY_B \
-  --base_chain HOTKEY_A=org/previous-adapter-a \
-  --base_chain HOTKEY_B=org/previous-adapter-b
 ```
-
-PvP local evaluation matches production seed, temperature, A/B ordering, and
-`base_chain` when you supply `--base_chain`. Production runs on Basilica A100
-80GB GPUs with a 900s per-environment wall-clock budget, so absolute game counts
-can differ on other hardware even when win rates are comparable.
-
-### Local SWE Infinite Evaluation Smoke Test
-
-For environment miners working on `swe_infinite`, use the local SWE smoke test
-when you want to evaluate a Hugging Face model repo without Basilica and without
-validator database access:
-
-```bash
-uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
-  --model YOUR_HF_MODEL_OR_LORA_REPO \
-  --base-model gradients-io-tournaments/swe-base-qwen3-8b-continuous \
-  --num-seeds 2 \
-  --seed 42
-```
-
-The script starts SGLang on the host, starts the SWE Infinite server from
-`gradientsio/swe-infinite:v1`, and calls the same MiniSWE evaluation path used
-by tournament evaluation. Task selection is deterministic for a fixed `--seed`,
-task range, and `--num-seeds`; run it again with the same values to evaluate the
-same task IDs. To force exact tasks:
-
-```bash
-uv run --extra dev python -m ops.tools.evaluation.local_swe_infinite_eval \
-  --model YOUR_HF_MODEL_OR_LORA_REPO \
-  --task-id 7 83 45
-```
-
-Because the SWE server runs in Docker while SGLang runs on the host, the model
-URL sent to the SWE container defaults to `http://host.docker.internal:30000/v1`.
-Use `--model-base-url` if your Docker runtime needs a different callback URL.
-Use `--dry-run` first to print the selected task IDs, Docker command, and model
-URL without launching SGLang or Docker.
 
 ### Checking For Duplicate Submissions
 

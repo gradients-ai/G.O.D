@@ -13,7 +13,6 @@ import validator.infrastructure.service_constants as service_cst
 import validator.tasks.datasets.constants as data_cst
 import validator.tasks.prep.constants as prep_cst
 import validator.tasks.synthetics.constants as synth_cst
-from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
@@ -26,7 +25,6 @@ from core.models.payload_models import InstructTextDatasetColumnsResponse
 from core.models.reward_models import RewardFunction
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from core.whitelisted_env_models import SUPPORTED_ENV_MODELS
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
@@ -35,12 +33,10 @@ from validator.db.sql.tasks import add_task
 from validator.db.sql.tasks import get_dataset_near_duplicate_rates
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
-from validator.scoring.models import EnvironmentWeight
 from validator.tasks.datasets.models import Dataset
 from validator.tasks.details import retry_with_backoff
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import DpoRawTask
-from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import RawTask
@@ -334,10 +330,6 @@ def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
     return hours if baseline_stats is None else hours
 
 
-def _get_training_hours_for_environment_task(round_number: int = 1) -> float:
-    return t_cst.ENV_TRAINING_HOURS
-
-
 async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
     """Check if a dataset has recently produced degenerate test_loss scores.
 
@@ -597,72 +589,6 @@ async def create_synthetic_grpo_task(
         augmentation_config=augmentation_config,
     )
     logger.info(f"New GRPO task created with dataset {dataset.dataset_id}, augmented={augmentation_config is not None}")
-
-    task = await add_task(task, config.psql_db)
-
-    return task
-
-
-@retry_with_backoff
-async def create_synthetic_env_task(
-    config: Config,
-    models: AsyncGenerator[str, None],
-    datasets: AsyncGenerator[Dataset, None],
-    num_environments: int = 1,
-    exclude_environments: list[EnvironmentName] | None = None,
-    round_number: int = 1,
-    model_id_override: str | None = None,
-    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
-    environment_names_override: list[EnvironmentName] | None = None,
-    eval_seed_override: int | None = None,
-    exclude_models: list[str] | None = None,
-    hours_override: float | None = None,
-) -> RawTask:
-    if model_id_override:
-        model_id = model_id_override
-    else:
-        candidates = [m for m in SUPPORTED_ENV_MODELS if m not in (exclude_models or [])]
-        model_id = random.choice(candidates or SUPPORTED_ENV_MODELS)
-    dummy_dataset = "env_task_dummy_dataset"
-
-    number_of_hours = hours_override or _get_training_hours_for_environment_task(round_number)
-    current_time = datetime.utcnow()
-    end_timestamp = current_time + timedelta(hours=number_of_hours)
-
-    if environment_names_override:
-        selected_environments = environment_names_override
-    else:
-        all_envs = list(EnvironmentName)
-        candidates = [g for g in all_envs if g not in (exclude_environments or [])]
-        count = min(num_environments, len(candidates))
-        selected_environments = random.sample(candidates, count) if candidates else []
-
-    eval_seed = eval_seed_override if eval_seed_override is not None else random.randint(0, 2**31 - 1)
-
-    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
-    weights = [EnvironmentWeight(environment=env) for env in selected_environments]
-
-    augmentation_config = maybe_get_augmentation_config(TaskType.ENVIRONMENTTASK)
-    task = EnvRawTask(
-        model_id=model_id,
-        ds=dummy_dataset,
-        status=TaskStatus.PENDING,
-        environment_names=selected_environments,
-        environment_weights=weights,
-        eval_seed=eval_seed,
-        is_organic=False,
-        created_at=current_time,
-        termination_at=end_timestamp,
-        hours_to_complete=number_of_hours,
-        account_id=service_cst.NULL_ACCOUNT_ID,
-        yarn_factor=None,
-        augmentation_config=augmentation_config,
-        training_start_point=training_start_point,
-    )
-    logger.info(
-        f"New Environment task: {len(selected_environments)} envs={[e.value for e in selected_environments]}, "
-        f"eval_seed={eval_seed}, augmented={augmentation_config is not None}"
-    )
 
     task = await add_task(task, config.psql_db)
 

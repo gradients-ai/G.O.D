@@ -302,28 +302,6 @@ class NewTaskRequestChat(NewTaskRequest):
         return values
 
 
-class NewTaskRequestEnvironment(NewTaskRequest):
-    environment_names: list[EnvironmentName] = Field(
-        ..., description="Environments to train on.", examples=[["gin_rummy", "liars_dice"]]
-    )
-
-    ds_repo: str = Field(..., description="The repository for the dataset", examples=["Magpie-Align/Magpie-Pro-300K-Filtered"])
-    model_repo: str = Field(..., description="The repository for the model", examples=["Qwen/Qwen2.5-Coder-32B-Instruct"])
-
-    # Turn off protected namespace for model
-    model_config = ConfigDict(protected_namespaces=())
-
-    @model_validator(mode="before")
-    def convert_empty_strings(cls, values):
-        string_fields = [
-            "environment_name",
-        ]
-        for field in string_fields:
-            if field in values and isinstance(values[field], str):
-                values[field] = values[field].strip() or None
-        return values
-
-
 class NewTaskRequestDPO(NewTaskRequest):
     field_prompt: str = Field(..., description="The column name for the prompt", examples=["prompt"])
     field_system: str | None = Field(None, description="The column name for the system (prompt)", examples=["system"])

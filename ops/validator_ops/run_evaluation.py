@@ -12,20 +12,17 @@ from typing import Optional
 
 import httpx
 
-import core.constants.environments as env_cst
 import validator.tournament.constants as t_cst
 from core.downloads import download_s3_file
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
-from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.task_models import TaskType
 from validator.evaluation.local_evaluation import run_evaluation_docker_image
 from validator.evaluation.local_evaluation import run_evaluation_docker_text
-from validator.evaluation.local_evaluation import run_evaluation_local_pvp_pairs
 from validator.tasks.models import ChatTaskWithHotkeyDetails
 from validator.tasks.models import DpoTaskWithHotkeyDetails
 from validator.tasks.models import EnvTaskWithHotkeyDetails
@@ -72,71 +69,6 @@ async def fetch_task_details(task_id: str):
             return EnvTaskWithHotkeyDetails(**data)
         else:
             raise ValueError(f"Unknown task type: {task_type}")
-
-
-def _get_task_environment_names(task_details) -> list[env_cst.EnvironmentName]:
-    environment_names = getattr(task_details, "environment_names", None) or []
-    if not environment_names:
-        raise ValueError("Environment task details did not include environment_names from the auditing API")
-    return [
-        name if isinstance(name, env_cst.EnvironmentName) else env_cst.EnvironmentName(name)
-        for name in environment_names
-    ]
-
-
-def _get_pvp_environment_names(environment_names: list[env_cst.EnvironmentName]) -> list[env_cst.EnvironmentName]:
-    return [
-        environment_name
-        for environment_name in environment_names
-        if env_cst.ENVIRONMENT_CONFIGS[environment_name].eval_type == env_cst.EvalType.PVP
-    ]
-
-
-def _get_hotkey_repo_map(task_details, hotkeys: Optional[List[str]] = None) -> dict[str, str]:
-    requested_hotkeys = set(hotkeys or [])
-    miner_repos: dict[str, str] = {}
-    for hotkey_detail in task_details.hotkey_details or []:
-        if requested_hotkeys and hotkey_detail.hotkey not in requested_hotkeys:
-            continue
-        if hotkey_detail.repo:
-            miner_repos[hotkey_detail.hotkey] = hotkey_detail.repo
-
-    if requested_hotkeys:
-        missing_hotkeys = sorted(requested_hotkeys - set(miner_repos))
-        if missing_hotkeys:
-            raise ValueError(f"No repo found in task details for hotkeys: {missing_hotkeys}")
-
-    if len(miner_repos) < 2:
-        raise ValueError("PvP evaluation requires at least two hotkeys with repos")
-    return miner_repos
-
-
-def _parse_base_chain_args(values: Optional[List[str]], miner_repos: dict[str, str]) -> dict[str, list[str]]:
-    """Parse repeatable --base_chain HOTKEY=REPO[,REPO...] flags into a per-hotkey map."""
-    if not values:
-        return {}
-
-    base_chains: dict[str, list[str]] = {}
-    for raw_value in values:
-        if "=" not in raw_value:
-            raise ValueError(
-                f"Invalid --base_chain value {raw_value!r}. Expected HOTKEY=REPO or HOTKEY=REPO1,REPO2"
-            )
-        hotkey, repos_raw = raw_value.split("=", 1)
-        hotkey = hotkey.strip()
-        repos = [repo.strip() for repo in repos_raw.split(",") if repo.strip()]
-        if not hotkey or not repos:
-            raise ValueError(
-                f"Invalid --base_chain value {raw_value!r}. Expected HOTKEY=REPO or HOTKEY=REPO1,REPO2"
-            )
-        if hotkey not in miner_repos:
-            raise ValueError(
-                f"Unknown hotkey in --base_chain: {hotkey}. Valid hotkeys: {sorted(miner_repos)}"
-            )
-        if hotkey in base_chains:
-            raise ValueError(f"Duplicate --base_chain entry for hotkey {hotkey}")
-        base_chains[hotkey] = repos
-    return base_chains
 
 
 async def run_evaluation_from_task_id(
@@ -246,54 +178,16 @@ async def run_evaluation_from_task_id(
             reward_functions=task_details.reward_functions,
         )
     elif task_type == TaskType.ENVIRONMENTTASK:
-        environment_names = _get_task_environment_names(task_details)
-        pvp_environment_names = _get_pvp_environment_names(environment_names)
-        if pvp_environment_names:
-            if models:
-                raise ValueError("PvP local evaluation needs task hotkeys. Use --hotkeys to filter contestants.")
-
-            miner_repos = _get_hotkey_repo_map(task_details, hotkeys)
-            base_chains = _parse_base_chain_args(base_chain, miner_repos)
-            if not base_chains:
-                logger.warning(
-                    "No --base_chain supplied. Continuation-round miners need the previous round's "
-                    "adapter repo (HOTKEY=PREVIOUS_REPO) or scores will not match production. "
-                    "The auditing API does not expose starting_model_repo, so this cannot be inferred."
-                )
-            logger.info("Selected PvP miner repos: %s", miner_repos)
-            logger.info("Selected PvP base chains: %s", base_chains)
-            logger.info(
-                "Running local PvP evaluation for %d hotkeys across environments: %s",
-                len(miner_repos),
-                [environment_name.value for environment_name in pvp_environment_names],
-            )
-            pvp_results = await run_evaluation_local_pvp_pairs(
-                miner_repos=miner_repos,
-                original_model=original_model,
-                environment_names=pvp_environment_names,
-                gpu_ids=gpu_ids,
-                eval_seed=task_details.eval_seed,
-                base_chains=base_chains,
-            )
-            logger.info(f"PvP evaluation results: {json.dumps(pvp_results.model_dump(mode='json'), indent=2)}")
-            return
-
-        dataset_type = EnvironmentDatasetType(environment_names=environment_names)
+        raise ValueError("Environment tasks are no longer supported by this evaluation tool")
     else:
         raise ValueError(f"Unsupported task type: {task_type}")
 
     continuous_sft_tokenizer_repo = t_cst.continuous_sft_seed_repo_for_ds(task_details.ds)
 
-    if task_type == TaskType.ENVIRONMENTTASK:
-        # For environment tasks, use dummy dataset paths (not actual files)
-        test_data_path = "/tmp/dummy_test_data.json"
-        synth_data_path = "/tmp/dummy_synth_data.json"
-        logger.info("Skipping file download for environment tasks, using dummy dataset paths")
-    else:
-        logger.info("Downloading test and synth data...")
-        test_data_path = await download_s3_file(test_data_url)
-        synth_data_path = await download_s3_file(task_details.synthetic_data)
-        logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
+    logger.info("Downloading test and synth data...")
+    test_data_path = await download_s3_file(test_data_url)
+    synth_data_path = await download_s3_file(task_details.synthetic_data)
+    logger.info(f"Downloaded test and synth data to {test_data_path} and {synth_data_path}")
 
     try:
         logger.info(f"Running test data evaluation for models: {models_to_evaluate}")
@@ -304,7 +198,7 @@ async def run_evaluation_from_task_id(
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
-            eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            eval_seed=None,
             continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
@@ -325,7 +219,7 @@ async def run_evaluation_from_task_id(
             dataset_type=dataset_type,
             file_format=FileFormat.JSON,
             gpu_ids=gpu_ids,
-            eval_seed=task_details.eval_seed if task_type == TaskType.ENVIRONMENTTASK else None,
+            eval_seed=None,
             continuous_sft_tokenizer_repo=continuous_sft_tokenizer_repo,
         )
 
@@ -341,9 +235,8 @@ async def run_evaluation_from_task_id(
     except Exception as e:
         logger.error(f"Text evaluation failed with error: {e}", exc_info=True)
     finally:
-        if task_type != TaskType.ENVIRONMENTTASK:
-            os.remove(test_data_path)
-            os.remove(synth_data_path)
+        os.remove(test_data_path)
+        os.remove(synth_data_path)
 
 
 if __name__ == "__main__":

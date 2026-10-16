@@ -1,69 +1,25 @@
 import asyncio
-import datetime
-import json
 import random
-import uuid
 from urllib.parse import urlparse
 from uuid import UUID
 
 import core.constants.docker as docker_cst
-import core.constants.environments as env_cst
 import validator.evaluation.constants as vcst
-from core.logging import get_environment_logger
 from core.logging import get_logger
-from core.logging import update_environment_logger_labels
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
-from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.payload_models import DockerEvaluationResults
-from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
-from validator.db.sql import tasks as tasks_sql
-from validator.db.sql import tournaments as tournament_sql
-from validator.evaluation.basilica import EvaluationCapacityUnavailable
-from validator.evaluation.basilica import EvaluationRetryableError
-from validator.evaluation.basilica import _BasilicaEvalContext
-from validator.evaluation.basilica import _db_call_with_retry
-from validator.evaluation.basilica import _delete_eval_deployment
-from validator.evaluation.basilica import _deploy_with_readiness_timeout
-from validator.evaluation.basilica import _evaluation_cost_run_key
-from validator.evaluation.basilica import _fetch_attempt_logs
-from validator.evaluation.basilica import _finish_evaluation_cost_run
-from validator.evaluation.basilica import _get_healthy_existing_basilica_deployment
-from validator.evaluation.basilica import _poll_eval_deployment
-from validator.evaluation.basilica import _start_evaluation_cost_run
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
-from validator.evaluation.basilica_deployments import create_basilica_public_sglang_eval_runner_source
 from validator.evaluation.db_utils import load_eval_pair_state_for_models
-from validator.evaluation.evaluation_logging import _log_eval_step
-from validator.evaluation.pvp.models import PvPEvalConfig
-from validator.evaluation.pvp.models import PvPEvalResults
-from validator.evaluation.pvp.models import PvPGroupResults
-from validator.evaluation.pvp.models import PvPMatchupConfig
-from validator.evaluation.pvp.models import PvPMode
-from validator.evaluation.pvp.models import PvPModelSpec
-from validator.evaluation.pvp.models import PvPPairResult
-from validator.evaluation.remote import EvalBackend
-from validator.evaluation.remote import get_eval_backend
 from validator.evaluation.remote import run_remote_eval_repos
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
-from validator.evaluation.swe_infinite_config import SweInfiniteEvalConfig
-from validator.evaluation.swe_infinite_config import SweInfiniteTaskSelectionOverride
-from validator.evaluation.swe_infinite_config import build_swe_infinite_container_env
-from validator.scoring.models import IndividualEvalResult
-from validator.scoring.models import MinerRepos
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
-
-
-try:
-    import basilica
-except ImportError:
-    basilica = None
 
 
 logger = get_logger(__name__)
@@ -79,23 +35,6 @@ def _effective_remote_file_format(dataset: str, file_format: FileFormat) -> File
     if path.endswith(".csv"):
         return FileFormat.CSV
     return file_format
-
-
-def _deployment_url(deployment) -> str | None:
-    return getattr(deployment, "url", None)
-
-
-def _first_environment_name(dataset_type: EnvironmentDatasetType) -> env_cst.EnvironmentName | None:
-    environment_names = dataset_type.environment_names or []
-    return environment_names[0] if environment_names else None
-
-
-def _is_environment_name(environment_name, expected: env_cst.EnvironmentName) -> bool:
-    return getattr(environment_name, "value", environment_name) == expected.value
-
-
-def _is_swe_infinite_name(environment_name) -> bool:
-    return _is_environment_name(environment_name, env_cst.EnvironmentName.SWE_INFINITE)
 
 
 async def _db_read_with_retry(coro_factory, op_name: str):
@@ -151,7 +90,7 @@ async def run_evaluation_basilica_text(
     dataset: str,
     models: list[str],
     original_model: str,
-    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType | EnvironmentDatasetType,
+    dataset_type: InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | ChatTemplateDatasetType,
     file_format: FileFormat,
     num_gpus: int,
     eval_seed: int | None = None,
@@ -171,19 +110,7 @@ async def run_evaluation_basilica_text(
     for repo, dep_info in db_deployment_ids_by_repo.items():
         deployment_ids_by_repo.setdefault(repo, dep_info)
     task_type = type(dataset_type).__name__
-    is_environment_eval = isinstance(dataset_type, EnvironmentDatasetType)
-    environment_name = _first_environment_name(dataset_type) if is_environment_eval else None
-    environment_name_value = getattr(environment_name, "value", environment_name)
-    is_intercode_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.INTERCODE.value
-    is_swe_infinite_eval = is_environment_eval and environment_name_value == env_cst.EnvironmentName.SWE_INFINITE.value
-    if is_intercode_eval:
-        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_INTERCODE
-    elif is_swe_infinite_eval:
-        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_SWE_INFINITE
-    elif is_environment_eval:
-        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE_ENV
-    else:
-        basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE
+    basilica_image = docker_cst.VALIDATOR_DOCKER_IMAGE
     if isinstance(dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
         command = ["python", "-m", "validator.evaluation.evaluators.instruct_text"]
     elif isinstance(dataset_type, DpoDatasetType):
@@ -195,25 +122,15 @@ async def run_evaluation_basilica_text(
             psql_db=psql_db,
             deployment_ids_by_repo=deployment_ids_by_repo,
         )
-    elif isinstance(dataset_type, EnvironmentDatasetType):
-        if is_intercode_eval:
-            command = ["python", "-m", "validator.evaluation.evaluators.intercode"]
-        elif is_swe_infinite_eval:
-            command = ["python", "-m", "validator.evaluation.evaluators.swe"]
-        else:
-            command = ["python", "-m", "validator.evaluation.evaluators.environment"]
     else:
         raise ValueError(f"Unsupported dataset type: {type(dataset_type)}")
-    if not is_environment_eval and not dataset.startswith("http://") and not dataset.startswith("https://"):
+    if not dataset.startswith("http://") and not dataset.startswith("https://"):
         raise ValueError(
             "Basilica text eval expects dataset to be an S3/HTTP URL. "
             "Use validator.evaluation.local_evaluation.run_evaluation_docker_text for local file paths."
         )
     dataset_type_str = dataset_type.model_dump_json()
-    if is_swe_infinite_eval:
-        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
-    else:
-        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
+    source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
 
     effective_file_format = _effective_remote_file_format(dataset, file_format)
     base_env = {
@@ -231,33 +148,16 @@ async def run_evaluation_basilica_text(
         base_env[docker_cst.CONTINUOUS_SFT_TOKENIZER_REPO_ENV] = continuous_sft_tokenizer_repo
     if emit_per_example_losses:
         base_env[docker_cst.EMIT_PER_EXAMPLE_LOSSES_ENV] = "1"
-    if is_environment_eval:
-        env_name = env_cst.EnvironmentName(environment_name_value) if environment_name_value else None
-        if env_name not in env_cst.ENVIRONMENT_CONFIGS:
-            raise ValueError(f"Environment '{env_name}' not found. Supported: {[e.value for e in env_cst.EnvironmentName]}")
-        base_seed = eval_seed if eval_seed is not None else vcst.ENV_EVAL_DEFAULT_SEED
-        base_env["ENVIRONMENT_NAME"] = env_name.value
-        base_env["EVAL_SEED"] = str(base_seed)
-        base_env["ENV_EVAL_TEMPERATURE"] = str(vcst.ENV_EVAL_TEMPERATURE)
-        if is_swe_infinite_eval:
-            base_env.update(build_swe_infinite_container_env())
-        # InterCode runs bash actions in-process, so only generic envs get ENV_SERVER_CMD.
-        if not is_intercode_eval and not is_swe_infinite_eval:
-            base_env["ENV_SERVER_CMD"] = vcst.ENV_SERVER_CMD_DEFAULT
 
     logger.debug(f"Running Basilica {task_type} evaluation (per-repo deployments) for models: {models}")
 
     def build_env_for_repo(repo: str) -> dict[str, str]:
         repo_env = dict(base_env)
         repo_env["MODELS"] = repo
-        if not is_environment_eval:
-            repo_env["DATASET_URL"] = dataset
+        repo_env["DATASET_URL"] = dataset
         return repo_env
 
-    deployment_ids_str = {
-        r: v for r, v in deployment_ids_by_repo.items()
-        if isinstance(v, str) and not is_environment_eval
-    }
+    deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
     repo_results = await run_remote_eval_repos(
         repos=models,
@@ -275,8 +175,8 @@ async def run_evaluation_basilica_text(
         repo_to_hotkey=repo_to_hotkey,
         deployment_ids_by_repo=deployment_ids_str,
         local_logging=local_logging,
-        persist_deployment_ids=not is_environment_eval,
-        reserve_deployment_id=not is_environment_eval,
+        persist_deployment_ids=True,
+        reserve_deployment_id=True,
     )
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
@@ -426,641 +326,3 @@ async def run_evaluation_basilica_image(
 
     evaluation_results = _collect_repo_evaluation_results(models, repo_results)
     return process_evaluation_results(evaluation_results, is_image=True)
-
-async def _release_pvp_pair_gpus_reservation(
-    *,
-    task_id: UUID | None,
-    psql_db: PSQLDB | None,
-    hotkeys: list[str],
-    ctx: _BasilicaEvalContext,
-) -> None:
-    """Release a PvP pair's GPU reservation on pvp_pair_results (pair-scoped, never clobbers a
-    sibling pair). No-op unless we have a full pair."""
-    if task_id is None or psql_db is None or len(hotkeys) != 2:
-        return
-    await _db_call_with_retry(
-        lambda: tasks_sql.release_pvp_pair_gpus(task_id, hotkeys[0], hotkeys[1], psql_db),
-        "release_pvp_pair_gpus",
-        ctx.eval_logger,
-        ctx.repo,
-    )
-
-
-def _pvp_remaining_poll_seconds(deployment) -> int:
-    """Poll a RESUMED deployment for only its remaining TTL, not a fresh full TTL, so an alive-but-
-    stuck resumed deployment cannot pin its (now-metered) reservation for a whole new TTL window."""
-    created = getattr(deployment, "created_at", None)
-    if isinstance(created, str):
-        try:
-            created = datetime.datetime.fromisoformat(created)
-        except ValueError:
-            return vcst.PVP_BASILICA_TTL_SECONDS
-    if not isinstance(created, datetime.datetime):
-        return vcst.PVP_BASILICA_TTL_SECONDS
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=datetime.timezone.utc)
-    age = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds()
-    return int(max(vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS, vcst.PVP_BASILICA_TTL_SECONDS - age))
-
-
-async def _persist_pvp_deployment_id(
-    *,
-    task_id: UUID | None,
-    psql_db: PSQLDB | None,
-    hotkeys: list[str],
-    deployment_name: str,
-    verified: bool,
-    ctx: _BasilicaEvalContext,
-) -> None:
-    if task_id is None or psql_db is None or not hotkeys:
-        return
-
-    ctx.log_eval_step("deployment_id_persist_start", deployment=deployment_name)
-    if len(hotkeys) == 2:
-        await _db_call_with_retry(
-            lambda: tournament_sql.set_pvp_pair_deployment_id(
-                str(task_id),
-                hotkeys[0],
-                hotkeys[1],
-                deployment_name,
-                verified,
-                psql_db,
-            ),
-            "set_pvp_pair_deployment_id",
-            ctx.eval_logger,
-            ctx.repo,
-        )
-    ctx.log_eval_step("deployment_id_persist_complete", deployment=deployment_name)
-
-
-async def _deploy_pvp_eval(
-    pvp_config: PvPEvalConfig,
-    label: str,
-    repos_label: str,
-    image: str | None = None,
-    gpu_count: int | None = None,
-    task_id: UUID | None = None,
-    psql_db: PSQLDB | None = None,
-    hotkeys: list[str] | None = None,
-) -> dict:
-    """Deploy a PvP eval container via Basilica and return the raw result dict.
-
-    Shared by PvP pair eval calls.
-    """
-    hotkeys = hotkeys or []
-    image = image or docker_cst.VALIDATOR_DOCKER_IMAGE_PVP
-    gpu_count = gpu_count or vcst.PVP_BASILICA_GPU_COUNT
-    env = {
-        vcst.PVP_CONFIG_ENV_VAR: pvp_config.model_dump_json(),
-        **vcst.HF_CONTAINER_ENV,
-    }
-    command = ["python", "-m", "validator.evaluation.pvp"]
-    source = create_basilica_eval_runner_source(command, vcst.PVP_RESULTS_PATH)
-
-    existing_deployment_name = None
-    if task_id is not None and psql_db is not None and len(hotkeys) == 2:
-        existing_deployment_name = await _db_read_with_retry(
-            lambda: tournament_sql.get_pvp_pair_deployment_id(str(task_id), hotkeys[0], hotkeys[1], psql_db),
-            "get_pvp_pair_deployment_id",
-        )
-    eval_id = str(uuid.uuid4())
-    eval_logger = get_environment_logger(
-        name=f"pvp-{label}-{eval_id[:8]}",
-        repo_id=repos_label,
-        eval_id=eval_id,
-        model=pvp_config.base_model or "",
-        task_type=TaskType.ENVIRONMENTTASK.value,
-        task_id=str(task_id) if task_id else "unknown",
-        hotkey_a=hotkeys[0] if len(hotkeys) > 0 else None,
-        hotkey_b=hotkeys[1] if len(hotkeys) > 1 else None,
-        deployment_id=existing_deployment_name,
-    )
-
-    def log_step(step: str, **fields) -> None:
-        _log_eval_step(eval_logger, step, **fields)
-
-    ctx = _BasilicaEvalContext(
-        repo=f"pvp-{label}",
-        eval_logger=eval_logger,
-        deleted_deployment_names=set(),
-        log_eval_step=log_step,
-    )
-
-    if get_eval_backend() == EvalBackend.RUNPOD:
-        update_environment_logger_labels(eval_logger, eval_backend="runpod")
-        reserved_pair = False
-        release_pair_on_exit = True
-        try:
-            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
-                if existing_deployment_name:
-                    await _db_call_with_retry(
-                        lambda: tasks_sql.reserve_pvp_pair_gpus_unconditional(
-                            task_id,
-                            hotkeys[0],
-                            hotkeys[1],
-                            gpu_count,
-                            psql_db,
-                        ),
-                        "reserve_pvp_pair_gpus_unconditional",
-                        ctx.eval_logger,
-                        ctx.repo,
-                    )
-                    reserved_pair = True
-                else:
-                    reserved_pair = await _db_call_with_retry(
-                        lambda: tasks_sql.try_reserve_pvp_pair_gpus(
-                            task_id,
-                            hotkeys[0],
-                            hotkeys[1],
-                            gpu_count,
-                            psql_db,
-                        ),
-                        "try_reserve_pvp_pair_gpus",
-                        ctx.eval_logger,
-                        ctx.repo,
-                    )
-                if not reserved_pair:
-                    raise EvaluationCapacityUnavailable(
-                        f"Not enough evaluation GPU capacity for PvP {label} ({gpu_count} GPUs)"
-                    )
-
-            async def persist_runpod_pvp_id(_repo: str, deployment_id: str) -> None:
-                await _persist_pvp_deployment_id(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=deployment_id,
-                    verified=False,
-                    ctx=ctx,
-                )
-
-            pseudo_repo = f"pvp-{label}"
-            raw_results = await run_remote_eval_repos(
-                repos=[pseudo_repo],
-                model_name=pvp_config.base_model or "",
-                task_type=TaskType.ENVIRONMENTTASK.value,
-                image=image,
-                source=source,
-                build_env_for_repo=lambda _repo: env,
-                gpu_count=gpu_count,
-                gpu_models=["A100"],
-                min_gpu_memory_gb=80,
-                storage=False,
-                task_id=task_id,
-                psql_db=psql_db,
-                # PvP owns its reservation in pvp_pair_results, so the generic
-                # evaluations-table reservation path must remain disabled.
-                repo_to_hotkey={},
-                deployment_ids_by_repo=(
-                    {pseudo_repo: existing_deployment_name}
-                    if isinstance(existing_deployment_name, str)
-                    else {}
-                ),
-                persist_deployment_ids=False,
-                deployment_id_persister=persist_runpod_pvp_id,
-                reserve_deployment_id=False,
-                propagate_retryable=True,
-            )
-            result = raw_results.get(pseudo_repo)
-            if not isinstance(result, dict):
-                raise RuntimeError(str(result))
-            return result
-        except EvaluationCapacityUnavailable:
-            # No-offers cleanup was verified by the backend; release and let
-            # the lifecycle defer without consuming an evaluation attempt.
-            raise
-        except EvaluationRetryableError:
-            # Fail closed: the backend raises this when deletion could not be
-            # verified. Keep the deployment ID and reservation for reconciliation.
-            release_pair_on_exit = False
-            raise
-        finally:
-            if reserved_pair and release_pair_on_exit:
-                await _release_pvp_pair_gpus_reservation(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    ctx=ctx,
-                )
-
-    if existing_deployment_name:
-        resume_deployment = await _get_healthy_existing_basilica_deployment(
-            existing_deployment_name=existing_deployment_name,
-            ctx=ctx,
-        )
-        if resume_deployment is not None:
-            client, deployment, deployment_name = resume_deployment
-            cost_run_key = (
-                _evaluation_cost_run_key(task_id, deployment_name)
-                if task_id is not None and psql_db is not None and gpu_count > 0
-                else None
-            )
-            attempt_success = False
-            # The deployment is already live and consuming GPUs — make it visible in the cap ledger
-            # unconditionally (it predates any new reservation, so it must count regardless of cap).
-            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
-                await _db_call_with_retry(
-                    lambda: tasks_sql.reserve_pvp_pair_gpus_unconditional(
-                        task_id, hotkeys[0], hotkeys[1], gpu_count, psql_db
-                    ),
-                    "reserve_pvp_pair_gpus_unconditional",
-                    ctx.eval_logger,
-                    ctx.repo,
-                )
-            update_environment_logger_labels(
-                eval_logger,
-                deployment_id=deployment_name,
-                deployment_url=_deployment_url(deployment),
-            )
-            try:
-                result = await _poll_eval_deployment(
-                    ctx=ctx,
-                    client=client,
-                    deployment=deployment,
-                    deployment_name=deployment_name,
-                    success_cleanup_reason="pvp_resume_completed",
-                    failure_cleanup_reason="pvp_resume_failed_or_timed_out",
-                    timeout_cleanup_reason="pvp_resume_failed_or_timed_out",
-                    retry_on_failure=False,
-                    poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
-                    max_poll_seconds=_pvp_remaining_poll_seconds(deployment),
-                )
-                attempt_success = isinstance(result, dict)
-            finally:
-                await _finish_evaluation_cost_run(
-                    run_key=cost_run_key,
-                    success=attempt_success,
-                    psql_db=psql_db,
-                    ctx=ctx,
-                )
-            if isinstance(result, dict):
-                await _release_pvp_pair_gpus_reservation(
-                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
-                )
-                return result
-            if deployment_name not in ctx.deleted_deployment_names:
-                raise EvaluationRetryableError(
-                    f"Failed to verify deletion for resumed PvP deployment {deployment_name}"
-                )
-            # Dead deployment was deleted by the poll — release its reservation before redeploying.
-            await _release_pvp_pair_gpus_reservation(
-                task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
-            )
-            eval_logger.error("PvP %s resume returned non-dict result; redeploying: %s", label, result)
-
-    for attempt in range(1, vcst.EVAL_BASILICA_MAX_RETRIES + 1):
-        deployment = None
-        reserved_pair = False
-        deployment_name = f"{vcst.EVAL_BASILICA_DEPLOYMENT_NAME_PREFIX}{uuid.uuid4()}"
-        cost_run_key = (
-            _evaluation_cost_run_key(task_id, deployment_name)
-            if task_id is not None and psql_db is not None and gpu_count > 0
-            else None
-        )
-        attempt_success = False
-        try:
-            update_environment_logger_labels(eval_logger, deployment_id=deployment_name)
-            log_step("attempt_start", attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}", deployment=deployment_name)
-            eval_logger.info("Starting PvP %s eval attempt %d/%d", label, attempt, vcst.EVAL_BASILICA_MAX_RETRIES)
-            client = basilica.BasilicaClient()
-            if task_id is not None and psql_db is not None and len(hotkeys) == 2 and gpu_count > 0:
-                reserved = await _db_call_with_retry(
-                    lambda: tasks_sql.try_reserve_pvp_pair_gpus(
-                        task_id,
-                        hotkeys[0],
-                        hotkeys[1],
-                        gpu_count,
-                        psql_db,
-                    ),
-                    "try_reserve_pvp_pair_gpus",
-                    ctx.eval_logger,
-                    ctx.repo,
-                )
-                if not reserved:
-                    log_step("gpu_capacity_unavailable", deployment=deployment_name, gpu_count=gpu_count)
-                    raise EvaluationCapacityUnavailable(
-                        f"Not enough evaluation GPU capacity for PvP deployment {deployment_name} ({gpu_count} GPUs)"
-                    )
-                reserved_pair = True
-                # Stamp deployment_id in the DB *before* client.deploy. The deploy name is a fixed
-                # uuid (see above) that Basilica reuses as the deployment name, so we know it up
-                # front. Without this, a pod created by a deploy that then hangs past its timeout
-                # carries a NULL deployment_id (the readiness-callback persist never runs): the
-                # stale-reservation sweep frees its GPU slot while the pod stays live on Basilica,
-                # leaving an untracked orphan that only the slow orphan-grace reaps — so they pile
-                # up faster than they age out. Stamping here guarantees every live pod is trackable
-                # (matched by the reconciler, deleted by cleanup, or freed via the fast ghost path).
-                await _persist_pvp_deployment_id(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=deployment_name,
-                    verified=False,
-                    ctx=ctx,
-                )
-            log_step(
-                "deploy_start",
-                deployment=deployment_name,
-                image=image,
-                gpu_count=gpu_count,
-                gpu_models=",".join(vcst.BASILICA_GPU_MODELS),
-                min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
-            )
-
-            async def persist_verified_pvp_deployment(verified_deployment_name: str) -> None:
-                # Fail closed: if the authoritative returned instance name cannot
-                # be persisted, the shared deploy wrapper deletes the remote
-                # deployment before the reservation is released.
-                await _persist_pvp_deployment_id(
-                    task_id=task_id,
-                    psql_db=psql_db,
-                    hotkeys=hotkeys,
-                    deployment_name=verified_deployment_name,
-                    verified=True,
-                    ctx=ctx,
-                )
-
-            await _start_evaluation_cost_run(
-                task_id=task_id,
-                psql_db=psql_db,
-                deployment_name=deployment_name,
-                gpu_count=gpu_count,
-                ctx=ctx,
-            )
-            deployment, resolved_deployment_name = await _deploy_with_readiness_timeout(
-                ctx=ctx,
-                client=client,
-                deployment_name=deployment_name,
-                deploy_kwargs={
-                    "name": deployment_name,
-                    "source": source,
-                    "image": image,
-                    "port": vcst.PVP_BASILICA_PORT,
-                    "cpu": vcst.EVAL_BASILICA_CPU,
-                    "memory": vcst.EVAL_BASILICA_MEMORY,
-                    "ttl_seconds": vcst.PVP_BASILICA_TTL_SECONDS,
-                    "timeout": vcst.EVAL_BASILICA_TIMEOUT,
-                    "storage": False,
-                    "env": env,
-                    "gpu_count": gpu_count,
-                    "gpu_models": vcst.BASILICA_GPU_MODELS,
-                    "min_gpu_memory_gb": vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
-                },
-                on_verified_deployment_name=persist_verified_pvp_deployment,
-            )
-            update_environment_logger_labels(
-                eval_logger,
-                deployment_id=resolved_deployment_name,
-                deployment_url=_deployment_url(deployment),
-            )
-            log_step("deploy_complete", deployment=resolved_deployment_name)
-            eval_logger.info("PvP %s deployment started: %s", label, resolved_deployment_name)
-
-            result = await _poll_eval_deployment(
-                ctx=ctx,
-                client=client,
-                deployment=deployment,
-                deployment_name=resolved_deployment_name,
-                success_cleanup_reason="pvp_completed",
-                failure_cleanup_reason="pvp_failed",
-                timeout_cleanup_reason="pvp_timed_out",
-                retry_on_failure=True,
-                poll_interval_seconds=vcst.EVAL_BASILICA_POLL_INTERVAL_SECONDS,
-                max_poll_seconds=vcst.PVP_BASILICA_TTL_SECONDS,
-            )
-            if isinstance(result, dict):
-                attempt_success = True
-                await _release_pvp_pair_gpus_reservation(
-                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
-                )
-                return result
-
-            raise RuntimeError(str(result))
-
-        except Exception as exc:
-            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
-            dep_name = (getattr(deployment, "name", None) or deployment_name) if deployment is not None else deployment_name
-            if deployment is not None:
-                deleted = await _delete_eval_deployment(ctx, client, deployment, dep_name, "pvp_attempt_exception")
-                if not deleted:
-                    raise EvaluationRetryableError(
-                        f"Failed to verify deletion for PvP deployment {dep_name}"
-                    ) from exc
-            if reserved_pair:
-                await _release_pvp_pair_gpus_reservation(
-                    task_id=task_id, psql_db=psql_db, hotkeys=hotkeys, ctx=ctx
-                )
-            await _finish_evaluation_cost_run(
-                run_key=cost_run_key,
-                success=False,
-                psql_db=psql_db,
-                ctx=ctx,
-            )
-            log_step(
-                "attempt_failed",
-                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
-                deployment=deployment_name,
-                remaining=remaining,
-                error=exc,
-            )
-            eval_logger.error("PvP %s eval attempt %d failed: %s", label, attempt, exc, exc_info=True)
-            if isinstance(exc, EvaluationRetryableError):
-                raise
-            if remaining > 0:
-                eval_logger.info("Retrying in %ds", vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
-                await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
-            else:
-                raise RuntimeError(f"PvP {label} eval failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts") from exc
-        finally:
-            await _finish_evaluation_cost_run(
-                run_key=cost_run_key,
-                success=attempt_success,
-                psql_db=psql_db,
-                ctx=ctx,
-            )
-            if deployment is not None:
-                await _fetch_attempt_logs(ctx, deployment, deployment_name)
-
-    raise RuntimeError(f"PvP {label} evaluation failed")
-
-
-async def run_evaluation_individual(
-    miners: MinerRepos,
-    base_model: str,
-    environment_name: env_cst.EnvironmentName,
-    seed: int,
-    image: str,
-    gpu_count: int,
-    task_id: UUID | None = None,
-    psql_db: PSQLDB | None = None,
-    base_chains: dict[str, list[str]] | None = None,
-    swe_eval_config: SweInfiniteEvalConfig | None = None,
-    swe_task_selection_override: SweInfiniteTaskSelectionOverride | None = None,
-) -> IndividualEvalResult:
-    """Run individual (per-miner) eval containers for a single environment.
-
-    Each miner gets its own container. The container runs one model and returns
-    a score via the standard eval_loss result format.
-
-    base_chains maps hotkey -> adapter lineage, piped to the container as BASE_CHAIN.
-    """
-    env_config = env_cst.ENVIRONMENT_CONFIGS[environment_name]
-    if not env_config.tournament_eval_command:
-        raise ValueError(f"No tournament_eval_command configured for {environment_name.value}")
-    command = env_config.tournament_eval_command
-    if _is_swe_infinite_name(environment_name):
-        source = create_basilica_public_sglang_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
-    else:
-        source = create_basilica_eval_runner_source(command, CONTAINER_EVAL_RESULTS_PATH)
-
-    base_env = {
-        "ORIGINAL_MODEL": base_model,
-        "ENVIRONMENT_NAME": environment_name.value,
-        "EVAL_SEED": str(seed),
-        "ENV_EVAL_TEMPERATURE": str(vcst.ENV_EVAL_TEMPERATURE),
-        "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
-        **vcst.HF_CONTAINER_ENV,
-    }
-    if _is_swe_infinite_name(environment_name):
-        base_env.update(build_swe_infinite_container_env(swe_eval_config, swe_task_selection_override))
-
-    repo_to_hotkey = {repo: hotkey for hotkey, repo in miners.by_hotkey.items()}
-    base_chains = base_chains or {}
-    existing_deployment_ids_by_hotkey = {}
-    if task_id is not None and psql_db is not None:
-        existing_deployment_ids_by_hotkey = await _db_read_with_retry(
-            lambda: tournament_sql.get_individual_deployment_ids(
-                str(task_id),
-                miners.hotkeys,
-                [environment_name.value],
-                psql_db,
-            ),
-            "get_individual_deployment_ids",
-        )
-    deployment_ids_by_repo = {
-        repo: existing_deployment_ids_by_hotkey[hotkey]
-        for hotkey, repo in miners.by_hotkey.items()
-        if hotkey in existing_deployment_ids_by_hotkey
-    }
-
-    async def persist_individual_deployment_id(repo: str, deployment_name: str) -> None:
-        hotkey = repo_to_hotkey.get(repo)
-        if not hotkey or task_id is None or psql_db is None:
-            return
-        await tournament_sql.set_individual_score_deployment_id(
-            str(task_id),
-            hotkey,
-            environment_name.value,
-            deployment_name,
-            psql_db,
-        )
-
-    def build_env_for_repo(repo: str) -> dict[str, str]:
-        repo_env = dict(base_env)
-        repo_env["MODELS"] = repo
-        chain = base_chains.get(repo_to_hotkey.get(repo, repo))
-        if chain:
-            repo_env["BASE_CHAIN"] = json.dumps(chain)
-        return repo_env
-
-    repo_results = await run_remote_eval_repos(
-        repos=miners.repos,
-        model_name=base_model,
-        task_type=f"ITournEval[{environment_name.value}]",
-        image=image,
-        source=source,
-        build_env_for_repo=build_env_for_repo,
-        gpu_count=max(1, gpu_count),
-        gpu_models=vcst.BASILICA_GPU_MODELS,
-        min_gpu_memory_gb=vcst.BASILICA_SGLANG_MIN_GPU_MEMORY_GB,
-        storage=False,
-        task_id=task_id,
-        psql_db=psql_db,
-        repo_to_hotkey=repo_to_hotkey,
-        deployment_ids_by_repo=deployment_ids_by_repo,
-        persist_deployment_ids=False,
-        deployment_id_persister=persist_individual_deployment_id,
-        reserve_deployment_id=False,
-        propagate_retryable=False,
-    )
-
-    scores: dict[str, float] = {}
-    deferred_hotkeys: list[str] = []
-    for repo, result in repo_results.items():
-        hotkey = repo_to_hotkey.get(repo, repo)
-        if isinstance(result, dict):
-            inner = result.get(repo, result)
-            if isinstance(inner, dict):
-                scores[hotkey] = float(inner.get("eval_loss", 0.0))
-            else:
-                logger.warning(f"Individual eval unexpected result for {repo}: {inner}")
-        elif isinstance(result, EvaluationRetryableError):
-            logger.info(f"Individual eval deferred for {repo}: {result}")
-            deferred_hotkeys.append(hotkey)
-        else:
-            logger.warning(f"Individual eval failed for {repo}: {result}")
-
-    return IndividualEvalResult(
-        environment_name=environment_name,
-        scores_by_hotkey=scores,
-        deferred_hotkeys=deferred_hotkeys,
-    )
-
-
-async def run_evaluation_pvp_pair(
-    model_a_repo: str,
-    model_b_repo: str,
-    hotkey_a: str,
-    hotkey_b: str,
-    base_model: str,
-    environment_names: list[env_cst.EnvironmentName],
-    seed: int,
-    image: str | None = None,
-    gpu_count: int | None = None,
-    temperature: float = 0.0,
-    task_id: UUID | None = None,
-    psql_db: PSQLDB | None = None,
-    base_chain_a: list[str] | None = None,
-    base_chain_b: list[str] | None = None,
-) -> PvPGroupResults:
-    """Run PvP 1v1 pair evaluation via Basilica.
-
-    Returns PvPGroupResults (single pair) for consistent downstream processing.
-
-    base_chain_a/base_chain_b reconstruct continuation miners' trained bases.
-    """
-    matchups = {
-        env: PvPMatchupConfig(time_budget_seconds=vcst.PVP_MATCHUP_TIME_BUDGET_SECONDS)
-        for env in environment_names
-    }
-    pvp_config = PvPEvalConfig(
-        mode=PvPMode.PAIR,
-        model_a=PvPModelSpec(repo=model_a_repo, original_model=base_model, base_chain=base_chain_a or []),
-        model_b=PvPModelSpec(repo=model_b_repo, original_model=base_model, base_chain=base_chain_b or []),
-        matchups=matchups,
-        seed=seed,
-        temperature=temperature,
-    )
-    repos_label = f"{model_a_repo.split('/')[-1]},{model_b_repo.split('/')[-1]}"
-    result = await _deploy_pvp_eval(
-        pvp_config,
-        "pair",
-        repos_label,
-        image=image,
-        gpu_count=gpu_count,
-        task_id=task_id,
-        psql_db=psql_db,
-        hotkeys=[hotkey_a, hotkey_b],
-    )
-
-    pair_eval = PvPEvalResults.model_validate(result)
-    return PvPGroupResults(
-        base_model=base_model,
-        hotkeys=[hotkey_a, hotkey_b],
-        pair_results=[PvPPairResult(
-            hotkey_a=hotkey_a,
-            hotkey_b=hotkey_b,
-            results=pair_eval.results,
-        )],
-        metadata=pair_eval.metadata,
-    )

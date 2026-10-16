@@ -21,13 +21,11 @@ from transformers import AutoConfig
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 
-from core.constants.environments import EnvironmentName
 from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.downloads import download_s3_file
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
-from core.models.model_prep_models import EnvBaselineConfig
 from core.models.model_prep_models import ModelPrepResult
 from core.models.task_models import TaskType
 from core.tokenizer_utils import ensure_chat_template
@@ -35,11 +33,6 @@ from core.tokenizer_utils import read_chat_template
 from core.tokenizer_utils import sanitize_tokenizer_config
 from trainer.model_prep.augmentation import augment_model
 from trainer.model_prep.stats import compute_text_stats
-
-
-# compute_env_stats is imported lazily inside main(): its core.pvp import chain (open-spiel, openai,
-# sglang launch) is env-task only, and pulling it at module load would force those deps into the
-# text-task model-prep image, which deliberately omits them (see ops/docker/model-prep-text.dockerfile).
 
 
 def detect_and_merge_lora(model_id: str, hf_token: str) -> ModelPrepResult:
@@ -420,38 +413,20 @@ def main():
 
     t0 = time.time()
     try:
-        if args.env_configs:
-            # Lazy import: env-only core.pvp deps are absent from the text-task image (see the
-            # import block at the top of this file).
-            from trainer.model_prep.env_stats import compute_env_stats
+        data_records = load_training_data(args.training_data)
+        reward_functions = json.loads(args.reward_functions) if args.reward_functions else None
 
-            raw_configs: dict[str, dict] = json.loads(args.env_configs)
-            env_configs = {
-                EnvironmentName(k): EnvBaselineConfig.model_validate(v)
-                for k, v in raw_configs.items()
-            }
-            stats = asyncio.run(compute_env_stats(
-                # Use the merged path for LoRA continuation; a bare adapter dir
-                # cannot be served directly by SGLang.
-                model_path=model_path,
-                model=model,
-                env_configs=env_configs,
-            ))
+        if data_records:
+            task_type_enum = TaskType(args.task_type)
+            print(f"[model_prep] {len(data_records)} data records, task_type={args.task_type}", flush=True)
+            stats = compute_text_stats(
+                model, tokenizer, data_records,
+                task_type=task_type_enum,
+                reward_functions=reward_functions,
+            )
         else:
-            data_records = load_training_data(args.training_data)
-            reward_functions = json.loads(args.reward_functions) if args.reward_functions else None
-
-            if data_records:
-                task_type_enum = TaskType(args.task_type)
-                print(f"[model_prep] {len(data_records)} data records, task_type={args.task_type}", flush=True)
-                stats = compute_text_stats(
-                    model, tokenizer, data_records,
-                    task_type=task_type_enum,
-                    reward_functions=reward_functions,
-                )
-            else:
-                print("[model_prep] Warning: no training data available for stats", flush=True)
-                stats = None
+            print("[model_prep] Warning: no training data available for stats", flush=True)
+            stats = None
     except torch.cuda.OutOfMemoryError:
         print("[model_prep] CUDA OOM during stats computation, returning partial results", flush=True)
         torch.cuda.empty_cache()

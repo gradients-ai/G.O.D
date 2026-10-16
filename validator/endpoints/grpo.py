@@ -4,6 +4,7 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 
+from core.logging import get_logger
 from core.models.payload_models import AddRewardFunctionRequest
 from core.models.payload_models import RewardFunctionInfo
 from core.models.payload_models import RewardFunctionsResponse
@@ -11,7 +12,6 @@ from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db.sql import grpo as grpo_sql
-from core.logging import get_logger
 from validator.tasks.rewards.functions import extract_docstring
 from validator.tasks.rewards.functions import extract_function_name
 from validator.tasks.rewards.functions import process_reward_function_code

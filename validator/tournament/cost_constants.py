@@ -25,10 +25,12 @@ RAO_PER_TAO = Decimal(1_000_000_000)
 
 # Participation fee per tournament type, in RAO (mirrors the canonical values used
 # when charging miners). Keyed by TournamentType value.
+# Environment tournaments are retired; the 0.6 TAO fee is hardcoded here so historical
+# cost reports for past environment tournaments still resolve a fee amount.
 TOURNAMENT_PARTICIPATION_FEE_RAO_BY_TYPE = {
     "text": Decimal(tourn_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO),
     "image": Decimal(tourn_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO),
-    "environment": Decimal(tourn_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO),
+    "environment": Decimal(600_000_000),
 }
 
 

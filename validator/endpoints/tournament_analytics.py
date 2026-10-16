@@ -11,6 +11,7 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 
+import validator.scoring.constants as cts
 import validator.tournament.constants as tourn_cst
 from core.logging import get_logger
 from core.models.payload_models import GpuRequirementSummary
@@ -253,8 +254,12 @@ async def get_tournament_details(
             winner_hotkey=tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
         )
+        # Environment tournaments are retired from weight setting, so the dynamic split no longer
+        # carries an environment base. Historical environment tournaments are still scored for
+        # display using the (equivalent) image anchor as a stable stand-in weight.
+        type_weight = base_weights.get(tournament_type, cts.TOURNAMENT_IMAGE_WEIGHT)
         tournament_type_result = calculate_tournament_type_scores_from_data(
-            tournament_type, tournament_results_with_winners, base_weights[tournament_type]
+            tournament_type, tournament_results_with_winners, type_weight
         )
 
         boss_round_performance = None
@@ -287,7 +292,6 @@ async def get_tournament_details(
             final_scores=tournament_type_result.scores,
             text_tournament_weight=base_weights[TournamentType.TEXT],
             image_tournament_weight=base_weights[TournamentType.IMAGE],
-            environment_tournament_weight=base_weights[TournamentType.ENVIRONMENT],
             boss_round_performance=boss_round_performance,
             sync_performance=sync_performance,
         )
@@ -312,11 +316,9 @@ async def get_latest_tournaments_details(
 
         latest_text = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.TEXT)
         latest_image = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.IMAGE)
-        latest_environment = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.ENVIRONMENT)
 
         text_details = None
         image_details = None
-        environment_details = None
 
         if latest_text:
             text_details = await get_tournament_details(latest_text.tournament_id, config)
@@ -324,15 +326,11 @@ async def get_latest_tournaments_details(
         if latest_image:
             image_details = await get_tournament_details(latest_image.tournament_id, config)
 
-        if latest_environment:
-            environment_details = await get_tournament_details(latest_environment.tournament_id, config)
-
         burn_data = await get_tournament_burn_details(config.psql_db)
 
         result = LatestTournamentsDetailsResponse(
             text=text_details,
             image=image_details,
-            environment=environment_details,
             burn_data=burn_data
         )
 
@@ -343,11 +341,9 @@ async def get_latest_tournaments_details(
         logger.info(
             f"Retrieved latest tournament details: text={latest_text.tournament_id if latest_text else None}, "
             f"image={latest_image.tournament_id if latest_image else None}, "
-            f"environment={latest_environment.tournament_id if latest_environment else None}, "
             f"burn_weight={burn_data.burn_weight:.4f}, "
             f"text_weight={burn_data.text_tournament_weight:.4f}, "
-            f"image_weight={burn_data.image_tournament_weight:.4f}, "
-            f"environment_weight={burn_data.environment_tournament_weight:.4f}"
+            f"image_weight={burn_data.image_tournament_weight:.4f}"
         )
         return result
 
@@ -447,22 +443,6 @@ async def get_next_tournament_dates(
             # Check if there's a pending tournament
             pending_tournaments = await tournament_sql.get_tournaments_with_status(TournamentStatus.PENDING, config.psql_db)
             pending_of_type = [t for t in pending_tournaments if t.tournament_type == tournament_type]
-            if (
-                tournament_type == TournamentType.ENVIRONMENT
-                and not tourn_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
-                and not pending_of_type
-            ):
-                scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
-                return NextTournamentInfo(
-                    tournament_type=tournament_type,
-                    next_start_date=None,
-                    tournament_status="paused",
-                    interval_hours=tourn_cst.TOURNAMENT_INTERVAL_HOURS,
-                    scheduled_day_of_week=scheduled_day,
-                    scheduled_hour=scheduled_hour,
-                    scheduled_minute=0,
-                )
-
             if pending_of_type:
                 # Get tournament-specific schedule
                 scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
@@ -522,7 +502,6 @@ async def get_next_tournament_dates(
         response = NextTournamentDates(
             text=await get_tournament_info_for_type(TournamentType.TEXT),
             image=await get_tournament_info_for_type(TournamentType.IMAGE),
-            environment=await get_tournament_info_for_type(TournamentType.ENVIRONMENT),
         )
 
         logger.info("Retrieved tournament info")
@@ -564,15 +543,13 @@ async def get_active_tournaments(
 
         text_info = await get_active_tournament_info(TournamentType.TEXT)
         image_info = await get_active_tournament_info(TournamentType.IMAGE)
-        environment_info = await get_active_tournament_info(TournamentType.ENVIRONMENT)
 
         logger.info(
             f"Retrieved active tournaments: text={text_info.tournament_id if text_info else None}, "
-            f"image={image_info.tournament_id if image_info else None}, "
-            f"environment={environment_info.tournament_id if environment_info else None}"
+            f"image={image_info.tournament_id if image_info else None}"
         )
 
-        return ActiveTournamentsResponse(text=text_info, image=image_info, environment=environment_info)
+        return ActiveTournamentsResponse(text=text_info, image=image_info)
 
     except Exception as e:
         logger.error(f"Error retrieving active tournaments: {str(e)}")

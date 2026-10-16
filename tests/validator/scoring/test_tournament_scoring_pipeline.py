@@ -8,10 +8,10 @@ import pytest
 
 import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName
-from validator.evaluation.pvp.models import PvPEnvironmentResult
-from validator.evaluation.pvp.models import PvPEvalMetadata
-from validator.evaluation.pvp.models import PvPGroupResults
-from validator.evaluation.pvp.models import PvPPairResult
+from core.models.pvp_models import PvPEnvironmentResult
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPGroupResults
+from core.models.pvp_models import PvPPairResult
 from validator.scoring.tournaments import accumulate_points
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.tournaments import compute_pvp_tournament_points
@@ -394,14 +394,12 @@ class TestTournamentScoresToWeights:
         assert tournament_scores_to_weights([], None, False) == {}
 
 
-# --- 1i: determine_boss_round_winner (environment = must win ALL) ---
+# --- 1i: determine_boss_round_winner (text/image comprehensive victory) ---
 
 
-class TestDetermineBossRoundWinnerEnv:
-    """Environment tournaments handled separately in determine_env_tournament_winner,
-    which requires DB access. TEXT/IMAGE go through determine_boss_round_winner,
-    which requires a comprehensive victory: the challenger may lose at most one
-    boss-round task. ENV uses a different path.
+class TestDetermineBossRoundWinner:
+    """TEXT/IMAGE boss rounds require a comprehensive victory: the challenger may lose at most one
+    boss-round task.
     """
 
     def test_empty_task_winners_boss_retains(self):
@@ -590,7 +588,7 @@ class TestCalculateTournamentTypeScores:
             ],
             winner_hotkey=None,
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_IMAGE_WEIGHT)
         scores_by_hotkey = {s.hotkey: s.score for s in result.scores}
 
         # Higher test_loss = better for env → Alice ranked 1st, Bob 2nd, Carol 3rd
@@ -617,7 +615,7 @@ class TestCalculateTournamentTypeScores:
             winner_hotkey=cts.EMISSION_BURN_HOTKEY,
             base_winner_hotkey="real_champ",
         )
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_IMAGE_WEIGHT)
         hotkeys_with_scores = {s.hotkey for s in result.scores}
 
         assert cts.EMISSION_BURN_HOTKEY not in hotkeys_with_scores
@@ -710,7 +708,7 @@ class TestCalculateTournamentTypeScores:
             winner_hotkey=None,
         )
 
-        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_ENVIRONMENT_WEIGHT)
+        result = calculate_tournament_type_scores_from_data(TournamentType.ENVIRONMENT, data, cts.TOURNAMENT_IMAGE_WEIGHT)
 
         assert result.scores == []
 
@@ -942,9 +940,8 @@ class TestGetBossRoundPairWeightsThirdPlace:
 
 
 class TestBossRoundEmissionsProductionPath:
-    def test_all_three_types_pay_only_boss_pair(self):
-        for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT]:
-            num_tasks = 3 if tournament_type == TournamentType.ENVIRONMENT else 1
+    def test_all_types_pay_only_boss_pair(self):
+        for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE]:
             earlier = [
                 TournamentRoundResult(
                     round_id="semi",
@@ -970,18 +967,16 @@ class TestBossRoundEmissionsProductionPath:
                 winner_hotkey=cts.EMISSION_BURN_HOTKEY,
                 base_winner_hotkey=BOSS,
                 earlier_rounds=earlier,
-                num_final_tasks=num_tasks,
+                num_final_tasks=1,
             )
 
-            text_w, image_w, env_w = get_tournament_weights_from_data(
+            text_w, image_w = get_tournament_weights_from_data(
                 data if tournament_type == TournamentType.TEXT else None,
                 data if tournament_type == TournamentType.IMAGE else None,
-                data if tournament_type == TournamentType.ENVIRONMENT else None,
             )
             weights = {
                 TournamentType.TEXT: text_w,
                 TournamentType.IMAGE: image_w,
-                TournamentType.ENVIRONMENT: env_w,
             }[tournament_type]
 
             assert weights == {BOSS: pytest.approx(0.8), CHALLENGER: pytest.approx(0.2)}
@@ -1006,7 +1001,7 @@ class TestBossRoundEmissionsProductionPath:
 
     def test_apply_tournament_weights_routes_champion_to_boost_runner_up_to_base(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
-        text_w, image_w, env_w = get_tournament_weights_from_data(data, None, None)
+        text_w, image_w = get_tournament_weights_from_data(data, None)
 
         hotkey_to_node_id = {BOSS: 0, CHALLENGER: 1, DAVE: 2}
         all_node_weights = [0.0, 0.0, 0.0]
@@ -1016,17 +1011,13 @@ class TestBossRoundEmissionsProductionPath:
         undistributed = apply_tournament_weights(
             text_w,
             image_w,
-            env_w,
             hotkey_to_node_id,
             all_node_weights,
             scaled_text_tournament_weight,
             0.0,
-            0.0,
             scaled_text_base_weight,
             0.0,
-            0.0,
             get_real_tournament_winner(data),
-            None,
             None,
         )
 
