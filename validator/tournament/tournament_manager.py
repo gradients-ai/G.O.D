@@ -30,7 +30,6 @@ from validator.db.sql.tournaments import activate_pending_tournament
 from validator.db.sql.tournaments import add_tournament_participants
 from validator.db.sql.tournaments import create_tournament
 from validator.db.sql.tournaments import eliminate_tournament_participants
-from validator.db.sql.tournaments import reactivate_tournament_participants
 from validator.db.sql.tournaments import enroll_tournament_participant_with_fee
 from validator.db.sql.tournaments import get_active_tournament
 from validator.db.sql.tournaments import get_latest_tournament_with_created_at
@@ -48,6 +47,7 @@ from validator.db.sql.tournaments import get_training_status_for_task
 from validator.db.sql.tournaments import insert_tournament_groups_with_members
 from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
+from validator.db.sql.tournaments import reactivate_tournament_participants
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_placements
@@ -1335,6 +1335,16 @@ async def process_pending_tournaments(config: Config) -> list[str]:
 
             for tournament in pending_tournaments:
                 with LogContext(tournament_id=tournament.tournament_id):
+                    if (
+                        tournament.tournament_type == TournamentType.ENVIRONMENT
+                        and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
+                    ):
+                        logger.info(
+                            f"Skipping pending environment tournament {tournament.tournament_id}; "
+                            f"environment tournaments are paused"
+                        )
+                        continue
+
                     logger.info(f"Processing pending tournament {tournament.tournament_id}")
 
                     num_participants = await populate_tournament_participants(tournament.tournament_id, config, config.psql_db)
@@ -1515,6 +1525,16 @@ async def process_active_tournaments(config: Config):
             active_tournaments = await get_tournaments_with_status(TournamentStatus.ACTIVE, config.psql_db)
             for tournament in active_tournaments:
                 with LogContext(tournament_id=tournament.tournament_id):
+                    if (
+                        tournament.tournament_type == TournamentType.ENVIRONMENT
+                        and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
+                    ):
+                        logger.info(
+                            f"Skipping active environment tournament {tournament.tournament_id}; "
+                            f"environment tournaments are paused"
+                        )
+                        continue
+
                     logger.info(f"Processing active tournament {tournament.tournament_id}")
                     await _alert_if_near_weekly_deadline(tournament, config)
                     rounds = await get_tournament_rounds(tournament.tournament_id, config.psql_db)
@@ -1828,7 +1848,7 @@ async def check_if_round_is_completed(round_data: TournamentRoundData, config: C
 async def process_tournament_scheduling(config: Config):
     """
     Process tournament scheduling to automatically start new tournaments when the previous ones finish.
-    Checks text, image, and environment tournaments independently.
+    Checks text, image, and environment tournaments independently (environment only when enabled).
 
     Tournaments only start during their scheduled day/hour window. If a scheduled start is missed,
     the system waits until the next week's scheduled time rather than starting late.
@@ -1837,8 +1857,10 @@ async def process_tournament_scheduling(config: Config):
 
     while True:
         try:
-            # Check all tournament types
-            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT]:
+            tournament_types = [TournamentType.TEXT, TournamentType.IMAGE]
+            if t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED:
+                tournament_types.append(TournamentType.ENVIRONMENT)
+            for tournament_type in tournament_types:
                 await check_and_start_tournament(tournament_type, config.psql_db, config)
 
         except Exception as e:
@@ -1852,6 +1874,10 @@ async def check_and_start_tournament(tournament_type: TournamentType, psql_db: P
     Check if we should start a new tournament of the given type.
     """
     with LogContext(tournament_type=tournament_type.value):
+        if tournament_type == TournamentType.ENVIRONMENT and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED:
+            logger.info("Environment tournaments are paused; not starting a new one")
+            return
+
         # Check if there's already an active tournament of this type
         active_tournament = await get_active_tournament(psql_db, tournament_type)
         if active_tournament:
