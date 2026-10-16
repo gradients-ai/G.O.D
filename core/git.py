@@ -12,8 +12,11 @@ def build_authenticated_git_url(repo_url: str, github_token: str | None) -> str:
     if not parsed.scheme or not parsed.netloc:
         return repo_url
 
+    # The token goes in the password field. As a bare username (empty password) git authenticates
+    # the info/refs retry but sends the follow-up POST git-upload-pack without credentials, which
+    # GitHub now rejects with 401 on some edges ("expected flush after ref listing").
     token = quote(github_token, safe="")
-    netloc = f"{token}@{parsed.netloc.split('@', 1)[-1]}"
+    netloc = f"x-access-token:{token}@{parsed.netloc.split('@', 1)[-1]}"
     return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
