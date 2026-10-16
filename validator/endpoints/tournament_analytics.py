@@ -447,6 +447,22 @@ async def get_next_tournament_dates(
             # Check if there's a pending tournament
             pending_tournaments = await tournament_sql.get_tournaments_with_status(TournamentStatus.PENDING, config.psql_db)
             pending_of_type = [t for t in pending_tournaments if t.tournament_type == tournament_type]
+            if (
+                tournament_type == TournamentType.ENVIRONMENT
+                and not tourn_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
+                and not pending_of_type
+            ):
+                scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
+                return NextTournamentInfo(
+                    tournament_type=tournament_type,
+                    next_start_date=None,
+                    tournament_status="paused",
+                    interval_hours=tourn_cst.TOURNAMENT_INTERVAL_HOURS,
+                    scheduled_day_of_week=scheduled_day,
+                    scheduled_hour=scheduled_hour,
+                    scheduled_minute=0,
+                )
+
             if pending_of_type:
                 # Get tournament-specific schedule
                 scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)

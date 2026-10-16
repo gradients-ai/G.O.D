@@ -341,8 +341,10 @@ Tournament system overview
 - The final-round `swe_infinite` task has a 2.5-hour training budget, one hour longer than standard environment tasks.
 - An environment boss-round challenger dethrones the champion when they have no boss-round losses and at least tie the champion on `swe_infinite`.
 - Typical cadence:
-  - environment tournaments start Mondays
-  - text/image tournaments start Thursdays
+  - environment tournaments are currently paused (no new starts; leftover env rows are skipped)
+  - text tournaments start Mondays at 11:00 UTC
+  - image tournaments start Mondays at 13:00 UTC
+- Environment emission share and related weight endpoints remain while tournaments are paused.
 - Fees are burned and can be queried from the public API.
 
 Tournament miner endpoint

@@ -13,6 +13,11 @@ TOURNAMENT_INTERVAL_HOURS = 120
 # results replace the standings: one interval plus roughly the run itself.
 RUNNER_UP_EMISSION_DAYS = 7
 
+# When False, the scheduler does not create new environment tournaments and the
+# pending/active loops skip leftover ENVIRONMENT rows. Emissions and public
+# environment weight fields stay in place until the full sunset lands.
+ENVIRONMENT_TOURNAMENTS_ENABLED = False
+
 # Tournament scheduling settings
 TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 9
