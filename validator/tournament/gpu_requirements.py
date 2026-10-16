@@ -3,7 +3,6 @@
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
 from core.models.task_models import TaskType
-from core.whitelisted_env_models import ENV_MODEL_SIZE_B
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
@@ -45,29 +44,6 @@ def get_tournament_gpu_requirement(
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X
 
-    if task_type == TaskType.ENVIRONMENTTASK and environment_count is not None:
-        if environment_count > 4 or training_start_point in {
-            TrainingStartPoint.FROM_SCRATCH,
-            TrainingStartPoint.PREVIOUS_WINNER,
-        }:
-            return GpuRequirement.H100_4X
-        if environment_count > 2:
-            return GpuRequirement.H100_2X
-
-        params_b = model_params_count / 1_000_000_000
-        if not params_b and model_id:
-            params_b = ENV_MODEL_SIZE_B.get(model_id, 0.0)
-            if not params_b:
-                try:
-                    params_b = get_model_num_params(model_id) / 1_000_000_000
-                except Exception:
-                    logger.warning(f"Could not determine environment model size for {model_id}, defaulting to H100_2X")
-                    return GpuRequirement.H100_2X
-        if not params_b:
-            return GpuRequirement.H100_2X
-        if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
-            return GpuRequirement.H100_1X
-        return GpuRequirement.H100_2X
     if task_type == TaskType.ENVIRONMENTTASK and gpu_multiplier is None:
         return GpuRequirement.H100_4X
 

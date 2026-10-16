@@ -1,14 +1,10 @@
 # Validator Evaluation Tests
 
-Tests for evaluation runtimes and PvP behavior.
+Tests for text/image evaluation runtimes, Basilica deployment tracking, and eval reconciliation.
 
 ## Contents
 
-- `test_local_evaluation_intercode.py`: local InterCode evaluation tests.
-- `test_local_swe_infinite_eval_tool.py`: local SWE Infinite smoke-test tool tests.
-- `test_pvp_bot.py`: PvP bot behavior tests.
-- `test_pvp_coverage_gaps.py`: PvP edge-case coverage tests.
-- `test_pvp_eval_integration.py`: PvP evaluation integration tests.
-- `test_pvp_game_instances.py`: PvP game instance tests.
-- `test_pvp_scoring.py`: PvP scoring tests.
+- `test_basilica_deployment_tracking.py`: Basilica eval deployment name resolution and readiness/delete lifecycle tests.
+- `test_eval_reconcile.py`: eval-deployment reconciler (orphan/ghost grace) tests.
+- `test_runpod_backend.py`: RunPod eval backend tests.
 - `__init__.py`: package marker.

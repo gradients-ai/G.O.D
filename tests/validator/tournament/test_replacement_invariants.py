@@ -1,15 +1,11 @@
-from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
-from uuid import uuid4
 
-from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from validator.tasks.models import EnvRawTask
 from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
 
@@ -133,44 +129,6 @@ async def test_image_replacement_filters_to_original_model_type(monkeypatch):
 
     created = await task_creator.create_new_task_of_same_type(image_task, MagicMock())
     assert created.task_id == "img-task"
-
-
-async def test_environment_replacement_preserves_identity_fields(monkeypatch):
-    original = EnvRawTask(
-        is_organic=False,
-        status=TaskStatus.PREP_TASK_FAILURE.value,
-        model_id="Qwen/Qwen3-8B",
-        ds="env_task_dummy_dataset",
-        account_id=uuid4(),
-        hours_to_complete=3.5,
-        created_at=datetime.utcnow(),
-        termination_at=datetime.utcnow(),
-        model_params_count=8_000_000_000,
-        training_start_point=TrainingStartPoint.PREVIOUS_WINNER,
-        environment_names=[EnvironmentName.SWE_INFINITE],
-        environment_weights=[],
-        eval_seed=123456,
-    )
-    _patch_replace_seams(monkeypatch, original)
-
-    env_create_mock = AsyncMock(return_value=SimpleNamespace(task_id="env-new", task_type=TaskType.ENVIRONMENTTASK))
-    monkeypatch.setattr(task_creator, "create_synthetic_env_task", env_create_mock)
-    monkeypatch.setattr(task_creator, "_get_text_models", lambda *_args, **_kwargs: MagicMock())
-    monkeypatch.setattr(task_creator, "_get_instruct_text_datasets", lambda *_args, **_kwargs: MagicMock())
-
-    new_task_id = await task_creator.replace_tournament_task(
-        "orig-task", "tourn", "tourn_round_004", None, "tourn_round_004_pair_001", MagicMock(), is_final_round=True
-    )
-
-    assert new_task_id == "env-new"
-    env_create_mock.assert_awaited_once()
-    kwargs = env_create_mock.call_args.kwargs
-    assert kwargs["model_id_override"] == original.model_id
-    assert kwargs["training_start_point"] == original.training_start_point
-    assert kwargs["environment_names_override"] == original.environment_names
-    assert kwargs["eval_seed_override"] == original.eval_seed
-    assert kwargs["hours_override"] == original.hours_to_complete
-    assert kwargs["num_environments"] == len(original.environment_names)
 
 
 async def test_replacement_detaches_original_instead_of_deleting(monkeypatch):

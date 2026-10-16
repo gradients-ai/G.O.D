@@ -3,7 +3,7 @@ Test separated burn dynamics functionality.
 
 This test file validates per-type tournament weight calculation and its application to
 node weights. There is no more time decay and no more burn: each type's pool (base +
-performance boost, capped) is normalized so text + image + environment always sum to
+performance boost, capped) is normalized so text + image always sum to
 exactly 1.0 - scaled up when their raw sum is below 1.0, not just scaled down when above.
 """
 
@@ -79,13 +79,10 @@ class TestSeparatedBurnDynamics:
         return TournamentBurnData(
             text_performance_diff=0.3,
             image_performance_diff=0.1,
-            environment_performance_diff=0.2,
             text_burn_proportion=0.3,
             image_burn_proportion=0.1,
-            environment_burn_proportion=0.0625,
             text_tournament_weight=0.35,
             image_tournament_weight=0.36,
-            environment_tournament_weight=0.15,
             burn_weight=0.14,
         )
 
@@ -123,40 +120,32 @@ class TestSeparatedBurnDynamics:
         """Test that separated burn data has correct structure."""
         assert sample_burn_data.text_performance_diff == 0.3
         assert sample_burn_data.image_performance_diff == 0.1
-        assert sample_burn_data.environment_performance_diff == 0.2
         assert sample_burn_data.text_burn_proportion == 0.3
         assert sample_burn_data.image_burn_proportion == 0.1
-        assert sample_burn_data.environment_burn_proportion == 0.0625
         assert sample_burn_data.text_tournament_weight == 0.35
         assert sample_burn_data.image_tournament_weight == 0.36
-        assert sample_burn_data.environment_tournament_weight == 0.15
 
     def test_apply_tournament_weights(self):
         """Test tournament weight application with separated burn dynamics."""
         text_tournament_weights = {"text_winner": 0.7, "shared": 0.3}
         image_tournament_weights = {"image_winner": 1.0}
-        environment_tournament_weights = {"env_winner": 1.0}
-        hotkey_to_node_id = {"text_winner": 0, "shared": 1, "image_winner": 2, "env_winner": 3}
-        all_node_weights = [0.0, 0.0, 0.0, 0.0]
+        hotkey_to_node_id = {"text_winner": 0, "shared": 1, "image_winner": 2}
+        all_node_weights = [0.0, 0.0, 0.0]
 
         undistributed_weight = apply_tournament_weights(
             text_tournament_weights,
             image_tournament_weights,
-            environment_tournament_weights,
             hotkey_to_node_id,
             all_node_weights,
             scaled_text_tournament_weight=0.35,
             scaled_image_tournament_weight=0.36,
-            scaled_environment_tournament_weight=0.2,
             scaled_text_base_weight=0.15,
             scaled_image_base_weight=0.125,
-            scaled_environment_base_weight=0.15,
             text_winner_hotkey="text_winner",
             image_winner_hotkey="image_winner",
-            environment_winner_hotkey="env_winner",
         )
 
-        assert all_node_weights == pytest.approx([0.245, 0.045, 0.36, 0.2])
+        assert all_node_weights == pytest.approx([0.245, 0.045, 0.36])
         assert undistributed_weight == pytest.approx(0.06)
 
     def test_node_weights_result_model(self):
@@ -232,16 +221,11 @@ class TestSeparatedBurnDynamics:
 
             assert result.text_performance_diff == 0.4
             assert result.image_performance_diff == 0.1
-            assert result.environment_performance_diff is None
             assert result.text_tournament_weight <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
             assert result.image_tournament_weight <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-            assert result.environment_tournament_weight == min(
-                cts.TOURNAMENT_ENVIRONMENT_WEIGHT,
-                cts.MAX_ENVIRONMENT_TOURNAMENT_WEIGHT,
-            )
-            assert result.burn_weight == pytest.approx(
-                1.0 - result.text_tournament_weight - result.image_tournament_weight - result.environment_tournament_weight
-            )
+            # No burn: text + image are normalized to fill the entire emission pie.
+            assert result.burn_weight == 0.0
+            assert result.text_tournament_weight + result.image_tournament_weight == pytest.approx(1.0)
 
     def test_participation_proportion_calculation(self):
         """Test that participation proportions are calculated correctly."""
@@ -293,8 +277,7 @@ class TestSeparatedBurnDynamics:
             # Build tournament audit data
             tournament_audit_data = TournamentAuditData()
             tournament_audit_data.text_tournament_weight = 0.4
-            tournament_audit_data.image_tournament_weight = 0.36
-            tournament_audit_data.environment_tournament_weight = 0.1
+            tournament_audit_data.image_tournament_weight = 0.46
             tournament_audit_data.burn_weight = 0.14
             tournament_audit_data.participants = []
 
@@ -316,24 +299,22 @@ class TestSeparatedBurnDynamics:
     @pytest.mark.asyncio
     async def test_no_champions_scales_anchor_split_up_to_one(self, mock_psql_db):
         """With no tournament history anywhere, each type falls back to its static anchor
-        (0.35/0.25/0.25 = 0.85 raw) - these must scale UP to sum to exactly 1.0, not leave
-        0.15 unspent as burn. Ratios between types are preserved."""
+        (0.35/0.25 = 0.60 raw) - these must scale UP to sum to exactly 1.0, not leave
+        0.40 unspent as burn. Ratios between types are preserved."""
         with (
             patch("validator.scoring.weights.get_latest_completed_tournament", return_value=None),
         ):
             result = await get_tournament_burn_details(mock_psql_db)
 
-            total = result.text_tournament_weight + result.image_tournament_weight + result.environment_tournament_weight
+            total = result.text_tournament_weight + result.image_tournament_weight
             assert total == pytest.approx(1.0)
             assert result.burn_weight == 0.0
-            # Ratios match the anchor split (0.35 : 0.25 : 0.25).
+            # Ratios match the anchor split (0.35 : 0.25).
             expected_ratio = cts.TOURNAMENT_TEXT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
             assert result.text_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
-            assert result.image_tournament_weight == pytest.approx(result.environment_tournament_weight, rel=1e-6)
             # Champion and runner-up pools are the same merged pool per type.
             assert result.text_base_weight == pytest.approx(result.text_tournament_weight)
             assert result.image_base_weight == pytest.approx(result.image_tournament_weight)
-            assert result.environment_base_weight == pytest.approx(result.environment_tournament_weight)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""generate_merged_repo_name / merge_publish_target + trainer/eval chain-depth parity.
+"""generate_merged_repo_name / merge_publish_target.
 
 When a LoRA wins a continuous task, model-prep flattens it and re-publishes a full-weight repo at
 this deterministic, opaque name so next week's base is a flat model (not a raw adapter). The name
@@ -89,10 +89,3 @@ class TestMergePublishTarget:
         model_arg = "org/still-an-adapter"
         target = ep.merge_publish_target(model_arg, None, was_lora=True, source_is_adapter=False)
         assert target == ep.generate_merged_repo_name(model_arg)
-
-
-def test_eval_chain_depth_matches_trainer_literal():
-    # The trainer's detect_and_merge_lora walks the adapter chain with a hardcoded range(10); the
-    # eval side uses MAX_CHAIN_DEPTH. They MUST agree or the two sides flatten to different models.
-    materialize = pytest.importorskip("validator.evaluation.pvp.materialize")
-    assert materialize.MAX_CHAIN_DEPTH == 10

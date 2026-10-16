@@ -8,18 +8,18 @@ from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
 
+from core.logging import get_logger
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
-from validator.transfers.models import BalanceEventResponse
-from validator.transfers.models import ColdkeyBalanceResponse
-from validator.transfers.models import TournamentFeesResponse
 from validator.db.sql.transfers import get_balance_events_by_coldkey
 from validator.db.sql.transfers import get_balance_events_by_tournament
 from validator.db.sql.transfers import get_coldkey_balance_by_address
 from validator.db.sql.transfers import refund_tournament_participants
 from validator.tournament import constants as t_cst
-from core.logging import get_logger
+from validator.transfers.models import BalanceEventResponse
+from validator.transfers.models import ColdkeyBalanceResponse
+from validator.transfers.models import TournamentFeesResponse
 
 
 logger = get_logger(__name__)
@@ -65,20 +65,18 @@ async def get_tournament_fees() -> TournamentFeesResponse:
     Get tournament participation fees for all tournament types
 
     Returns:
-        TournamentFeesResponse: Fee information for text, image, and environment tournaments
+        TournamentFeesResponse: Fee information for text and image tournaments
     """
     logger.info("Getting tournament participation fees")
 
     response = TournamentFeesResponse(
         text_tournament_fee_rao=t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO,
         image_tournament_fee_rao=t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO,
-        environment_tournament_fee_rao=t_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO,
     )
 
     logger.info(
         f"Returning tournament fees - Text: {response.text_tournament_fee_rao:,} RAO, "
-        f"Image: {response.image_tournament_fee_rao:,} RAO, "
-        f"Environment: {response.environment_tournament_fee_rao:,} RAO"
+        f"Image: {response.image_tournament_fee_rao:,} RAO"
     )
     return response
 
@@ -200,7 +198,7 @@ def factory_router() -> APIRouter:
         methods=["GET"],
         response_model=TournamentFeesResponse,
         summary="Get tournament participation fees",
-        description="Get participation fees for text, image, and environment tournaments",
+        description="Get participation fees for text and image tournaments",
         tags=["tournaments"],
     )
 

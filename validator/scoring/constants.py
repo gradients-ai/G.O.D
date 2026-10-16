@@ -26,14 +26,13 @@ TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
 # Uniform hard cap on any single tournament type's final (base + boost) weight.
 MAX_TEXT_TOURNAMENT_WEIGHT = 0.50
 MAX_IMAGE_TOURNAMENT_WEIGHT = 0.50
-MAX_ENVIRONMENT_TOURNAMENT_WEIGHT = 0.50
 
-# Anchor base split (text / image / env). These are the *neutral* bases used when
+# Anchor base split (text / image). These are the *neutral* bases used when
 # participation is balanced across the anchor ratio; they double as the fallback base
-# for a type with no completed-tournament history. Their sum is the balancer pool.
+# for a type with no completed-tournament history. Their sum is the balancer pool, which
+# the normalize-to-1 step then scales up to fill the entire emission pie.
 TOURNAMENT_TEXT_WEIGHT = 0.35
 TOURNAMENT_IMAGE_WEIGHT = 0.25
-TOURNAMENT_ENVIRONMENT_WEIGHT = 0.25
 
 # Participation-driven auto-balancer. The base split is recomputed each cycle from the
 # rolling entrant counts of the last N completed tournaments of each type: an oversubscribed

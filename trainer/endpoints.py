@@ -63,14 +63,14 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             task_id=req.training_data.task_id,
             hotkey=req.hotkey,
         )
-    except Exception as e:
+    except Exception:
         await log_task(task_id, hotkey, "Failed to clone repository")
         await complete_task(task_id, hotkey, success=False)
         logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
         return
 
     logger.info(
-        f"Repository cloned successfully",
+        "Repository cloned successfully",
         extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
     )
 
@@ -148,7 +148,6 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
             augmentation_config=req.augmentation_config,
             gpu_ids=req.gpu_ids,
             reward_functions=req.reward_functions,
-            env_configs=req.env_configs,
         )
         await complete_model_prep(req.task_id, success=True, result=result, hotkey=req.hotkey)
         return result

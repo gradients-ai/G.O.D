@@ -1,13 +1,13 @@
 import asyncio
 
+from core.logging import get_logger
 from validator.app.config import load_config
+from validator.tasks.details import try_db_connections
 from validator.tournament.tournament_manager import process_active_tournaments
 from validator.tournament.tournament_manager import process_pending_rounds
 from validator.tournament.tournament_manager import process_pending_tournaments
 from validator.tournament.tournament_manager import process_tournament_scheduling
 from validator.tournament.transfer_monitoring import transfer_monitoring_cycle
-from core.logging import get_logger
-from validator.tasks.details import try_db_connections
 
 
 logger = get_logger(__name__)

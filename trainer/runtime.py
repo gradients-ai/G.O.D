@@ -13,10 +13,6 @@ from docker.models.containers import Container
 
 import core.constants as core_cst
 import trainer.training_paths as train_paths
-from core.constants.docker import MCTS_API_DOCKER_IMAGE
-from core.constants.environments import ENVIRONMENT_CONFIGS
-from core.constants.environments import EnvironmentName
-from core.constants.environments import EvalType
 from core.logging import get_all_context_tags
 from core.logging import stream_container_logs
 from core.logging import stream_image_build_logs
@@ -28,15 +24,11 @@ from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.model_prep_models import BaselineStats
-from core.models.model_prep_models import EnvBaselineConfig
-from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskType
-from core.pvp.sglang_parsers import TOOL_CALL_PARSER_ENV
-from core.pvp.sglang_parsers import tool_call_parser_for
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
@@ -162,38 +154,6 @@ def delete_image_and_cleanup(tag: str):
         logger.info("Cleaned up dangling images and build cache.")
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
-
-
-async def wait_for_env_container_ip(environment_server_container) -> str:
-    ip_address = None
-    for _ in range(10):
-        environment_server_container.reload()
-        settings = environment_server_container.attrs.get("NetworkSettings", {})
-
-        # First, try to get IP from the specific internal_bridge network
-        networks = settings.get("Networks", {})
-        if cst.INTERNAL_BRIDGE_NAME in networks:
-            ip_address = networks[cst.INTERNAL_BRIDGE_NAME].get("IPAddress")
-        
-        # Fallback: try the direct field (for default bridge network)
-        if not ip_address:
-            ip_address = settings.get("IPAddress")
-
-        # Fallback: check any other network (shouldn't happen, but safer)
-        if not ip_address:
-            for net_name in networks:
-                ip_address = networks[net_name].get("IPAddress")
-                if ip_address:
-                    break
-
-        if ip_address:
-            break
-        await asyncio.sleep(0.5)
-
-    if not ip_address:
-        raise RuntimeError("Environment server started but could not retrieve internal IP.")
-
-    return ip_address
 
 
 async def run_trainer_container_image(
@@ -506,93 +466,6 @@ def run_downloader_container(
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
 
-def _env_baseline_runs_in_harness(env_name: EnvironmentName) -> bool:
-    """PvP envs baseline in-process inside model prep and need no sidecar."""
-    cfg = ENVIRONMENT_CONFIGS.get(env_name)
-    return cfg is not None and cfg.eval_type == EvalType.PVP
-
-
-def _env_config_uses_sidecar(cfg: EnvConfig) -> bool:
-    return bool(cfg.env_image)
-
-
-def _start_env_sidecars(
-    env_configs: dict[EnvironmentName, EnvConfig],
-    log_labels: dict[str, str] | None,
-) -> tuple[dict[EnvironmentName, str], list[Container]]:
-    """Start one sidecar per unique env_image. Returns (env_name→url mapping, container list).
-
-    Multiple environments may share the same image. We start one container per
-    unique image and map all environments using that image to the same sidecar
-    URL. In-harness envs are skipped entirely, and a sidecar that fails to start
-    degrades its envs to empty baseline stats instead of failing prep.
-    """
-    ensure_internal_network()
-    loop = asyncio.new_event_loop()
-
-    image_to_url: dict[tuple[str, tuple[str, ...]], str] = {}
-    containers: list[Container] = []
-
-    try:
-        for env_name, cfg in env_configs.items():
-            if _env_baseline_runs_in_harness(env_name):
-                continue
-            if not _env_config_uses_sidecar(cfg):
-                continue
-            image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
-            if image_key in image_to_url:
-                continue
-
-            try:
-                container = loop.run_until_complete(
-                    run_environment_server_container(
-                        env_name,
-                        log_labels or {},
-                        image=cfg.env_image,
-                        command=cfg.env_server_command,
-                    )
-                )
-                if container is None:
-                    continue
-                containers.append(container)
-                ip = loop.run_until_complete(_resolve_container_ip(container))
-            except Exception as exc:
-                logger.warning(
-                    f"Env sidecar for {cfg.env_image} failed to start ({exc}); "
-                    f"its envs will report empty baseline stats",
-                    extra=log_labels,
-                )
-                continue
-            url = f"http://{ip}:8000"
-            image_to_url[image_key] = url
-            logger.info(f"Env sidecar for {cfg.env_image}: {url}", extra=log_labels)
-    finally:
-        loop.close()
-
-    env_url_map: dict[EnvironmentName, str] = {}
-    for env_name, cfg in env_configs.items():
-        image_key = (cfg.env_image, tuple(cfg.env_server_command or []))
-        if image_key in image_to_url:
-            env_url_map[env_name] = image_to_url[image_key]
-
-    return env_url_map, containers
-
-
-async def _resolve_container_ip(container) -> str:
-    """Wait for a container to get an IP on the internal bridge network."""
-    await asyncio.sleep(2)
-    container.reload()
-    networks = container.attrs.get("NetworkSettings", {}).get("Networks", {})
-    if cst.INTERNAL_BRIDGE_NAME in networks:
-        ip = networks[cst.INTERNAL_BRIDGE_NAME].get("IPAddress")
-        if ip:
-            return ip
-    ip = container.attrs.get("NetworkSettings", {}).get("IPAddress")
-    if ip:
-        return ip
-    raise RuntimeError("Could not resolve container IP on internal bridge")
-
-
 def run_model_prep_container(
     task_id: str,
     model_id: str,
@@ -601,13 +474,11 @@ def run_model_prep_container(
     augmentation_config=None,
     gpu_ids: list[int] = [0],
     reward_functions=None,
-    env_configs: dict[EnvironmentName, EnvConfig] | None = None,
     log_labels: dict[str, str] | None = None,
 ) -> ModelPrepResponse:
     """Run model prep container: augment model + compute baseline stats.
-    Downloads model to cache via downloader first. For env tasks, starts env server sidecars."""
+    Downloads model to cache via downloader first."""
     client = docker.from_env()
-    env_containers: list[Container] = []
 
     # Download model to cache volume
     download_exit, download_err = run_downloader_container(
@@ -624,20 +495,6 @@ def run_model_prep_container(
 
     anonymous_model = get_anonymous_model_dir(model_id)
     model_cache_path = f"/cache/models/{anonymous_model}"
-
-    # For env tasks, start env server sidecars and build env_configs with URLs
-    env_configs_with_urls: dict[str, dict] | None = None
-    if env_configs:
-        env_url_map, env_containers = _start_env_sidecars(env_configs, log_labels)
-        env_configs_with_urls = {}
-        for env_name, cfg in env_configs.items():
-            env_configs_with_urls[env_name.value] = EnvBaselineConfig(
-                url=env_url_map.get(env_name),
-                task_id_min=cfg.task_id_min,
-                task_id_max=cfg.task_id_max,
-                num_episodes=cfg.num_episodes,
-                eval_payload_extra=cfg.eval_payload_extra,
-            ).model_dump()
 
     command = [
         "--model", model_cache_path,
@@ -663,30 +520,16 @@ def run_model_prep_container(
         ]
         command += ["--reward-functions", json.dumps(reward_functions_payload)]
 
-    if env_configs_with_urls:
-        command += ["--env-configs", json.dumps(env_configs_with_urls)]
-
     env = _hf_container_env()
-    if env_configs:
-        tool_call_parser = tool_call_parser_for(model_id, log_unmapped=False)
-        if tool_call_parser:
-            env[TOOL_CALL_PARSER_ENV] = tool_call_parser
-        if os.environ.get("MODEL_PREP_ENV_TIME_BUDGET_SECONDS"):
-            env["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"] = os.environ["MODEL_PREP_ENV_TIME_BUDGET_SECONDS"]
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None
     memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
 
-    # Env tasks need sglang (transformers v4); text tasks (incl. continuous-SFT custom-arch) need the
-    # transformers-v5 image. sglang and v5 can't coexist, so they're split into two images.
-    model_prep_image = (
-        cst.MODEL_PREP_ENV_DOCKER_IMAGE if task_type == TaskType.ENVIRONMENTTASK else cst.MODEL_PREP_TEXT_DOCKER_IMAGE
-    )
+    model_prep_image = cst.MODEL_PREP_TEXT_DOCKER_IMAGE
 
     try:
         logger.info(f"Starting model prep container: {container_name} (image={model_prep_image})", extra=log_labels)
-        network = cst.INTERNAL_BRIDGE_NAME if env_configs else None
         container = client.containers.run(
             image=model_prep_image,
             name=container_name,
@@ -700,7 +543,7 @@ def run_model_prep_container(
             )],
             mem_limit=memory_limit,
             nano_cpus=cpu_limit_nanocpus,
-            network=network,
+            network=None,
             remove=False,
             detach=True,
         )
@@ -725,66 +568,6 @@ def run_model_prep_container(
                 container.remove(force=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
-        for sidecar in env_containers:
-            try:
-                sidecar.stop()
-                sidecar.remove(force=True)
-            except Exception as env_cleanup_err:
-                logger.warning(f"Failed to cleanup env sidecar: {env_cleanup_err}", extra=log_labels)
-        if env_containers:
-            logger.info(f"Cleaned up {len(env_containers)} env sidecars", extra=log_labels)
-
-
-FALLBACK_ENV_IMAGES: dict[EnvironmentName, str] = {
-    EnvironmentName.GIN_RUMMY: MCTS_API_DOCKER_IMAGE,
-    EnvironmentName.LIARS_DICE: MCTS_API_DOCKER_IMAGE,
-    EnvironmentName.LEDUC_POKER: MCTS_API_DOCKER_IMAGE,
-    EnvironmentName.OTHELLO: MCTS_API_DOCKER_IMAGE,
-    EnvironmentName.CLOBBER: MCTS_API_DOCKER_IMAGE,
-    EnvironmentName.GOOFSPIEL: MCTS_API_DOCKER_IMAGE,
-}
-
-
-def _select_training_env_server_name(
-    environment_names: list[EnvironmentName] | None,
-) -> EnvironmentName | None:
-    for env_name in environment_names or []:
-        resolved = EnvironmentName(env_name)
-        cfg = ENVIRONMENT_CONFIGS.get(resolved)
-        if cfg is not None and cfg.eval_type == EvalType.PVP and cfg.env_image:
-            return resolved
-    return None
-
-
-async def run_environment_server_container(
-    environment_name: EnvironmentName | None,
-    log_labels: dict,
-    image: str | None = None,
-    command: list[str] | None = None,
-) -> Container | None:
-    client = docker.from_env()
-
-    ensure_internal_network()
-
-    env_config = ENVIRONMENT_CONFIGS.get(environment_name) if environment_name else None
-    resolved_image = image or (env_config.env_image if env_config else None) or FALLBACK_ENV_IMAGES.get(environment_name)
-    resolved_command = command if command is not None else (env_config.env_server_command if env_config else None)
-    if resolved_image is None:
-        logger.warning(f"No image for environment '{environment_name}', cannot start sidecar")
-        return None
-
-    container_name = f"environment-server-{uuid.uuid4().hex[:8]}"
-    logger.info(f"Starting env server container: {container_name} (image={resolved_image})", extra=log_labels)
-    container = await asyncio.to_thread(
-        client.containers.run,
-        image=resolved_image,
-        name=container_name,
-        command=resolved_command,
-        detach=True,
-        labels=log_labels,
-        network=cst.INTERNAL_BRIDGE_NAME,
-    )
-    return container
 
 
 async def upload_repo_to_hf(
@@ -987,27 +770,13 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
         await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
 
-        env_urls = []
         env_server_url_str = None
         if task_type == TaskType.ENVIRONMENTTASK:
-            env_name = _select_training_env_server_name(task.training_data.dataset_type.environment_names)
-            if env_name is None:
-                logger.info("Skipping env server containers; no training sidecar environments configured", extra=log_labels)
-                await log_task(training_data.task_id, task.hotkey, "Skipping Environment Servers.")
-            else:
-                logger.info("Running Environment Server Containers", extra=log_labels)
-                await log_task(training_data.task_id, task.hotkey, "Starting Environment Servers...")
-                for gpu in task.gpu_ids:
-                    environment_server_container = await run_environment_server_container(
-                        env_name, log_labels
-                    )
-                    if environment_server_container is None:
-                        raise RuntimeError(f"Unable to start environment server for {env_name}")
-                    env_server_containers.append(environment_server_container)
-                    ip_address = await wait_for_env_container_ip(environment_server_container)
-                    env_urls.append(f"http://{ip_address}:8000")
-                env_server_url_str = ",".join(env_urls)
-                await log_task(training_data.task_id, task.hotkey, "Environment servers ready.")
+            logger.warning(
+                "Environment tasks are no longer supported; skipping environment server setup",
+                extra=log_labels,
+            )
+            await log_task(training_data.task_id, task.hotkey, "Environment tasks are no longer supported; skipping.")
 
         if model_prep_ran:
             model_for_container = get_anonymous_model_dir(training_data.model)

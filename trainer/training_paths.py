@@ -4,7 +4,6 @@ from pathlib import Path
 import trainer.constants as train_cst
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
-from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
@@ -52,9 +51,7 @@ def get_axolotl_dataset_paths(dataset_filename: str) -> tuple[str, str]:
 
 def get_axolotl_base_config_path(dataset_type) -> str:
     root_dir = Path(train_cst.AXOLOTL_DIRECTORIES["root"])
-    if isinstance(dataset_type, EnvironmentDatasetType):
-        return str(root_dir / "base_environment.yml")
-    elif isinstance(dataset_type, (InstructTextDatasetType, DpoDatasetType, ChatTemplateDatasetType)):
+    if isinstance(dataset_type, (InstructTextDatasetType, DpoDatasetType, ChatTemplateDatasetType)):
         return str(root_dir / "base.yml")
     elif isinstance(dataset_type, GrpoDatasetType):
         return str(root_dir / "base_grpo.yml")
