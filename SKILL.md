@@ -160,6 +160,7 @@ Minimal workflow for text fine-tuning
 2. Choose a base model repo, usually a Hugging Face model ID.
 3. Choose a dataset source:
    - Hugging Face dataset repo via ds_repo and file_format=hf
+     (code-free repos only: Parquet, JSON/JSONL, CSV or Arrow files; repos with a Python loading script are rejected with 400)
    - Prebuilt dataset URLs via create_custom_dataset_text or create_custom_dataset_chat with file_format=s3
 4. Call the price check endpoint.
 5. Create the task.

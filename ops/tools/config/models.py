@@ -35,7 +35,7 @@ class ValidatorConfig(BaseConfig):
     gpu_server: str | None = None
     localhost: bool = False
     env_file: str = ".vali.env"
-    hf_datasets_trust_remote_code = True
+    hf_datasets_trust_remote_code = False
     s3_region: str = "us-east-1"
     refresh_nodes: bool = True
     database_url: str | None = None

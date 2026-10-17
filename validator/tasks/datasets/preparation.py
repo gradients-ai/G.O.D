@@ -25,6 +25,7 @@ from core.models.dataset_models import ImageTextPair
 from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache
+from validator.tasks.datasets.hub_safety import resolve_code_free_hub_dataset
 from validator.tasks.details import save_json_to_temp_file
 from validator.tasks.details import upload_file_to_minio
 from validator.tasks.models import AnyTextTypeRawTask
@@ -159,8 +160,9 @@ async def download_and_load_dataset(
     if file_format == FileFormat.S3:
         dataset = await load_dataset_from_s3(dataset_name, max_file_size_bytes)
     else:
-        config_name = get_default_dataset_config(dataset_name)
-        dataset = load_dataset(dataset_name, config_name, trust_remote_code=True)
+        revision = resolve_code_free_hub_dataset(dataset_name)
+        config_name = get_default_dataset_config(dataset_name, revision=revision)
+        dataset = load_dataset(dataset_name, config_name, revision=revision, trust_remote_code=False)
 
     if isinstance(dataset, DatasetDict):
         combined_dataset = concatenate_datasets([split for split in dataset.values()])

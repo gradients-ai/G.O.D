@@ -17,6 +17,8 @@ from core.models.payload_models import NewTaskRequestDPO
 from core.models.payload_models import NewTaskRequestGrpo
 from core.models.payload_models import NewTaskRequestInstructText
 from validator.evaluation.dataset_configs import get_default_dataset_config
+from validator.tasks.datasets.hub_safety import ScriptedDatasetError
+from validator.tasks.datasets.hub_safety import resolve_code_free_hub_dataset
 
 
 logger = get_logger(__name__)
@@ -69,16 +71,17 @@ def _hf_column_names_from_features_or_stream(dataset_id: str) -> set[str]:
     Prefer dataset schema from the builder (no full dataset materialization).
     If features are missing (common for some repos), fall back to streaming one row.
     """
-    config_name = get_default_dataset_config(dataset_id)
+    revision = resolve_code_free_hub_dataset(dataset_id)
+    config_name = get_default_dataset_config(dataset_id, revision=revision)
 
-    builder = load_dataset_builder(dataset_id, name=config_name, trust_remote_code=True)
+    builder = load_dataset_builder(dataset_id, name=config_name, revision=revision, trust_remote_code=False)
     if builder.info and builder.info.features:
         feat = builder.info.features
         names = list(feat.keys())
         if names:
             return set(names)
 
-    dsd = load_dataset(dataset_id, config_name, streaming=True, trust_remote_code=True)
+    dsd = load_dataset(dataset_id, config_name, revision=revision, streaming=True, trust_remote_code=False)
 
     if isinstance(dsd, DatasetDict):
         errors: list[str] = []
@@ -106,13 +109,16 @@ def _hf_column_names_from_features_or_stream(dataset_id: str) -> set[str]:
 async def _hf_column_names_best_effort(dataset_id: str) -> set[str] | None:
     """
     Resolve HF column names when the Hub is reachable. Returns None on timeout or any error
-    so task creation can proceed (validation is best-effort for HF).
+    so task creation can proceed (validation is best-effort for HF). Script-based datasets are
+    always rejected.
     """
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_hf_column_names_from_features_or_stream, dataset_id),
             timeout=_HF_COLUMN_CHECK_TIMEOUT_SEC,
         )
+    except ScriptedDatasetError:
+        raise
     except asyncio.TimeoutError:
         logger.warning(
             "HF dataset column check timed out after %ss for %r; skipping column validation",
@@ -127,6 +133,15 @@ async def _hf_column_names_best_effort(dataset_id: str) -> set[str] | None:
             exc,
         )
         return None
+
+
+async def _reject_scripted_hf_dataset_best_effort(dataset_id: str) -> None:
+    try:
+        await asyncio.wait_for(asyncio.to_thread(resolve_code_free_hub_dataset, dataset_id), timeout=_HF_COLUMN_CHECK_TIMEOUT_SEC)
+    except ScriptedDatasetError:
+        raise
+    except Exception as exc:
+        logger.warning("HF dataset script check failed for %r (%s); deferring to dataset preparation", dataset_id, exc)
 
 
 def _column_names_from_json_prefix(text: str) -> set[str]:
@@ -211,13 +226,16 @@ async def validate_dataset_columns(
     """
     Ensure requested column names exist (S3/JSON: from a streamed prefix; HF: from builder
     features or one streaming row). Hugging Face checks are best-effort: on timeout or any
-    hub error, validation is skipped and the request is not rejected.
+    hub error, validation is skipped and the request is not rejected. Hugging Face datasets that
+    ship a Python loading script are always rejected.
     """
     cols = _normalize_column_names(requested_columns)
+    dataset_ref = dataset_ref.strip()
     if not cols:
+        if dataset_ref and file_format != FileFormat.S3:
+            await _reject_scripted_hf_dataset_best_effort(dataset_ref)
         return
 
-    dataset_ref = dataset_ref.strip()
     if not dataset_ref:
         raise ValueError("Dataset reference is empty.")
 

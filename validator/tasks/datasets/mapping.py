@@ -14,6 +14,7 @@ from validator.tasks.datasets.constants import STANDARD_INPUT_COLUMN
 from validator.tasks.datasets.constants import STANDARD_INSTRUCT_COLUMN
 from validator.tasks.datasets.constants import STANDARD_OUTPUT_COLUMN
 from validator.tasks.datasets.constants import STANDARD_SYSTEM_COLUMN
+from validator.tasks.datasets.hub_safety import resolve_code_free_hub_dataset
 from validator.tasks.models import AnyTextTypeRawTask
 
 
@@ -227,8 +228,9 @@ async def load_and_merge_multiple_datasets(dataset_ids: list[str], task: AnyText
     primary_columns = get_task_columns(task)
 
     try:
-        config_name = get_default_dataset_config(primary_id)
-        dataset = load_dataset(primary_id, config_name, trust_remote_code=True)
+        revision = resolve_code_free_hub_dataset(primary_id)
+        config_name = get_default_dataset_config(primary_id, revision=revision)
+        dataset = load_dataset(primary_id, config_name, revision=revision, trust_remote_code=False)
 
         if isinstance(dataset, dict):
             if "train" in dataset:
@@ -289,11 +291,12 @@ async def load_and_merge_multiple_datasets(dataset_ids: list[str], task: AnyText
                         raise
 
                 columns = list(column_mapping.values())
-                config_name = get_default_dataset_config(dataset_id)
+                revision = resolve_code_free_hub_dataset(dataset_id)
+                config_name = get_default_dataset_config(dataset_id, revision=revision)
                 logger.info(f"Loading {dataset_id} with config {config_name} and columns {columns}")
                 logger.info(f"Column mapping: {column_mapping}")
 
-                dataset = load_dataset(dataset_id, config_name, trust_remote_code=True)
+                dataset = load_dataset(dataset_id, config_name, revision=revision, trust_remote_code=False)
 
                 # Handle DatasetDict vs Dataset
                 if hasattr(dataset, "column_names") and not isinstance(dataset, dict):
