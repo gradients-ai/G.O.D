@@ -6,10 +6,10 @@ from core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def get_default_dataset_config(dataset_name: str) -> str | None:
+def get_default_dataset_config(dataset_name: str, revision: str | None = None) -> str | None:
     try:
         logger.info(dataset_name)
-        config_names = get_dataset_config_names(dataset_name)
+        config_names = get_dataset_config_names(dataset_name, revision=revision, trust_remote_code=False)
     except Exception:
         return None
     if config_names:
