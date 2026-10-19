@@ -200,8 +200,10 @@ FINAL_ROUND_OVERSAMPLED_TASKS = 0
 # for carry-forward routing) -> seed model, from which eval reads the tokenizer + chat template.
 # Seeds must be standard architectures: eval and model-prep load miner-controlled repos with
 # trust_remote_code off, so a custom-arch seed would not load.
+# New slug on purpose: the retired `qwen` row still holds the old Qwen3-8B-Base winner, and
+# reusing that slug would resume it. A slug with no continuous_sft_state row starts at this seed, chunk 0.
 CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
-    "qwen3-14b": "Qwen/Qwen3-14B",
+    "qwen3-8b": "Qwen/Qwen3-8B-Base",
 }
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
 

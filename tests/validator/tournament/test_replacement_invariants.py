@@ -94,7 +94,7 @@ async def test_continuous_sft_replacement_recreates_the_same_lineage(monkeypatch
         task_id="orig-task",
         task_type=TaskType.CHATTASK,
         training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-        ds="continuous-sft:qwen3-14b:chunk-00003",
+        ds="continuous-sft:qwen3-8b:chunk-00003",
         status=TaskStatus.PREP_TASK_FAILURE.value,
         model_id="miner-org/carried-winner",
         model_params_count=0,
@@ -112,8 +112,8 @@ async def test_continuous_sft_replacement_recreates_the_same_lineage(monkeypatch
     same_type_mock.assert_not_awaited()
     assert new_task_id == "new-task"
     _, lineage, seed_model = recreate_mock.call_args.args
-    assert lineage == "qwen3-14b"
-    assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen3-14b"]
+    assert lineage == "qwen3-8b"
+    assert seed_model == t_cst.CONTINUOUS_SFT_LINEAGES["qwen3-8b"]
 
 
 async def test_image_replacement_filters_to_original_model_type(monkeypatch):

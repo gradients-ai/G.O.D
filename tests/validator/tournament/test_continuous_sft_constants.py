@@ -35,9 +35,10 @@ class TestFinalRoundComposition:
 
 
 class TestLineages:
-    def test_lineage_is_qwen3_14b_with_expected_seed(self):
+    def test_lineage_is_qwen3_8b_with_expected_seed(self):
         # Seed-repo typo would silently train the wrong base every week.
-        assert t_cst.CONTINUOUS_SFT_LINEAGES == {"qwen3-14b": "Qwen/Qwen3-14B"}
+        # Slug must stay off the retired `qwen` row, which still holds that chain's winner.
+        assert t_cst.CONTINUOUS_SFT_LINEAGES == {"qwen3-8b": "Qwen/Qwen3-8B-Base"}
 
     def test_training_hours_fallback_is_four(self):
         # Initial/fallback only — post-prep the throughput pipeline resizes the budget.
@@ -83,7 +84,7 @@ class TestIsContinuousSftTask:
 
 class TestSeedRouting:
     def test_seed_repo_for_ds_pins_the_lineage_seed(self):
-        assert t_cst.continuous_sft_seed_repo_for_ds(t_cst.continuous_sft_ds("qwen3-14b", "x")) == "Qwen/Qwen3-14B"
+        assert t_cst.continuous_sft_seed_repo_for_ds(t_cst.continuous_sft_ds("qwen3-8b", "x")) == "Qwen/Qwen3-8B-Base"
 
     def test_seed_repo_none_for_non_continuous_ds(self):
         assert t_cst.continuous_sft_seed_repo_for_ds("tatsu-lab/alpaca") is None
