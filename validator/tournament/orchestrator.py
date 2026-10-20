@@ -804,21 +804,45 @@ def _trainer_has_sufficient_gpus(trainer_gpus: list[GPUInfo], requirement: GpuRe
     Returns:
         list[int]: List of GPU IDs needed for the requirement, empty list if insufficient
     """
-    available_h100s = [gpu for gpu in trainer_gpus if gpu.available and gpu.gpu_type == GPUType.H100]
-    available_a100s = [gpu for gpu in trainer_gpus if gpu.available and gpu.gpu_type == GPUType.A100]
+    gpu_type = GPUType.A100 if requirement == GpuRequirement.A100 else GPUType.H100
+    available_ids = [gpu.gpu_id for gpu in trainer_gpus if gpu.available and gpu.gpu_type == gpu_type]
+    return _select_paired_gpu_ids(available_ids, requirement.gpu_count)
 
-    if requirement == GpuRequirement.A100:
-        return [available_a100s[0].gpu_id] if len(available_a100s) >= 1 else []
-    elif requirement == GpuRequirement.H100_1X:
-        return [available_h100s[0].gpu_id] if len(available_h100s) >= 1 else []
-    elif requirement == GpuRequirement.H100_2X:
-        return [gpu.gpu_id for gpu in available_h100s[:2]] if len(available_h100s) >= 2 else []
-    elif requirement == GpuRequirement.H100_4X:
-        return [gpu.gpu_id for gpu in available_h100s[:4]] if len(available_h100s) >= 4 else []
-    elif requirement == GpuRequirement.H100_8X:
-        return [gpu.gpu_id for gpu in available_h100s[:8]] if len(available_h100s) >= 8 else []
 
-    return []
+def _select_paired_gpu_ids(available_ids: list[int], count: int) -> list[int]:
+    """
+    Pick `count` GPU IDs, keeping adjacent pairs (2k, 2k+1) together.
+
+    PCIe trainers bridge GPUs with NVLink in adjacent pairs (0-1, 2-3, ...); a
+    cross-pair copy runs ~7x slower. Multi-GPU jobs take whole free pairs first,
+    and single-GPU jobs take a GPU whose partner is already busy so free pairs
+    stay intact. On trainers without bridges the choice costs nothing.
+
+    Returns:
+        list[int]: Sorted GPU IDs, empty list if fewer than `count` are free
+    """
+    if len(available_ids) < count:
+        return []
+
+    free = sorted(available_ids)
+    free_set = set(free)
+    orphans = [gpu_id for gpu_id in free if gpu_id ^ 1 not in free_set]
+    whole_pairs = [(gpu_id, gpu_id + 1) for gpu_id in free if gpu_id % 2 == 0 and gpu_id + 1 in free_set]
+
+    chosen: list[int] = []
+    for pair in whole_pairs:
+        if len(chosen) + 2 > count:
+            break
+        chosen.extend(pair)
+
+    # Fill any remainder (odd counts, or not enough whole pairs) from orphans before splitting a pair.
+    for gpu_id in orphans + free:
+        if len(chosen) == count:
+            break
+        if gpu_id not in chosen:
+            chosen.append(gpu_id)
+
+    return sorted(chosen)
 
 
 async def monitor_training_tasks(config: Config):
