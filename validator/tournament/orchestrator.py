@@ -805,18 +805,51 @@ def _trainer_has_sufficient_gpus(trainer_gpus: list[GPUInfo], requirement: GpuRe
         list[int]: List of GPU IDs needed for the requirement, empty list if insufficient
     """
     gpu_type = GPUType.A100 if requirement == GpuRequirement.A100 else GPUType.H100
-    available_ids = [gpu.gpu_id for gpu in trainer_gpus if gpu.available and gpu.gpu_type == gpu_type]
-    return _select_paired_gpu_ids(available_ids, requirement.gpu_count)
+    typed_gpus = [gpu for gpu in trainer_gpus if gpu.gpu_type == gpu_type]
+    available_ids = [gpu.gpu_id for gpu in typed_gpus if gpu.available]
+    return _select_grouped_gpu_ids(available_ids, _nvlink_groups(typed_gpus), requirement.gpu_count)
 
 
-def _select_paired_gpu_ids(available_ids: list[int], count: int) -> list[int]:
+def _nvlink_groups(gpus: list[GPUInfo]) -> list[list[int]]:
     """
-    Pick `count` GPU IDs, keeping adjacent pairs (2k, 2k+1) together.
+    Split a trainer's GPUs into NVLink-connected groups.
 
-    PCIe trainers bridge GPUs with NVLink in adjacent pairs (0-1, 2-3, ...); a
-    cross-pair copy runs ~7x slower. Multi-GPU jobs take whole free pairs first,
-    and single-GPU jobs take a GPU whose partner is already busy so free pairs
-    stay intact. On trainers without bridges the choice costs nothing.
+    Uses the topology the trainer reports. Trainers on older builds report no
+    topology (nvlink_peers is None); for those, assume the adjacent-pair bridging
+    (0-1, 2-3, ...) common on PCIe boxes, which is harmless where it is wrong.
+    """
+    gpu_ids = sorted(gpu.gpu_id for gpu in gpus)
+    if any(gpu.nvlink_peers is None for gpu in gpus):
+        return [[gpu_id for gpu_id in gpu_ids if gpu_id // 2 == pair] for pair in sorted({gpu_id // 2 for gpu_id in gpu_ids})]
+
+    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus}
+    groups: list[list[int]] = []
+    seen: set[int] = set()
+    for start in gpu_ids:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack, group = [start], []
+        while stack:
+            gpu_id = stack.pop()
+            group.append(gpu_id)
+            for peer in peers[gpu_id]:
+                if peer in peers and peer not in seen:
+                    seen.add(peer)
+                    stack.append(peer)
+        groups.append(sorted(group))
+    return groups
+
+
+def _select_grouped_gpu_ids(available_ids: list[int], groups: list[list[int]], count: int) -> list[int]:
+    """
+    Pick `count` GPU IDs, keeping NVLink groups together.
+
+    Fully connected (SXM / NVSwitch) and unlinked trainers make every choice
+    equivalent, so they get first-fit. Partially linked trainers (PCIe with
+    NVLink bridges, where a cross-group copy runs ~7x slower) give multi-GPU jobs
+    whole free groups first, and give single-GPU jobs a GPU from an already
+    broken group so free groups stay intact.
 
     Returns:
         list[int]: Sorted GPU IDs, empty list if fewer than `count` are free
@@ -825,17 +858,20 @@ def _select_paired_gpu_ids(available_ids: list[int], count: int) -> list[int]:
         return []
 
     free = sorted(available_ids)
+    if len(groups) <= 1 or all(len(group) == 1 for group in groups):
+        return free[:count]
+
     free_set = set(free)
-    orphans = [gpu_id for gpu_id in free if gpu_id ^ 1 not in free_set]
-    whole_pairs = [(gpu_id, gpu_id + 1) for gpu_id in free if gpu_id % 2 == 0 and gpu_id + 1 in free_set]
+    whole_free_groups = [group for group in groups if all(gpu_id in free_set for gpu_id in group)]
+    in_whole_group = {gpu_id for group in whole_free_groups for gpu_id in group}
+    orphans = [gpu_id for gpu_id in free if gpu_id not in in_whole_group]
 
     chosen: list[int] = []
-    for pair in whole_pairs:
-        if len(chosen) + 2 > count:
-            break
-        chosen.extend(pair)
+    for group in whole_free_groups:
+        if len(chosen) + len(group) <= count:
+            chosen.extend(group)
 
-    # Fill any remainder (odd counts, or not enough whole pairs) from orphans before splitting a pair.
+    # Fill any remainder from orphans before splitting a free group.
     for gpu_id in orphans + free:
         if len(chosen) == count:
             break

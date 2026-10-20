@@ -53,7 +53,7 @@ gpu = [
     "transformers==4.46.2",
     "peft",
     "Pillow==11.1.0",
-    "nvidia-ml-py3",
+    "nvidia-ml-py==13.615.71",
     "textstat==0.7.7",
     "langcheck==0.9.0",
     "detoxify",

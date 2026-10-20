@@ -33,3 +33,7 @@ class GPUInfo(BaseModel):
         description="Form factor / interconnect: SXM, PCIe, NVL, or unknown",
     )
     nvlink: bool = Field(default=False, description="True if any NVLink link is enabled on this GPU")
+    nvlink_peers: list[int] | None = Field(
+        default=None,
+        description="GPU IDs this GPU reaches over NVLink; None if the trainer cannot report topology",
+    )

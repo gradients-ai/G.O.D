@@ -948,8 +948,8 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
             insert_query = f"""
                 INSERT INTO {cst.TRAINERS_GPUS_TABLE}
                 ({cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL},
-                 {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK})
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                 {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}, {cst.NVLINK_PEERS})
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 ON CONFLICT ({cst.TRAINER_IP}, {cst.GPU_ID}) DO UPDATE SET
                     {cst.GPU_TYPE} = EXCLUDED.{cst.GPU_TYPE},
                     {cst.VRAM_GB} = EXCLUDED.{cst.VRAM_GB},
@@ -957,6 +957,7 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
                     {cst.PRODUCT_NAME} = EXCLUDED.{cst.PRODUCT_NAME},
                     {cst.INTERCONNECT} = EXCLUDED.{cst.INTERCONNECT},
                     {cst.NVLINK} = EXCLUDED.{cst.NVLINK},
+                    {cst.NVLINK_PEERS} = EXCLUDED.{cst.NVLINK_PEERS},
                     {cst.UPDATED_AT} = CURRENT_TIMESTAMP
             """
 
@@ -975,6 +976,7 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
                     gpu_info.product_name,
                     gpu_info.interconnect.value if hasattr(gpu_info.interconnect, "value") else gpu_info.interconnect,
                     gpu_info.nvlink,
+                    gpu_info.nvlink_peers,
                 )
 
             logger.info(f"Added {len(gpu_infos)} GPUs for trainer {trainer_ip}")
@@ -998,7 +1000,7 @@ async def get_trainers(psql_db: PSQLDB) -> list[TrainerInfo]:
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL}, {cst.UPDATED_AT},
-                   {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}
+                   {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}, {cst.NVLINK_PEERS}
             FROM {cst.TRAINERS_GPUS_TABLE}
             ORDER BY {cst.TRAINER_IP}, {cst.GPU_ID}
         """
@@ -1032,6 +1034,7 @@ async def get_trainers(psql_db: PSQLDB) -> list[TrainerInfo]:
                     product_name=row[cst.PRODUCT_NAME],
                     interconnect=interconnect,
                     nvlink=bool(row[cst.NVLINK]),
+                    nvlink_peers=list(row[cst.NVLINK_PEERS]) if row[cst.NVLINK_PEERS] is not None else None,
                 )
             )
 
