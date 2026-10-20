@@ -23,22 +23,22 @@ PVP_PERF_DIFF_SLOPE = 0.125
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
 TOURNAMENT_PAID_RANKS = 3
 TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
-# Uniform hard cap on any single tournament type's final (base + boost) weight.
-MAX_TEXT_TOURNAMENT_WEIGHT = 0.50
-MAX_IMAGE_TOURNAMENT_WEIGHT = 0.50
+# Guaranteed minimum share per tournament type (text / image). Each type always receives at
+# least this much of the emission pie; the remainder (EMISSION_FLEX_POOL) is split between the
+# types by participation. Also the fallback split's floor when a type has no completed history.
+TOURNAMENT_TEXT_WEIGHT = 0.50
+TOURNAMENT_IMAGE_WEIGHT = 0.30
+EMISSION_FLEX_POOL = 1.0 - (TOURNAMENT_TEXT_WEIGHT + TOURNAMENT_IMAGE_WEIGHT)  # 0.20
 
-# Anchor base split (text / image). These are the *neutral* bases used when
-# participation is balanced across the anchor ratio; they double as the fallback base
-# for a type with no completed-tournament history. Their sum is the balancer pool, which
-# the normalize-to-1 step then scales up to fill the entire emission pie.
-TOURNAMENT_TEXT_WEIGHT = 0.35
-TOURNAMENT_IMAGE_WEIGHT = 0.25
+# Hard cap on any single tournament type's final (base + boost) weight: its minimum plus the
+# whole flex pool, i.e. the most participation alone can ever hand it.
+MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.70
+MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.50
 
-# Participation-driven auto-balancer. The base split is recomputed each cycle from the
-# rolling entrant counts of the last N completed tournaments of each type: an oversubscribed
-# type sheds weight (down to the floor) toward a starved one. See validator.scoring.emission_balance.
-EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = static anchors, higher = sharper reaction
-EMISSION_BALANCE_FLOOR = 0.05            # no type's base may drop below this
+# Participation-driven auto-balancer for the flex pool. Each cycle the flex pool is split from the
+# rolling entrant counts of the last N completed tournaments of each type: an oversubscribed type
+# cedes flex toward a starved one. Minimums are never touched. See validator.scoring.emission_balance.
+EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split at the minimums' ratio, higher = sharper reaction
 # The window is LAGGED by one tournament: the most recent completed-or-active tournament (position
 # -1) is excluded, and the average is taken over positions -2..-5. This locks the split a cohort
 # competes under before they enter, so it can't move against them (rug them) when their tournament

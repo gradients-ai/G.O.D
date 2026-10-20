@@ -453,12 +453,12 @@ Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
 The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
 
-Anchor base and cap weights in `validator/scoring/constants.py`. The base per type is adjusted from this anchor by a participation-driven balancer (an oversubscribed type sheds weight, down to `EMISSION_BALANCE_FLOOR`, toward a starved one — see `validator/scoring/emission_balance.py`), and the resulting per-type pools are always scaled so text + image sum to exactly 1.0 (scaled up if their raw sum is below 1.0, not just capped when above):
+Weights are set in `validator/scoring/constants.py`. Each type has a guaranteed minimum share that never moves; the remaining flex pool (`EMISSION_FLEX_POOL`, 0.20) is split between the types by a participation-driven balancer (an oversubscribed type cedes flex toward a starved one — see `validator/scoring/emission_balance.py`). A type's base therefore always lies between its minimum and its minimum plus the whole flex pool, and text + image always sum to exactly 1.0:
 
-| Tournament type | Anchor base weight | Max weight |
+| Tournament type | Guaranteed minimum | Max weight (minimum + flex) |
 | --- | --- | --- |
-| Text | 0.35 | 0.50 |
-| Image | 0.25 | 0.50 |
+| Text | 0.50 | 0.70 |
+| Image | 0.30 | 0.50 |
 
 Active tournament participants receive `0.0001` weight each.
 

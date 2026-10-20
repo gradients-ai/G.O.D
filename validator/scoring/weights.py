@@ -243,8 +243,10 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
         max_weight=cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
     )
 
-    # No burn: the type pools always fill the entire emission pie, scaled up OR down as
-    # needed (previously this only ever scaled down, leaving a burn remainder).
+    # No burn: the type pools always fill the entire emission pie. The dynamic bases already sum
+    # to exactly 1.0 (guaranteed minimums + flex), so any champion boost pushes the sum above 1.0
+    # and this only ever scales DOWN - which also squeezes the other type below its minimum.
+    # TODO(human): decide how a champion boost composes with the guaranteed minimums.
     weight_sum = text_weight + image_weight
     if weight_sum > 0:
         scale = 1.0 / weight_sum
