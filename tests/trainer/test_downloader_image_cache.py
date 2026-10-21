@@ -45,6 +45,30 @@ def _mock_snapshot_download(monkeypatch, files: dict[str, bytes], calls: list[di
 
 
 @pytest.mark.asyncio
+async def test_flux_evaluation_artifacts_are_cached_with_stable_names(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_download_adapter(repo_id, filename, adapters_dir):
+        calls.append((repo_id, filename, adapters_dir))
+        return str(Path(adapters_dir) / filename)
+
+    monkeypatch.setattr(downloader, "download_adapter", fake_download_adapter)
+
+    paths = await downloader.download_flux_evaluation_artifacts(str(tmp_path))
+
+    assert calls == [
+        ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", str(tmp_path)),
+        ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", str(tmp_path)),
+        ("rayonlabs/FLUX.1-dev", "ae.safetensors", str(tmp_path)),
+    ]
+    assert paths == (
+        str(tmp_path / "t5xxl_fp16.safetensors"),
+        str(tmp_path / "clip_l.safetensors"),
+        str(tmp_path / "ae.safetensors"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_new_standalone_flux_downloads_only_root_checkpoint(monkeypatch, tmp_path):
     repo_id = "dataautogpt3/FLUX-MonochromeManga"
     checkpoint_name = "FLUX-DEV_MonochromeManga.safetensors"

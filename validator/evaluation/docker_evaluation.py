@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import random
+import secrets
 import uuid
 from urllib.parse import urlparse
 from uuid import UUID
@@ -387,6 +388,8 @@ async def run_evaluation_basilica_image(
     base_env = {
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
+        # Shared across candidates in this evaluation, but unpredictable across runs.
+        "GOD_FP8_ROUNDING_SALT": secrets.token_hex(16),
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         "PYTHONUNBUFFERED": "1",
         **vcst.HF_CONTAINER_ENV_IMAGE,

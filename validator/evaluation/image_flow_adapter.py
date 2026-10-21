@@ -6,6 +6,8 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 
+from core.models.image_models import FLUX_TEXT_ENCODER_ARTIFACTS
+from core.models.image_models import FLUX_VAE_ARTIFACT
 from validator.evaluation.image_artifacts import materialize_model
 
 logger = logging.getLogger(__name__)
@@ -28,8 +30,8 @@ FAMILIES = {
     ),
     "flux": FlowFamily(
         "flux",
-        tuple(("comfyanonymous/flux_text_encoders", f) for f in ("t5xxl_fp16.safetensors", "clip_l.safetensors")),
-        ("rayonlabs/FLUX.1-dev", "ae.safetensors"),
+        FLUX_TEXT_ENCODER_ARTIFACTS,
+        FLUX_VAE_ARTIFACT,
         guidance=3.5,
     ),
     "qwen-image": FlowFamily(

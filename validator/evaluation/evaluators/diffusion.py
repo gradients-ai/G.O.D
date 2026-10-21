@@ -3,6 +3,7 @@
 import gc
 import logging
 import os
+import secrets
 import sys
 import tempfile
 import time
@@ -71,6 +72,9 @@ def load_base(api, repo, family, root):
 def evaluate(config, output):
     from huggingface_hub import HfApi
 
+    # Remote orchestration supplies one salt shared by every candidate. Generate
+    # one here as a fallback for direct/local evaluator runs.
+    os.environ.setdefault("GOD_FP8_ROUNDING_SALT", secrets.token_hex(16))
     family = config["family"]
     if family not in FAMILIES:
         raise ValueError("Unsupported image model family")

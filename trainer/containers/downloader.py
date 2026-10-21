@@ -16,6 +16,8 @@ from huggingface_hub import snapshot_download
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
 from core.models.dataset_models import FileFormat
+from core.models.image_models import FLUX_TEXT_ENCODER_ARTIFACTS
+from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
 from core.tokenizer_utils import ensure_chat_template
@@ -501,6 +503,14 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
         raise e
 
 
+async def download_flux_evaluation_artifacts(cache_dir: str) -> tuple[str, ...]:
+    """Cache the exact text encoders and VAE used by FLUX evaluation."""
+    paths = []
+    for repo_id, filename in (*FLUX_TEXT_ENCODER_ARTIFACTS, FLUX_VAE_ARTIFACT):
+        paths.append(await download_adapter(repo_id, filename, cache_dir))
+    return tuple(paths)
+
+
 async def main():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -599,6 +609,11 @@ async def main():
                 adapters_dir,
             )
             print(f"Krea 2 text encoder downloaded to: {text_encoder_path}", flush=True)
+
+        elif args.model_type == ImageModelType.FLUX.value:
+            print("Downloading FLUX evaluation text encoders and VAE...", flush=True)
+            artifact_paths = await download_flux_evaluation_artifacts(adapters_dir)
+            print(f"FLUX evaluation artifacts downloaded to: {', '.join(artifact_paths)}", flush=True)
 
         from transformers import CLIPTokenizer
 

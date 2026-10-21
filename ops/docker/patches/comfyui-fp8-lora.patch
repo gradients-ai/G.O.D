@@ -1,0 +1,87 @@
+diff --git a/comfy/model_patcher.py b/comfy/model_patcher.py
+index 45e827d..c2b6a0a 100644
+--- a/comfy/model_patcher.py
++++ b/comfy/model_patcher.py
+@@ -864,7 +864,7 @@ class ModelPatcher:
+         out_weight = comfy.lora.calculate_weight(self.patches[key], temp_weight, key) if key in self.patches else temp_weight
+         if set_func is None:
+             if key in self.patches:
+-                out_weight = comfy.float.stochastic_rounding(out_weight, weight.dtype, seed=comfy.utils.string_to_seed(key))
++                out_weight = comfy.float.stochastic_rounding(out_weight, weight.dtype, seed=comfy.utils.patch_rounding_seed(key))
+             if return_weight:
+                 return out_weight
+             elif inplace_update:
+@@ -872,7 +872,7 @@ class ModelPatcher:
+             else:
+                 comfy.utils.set_attr_param(self.model, key, out_weight)
+         else:
+-            return set_func(out_weight, inplace_update=inplace_update, seed=comfy.utils.string_to_seed(key), return_weight=return_weight)
++            return set_func(out_weight, inplace_update=inplace_update, seed=comfy.utils.patch_rounding_seed(key), return_weight=return_weight)
+ 
+     def pin_weight_to_device(self, key):
+         weight, set_func, convert_func = get_key_weight(self.model, key)
+diff --git a/comfy/ops.py b/comfy/ops.py
+index e037262..06a7068 100644
+--- a/comfy/ops.py
++++ b/comfy/ops.py
+@@ -28,7 +28,22 @@ import comfy.utils
+ 
+ import comfy_aimdo.model_vbar
+ import comfy_aimdo.torch
+ 
++def _requantize_patched_weight(original, patched, seed, inplace_ops=False):
++    """Keep checkpoint FP8 scales stable when materializing a model patch."""
++    scale = "recalculate"
++    if original.storage_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
++        scale = original.params.scale.to(device=patched.device, dtype=torch.float32)
++        limit = scale * torch.finfo(original.storage_dtype).max
++        patched.clamp_(min=-limit, max=limit)
++    return original.requantize_from_float(
++        patched,
++        scale=scale,
++        stochastic_rounding=seed,
++        inplace_ops=inplace_ops,
++    )
++
++
+ def run_every_op():
+     if torch.compiler.is_compiling():
+         return
+@@ -254,9 +270,9 @@ def cast_bias_weight(s, input=None, dtype=None, device=None, bias_dtype=None, i
+             x = to_dequant(x, dtype if compute_dtype is None else compute_dtype)
+             x = lowvram_fn(x)
+             if (want_requant and len(fns) == 0 or update_weight):
+-                seed = comfy.utils.string_to_seed(s.seed_key)
++                seed = comfy.utils.patch_rounding_seed(s.seed_key)
+                 if isinstance(orig, QuantizedTensor):
+-                    y = orig.requantize_from_float(x, scale="recalculate", stochastic_rounding=seed)
++                    y = _requantize_patched_weight(orig, x, seed)
+                 else:
+                     y = comfy.float.stochastic_rounding(x, orig.dtype, seed=seed)
+             if want_requant and len(fns) == 0:
+@@ -1306,7 +1322,7 @@ class manual_cast(DisableWeightInit):
+ 
+             def set_weight(self, weight, inplace_update=False, seed=None, return_weight=False, **kwargs):
+                 if getattr(self, 'layout_type', None) is not None:
+-                    weight = self.weight.requantize_from_float(weight, scale="recalculate", stochastic_rounding=seed, inplace_ops=True).to(self.weight.dtype)
++                    weight = _requantize_patched_weight(self.weight, weight, seed, inplace_ops=True).to(self.weight.dtype)
+                 else:
+                     weight = weight.to(self.weight.dtype)
+                 if return_weight:
+diff --git a/comfy/utils.py b/comfy/utils.py
+index db76e88..2d3c7cd 100644
+--- a/comfy/utils.py
++++ b/comfy/utils.py
+@@ -1472,6 +1472,12 @@ def string_to_seed(data):
+                 crc >>= 1
+     return crc ^ 0xFFFFFFFF
+ 
++def patch_rounding_seed(data):
++    """Salt model-patch rounding per evaluation run when requested."""
++    salt = os.environ.get("GOD_FP8_ROUNDING_SALT")
++    return string_to_seed(f"{salt}:{data}") if salt else string_to_seed(data)
++
++
+ def deepcopy_list_dict(obj, memo=None):
+     if memo is None:
+         memo = {}
