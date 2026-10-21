@@ -26,6 +26,9 @@ from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
+from core.models.image_models import FLUX_CLIP_ARTIFACT
+from core.models.image_models import FLUX_T5_ARTIFACT
+from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
 from core.models.model_prep_models import BaselineStats
 from core.models.model_prep_models import EnvBaselineConfig
@@ -237,6 +240,14 @@ async def run_trainer_container_image(
         "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
         **_hf_container_env(),
     }
+    if model_type == ImageModelType.FLUX.value:
+        environment.update(
+            {
+                "FLUX_T5_PATH": os.path.join(cst.HUGGINGFACE_CACHE_PATH, FLUX_T5_ARTIFACT[1]),
+                "FLUX_CLIP_PATH": os.path.join(cst.HUGGINGFACE_CACHE_PATH, FLUX_CLIP_ARTIFACT[1]),
+                "FLUX_VAE_PATH": os.path.join(cst.HUGGINGFACE_CACHE_PATH, FLUX_VAE_ARTIFACT[1]),
+            }
+        )
     if baseline_stats:
         vol = client.volumes.get(cst.CACHE_VOLUME_NAME)
         stats_filename = f"baseline_stats_{task_id}.json"

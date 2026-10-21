@@ -8,6 +8,9 @@ RUN git init validator/evaluation/ComfyUI && \
     cd validator/evaluation/ComfyUI && \
     git remote add origin https://github.com/comfyanonymous/ComfyUI.git && \
     git fetch --depth 1 origin "${COMFYUI_COMMIT}" && git checkout FETCH_HEAD
+COPY ops/docker/patches/comfyui-fp8-lora.patch /tmp/comfyui-fp8-lora.patch
+RUN cd validator/evaluation/ComfyUI && git apply --check /tmp/comfyui-fp8-lora.patch && \
+    git apply /tmp/comfyui-fp8-lora.patch
 COPY ops/docker/requirements/image-evaluator.txt /tmp/image-evaluator.txt
 RUN pip install --no-cache-dir torch==2.9.1 torchvision==0.24.1 torchaudio==2.9.1 \
     --index-url https://download.pytorch.org/whl/cu128

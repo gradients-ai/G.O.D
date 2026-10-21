@@ -18,6 +18,11 @@ and no sharded-weight index. Its final cache directory has that checkpoint as it
 pinned miner repositories compatible with their legacy resolver, which selects a checkpoint only when it is the sole
 top-level file.
 
+For every FLUX task, the downloader also places the exact auxiliary artifacts used by evaluation in `/cache/hf_cache`:
+`t5xxl_fp16.safetensors`, `clip_l.safetensors`, and `ae.safetensors`. Trainer containers receive their paths as
+`FLUX_T5_PATH`, `FLUX_CLIP_PATH`, and `FLUX_VAE_PATH`. Keeping these outside the model directory preserves the standalone
+checkpoint contract while making caption and image encoding available to offline trainer containers.
+
 Diffusers repositories and the Z-Image, Qwen-Image, Ideogram4, and Krea2 AI Toolkit model types retain complete snapshots;
 their component files are never flattened or relocated. Before reusing any image-model cache, the downloader compares it
 with Hugging Face repository metadata and checks sharded-index references. A complete standalone FLUX cache that still has
