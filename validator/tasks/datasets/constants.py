@@ -25,7 +25,7 @@ DATASET_BINS_TO_SAMPLE = [
 # One quarter-hour step: the size-band overhead below is the real floor for small tasks.
 TRAINING_HOURS_MIN = 0.25
 MAX_TRAINING_HOURS = 5.0
-TARGET_TRAINING_EPOCHS = 2.0
+TARGET_TRAINING_EPOCHS = 2.5
 H100_BF16_TFLOPS = 989.0
 ASSUMED_TRAINING_MFU = 0.15
 ASSUMED_TOKENS_PER_ROW = 400
@@ -34,8 +34,8 @@ DEFAULT_MODEL_PARAMS_FOR_HOURS = 8e9
 # Fixed overhead (setup, model load, final save/upload) added on top of the token budget, by model
 # size band: (exclusive upper bound in B params, hours). Small models load and save in minutes.
 TRAINING_OVERHEAD_HOURS_BY_PARAMS_B: list[tuple[float, float]] = [
-    (1.0, 0.4),
-    (4.0, 0.6),
+    (0.5, 0.4),
+    (1.0, 0.6),
     (float("inf"), 0.75),
 ]
 MEASURED_THROUGHPUT_MINER_RATIO = 1.0
