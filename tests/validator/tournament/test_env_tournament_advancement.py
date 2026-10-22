@@ -193,6 +193,43 @@ class TestWinnerModelRepoSaving:
         assert result == "foundation/base"
 
     @pytest.mark.asyncio
+    async def test_resolve_winner_base_model_walks_multi_round_lineage(self, tmp_path):
+        """A 3-round winner declares round 2 as its base; the foundation is two hops further up."""
+        from validator.tournament.tournament_manager import _resolve_winner_base_model
+
+        foundation = "unsloth/Meta-Llama-3.1-8B-Instruct"
+        r1, r2, r3 = "org/round1", "org/round2", "org/round3"
+        declared = {r3: r2, r2: r1, r1: foundation}
+
+        def cfg_for(repo: str) -> str:
+            cfg_path = tmp_path / f"{repo.replace('/', '_')}.json"
+            cfg_path.write_text(f'{{"base_model_name_or_path": "{declared[repo]}"}}')
+            return str(cfg_path)
+
+        async def fake_to_thread(_fn, repo, *args, **kwargs):
+            if repo not in declared:
+                raise OSError(f"{repo} has no adapter_config.json")
+            return cfg_for(repo)
+
+        with patch("validator.tournament.tournament_manager.asyncio.to_thread", side_effect=fake_to_thread):
+            result = await _resolve_winner_base_model(r3, "fallback/base")
+
+        assert result == foundation
+
+    @pytest.mark.asyncio
+    async def test_resolve_winner_base_model_falls_back_for_full_finetune(self):
+        """A full-weight winner has no adapter_config; the task's own model stands in."""
+        from validator.tournament.tournament_manager import _resolve_winner_base_model
+
+        with patch(
+            "validator.tournament.tournament_manager.asyncio.to_thread",
+            side_effect=OSError("no adapter_config.json"),
+        ):
+            result = await _resolve_winner_base_model("org/full-ft-winner", "fallback/base")
+
+        assert result == "fallback/base"
+
+    @pytest.mark.asyncio
     async def test_save_previous_winner_records_resolved_foundation_base(self):
         from validator.tournament.tournament_manager import _save_winner_model_repo
 
