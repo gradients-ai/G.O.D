@@ -28,9 +28,34 @@ def _gpu_has_nvlink(pynvml, handle) -> bool:
             if get_state(handle, link) == enabled:
                 return True
         except Exception:
-            # Links past the device's max raise; stop scanning.
-            break
+            # Unpopulated links raise NotSupported, and they can sit between active ones.
+            continue
     return False
+
+
+def _nvlink_peers(pynvml, handles: dict[int, object]) -> dict[int, list[int]] | None:
+    """Map each GPU index to the GPU indices it reaches over NVLink.
+
+    Returns None when this pynvml build cannot query NVLink P2P status, so callers
+    can tell "no NVLink" apart from "topology unknown".
+    """
+    get_p2p = getattr(pynvml, "nvmlDeviceGetP2PStatus", None)
+    nvlink_caps = getattr(pynvml, "NVML_P2P_CAPS_INDEX_NVLINK", None)
+    status_ok = getattr(pynvml, "NVML_P2P_STATUS_OK", None)
+    if get_p2p is None or nvlink_caps is None or status_ok is None:
+        return None
+
+    peers: dict[int, list[int]] = {index: [] for index in handles}
+    for index, handle in handles.items():
+        for other_index, other_handle in handles.items():
+            if other_index == index:
+                continue
+            try:
+                if get_p2p(handle, other_handle, nvlink_caps) == status_ok:
+                    peers[index].append(other_index)
+            except Exception:
+                continue
+    return peers
 
 
 def _detect_interconnect(pynvml, handle, product_name: str) -> tuple[GPUInterconnect, bool]:
@@ -124,9 +149,11 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
     index_to_product_name: dict[int, str] = {}
     index_to_interconnect: dict[int, GPUInterconnect] = {}
     index_to_nvlink: dict[int, bool] = {}
+    index_to_handle: dict[int, object] = {}
 
     for i in range(device_count):
         handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+        index_to_handle[i] = handle
         raw_name = pynvml.nvmlDeviceGetName(handle)
         product_name = raw_name.decode("utf-8") if isinstance(raw_name, bytes) else raw_name
         name = product_name.upper()
@@ -142,6 +169,8 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
                 index_to_interconnect[i] = interconnect
                 index_to_nvlink[i] = has_nvlink
                 break
+
+    index_to_peers = _nvlink_peers(pynvml, index_to_handle)
 
     busy_gpu_ids: set[int] = set()
     running_jobs = get_running_jobs()
@@ -163,7 +192,8 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
             available=gpu_id not in busy_gpu_ids,
             product_name=index_to_product_name[gpu_id],
             interconnect=index_to_interconnect[gpu_id],
-            nvlink=index_to_nvlink[gpu_id],
+            nvlink=index_to_nvlink[gpu_id] or bool(index_to_peers and index_to_peers[gpu_id]),
+            nvlink_peers=index_to_peers[gpu_id] if index_to_peers is not None else None,
         )
         gpu_infos.append(gpu_info)
 

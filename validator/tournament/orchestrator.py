@@ -804,21 +804,81 @@ def _trainer_has_sufficient_gpus(trainer_gpus: list[GPUInfo], requirement: GpuRe
     Returns:
         list[int]: List of GPU IDs needed for the requirement, empty list if insufficient
     """
-    available_h100s = [gpu for gpu in trainer_gpus if gpu.available and gpu.gpu_type == GPUType.H100]
-    available_a100s = [gpu for gpu in trainer_gpus if gpu.available and gpu.gpu_type == GPUType.A100]
+    gpu_type = GPUType.A100 if requirement == GpuRequirement.A100 else GPUType.H100
+    typed_gpus = [gpu for gpu in trainer_gpus if gpu.gpu_type == gpu_type]
+    available_ids = [gpu.gpu_id for gpu in typed_gpus if gpu.available]
+    return _select_grouped_gpu_ids(available_ids, _nvlink_groups(typed_gpus), requirement.gpu_count)
 
-    if requirement == GpuRequirement.A100:
-        return [available_a100s[0].gpu_id] if len(available_a100s) >= 1 else []
-    elif requirement == GpuRequirement.H100_1X:
-        return [available_h100s[0].gpu_id] if len(available_h100s) >= 1 else []
-    elif requirement == GpuRequirement.H100_2X:
-        return [gpu.gpu_id for gpu in available_h100s[:2]] if len(available_h100s) >= 2 else []
-    elif requirement == GpuRequirement.H100_4X:
-        return [gpu.gpu_id for gpu in available_h100s[:4]] if len(available_h100s) >= 4 else []
-    elif requirement == GpuRequirement.H100_8X:
-        return [gpu.gpu_id for gpu in available_h100s[:8]] if len(available_h100s) >= 8 else []
 
-    return []
+def _nvlink_groups(gpus: list[GPUInfo]) -> list[list[int]]:
+    """
+    Split a trainer's GPUs into NVLink-connected groups.
+
+    Uses the topology the trainer reports. Trainers on older builds report no
+    topology (nvlink_peers is None); for those, assume the adjacent-pair bridging
+    (0-1, 2-3, ...) common on PCIe boxes, which is harmless where it is wrong.
+    """
+    gpu_ids = sorted(gpu.gpu_id for gpu in gpus)
+    if any(gpu.nvlink_peers is None for gpu in gpus):
+        return [[gpu_id for gpu_id in gpu_ids if gpu_id // 2 == pair] for pair in sorted({gpu_id // 2 for gpu_id in gpu_ids})]
+
+    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus}
+    groups: list[list[int]] = []
+    seen: set[int] = set()
+    for start in gpu_ids:
+        if start in seen:
+            continue
+        seen.add(start)
+        stack, group = [start], []
+        while stack:
+            gpu_id = stack.pop()
+            group.append(gpu_id)
+            for peer in peers[gpu_id]:
+                if peer in peers and peer not in seen:
+                    seen.add(peer)
+                    stack.append(peer)
+        groups.append(sorted(group))
+    return groups
+
+
+def _select_grouped_gpu_ids(available_ids: list[int], groups: list[list[int]], count: int) -> list[int]:
+    """
+    Pick `count` GPU IDs, keeping NVLink groups together.
+
+    Fully connected (SXM / NVSwitch) and unlinked trainers make every choice
+    equivalent, so they get first-fit. Partially linked trainers (PCIe with
+    NVLink bridges, where a cross-group copy runs ~7x slower) give multi-GPU jobs
+    whole free groups first, and give single-GPU jobs a GPU from an already
+    broken group so free groups stay intact.
+
+    Returns:
+        list[int]: Sorted GPU IDs, empty list if fewer than `count` are free
+    """
+    if len(available_ids) < count:
+        return []
+
+    free = sorted(available_ids)
+    if len(groups) <= 1 or all(len(group) == 1 for group in groups):
+        return free[:count]
+
+    free_set = set(free)
+    whole_free_groups = [group for group in groups if all(gpu_id in free_set for gpu_id in group)]
+    in_whole_group = {gpu_id for group in whole_free_groups for gpu_id in group}
+    orphans = [gpu_id for gpu_id in free if gpu_id not in in_whole_group]
+
+    chosen: list[int] = []
+    for group in whole_free_groups:
+        if len(chosen) + len(group) <= count:
+            chosen.extend(group)
+
+    # Fill any remainder from orphans before splitting a free group.
+    for gpu_id in orphans + free:
+        if len(chosen) == count:
+            break
+        if gpu_id not in chosen:
+            chosen.append(gpu_id)
+
+    return sorted(chosen)
 
 
 async def monitor_training_tasks(config: Config):

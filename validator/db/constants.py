@@ -243,6 +243,7 @@ USED_UNTIL = "used_until"
 PRODUCT_NAME = "product_name"
 INTERCONNECT = "interconnect"
 NVLINK = "nvlink"
+NVLINK_PEERS = "nvlink_peers"
 
 
 # Common Column Names (shared between tables)
