@@ -1,0 +1,34 @@
+diff --git a/comfy/model_patcher.py b/comfy/model_patcher.py
+index 45e827d..c2b6a0a 100644
+--- a/comfy/model_patcher.py
++++ b/comfy/model_patcher.py
+@@ -872,7 +872,7 @@ class ModelPatcher:
+             else:
+                 comfy.utils.set_attr_param(self.model, key, out_weight)
+         else:
+-            return set_func(out_weight, inplace_update=inplace_update, seed=comfy.utils.string_to_seed(key), return_weight=return_weight)
++            return set_func(out_weight, inplace_update=inplace_update, seed=comfy.utils.string_to_seed(key), return_weight=return_weight, keep_patched_bf16=key in self.patches)
+ 
+     def pin_weight_to_device(self, key):
+         weight, set_func, convert_func = get_key_weight(self.model, key)
+diff --git a/comfy/ops.py b/comfy/ops.py
+index e037262..06a7068 100644
+--- a/comfy/ops.py
++++ b/comfy/ops.py
+@@ -1307,5 +1307,6 @@ class manual_cast(DisableWeightInit):
+-            def set_weight(self, weight, inplace_update=False, seed=None, return_weight=False, **kwargs):
+-                if getattr(self, 'layout_type', None) is not None:
++            def set_weight(self, weight, inplace_update=False, seed=None, return_weight=False, keep_patched_bf16=False, **kwargs):
++                keep_patched_bf16 = keep_patched_bf16 and getattr(self, 'layout_type', None) is not None
++                if getattr(self, 'layout_type', None) is not None and not keep_patched_bf16:
+                     weight = self.weight.requantize_from_float(weight, scale="recalculate", stochastic_rounding=seed, inplace_ops=True).to(self.weight.dtype)
+                 else:
+                     weight = weight.to(self.weight.dtype)
+@@ -1312,5 +1313,7 @@ class manual_cast(DisableWeightInit):
+                 if return_weight:
+                     return weight
+ 
+                 assert inplace_update is False  # TODO: eventually remove the inplace_update stuff
++                if keep_patched_bf16:
++                    self.layout_type = None
+                 self.weight = torch.nn.Parameter(weight, requires_grad=False)

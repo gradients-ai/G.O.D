@@ -45,6 +45,30 @@ def _mock_snapshot_download(monkeypatch, files: dict[str, bytes], calls: list[di
 
 
 @pytest.mark.asyncio
+async def test_flux_evaluation_artifacts_are_cached_with_stable_names(monkeypatch, tmp_path):
+    calls = []
+
+    async def fake_download_adapter(repo_id, filename, adapters_dir):
+        calls.append((repo_id, filename, adapters_dir))
+        return str(Path(adapters_dir) / filename)
+
+    monkeypatch.setattr(downloader, "download_adapter", fake_download_adapter)
+
+    paths = await downloader.download_flux_evaluation_artifacts(str(tmp_path))
+
+    assert calls == [
+        ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", str(tmp_path)),
+        ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", str(tmp_path)),
+        ("rayonlabs/FLUX.1-dev", "ae.safetensors", str(tmp_path)),
+    ]
+    assert paths == (
+        str(tmp_path / "t5xxl_fp16.safetensors"),
+        str(tmp_path / "clip_l.safetensors"),
+        str(tmp_path / "ae.safetensors"),
+    )
+
+
+@pytest.mark.asyncio
 async def test_new_standalone_flux_downloads_only_root_checkpoint(monkeypatch, tmp_path):
     repo_id = "dataautogpt3/FLUX-MonochromeManga"
     checkpoint_name = "FLUX-DEV_MonochromeManga.safetensors"
@@ -73,6 +97,7 @@ async def test_new_standalone_flux_downloads_only_root_checkpoint(monkeypatch, t
     assert result == tmp_path / "dataautogpt3--FLUX-MonochromeManga"
     assert [path.name for path in result.iterdir() if path.is_file()] == [checkpoint_name]
     assert _legacy_image_base_model_resolver(result) == result / checkpoint_name
+    assert downloader._is_standalone_flux_cache(ImageModelType.FLUX, str(result))
 
 
 @pytest.mark.asyncio
@@ -127,6 +152,7 @@ async def test_genuine_diffusers_layout_is_not_normalized(monkeypatch, tmp_path)
     assert (cache_path / "model_index.json").is_file()
     assert (cache_path / "transformer/diffusion_pytorch_model.safetensors").is_file()
     assert _legacy_image_base_model_resolver(cache_path) == cache_path
+    assert not downloader._is_standalone_flux_cache(ImageModelType.FLUX, str(cache_path))
 
 
 @pytest.mark.asyncio
