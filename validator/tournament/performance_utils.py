@@ -5,7 +5,6 @@ from validator.db.sql.tournaments import get_tournament_participants
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tournaments import exponential_decline_mapping
 from validator.scoring.weights import calculate_emission_boost_from_perf
-from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
 from validator.scoring.weights import calculate_tournament_weight
 from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
@@ -18,7 +17,7 @@ from validator.tournament.round_results import get_real_tournament_winner
 
 def calculate_scaled_weights(
     tournament_audit_data: TournamentAuditData,
-) -> tuple[float, float, float, float, float, float, float, str | None, str | None, str | None]:
+) -> tuple[float, float, float, float, float, str | None, str | None]:
     """
     Calculate scaled weights and winner hotkeys from tournament audit data.
     Uses the same logic as get_node_weights_from_tournament_audit_data in weight_setting.py.
@@ -26,8 +25,7 @@ def calculate_scaled_weights(
     Returns:
         Tuple of (scaled_text_tournament_weight, scaled_text_base_weight,
                  scaled_image_tournament_weight, scaled_image_base_weight,
-                 scaled_environment_tournament_weight, scaled_environment_base_weight,
-                 scaled_burn_weight, text_winner_hotkey, image_winner_hotkey, environment_winner_hotkey)
+                 scaled_burn_weight, text_winner_hotkey, image_winner_hotkey)
     """
     participants: list[str] = tournament_audit_data.participants
     participation_total: float = len(participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
@@ -35,28 +33,22 @@ def calculate_scaled_weights(
 
     scaled_text_tournament_weight: float = tournament_audit_data.text_tournament_weight * scale_factor
     scaled_image_tournament_weight: float = tournament_audit_data.image_tournament_weight * scale_factor
-    scaled_environment_tournament_weight: float = tournament_audit_data.environment_tournament_weight * scale_factor
     scaled_burn_weight: float = tournament_audit_data.burn_weight * scale_factor
 
     scaled_text_base_weight: float = tournament_audit_data.text_base_weight * scale_factor
     scaled_image_base_weight: float = tournament_audit_data.image_base_weight * scale_factor
-    scaled_environment_base_weight: float = tournament_audit_data.environment_base_weight * scale_factor
 
     text_winner_hotkey = get_real_tournament_winner(tournament_audit_data.text_tournament_data)
     image_winner_hotkey = get_real_tournament_winner(tournament_audit_data.image_tournament_data)
-    environment_winner_hotkey = get_real_tournament_winner(tournament_audit_data.environment_tournament_data)
 
     return (
         scaled_text_tournament_weight,
         scaled_text_base_weight,
         scaled_image_tournament_weight,
         scaled_image_base_weight,
-        scaled_environment_tournament_weight,
-        scaled_environment_base_weight,
         scaled_burn_weight,
         text_winner_hotkey,
         image_winner_hotkey,
-        environment_winner_hotkey,
     )
 
 
@@ -106,14 +98,11 @@ async def calculate_tournament_projection(
     percentage_improvement: float,
     base_weight: float,
     max_weight: float,
-    win_pct: float | None = None,
 ) -> TournamentProjection:
     """
     Project a challenger's emission for a tournament type.
 
-    For TEXT/IMAGE the input is a percentage score improvement over the boss.
-    For ENVIRONMENT the input is a win rate (``win_pct``, 0.0-1.0) mapped through
-    the PvP emission curve.
+    The input is a percentage score improvement over the boss.
 
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
@@ -124,16 +113,10 @@ async def calculate_tournament_projection(
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
 
     # Determine the challenger's performance diff and whether it dethrones the boss.
-    if tournament_type == TournamentType.ENVIRONMENT:
-        effective_win_pct = win_pct if win_pct is not None else percentage_improvement / 100.0
-        performance_diff = calculate_env_perf_diff_from_win_pct(effective_win_pct)
-        dethrone_threshold = cts.PVP_WIN_PCT_THRESHOLD
-        dethrones = effective_win_pct >= cts.PVP_WIN_PCT_THRESHOLD
-    else:
-        performance_diff = percentage_improvement / 100.0
-        # Match the boss-round crowning margin so the projection agrees with reality.
-        dethrone_threshold = t_cst.BOSS_ROUND_WIN_MARGIN
-        dethrones = performance_diff > dethrone_threshold
+    performance_diff = percentage_improvement / 100.0
+    # Match the boss-round crowning margin so the projection agrees with reality.
+    dethrone_threshold = t_cst.BOSS_ROUND_WIN_MARGIN
+    dethrones = performance_diff > dethrone_threshold
 
     # Tournament-internal share by rank and the participation scale factor.
     num_participants = 0

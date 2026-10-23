@@ -12,17 +12,18 @@ Tournament types are scheduled independently:
 
 | Type | Scheduled start | Task family | Participation fee | Minimum miners |
 | --- | --- | --- | --- | --- |
-| Environment | Monday 09:00 UTC (paused) | Environment interaction and PvP tasks | `0.6 TAO` | 5 |
 | Text | Monday 11:00 UTC | Instruct, Chat, DPO, and GRPO tasks | `0.7 TAO` | 4 |
 | Image | Monday 13:00 UTC | Diffusion/image tasks | `0.4 TAO` | 4 |
 
+Environment tournaments have been retired and are no longer scheduled or emission-weighted. Historical
+environment tournaments remain queryable through the tournament analytics endpoints.
+
 Scheduling notes:
 
-- Environment tournaments are temporarily paused: the scheduler will not create a new environment tournament, and leftover pending/active environment rows are skipped. Environment emission share and weight endpoints remain until the full sunset.
 - The scheduler creates a new pending tournament only when there is no pending or active tournament of the same type.
 - Follow-up tournaments are created only during the configured UTC start hour. If the window is missed, the next opportunity is the following week's window.
 - Tournament length is round- and task-dependent rather than a fixed 4-7 day duration. Pending tournaments collect and validate participants, deduct fees, and activate after the minimum miner count is met; active tournaments advance as training and evaluation rounds finish.
-- Text and image tournaments use group, knockout/final, and boss/champion rounds. Environment tournaments use PvP-style evaluation and environment-specific boss comparisons.
+- Text and image tournaments use group, knockout/final, and boss/champion rounds.
 - Winning repositories are published to [github.com/gradients-opensource](https://github.com/gradients-opensource), and tournament performance feeds validator weight setting.
 
 Useful public endpoints:

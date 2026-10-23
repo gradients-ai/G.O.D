@@ -1,5 +1,4 @@
 import asyncio
-import json
 import math
 import random
 import re
@@ -8,12 +7,7 @@ from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
-from huggingface_hub import hf_hub_download
-from huggingface_hub import repo_exists
 
-from core.constants.credentials import HUGGINGFACE_TOKEN
-from core.constants.credentials import RAYONLABS_HF_USERNAME
-from core.constants.environments import TrainingStartPoint
 from core.datasets.whitelist import validate_requested_datasets
 from core.logging import LogContext
 from core.logging import get_logger
@@ -52,7 +46,6 @@ from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_placements
 from validator.db.sql.tournaments import update_tournament_winner_hotkey
-from validator.db.sql.tournaments import update_tournament_winner_model
 from validator.infrastructure.content_service import process_non_stream_fiber_get
 from validator.infrastructure.service_constants import TRAINING_REPO_ENDPOINT
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
@@ -99,14 +92,10 @@ from validator.tournament.participants import get_latest_tournament_winner_parti
 from validator.tournament.participants import get_pre_boss_knockout_loser
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
-from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import find_groups_with_no_valid_scores
-from validator.tournament.round_results import get_boss_retention_runners_up
-from validator.tournament.round_results import get_pre_boss_group_runner_up
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.round_results import select_round2_entrants
 from validator.tournament.task_creator import create_boss_round_decider_tasks
-from validator.tournament.task_creator import create_environment_tournament_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
 from validator.tournament.task_creator import create_text_tournament_tasks
 from validator.tournament.task_creator import replace_tournament_task
@@ -148,37 +137,6 @@ def organise_tournament_round(
 ) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
-
-    if tournament_type == TournamentType.ENVIRONMENT:
-        if len(nodes_copy) < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
-            raise ValueError(
-                f"Environment tournament requires minimum {t_cst.MIN_ENVIRONMENT_GROUP_SIZE} participants, "
-                f"got {len(nodes_copy)}"
-            )
-        # A small starting field uses a smaller group size so more contenders survive round 1.
-        # Round 1 only — later rounds keep the normal size so the bracket still converges
-        # rather than re-splitting the shrinking field into ever-smaller groups.
-        max_group_size = (
-            t_cst.SMALL_ENVIRONMENT_GROUP_SIZE
-            if round_number == 1 and len(nodes_copy) <= t_cst.SMALL_ENVIRONMENT_MAX_PARTICIPANTS
-            else t_cst.MAX_ENVIRONMENT_GROUP_SIZE
-        )
-        boss_will_be_injected = not is_final_round and EMISSION_BURN_HOTKEY not in {n.hotkey for n in nodes_copy}
-        effective_count = len(nodes_copy) + (1 if boss_will_be_injected else 0)
-        num_groups = math.ceil(effective_count / max_group_size)
-        while num_groups > 1 and len(nodes_copy) // num_groups < t_cst.MIN_ENVIRONMENT_GROUP_SIZE:
-            num_groups -= 1
-
-        base_size = len(nodes_copy) // num_groups
-        remainder = len(nodes_copy) % num_groups
-        groups = []
-        idx = 0
-        for g in range(num_groups):
-            size = base_size + (1 if g < remainder else 0)
-            group_hotkeys = [node.hotkey for node in nodes_copy[idx : idx + size]]
-            groups.append(Group(member_ids=group_hotkeys, task_ids=[]))
-            idx += size
-        return GroupRound(groups=groups, round_id=round_id, round_number=round_number)
 
     # Text and image round 1 always use one multi-match group. The top two
     # advance into one knockout task, whose winner becomes the boss challenger.
@@ -265,93 +223,10 @@ async def _create_tournament_tasks(
         tasks = await create_text_tournament_tasks(round_structure, tournament_id, config, is_final)
     elif tournament_type == TournamentType.IMAGE:
         tasks = await create_image_tournament_tasks(round_structure, tournament_id, config, is_final)
-    elif tournament_type == TournamentType.ENVIRONMENT:
-        tasks = await create_environment_tournament_tasks(round_structure, tournament_id, config, is_final)
     else:
         raise ValueError(f"Unknown tournament type: {tournament_type}")
 
     return tasks
-
-
-async def _hf_repo_exists(repo_id: str) -> bool:
-    """Whether an HF model repo exists."""
-    try:
-        return await asyncio.to_thread(repo_exists, repo_id, repo_type="model", token=HUGGINGFACE_TOKEN)
-    except Exception as e:
-        logger.warning(f"HF repo existence check failed for {repo_id}: {e}; assuming it exists")
-        return True
-
-
-async def _get_previous_round_repo(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> str | None:
-    """Look up a miner's output repo from the previous round for model continuation."""
-    rounds = await get_tournament_rounds(tournament_id, psql_db)
-    if len(rounds) < 2:
-        return None
-
-    sorted_rounds = sorted(rounds, key=lambda r: r.round_number, reverse=True)
-    prev_round = sorted_rounds[1]  # second most recent = previous round
-
-    prev_tasks = await get_tournament_tasks(prev_round.round_id, psql_db)
-    for prev_task in prev_tasks:
-        repo_name = await task_sql.get_expected_repo_name(prev_task.task_id, hotkey, psql_db)
-        if repo_name:
-            return f"{RAYONLABS_HF_USERNAME}/{repo_name}"
-
-    return None
-
-
-async def _resolve_winner_base_model(winner_repo: str, fallback_model_id: str | None) -> str | None:
-    """Return the winner model's real foundation base model."""
-    try:
-        cfg_path = await asyncio.to_thread(
-            hf_hub_download, winner_repo, "adapter_config.json", token=HUGGINGFACE_TOKEN,
-        )
-        with open(cfg_path) as f:
-            base = json.load(f).get("base_model_name_or_path")
-        if base:
-            return base
-    except Exception:
-        pass
-    return fallback_model_id
-
-
-async def _save_winner_model_repo(
-    tournament_id: str, winner_hotkey: str, round_tasks: list[TournamentTask], psql_db: PSQLDB,
-) -> None:
-    """Save the winner's HF model repo and base model to the tournament for next tournament's PREVIOUS_WINNER task.
-
-    Prefers the PREVIOUS_WINNER task output since it represents the champion lineage.
-    Falls back to any task with a valid repo if PREVIOUS_WINNER isn't found.
-    """
-    logger.info(f"Saving winner model repo for {winner_hotkey[:12]} from {len(round_tasks)} boss round tasks")
-    fallback_repo: str | None = None
-    fallback_base_model: str | None = None
-
-    for round_task in round_tasks:
-        repo_name = await task_sql.get_expected_repo_name(round_task.task_id, winner_hotkey, psql_db)
-        if not repo_name:
-            continue
-
-        task_obj = await task_sql.get_task(round_task.task_id, psql_db)
-        if not task_obj:
-            continue
-
-        winner_repo = f"{RAYONLABS_HF_USERNAME}/{repo_name}"
-
-        if task_obj.training_start_point == TrainingStartPoint.PREVIOUS_WINNER:
-            base = await _resolve_winner_base_model(winner_repo, task_obj.model_id) or t_cst.ENV_TARGET_TOURN_MODEL
-            logger.info(f"Saving PREVIOUS_WINNER lineage: {winner_repo} (resolved base={base})")
-            await update_tournament_winner_model(tournament_id, winner_repo, base, psql_db)
-            return
-
-        if not fallback_repo:
-            fallback_repo = winner_repo
-            fallback_base_model = await _resolve_winner_base_model(winner_repo, task_obj.model_id)
-
-    if fallback_repo and fallback_base_model:
-        await update_tournament_winner_model(tournament_id, fallback_repo, fallback_base_model, psql_db)
-    else:
-        logger.warning(f"Could not find winner model repo for {winner_hotkey} in tournament {tournament_id}")
 
 
 async def _carry_forward_continuous_sft(
@@ -398,49 +273,22 @@ async def _carry_forward_continuous_sft(
         logger.info("No continuous-SFT task in completed text boss round; nothing to carry forward")
 
 
-def select_boss_group_index(groups: list[Group]) -> int:
-    """Return the index of the smallest group for boss injection."""
-    return min(range(len(groups)), key=lambda index: len(groups[index].member_ids))
-
-
 async def assign_nodes_to_tournament_tasks(
     tournament_id: str, round_structure: Round, psql_db: PSQLDB, is_final_round: bool = False
 ) -> None:
     """Assign nodes to tournament tasks for the given round."""
 
-    tournament = await get_tournament(tournament_id, psql_db)
-    is_environment_tournament = tournament and tournament.tournament_type == TournamentType.ENVIRONMENT
-
     if isinstance(round_structure, GroupRound):
         all_round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
 
-        boss_target_idx = (
-            None
-            if not is_environment_tournament or any(EMISSION_BURN_HOTKEY in group.member_ids for group in round_structure.groups)
-            else select_boss_group_index(round_structure.groups)
-        )
         for i, group in enumerate(round_structure.groups):
-            if is_environment_tournament:
-                group_participants = list(group.member_ids)
-                if i == boss_target_idx and EMISSION_BURN_HOTKEY not in group_participants:
-                    group_participants.append(EMISSION_BURN_HOTKEY)
-                participants_to_assign = group_participants
-
-                if is_final_round:
-                    group_tasks = all_round_tasks
-                else:
-                    current_group_id = f"{round_structure.round_id}_group_{i + 1:03d}"
-                    group_tasks = [t for t in all_round_tasks if t.group_id == current_group_id]
-            else:
-                current_group_id = f"{round_structure.round_id}_group_{i + 1:03d}"
-                participants_to_assign = group.member_ids
-                group_tasks = [t for t in all_round_tasks if t.group_id == current_group_id]
+            current_group_id = f"{round_structure.round_id}_group_{i + 1:03d}"
+            participants_to_assign = group.member_ids
+            group_tasks = [t for t in all_round_tasks if t.group_id == current_group_id]
 
             for tournament_task in group_tasks:
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(tournament_task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
-
-                task_obj = await task_sql.get_task(tournament_task.task_id, psql_db) if is_environment_tournament else None
 
                 for hotkey in participants_to_assign:
                     if hotkey in already_assigned_hotkeys:
@@ -454,30 +302,12 @@ async def assign_nodes_to_tournament_tasks(
                         expected_repo_name = f"tournament-{tournament_id}-{tournament_task.task_id}-{hotkey[:8]}"
                         await task_sql.set_expected_repo_name(tournament_task.task_id, node, psql_db, expected_repo_name)
 
-                        if task_obj and task_obj.training_start_point == TrainingStartPoint.CONTINUATION:
-                            prev_repo = await _get_previous_round_repo(tournament_id, hotkey, psql_db)
-                            if prev_repo and not await _hf_repo_exists(prev_repo):
-                                logger.warning(
-                                    f"Continuation model {prev_repo} for {hotkey[:8]} not found on HF; "
-                                    f"falling back to base model {task_obj.model_id}"
-                                )
-                                prev_repo = task_obj.model_id
-                            if prev_repo:
-                                await task_sql.set_starting_model_repo(
-                                    tournament_task.task_id, hotkey, prev_repo, psql_db,
-                                )
-                                logger.info(f"Model continuation: {hotkey[:8]} starts from {prev_repo}")
-
                         logger.info(
                             f"Assigned {hotkey} to group task {tournament_task.task_id} "
                             f"with expected_repo_name: {expected_repo_name}"
                         )
                     else:
                         logger.warning(f"Could not find node for hotkey {hotkey} during group task assignment")
-
-            # Boss round: single group with all participants assigned to all 3 tasks — one iteration suffices
-            if is_environment_tournament and is_final_round:
-                break
     else:
         logger.info("Processing KNOCKOUT round assignment")
         round_tasks = await get_tournament_tasks(round_structure.round_id, psql_db)
@@ -534,28 +364,22 @@ async def create_next_round(
     with LogContext(tournament_id=tournament.tournament_id, round_id=next_round_id):
         logger.info(f"Creating next round with {len(winners)} winners: {winners}")
 
-        is_env = tournament.tournament_type == TournamentType.ENVIRONMENT
         next_round_is_final = len(winners) == 1
 
-        if is_env:
-            # Env tournaments use groups — boss stays, final when only boss + 1 challenger
-            if len(winners) == 2 and EMISSION_BURN_HOTKEY in winners:
+        # Text/image knockout tournaments need even pairs
+        if len(winners) == 2:
+            if EMISSION_BURN_HOTKEY in winners:
                 next_round_is_final = True
-        else:
-            # Text/image knockout tournaments need even pairs
-            if len(winners) == 2:
-                if EMISSION_BURN_HOTKEY in winners:
+        elif len(winners) % 2 == 1:
+            if EMISSION_BURN_HOTKEY not in winners:
+                winners.append(EMISSION_BURN_HOTKEY)
+                logger.info("Added burn hotkey to make even number of participants")
+            else:
+                if len(winners) == 1:
                     next_round_is_final = True
-            elif len(winners) % 2 == 1:
-                if EMISSION_BURN_HOTKEY not in winners:
-                    winners.append(EMISSION_BURN_HOTKEY)
-                    logger.info("Added burn hotkey to make even number of participants")
                 else:
-                    if len(winners) == 1:
-                        next_round_is_final = True
-                    else:
-                        winners = [w for w in winners if w != EMISSION_BURN_HOTKEY]
-                        logger.info("Removed burn hotkey to make even number of participants")
+                    winners = [w for w in winners if w != EMISSION_BURN_HOTKEY]
+                    logger.info("Removed burn hotkey to make even number of participants")
 
         winner_nodes = []
         for hotkey in winners:
@@ -576,7 +400,7 @@ async def create_next_round(
 
         round_structure = organise_tournament_round(
             winner_nodes, config,
-            tournament.tournament_type if tournament.tournament_type == TournamentType.ENVIRONMENT else None,
+            None,
             round_id=next_round_id, round_number=next_round_number, is_final_round=next_round_is_final,
         )
 
@@ -608,29 +432,13 @@ async def _complete_with_defending_champion(
     psql_db: PSQLDB,
     *,
     reason: str,
-    exclude_hotkeys: set[str] | None = None,
 ) -> None:
     """Crown the defending champion and finish the tournament."""
     winner = EMISSION_BURN_HOTKEY
-    second_place: str | None = None
-    third_place: str | None = None
     logger.warning(reason)
-    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-        second_place, third_place = await get_boss_retention_runners_up(
-            completed_round, psql_db, exclude_hotkeys=exclude_hotkeys
-        )
-        await update_tournament_placements(
-            tournament.tournament_id,
-            winner,
-            second_place,
-            third_place,
-            psql_db,
-        )
-    else:
-        await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
+    await update_tournament_winner_hotkey(tournament.tournament_id, winner, psql_db)
     logger.info(
-        f"Tournament {tournament.tournament_id} completed with winner: {winner}, "
-        f"second={second_place}, third={third_place}. Please update DB manually."
+        f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually."
     )
     asyncio.create_task(
         notify_tournament_completed(
@@ -744,13 +552,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         logger.info(f"Round winners: {winners}")
         logger.info(f"Number of winners: {len(winners)}")
 
-        # For environment tournaments, boss auto-advances through non-final rounds
-        # only when there are winners. Empty winners use generic boss fallback below.
-        if tournament.tournament_type == TournamentType.ENVIRONMENT and not completed_round.is_final_round:
-            if winners and EMISSION_BURN_HOTKEY not in winners:
-                winners.append(EMISSION_BURN_HOTKEY)
-                logger.info(f"Boss {EMISSION_BURN_HOTKEY} auto-advances to next environment round")
-
         # Get all active participants and handle eliminations
         all_participants = await get_tournament_participants(tournament.tournament_id, psql_db)
         active_participants = [p.hotkey for p in all_participants if p.eliminated_in_round_id is None]
@@ -785,15 +586,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             return
 
-        if completed_round.is_final_round and (len(winners) == 1 or tournament.tournament_type == TournamentType.ENVIRONMENT):
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                logger.info("Environment tournament final round — applying SWE-gated boss round rule")
-                env_results = await determine_env_tournament_winner(tournament, winners, config, psql_db)
-                winner = env_results[0]
-                # Replace winners list with the cross-round results for downstream use
-                winners = env_results
-            else:
-                winner = winners[0]
+        if completed_round.is_final_round and len(winners) == 1:
+            winner = winners[0]
 
             # Keep the winner as-is (EMISSION_BURN_HOTKEY if defending champion won)
             # The base_winner_hotkey field already tracks the actual identity for display purposes
@@ -868,10 +662,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 third_place = await get_pre_boss_knockout_loser(
                     tournament, completed_round, challenger.hotkey, psql_db
                 )
-            elif tournament.tournament_type == TournamentType.ENVIRONMENT:
-                third_place = await get_pre_boss_group_runner_up(
-                    tournament.tournament_id, completed_round, challenger.hotkey, psql_db
-                )
 
             if third_place is not None and third_place in {winner, second_place}:
                 logger.warning(
@@ -889,11 +679,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             )
             # await update_tournament_status(tournament.tournament_id, TournamentStatus.COMPLETED, psql_db)
             logger.info(f"Tournament {tournament.tournament_id} completed with winner: {winner}. Please update DB manually.")
-
-            # Save winner's model repo for next tournament's PREVIOUS_WINNER task
-            if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                save_hotkey = winner if winner != EMISSION_BURN_HOTKEY else EMISSION_BURN_HOTKEY
-                await _save_winner_model_repo(tournament.tournament_id, save_hotkey, round_tasks, psql_db)
 
             if winner != EMISSION_BURN_HOTKEY:
                 try:
@@ -944,18 +729,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         else:
             # R2 gates: before building round 2, check entrants for duplicates and cheating.
             # Flags HALT until a human approves. Approved DQs are replaced from the R1 bench
-            # (text/image: next in cumulative rank; env: next in that group, or a boss-beater
-            # in the boss group). Replacements get both checks.
+            # (next in cumulative rank). Replacements get both checks.
             if completed_round.round_number == 1:
-                challengers, eliminated, halt = await _resolve_r2_entry_after_integrity_gates(
+                challengers, _eliminated, halt = await _resolve_r2_entry_after_integrity_gates(
                     tournament, completed_round, config, psql_db
                 )
-                if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                    winners = list(challengers)
-                    if EMISSION_BURN_HOTKEY not in winners:
-                        winners.append(EMISSION_BURN_HOTKEY)
-                else:
-                    winners = list(challengers)
+                winners = list(challengers)
                 if halt:
                     return
                 if not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in winners):
@@ -968,7 +747,6 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                             f"No challengers left to enter round 2 of {tournament.tournament_id} "
                             "after integrity gates; defending champion retains."
                         ),
-                        exclude_hotkeys=eliminated,
                     )
                     return
                 logger.info(f"R2 field after integrity gates: {winners}")
@@ -1022,22 +800,21 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
         logger.error(f"Tournament {tournament_id} not found")
         return 0
 
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        logger.info(f"Skipping environment tournament {tournament_id}; environment tournaments are retired")
+        return 0
+
     if tournament.tournament_type == TournamentType.TEXT:
         participation_fee_rao = t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO
     elif tournament.tournament_type == TournamentType.IMAGE:
         participation_fee_rao = t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO
-    elif tournament.tournament_type == TournamentType.ENVIRONMENT:
-        participation_fee_rao = t_cst.TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO
     else:
         raise ValueError(f"Unknown tournament type: {tournament.tournament_type}")
 
     fee_description = f"{participation_fee_rao / 1_000_000_000:g} TAO"
     logger.info(f"Tournament type: {tournament.tournament_type.value}, participation fee: {fee_description}")
 
-    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-        min_required_miners = t_cst.MIN_MINERS_FOR_ENV_TOURN
-    else:
-        min_required_miners = t_cst.MIN_MINERS_FOR_TOURN
+    min_required_miners = t_cst.MIN_MINERS_FOR_TOURN
 
     while True:
         persisted_participants = await get_tournament_participants(tournament_id, psql_db)
@@ -1335,13 +1112,10 @@ async def process_pending_tournaments(config: Config) -> list[str]:
 
             for tournament in pending_tournaments:
                 with LogContext(tournament_id=tournament.tournament_id):
-                    if (
-                        tournament.tournament_type == TournamentType.ENVIRONMENT
-                        and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
-                    ):
+                    if tournament.tournament_type == TournamentType.ENVIRONMENT:
                         logger.info(
-                            f"Skipping pending environment tournament {tournament.tournament_id}; "
-                            f"environment tournaments are paused"
+                            f"Skipping environment tournament {tournament.tournament_id}; "
+                            f"environment tournaments are retired"
                         )
                         continue
 
@@ -1525,13 +1299,10 @@ async def process_active_tournaments(config: Config):
             active_tournaments = await get_tournaments_with_status(TournamentStatus.ACTIVE, config.psql_db)
             for tournament in active_tournaments:
                 with LogContext(tournament_id=tournament.tournament_id):
-                    if (
-                        tournament.tournament_type == TournamentType.ENVIRONMENT
-                        and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED
-                    ):
+                    if tournament.tournament_type == TournamentType.ENVIRONMENT:
                         logger.info(
-                            f"Skipping active environment tournament {tournament.tournament_id}; "
-                            f"environment tournaments are paused"
+                            f"Skipping environment tournament {tournament.tournament_id}; "
+                            f"environment tournaments are retired"
                         )
                         continue
 
@@ -1848,7 +1619,8 @@ async def check_if_round_is_completed(round_data: TournamentRoundData, config: C
 async def process_tournament_scheduling(config: Config):
     """
     Process tournament scheduling to automatically start new tournaments when the previous ones finish.
-    Checks text, image, and environment tournaments independently (environment only when enabled).
+    Checks text and image tournaments independently. Environment tournaments are retired and no
+    longer scheduled.
 
     Tournaments only start during their scheduled day/hour window. If a scheduled start is missed,
     the system waits until the next week's scheduled time rather than starting late.
@@ -1857,10 +1629,7 @@ async def process_tournament_scheduling(config: Config):
 
     while True:
         try:
-            tournament_types = [TournamentType.TEXT, TournamentType.IMAGE]
-            if t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED:
-                tournament_types.append(TournamentType.ENVIRONMENT)
-            for tournament_type in tournament_types:
+            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE]:
                 await check_and_start_tournament(tournament_type, config.psql_db, config)
 
         except Exception as e:
@@ -1874,10 +1643,6 @@ async def check_and_start_tournament(tournament_type: TournamentType, psql_db: P
     Check if we should start a new tournament of the given type.
     """
     with LogContext(tournament_type=tournament_type.value):
-        if tournament_type == TournamentType.ENVIRONMENT and not t_cst.ENVIRONMENT_TOURNAMENTS_ENABLED:
-            logger.info("Environment tournaments are paused; not starting a new one")
-            return
-
         # Check if there's already an active tournament of this type
         active_tournament = await get_active_tournament(psql_db, tournament_type)
         if active_tournament:
@@ -1981,9 +1746,7 @@ def _get_tournament_schedule(tournament_type: TournamentType) -> tuple[int, int]
 
     Returns (day_of_week, hour) where day_of_week is 0=Monday through 6=Sunday.
     """
-    if tournament_type == TournamentType.ENVIRONMENT:
-        return (t_cst.TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR)
-    elif tournament_type == TournamentType.TEXT:
+    if tournament_type == TournamentType.TEXT:
         return (t_cst.TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_TEXT_HOUR)
     elif tournament_type == TournamentType.IMAGE:
         return (t_cst.TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_IMAGE_HOUR)

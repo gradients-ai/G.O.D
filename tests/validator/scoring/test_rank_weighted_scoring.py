@@ -3,10 +3,10 @@
 import pytest
 
 from core.constants.environments import EnvironmentName
-from validator.evaluation.pvp.models import PvPEnvironmentResult
-from validator.evaluation.pvp.models import PvPEvalMetadata
-from validator.evaluation.pvp.models import PvPGroupResults
-from validator.evaluation.pvp.models import PvPPairResult
+from core.models.pvp_models import PvPEnvironmentResult
+from core.models.pvp_models import PvPEvalMetadata
+from core.models.pvp_models import PvPGroupResults
+from core.models.pvp_models import PvPPairResult
 from validator.scoring.models import EnvironmentWeight
 from validator.scoring.models import EnvMinerScores
 from validator.scoring.tournaments import _rank_quantiles

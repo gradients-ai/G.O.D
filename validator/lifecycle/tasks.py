@@ -12,6 +12,7 @@ import validator.tasks.prep.constants as prep_cst
 from core.logging import LogContext
 from core.logging import add_context_tag
 from core.logging import get_logger
+from core.models.pvp_models import PvPIncompleteError
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.app.config import Config
@@ -19,14 +20,12 @@ from validator.db.database import PSQLDB
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.notifications import notify_evaluation_exception
 from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
-from validator.evaluation.pvp.models import PvPIncompleteError
 from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.infrastructure.cache import clean_all_hf_datasets_cache
 from validator.infrastructure.cache import manage_models_cache
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import evaluate_and_score_hotkeys
 from validator.scoring.tasks import finalize_task_scores_from_raw_losses
-from validator.scoring.tasks import should_use_tournament_eval
 from validator.tasks.config import get_task_config
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import RawTask
@@ -176,8 +175,7 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
     for task in preevaluation_tasks:
         try:
             assert task.task_id is not None
-            pvp = should_use_tournament_eval(task)
-            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=pvp)
+            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db, include_failed_training=False)
             task.status = TaskStatus.EVALUATING
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
@@ -341,9 +339,8 @@ async def _evaluate_pending_pairs_for_task(
     assert task.task_id is not None
 
     # GRPO must evaluate all repos in one pass so normalize_rewards_and_compute_loss
-    # can cross-normalize raw rewards before writing eval_loss. Tournament env eval
-    # similarly needs one coordinated pass. Instruct/DPO/image stay per-hotkey.
-    batch_together = task.task_type == TaskType.GRPOTASK or should_use_tournament_eval(task)
+    # can cross-normalize raw rewards before writing eval_loss. Instruct/DPO/image stay per-hotkey.
+    batch_together = task.task_type == TaskType.GRPOTASK
     if batch_together:
         training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
         if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):

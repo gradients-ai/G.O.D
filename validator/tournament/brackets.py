@@ -1,7 +1,7 @@
 from core.logging import get_logger
-from validator.tournament.models import RoundType
 from validator.db.sql.tournaments import get_tournament_group_members
 from validator.db.sql.tournaments import get_tournament_groups
+from validator.tournament.models import RoundType
 
 
 logger = get_logger(__name__)

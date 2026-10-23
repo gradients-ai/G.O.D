@@ -541,7 +541,6 @@ class TournamentDetailsResponse(BaseModel):
     final_scores: list[TournamentScore]
     text_tournament_weight: float
     image_tournament_weight: float
-    environment_tournament_weight: float | None = None
     boss_round_performance: list[TaskPerformanceDifference] | None = None
     sync_performance: list[TournamentPerformanceData] | None = None
 
@@ -549,15 +548,12 @@ class TournamentDetailsResponse(BaseModel):
 class TournamentAuditData(BaseModel):
     text_tournament_data: TournamentResultsWithWinners | None = None
     image_tournament_data: TournamentResultsWithWinners | None = None
-    environment_tournament_data: TournamentResultsWithWinners | None = None
     participants: list[str] = []
     text_tournament_weight: float = 0.0
     image_tournament_weight: float = 0.0
-    environment_tournament_weight: float = 0.0
     # Dynamic (participation-driven) base weights — what non-winner finalists receive.
     text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
     image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
-    environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT
     burn_weight: float = 0.0
     weekly_participation: list["HotkeyTaskParticipation"] = []
 
@@ -610,7 +606,6 @@ class NextTournamentInfo(BaseModel):
 class NextTournamentDates(BaseModel):
     text: NextTournamentInfo
     image: NextTournamentInfo
-    environment: NextTournamentInfo
 
 
 class ActiveTournamentParticipant(BaseModel):
@@ -628,7 +623,6 @@ class ActiveTournamentInfo(BaseModel):
 class ActiveTournamentsResponse(BaseModel):
     text: ActiveTournamentInfo | None
     image: ActiveTournamentInfo | None
-    environment: ActiveTournamentInfo | None
 
 
 class TournamentBurnData(BaseModel):
@@ -636,16 +630,12 @@ class TournamentBurnData(BaseModel):
 
     text_performance_diff: float | None
     image_performance_diff: float | None
-    environment_performance_diff: float | None = None
     text_burn_proportion: float
     image_burn_proportion: float
-    environment_burn_proportion: float = 0.0
     text_tournament_weight: float
     image_tournament_weight: float
-    environment_tournament_weight: float = 0.0
     text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
     image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
-    environment_base_weight: float = cts.TOURNAMENT_ENVIRONMENT_WEIGHT
     burn_weight: float
 
 
@@ -654,7 +644,6 @@ class LatestTournamentsDetailsResponse(BaseModel):
 
     text: TournamentDetailsResponse | None
     image: TournamentDetailsResponse | None
-    environment: TournamentDetailsResponse | None = None
     burn_data: TournamentBurnData
 
 
@@ -762,7 +751,6 @@ class TournamentWeightsResponse(BaseModel):
     burn_data: TournamentBurnData
     text_top_miners: list[MinerEmissionWeight]
     image_top_miners: list[MinerEmissionWeight]
-    environment_top_miners: list[MinerEmissionWeight] = []
 
 
 class WeightProjection(BaseModel):
@@ -788,7 +776,6 @@ class WeightProjectionResponse(BaseModel):
     percentage_improvement: float
     text_projection: TournamentProjection
     image_projection: TournamentProjection
-    environment_projection: TournamentProjection | None = None
 
 
 class MultiWeightProjectionResponse(BaseModel):
@@ -802,8 +789,6 @@ class BossBattleResponse(BaseModel):
     text_performance_differences: list[TaskPerformanceDifference]
     image_tournament_id: str | None
     image_performance_differences: list[TaskPerformanceDifference]
-    environment_tournament_id: str | None = None
-    environment_performance_differences: list[TaskPerformanceDifference] = []
 
 
 class DedupReviewStatus(str, Enum):

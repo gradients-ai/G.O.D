@@ -1,4 +1,4 @@
-from validator.evaluation.pvp.models import PvPStatus
+from core.models.pvp_models import PvPStatus
 
 
 # Connection Pool Constants

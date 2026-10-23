@@ -22,7 +22,7 @@ Important framing
 - The repo named G.O.D is not a website frontend. It is the subnet/validator/miner/trainer system that executes training jobs and tournaments.
 
 What the system does
-1. Accepts training requests for text, chat, DPO, GRPO, image, and environment tasks.
+1. Accepts training requests for text, chat, DPO, GRPO, and image tasks.
 2. Prices jobs based on model size and hours requested.
 3. Charges the user's account balance.
 4. Sends the task to a private validator on subnet 56.
@@ -110,7 +110,6 @@ Task types you can create
 - DpoTask
 - GrpoTask
 - ImageTask
-- EnvTask
 
 Core task creation endpoints
 - POST /v1/tasks/create
@@ -337,15 +336,10 @@ Tournament system overview
 - Tournaments are separate from paid organic jobs, but share the same ecosystem.
 - Miners expose GET /training_repo/{task_type} from their miner.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
-- Tournament types include text, image, and environment.
-- Environment tournaments can include PvP games, InterCode, and SWE Infinite (`swe_infinite`) individual evaluations.
-- The final-round `swe_infinite` task has a 2.5-hour training budget, one hour longer than standard environment tasks.
-- An environment boss-round challenger dethrones the champion when they have no boss-round losses and at least tie the champion on `swe_infinite`.
+- Tournament types include text and image. Environment tournaments have been retired and are no longer scheduled or emission-weighted; historical environment tournament rows remain queryable through the analytics endpoints.
 - Typical cadence:
-  - environment tournaments are currently paused (no new starts; leftover env rows are skipped)
   - text tournaments start Mondays at 11:00 UTC
   - image tournaments start Mondays at 13:00 UTC
-- Environment emission share and related weight endpoints remain while tournaments are paused.
 - Fees are burned and can be queried from the public API.
 
 Tournament miner endpoint
@@ -428,7 +422,7 @@ Operational rules for agents
 - Reuse the same persisted task_id for all follow-up status, breakdown, delete, and deployment operations.
 
 5. System capabilities
-- Can launch paid fine-tuning jobs for text, chat, DPO, GRPO, image, and environment tasks.
+- Can launch paid fine-tuning jobs for text, chat, DPO, GRPO, and image tasks.
 - Can launch multiple tasks for comparison across datasets, models, or reward configurations.
 - Can check pricing, poll task states, inspect breakdowns, and deploy a base-model-plus-LoRA pair to Chutes.
 - Can read public network, auditing, tournament, and performance endpoints without an API key where documented.

@@ -1,11 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum
 
-from core.constants.docker import MCTS_API_DOCKER_IMAGE
-from core.constants.docker import VALIDATOR_DOCKER_IMAGE_INTERCODE
-from core.constants.docker import VALIDATOR_DOCKER_IMAGE_PVP
-from core.constants.docker import VALIDATOR_DOCKER_IMAGE_SWE_INFINITE
-
 
 class EvalType(str, Enum):
     INDIVIDUAL = "individual"
@@ -44,16 +39,15 @@ class EnvironmentConfig:
     # until the per-environment time budget expires.
     num_baseline_episodes: int
     eval_type: EvalType
+    # Environment evaluation/training containers were sunset. These image/command
+    # fields are retained (empty) only so stored env rows and legacy payloads
+    # continue to deserialize; no environment container is built or launched.
     env_image: str = ""
     env_server_command: list[str] | None = None
-    tournament_eval_image: str = VALIDATOR_DOCKER_IMAGE_PVP
+    tournament_eval_image: str = ""
     tournament_eval_command: list[str] | None = None
     gpu_multiplier: int = 4
     eval_payload_extra: dict | None = None
-
-    def __post_init__(self):
-        if self.eval_type == EvalType.INDIVIDUAL and not self.tournament_eval_command:
-            raise ValueError("EnvironmentConfig with eval_type=INDIVIDUAL must define tournament_eval_command")
 
 
 ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
@@ -63,8 +57,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=2000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -79,8 +71,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=10_000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -95,8 +85,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=1000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -111,8 +99,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=10_000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -127,8 +113,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=10_000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -143,8 +127,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=10_000,
         num_baseline_episodes=0,
         eval_type=EvalType.PVP,
-        env_image=MCTS_API_DOCKER_IMAGE,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_PVP,
         gpu_multiplier=4,
         eval_payload_extra={
             "opponent": "mcts",
@@ -159,19 +141,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=20,
         num_baseline_episodes=0,
         eval_type=EvalType.INDIVIDUAL,
-        env_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
-        env_server_command=[
-            "python",
-            "-m",
-            "uvicorn",
-            "validator.evaluation.intercode_server:app",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "8000",
-        ],
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_INTERCODE,
-        tournament_eval_command=["python", "-m", "validator.evaluation.evaluators.intercode"],
         gpu_multiplier=4,
     ),
     EnvironmentName.SWE_INFINITE: EnvironmentConfig(
@@ -180,8 +149,6 @@ ENVIRONMENT_CONFIGS: dict[EnvironmentName, EnvironmentConfig] = {
         num_seeds=6,
         num_baseline_episodes=0,
         eval_type=EvalType.INDIVIDUAL,
-        tournament_eval_image=VALIDATOR_DOCKER_IMAGE_SWE_INFINITE,
-        tournament_eval_command=["python", "-m", "validator.evaluation.evaluators.swe"],
         gpu_multiplier=4,
     ),
 }

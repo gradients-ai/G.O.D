@@ -5,7 +5,7 @@ from collections import defaultdict
 import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName
 from core.logging import get_logger
-from validator.evaluation.pvp.models import PvPGroupResults
+from core.models.pvp_models import PvPGroupResults
 from validator.scoring.models import EnvironmentWeight
 from validator.scoring.models import EnvMinerScores
 from validator.scoring.models import GroupStagePoints
@@ -458,10 +458,8 @@ def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWit
 def get_tournament_weights_from_data(
     text_tournament_data: TournamentResultsWithWinners | None,
     image_tournament_data: TournamentResultsWithWinners | None,
-    environment_tournament_data: TournamentResultsWithWinners | None = None,
-) -> tuple[dict[str, float], dict[str, float], dict[str, float]]:
-    """Get tournament weights keeping text, image, and environment tournaments separate."""
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Get tournament weights keeping text and image tournaments separate."""
     text_weights = _compute_weights(TournamentType.TEXT, text_tournament_data)
     image_weights = _compute_weights(TournamentType.IMAGE, image_tournament_data)
-    environment_weights = _compute_weights(TournamentType.ENVIRONMENT, environment_tournament_data)
-    return text_weights, image_weights, environment_weights
+    return text_weights, image_weights

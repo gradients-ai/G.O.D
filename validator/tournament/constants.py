@@ -1,6 +1,5 @@
 from datetime import date
 
-from core.constants.environments import EnvironmentName
 from core.constants.environments import TrainingStartPoint
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
@@ -13,14 +12,7 @@ TOURNAMENT_INTERVAL_HOURS = 120
 # results replace the standings: one interval plus roughly the run itself.
 RUNNER_UP_EMISSION_DAYS = 7
 
-# When False, the scheduler does not create new environment tournaments and the
-# pending/active loops skip leftover ENVIRONMENT rows. Emissions and public
-# environment weight fields stay in place until the full sunset lands.
-ENVIRONMENT_TOURNAMENTS_ENABLED = False
-
 # Tournament scheduling settings
-TOURNAMENT_SCHEDULE_ENVIRONMENT_DAY_OF_WEEK = 0
-TOURNAMENT_SCHEDULE_ENVIRONMENT_HOUR = 9
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_TEXT_HOUR = 11
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0
@@ -35,7 +27,6 @@ TOURNAMENT_DEADLINE_HOUR = 14
 TOURNAMENT_DEADLINE_ALERT_MINUTES_BEFORE = 30
 
 # Tournament start requirements
-MIN_MINERS_FOR_ENV_TOURN = 5
 MIN_MINERS_FOR_TOURN = 4  # text/image minimum; text R1 is always a single group advancing top 2
 
 # Boss round historical task selection
@@ -98,33 +89,6 @@ MIN_GROUP_SIZE = 20
 # challenger.
 SMALL_TOURNAMENT_GROUP_TASKS = 3
 SMALL_TOURNAMENT_ADVANCE = 2
-MIN_ENVIRONMENT_GROUP_SIZE = 2
-# Cap includes the injected boss. With 5 members, a group evaluates at most
-# C(5, 2) = 10 PvP pairs.
-MAX_ENVIRONMENT_GROUP_SIZE = 5
-# Small env tournaments collapse too fast (one big group advancing 1 contender). When the
-# field is smaller than SMALL_ENVIRONMENT_MAX_PARTICIPANTS, cap the group size lower so there
-# are more groups, more contenders survive each round, and the bracket plays out over more rounds.
-SMALL_ENVIRONMENT_MAX_PARTICIPANTS = 7  # i.e. fewer than 8
-SMALL_ENVIRONMENT_GROUP_SIZE = 4
-
-
-# Environment tournament round structure
-ENV_ADVANCE_PER_GROUP = 1
-ENV_FINAL_ROUND_TASK_COUNT = 3
-ENV_ENVS_PER_ROUND_MULTIPLIER = 2  # R1=2, R2=4, R3=6 (capped at total available)
-ENV_TRAINING_HOURS = 1.5
-ENV_TRAINING_HOURS_SWE_INFINITE = ENV_TRAINING_HOURS + 1.0
-ENV_TRAINING_HOURS_BOSS_ROUND_FROM_SCRATCH = 3.0
-# Clean copy of the retired qwen (Qwen3-8B-Base) continuous-SFT final winner; base for the
-# guaranteed swe_infinite boss task (TrainingStartPoint.PREVIOUS_WINNER / target-model start).
-ENV_TARGET_TOURN_MODEL = "gradients-io-tournaments/swe-base-qwen3-8b-continuous"
-# If set, forces this game to be the boss (final) round task and excludes it from earlier rounds.
-# Set to None to let any game randomly be the boss round.
-FORCED_BOSS_ENVIRONMENT: EnvironmentName | None = EnvironmentName.SWE_INFINITE
-# If set, guarantees this game is one of round 1's environments (all groups share round 1's
-# environment set). Set to None to let round 1's environments be picked without any forcing.
-FORCED_R1_ENVIRONMENT: EnvironmentName | None = EnvironmentName.INTERCODE
 
 TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE = 50
 DEFAULT_PARTICIPANT_REPO = "https://github.com/rayonlabs/G.O.D"
@@ -147,7 +111,6 @@ TOURN_DEDUP_CONCURRENCY = 8
 # Tournament task allocation
 TEXT_TASKS_PER_GROUP = 1
 IMAGE_TASKS_PER_GROUP = 1
-ENVIRONMENT_TASKS_PER_GROUP = 1
 
 # Image R1 has one smaller task for each family. Thirty source pairs map to at
 # most three test images and at most 0.75 competition hours.
@@ -348,5 +311,4 @@ PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS = 0.5
 
 # Tournament participation fees (in RAO)
 TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 700_000_000  # 0.7 TAO = 700,000,000 RAO
-TOURNAMENT_ENVIRONMENT_PARTICIPATION_FEE_RAO = 600_000_000  # 0.6 TAO = 600,000,000 RAO
 TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 400_000_000  # 0.4 TAO = 400,000,000 RAO

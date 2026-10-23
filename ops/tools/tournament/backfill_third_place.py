@@ -18,7 +18,7 @@ tournament whose 3rd place cannot be cleanly resolved.
 Usage
 -----
     # Dry run (default): show what would change for the latest completed
-    # text/image/environment tournaments, write nothing.
+    # text/image tournaments, write nothing.
     python ops/tools/tournament/backfill_third_place.py
 
     # Dry run for specific tournament ids.
@@ -46,7 +46,6 @@ from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentType
 from validator.tournament.participants import get_pre_boss_knockout_loser
-from validator.tournament.round_results import get_pre_boss_group_runner_up
 
 
 logger = get_logger(__name__)
@@ -73,10 +72,6 @@ async def _resolve_third_place(
 ) -> str | None:
     if tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
         return await get_pre_boss_knockout_loser(tournament, final_round, challenger_hotkey, psql_db)
-    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-        return await get_pre_boss_group_runner_up(
-            tournament.tournament_id, final_round, challenger_hotkey, psql_db
-        )
     return None
 
 
@@ -150,7 +145,7 @@ async def main() -> None:
     parser.add_argument(
         "tournament_ids",
         nargs="*",
-        help="Specific tournament ids. Defaults to the latest completed text/image/environment tournaments.",
+        help="Specific tournament ids. Defaults to the latest completed text/image tournaments.",
     )
     parser.add_argument(
         "--apply",
@@ -167,7 +162,7 @@ async def main() -> None:
         tournament_ids = args.tournament_ids
         if not tournament_ids:
             tournament_ids = []
-            for tournament_type in (TournamentType.TEXT, TournamentType.IMAGE, TournamentType.ENVIRONMENT):
+            for tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
                 latest = await get_latest_completed_tournament(psql_db, tournament_type)
                 if latest:
                     tournament_ids.append(latest.tournament_id)

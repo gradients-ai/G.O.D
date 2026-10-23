@@ -24,9 +24,7 @@ from validator.tournament.reports import generate_diff_report_and_notify_tournam
 from validator.tournament.reports import generate_diff_report_for_result
 from validator.tournament.round_results import _resolve_boss_round_draws
 from validator.tournament.round_results import determine_boss_round_winner
-from validator.tournament.round_results import determine_env_tournament_winner
 from validator.tournament.round_results import did_winner_change
-from validator.tournament.round_results import get_environment_group_winners
 from validator.tournament.round_results import get_group_winners
 from validator.tournament.round_results import get_knockout_winners
 from validator.tournament.round_results import get_real_tournament_winner
@@ -45,7 +43,6 @@ __all__ = [
     "deduplicate_by_github_account",
     "deduplicate_by_ip_address",
     "determine_boss_round_winner",
-    "determine_env_tournament_winner",
     "did_winner_change",
     "draw_group_stage_table",
     "draw_knockout_bracket",
@@ -53,7 +50,6 @@ __all__ = [
     "generate_diff_report_for_result",
     "get_base_contestant",
     "get_challenger_participant_for_retained_boss",
-    "get_environment_group_winners",
     "get_group_winners",
     "get_knockout_winners",
     "get_latest_commit_hash_from_github",

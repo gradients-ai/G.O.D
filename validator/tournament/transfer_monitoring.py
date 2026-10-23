@@ -8,16 +8,16 @@ from typing import Optional
 
 import requests
 
+from core.logging import get_logger
 from validator.app.config import Config
-from validator.transfers.models import TaoStatsTransferData
-from validator.transfers.models import TaoStatsTransferResponse
-from validator.transfers.models import TransferData
 from validator.db.sql.transfers import get_or_create_coldkey_balance
 from validator.db.sql.transfers import get_transfer_processing_state
 from validator.db.sql.transfers import insert_transfer
 from validator.db.sql.transfers import update_coldkey_balance
 from validator.db.sql.transfers import update_transfer_processing_state
-from core.logging import get_logger
+from validator.transfers.models import TaoStatsTransferData
+from validator.transfers.models import TaoStatsTransferResponse
+from validator.transfers.models import TransferData
 
 
 logger = get_logger(__name__)

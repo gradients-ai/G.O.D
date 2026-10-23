@@ -1,8 +1,6 @@
 # Text-task model-prep: instruct / dpo / grpo / chat, including continuous-SFT custom-arch (quasar).
 # On the transformers-v5 axolotl base so the quasar v5 arch loads. Deliberately NO sglang: it is an
-# unused, heavy dependency for text tasks (sglang is only invoked by ENVIRONMENT-task baseline stats,
-# which run in the separate model-prep image, ops/docker/model-prep-env.dockerfile). Recent sglang
-# (>= v0.5.10) pins transformers v5 too, so the historical v4-conflict reason no longer applies.
+# unused, heavy dependency for text tasks.
 FROM axolotlai/axolotl:main-20260701-py3.11-cu128-2.9.1
 
 WORKDIR /app

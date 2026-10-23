@@ -37,7 +37,6 @@ from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDP
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tasks import _get_dataset_type
-from validator.scoring.tasks import should_use_tournament_eval
 from validator.tasks.details import try_db_connections
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import Backend
@@ -355,6 +354,12 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
     tasks_without_nodes = []
 
     for task in tasks:
+        # Environment tournaments are retired; never assign environment tasks for training.
+        # This covers leftover pending tournament ENVIRONMENTTASKs and organic environment tasks.
+        if task.task_type == TaskType.ENVIRONMENTTASK:
+            logger.info(f"Skipping environment task {task.task_id} for training; environment tournaments are retired")
+            continue
+
         # For tournament and benchmark tasks (priority 2 and 3), get actual assigned nodes
         # For organic tasks (priority 1), we'll use EMISSION_BURN_HOTKEY
         if priority in [2, 3]:
@@ -394,8 +399,6 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 tournament_type = TournamentType.TEXT
             elif task.task_type == TaskType.IMAGETASK:
                 tournament_type = TournamentType.IMAGE
-            elif task.task_type == TaskType.ENVIRONMENTTASK:
-                tournament_type = TournamentType.ENVIRONMENT
             else:
                 tournament_type = None
 
@@ -1129,12 +1132,6 @@ async def seed_tournament_evaluations_from_training(config: Config):
 
             for task in training_tasks:
                 try:
-                    # For PvP tasks, only seed eval rows once ALL miners have terminal training.
-                    # Otherwise miners get evaluated individually as they finish, producing 0 PvP pairs.
-                    if should_use_tournament_eval(task):
-                        statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
-                        if statuses and any(s not in ("success", "failure") for s in statuses.values()):
-                            continue
                     await task_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
                 except Exception as e:
                     logger.error(f"Error seeding evaluation rows for task {task.task_id}: {str(e)}", exc_info=True)
