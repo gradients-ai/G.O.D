@@ -1,0 +1,54 @@
+{
+ "axolotl_commit": "0bda5a13",
+ "transformers_version": "5.12.1",
+ "datasets_version": "4.8.5",
+ "tokenizer_repo": "tiiuae/Falcon-H1-0.5B-Base",
+ "tokenizer_sha": "59fb76e8c5d3fc7441b062be638e1ba0afd5c687",
+ "tokenizer_files_sha256": {
+  "generation_config.json": "1689c9ee2a9b2d312bd6bfbc21dde4e0894b998fa429203da89ccbfb0ac3d2f4",
+  "special_tokens_map.json": "f7f8082c06e8059eae989095356ba775ad4dcdc2e23af15eda6c74e3aee0d239",
+  "tokenizer.json": "605c664925653e3fbf2f35ea063847db441ba5b7a6af04378880409c3ab311fc",
+  "tokenizer_config.json": "e0eb1761b3a782ef1c0dd634f643f0f468b0a86198c2d898a73e60263bdc9f88"
+ },
+ "bos_token_id": null,
+ "eos_token_id": 11,
+ "pad_token_id": 11,
+ "kind": "instruct_system_nofield",
+ "dataset_type_name": "InstructTextDatasetType",
+ "dataset_type": {
+  "system_prompt": "",
+  "system_format": "{system}",
+  "field_system": null,
+  "field_instruction": "instruct",
+  "field_input": "input",
+  "field_output": "output",
+  "format": null,
+  "no_input_format": null,
+  "field": null
+ },
+ "sequence_len": 4096,
+ "max_position_embeddings": 40960,
+ "rows_file": "datasets/instruct_system_rows.json",
+ "excluded_rows": [],
+ "raw": [
+  {"row_index":0,"chunk":0,"input_ids":[5617,998,2659,814,537,562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,12698,537,11],"dropped":null},
+  {"row_index":1,"chunk":0,"input_ids":[562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,12698,537,11],"dropped":null},
+  {"row_index":2,"chunk":0,"input_ids":[562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,12698,537,11],"dropped":null},
+  {"row_index":3,"chunk":0,"input_ids":[5617,998,12649,537,562,9961,1366,537,4572,1470,18109,2780,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,18109,2780,537,11],"dropped":null},
+  {"row_index":4,"chunk":0,"input_ids":[562,9961,1366,537,4572,1470,18109,2780,537,11],"labels":[-100,-100,-100,-100,-100,-100,18109,2780,537,11],"dropped":null},
+  {"row_index":5,"chunk":0,"input_ids":[731,1359,3934,2002,731,992,9961,1366,537,13959,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,13959,537,11],"dropped":null},
+  {"row_index":6,"chunk":0,"input_ids":[562,9961,1366,537,13959,537,11],"labels":[-100,-100,-100,-100,13959,537,11],"dropped":null},
+  {"row_index":7,"chunk":0,"input_ids":[10604,951,731,614,1857,2604,1192,5656,2177,2604,537,614,1067,616,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,614,1067,616,11],"dropped":null},
+  {"row_index":8,"chunk":0,"input_ids":[1999,1555,537,4160,3458,537],"labels":[-100,-100,-100,-100,-100,-100],"dropped":"unscored"}
+ ],
+ "final": [
+  {"row_index":1,"chunk":0,"input_ids":[562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,12698,537,11]},
+  {"row_index":2,"chunk":0,"input_ids":[562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,12698,537,11]},
+  {"row_index":6,"chunk":0,"input_ids":[562,9961,1366,537,13959,537,11],"labels":[-100,-100,-100,-100,13959,537,11]},
+  {"row_index":4,"chunk":0,"input_ids":[562,9961,1366,537,4572,1470,18109,2780,537,11],"labels":[-100,-100,-100,-100,-100,-100,18109,2780,537,11]},
+  {"row_index":0,"chunk":0,"input_ids":[5617,998,2659,814,537,562,9961,1366,537,12698,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,12698,537,11]},
+  {"row_index":5,"chunk":0,"input_ids":[731,1359,3934,2002,731,992,9961,1366,537,13959,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,13959,537,11]},
+  {"row_index":3,"chunk":0,"input_ids":[5617,998,12649,537,562,9961,1366,537,4572,1470,18109,2780,537,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,18109,2780,537,11]},
+  {"row_index":7,"chunk":0,"input_ids":[10604,951,731,614,1857,2604,1192,5656,2177,2604,537,614,1067,616,11],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,-100,614,1067,616,11]}
+ ]
+}

@@ -1,0 +1,70 @@
+[
+ {
+  "conversations": [
+   {
+    "from": "human",
+    "value": "Hi there."
+   },
+   {
+    "from": "gpt",
+    "value": "Hello! How can I help?"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "human",
+    "value": "What is the capital of France?"
+   },
+   {
+    "from": "gpt",
+    "value": "Paris is the capital."
+   },
+   {
+    "from": "human",
+    "value": "And Germany?"
+   },
+   {
+    "from": "gpt",
+    "value": "Berlin."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "system",
+    "value": "You are a pirate."
+   },
+   {
+    "from": "human",
+    "value": "Hello."
+   },
+   {
+    "from": "gpt",
+    "value": "Arr, ahoy."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "human",
+    "value": "Is anyone there?"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "human",
+    "value": "Say nothing."
+   },
+   {
+    "from": "gpt",
+    "value": ""
+   }
+  ]
+ }
+]
