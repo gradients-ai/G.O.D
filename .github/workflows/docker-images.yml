@@ -78,6 +78,9 @@ jobs:
                       "validator/evaluation/**",
                       "ops/docker/validator.dockerfile",
                       "ops/docker/requirements/validator.txt",
+                      "ops/docker/requirements/text-evaluator-pins.txt",
+                      "ops/docker/requirements/text-evaluator-pins.in",
+                      "validator/assets/chat_templates/**",
                       ".dockerignore",
                   ],
                   "exclude_patterns": [
