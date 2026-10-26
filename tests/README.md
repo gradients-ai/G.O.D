@@ -20,3 +20,7 @@ GPU/model-download tests are marked `gpu` and skipped by default so local CPU-on
 ```bash
 uv run --extra dev --extra gpu pytest -q --run-gpu
 ```
+
+The text-eval equivalence tests (`validator/evaluation/test_axolotl_golden_equivalence.py` and the other real-tokenizer
+tests there) need the eval image's HF stack and cached tokenizers rather than a GPU; they skip without transformers. See
+`validator/evaluation/README.md` for the command.

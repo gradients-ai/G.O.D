@@ -1,11 +1,9 @@
 import json
 import math
 import os
-import shutil
 import subprocess
 import tempfile
 import urllib.request
-from pathlib import Path
 
 from pydantic import TypeAdapter
 
@@ -17,9 +15,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from accelerate.utils import find_executable_batch_size
-from axolotl.utils.dict import DictDefault
 from torch.nn.utils.rnn import pad_sequence
-from torch.utils.data import Dataset
 from transformers import AutoModelForCausalLM
 from transformers import AutoTokenizer
 from transformers import Trainer
@@ -28,9 +24,11 @@ from transformers import TrainingArguments
 import core.constants as core_cst
 import validator.evaluation.constants as eval_cst
 from core.logging import get_logger
+from core.models.dataset_models import ChatTemplateDatasetType
+from core.models.dataset_models import FileFormat
+from core.models.dataset_models import InstructTextDatasetType
 from core.models.dataset_models import TextDatasetType
 from validator.evaluation.common import ProgressLoggerCallback
-from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
 from validator.evaluation.common import eval_set_fingerprint
@@ -41,39 +39,35 @@ from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
+from validator.evaluation.common import text_eval_config_for_finetuned_model
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import model_is_a_finetune
 from validator.evaluation.models import EvaluationArgs
-from validator.infrastructure.service_constants import VALI_CONFIG_PATH
+from validator.evaluation.text_eval_config import TextEvalConfig
+from validator.evaluation.text_eval_dataset import DropReason
+from validator.evaluation.text_eval_dataset import build_text_eval_dataset
+from validator.evaluation.text_eval_dataset import load_eval_rows
 
 
 logger = get_logger(__name__)
 
-try:
-    from axolotl.utils.data import load_tokenized_prepared_datasets
-
-    _USES_LEGACY_AXOLOTL_DATA_API = True
-except ImportError:
-    from axolotl.utils.data.sft import _load_tokenized_prepared_datasets as load_tokenized_prepared_datasets
-
-    _USES_LEGACY_AXOLOTL_DATA_API = False
+EvalTextDatasetType = InstructTextDatasetType | ChatTemplateDatasetType
 
 
-def _load_evaluation_dataset(evaluation_config: DictDefault, tokenizer: AutoTokenizer) -> Dataset:
-    prepared_path = Path(evaluation_config.output_dir) / "prepared"
-    if _USES_LEGACY_AXOLOTL_DATA_API:
-        eval_dataset, _ = load_tokenized_prepared_datasets(tokenizer, evaluation_config, prepared_path)
-    else:
-        evaluation_config["dataset_prepared_path"] = str(prepared_path)
-        eval_dataset, _ = load_tokenized_prepared_datasets(tokenizer, evaluation_config, split="train")
-
-    original_length = len(eval_dataset)
-    eval_dataset = [sample for sample in eval_dataset if any(label != -100 for label in sample["labels"])]
-    filtered_length = len(eval_dataset)
-
-    logger.info(f"Filtered out {original_length - filtered_length} samples with empty outputs")
-    eval_dataset = sorted(eval_dataset, key=lambda x: len(x["input_ids"]))
-    logger.info(f"Loaded evaluation dataset with {filtered_length} samples")
+def _load_evaluation_dataset(
+    config: TextEvalConfig,
+    dataset_type: EvalTextDatasetType,
+    dataset_path: str,
+    tokenizer: AutoTokenizer,
+    file_format: FileFormat = FileFormat.JSON,
+) -> list[dict[str, list[int]]]:
+    """The scored eval set in its final order, as plain dicts so the Trainer, collator and fingerprint see the same
+    {input_ids, attention_mask, labels} rows they always did."""
+    build = build_text_eval_dataset(load_eval_rows(dataset_path, file_format), dataset_type, tokenizer, config)
+    eval_dataset = [example.model_dump() for example in build.examples]
+    # Same two log lines (and wording) as the previous loader; ops greps them. "Filtered out" is the all-masked drop.
+    logger.info(f"Filtered out {build.dropped[DropReason.UNSCORED]} samples with empty outputs")
+    logger.info(f"Loaded evaluation dataset with {len(eval_dataset)} samples")
     return eval_dataset
 
 
@@ -111,29 +105,28 @@ def _sequence_len_candidates(start: int, cap: int) -> list[int]:
 
 
 def _load_evaluation_dataset_with_sequence_retries(
-    evaluation_config: DictDefault,
+    config: TextEvalConfig,
+    dataset_type: EvalTextDatasetType,
+    dataset_path: str,
     tokenizer: AutoTokenizer,
     language_model: AutoModelForCausalLM,
-) -> list:
+    file_format: FileFormat = FileFormat.JSON,
+) -> list[dict[str, list[int]]]:
     """
-    Axolotl drops samples longer than sequence_len. If nothing survives, retry
-    with larger sequence_len (cleared prepared cache) up to model limits.
+    Rows longer than sequence_len are dropped. If nothing survives, retry with a larger
+    sequence_len up to model limits.
     """
-    prepared_path = Path(evaluation_config.output_dir) / "prepared"
-    start_seq = int(evaluation_config.sequence_len)
+    start_seq = int(config.sequence_len)
     cap = _max_eval_sequence_cap(tokenizer, language_model)
     candidates = _sequence_len_candidates(start_seq, cap)
     logger.info(f"Eval sequence_len candidates (start={start_seq}, cap={cap}): {candidates}")
 
-    last_dataset: list = []
     for seq_len in candidates:
-        evaluation_config.sequence_len = seq_len
-        if prepared_path.exists():
-            shutil.rmtree(prepared_path, ignore_errors=True)
-        last_dataset = _load_evaluation_dataset(evaluation_config, tokenizer)
-        if len(last_dataset) > 0:
-            logger.info(f"Using sequence_len={seq_len} with {len(last_dataset)} evaluation samples")
-            return last_dataset
+        candidate_config = config.model_copy(update={"sequence_len": seq_len})
+        eval_dataset = _load_evaluation_dataset(candidate_config, dataset_type, dataset_path, tokenizer, file_format)
+        if len(eval_dataset) > 0:
+            logger.info(f"Using sequence_len={seq_len} with {len(eval_dataset)} evaluation samples")
+            return eval_dataset
         logger.warning(
             f"No eval samples after tokenization at sequence_len={seq_len}; "
             f"retrying with a larger sequence_len if available"
@@ -176,7 +169,7 @@ def _compute_per_example_losses(
     """Cross-entropy per eval example, token-averaged within each example.
 
     Matches what the reported eval_loss aggregates: per_device_eval_batch_size is pinned to 1
-    (test_axolotl.yml sets starting_batch_size: 1 and find_executable_batch_size only shrinks), so
+    (TextEvalConfig.starting_batch_size is 1 and find_executable_batch_size only shrinks), so
     HF's eval_loss is a flat mean over examples of exactly this quantity. That identity is asserted
     by the caller and is the only check available on code that cannot be run outside the eval image.
 
@@ -290,17 +283,19 @@ def _calculate_instruct_kl_divergence(
 
 
 def evaluate_instruct_text_model(
-    evaluation_config: DictDefault,
+    evaluation_config: TextEvalConfig,
+    dataset_type: EvalTextDatasetType,
+    dataset_path: str,
     language_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     base_model: AutoModelForCausalLM | None = None,
     kl_coef: float | None = None,
+    file_format: FileFormat = FileFormat.JSON,
 ) -> dict[str, float | list[float] | str]:
-    evaluation_config.tokenizer_config = tokenizer.name_or_path
-    logger.info(f"Config: {evaluation_config}")
+    logger.info(f"Config: {evaluation_config.model_dump()} tokenizer={tokenizer.name_or_path} dataset_type={dataset_type}")
 
     eval_dataset = _load_evaluation_dataset_with_sequence_retries(
-        evaluation_config, tokenizer, language_model
+        evaluation_config, dataset_type, dataset_path, tokenizer, language_model, file_format
     )
 
     _log_dataset_and_model_info(eval_dataset, language_model, tokenizer)
@@ -431,11 +426,17 @@ def evaluate_finetuned_model(
     base_model: AutoModelForCausalLM | None = None,
     kl_coef: float | None = None,
 ) -> dict[str, float | list[float] | str]:
-    evaluation_config = _load_and_update_evaluation_config(
-        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
-    )
+    if not isinstance(evaluation_args.dataset_type, (InstructTextDatasetType, ChatTemplateDatasetType)):
+        raise TypeError(f"instruct_text evaluates instruct or chat tasks, got {type(evaluation_args.dataset_type).__name__}")
     return evaluate_instruct_text_model(
-        evaluation_config, finetuned_model, tokenizer, base_model=base_model, kl_coef=kl_coef
+        text_eval_config_for_finetuned_model(finetuned_model),
+        evaluation_args.dataset_type,
+        evaluation_args.dataset,
+        finetuned_model,
+        tokenizer,
+        base_model=base_model,
+        kl_coef=kl_coef,
+        file_format=evaluation_args.file_format,
     )
 
 

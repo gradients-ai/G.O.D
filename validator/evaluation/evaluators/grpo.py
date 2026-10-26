@@ -9,7 +9,6 @@ import urllib.request
 os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 
 from accelerate.utils import find_executable_batch_size
-from axolotl.utils.dict import DictDefault
 from datasets import Dataset
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM
@@ -21,7 +20,6 @@ import validator.evaluation.constants as cst
 from core.logging import get_logger
 from core.models.dataset_models import GrpoDatasetType
 from validator.evaluation.common import ProgressLoggerCallback
-from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
 from validator.evaluation.common import load_finetuned_model
@@ -31,11 +29,12 @@ from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
+from validator.evaluation.common import text_eval_config_for_finetuned_model
 from validator.evaluation.dataset_utils import build_dummy_train_dataset
 from validator.evaluation.model_checks import check_for_lora
 from validator.evaluation.model_checks import model_is_a_finetune
 from validator.evaluation.models import EvaluationArgs
-from validator.infrastructure.service_constants import VALI_CONFIG_PATH
+from validator.evaluation.text_eval_config import TextEvalConfig
 from validator.tasks.datasets.constants import STANDARD_GRPO_EXTRA_COLUMN
 from validator.tasks.rewards.functions import supports_extra_data
 from validator.tasks.rewards.functions import validate_reward_function
@@ -68,15 +67,14 @@ def _adapt_grpo_columns_to_trl(dataset: Dataset, dataset_type: GrpoDatasetType) 
 
 
 def evaluate_grpo_model(
-    evaluation_config: DictDefault,
+    evaluation_config: TextEvalConfig,
     finetuned_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     evaluation_args: EvaluationArgs,
 ) -> dict[str, float]:
-    evaluation_config.tokenizer_config = tokenizer.name_or_path
-    logger.info(f"Config: {evaluation_config}")
+    logger.info(f"Config: {evaluation_config.model_dump()} tokenizer={tokenizer.name_or_path}")
 
-    data_files = evaluation_config.datasets[0].get("data_files", [evaluation_config.datasets[0]["path"]])
+    data_files = [os.path.abspath(evaluation_args.dataset)]
     eval_dataset = load_dataset("json", data_files=data_files, split="train")
 
     eval_dataset = _adapt_grpo_columns_to_trl(eval_dataset, evaluation_args.dataset_type)
@@ -267,9 +265,7 @@ def evaluate_finetuned_grpo_model(
     finetuned_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
 ) -> dict[str, float]:
-    evaluation_config = _load_and_update_evaluation_config(
-        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
-    )
+    evaluation_config = text_eval_config_for_finetuned_model(finetuned_model)
     return evaluate_grpo_model(evaluation_config, finetuned_model, tokenizer, evaluation_args)
 
 

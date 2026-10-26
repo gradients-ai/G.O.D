@@ -14,8 +14,6 @@ COLDKEY = "coldkey"
 BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 DELETE_S3_AFTER_COMPLETE = True
 
-VALI_CONFIG_PATH = "validator/assets/test_axolotl.yml"
-
 # db stuff
 NULL_ACCOUNT_ID = "00000000-0000-0000-0000-000000000000"
 

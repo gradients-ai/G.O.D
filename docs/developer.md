@@ -313,6 +313,9 @@ Run tests that need GPU/evaluation dependencies:
 uv run --extra dev --extra gpu pytest -q
 ```
 
+The text-eval data path (`validator/evaluation/text_eval_dataset.py`, no axolotl) is proven against frozen axolotl outputs by
+real-tokenizer tests that need the eval image's transformers 5.12.1 stack; see `tests/validator/evaluation/README.md`.
+
 Run a focused test:
 
 ```bash

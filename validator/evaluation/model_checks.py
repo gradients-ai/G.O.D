@@ -123,8 +123,8 @@ def model_is_a_finetune(
                 break
 
     # Context window is checked directionally rather than for equality. Declaring a SMALLER context
-    # than the base lowers the eval sequence_len (_load_and_update_evaluation_config only ever
-    # shrinks it), which makes axolotl drop the longer held-out rows - so the submission is scored
+    # than the base lowers the eval sequence_len (text_eval_config_for_model only ever
+    # shrinks it), which makes the eval dataset builder drop the longer held-out rows - so the submission is scored
     # on a shorter subset than everyone else and the mean losses stop being comparable. A LARGER
     # declared context cannot shrink anyone's eval set, and rejecting it would fail benign pipelines
     # that rewrite the field when applying rope scaling. YaRN tasks are unaffected either way: the

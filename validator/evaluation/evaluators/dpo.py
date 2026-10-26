@@ -12,7 +12,6 @@ os.environ["TRANSFORMERS_ALLOW_TORCH_LOAD"] = "true"
 import torch
 import torch.nn.functional as F
 from accelerate.utils import find_executable_batch_size
-from axolotl.utils.dict import DictDefault
 from datasets import Dataset
 from datasets import load_dataset
 from torch.nn.utils.rnn import pad_sequence
@@ -26,7 +25,6 @@ import validator.evaluation.constants as cst
 from core.logging import get_logger
 from core.models.dataset_models import DpoDatasetType
 from validator.evaluation.common import ProgressLoggerCallback
-from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
 from validator.evaluation.common import eval_set_fingerprint
@@ -38,10 +36,11 @@ from validator.evaluation.common import load_tokenizer
 from validator.evaluation.common import log_memory_stats
 from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
+from validator.evaluation.common import text_eval_config_for_finetuned_model
 from validator.evaluation.dataset_utils import build_dummy_train_dataset
 from validator.evaluation.model_checks import model_is_a_finetune
 from validator.evaluation.models import EvaluationArgs
-from validator.infrastructure.service_constants import VALI_CONFIG_PATH
+from validator.evaluation.text_eval_config import TextEvalConfig
 
 
 logger = get_logger(__name__)
@@ -243,8 +242,8 @@ def _compute_per_pair_dpo_losses(
     """DPO loss per preference pair, for the paired boss-round comparison.
 
     Computed directly from policy and reference log-probabilities rather than through TRL, because
-    TRL is unpinned - it comes from the axolotl base image - so reaching into its internals would
-    break silently on a base bump. The caller asserts the mean of this against TRL's reported
+    TRL's internals change between releases (the eval image pins it, but pins get bumped), so reaching
+    into them would break silently on an upgrade. The caller asserts the mean of this against TRL's reported
     eval_loss, which is what catches a wrong formula on code that cannot be run locally.
     """
     finetuned_model.eval()
@@ -273,16 +272,15 @@ def _compute_per_pair_dpo_losses(
 
 
 def evaluate_dpo_model(
-    evaluation_config: DictDefault,
+    evaluation_config: TextEvalConfig,
     finetuned_model: AutoModelForCausalLM,
     reference_model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     evaluation_args: EvaluationArgs,
 ) -> dict[str, float | list[float] | str]:
-    evaluation_config.tokenizer_config = tokenizer.name_or_path
-    logger.info(f"Config: {evaluation_config}")
+    logger.info(f"Config: {evaluation_config.model_dump()} tokenizer={tokenizer.name_or_path}")
 
-    data_files = evaluation_config.datasets[0].get("data_files", [evaluation_config.datasets[0]["path"]])
+    data_files = [os.path.abspath(evaluation_args.dataset)]
     eval_dataset = load_dataset("json", data_files=data_files, split="train")
     eval_dataset = _adapt_dpo_columns_to_trl(eval_dataset, evaluation_args.dataset_type)
 
@@ -374,9 +372,7 @@ def evaluate_finetuned_dpo_model(
     tokenizer: AutoTokenizer,
     reference_model: AutoModelForCausalLM,
 ) -> dict[str, float]:
-    evaluation_config = _load_and_update_evaluation_config(
-        evaluation_args=evaluation_args, finetuned_model=finetuned_model, config_path=VALI_CONFIG_PATH
-    )
+    evaluation_config = text_eval_config_for_finetuned_model(finetuned_model)
     return evaluate_dpo_model(evaluation_config, finetuned_model, reference_model, tokenizer, evaluation_args)
 
 
