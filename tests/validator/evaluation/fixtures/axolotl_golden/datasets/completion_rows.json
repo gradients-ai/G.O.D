@@ -1,0 +1,26 @@
+[
+ {
+  "instruct": "The quick brown fox jumps over the lazy dog."
+ },
+ {
+  "instruct": "Paragraph 1: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 1 exists only to be long. Paragraph 2: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 2 exists only to be long. Paragraph 3: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 3 exists only to be long. Paragraph 4: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 4 exists only to be long. Paragraph 5: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 5 exists only to be long. Paragraph 6: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 6 exists only to be long. Paragraph 7: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 7 exists only to be long. Paragraph 8: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 8 exists only to be long. Paragraph 9: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 9 exists only to be long. Paragraph 10: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 10 exists only to be long. Paragraph 11: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 11 exists only to be long. Paragraph 12: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 12 exists only to be long."
+ },
+ {
+  "instruct": ""
+ },
+ {
+  "instruct": "a"
+ },
+ {
+  "instruct": "Line one.\nLine two.\n"
+ },
+ {
+  "instruct": "Ends with eos text<|endoftext|>"
+ },
+ {
+  "instruct": "Unicode ✓ 🙂 日本"
+ },
+ {
+  "instruct": null
+ }
+]

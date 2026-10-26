@@ -1,0 +1,55 @@
+[
+ {
+  "instruct": "Greet me.",
+  "input": "",
+  "output": "Hello.",
+  "system": "You are terse."
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "",
+  "output": "Hello.",
+  "system": ""
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "",
+  "output": "Hello.",
+  "system": null
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "politely",
+  "output": "Good day.",
+  "system": "You are formal."
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "politely",
+  "output": "Good day.",
+  "system": null
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "",
+  "output": "Hi.",
+  "system": "  spaced system  "
+ },
+ {
+  "instruct": "Greet me.",
+  "input": "",
+  "output": "Hi."
+ },
+ {
+  "instruct": "Use braces.",
+  "input": "",
+  "output": "{ok}",
+  "system": "Reply with {braces}."
+ },
+ {
+  "instruct": "Empty answer.",
+  "input": "",
+  "output": "",
+  "system": "System only."
+ }
+]

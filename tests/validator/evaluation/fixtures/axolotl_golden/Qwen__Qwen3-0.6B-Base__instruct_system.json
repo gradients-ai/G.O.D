@@ -1,0 +1,54 @@
+{
+ "axolotl_commit": "0bda5a13",
+ "transformers_version": "5.12.1",
+ "datasets_version": "4.8.5",
+ "tokenizer_repo": "Qwen/Qwen3-0.6B-Base",
+ "tokenizer_sha": "da87bfb608c14b7cf20ba1ce41287e8de496c0cd",
+ "tokenizer_files_sha256": {
+  "merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+  "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+  "tokenizer_config.json": "3c04ed3ca964ea2f6b2b5faf0dc4d31aec1cb1e8b4bcf63f402d295046b422b5",
+  "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+ },
+ "bos_token_id": null,
+ "eos_token_id": 151643,
+ "pad_token_id": 151643,
+ "kind": "instruct_system",
+ "dataset_type_name": "InstructTextDatasetType",
+ "dataset_type": {
+  "system_prompt": "",
+  "system_format": "{system}",
+  "field_system": "system",
+  "field_instruction": "instruct",
+  "field_input": "input",
+  "field_output": "output",
+  "format": null,
+  "no_input_format": null,
+  "field": null
+ },
+ "sequence_len": 4096,
+ "max_position_embeddings": 40960,
+ "rows_file": "datasets/instruct_system_rows.json",
+ "excluded_rows": [],
+ "raw": [
+  {"row_index":0,"chunk":0,"input_ids":[2610,525,50537,1224,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,9707,13,151643],"dropped":null},
+  {"row_index":1,"chunk":0,"input_ids":[38,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,9707,13,151643],"dropped":null},
+  {"row_index":2,"chunk":0,"input_ids":[38,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,9707,13,151643],"dropped":null},
+  {"row_index":3,"chunk":0,"input_ids":[2610,525,15908,1224,3744,752,13,80767,15216,1899,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,15216,1899,13,151643],"dropped":null},
+  {"row_index":4,"chunk":0,"input_ids":[38,3744,752,13,80767,15216,1899,13,151643],"labels":[-100,-100,-100,-100,-100,15216,1899,13,151643],"dropped":null},
+  {"row_index":5,"chunk":0,"input_ids":[220,63828,1849,220,479,3744,752,13,13048,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,13048,13,151643],"dropped":null},
+  {"row_index":6,"chunk":0,"input_ids":[38,3744,752,13,13048,13,151643],"labels":[-100,-100,-100,-100,13048,13,151643],"dropped":null},
+  {"row_index":7,"chunk":0,"input_ids":[20841,448,314,1323,2434,7810,10253,59191,13,90,562,92,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,90,562,92,151643],"dropped":null},
+  {"row_index":8,"chunk":0,"input_ids":[2320,1172,11180,4226,13],"labels":[-100,-100,-100,-100,-100],"dropped":"unscored"}
+ ],
+ "final": [
+  {"row_index":1,"chunk":0,"input_ids":[38,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,9707,13,151643]},
+  {"row_index":2,"chunk":0,"input_ids":[38,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,9707,13,151643]},
+  {"row_index":6,"chunk":0,"input_ids":[38,3744,752,13,13048,13,151643],"labels":[-100,-100,-100,-100,13048,13,151643]},
+  {"row_index":4,"chunk":0,"input_ids":[38,3744,752,13,80767,15216,1899,13,151643],"labels":[-100,-100,-100,-100,-100,15216,1899,13,151643]},
+  {"row_index":0,"chunk":0,"input_ids":[2610,525,50537,1224,3744,752,13,9707,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,9707,13,151643]},
+  {"row_index":5,"chunk":0,"input_ids":[220,63828,1849,220,479,3744,752,13,13048,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,13048,13,151643]},
+  {"row_index":3,"chunk":0,"input_ids":[2610,525,15908,1224,3744,752,13,80767,15216,1899,13,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,15216,1899,13,151643]},
+  {"row_index":7,"chunk":0,"input_ids":[20841,448,314,1323,2434,7810,10253,59191,13,90,562,92,151643],"labels":[-100,-100,-100,-100,-100,-100,-100,-100,-100,90,562,92,151643]}
+ ]
+}

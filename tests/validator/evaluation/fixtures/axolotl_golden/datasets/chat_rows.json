@@ -1,0 +1,282 @@
+[
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Hi there."
+   },
+   {
+    "from": "assistant",
+    "value": "Hello! How can I help?"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "What is the capital of France?"
+   },
+   {
+    "from": "assistant",
+    "value": "Paris is the capital."
+   },
+   {
+    "from": "user",
+    "value": "And Germany?"
+   },
+   {
+    "from": "assistant",
+    "value": "Berlin."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "One?"
+   },
+   {
+    "from": "assistant",
+    "value": "1."
+   },
+   {
+    "from": "user",
+    "value": "Two?"
+   },
+   {
+    "from": "assistant",
+    "value": "2."
+   },
+   {
+    "from": "user",
+    "value": "Three?"
+   },
+   {
+    "from": "assistant",
+    "value": "3."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "system",
+    "value": "You are a pirate."
+   },
+   {
+    "from": "user",
+    "value": "Hello."
+   },
+   {
+    "from": "assistant",
+    "value": "Arr, ahoy."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "system",
+    "value": "Be brief."
+   },
+   {
+    "from": "user",
+    "value": "A?"
+   },
+   {
+    "from": "assistant",
+    "value": "a."
+   },
+   {
+    "from": "user",
+    "value": "B?"
+   },
+   {
+    "from": "assistant",
+    "value": "b."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Leading newline please."
+   },
+   {
+    "from": "assistant",
+    "value": "\nStarts with a newline."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Trailing newline please."
+   },
+   {
+    "from": "assistant",
+    "value": "Ends with a newline.\n"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Both please."
+   },
+   {
+    "from": "assistant",
+    "value": "\n\nPadded both sides.\n\n"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Say nothing."
+   },
+   {
+    "from": "assistant",
+    "value": ""
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "First?"
+   },
+   {
+    "from": "assistant",
+    "value": ""
+   },
+   {
+    "from": "user",
+    "value": "Second?"
+   },
+   {
+    "from": "assistant",
+    "value": "Now I answer."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Is anyone there?"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Write something long."
+   },
+   {
+    "from": "assistant",
+    "value": "Paragraph 1: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 1 exists only to be long. Paragraph 2: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 2 exists only to be long. Paragraph 3: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 3 exists only to be long. Paragraph 4: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 4 exists only to be long. Paragraph 5: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 5 exists only to be long. Paragraph 6: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 6 exists only to be long. Paragraph 7: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 7 exists only to be long. Paragraph 8: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 8 exists only to be long. Paragraph 9: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 9 exists only to be long. Paragraph 10: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 10 exists only to be long. Paragraph 11: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 11 exists only to be long. Paragraph 12: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 12 exists only to be long."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Summarise: Paragraph 1: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 1 exists only to be long. Paragraph 2: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 2 exists only to be long. Paragraph 3: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 3 exists only to be long. Paragraph 4: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 4 exists only to be long. Paragraph 5: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 5 exists only to be long. Paragraph 6: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 6 exists only to be long. Paragraph 7: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 7 exists only to be long. Paragraph 8: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 8 exists only to be long. Paragraph 9: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 9 exists only to be long. Paragraph 10: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 10 exists only to be long. Paragraph 11: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 11 exists only to be long. Paragraph 12: the validator scores held-out rows by mean negative log-likelihood, so every token that is labelled counts toward the loss and every token that is masked does not; row 12 exists only to be long."
+   },
+   {
+    "from": "assistant",
+    "value": "It is long."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Émojis? 🙂 日本語"
+   },
+   {
+    "from": "assistant",
+    "value": "Oui 👍🏽 — 中文 ✓"
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Template-looking text {{ x }} {% raw %}"
+   },
+   {
+    "from": "assistant",
+    "value": "Literal {{ y }} and {% endraw %} kept."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Question?"
+   },
+   {
+    "from": "assistant",
+    "value": "Answer."
+   },
+   {
+    "from": "user",
+    "value": "Thanks."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "assistant",
+    "value": "I speak first."
+   },
+   {
+    "from": "user",
+    "value": "Okay."
+   },
+   {
+    "from": "assistant",
+    "value": "Good."
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Whitespace answer."
+   },
+   {
+    "from": "assistant",
+    "value": " "
+   }
+  ]
+ },
+ {
+  "conversations": [
+   {
+    "from": "user",
+    "value": "Code?"
+   },
+   {
+    "from": "assistant",
+    "value": "```python\nprint('hi')\n```"
+   }
+  ]
+ }
+]
