@@ -65,7 +65,8 @@ assert version('datasets').startswith('4.8.'), version('datasets'); \
 import importlib.util; \
 missing = [m for m in ('mamba_ssm', 'causal_conv1d', 'fla') if importlib.util.find_spec(m) is None]; \
 assert not missing, missing" \
-    && python -c "import validator.evaluation.evaluators.instruct_text, validator.evaluation.evaluators.dpo, validator.evaluation.evaluators.grpo, validator.evaluation.evaluators.single_kl_divergence"
+    && python -c "import validator.evaluation.evaluators.instruct_text, validator.evaluation.evaluators.dpo, validator.evaluation.evaluators.grpo, validator.evaluation.evaluators.single_kl_divergence" \
+    && python -c "from validator.evaluation.chat_templates import bundled_chat_template; assert '<|im_start|>' in bundled_chat_template('chatml')"
 
 ENV JOB_ID=""
 ENV DATASET=""
