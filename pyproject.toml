@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 organic = [
+    "astor",
     "asyncpg==0.29.0",
     "datasets>=2.16.0,<3.0.0",
     "docker==7.1.0",
