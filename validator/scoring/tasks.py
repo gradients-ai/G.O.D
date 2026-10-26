@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import math
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import numpy as np
-from fiber.chain.models import Node
 from huggingface_hub import HfApi
 
 import validator.evaluation.constants as eval_cst
@@ -22,7 +24,6 @@ from core.models.payload_models import DiffusionLosses
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
 from core.models.task_models import TaskType
-from validator.app.config import Config
 from validator.db.sql.submissions_and_scoring import add_submission
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.db.sql.submissions_and_scoring import set_task_node_losses
@@ -43,6 +44,12 @@ from validator.scoring.models import MinerResultsText
 from validator.scoring.models import Submission
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import InstructTextRawTask
+
+
+if TYPE_CHECKING:
+    from fiber.chain.models import Node
+
+    from validator.app.config import Config
 
 
 logger = get_logger(__name__)

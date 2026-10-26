@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import json
 import math
 import os
 import tempfile
+from typing import TYPE_CHECKING
 
 import httpx
 from tenacity import retry
@@ -20,9 +23,12 @@ from core.models.payload_models import ImageTaskDetails
 from core.models.payload_models import InstructTextTaskDetails
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from validator.app.config import Config
 from validator.infrastructure.minio_client import async_minio_client
 from validator.tasks.models import AnyTypeTask
+
+
+if TYPE_CHECKING:
+    from validator.app.config import Config
 
 
 logger = get_logger(__name__)

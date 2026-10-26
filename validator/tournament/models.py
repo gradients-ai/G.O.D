@@ -1,10 +1,10 @@
 import secrets
 from datetime import datetime
 from enum import Enum
+from typing import Any
 from typing import NamedTuple
 from uuid import UUID
 
-from fiber.chain.models import Node
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -585,7 +585,7 @@ class GitHubOwnerRepo(BaseModel):
 class RespondingNode(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    node: Node
+    node: Any
     training_repo_response: TrainingRepoResponse
 
 

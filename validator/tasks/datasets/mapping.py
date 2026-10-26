@@ -1,8 +1,8 @@
 import json
 
 from datasets import load_dataset
-from fiber import Keypair
 
+from core.interfaces import KeypairLike
 from core.logging import get_logger
 from core.models.task_models import TaskType
 from validator.evaluation.dataset_configs import get_default_dataset_config
@@ -21,7 +21,11 @@ from validator.tasks.models import AnyTextTypeRawTask
 logger = get_logger(__name__)
 
 
-async def get_dataset_column_mapping(dataset_id: str, task_type: TaskType, keypair: Keypair) -> dict[str, str]:
+async def get_dataset_column_mapping(
+    dataset_id: str,
+    task_type: TaskType,
+    keypair: KeypairLike,
+) -> dict[str, str]:
     """Get column mapping for a specific dataset based on task type."""
     from validator.infrastructure.content_service import call_content_service_fast
     from validator.infrastructure.service_constants import CONTENT_BASE_URL
@@ -215,7 +219,11 @@ def create_temp_task_from_mapping(column_mapping: dict[str, str], task_type):
         return type("obj", (object,), temp_task_dict)
 
 
-async def load_and_merge_multiple_datasets(dataset_ids: list[str], task: AnyTextTypeRawTask, keypair: Keypair) -> list[dict]:
+async def load_and_merge_multiple_datasets(
+    dataset_ids: list[str],
+    task: AnyTextTypeRawTask,
+    keypair: KeypairLike,
+) -> list[dict]:
     """Load and merge multiple datasets, returning average size."""
     import random
 

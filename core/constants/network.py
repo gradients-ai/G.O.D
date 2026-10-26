@@ -1,9 +1,5 @@
 import os
 
-from dotenv import load_dotenv
-
-
-load_dotenv()
 
 VERSION_KEY = 61_000
 DEFAULT_NETUID = 56

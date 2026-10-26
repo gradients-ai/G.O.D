@@ -9,6 +9,9 @@ IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"
 TEMP_PATH_FOR_IMAGES = "/tmp/validator/temp_images"
 SUPPORTED_IMAGE_FILE_EXTENSIONS = (".png", ".jpg", ".jpeg")
 MAX_FILE_SIZE_BYTES = 2_147_483_646  # pyarrow max json load size
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_ARCHIVE_UNCOMPRESSED_BYTES = 10 * 1024 * 1024 * 1024
+MAX_ARCHIVE_COMPRESSION_RATIO = 100
 MINIMUM_DATASET_ROWS = 8_000  # Minimum number of rows required in a dataset
 MAXIMUM_DATASET_ROWS = 175_000  # Above this, 2 epochs cannot fit the training-hours cap
 

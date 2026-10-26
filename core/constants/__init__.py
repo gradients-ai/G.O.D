@@ -1,3 +1,5 @@
+"""Shared constants without import-time dotenv loading."""
+
 from core.constants.credentials import *  # noqa: F403
 from core.constants.datasets import *  # noqa: F403
 from core.constants.docker import *  # noqa: F403
