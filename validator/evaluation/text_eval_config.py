@@ -1,8 +1,8 @@
-"""Typed text-eval settings, replacing the axolotl yaml + DictDefault the evaluators used to carry.
+"""Typed text-eval settings, replacing the axolotl yaml config the evaluators used to carry.
 
-Only the keys the text evaluators actually read survive. The values are the ones `test_axolotl.yml` set, and
-the sequence_len halving rule is the one `common._load_and_update_evaluation_config` applied, so a model scores
-the same held-out rows it did before. `train_on_inputs` is deliberately absent: prompts are never scored.
+Only the keys the text evaluators actually read survive. The values are the ones that yaml set, and the
+sequence_len halving rule is the one the old config loader applied, so a model scores the same held-out rows it
+did before. `train_on_inputs` is deliberately absent: prompts are never scored.
 """
 
 from math import ceil

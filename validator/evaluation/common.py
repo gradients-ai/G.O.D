@@ -14,9 +14,7 @@ from math import ceil
 import psutil
 import torch
 import torch.nn.functional as F
-import yaml
 from accelerate.utils import find_executable_batch_size
-from axolotl.utils.dict import DictDefault
 from datasets import Dataset
 from huggingface_hub import snapshot_download
 from peft import AutoPeftModelForCausalLM
@@ -27,8 +25,8 @@ from transformers import TrainerCallback
 import core.constants as core_cst
 import validator.evaluation.constants as cst
 from core.logging import get_logger
-from core.training_config import create_dataset_entry
-from validator.evaluation.models import EvaluationArgs
+from validator.evaluation.text_eval_config import TextEvalConfig
+from validator.evaluation.text_eval_config import text_eval_config_for_model
 from validator.infrastructure.retries import retry_on_5xx
 from validator.tasks.datasets.constants import CONTAINER_EVAL_RESULTS_PATH
 
@@ -527,28 +525,9 @@ def log_cuda_info():
         logger.info("CUDA not available")
 
 
-def _load_and_update_evaluation_config(
-    evaluation_args: EvaluationArgs,
-    finetuned_model: AutoModelForCausalLM,
-    config_path: str,
-) -> DictDefault:
-    with open(config_path, "r") as file:
-        config_dict = yaml.safe_load(file)
-
-    dataset_entry = create_dataset_entry(
-        dataset=evaluation_args.dataset,
-        dataset_type=evaluation_args.dataset_type,
-        file_format=evaluation_args.file_format,
-        is_eval=True,
-    )
-    config_dict["datasets"] = [dataset_entry]
-
-    max_embeddings = getattr(finetuned_model.config, "max_position_embeddings", None)
-
-    if max_embeddings and max_embeddings < 2 * config_dict["sequence_len"]:
-        config_dict["sequence_len"] = ceil(max_embeddings / 2)
-
-    return DictDefault(config_dict)
+def text_eval_config_for_finetuned_model(finetuned_model: AutoModelForCausalLM) -> TextEvalConfig:
+    """The text-eval settings for one submission: the default window, halved for short-context models."""
+    return text_eval_config_for_model(getattr(finetuned_model.config, "max_position_embeddings", None))
 
 
 def _model_num_params_from_hub(model_id: str) -> int:

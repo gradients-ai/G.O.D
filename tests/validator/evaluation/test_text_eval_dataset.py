@@ -4,11 +4,14 @@ import pytest
 
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
+from core.models.dataset_models import FileFormat
 from core.models.dataset_models import InstructTextDatasetType
+from validator.evaluation import text_eval_dataset
 from validator.evaluation.text_eval_config import TextEvalConfig
 from validator.evaluation.text_eval_dataset import DropReason
 from validator.evaluation.text_eval_dataset import HfTruncatingTokenizer
 from validator.evaluation.text_eval_dataset import TextEvalDatasetBuild
+from validator.evaluation.text_eval_dataset import build_chat_eval_dataset
 from validator.evaluation.text_eval_dataset import build_instruct_eval_dataset
 from validator.evaluation.text_eval_dataset import build_text_eval_dataset
 from validator.evaluation.text_eval_dataset import load_eval_rows
@@ -101,11 +104,28 @@ def test_completion_rows_are_chunked_and_empty_rows_counted():
     assert build.dropped[DropReason.SHORT] == 1
 
 
-def test_dispatch():
+class CallableCharTokenizer(CharTokenizer):
+    """Just enough of a transformers tokenizer for `HfTruncatingTokenizer` (the dispatcher wraps the real one)."""
+
+    def __call__(self, text, truncation, max_length, padding, return_tensors):
+        assert truncation is True and padding is False and return_tensors is None
+        return {"input_ids": self.encode_truncated(text, max_length)}
+
+
+def test_dispatch(monkeypatch):
     rows = [{"instruct": "a", "output": "b"}]
-    assert len(build_text_eval_dataset(rows, INSTRUCT, TOK, TextEvalConfig()).examples) == 1
-    with pytest.raises(NotImplementedError):
-        build_text_eval_dataset(rows, ChatTemplateDatasetType(), TOK, TextEvalConfig())
+    assert len(build_text_eval_dataset(rows, INSTRUCT, CallableCharTokenizer(), TextEvalConfig()).examples) == 1
+
+    # Chat dispatch is exercised end to end in test_instruct_text_dataset_wiring.py; here only the routing.
+    seen = {}
+    monkeypatch.setattr(text_eval_dataset, "resolve_chat_template", lambda name, tokenizer: f"template:{name}")
+    monkeypatch.setattr(text_eval_dataset, "HfChatTokenizer", lambda tokenizer, template: ("chat", template))
+    monkeypatch.setattr(
+        text_eval_dataset, "build_chat_eval_dataset", lambda rows, dataset_type, tokenizer, config: seen.update(tok=tokenizer)
+    )
+    build_text_eval_dataset(rows, ChatTemplateDatasetType(chat_template="chatml"), TOK, TextEvalConfig())
+    assert seen["tok"] == ("chat", "template:chatml")
+
     with pytest.raises(TypeError):
         build_text_eval_dataset(rows, DpoDatasetType(), TOK, TextEvalConfig())
 
@@ -128,6 +148,65 @@ def test_load_eval_rows_resolves_relative_paths(tmp_path, monkeypatch):
     (tmp_path / "eval.json").write_text(json.dumps([{"instruct": "a", "output": "b"}]))
     monkeypatch.chdir(tmp_path)
     assert len(load_eval_rows("eval.json")) == 1
+
+
+class ChatMLCharTokenizer:
+    """`chat_labels.ChatTokenizer` with one id per character and a ChatML template rendered in Python."""
+
+    def render(self, messages: list[dict], add_generation_prompt: bool) -> str:
+        if any(m.get("content") == "reject me" for m in messages):
+            raise RuntimeError("template refuses the conversation")
+        text = "".join(f"<s>{m['role']}\n{m.get('content', '')}</s>\n" for m in messages)
+        return text + ("<s>assistant\n" if add_generation_prompt else "")
+
+    def encode_with_offsets(self, text: str) -> tuple[list[int], list[tuple[int, int]]]:
+        return [ord(c) for c in text], [(k, k + 1) for k in range(len(text))]
+
+
+def _conversation(*turns: tuple[str, str]) -> dict:
+    return {"conversations": [{"from": role, "value": value} for role, value in turns]}
+
+
+def test_chat_build_scores_assistant_turns_counts_drops_and_sorts():
+    rows = [
+        _conversation(("user", "a longer question"), ("assistant", "yes")),
+        _conversation(("user", "only a question")),
+        _conversation(("human", "q"), ("gpt", "ok")),  # unknown roles here: no assistant turn
+        _conversation(("user", "q"), ("assistant", "ok")),
+        _conversation(("user", "x" * 40), ("assistant", "long")),
+    ]
+    build = build_chat_eval_dataset(rows, ChatTemplateDatasetType(), ChatMLCharTokenizer(), TextEvalConfig(sequence_len=60))
+    scored = ["".join(chr(t) for t in e.labels if t != IGNORE_INDEX) for e in build.examples]
+    assert scored == ["ok</s>\n", "yes</s>\n"]
+    assert all(e.attention_mask == [1] * len(e.input_ids) for e in build.examples)
+    assert build.n_rows == 5
+    assert build.dropped[DropReason.UNSCORED] == 2
+    assert build.dropped[DropReason.LONG] == 1
+    assert build.straddles == 0
+
+
+def test_chat_build_maps_dataset_roles_and_field_names():
+    rows = [{"msgs": [{"who": "human", "text": "q"}, {"who": "gpt", "text": "ok"}]}]
+    dataset_type = ChatTemplateDatasetType(
+        chat_column="msgs", chat_role_field="who", chat_content_field="text",
+        chat_user_reference="human", chat_assistant_reference="gpt",
+    )
+    [example] = build_chat_eval_dataset(rows, dataset_type, ChatMLCharTokenizer(), TextEvalConfig()).examples
+    assert "".join(chr(t) for t in example.input_ids) == "<s>user\nq</s>\n<s>assistant\nok</s>\n"
+
+
+def test_chat_build_fails_when_the_template_refuses_a_row():
+    rows = [_conversation(("user", "q"), ("assistant", "ok")), _conversation(("user", "reject me"), ("assistant", "x"))]
+    with pytest.raises(RuntimeError, match="refuses"):
+        build_chat_eval_dataset(rows, ChatTemplateDatasetType(), ChatMLCharTokenizer(), TextEvalConfig())
+
+
+def test_load_eval_rows_reads_csv_and_rejects_non_local_formats(tmp_path):
+    path = tmp_path / "eval.csv"
+    path.write_text("instruct,output\nfirst,1\nsecond,2\n")
+    assert [row["instruct"] for row in load_eval_rows(str(path), FileFormat.CSV)] == ["first", "second"]
+    with pytest.raises(ValueError, match="local json or csv"):
+        load_eval_rows(str(path), FileFormat.HF)
 
 
 # ---- real tokenizers (need transformers + the offline HF cache; skipped in the dev venv) ----

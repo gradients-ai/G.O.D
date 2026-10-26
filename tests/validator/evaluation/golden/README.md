@@ -20,8 +20,12 @@ Recapture only to add a tokenizer or a case, in the golden venv (torch 2.9.1+cpu
 datasets 4.8.5, accelerate 1.13.0, peft 0.19.1, trl 1.5.1, axolotl installed `--no-deps -e` from a checkout of commit
 `0bda5a13`; the script checks the axolotl commit and transformers version and refuses to run otherwise):
 
+The script drives the axolotl-based loader (`common._load_and_update_evaluation_config`, the old
+`instruct_text._load_evaluation_dataset`), which the evaluator switch-over removed, so it only runs from a checkout that still
+has it - commit `3f096e12` (the fixture capture merge) or any earlier one:
+
 ```
-cd <G.O.D checkout>
+cd <G.O.D checkout at 3f096e12>
 HF_HUB_OFFLINE=1 PYTHONPATH=. <golden venv>/bin/python -m tests.validator.evaluation.golden.capture_axolotl_golden \
     [--only <tokenizer repo> ...] [--kinds <kind> ...]
 ```

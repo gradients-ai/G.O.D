@@ -9,7 +9,9 @@ The rule, for every assistant turn i of messages M (after role mapping), with F 
 
 * the turn's scored text runs from the end of the generation prompt `render(M[:i], add_generation_prompt=True)` (when
   that prompt is a prefix of F and ends before the content) or else from the content start, through the content and the
-  template's own turn-end string (`<|im_end|>\\n`, `<end_of_turn>\\n`, `</s>`, ...);
+  template's own turn-end string (`<|im_end|>\\n`, `<end_of_turn>\\n`, `</s>`, ...). An assistant turn with no message
+  before it (i = 0) has no prompt to render - real templates index `messages[0]` and raise on an empty list - so its
+  span starts at the content;
 * the content span is located by re-rendering with the content replaced by a sentinel (common prefix / suffix), both in
   the full render F and in the "as last turn" render E = render(M[:i+1]); the turn-end string is read from E and must
   appear right after the content in F.
@@ -188,7 +190,8 @@ def _turn_char_span(
 ) -> tuple[int, int, bool] | None:
     """[start, end) characters of `full_text` scored for one assistant turn, and whether it starts at the prompt end."""
     with_sentinel = rendered[:turn_index] + [{**rendered[turn_index], "content": SENTINEL}] + rendered[turn_index + 1 :]
-    prompt_text = tokenizer.render(rendered[:turn_index], add_generation_prompt=True)
+    # Nothing precedes the first message, so there is no generation prompt to start from (see the module docstring).
+    prompt_text = tokenizer.render(rendered[:turn_index], add_generation_prompt=True) if turn_index else None
     as_last_text = tokenizer.render(rendered[: turn_index + 1], add_generation_prompt=False)
     full_sentinel = tokenizer.render(with_sentinel, add_generation_prompt=False)
     as_last_sentinel = tokenizer.render(with_sentinel[: turn_index + 1], add_generation_prompt=False)
@@ -203,7 +206,7 @@ def _turn_char_span(
     if full_text[content_end_full : content_end_full + len(turn_end)] != turn_end:
         return None
     end_char = content_end_full + len(turn_end)
-    if full_text.startswith(prompt_text) and len(prompt_text) <= content_start_full:
+    if prompt_text is not None and full_text.startswith(prompt_text) and len(prompt_text) <= content_start_full:
         return len(prompt_text), end_char, True
     return content_start_full, end_char, False
 

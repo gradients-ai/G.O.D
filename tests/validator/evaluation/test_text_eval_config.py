@@ -6,7 +6,7 @@ from validator.evaluation.text_eval_config import TextEvalConfig
 from validator.evaluation.text_eval_config import text_eval_config_for_model
 
 
-def test_defaults_match_test_axolotl_yml():
+def test_defaults_match_the_old_eval_yaml():
     config = TextEvalConfig()
     assert config.sequence_len == DEFAULT_EVAL_SEQUENCE_LEN == 4096
     assert config.min_sequence_len == 2

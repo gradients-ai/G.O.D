@@ -81,6 +81,12 @@ def raises_on_empty_template(messages: list[dict], add_generation_prompt: bool) 
     return plain_template(messages, add_generation_prompt)
 
 
+def raises_on_sentinel_template(messages: list[dict], add_generation_prompt: bool) -> str:
+    if any(_content(m) == SENTINEL for m in messages):
+        raise RuntimeError("template validates message content")
+    return plain_template(messages, add_generation_prompt)
+
+
 class FakeChatTokenizer:
     """One id per character (its code point); optionally fuses "\\n\\n" into one token like BPE vocabularies do."""
 
@@ -205,8 +211,8 @@ def test_turn_end_that_differs_on_the_last_turn_still_labels_single_turn_rows():
 
 
 def test_auxiliary_render_failure_is_a_render_skip():
-    tokenizer = FakeChatTokenizer(raises_on_empty_template)
-    assert label_chat(tokenizer, _msgs(("assistant", "first"), ("user", "hi"))) is ChatLabelSkip.RENDER
+    tokenizer = FakeChatTokenizer(raises_on_sentinel_template)
+    assert label_chat(tokenizer, TWO_TURNS) is ChatLabelSkip.RENDER
 
 
 def test_full_render_failure_propagates():
@@ -254,11 +260,15 @@ def test_system_and_user_turns_are_never_scored():
     assert "Be terse." not in scored and "Capital" not in scored
 
 
-def test_assistant_first_conversation_uses_the_empty_prefix_generation_prompt():
-    tokenizer = FakeChatTokenizer(plain_template)
-    result = _labelled(tokenizer, _msgs(("assistant", "Hello."), ("user", "Hi")))
-    assert _scored_texts(tokenizer, result) == [f"Hello.{IM_END}\n"]
-    assert result.spans[0].start_from_prompt
+@pytest.mark.parametrize("template", [plain_template, raises_on_empty_template])
+def test_assistant_first_turn_starts_at_its_content_without_rendering_an_empty_prompt(template):
+    """Real templates raise on an empty message list (Qwen, Llama, gemma, granite...) and transformers itself indexes
+    conversation[0]; a first-message assistant turn has no prompt, so its span starts at the content."""
+    tokenizer = FakeChatTokenizer(template)
+    result = _labelled(tokenizer, _msgs(("assistant", "Hello."), ("user", "Hi"), ("assistant", "Bye.")))
+    assert _scored_texts(tokenizer, result) == [f"Hello.{IM_END}\n", f"Bye.{IM_END}\n"]
+    assert not result.spans[0].start_from_prompt
+    assert result.spans[1].start_from_prompt
 
 
 def test_sentinel_content_in_real_data_does_not_break_span_location():

@@ -31,10 +31,10 @@ COMPLETION_MAX_LENGTH_MULTIPLIER = 64
 
 # UserDefinedDatasetConfig dataclass defaults; they apply to every field G.O.D leaves as None because
 # core.training_config strips Nones before handing the dict to axolotl.
-_AXOLOTL_FIELD_SYSTEM = "system"
-_AXOLOTL_FIELD_INSTRUCTION = "instruction"
-_AXOLOTL_FIELD_INPUT = "input"
-_AXOLOTL_SYSTEM_FORMAT = "{system}"
+_DEFAULT_FIELD_SYSTEM = "system"
+_DEFAULT_FIELD_INSTRUCTION = "instruction"
+_DEFAULT_FIELD_INPUT = "input"
+_DEFAULT_SYSTEM_FORMAT = "{system}"
 
 
 class InstructFormat(BaseModel):
@@ -80,16 +80,16 @@ def instruct_format(dataset_type: InstructTextDatasetType) -> InstructFormat:
         field_instruction = dataset_type.field_instruction
     else:
         field_output = dataset_type.field_output
-        field_instruction = _given(dataset_type.field_instruction, _AXOLOTL_FIELD_INSTRUCTION)
+        field_instruction = _given(dataset_type.field_instruction, _DEFAULT_FIELD_INSTRUCTION)
 
     default_format = "{instruction} {input}" if dataset_type.field_input else "{instruction}"
     return InstructFormat(
         field_instruction=field_instruction,
-        field_input=_given(dataset_type.field_input, _AXOLOTL_FIELD_INPUT),
+        field_input=_given(dataset_type.field_input, _DEFAULT_FIELD_INPUT),
         field_output=field_output,
-        field_system=_given(dataset_type.field_system, _AXOLOTL_FIELD_SYSTEM),
+        field_system=_given(dataset_type.field_system, _DEFAULT_FIELD_SYSTEM),
         system_prompt=dataset_type.system_prompt or "",
-        system_format=_given(dataset_type.system_format, _AXOLOTL_SYSTEM_FORMAT),
+        system_format=_given(dataset_type.system_format, _DEFAULT_SYSTEM_FORMAT),
         format=_given(dataset_type.format, default_format),
         no_input_format=_given(dataset_type.no_input_format, "{instruction}"),
     )
