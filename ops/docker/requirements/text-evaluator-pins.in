@@ -1,0 +1,36 @@
+# Direct requirements for text-evaluator-pins.txt: the axolotl 0bda5a13 pyproject pins that the text eval
+# actually imports (transformers/torch/trl/peft/accelerate/datasets set the loss numerics), the kernels the
+# axolotl base shipped for hybrid/linear-attention models, and the build tools the --no-build-isolation
+# installs of mamba_ssm and causal-conv1d need. Recompile after any edit (see README.md).
+torch==2.9.1
+torchvision
+transformers==5.12.1
+tokenizers>=0.22.1
+accelerate==1.13.0
+datasets>=4.8.4,<4.9.0
+peft>=0.19.1,<0.20.0
+trl==1.5.1
+huggingface_hub>=1.5.0
+hf_transfer
+hf_xet==1.4.3
+sentencepiece
+# numpy: axolotl only asks numpy>=2.2.6, but resolving its full dependency set at the same date yields 2.3.5
+# (numba caps numpy); pin that rather than the newer release this smaller set would pick.
+numpy==2.3.5
+scipy
+psutil
+pyyaml
+einops
+packaging==26.0
+flash-linear-attention==0.4.1
+fla-core==0.4.1
+kernels==0.13.0
+bitsandbytes==0.49.1
+ninja
+setuptools
+wheel
+# Runtime deps of mamba_ssm==2.3.2.post1 (its sdist is installed separately with --no-build-isolation, so its
+# requirements are pinned here; see ops/docker/validator.dockerfile).
+tilelang==0.1.8
+apache-tvm-ffi<=0.1.9
+quack-kernels>=0.3.4

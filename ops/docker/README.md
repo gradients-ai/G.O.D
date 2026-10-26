@@ -15,5 +15,7 @@ Dockerfiles and container support files for miner, trainer, validator, evaluatio
 - `standalone-text-trainer.dockerfile`: text trainer image expected in miner repos.
 - `trainer-downloader.dockerfile`: model/dataset downloader image, including image-model cache validation and legacy FLUX
   checkpoint layout normalization; see `trainer/containers/README.md` for its cache and deployment contract.
-- `validator.dockerfile`: base validator image.
+- `validator.dockerfile`: text evaluator image (`gradientsio/text-evaluator`): CUDA 12.8 + torch 2.9.1 + pinned HF stack
+  from `requirements/text-evaluator-pins.txt`, no axolotl; a build-time smoke asserts the pinned versions and that every
+  text evaluator entrypoint imports.
 - `validator-diffusion.dockerfile`: image evaluation validator image.

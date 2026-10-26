@@ -1,6 +1,6 @@
 git+https://github.com/besimray/fiber.git@v2.6.0
-# transformers / datasets / peft come from the axolotl base venv (v5 set) — do NOT pin here
-# (pinning downgrades them and breaks axolotl, which hard-pins the v5 trio).
+# transformers / datasets / peft / torch / trl / accelerate come from text-evaluator-pins.txt, which the
+# dockerfile installs first and passes as a constraint here - do NOT pin them in this file.
 docker
 toml
 debugpy
@@ -9,6 +9,5 @@ langcheck==0.9.0
 detoxify
 astor
 basilica-sdk==0.17.0
-# NB: causal-conv1d (quasar hybrid-arch dep) is built separately in the dockerfile with
-# --no-build-isolation so it links against the base torch's ABI. flash-linear-attention is
-# already in the axolotl base.
+# NB: mamba_ssm and causal-conv1d (hybrid-arch deps) are installed separately in the dockerfile with
+# --no-build-isolation so they link against the pinned torch's ABI. flash-linear-attention is in the pins file.
