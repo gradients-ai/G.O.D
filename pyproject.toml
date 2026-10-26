@@ -81,6 +81,7 @@ include = [
     "miner/**/*.py",
     "ops/**/*",
     "trainer/**/*.py",
+    "validator/**/*.jinja",
     "validator/**/*.json",
     "validator/**/*.py",
     "validator/**/*.yml",
