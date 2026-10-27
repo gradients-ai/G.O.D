@@ -32,6 +32,10 @@ organic = [
     "tenacity==9.0.0",
     "websocket-client",
 ]
+subnet-api = [
+    "fastapi>=0.110.3,<0.113.0",
+    "uvicorn>=0.30.5,<0.32.0",
+]
 evaluation-remote = [
     "basilica-sdk==0.33.0",
 ]
@@ -84,7 +88,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["core", "miner", "ops", "trainer", "validator"]
+packages = ["core", "miner", "ops", "subnet_api", "trainer", "validator"]
 
 [tool.hatch.build]
 include = [
@@ -93,6 +97,7 @@ include = [
     "core/training_templates/**/*",
     "miner/**/*.py",
     "ops/**/*",
+    "subnet_api/**/*.py",
     "trainer/**/*.py",
     "validator/**/*.json",
     "validator/**/*.py",
@@ -109,6 +114,7 @@ include = [
     "docs",
     "miner",
     "ops",
+    "subnet_api",
     "trainer",
     "validator",
 ]
