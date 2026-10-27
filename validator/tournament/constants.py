@@ -121,6 +121,10 @@ ROUND_ONE_IMAGE_MODEL_TYPES = (
 )
 ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 
+# Text R1 instruct tasks keep the throughput-based hours formula, but never exceed
+# this ceiling (creation and post-prep). Keeps the opening round short.
+ROUND_ONE_TEXT_MAX_TRAINING_HOURS = 2.5
+
 # The single R2 knockout task randomly uses one of these larger families.
 ROUND_TWO_IMAGE_MODEL_TYPES = (
     ImageModelType.QWEN_IMAGE,

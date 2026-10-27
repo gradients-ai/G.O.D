@@ -1,4 +1,6 @@
 import random
+from datetime import datetime
+from datetime import timedelta
 
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
@@ -315,6 +317,8 @@ async def _create_and_register_tournament_task(
     pair_id: str | None = None,
 ) -> None:
     """Create a TournamentTask, register it in the database, and log the creation."""
+    if _is_round_one_group_text_task(task, round_id, group_id, pair_id):
+        await _cap_round_one_text_hours(task, config)
     tournament_task = TournamentTask(
         tournament_id=tournament_id,
         round_id=round_id,
@@ -618,11 +622,25 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
     )
 
 
+async def _cap_round_one_text_hours(task: RawTask, config: Config) -> None:
+    """Clamp R1 text hours (and termination) to ROUND_ONE_TEXT_MAX_TRAINING_HOURS."""
+    capped = min(float(task.hours_to_complete), t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS)
+    if capped >= float(task.hours_to_complete):
+        return
+    logger.info(
+        f"Capping round-1 text task {task.task_id} hours {task.hours_to_complete} -> {capped}"
+    )
+    task.hours_to_complete = capped
+    task.termination_at = datetime.utcnow() + timedelta(hours=capped)
+    await task_sql.update_task(task, config.psql_db)
+
+
 async def _create_round_one_group_text_replacement_task(config: Config, model_id_override: str | None = None) -> RawTask:
     """
     Create a replacement task that matches round-1 group text constraints:
     - small text model pool (0.1B-4.0B)
     - broad dataset bins (same as R1 creation)
+    - hours capped at ROUND_ONE_TEXT_MAX_TRAINING_HOURS (applied on register)
     """
     models = None if model_id_override else _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
@@ -940,7 +958,10 @@ async def replace_tournament_task(
 
     try:
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
-            logger.info("Detected round-1 group text task replacement; enforcing small-model and 2h constraints")
+            logger.info(
+                "Detected round-1 group text task replacement; enforcing small-model and "
+                f"{t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h max constraints"
+            )
             replacement_model_override = (
                 original_task_obj.model_id if _is_oversampled_later_model_task(original_task_obj) else None
             )

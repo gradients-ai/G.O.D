@@ -1556,6 +1556,26 @@ async def get_tournament_id_by_task_id(task_id: str, psql_db: PSQLDB) -> str | N
         return None
 
 
+async def get_tournament_task_by_task_id(task_id: str, psql_db: PSQLDB) -> TournamentTask | None:
+    """Return the tournament task row for a task id, if it is registered in a tournament."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT {cst.TOURNAMENT_ID}, {cst.ROUND_ID}, {cst.TASK_ID}, {cst.GROUP_ID}, {cst.PAIR_ID}
+            FROM {cst.TOURNAMENT_TASKS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+        """
+        row = await connection.fetchrow(query, task_id)
+        if not row:
+            return None
+        return TournamentTask(
+            tournament_id=row[cst.TOURNAMENT_ID],
+            round_id=row[cst.ROUND_ID],
+            task_id=row[cst.TASK_ID],
+            group_id=row[cst.GROUP_ID],
+            pair_id=row[cst.PAIR_ID],
+        )
+
+
 async def add_benchmark_root_task(task_id: str, task_type: TaskType, psql_db: PSQLDB):
     """Add a task as a benchmark root task (template for benchmarking)."""
     async with await psql_db.connection() as connection:

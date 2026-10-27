@@ -245,11 +245,13 @@ def compute_training_hours(
     task_type: TaskType,
     measured_tokens_per_sec: float | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    max_hours: float | None = None,
 ) -> float:
     """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
 
     training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
+    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set (e.g. text R1).
     """
     gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
@@ -265,7 +267,8 @@ def compute_training_hours(
     hours = train_seconds / 3600 + get_training_overhead_hours(num_params)
 
     hours = max(data_cst.TRAINING_HOURS_MIN, math.ceil(hours * 4) / 4)
-    return min(hours, data_cst.MAX_TRAINING_HOURS)
+    ceiling = data_cst.MAX_TRAINING_HOURS if max_hours is None else max_hours
+    return min(hours, ceiling)
 
 
 def get_grpo_training_hours(num_params: float | None) -> float:
@@ -294,6 +297,7 @@ def compute_hours_from_baseline_stats(
     model_params_count: int | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
     ds: str | None = None,
+    max_hours: float | None = None,
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput.
 
@@ -303,7 +307,7 @@ def compute_hours_from_baseline_stats(
     unfetchable (LoRA adapter / custom arch).
     """
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
-        return current_hours
+        return current_hours if max_hours is None else min(current_hours, max_hours)
 
     model_id = t_cst.continuous_sft_seed_repo_for_ds(ds) or model_id
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
@@ -311,18 +315,21 @@ def compute_hours_from_baseline_stats(
         num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
 
     if task_type == TaskType.GRPOTASK:
-        return get_grpo_training_hours(num_params)
+        hours = get_grpo_training_hours(num_params)
+        return hours if max_hours is None else min(hours, max_hours)
 
     dataset_stats = baseline_stats.dataset
     if not dataset_stats.total_tokens or not dataset_stats.num_records:
-        return current_hours
+        return current_hours if max_hours is None else min(current_hours, max_hours)
 
     effective_tokens = max(
         dataset_stats.total_tokens,
         dataset_stats.num_records * data_cst.EFFECTIVE_MIN_TOKENS_PER_ROW,
     )
     measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
-    return compute_training_hours(effective_tokens, num_params, task_type, measured_tps, training_start_point)
+    return compute_training_hours(
+        effective_tokens, num_params, task_type, measured_tps, training_start_point, max_hours=max_hours
+    )
 
 
 def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
