@@ -10,7 +10,7 @@ Clients and adapters for external systems used by the validator.
 - `content_service.py`: Gradients/content-service API calls.
 - `fal_client.py`: Fal client integration.
 - `llm.py`: LLM client helpers.
-- `minio_client.py`: MinIO/S3-compatible storage client.
+- `minio_client.py`: MinIO/S3-compatible storage client. `parse_s3_url` reads both virtual-host (`bucket.host/key`) and path-style (`host/bucket/key`) URLs.
 - `models.py`: validator infrastructure helper schemas.
 - `retries.py`: retry decorators and retry policy.
 - `service_constants.py`: service endpoint constants.
