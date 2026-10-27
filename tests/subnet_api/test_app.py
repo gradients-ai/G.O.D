@@ -128,6 +128,7 @@ async def test_audit_tasks_keep_type_fields_and_drop_unknown_ones() -> None:
     assert dpo["field_chosen"] == "chosen" and dpo["backend"] == "some-new-backend"
     assert future["task_type"] == "SomeFutureTask" and "field_chosen" not in future
     assert single.json()["hotkey_details"][0]["repo"] == "org/model"
+    assert listed.headers.get("content-encoding") == "gzip"
     assert "must-not-leak" not in listed.text + single.text
     assert validator.calls[0].url.params["limit"] == "5"
 

@@ -8,6 +8,7 @@ from fastapi import Path
 from fastapi import Query
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from loguru import logger
 from pydantic import ValidationError
@@ -67,6 +68,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         description="Public, read-only data for subnet 56: auditing, tournaments and emissions.",
         lifespan=lifespan,
     )
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["GET"])
 
