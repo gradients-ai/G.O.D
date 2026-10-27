@@ -633,6 +633,17 @@ async def _run_single_runpod_eval_repo(
             else None
         )
         try:
+            ctx.log_eval_step(
+                "attempt_start",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_id,
+            )
+            eval_logger.info(
+                "[%s] starting Runpod evaluation attempt %d/%d",
+                repo,
+                attempt,
+                vcst.EVAL_BASILICA_MAX_RETRIES,
+            )
             if task_id is not None and psql_db is not None and reserved_hotkeys:
                 reserved = await _db_call_with_retry(
                     lambda: tasks_sql.try_reserve_evaluation_gpus(
@@ -779,7 +790,29 @@ async def _run_single_runpod_eval_repo(
             )
             if isinstance(exc, EvaluationRetryableError):
                 raise
-            if attempt < vcst.EVAL_BASILICA_MAX_RETRIES:
+            remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
+            ctx.log_eval_step(
+                "attempt_failed",
+                attempt=f"{attempt}/{vcst.EVAL_BASILICA_MAX_RETRIES}",
+                deployment=deployment_id,
+                remaining=remaining,
+                error=exc,
+            )
+            eval_logger.error(
+                "[%s] Runpod attempt %d/%d failed: %s",
+                repo,
+                attempt,
+                vcst.EVAL_BASILICA_MAX_RETRIES,
+                exc,
+                exc_info=True,
+            )
+            if remaining > 0:
+                eval_logger.info(
+                    "[%s] retrying Runpod eval in %ds (%d attempts remaining)",
+                    repo,
+                    vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS,
+                    remaining,
+                )
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
     return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {last_error}"
 

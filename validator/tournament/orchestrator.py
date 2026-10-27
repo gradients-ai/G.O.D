@@ -65,6 +65,22 @@ def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
     return f"prep:{task_id}:{identity}"
 
 
+async def _max_training_hours_for_task(task, config: Config) -> float | None:
+    """Lower hours ceiling for round-1 group text tasks; None keeps the global max."""
+    if task.task_type != TaskType.INSTRUCTTEXTTASK:
+        return None
+    tourn_task = await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), config.psql_db)
+    if tourn_task is None:
+        return None
+    if (
+        tourn_task.group_id is not None
+        and tourn_task.pair_id is None
+        and tourn_task.round_id.endswith("_round_001")
+    ):
+        return cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS
+    return None
+
+
 async def _start_prep_cost_run(
     run_key: str,
     task_id: str,
@@ -1290,6 +1306,7 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                     model_params_count=task.model_params_count,
                     training_start_point=task.training_start_point,
                     ds=task.ds,
+                    max_hours=await _max_training_hours_for_task(task, config),
                 )
                 task.hours_to_complete = new_hours
                 task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
@@ -1552,6 +1569,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         model_params_count=task.model_params_count,
                         training_start_point=task.training_start_point,
                         ds=task.ds,
+                        max_hours=await _max_training_hours_for_task(task, config),
                     )
                     task.hours_to_complete = new_hours
                     task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
