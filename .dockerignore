@@ -16,3 +16,32 @@ comfy-ideogram
 ideogram-eval-images
 ideogram-debug*
 krea-eval-images
+
+# Secrets. Several images `COPY . .` the whole build context, so any of these
+# present in a real checkout would otherwise be baked into the image layers.
+# Docker anchors patterns at the context root (no .gitignore-style basename
+# matching), hence the `**/` prefixes. `*` also matches a leading dot.
+# Env files and their backups: .env, .env.local, .vali.env, .trainer.env,
+# .vali.env.bak.20261027, prod.env, ...
+**/.env*
+**/*.env
+**/*.env.*
+# Keys, certificates and credential stores.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/id_rsa*
+**/id_ecdsa*
+**/id_ed25519*
+**/.ssh
+**/.git-credentials
+**/.netrc
+**/.pgpass
+**/.aws
+**/.docker/config.json
+**/.huggingface/token
+# Bittensor wallets/hotkeys.
+**/.bittensor
+**/wallets
+**/*_keys.encrypted
