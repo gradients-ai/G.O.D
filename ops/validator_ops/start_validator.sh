@@ -11,6 +11,7 @@ pm2 delete weight_setter || true
 pm2 delete tournament_orchestrator || true
 pm2 delete tournament_cycle || true
 pm2 delete dstack_orchestrator || true
+pm2 delete subnet_api || true
 
 # Load variables from .vali.env
 set -a # Automatically export all variables
@@ -95,6 +96,19 @@ pm2 start \
     --service_name dstack_orchestrator \
     python -u -m validator.tournament.dstack_orchestrator" \
     --name dstack_orchestrator
+
+# Public subnet API (sn56.io), only where SUBNET_API_PORT is set. It listens on localhost;
+# a Cloudflare tunnel publishes it. See subnet_api/README.md.
+if [ -n "${SUBNET_API_PORT:-}" ]; then
+    VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" \
+    VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
+    pm2 start \
+        "uvicorn --factory subnet_api.app:app \
+        --host 127.0.0.1 \
+        --port ${SUBNET_API_PORT} \
+        --no-server-header" \
+        --name subnet_api
+fi
 
 # Start Grafana and observability stack
 echo "Starting Grafana and observability stack..."

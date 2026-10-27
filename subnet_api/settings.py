@@ -23,12 +23,13 @@ class Settings:
         key = os.getenv("VALIDATOR_API_KEY", "")
         if not url or not key:
             raise RuntimeError("VALIDATOR_URL and VALIDATOR_API_KEY must be set")
-        origins = tuple(o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip())
+        raw_origins = os.getenv("SUBNET_API_CORS_ORIGINS", "")
+        origins = tuple(o.strip() for o in raw_origins.split(",") if o.strip())
         return cls(
             validator_url=url,
             validator_api_key=key,
-            request_timeout=_float("REQUEST_TIMEOUT", 30.0),
-            slow_request_timeout=_float("SLOW_REQUEST_TIMEOUT", 120.0),
-            cache_seconds=_float("CACHE_SECONDS", 30.0),
+            request_timeout=_float("SUBNET_API_REQUEST_TIMEOUT", 30.0),
+            slow_request_timeout=_float("SUBNET_API_SLOW_REQUEST_TIMEOUT", 120.0),
+            cache_seconds=_float("SUBNET_API_CACHE_SECONDS", 30.0),
             cors_origins=origins,
         )

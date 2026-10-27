@@ -239,3 +239,14 @@ def test_settings_require_validator_url_and_key(monkeypatch: pytest.MonkeyPatch)
     settings = Settings.from_env()
     assert settings.validator_url == "http://validator.test"
     assert API_KEY not in repr(settings)
+
+
+def test_optional_settings_are_namespaced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VALIDATOR_URL", "http://validator.test")
+    monkeypatch.setenv("VALIDATOR_API_KEY", API_KEY)
+    monkeypatch.setenv("CACHE_SECONDS", "999")
+    monkeypatch.setenv("SUBNET_API_CACHE_SECONDS", "5")
+    monkeypatch.setenv("SUBNET_API_CORS_ORIGINS", "https://sn56.io, https://gradients.io")
+    settings = Settings.from_env()
+    assert settings.cache_seconds == 5
+    assert settings.cors_origins == ("https://sn56.io", "https://gradients.io")
