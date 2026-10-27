@@ -78,15 +78,19 @@ tasks:
         fi
 
   install:
+    # Single source of truth for node installs (validator, auditor, miner).
+    # Runtime deps live in optional extras after #1405, so a plain `pip install -e .`
+    # is not enough. Fiber v2.7.0+ needs `cyscale` (provides the `scalecodec`
+    # import namespace); uninstall only the old `substrate-interface`/`scalecodec`
+    # packages, never cyscale, then reinstall cyscale explicitly for upgrade paths.
     cmds:
-      - . $HOME/.venv/bin/activate
-      # fiber v2.7.0+ moved to async-substrate-interface 2.x, which depends on
-      # `cyscale` instead of `scalecodec`/`substrate-interface` (same import
-      # namespace as scalecodec, so it refuses to load if either is still
-      # around). `pip install -e .` won't remove those on its own since
-      # they're no longer required by anything, so clear them out first.
-      - pip uninstall -y substrate-interface scalecodec cyscale || true
-      - pip install -e .
+      - |
+        set -e
+        . $HOME/.venv/bin/activate
+        pip uninstall -y substrate-interface scalecodec || true
+        pip install -e ".[organic,chain,evaluation-remote,validator]"
+        pip install -U 'cyscale>=0.3.3,<1.0.0'
+        python -c "import scalecodec, fiber.chain.interface, fastapi, uvicorn, asyncpg"
 
   auditor:
     cmds:

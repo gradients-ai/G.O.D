@@ -61,23 +61,25 @@ Install system dependencies on a fresh Ubuntu machine:
 task bootstrap
 ```
 
-Install the Python package:
+Install the Python package (node extras: `organic`, `chain`, `evaluation-remote`, `validator`):
 
 ```bash
 task install
 ```
 
-For development, install dev dependencies and pre-commit:
+See [organic-package.md](organic-package.md) for what each extra covers.
+
+For development, install the node extras plus dev dependencies and pre-commit:
 
 ```bash
-pip install -e '.[dev]'
+pip install -e '.[dev,organic,chain,evaluation-remote,validator]'
 pre-commit install
 ```
 
 If you need GPU evaluation dependencies locally:
 
 ```bash
-pip install -e '.[dev,gpu]'
+pip install -e '.[dev,organic,chain,evaluation-remote,validator,gpu]'
 ```
 
 ## Configuration Files
