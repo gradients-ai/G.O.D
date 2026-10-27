@@ -1,8 +1,3 @@
-from dotenv import load_dotenv
-
-
-load_dotenv(".vali.env")
-
 import os
 import time
 from dataclasses import dataclass
@@ -11,6 +6,7 @@ import httpx
 import websocket
 from async_substrate_interface import SubstrateInterface
 from bittensor_wallet.keypair import Keypair
+from dotenv import load_dotenv
 from fiber.chain import chain_utils
 from fiber.chain import interface
 from redis.asyncio import Redis
@@ -51,6 +47,7 @@ _config = None
 def load_config() -> Config:
     global _config
     if _config is None:
+        load_dotenv(".vali.env")
         subtensor_network = os.getenv("SUBTENSOR_NETWORK")
         subtensor_address = os.getenv("SUBTENSOR_ADDRESS") or None
         dev_env = os.getenv("ENV", "prod").lower() != "prod"

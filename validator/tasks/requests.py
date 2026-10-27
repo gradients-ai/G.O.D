@@ -1,9 +1,9 @@
 import re
 
-from fiber import Keypair
 from huggingface_hub import HfApi
 
 import validator.tasks.datasets.constants as cst
+from core.interfaces import KeypairLike
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
@@ -68,7 +68,7 @@ async def get_total_image_dataset_size(task: ImageRawTask) -> int:
     return 0
 
 
-async def run_image_task_prep(task: ImageRawTask, keypair: Keypair, psql_db=None) -> ImageRawTask:
+async def run_image_task_prep(task: ImageRawTask, keypair: KeypairLike | None = None, psql_db=None) -> ImageRawTask:
     test_url, train_url = await prepare_image_task(
         image_text_pairs=task.image_text_pairs,
         dataset_zip_url=task.ds if not task.image_text_pairs else None,
@@ -82,7 +82,11 @@ async def run_image_task_prep(task: ImageRawTask, keypair: Keypair, psql_db=None
     return task
 
 
-async def run_text_task_prep(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=None) -> AnyTextTypeRawTask:
+async def run_text_task_prep(
+    task: AnyTextTypeRawTask,
+    keypair: KeypairLike | None = None,
+    psql_db=None,
+) -> AnyTextTypeRawTask:
     if task.yarn_factor is not None:
         logger.info(f"Applying YaRN extension with factor {task.yarn_factor} to model {task.model_id}")
         try:

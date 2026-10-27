@@ -1,8 +1,7 @@
 import os
 
-from fiber.logging_utils import get_logger
-
 from core.constants.datasets import DPO_DEFAULT_DATASET_TYPE
+from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import DpoDatasetType
 from core.models.dataset_models import EnvironmentDatasetType

@@ -1,9 +1,9 @@
+import logging
 from datetime import datetime
 from typing import Literal
 from uuid import UUID
 from uuid import uuid4
 
-from fiber.logging_utils import get_logger
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -29,7 +29,7 @@ from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class TrainRequest(BaseModel):

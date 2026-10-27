@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import math
 from datetime import datetime
+from typing import TYPE_CHECKING
 from typing import Literal
 from uuid import UUID
 
 from asyncpg.connection import Connection
-from fiber.chain.models import Node
 
 import validator.db.constants as cst
 import validator.lifecycle.constants as lifecycle_cst
@@ -34,7 +36,18 @@ from validator.tasks.models import InstructTextTask
 from validator.tasks.models import NetworkStats
 
 
+if TYPE_CHECKING:
+    from fiber.chain.models import Node
+
+
 logger = get_logger(__name__)
+
+
+def _node_from_row(row) -> Node:
+    """Import the chain model only when a chain-specific query is executed."""
+    from fiber.chain.models import Node
+
+    return Node(**{key: value for key, value in dict(row).items() if key != cst.TRUST})
 
 
 async def get_dataset_test_losses(
@@ -366,7 +379,7 @@ async def get_nodes_assigned_to_task(task_id: str, psql_db: PSQLDB) -> list[Node
             NETUID,
         )
         # Filter out 'trust' field as it was removed from Node model
-        return [Node(**{k: v for k, v in dict(row).items() if k != cst.TRUST}) for row in rows]
+        return [_node_from_row(row) for row in rows]
 
 
 async def count_hotkeys_assigned_to_task(task_id: str, psql_db: PSQLDB) -> int:
@@ -1028,7 +1041,7 @@ async def get_miners_for_task(task_id: UUID, psql_db: PSQLDB) -> list[Node]:
         """
         rows = await connection.fetch(query, task_id)
         # Filter out 'trust' field as it was removed from Node model
-        return [Node(**{k: v for k, v in dict(row).items() if k != cst.TRUST}) for row in rows]
+        return [_node_from_row(row) for row in rows]
 
 
 async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None = None) -> AnyTypeTask:

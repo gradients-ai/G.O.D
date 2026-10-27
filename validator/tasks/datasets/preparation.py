@@ -3,6 +3,7 @@ import json
 import os
 import random
 import shutil
+import stat
 import tempfile
 import uuid
 import zipfile
@@ -13,12 +14,12 @@ from datasets import Dataset
 from datasets import DatasetDict
 from datasets import concatenate_datasets
 from datasets import load_dataset
-from fiber import Keypair
 
 import core.constants.datasets as core_cst
 import validator.tasks.datasets.constants as cst
 from core.constants.credentials import BUCKET_NAME
 from core.downloads import download_s3_file
+from core.interfaces import KeypairLike
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import ImageTextPair
@@ -61,13 +62,35 @@ def create_zip_for_image_dataset(split_keys: set, zip_name: str, entries: dict, 
 
 def unzip_to_temp_path(zip_file_path: str) -> str:
     random_tmp_id = uuid.uuid4()
-    tmp_dir = f"{cst.TEMP_PATH_FOR_IMAGES}/{random_tmp_id}"
-    if not os.path.exists(tmp_dir):
-        os.makedirs(tmp_dir)
-    with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-        zip_ref.extractall(tmp_dir)
-
-    return tmp_dir
+    tmp_dir = Path(cst.TEMP_PATH_FOR_IMAGES) / str(random_tmp_id)
+    tmp_dir.mkdir(parents=True, exist_ok=False)
+    root = tmp_dir.resolve()
+    total_uncompressed = 0
+    try:
+        with zipfile.ZipFile(zip_file_path, "r") as archive:
+            entries = archive.infolist()
+            if len(entries) > cst.MAX_ARCHIVE_ENTRIES:
+                raise ValueError(f"Archive contains too many entries: {len(entries)}")
+            for entry in entries:
+                if entry.flag_bits & 0x1:
+                    raise ValueError("Encrypted archive entries are not allowed")
+                if stat.S_ISLNK(entry.external_attr >> 16):
+                    raise ValueError("Archive symlinks are not allowed")
+                target = (root / entry.filename).resolve()
+                if target != root and root not in target.parents:
+                    raise ValueError("Archive entry escapes the extraction directory")
+                total_uncompressed += entry.file_size
+                if total_uncompressed > cst.MAX_ARCHIVE_UNCOMPRESSED_BYTES:
+                    raise ValueError("Archive uncompressed size exceeds the limit")
+                if entry.file_size and entry.compress_size == 0:
+                    raise ValueError("Archive entry has an invalid compression ratio")
+                if entry.compress_size and entry.file_size / entry.compress_size > cst.MAX_ARCHIVE_COMPRESSION_RATIO:
+                    raise ValueError("Archive compression ratio exceeds the limit")
+            archive.extractall(root)
+    except Exception:
+        shutil.rmtree(root, ignore_errors=True)
+        raise
+    return str(root)
 
 
 async def load_dataset_from_s3(dataset_url: str, max_file_size_bytes: int = None) -> Dataset | DatasetDict:
@@ -477,7 +500,11 @@ def standardize_grpo_column_names(dataset: Dataset, task: GrpoRawTask) -> Datase
     return dataset
 
 # TODO changes needed here?
-async def prepare_text_task(task: AnyTextTypeRawTask, keypair: Keypair, psql_db=None) -> tuple[str, str, str]:
+async def prepare_text_task(
+    task: AnyTextTypeRawTask,
+    keypair: KeypairLike | None = None,
+    psql_db=None,
+) -> tuple[str, str, str]:
     # Environment tasks: trainer ignores the dataset and generates its own proxy dataset
     # Just return dummy URLs to satisfy the interface - they won't be used
     if isinstance(task, EnvRawTask):

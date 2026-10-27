@@ -11,7 +11,12 @@ from logging import LogRecord
 from typing import TYPE_CHECKING
 
 import requests
-from fiber.logging_utils import get_logger as fiber_get_logger
+
+
+try:
+    from fiber.logging_utils import get_logger as _fiber_get_logger
+except ModuleNotFoundError:
+    _fiber_get_logger = None
 
 
 if TYPE_CHECKING:
@@ -159,8 +164,9 @@ def stream_image_build_logs(logs: list[dict], logger: Logger | None = None, log_
 
 
 def get_logger(name: str) -> Logger:
-    logger = fiber_get_logger(name)
-    logger.addFilter(ContextTagsFilter())
+    logger = _fiber_get_logger(name) if _fiber_get_logger is not None else logging.getLogger(name)
+    if not any(isinstance(existing, ContextTagsFilter) for existing in logger.filters):
+        logger.addFilter(ContextTagsFilter())
     return logger
 
 
