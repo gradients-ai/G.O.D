@@ -10,6 +10,8 @@ import wandb
 from huggingface_hub import HfApi
 from huggingface_hub import login
 
+from core.tokenizer_utils import sanitize_tokenizer_config
+
 
 def _resolve_base_model(model_id: str) -> str:
     """If model_id is a LoRA adapter repo, follow the chain to the real base model."""
@@ -184,6 +186,9 @@ def main():
         raise ValueError(f"Local folder {local_folder} is empty or only contains metadata files. Nothing to upload.")
 
     patch_model_metadata(local_folder, model)
+    # A winning upload becomes the next base (continuous-SFT carry-forward), so a v5-serialized
+    # tokenizer here breaks every v4 miner trainer that loads it next week.
+    sanitize_tokenizer_config(local_folder)
 
     print(f"Creating repo {repo_id}...", flush=True)
     api = HfApi()

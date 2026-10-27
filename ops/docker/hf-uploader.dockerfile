@@ -9,7 +9,8 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir \
     huggingface_hub \
-    wandb 
+    python-dotenv \
+    wandb
 
 COPY trainer/ trainer/
 COPY core/ core/
