@@ -21,10 +21,7 @@ Cloudflare tunnel below is its only public entry point.
 To start it now without restarting the validator:
 
 ```bash
-set -a; . ./.vali.env; set +a
-VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
-  pm2 start "uvicorn --factory subnet_api.app:app --host 127.0.0.1 --port ${SUBNET_API_PORT} --no-server-header" \
-  --name subnet_api
+task subnet-api
 curl -s localhost:${SUBNET_API_PORT}/health
 ```
 
