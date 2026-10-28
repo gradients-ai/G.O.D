@@ -7,6 +7,7 @@ import stat
 import tempfile
 import uuid
 import zipfile
+from collections.abc import Mapping
 from math import ceil
 from pathlib import Path
 
@@ -123,6 +124,30 @@ async def train_test_split(dataset: Dataset, test_size: float = cst.TRAIN_TEST_S
     logger.info(f"Test set size: {len(split_dataset['test'])}")
 
     return split_dataset
+
+
+def _instruct_row_key(row: Mapping) -> tuple:
+    """Identity of an instruct row for de-duplication. Rows with equal keys are duplicates."""
+    columns = (cst.STANDARD_SYSTEM_COLUMN, cst.STANDARD_INSTRUCT_COLUMN, cst.STANDARD_INPUT_COLUMN, cst.STANDARD_OUTPUT_COLUMN)
+    return tuple(str(row.get(col) or "").strip() for col in columns)
+
+
+def drop_duplicate_instruct_rows(dataset: Dataset) -> Dataset:
+    """Drop duplicate rows (first occurrence kept) so no test row also appears in train."""
+    seen: set[tuple] = set()
+    keep: list[int] = []
+    for idx, row in enumerate(dataset):
+        key = _instruct_row_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        keep.append(idx)
+
+    dropped = len(dataset) - len(keep)
+    if dropped:
+        logger.info(f"Dropped {dropped}/{len(dataset)} duplicate rows before train/test split")
+        dataset = dataset.select(keep)
+    return dataset
 
 
 def train_test_split_image(dataset_path: str) -> tuple[str, str]:
@@ -525,6 +550,7 @@ async def prepare_text_task(
 
         if isinstance(task, InstructTextRawTask):
             dataset = standardize_column_names(dataset, task)
+            dataset = drop_duplicate_instruct_rows(dataset)
         elif isinstance(task, DpoRawTask):
             dataset = standardize_dpo_column_names(dataset, task)
         elif isinstance(task, GrpoRawTask):

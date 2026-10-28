@@ -98,7 +98,7 @@ def stub_near_dup_rates(monkeypatch):
     return _stub
 
 
-async def _has_high_near_dup(task_type: TaskType = TaskType.INSTRUCTTEXTTASK) -> bool:
+async def _has_high_near_dup(task_type: TaskType = TaskType.DPOTASK) -> bool:
     return await scheduler._has_known_high_near_duplicate_rate("some/dataset", task_type, psql_db=None)
 
 
@@ -130,3 +130,10 @@ async def test_near_dup_db_error_is_allowed(monkeypatch):
 
     monkeypatch.setattr(scheduler, "get_dataset_near_duplicate_rates", boom)
     assert await _has_high_near_dup() is False
+
+
+@pytest.mark.asyncio
+async def test_near_dup_gate_skips_instruct(stub_near_dup_rates):
+    stub_near_dup_rates([0.9])
+    assert await _has_high_near_dup(TaskType.INSTRUCTTEXTTASK) is False
+    assert await _has_high_near_dup(TaskType.DPOTASK) is True

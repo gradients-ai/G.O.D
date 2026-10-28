@@ -387,6 +387,9 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
 
 async def _has_known_high_near_duplicate_rate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
     """Skip datasets whose persisted near_duplicate_rate already exceeded the gate, before paying for prep."""
+    # Instruct drops duplicate rows before the train/test split instead of gating on the rate.
+    if task_type == TaskType.INSTRUCTTEXTTASK:
+        return False
     try:
         rates = await get_dataset_near_duplicate_rates(
             ds_name, psql_db, synth_cst.NEAR_DUP_HISTORY_LOOKBACK_DAYS, task_type
