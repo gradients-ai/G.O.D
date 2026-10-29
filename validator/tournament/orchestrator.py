@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
@@ -15,7 +16,9 @@ import validator.tournament.constants as cst
 from core.logging import LogContext
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
+from core.models.image_models import ImageModelType
 from core.models.payload_models import ModelPrepJob
+from core.models.payload_models import PreparedTrainingImage
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
@@ -28,6 +31,7 @@ from core.models.trainer_contract_models import GPUType
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import gpu_costs as gpu_cost_sql
+from validator.db.sql import image_builds as image_build_sql
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.tournaments import get_tournament_id_by_task_id
@@ -45,12 +49,16 @@ from validator.tasks.models import InstructTextRawTask
 from validator.tasks.synthetics.scheduler import compute_hours_from_baseline_stats
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import GpuRequirement
+from validator.tournament.models import ImageBuildStatus
+from validator.tournament.models import ImageBuildVariant
 from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentTaskTraining
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingRepoInfo
 from validator.tournament.models import TrainingStatus
 from validator.tournament.notifications import notify_model_prep_failure_limit
+from validator.tournament.trainer_images import ensure_prefetched
+from validator.tournament.trainer_images import request_prefetch
 
 
 logger = get_logger(__name__)
@@ -368,6 +376,8 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
     assignments = []
     tasks_to_update = []
     tasks_without_nodes = []
+    failed_image_pairs: list[tuple[str, str]] = []
+    depot_enabled = os.getenv("DEPOT_IMAGE_BUILDS_ENABLED", "false").lower() == "true"
 
     for task in tasks:
         # Environment tournaments are retired; never assign environment tasks for training.
@@ -388,10 +398,46 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                 # Get tournament_id for this task
                 tournament_id = await tournament_sql.get_tournament_id_by_task_id(task.task_id, config.psql_db)
 
+                task_has_nonterminal_builds = False
                 for hotkey in hotkeys:
                     repo_info = await tournament_sql.get_tournament_training_repo_and_commit(
                         hotkey, tournament_id, config.psql_db
                     ) if tournament_id else TrainingRepoInfo.empty()
+                    prepared_image = None
+                    if depot_enabled and tournament_id and priority == 2:
+                        if task.task_type == TaskType.IMAGETASK:
+                            variant = (
+                                ImageBuildVariant.IMAGE_FLUX
+                                if task.model_type == ImageModelType.FLUX
+                                else ImageBuildVariant.IMAGE_TOOLKIT
+                            )
+                        else:
+                            variant = ImageBuildVariant.TEXT
+                        image_build = await image_build_sql.get_build(
+                            tournament_id, hotkey, variant, config.psql_db
+                        )
+                        if image_build is None or image_build.status not in {
+                            ImageBuildStatus.READY,
+                            ImageBuildStatus.FAILED,
+                        }:
+                            task_has_nonterminal_builds = True
+                            continue
+                        if image_build.status == ImageBuildStatus.FAILED:
+                            logger.warning(
+                                f"Image build failed for {hotkey} on task {task.task_id}; "
+                                "recording training failure without GPU dispatch"
+                            )
+                            failed_image_pairs.append((str(task.task_id), hotkey))
+                        elif image_build.pull_ref and image_build.digest:
+                            prepared_image = PreparedTrainingImage(
+                                build_id=image_build.build_id,
+                                pull_ref=image_build.pull_ref,
+                                digest=image_build.digest,
+                                variant=image_build.variant.value,
+                            )
+                        else:
+                            task_has_nonterminal_builds = True
+                            continue
 
                     assignments.append(
                         TaskTrainingAssignment(
@@ -403,9 +449,11 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
                             training_commit_hash=repo_info.training_commit_hash,
                             github_token=repo_info.github_token,
                             requested_datasets=repo_info.requested_datasets,
+                            prepared_image=prepared_image,
                         )
                     )
-                tasks_to_update.append(task)
+                if not task_has_nonterminal_builds:
+                    tasks_to_update.append(task)
             else:
                 tasks_without_nodes.append(task)
         elif priority == 1:
@@ -450,6 +498,11 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
     if assignments:
         await tournament_sql.add_tournament_task_hotkey_pairs_for_training(assignments, config.psql_db)
 
+    for task_id, hotkey in failed_image_pairs:
+        await tournament_sql.update_tournament_task_training_status(
+            task_id, hotkey, TrainingStatus.FAILURE, config.psql_db
+        )
+
     for task in tasks_to_update:
         task.status = TaskStatus.TRAINING
         await task_sql.update_task(task, config.psql_db)
@@ -470,6 +523,8 @@ async def process_pending_tournament_tasks(config: Config):
             tournament_tasks = [
                 t for t in pending_training_tasks if t.task.backend is None or t.task.backend.value == Backend.OBLIVUS.value
             ]
+            # schedule_tasks_for_training pops from the end; prepared images go last.
+            tournament_tasks.sort(key=lambda item: item.prepared_image is not None)
 
             logger.info(f"Fetched {len(pending_training_tasks)} pending training tasks, {len(tournament_tasks)}")
 
@@ -544,6 +599,22 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
 
             trainer_ip, gpu_ids, interconnect = suitable_gpus_result
 
+            if oldest_task_training.prepared_image is not None:
+                try:
+                    await ensure_prefetched(
+                        trainer_ip,
+                        oldest_task_training.prepared_image,
+                        timeout_seconds=float(os.getenv("IMAGE_PREFETCH_WAIT_TIMEOUT_SECONDS", "3600")),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        f"Image prefetch not ready for {oldest_task_training.hotkey} on {trainer_ip}: {exc}"
+                    )
+                    pending_training_tasks.pop()
+                    pending_training_tasks.insert(0, oldest_task_training)
+                    await asyncio.sleep(cst.TRAINING_START_RETRY_INTERVAL)
+                    continue
+
         try:
             training_task = pending_training_tasks[-1]
             tournament_id = await get_tournament_id_by_task_id(training_task.task.task_id, config.psql_db)
@@ -556,6 +627,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     training_task.training_commit_hash,
                     training_task.github_token,
                     training_task.requested_datasets,
+                    training_task.prepared_image,
                     config,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
@@ -729,6 +801,7 @@ async def _create_training_request(
     training_commit_hash: str,
     github_token: str | None,
     requested_datasets: list[str] | None,
+    prepared_image: PreparedTrainingImage | None,
     config: Config,
 ) -> TrainerProxyRequest:
     """
@@ -807,8 +880,9 @@ async def _create_training_request(
         gpu_ids=available_gpu_ids,
         hotkey=hotkey,
         github_commit_hash=training_commit_hash,
-        github_token=github_token,
+        github_token=None if prepared_image else github_token,
         requested_datasets=requested_datasets,
+        prepared_image=prepared_image,
     )
 
 
@@ -1706,6 +1780,42 @@ async def process_awaiting_model_prep_tasks(config: Config):
         await asyncio.sleep(cst.MODEL_PREP_CYCLE_INTERVAL)
 
 
+async def prefetch_pending_training_images(config: Config):
+    """Continuously shard ready assignment images across trainers without reserving GPUs."""
+    while True:
+        try:
+            if os.getenv("DEPOT_IMAGE_BUILDS_ENABLED", "false").lower() != "true":
+                await asyncio.sleep(30)
+                continue
+            assignments = await tournament_sql.get_tournament_training_tasks(
+                config.psql_db, TrainingStatus.PENDING
+            )
+            images = {
+                assignment.prepared_image.digest: assignment.prepared_image
+                for assignment in assignments
+                if assignment.prepared_image is not None
+            }
+            trainers = await tournament_sql.get_trainers(config.psql_db)
+            if trainers and images:
+                shards: dict[str, list[PreparedTrainingImage]] = {
+                    trainer.trainer_ip: [] for trainer in trainers
+                }
+                trainer_ips = list(shards)
+                for index, image in enumerate(images.values()):
+                    shards[trainer_ips[index % len(trainer_ips)]].append(image)
+                await asyncio.gather(
+                    *(
+                        request_prefetch(trainer_ip, shard)
+                        for trainer_ip, shard in shards.items()
+                        if shard
+                    ),
+                    return_exceptions=True,
+                )
+        except Exception:
+            logger.exception("Failed to prefetch pending training images")
+        await asyncio.sleep(30)
+
+
 async def run_tournament_orchestrator_cycles():
     config = load_config()
     await try_db_connections(config)
@@ -1718,6 +1828,7 @@ async def run_tournament_orchestrator_cycles():
         seed_tournament_evaluations_from_training(config),
         update_all_trainers_gpu_availability_cycle(config),
         process_awaiting_model_prep_tasks(config),
+        prefetch_pending_training_images(config),
     )
 
 

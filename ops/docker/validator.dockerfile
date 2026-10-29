@@ -2,6 +2,11 @@ FROM axolotlai/axolotl:main-20260701-py3.11-cu128-2.9.1
 
 WORKDIR /app
 
+ARG DEPOT_CLI_VERSION=2.103.4
+RUN apt-get update && apt-get install -y --no-install-recommends curl && \
+    curl -fsSL https://depot.dev/install-cli.sh | DEPOT_INSTALL_DIR=/usr/local/bin sh -s "${DEPOT_CLI_VERSION}" && \
+    rm -rf /var/lib/apt/lists/*
+
 COPY ops/docker/requirements/validator.txt requirements.txt
 # axolotl base ships a uv-managed venv at /workspace/axolotl-venv with no `pip` on PATH.
 RUN uv pip install --python /workspace/axolotl-venv/bin/python --no-cache -r requirements.txt
