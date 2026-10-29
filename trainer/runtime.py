@@ -35,6 +35,7 @@ from core.models.task_models import TaskType
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
+from trainer.image_prefetch import ensure_ready as ensure_prepared_image
 from trainer.job_state import complete_task
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
@@ -708,7 +709,7 @@ def _resolve_dockerfile_path(local_repo_path: str, candidate_paths: tuple[str, .
     raise FileNotFoundError(f"Training repository is missing a supported Dockerfile. Checked: {searched}")
 
 
-async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
+async def start_training_task(task: TrainerProxyRequest, local_repo_path: str | None):
     cancelled_exc: asyncio.CancelledError | None = None
     cancel_log_message: str | None = None
 
@@ -735,7 +736,11 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             ),
         }
 
-        dockerfile_path = get_dockerfile_path(task_type, training_data, local_repo_path)
+        dockerfile_path = (
+            get_dockerfile_path(task_type, training_data, local_repo_path)
+            if task.prepared_image is None and local_repo_path is not None
+            else None
+        )
 
         logger.info("Running Cache Download Container", extra=log_labels)
         await log_task(training_data.task_id, task.hotkey, "Downloading data")
@@ -764,13 +769,22 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Downloader container failed: {exc}")
 
-        tag, exc = await asyncio.to_thread(
-            build_docker_image,
-            dockerfile_path=dockerfile_path,
-            log_labels=log_labels,
-            is_image_task=(task_type == TaskType.IMAGETASK),
-            context_path=local_repo_path,
-        )
+        if task.prepared_image is not None:
+            tag = await ensure_prepared_image(
+                task.prepared_image,
+                timeout=float(os.getenv("IMAGE_PREFETCH_WAIT_TIMEOUT_SECONDS", "3600")),
+            )
+            exc = None
+        else:
+            if dockerfile_path is None or local_repo_path is None:
+                raise RuntimeError("Legacy training requires a repository and Dockerfile")
+            tag, exc = await asyncio.to_thread(
+                build_docker_image,
+                dockerfile_path=dockerfile_path,
+                log_labels=log_labels,
+                is_image_task=(task_type == TaskType.IMAGETASK),
+                context_path=local_repo_path,
+            )
 
         if not tag:
             message = f"[ERROR] Image Build failed | ExitCode: Unknown | LastError: {exc}"
@@ -909,9 +923,11 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     await log_task(training_data.task_id, task.hotkey, f"Error during container cleanup: {cleanup_err}")
 
             logger.info("Cleaning up", extra=log_labels)
-            if tag:
+            if tag and task.prepared_image is None:
                 await asyncio.to_thread(delete_image_and_cleanup, tag)
                 logger.info("Cleaned up Docker resources.", extra=log_labels)
+            elif tag:
+                logger.info("Keeping prepared image in the host cache.", extra=log_labels)
             else:
                 logger.info("No Docker image to clean up.", extra=log_labels)
 

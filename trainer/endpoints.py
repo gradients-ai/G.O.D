@@ -10,7 +10,9 @@ from fastapi.responses import JSONResponse
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
+from core.models.payload_models import TrainerImagesResponse
 from core.models.payload_models import TrainerJob
+from core.models.payload_models import TrainerPrefetchRequest
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.trainer_contract_models import GPUInfo
@@ -19,6 +21,8 @@ from trainer.containers.dataset_cache import download_whitelisted_datasets
 from trainer.host import are_gpus_available
 from trainer.host import clone_repo
 from trainer.host import get_gpu_info
+from trainer.image_prefetch import enqueue as enqueue_images
+from trainer.image_prefetch import inventory as image_inventory
 from trainer.job_state import _start_model_prep_unlocked
 from trainer.job_state import _start_task_unlocked
 from trainer.job_state import _task_lock
@@ -38,6 +42,8 @@ from validator.infrastructure.service_constants import MODEL_PREP_ENDPOINT
 from validator.infrastructure.service_constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
+from validator.infrastructure.service_constants import TRAINER_IMAGES_INVENTORY_ENDPOINT
+from validator.infrastructure.service_constants import TRAINER_PREFETCH_IMAGES_ENDPOINT
 
 
 load_task_history()
@@ -53,26 +59,28 @@ async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) 
 async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
     task_id = req.training_data.task_id
     hotkey = req.hotkey
-    try:
-        local_repo_path = await asyncio.to_thread(
-            clone_repo,
-            repo_url=req.github_repo,
-            parent_dir=cst.TEMP_REPO_PATH,
-            commit_hash=req.github_commit_hash,
-            github_token=req.github_token,
-            task_id=req.training_data.task_id,
-            hotkey=req.hotkey,
-        )
-    except Exception:
-        await log_task(task_id, hotkey, "Failed to clone repository")
-        await complete_task(task_id, hotkey, success=False)
-        logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
-        return
+    local_repo_path = None
+    if req.prepared_image is None:
+        try:
+            local_repo_path = await asyncio.to_thread(
+                clone_repo,
+                repo_url=req.github_repo,
+                parent_dir=cst.TEMP_REPO_PATH,
+                commit_hash=req.github_commit_hash,
+                github_token=req.github_token,
+                task_id=req.training_data.task_id,
+                hotkey=req.hotkey,
+            )
+        except Exception:
+            await log_task(task_id, hotkey, "Failed to clone repository")
+            await complete_task(task_id, hotkey, success=False)
+            logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
+            return
 
-    logger.info(
-        "Repository cloned successfully",
-        extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
-    )
+        logger.info(
+            "Repository cloned successfully",
+            extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
+        )
 
     if req.requested_datasets:
         try:
@@ -182,6 +190,14 @@ async def get_recent_tasks_list(hours: int) -> list[TrainerJob]:
     return tasks
 
 
+async def prefetch_images(req: TrainerPrefetchRequest) -> TrainerImagesResponse:
+    return await enqueue_images(req.entries)
+
+
+async def get_images_inventory() -> TrainerImagesResponse:
+    return image_inventory()
+
+
 def factory_router() -> APIRouter:
     router = APIRouter(tags=["Proxy Trainer"])
     router.add_api_route(
@@ -199,5 +215,17 @@ def factory_router() -> APIRouter:
     router.add_api_route(TASK_DETAILS_ENDPOINT, get_task_details, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)])
     router.add_api_route(
         MODEL_PREP_STATUS_ENDPOINT, get_model_prep_status, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
+    router.add_api_route(
+        TRAINER_PREFETCH_IMAGES_ENDPOINT,
+        prefetch_images,
+        methods=["POST"],
+        dependencies=[Depends(verify_orchestrator_ip)],
+    )
+    router.add_api_route(
+        TRAINER_IMAGES_INVENTORY_ENDPOINT,
+        get_images_inventory,
+        methods=["GET"],
+        dependencies=[Depends(verify_orchestrator_ip)],
     )
     return router
