@@ -40,7 +40,7 @@ from validator.tournament.task_results import get_task_results_for_ranking
 logger = get_logger(__name__)
 
 _RESOLVED_ALLOW = frozenset({"clean", "rejected"})
-_UNRESOLVED_HOLD = frozenset({"pending", "error"})
+_UNRESOLVED_HOLD = frozenset({"pending", "error", "needs_review"})
 
 
 @dataclass(frozen=True)
@@ -134,6 +134,27 @@ async def evaluate_round2_code_reviews(
                 hotkey,
                 f"Code review failed: {exc}",
                 None,
+                config.discord_url,
+            )
+            halt = True
+            continue
+
+        if verdict.needs_review and not verdict.flagged:
+            try:
+                report_url = await _upload_report(tournament, participant, verdict.reason, verdict.evidence)
+            except Exception:  # noqa: BLE001 - Discord finding is still useful without an uploaded report
+                report_url = None
+            await _record(tournament.tournament_id, hotkey, "needs_review", psql_db)
+            logger.warning(
+                f"Persisted round-2 code review for {hotkey} as needs_review; "
+                f"holding advancement (report={report_url or 'upload failed'})"
+            )
+            await notify_challenger_code_review(
+                tournament.tournament_id,
+                tournament.tournament_type.value,
+                hotkey,
+                verdict.reason,
+                report_url,
                 config.discord_url,
             )
             halt = True
