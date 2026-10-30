@@ -36,5 +36,8 @@ Optional settings, also read from the environment:
 | `SUBNET_API_REQUEST_TIMEOUT` | `30` | Seconds to wait for the validator |
 | `SUBNET_API_SLOW_REQUEST_TIMEOUT` | `120` | Same, for the heavy performance routes |
 | `SUBNET_API_CORS_ORIGINS` | none | Comma-separated browser origins allowed to call it |
+| `SUBNET_API_PUBLIC_URL` | `https://api.sn56.io` | Base URL shown in the code samples on `/docs` |
+
+The API reference is served at `/docs`, from `/openapi.json`.
 
 Keep `VALIDATOR_PORT` firewalled / bound as today — only publish `SUBNET_API_PORT`.
