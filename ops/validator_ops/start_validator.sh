@@ -97,14 +97,13 @@ pm2 start \
     python -u -m validator.tournament.dstack_orchestrator" \
     --name dstack_orchestrator
 
-# Public subnet API (sn56.io), only where SUBNET_API_PORT is set. It listens on localhost;
-# a Cloudflare tunnel publishes it. See subnet_api/README.md.
+# Public subnet API (sn56.io), only where SUBNET_API_PORT is set. See subnet_api/README.md.
 if [ -n "${SUBNET_API_PORT:-}" ]; then
     VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" \
     VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
     pm2 start \
         "uvicorn --factory subnet_api.app:app \
-        --host 127.0.0.1 \
+        --host 0.0.0.0 \
         --port ${SUBNET_API_PORT} \
         --no-server-header" \
         --name subnet_api
