@@ -16,6 +16,7 @@ class Settings:
     slow_request_timeout: float = 120.0
     cache_seconds: float = 30.0
     cors_origins: tuple[str, ...] = ()
+    public_url: str = "https://api.sn56.io"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -32,4 +33,5 @@ class Settings:
             slow_request_timeout=_float("SUBNET_API_SLOW_REQUEST_TIMEOUT", 120.0),
             cache_seconds=_float("SUBNET_API_CACHE_SECONDS", 30.0),
             cors_origins=origins,
+            public_url=os.getenv("SUBNET_API_PUBLIC_URL", "https://api.sn56.io").rstrip("/"),
         )
