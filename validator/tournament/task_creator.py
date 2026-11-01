@@ -1,9 +1,8 @@
 import random
-from datetime import datetime
-from datetime import timedelta
 
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.oversampled_later_models import OVERSAMPLED_LATER_MODELS
 from core.oversampled_later_models import sample_oversampled_later_model
@@ -317,8 +316,6 @@ async def _create_and_register_tournament_task(
     pair_id: str | None = None,
 ) -> None:
     """Create a TournamentTask, register it in the database, and log the creation."""
-    if _is_round_one_group_text_task(task, round_id, group_id, pair_id):
-        await _cap_round_one_text_hours(task, config)
     tournament_task = TournamentTask(
         tournament_id=tournament_id,
         round_id=round_id,
@@ -477,13 +474,22 @@ async def _create_single_group_text_tasks(
         )
         if model_id_override:
             logger.info(f"    Group {group_index + 1} task {task_index + 1} uses oversampled later model {model_id_override}")
-        task = await create_synthetic_instruct_text_task(
-            config,
-            models,
-            instruct_datasets,
-            enable_kl=enable_kl,
-            model_id_override=model_id_override,
-        )
+        if round_id.endswith("_round_001"):
+            task = await _draw_round_one_text_task_within_hours(
+                config,
+                models,
+                instruct_datasets,
+                enable_kl=enable_kl,
+                model_id_override=model_id_override,
+            )
+        else:
+            task = await create_synthetic_instruct_text_task(
+                config,
+                models,
+                instruct_datasets,
+                enable_kl=enable_kl,
+                model_id_override=model_id_override,
+            )
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
 
@@ -622,17 +628,52 @@ def _is_round_one_group_text_task(task: RawTask, round_id: str, group_id: str | 
     )
 
 
-async def _cap_round_one_text_hours(task: RawTask, config: Config) -> None:
-    """Clamp R1 text hours (and termination) to ROUND_ONE_TEXT_MAX_TRAINING_HOURS."""
-    capped = min(float(task.hours_to_complete), t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS)
-    if capped >= float(task.hours_to_complete):
-        return
+def _round_one_text_hours_too_long(hours: float) -> bool:
+    return float(hours) > t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS
+
+
+async def _retire_unused_round_one_text_task(task: RawTask, config: Config) -> None:
+    """Keep a too-long draw out of the pending queue. It was already inserted by task creation."""
     logger.info(
-        f"Capping round-1 text task {task.task_id} hours {task.hours_to_complete} -> {capped}"
+        f"Round-1 text task {task.task_id} is {task.hours_to_complete}h "
+        f"> {t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h; retiring it and drawing another"
     )
-    task.hours_to_complete = capped
-    task.termination_at = datetime.utcnow() + timedelta(hours=capped)
+    task.status = TaskStatus.FAILURE
     await task_sql.update_task(task, config.psql_db)
+
+
+async def _draw_round_one_text_task_within_hours(
+    config: Config,
+    models,
+    instruct_datasets,
+    enable_kl: bool = False,
+    model_id_override: str | None = None,
+) -> RawTask:
+    """Create an R1 instruct task with its natural hours, redrawing while those hours exceed the limit.
+
+    Hours are never shortened. A draw over ROUND_ONE_TEXT_MAX_TRAINING_HOURS is marked failed
+    so the pending-task lifecycle does not prep it, then another task is created.
+    """
+    attempts = t_cst.ROUND_ONE_TEXT_DURATION_DRAW_ATTEMPTS
+    last_hours = None
+    for attempt in range(1, attempts + 1):
+        task = await create_synthetic_instruct_text_task(
+            config,
+            models,
+            instruct_datasets,
+            enable_kl=enable_kl,
+            model_id_override=model_id_override,
+        )
+        last_hours = float(task.hours_to_complete)
+        if not _round_one_text_hours_too_long(last_hours):
+            return task
+        await _retire_unused_round_one_text_task(task, config)
+        logger.info(f"Round-1 text duration draw {attempt}/{attempts} was {last_hours}h")
+
+    raise RuntimeError(
+        f"Could not draw a round-1 text task within {t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h "
+        f"after {attempts} attempts (last draw was {last_hours}h)"
+    )
 
 
 async def _create_round_one_group_text_replacement_task(config: Config, model_id_override: str | None = None) -> RawTask:
@@ -640,11 +681,11 @@ async def _create_round_one_group_text_replacement_task(config: Config, model_id
     Create a replacement task that matches round-1 group text constraints:
     - small text model pool (0.1B-4.0B)
     - broad dataset bins (same as R1 creation)
-    - hours capped at ROUND_ONE_TEXT_MAX_TRAINING_HOURS (applied on register)
+    - natural hours; redraw while the draw is longer than ROUND_ONE_TEXT_MAX_TRAINING_HOURS
     """
     models = None if model_id_override else _get_text_models(config.keypair, smallest_size_b=0.1, largest_size_b=4.0)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
-    return await create_synthetic_instruct_text_task(
+    return await _draw_round_one_text_task_within_hours(
         config,
         models,
         instruct_datasets,
@@ -959,8 +1000,8 @@ async def replace_tournament_task(
     try:
         if _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info(
-                "Detected round-1 group text task replacement; enforcing small-model and "
-                f"{t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h max constraints"
+                "Detected round-1 group text task replacement; redrawing a small-model task "
+                f"whose natural hours are within {t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h"
             )
             replacement_model_override = (
                 original_task_obj.model_id if _is_oversampled_later_model_task(original_task_obj) else None

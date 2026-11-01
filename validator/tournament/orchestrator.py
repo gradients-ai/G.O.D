@@ -66,7 +66,7 @@ def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
 
 
 async def _max_training_hours_for_task(task, config: Config) -> float | None:
-    """Lower hours ceiling for round-1 group text tasks; None keeps the global max."""
+    """Hours above which a round-1 group text task is replaced. None means no extra limit."""
     if task.task_type != TaskType.INSTRUCTTEXTTASK:
         return None
     tourn_task = await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), config.psql_db)
@@ -79,6 +79,36 @@ async def _max_training_hours_for_task(task, config: Config) -> float | None:
     ):
         return cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS
     return None
+
+
+async def _apply_measured_training_hours(task, config: Config) -> bool:
+    """Write post-prep hours from measured stats.
+
+    Returns True when a round-1 text task measures longer than ROUND_ONE_TEXT_MAX_TRAINING_HOURS.
+    That task is marked for replacement. Its budget is not shortened to the limit.
+    """
+    new_hours = compute_hours_from_baseline_stats(
+        task.hours_to_complete,
+        task.baseline_stats,
+        task.task_type,
+        model_id=task.model_id,
+        model_params_count=task.model_params_count,
+        training_start_point=task.training_start_point,
+        ds=task.ds,
+    )
+    limit = await _max_training_hours_for_task(task, config)
+    if limit is not None and new_hours > limit:
+        logger.warning(
+            f"Round-1 text task {task.task_id} measured {new_hours}h > {limit}h; "
+            f"marking {TaskStatus.PREP_TASK_FAILURE.value} for replacement"
+        )
+        task.status = TaskStatus.PREP_TASK_FAILURE
+        await task_sql.update_task(task, config.psql_db)
+        return True
+
+    task.hours_to_complete = new_hours
+    task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+    return False
 
 
 async def _start_prep_cost_run(
@@ -1300,19 +1330,8 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 await task_sql.update_task(task, config.psql_db)
                 return True
 
-            if job.result.baseline_stats:
-                new_hours = compute_hours_from_baseline_stats(
-                    task.hours_to_complete,
-                    task.baseline_stats,
-                    task.task_type,
-                    model_id=task.model_id,
-                    model_params_count=task.model_params_count,
-                    training_start_point=task.training_start_point,
-                    ds=task.ds,
-                    max_hours=await _max_training_hours_for_task(task, config),
-                )
-                task.hours_to_complete = new_hours
-                task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+            if job.result.baseline_stats and await _apply_measured_training_hours(task, config):
+                return True
 
             task.status = TaskStatus.LOOKING_FOR_NODES
             await task_sql.update_task(task, config.psql_db)
@@ -1563,19 +1582,8 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     await task_sql.update_task(task, config.psql_db)
                     return
 
-                if prep_result.baseline_stats:
-                    new_hours = compute_hours_from_baseline_stats(
-                        task.hours_to_complete,
-                        task.baseline_stats,
-                        task.task_type,
-                        model_id=task.model_id,
-                        model_params_count=task.model_params_count,
-                        training_start_point=task.training_start_point,
-                        ds=task.ds,
-                        max_hours=await _max_training_hours_for_task(task, config),
-                    )
-                    task.hours_to_complete = new_hours
-                    task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+                if prep_result.baseline_stats and await _apply_measured_training_hours(task, config):
+                    return
 
                 task.status = TaskStatus.LOOKING_FOR_NODES
                 await task_sql.update_task(task, config.psql_db)

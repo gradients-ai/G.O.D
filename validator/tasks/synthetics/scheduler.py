@@ -251,7 +251,7 @@ def compute_training_hours(
 
     training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
-    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set (e.g. text R1).
+    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set.
     """
     gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
