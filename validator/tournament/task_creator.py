@@ -652,11 +652,11 @@ async def _draw_round_one_text_task_within_hours(
     """Create an R1 instruct task with its natural hours, redrawing while those hours exceed the limit.
 
     Hours are never shortened. A draw over ROUND_ONE_TEXT_MAX_TRAINING_HOURS is marked failed
-    so the pending-task lifecycle does not prep it, then another task is created.
+    so the pending-task lifecycle does not prep it, then another task is created until one fits.
     """
-    attempts = t_cst.ROUND_ONE_TEXT_DURATION_DRAW_ATTEMPTS
-    last_hours = None
-    for attempt in range(1, attempts + 1):
+    attempt = 0
+    while True:
+        attempt += 1
         task = await create_synthetic_instruct_text_task(
             config,
             models,
@@ -664,16 +664,10 @@ async def _draw_round_one_text_task_within_hours(
             enable_kl=enable_kl,
             model_id_override=model_id_override,
         )
-        last_hours = float(task.hours_to_complete)
-        if not _round_one_text_hours_too_long(last_hours):
+        if not _round_one_text_hours_too_long(float(task.hours_to_complete)):
             return task
         await _retire_unused_round_one_text_task(task, config)
-        logger.info(f"Round-1 text duration draw {attempt}/{attempts} was {last_hours}h")
-
-    raise RuntimeError(
-        f"Could not draw a round-1 text task within {t_cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS}h "
-        f"after {attempts} attempts (last draw was {last_hours}h)"
-    )
+        logger.info(f"Round-1 text duration draw {attempt} was {task.hours_to_complete}h")
 
 
 async def _create_round_one_group_text_replacement_task(config: Config, model_id_override: str | None = None) -> RawTask:

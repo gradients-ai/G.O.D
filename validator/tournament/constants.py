@@ -126,7 +126,6 @@ ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 # estimate, and again after model prep from measured tokens). Hours are never
 # shortened to fit.
 ROUND_ONE_TEXT_MAX_TRAINING_HOURS = 2.5
-ROUND_ONE_TEXT_DURATION_DRAW_ATTEMPTS = 8
 
 # The single R2 knockout task randomly uses one of these larger families.
 ROUND_TWO_IMAGE_MODEL_TYPES = (

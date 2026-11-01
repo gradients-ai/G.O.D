@@ -2,8 +2,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
-import pytest
-
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.tournament import orchestrator
@@ -28,18 +26,6 @@ async def test_draw_keeps_natural_hours_and_retires_longer_tasks(monkeypatch):
     assert short_task.hours_to_complete == 2.5
     assert long_task.status == TaskStatus.FAILURE
     assert update.await_args.args[0] is long_task
-
-
-async def test_draw_raises_when_every_task_is_too_long(monkeypatch):
-    monkeypatch.setattr(task_creator.t_cst, "ROUND_ONE_TEXT_DURATION_DRAW_ATTEMPTS", 2)
-    draws = [_task("a", 3.0), _task("b", 3.25)]
-    monkeypatch.setattr(task_creator, "create_synthetic_instruct_text_task", AsyncMock(side_effect=draws))
-    monkeypatch.setattr(task_creator.task_sql, "update_task", AsyncMock())
-
-    with pytest.raises(RuntimeError, match="within 2.5h"):
-        await task_creator._draw_round_one_text_task_within_hours(MagicMock(), None, None)
-
-    assert all(task.status == TaskStatus.FAILURE for task in draws)
 
 
 def _measured_task(hours: float):
