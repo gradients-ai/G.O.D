@@ -57,7 +57,10 @@ async def main() -> None:
             return
 
         status = "accepted" if args.command == "agree" else "rejected"
-        reviewable_statuses = ["pending"] if args.command == "agree" else ["pending", "error"]
+        # pending = Claude flagged cheat; needs_review = unresolved/opaque deps; error = review crash
+        reviewable_statuses = (
+            ["pending", "needs_review"] if args.command == "agree" else ["pending", "needs_review", "error"]
+        )
         result = await connection.execute(
             """
             UPDATE tournament_participants
@@ -70,7 +73,7 @@ async def main() -> None:
             reviewable_statuses,
         )
         if result != "UPDATE 1":
-            raise SystemExit("No pending code review matched that tournament and hotkey.")
+            raise SystemExit("No pending/needs_review code review matched that tournament and hotkey.")
         print(f"Code review marked {status}. Round 2 will resume on the next validator cycle.")
     finally:
         await connection.close()

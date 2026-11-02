@@ -12,6 +12,7 @@ from typing import Any
 
 import validator.tournament.constants as t_cst
 from core.logging import get_logger
+from validator.infrastructure.challenger_dependency_review import materialize_dependencies
 from validator.infrastructure.repo_dedup import _sanitize_reason
 from validator.infrastructure.repo_dedup import _snapshot_god_source
 from validator.tournament.models import IntegrityVerdict
@@ -46,16 +47,21 @@ def _parse_verdict(text: str) -> IntegrityVerdict:
         raise ValueError("Claude returned no JSON verdict")
     value = json.loads(cleaned[start : end + 1])
     verdict = str(value.get("verdict", "")).lower()
-    if verdict not in {"clean", "flagged"}:
+    if verdict not in {"clean", "flagged", "needs_review"}:
         raise ValueError(f"Unknown integrity verdict: {verdict!r}")
     evidence = value.get("evidence") or []
     if not isinstance(evidence, list):
         evidence = [str(evidence)]
+    unresolved = value.get("unresolved_dependencies") or []
+    if not isinstance(unresolved, list):
+        unresolved = [str(unresolved)]
     return IntegrityVerdict(
         flagged=verdict == "flagged",
+        needs_review=verdict == "needs_review",
         confidence=float(value.get("confidence", 0.0)),
         reason=str(value.get("reason", "")),
         evidence=[str(item) for item in evidence],
+        unresolved_dependencies=[str(item) for item in unresolved],
     )
 
 
@@ -94,6 +100,26 @@ async def _run_claude(cwd: Path, tournament_type: str, requested_datasets: list[
     return _parse_verdict(result_text)
 
 
+def _merge_materialization_into_verdict(verdict: IntegrityVerdict, unresolved: list[str]) -> IntegrityVerdict:
+    """Fail closed: unresolved non-allowlisted deps cannot be marked clean."""
+    if not unresolved:
+        return verdict
+    if verdict.flagged:
+        verdict.unresolved_dependencies = list(dict.fromkeys([*verdict.unresolved_dependencies, *unresolved]))
+        return verdict
+    verdict.needs_review = True
+    verdict.flagged = False
+    verdict.unresolved_dependencies = list(dict.fromkeys([*verdict.unresolved_dependencies, *unresolved]))
+    extra = "Unresolved dependencies require manual review: " + "; ".join(unresolved[:12])
+    if verdict.reason:
+        verdict.reason = f"{verdict.reason.rstrip()} | {extra}"
+    else:
+        verdict.reason = extra
+    if not any("unresolved" in e.lower() for e in verdict.evidence):
+        verdict.evidence = [*verdict.evidence, f"_manifests/unresolved.json - {extra}"]
+    return verdict
+
+
 async def review_challenger_code(
     participant: TournamentParticipant, tournament_type: str
 ) -> IntegrityVerdict:
@@ -118,16 +144,30 @@ async def review_challenger_code(
             raise RuntimeError("ANTHROPIC_API_KEY is not set")
         if not await asyncio.to_thread(_snapshot_god_source, temp_root / "_god_source"):
             raise RuntimeError("could not snapshot validator source for the code review")
+
+        materialization = await asyncio.to_thread(materialize_dependencies, repo, temp_root)
+        logger.info(
+            f"Materialized dependencies for {participant.hotkey}: "
+            f"extracted={sum(1 for p in materialization.packages if p.status == 'extracted')} "
+            f"unresolved={len(materialization.unresolved)} findings={len(materialization.findings)}"
+        )
+
         verdict = await _run_claude(
             temp_root,
             tournament_type,
             participant.requested_datasets or [],
         )
+        verdict = _merge_materialization_into_verdict(verdict, materialization.unresolved)
         verdict.reason = _sanitize_reason(verdict.reason, {token} if token else set())
         verdict.evidence = [_sanitize_reason(item, {token} if token else set()) for item in verdict.evidence]
+        status = (
+            "FLAGGED"
+            if verdict.flagged
+            else ("NEEDS_REVIEW" if verdict.needs_review else "CLEAN")
+        )
         logger.info(
             f"Completed challenger code review for {participant.hotkey}: "
-            f"{'FLAGGED' if verdict.flagged else 'CLEAN'} (confidence={verdict.confidence:.2f})"
+            f"{status} (confidence={verdict.confidence:.2f})"
         )
         return verdict
     finally:
