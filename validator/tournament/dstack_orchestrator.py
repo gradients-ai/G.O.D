@@ -288,6 +288,7 @@ async def _create_dstack_request(
     if task.task_type == TaskType.IMAGETASK:
         task_env["DATASET_ZIP"] = task.training_data
         task_env["MODEL_TYPE"] = task.model_type
+        task_env["TRAINING_MODE"] = task.training_mode
         if task.trigger_word:
             task_env["TRIGGER_WORD"] = task.trigger_word
     else:

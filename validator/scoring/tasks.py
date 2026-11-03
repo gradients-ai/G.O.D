@@ -395,6 +395,8 @@ async def _evaluate_submissions(
             "original_model_repo": base_model,
             "models": repos_to_evaluate,
             "model_type": task.model_type,
+            "training_mode": task.training_mode,
+            "trigger_word": task.trigger_word,
             "num_gpus": num_gpus,
             "task_id": task.task_id,
             "psql_db": config.psql_db if config is not None else None,

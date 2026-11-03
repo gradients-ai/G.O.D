@@ -115,9 +115,9 @@ IMAGE_TASKS_PER_GROUP = 1
 # Image R1 has one smaller task for each family. Thirty source pairs map to at
 # most three test images and at most 0.75 competition hours.
 ROUND_ONE_IMAGE_MODEL_TYPES = (
-    ImageModelType.FLUX,
-    ImageModelType.IDEOGRAM4,
     ImageModelType.Z_IMAGE,
+    ImageModelType.FLUX2_KLEIN_4B,
+    ImageModelType.MOSS_IMAGE_BASE,
 )
 ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 
@@ -131,15 +131,20 @@ ROUND_ONE_TEXT_MAX_TRAINING_HOURS = 2.5
 ROUND_TWO_IMAGE_MODEL_TYPES = (
     ImageModelType.QWEN_IMAGE,
     ImageModelType.KREA2,
+    ImageModelType.QWEN_IMAGE_EDIT_2511,
+    ImageModelType.HIDREAM_O1,
 )
 
 # Final round task counts
-FINAL_ROUND_IMAGE_TASKS = 6
+FINAL_ROUND_IMAGE_TASKS = 7
 FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
-    ImageModelType.KREA2: 2,
-    ImageModelType.IDEOGRAM4: 2,
+    ImageModelType.KREA2: 1,
     ImageModelType.QWEN_IMAGE: 1,
     ImageModelType.Z_IMAGE: 1,
+    ImageModelType.FLUX2_KLEIN_4B: 1,
+    ImageModelType.QWEN_IMAGE_EDIT_2511: 1,
+    ImageModelType.HIDREAM_O1: 1,
+    ImageModelType.MOSS_IMAGE_BASE: 1,
 }
 
 # Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.

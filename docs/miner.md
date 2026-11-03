@@ -333,11 +333,30 @@ Used for `ImageTask`:
 --task-id             # Unique task UUID/string
 --model               # Base model identifier or local cached model path
 --dataset-zip         # Original task dataset zip URL
---model-type          # flux, z-image, qwen-image, ideogram4, or krea2
+--model-type          # Existing types plus flux2-klein-4b, qwen-image-edit-2511,
+                      # hidream-o1, and moss-image-base
+--training-mode       # text-to-image (default) or edit
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
 --trigger-word        # Optional, only when provided by task data
 ```
+
+The in-repo AI Toolkit trainer supports FLUX.2 Klein and MOSS Base in both
+modes, Qwen Image Edit 2511 in edit mode, and HiDream O1 in text-to-image
+mode. HiDream O1 editing runs the pinned Musubi trainer directly from the
+Python entrypoint until AI Toolkit supports O1 reference conditioning.
+
+Qwen Image Edit 2511 uses AI Toolkit's `qwen_image_edit_plus` trainer with
+the 2511 checkpoint override. Keep it behind a rollout flag until a one-step
+training/reload probe confirms parity with 2511's reference `zero_cond_t`
+training behavior.
+
+Edit datasets contain one `manifest.jsonl`. Each non-empty line has
+`sample_id`, a relative `target` image path, an `instruction`, and one to
+three relative paths in `sources`. Every sample in one task must have the
+same source count. The trainer converts this manifest into AI Toolkit's
+same-filename target/control folder layout and rejects missing or escaping
+paths.
 
 ## Runtime Environment Variables
 

@@ -176,5 +176,7 @@ async def test_image_round_two_uses_qwen_or_krea(monkeypatch):
     assert t_cst.ROUND_TWO_IMAGE_MODEL_TYPES == (
         ImageModelType.QWEN_IMAGE,
         ImageModelType.KREA2,
+        ImageModelType.QWEN_IMAGE_EDIT_2511,
+        ImageModelType.HIDREAM_O1,
     )
     assert knockout_mock.await_args.args[3] is selected_pool
