@@ -22,6 +22,13 @@ MUSUBI_ROOT = Path("/app/musubi-tuner")
 MUSUBI_PYTHON = os.environ.get("MUSUBI_PYTHON", "/opt/musubi/bin/python")
 MUSUBI_ACCELERATE = os.environ.get("MUSUBI_ACCELERATE", "/opt/musubi/bin/accelerate")
 HIDREAM_DIT = CACHE_ROOT / "hf_cache" / "checkpoints" / "hidream_o1_image_bf16.safetensors"
+# Trainers resolve some assets by hub repo id; the downloader pre-caches them here.
+OFFLINE_HUB_ENV = {
+    **os.environ,
+    "HF_HUB_CACHE": str(CACHE_ROOT / "hf_cache"),
+    "HF_HUB_OFFLINE": "1",
+    "MODELS_PATH": str(CACHE_ROOT / "ai_toolkit_models"),
+}
 
 TEXT_TO_IMAGE = "text-to-image"
 EDIT = "edit"
@@ -275,8 +282,17 @@ def run_hidream_edit(args: argparse.Namespace, dataset_path: Path, control_paths
     output_dir.mkdir(parents=True, exist_ok=True)
     common = ["--dataset_config", str(dataset_config), "--batch_size", "1"]
     subprocess.run(
+        [
+            MUSUBI_PYTHON,
+            "-c",
+            "import sys, torch; sys.exit(0 if torch.cuda.is_available() else 'Musubi torch cannot use CUDA')",
+        ],
+        check=True,
+    )
+    subprocess.run(
         [MUSUBI_PYTHON, "src/musubi_tuner/hidream_o1_cache_pixel.py", *common],
         cwd=MUSUBI_ROOT,
+        env=OFFLINE_HUB_ENV,
         check=True,
     )
     subprocess.run(
@@ -290,6 +306,7 @@ def run_hidream_edit(args: argparse.Namespace, dataset_path: Path, control_paths
             "full",
         ],
         cwd=MUSUBI_ROOT,
+        env=OFFLINE_HUB_ENV,
         check=True,
     )
     train_command = [
@@ -344,13 +361,15 @@ def run_hidream_edit(args: argparse.Namespace, dataset_path: Path, control_paths
             "--output_name",
             args.expected_repo_name,
         ]
-    if max_train_steps := os.environ.get("MAX_TRAIN_STEPS"):
-        train_command.extend(["--max_train_steps", max_train_steps])
+    if max_train_epochs := os.environ.get("MAX_TRAIN_EPOCHS"):
+        train_command.extend(["--max_train_epochs", max_train_epochs])
     else:
-        train_command.extend(["--max_train_epochs", os.environ.get("MAX_TRAIN_EPOCHS", "16")])
+        # Default to a fixed step budget so HiDream edit fits the 0.5–1.5h window.
+        train_command.extend(["--max_train_steps", os.environ.get("MAX_TRAIN_STEPS", "500")])
     subprocess.run(
         train_command,
         cwd=MUSUBI_ROOT,
+        env=OFFLINE_HUB_ENV,
         check=True,
     )
 
@@ -362,7 +381,7 @@ def main() -> None:
         run_hidream_edit(args, dataset_path, control_paths)
         return
     config_path = prepare_config(args, dataset_path, control_paths)
-    subprocess.run(["python3", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, check=True)
+    subprocess.run(["python3", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, env=OFFLINE_HUB_ENV, check=True)
 
 
 if __name__ == "__main__":

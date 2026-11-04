@@ -119,7 +119,7 @@ async def test_image_replacement_filters_to_original_model_type(monkeypatch):
         yield SimpleNamespace(model_id="repo/a", model_type=ImageModelType.KREA2)
         yield SimpleNamespace(model_id="repo/b", model_type=ImageModelType.Z_IMAGE)
 
-    async def fake_create_synthetic_image_task(_config, models):
+    async def fake_create_synthetic_image_task(_config, models, **_kwargs):
         selected = await anext(models)
         assert selected.model_type == ImageModelType.Z_IMAGE
         return SimpleNamespace(task_id="img-task", task_type=TaskType.IMAGETASK)

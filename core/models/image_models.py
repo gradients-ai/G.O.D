@@ -38,6 +38,20 @@ IMAGE_MODEL_CAPABILITIES = {
     ImageModelType.MOSS_IMAGE_BASE: frozenset({ImageTrainingMode.TEXT_TO_IMAGE, ImageTrainingMode.EDIT}),
 }
 
+# Hub repos AI Toolkit loads by id besides the base model, as (repo_id, allow_patterns).
+# Trainers have no internet, so the downloader caches these into the shared hub cache.
+AI_TOOLKIT_RUNTIME_REPOS = {
+    ImageModelType.FLUX2_KLEIN_4B: (
+        ("Qwen/Qwen3-4B", None),
+        ("ai-toolkit/flux2_vae", ("ae.safetensors",)),
+    ),
+    ImageModelType.MOSS_IMAGE_BASE: (("Qwen/Qwen3.5-9B", ("*.json", "*.txt", "*.jinja", "*.model")),),
+}
+# Comfy-layout files AI Toolkit resolves under its MODELS_PATH, as (repo_id, filename).
+AI_TOOLKIT_COMFY_FILES = {
+    ImageModelType.MOSS_IMAGE_BASE: (("Comfy-Org/MOSS-Image", "text_encoders/qwen3.5_9b_int8_convrot.safetensors"),),
+}
+
 
 def supports_image_training_mode(model_type: ImageModelType, mode: ImageTrainingMode) -> bool:
     return mode in IMAGE_MODEL_CAPABILITIES.get(model_type, frozenset())

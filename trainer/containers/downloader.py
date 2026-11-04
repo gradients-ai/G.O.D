@@ -16,6 +16,8 @@ from huggingface_hub import snapshot_download
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
 from core.models.dataset_models import FileFormat
+from core.models.image_models import AI_TOOLKIT_COMFY_FILES
+from core.models.image_models import AI_TOOLKIT_RUNTIME_REPOS
 from core.models.image_models import FLUX_TEXT_ENCODER_ARTIFACTS
 from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
@@ -601,6 +603,13 @@ async def main():
                 adapters_dir=adapters_dir,
             )
             print(f"HiDream O1 checkpoint downloaded to: {model_path}", flush=True)
+            # Musubi loads the processor and config from the hub repo; trainers run offline.
+            snapshot_download(
+                repo_id="HiDream-ai/HiDream-O1-Image",
+                cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                ignore_patterns=["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"],
+                token=_huggingface_token(),
+            )
         else:
             model_path = await download_base_model(
                 args.model,
@@ -608,6 +617,22 @@ async def main():
                 args.model_type,
                 anonymize=args.anonymize,
             )
+            for repo_id, allow_patterns in AI_TOOLKIT_RUNTIME_REPOS.get(args.model_type, ()):
+                print(f"Caching AI Toolkit runtime repo {repo_id}...", flush=True)
+                snapshot_download(
+                    repo_id=repo_id,
+                    cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                    allow_patterns=list(allow_patterns) if allow_patterns else None,
+                    token=_huggingface_token(),
+                )
+            for repo_id, filename in AI_TOOLKIT_COMFY_FILES.get(args.model_type, ()):
+                print(f"Caching AI Toolkit comfy file {repo_id}/{filename}...", flush=True)
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=cst.AI_TOOLKIT_MODELS_PATH,
+                    token=_huggingface_token(),
+                )
 
         if args.model_type == ImageModelType.Z_IMAGE.value:
             print("Downloading Z-Image adapter...", flush=True)

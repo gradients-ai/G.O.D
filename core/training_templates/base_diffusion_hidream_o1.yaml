@@ -21,7 +21,7 @@ config:
           resolution: [512, 768, 1024, 2048]
       train:
         batch_size: 1
-        steps: 2500
+        steps: 1000
         lr: 0.00004
         optimizer: adamw8bit
         gradient_checkpointing: true

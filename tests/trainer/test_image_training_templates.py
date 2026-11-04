@@ -66,6 +66,26 @@ def test_image_train_request_rejects_unsupported_model_mode():
 
 
 @pytest.mark.parametrize(
+    ("template_name", "steps"),
+    [
+        ("base_diffusion_flux2_klein_4b.yaml", 1000),
+        ("base_diffusion_flux2_klein_4b_edit.yaml", 1000),
+        ("base_diffusion_qwen_image_edit_2511.yaml", 500),
+        ("base_diffusion_hidream_o1.yaml", 1000),
+        ("base_diffusion_moss_image_base.yaml", 1000),
+        ("base_diffusion_moss_image_base_edit.yaml", 500),
+        ("base_diffusion_qwen_image.yaml", 1000),
+        ("base_diffusion_zimage.yaml", 1000),
+        ("base_diffusion_krea2.yaml", 1000),
+    ],
+)
+def test_training_template_step_budgets_fit_competition_windows(template_name, steps):
+    template_path = Path(__file__).parents[2] / "core" / "training_templates" / template_name
+    process = yaml.safe_load(template_path.read_text())["config"]["process"][0]
+    assert process["train"]["steps"] == steps
+
+
+@pytest.mark.parametrize(
     "template_name",
     [
         "base_diffusion_flux2_klein_4b.yaml",

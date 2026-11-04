@@ -10,9 +10,27 @@ types for tournament tasks:
 - `HiDream-ai/HiDream-O1-Image` (`text-to-image`, `edit`)
 - `OpenMOSS-Team/MOSS-Image-Base` (`text-to-image`, `edit`)
 
+Legacy families `z-image`, `qwen-image`, and `krea2` remain in the tournament
+pool for Round 1 / Round 2 / Final slots that still reference them.
+
 FLUX.2, Qwen, and MOSS train through the pinned AI Toolkit runtime. HiDream
 text-to-image also uses AI Toolkit; HiDream edit uses pinned Musubi because
 AI Toolkit does not expose O1 reference-image conditioning.
+
+## Tournament structure
+
+- **Round 1**: one group with three text-to-image tasks — Z-Image, FLUX.2,
+  and MOSS — each capped at 30 source pairs (at most 0.75h).
+- **Round 2**: one knockout task. The validator draws uniformly from the
+  `(model, capability)` slots of Qwen-Image (t2i), Krea2 (t2i),
+  Qwen-Image-Edit (edit), and HiDream (t2i and edit).
+- **Final**: six fixed slots — FLUX.2 / HiDream / MOSS edit, plus Krea2 /
+  HiDream / MOSS text-to-image.
+
+Template step budgets are sized for the existing 0.5–1.5h competition window
+(about 1000 steps for fast families, 500 for Qwen/MOSS edit and HiDream edit).
+Outside tournament overrides, dual-capability models still use the organic
+40% edit probability.
 
 ## Image-edit dataset contract
 
@@ -61,3 +79,21 @@ is tighter because it predicts pixel-space x0 with `noise_scale=8`: T2I
 Evaluation defaults to four held-out examples per candidate, ten repeats,
 and fixed seeds. `IMAGE_OBJECTIVE_EVAL_SAMPLES`, `IMAGE_OBJECTIVE_EVAL_REPEATS`,
 and `IMAGE_OBJECTIVE_EVAL_SEED` can override those values.
+
+Scores are reproducible and every candidate sees identical noise and
+timesteps. Each case is seeded from the base seed, the held-out sample's
+identity, and how many times that sample has been scored, so the trainers'
+shuffled visit order has no effect. Deterministic CUDA kernels are enabled,
+and per-sample means use exact summation.
+
+Edit scoring weights the region that changed between the held-out source and
+target. A mask is built from their difference: blurred, thresholded and
+dilated, with unchanged pixels kept at weight 0.2 so damage to the rest of
+the image still costs. Samples with almost no change, or a near-global
+change, are scored without a mask.
+
+Candidate LoRAs must use one uniform linear rank of at most 128. `alpha` keys
+are optional and default to the rank. The evaluator builds the network from
+the file's rank and alpha. LoRA keys that match no evaluation module, mixed
+ranks, or a LoRA with no non-zero weights fail that candidate with a reason
+rather than scoring the base model.

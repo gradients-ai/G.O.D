@@ -17,7 +17,7 @@ RUN git init /app/musubi-tuner && \
     python3 -m venv /opt/musubi && \
     /opt/musubi/bin/pip install --upgrade pip && \
     /opt/musubi/bin/pip install --no-cache-dir \
-        torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130 && \
+        torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 --index-url https://download.pytorch.org/whl/cu128 && \
     /opt/musubi/bin/pip install --no-cache-dir -e . lycoris-lora
 
 COPY core/training_templates /workspace/core/training_templates

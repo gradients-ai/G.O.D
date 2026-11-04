@@ -893,6 +893,7 @@ async def create_synthetic_image_task(
     models: AsyncGenerator[ImageModelInfo, None],
     *,
     max_num_prompts: int | None = None,
+    training_mode: ImageTrainingMode | None = None,
 ) -> RawTask:
     """Create a synthetic image task with a random image dataset category."""
     logger.info("Creating synthetic image task")
@@ -903,7 +904,10 @@ async def create_synthetic_image_task(
         )
     num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
     model_info = await anext(models)
-    training_mode = pick_image_training_mode(model_info.model_type)
+    if training_mode is None:
+        training_mode = pick_image_training_mode(model_info.model_type)
+    elif training_mode not in IMAGE_MODEL_CAPABILITIES.get(model_info.model_type, frozenset()):
+        raise ValueError(f"{model_info.model_type.value} does not support {training_mode.value}")
     use_higher_training_hours = model_info.model_type in {
         ImageModelType.QWEN_IMAGE,
         ImageModelType.QWEN_IMAGE_EDIT_2511,
