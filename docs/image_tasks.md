@@ -29,8 +29,9 @@ AI Toolkit does not expose O1 reference-image conditioning.
 
 Template step budgets are sized for the existing 0.5–1.5h competition window
 (about 1000 steps for fast families, 500 for Qwen/MOSS edit and HiDream edit).
-Outside tournament overrides, dual-capability models still use the organic
-40% edit probability.
+Qwen-Image, Qwen-Image-Edit, and MOSS edit each get an extra +0.5h on top of
+the size-scaled window. Outside tournament overrides, dual-capability models
+still use the organic 40% edit probability.
 
 ## Image-edit dataset contract
 

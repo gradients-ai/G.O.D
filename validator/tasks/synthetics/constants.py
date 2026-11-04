@@ -75,6 +75,7 @@ IMAGE_RESOLUTION_STEP = 64
 
 MIN_IMAGE_COMPETITION_HOURS = 0.5
 MAX_IMAGE_COMPETITION_HOURS = 1.0
+# Applied to Qwen-Image / Qwen-Image-Edit and to MOSS-Image-Base edit tasks.
 QWEN_IMAGE_EXTRA_COMPETITION_HOURS = 0.5
 
 FAL_KEY = os.getenv("FAL_KEY")

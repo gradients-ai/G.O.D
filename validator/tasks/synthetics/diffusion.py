@@ -908,10 +908,14 @@ async def create_synthetic_image_task(
         training_mode = pick_image_training_mode(model_info.model_type)
     elif training_mode not in IMAGE_MODEL_CAPABILITIES.get(model_info.model_type, frozenset()):
         raise ValueError(f"{model_info.model_type.value} does not support {training_mode.value}")
+    # Qwen families and MOSS edit need the +0.5h bump: large TEs / uncached VL encode.
     use_higher_training_hours = model_info.model_type in {
         ImageModelType.QWEN_IMAGE,
         ImageModelType.QWEN_IMAGE_EDIT_2511,
-    }
+    } or (
+        model_info.model_type == ImageModelType.MOSS_IMAGE_BASE
+        and training_mode == ImageTrainingMode.EDIT
+    )
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
     if training_mode == ImageTrainingMode.EDIT:
         image_text_pairs, ds_prefix, trigger_word = await generate_edit_synthetic(num_prompts)
