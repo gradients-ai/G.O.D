@@ -19,7 +19,7 @@ from validator.evaluation.evaluators.diffusion_objective import EVAL_MUSUBI_MIN_
 from validator.evaluation.evaluators.diffusion_objective import _evaluation_config
 from validator.evaluation.evaluators.diffusion_objective import _mean_losses_by_sample
 from validator.evaluation.evaluators.diffusion_objective import _write_dataset
-from validator.evaluation.evaluators.diffusion_objective import lora_conv_spec
+from validator.evaluation.evaluators.diffusion_objective import lora_modules_from_file
 from validator.evaluation.evaluators.diffusion_objective import lora_network_spec
 from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import case_seed
@@ -142,13 +142,15 @@ def test_lora_spec_reads_rank_and_alpha(tmp_path: Path):
     assert lora_network_spec(_lora(tmp_path / "b.safetensors")) == (16, 16.0)
 
 
-def test_lora_spec_separates_linear_and_conv_modules(tmp_path: Path):
-    path = tmp_path / "conv.safetensors"
+def test_lora_spec_allows_mixed_ranks_and_keeps_per_module_alphas(tmp_path: Path):
+    path = tmp_path / "mixed.safetensors"
     save_file(
         {
-            "lora_unet_blocks_0_attn.lora_down.weight": torch.randn(32, 64),
-            "lora_unet_blocks_0_attn.lora_up.weight": torch.randn(64, 32),
-            "lora_unet_blocks_0_attn.alpha": torch.tensor(32.0),
+            "lora_unet_blocks_0_attn.lora_down.weight": torch.randn(16, 64),
+            "lora_unet_blocks_0_attn.lora_up.weight": torch.randn(64, 16),
+            "lora_unet_blocks_0_attn.alpha": torch.tensor(8.0),
+            "lora_unet_blocks_1_attn.lora_down.weight": torch.randn(32, 64),
+            "lora_unet_blocks_1_attn.lora_up.weight": torch.randn(64, 32),
             "lora_unet_patch_conv.lora_down.weight": torch.randn(4, 3, 3, 3),
             "lora_unet_patch_conv.lora_up.weight": torch.randn(3, 4, 1, 1),
             "lora_unet_patch_conv.alpha": torch.tensor(1.0),
@@ -156,18 +158,28 @@ def test_lora_spec_separates_linear_and_conv_modules(tmp_path: Path):
         str(path),
     )
 
+    modules_dim, modules_alpha, linear_names = lora_modules_from_file(path)
+    assert modules_dim["lora_unet_blocks_0_attn"] == 16
+    assert modules_dim["lora_unet_blocks_1_attn"] == 32
+    assert modules_dim["lora_unet_patch_conv"] == 4
+    assert modules_alpha["lora_unet_blocks_0_attn"] == 8.0
+    assert modules_alpha["lora_unet_blocks_1_attn"] == 32.0
+    assert modules_alpha["lora_unet_patch_conv"] == 1.0
+    assert linear_names == {"lora_unet_blocks_0_attn", "lora_unet_blocks_1_attn"}
     assert lora_network_spec(path) == (32, 32.0)
-    assert lora_conv_spec(path) == (4, 1.0)
-    assert lora_conv_spec(_lora(tmp_path / "linear.safetensors")) is None
 
 
-@pytest.mark.parametrize(
-    "ranks, message",
-    [((16, 32), "mixes linear ranks"), ((256,), "exceeds"), ((), "no linear")],
-)
-def test_lora_spec_rejects_unscorable_loras(tmp_path: Path, ranks, message):
-    with pytest.raises(ValueError, match=message):
-        lora_network_spec(_lora(tmp_path / "bad.safetensors", ranks=ranks))
+def test_lora_spec_rejects_loras_without_linear_weights(tmp_path: Path):
+    path = tmp_path / "conv_only.safetensors"
+    save_file(
+        {
+            "lora_unet_patch_conv.lora_down.weight": torch.randn(4, 3, 3, 3),
+            "lora_unet_patch_conv.lora_up.weight": torch.randn(3, 4, 1, 1),
+        },
+        str(path),
+    )
+    with pytest.raises(ValueError, match="no linear"):
+        lora_network_spec(path)
 
 
 def test_ai_toolkit_config_uses_frozen_training_loss_without_updates(tmp_path: Path):

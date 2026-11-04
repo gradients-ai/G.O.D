@@ -6,8 +6,10 @@ GOD_EVAL_CACHE_DIR, GOD_EVAL_OUTPUT, GOD_EVAL_SEED and optional GOD_EVAL_MASK_DI
 """
 
 import hashlib
+import importlib
 import json
 import os
+import sys
 from pathlib import Path
 
 import torch
@@ -19,6 +21,7 @@ from musubi_tuner.hv_train_network import setup_parser_common
 from musubi_tuner.utils.model_utils import remove_dtype_suffix
 from PIL import Image
 from safetensors import safe_open
+from safetensors.torch import load_file
 
 from validator.evaluation.edit_masks import cover_and_center_crop
 from validator.evaluation.edit_masks import mask_weights
@@ -52,6 +55,18 @@ def _latent_fingerprints(cache_dir: Path) -> dict[str, str]:
     return fingerprints
 
 
+def _weights_with_default_alphas(path: str) -> dict[str, torch.Tensor]:
+    """Fill missing .alpha keys so create_network_from_weights accepts mixed-rank LoRAs."""
+    weights_sd = load_file(path)
+    for key, value in list(weights_sd.items()):
+        if "lora_down" not in key or not key.endswith(".weight"):
+            continue
+        alpha_key = f"{key.split('.')[0]}.alpha"
+        if alpha_key not in weights_sd:
+            weights_sd[alpha_key] = torch.tensor(float(value.shape[0]))
+    return weights_sd
+
+
 class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
     def __init__(self):
         super().__init__()
@@ -64,7 +79,19 @@ class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
         self.current_key = None
 
     def _build_network(self, args, accelerator, transformer, vae, weight_dtype):
-        network = super()._build_network(args, accelerator, transformer, vae, weight_dtype)
+        if not args.network_weights:
+            raise ValueError("HiDream objective evaluation requires --network_weights")
+        import musubi_tuner
+
+        sys.path.append(str(Path(musubi_tuner.__file__).resolve().parent))
+        network_module = importlib.import_module(args.network_module)
+        weights_sd = _weights_with_default_alphas(args.network_weights)
+        network = network_module.create_arch_network_from_weights(1, weights_sd, unet=transformer)
+        if hasattr(network_module, "prepare_network"):
+            network.prepare_network(args)
+        network.apply_to(None, transformer, apply_text_encoder=False, apply_unet=True)
+        network.load_weights(args.network_weights)
+
         with safe_open(args.network_weights, framework="pt") as handle:
             file_keys = set(handle.keys())
         network_keys = set(network.state_dict().keys())
@@ -77,6 +104,10 @@ class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
             if "lora_up" in name
         ):
             raise ValueError("LoRA loaded no non-zero up weights; refusing to score the base model")
+
+        if args.gradient_checkpointing:
+            transformer.enable_gradient_checkpointing(args.gradient_checkpointing_cpu_offload)
+            network.enable_gradient_checkpointing()
         return network
 
     def process_batch(self, args, accelerator, transformer, network, batch, latents, noise, *rest):

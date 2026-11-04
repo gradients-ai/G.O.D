@@ -62,53 +62,41 @@ EVAL_HIDREAM_MAX_DENOISING_STEPS = 50
 EVAL_HIDREAM_MUSUBI_MIN_TIMESTEP = 950
 
 
-def _lora_module_specs(path: Path) -> dict[str, tuple[int, float]]:
-    """Read the uniform rank and alpha of a candidate LoRA's linear and conv modules."""
+def lora_modules_from_file(path: Path) -> tuple[dict[str, int], dict[str, float], set[str]]:
+    """Per-module ranks and alphas from a LoRA file (alpha defaults to that module's rank)."""
     from safetensors import safe_open
 
-    module_ranks = {"linear": {}, "conv": {}}
-    alpha_keys = {}
+    modules_dim: dict[str, int] = {}
+    alpha_keys: dict[str, str] = {}
+    linear_names: set[str] = set()
     with safe_open(str(path), framework="pt") as handle:
         for key in handle.keys():
             suffix = next((suffix for suffix in LORA_DOWN_SUFFIXES if key.endswith(suffix)), None)
             if suffix is not None:
-                kind = "linear" if len(handle.get_slice(key).get_shape()) == 2 else "conv"
-                module_ranks[kind][key[: -len(suffix)]] = int(handle.get_slice(key).get_shape()[0])
+                name = key[: -len(suffix)]
+                modules_dim[name] = int(handle.get_slice(key).get_shape()[0])
+                if len(handle.get_slice(key).get_shape()) == 2:
+                    linear_names.add(name)
             elif key.endswith(".alpha"):
                 alpha_keys[key[: -len(".alpha")]] = key
-        module_alphas = {
-            kind: {
-                round(float(handle.get_tensor(alpha_keys[module]).float().item()), 6)
-                for module in ranks
-                if module in alpha_keys
-            }
-            for kind, ranks in module_ranks.items()
+        if not linear_names:
+            raise ValueError("LoRA has no linear lora_down/lora_A weights")
+        modules_alpha = {
+            name: (
+                round(float(handle.get_tensor(alpha_keys[name]).float().item()), 6)
+                if name in alpha_keys
+                else float(rank)
+            )
+            for name, rank in modules_dim.items()
         }
-    specs = {}
-    for kind, ranks_by_module in module_ranks.items():
-        ranks = set(ranks_by_module.values())
-        if not ranks:
-            continue
-        if len(ranks) != 1:
-            raise ValueError(f"LoRA mixes {kind} ranks {sorted(ranks)}; evaluation requires one uniform rank")
-        rank = ranks.pop()
-        alphas = module_alphas[kind]
-        if len(alphas) > 1:
-            raise ValueError(f"LoRA mixes {kind} alphas {sorted(alphas)}; evaluation requires one uniform alpha")
-        specs[kind] = (rank, alphas.pop() if alphas else float(rank))
-    if "linear" not in specs:
-        raise ValueError("LoRA has no linear lora_down/lora_A weights")
-    return specs
+    return modules_dim, modules_alpha, linear_names
 
 
 def lora_network_spec(path: Path) -> tuple[int, float]:
-    """Read the uniform linear rank and alpha a candidate LoRA was trained with."""
-    return _lora_module_specs(path)["linear"]
-
-
-def lora_conv_spec(path: Path) -> tuple[int, float] | None:
-    """Read the uniform conv rank and alpha of a candidate LoRA, if it has conv modules."""
-    return _lora_module_specs(path).get("conv")
+    """Largest linear rank in the file, and that module's alpha, for AI Toolkit network creation."""
+    modules_dim, modules_alpha, linear_names = lora_modules_from_file(path)
+    name = max(linear_names, key=modules_dim.get)
+    return modules_dim[name], modules_alpha[name]
 
 
 def _write_dataset(rows, root: Path, training_mode: str, blank: bool) -> Path:
@@ -329,9 +317,7 @@ def _run_hidream_edit_objective(
     repeats: int,
     seed: int,
 ) -> list[float]:
-    rank, alpha = lora_network_spec(lora)
-    conv = lora_conv_spec(lora)
-    network_args = ["--network_args", f"conv_dim={conv[0]}", f"conv_alpha={conv[1]:g}"] if conv else []
+    lora_modules_from_file(lora)  # fail closed before launching Musubi if the file has no linear LoRA
     output = model_dir / f"{label}_records.json"
     output_dir = model_dir / f"{label}-unused-checkpoints"
     output_dir.mkdir()
@@ -383,11 +369,6 @@ def _run_hidream_edit_objective(
             "1e-12",
             "--network_module",
             "networks.lora_hidream_o1",
-            "--network_dim",
-            str(rank),
-            "--network_alpha",
-            f"{alpha:g}",
-            *network_args,
             "--network_weights",
             str(lora),
             "--max_train_steps",

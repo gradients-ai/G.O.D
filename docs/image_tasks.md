@@ -93,9 +93,8 @@ dilated, with unchanged pixels kept at weight 0.2 so damage to the rest of
 the image still costs. Samples with almost no change, or a near-global
 change, are scored without a mask.
 
-Candidate LoRAs must use one uniform linear rank. `alpha` keys are optional
-and default to the rank. The evaluator builds the network from the file's
-rank and alpha. LoRA keys that match no evaluation module, mixed ranks, or a
-LoRA with no non-zero weights fail that candidate with a reason rather than
-scoring the base model. Oversized ranks that OOM the evaluator fail that
-candidate.
+Candidate LoRAs are applied from the file the same way legacy Comfy eval
+loads them: per-module ranks and alphas (missing `alpha` defaults to that
+module's rank). LoRA keys that match no evaluation module, or a LoRA with no
+non-zero weights, fail that candidate with a reason rather than scoring the
+base model. Oversized ranks that OOM the evaluator fail that candidate.
