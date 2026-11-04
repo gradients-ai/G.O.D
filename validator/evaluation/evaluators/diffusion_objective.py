@@ -49,7 +49,6 @@ MODEL_REPOS = {
     "moss-image-base": "OpenMOSS-Team/MOSS-Image-Base",
 }
 TEMPLATE_ROOT = REPO_ROOT / "core" / "training_templates"
-MAX_EVAL_LORA_RANK = 128
 LORA_DOWN_SUFFIXES = (".lora_down.weight", ".lora_A.weight")
 
 # AI Toolkit flow-match timesteps are linspace(1000, 1), so index 0 is pure noise.
@@ -93,8 +92,6 @@ def _lora_module_specs(path: Path) -> dict[str, tuple[int, float]]:
         if len(ranks) != 1:
             raise ValueError(f"LoRA mixes {kind} ranks {sorted(ranks)}; evaluation requires one uniform rank")
         rank = ranks.pop()
-        if rank > MAX_EVAL_LORA_RANK:
-            raise ValueError(f"LoRA {kind} rank {rank} exceeds the evaluation limit {MAX_EVAL_LORA_RANK}")
         alphas = module_alphas[kind]
         if len(alphas) > 1:
             raise ValueError(f"LoRA mixes {kind} alphas {sorted(alphas)}; evaluation requires one uniform alpha")
