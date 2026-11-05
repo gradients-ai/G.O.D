@@ -5,6 +5,7 @@ Automated and end-to-end tests grouped by runtime/domain.
 ## Contents
 
 - `e2e/`: shell and Python entrypoints for remote/container PvP evaluation flows.
+- `ops/`: the `.dockerignore` secret exclusions, checked with docker-py's port of the daemon matcher.
 - `trainer/`: trainer service, model prep, cache, and anonymizer tests.
 - `validator/`: validator evaluation, scoring, and tournament tests.
 - `__init__.py`: package marker.
