@@ -1,7 +1,9 @@
 import asyncio
 import datetime
+import ipaddress
 import os
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import unquote
 from urllib.parse import urlparse
 
 from minio import Minio
@@ -104,14 +106,32 @@ class AsyncMinioClient:
             return None
 
     def parse_s3_url(self, url: str) -> tuple[str, str]:
-        """Extract bucket name and object name from S3 URL."""
+        """Extract bucket name and object name from an S3 URL, path style or virtual-host style.
+
+        minio-py signs virtual-host URLs (bucket.host/key) only for AWS-style endpoints and path-style URLs
+        (host/bucket/key) for everything else, e.g. a plain MinIO. A URL on this client's own endpoint, or on an
+        IP literal or a dotless host such as localhost, cannot carry the bucket in its host, so it is path style.
+        """
         parsed_url = urlparse(url)
-        bucket_name = parsed_url.hostname.split(".")[0]
-        object_name = parsed_url.path.lstrip("/").split("?")[0]
-        return bucket_name, object_name
+        hostname = parsed_url.hostname or ""
+        path = unquote(parsed_url.path).lstrip("/")
+        if _is_path_style(parsed_url.netloc, hostname, self.endpoint):
+            bucket_name, _, object_name = path.partition("/")
+            return bucket_name, object_name
+        return hostname.split(".")[0], path
 
     def __del__(self):
         self.executor.shutdown(wait=False)
+
+
+def _is_path_style(netloc: str, hostname: str, endpoint: str) -> bool:
+    if netloc.lower() == endpoint.lower() or "." not in hostname:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return True
 
 
 S3_COMPATIBLE_ENDPOINT = os.getenv("S3_COMPATIBLE_ENDPOINT", "localhost:9000")

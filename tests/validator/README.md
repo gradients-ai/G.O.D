@@ -6,6 +6,7 @@ Tests for validator evaluation, scoring, and tournament behavior.
 
 - `db/`: SQL helper tests (continuous SFT state, placement persistence).
 - `evaluation/`: local evaluation and PvP tests.
+- `infrastructure/`: S3 client (path- and virtual-host-style URL parsing).
 - `scoring/`: task/tournament scoring pipeline tests.
 - `tournament/`: tournament rounds, boss rounds, weight distribution, and analytics tests.
 - `__init__.py`: package marker.
