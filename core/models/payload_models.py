@@ -20,6 +20,8 @@ from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import ImageTextPair
 from core.models.dataset_models import TextDatasetType
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
+from core.models.image_models import supports_image_training_mode
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.reward_models import RewardFunction
@@ -80,7 +82,14 @@ class TrainRequestImage(TrainRequest):
         min_length=1,
     )
     model_type: ImageModelType = ImageModelType.FLUX
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = None
+
+    @model_validator(mode="after")
+    def validate_model_training_mode(self):
+        if not supports_image_training_mode(self.model_type, self.training_mode):
+            raise ValueError(f"{self.model_type.value} does not support {self.training_mode.value} training")
+        return self
 
 
 class TrainerProxyRequest(BaseModel):
@@ -385,7 +394,18 @@ class NewTaskRequestImage(NewTaskRequest):
         description="A ds name. The actual dataset is provided via the image_text_pairs",
     )
     model_type: ImageModelType = ImageModelType.FLUX
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
+
+    @model_validator(mode="after")
+    def validate_model_training_mode(self):
+        if not supports_image_training_mode(self.model_type, self.training_mode):
+            raise ValueError(f"{self.model_type.value} does not support {self.training_mode.value} training")
+        if self.training_mode == ImageTrainingMode.EDIT and any(
+            pair.source_image_url is None for pair in self.image_text_pairs
+        ):
+            raise ValueError("Every image-edit pair must include source_image_url")
+        return self
 
 
 class NewTaskRequestImageZip(NewTaskRequest):
@@ -399,7 +419,14 @@ class NewTaskRequestImageZip(NewTaskRequest):
         ),
     )
     model_type: ImageModelType = ImageModelType.FLUX
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = Field(None, description="Optional trigger word or phrase for image training")
+
+    @model_validator(mode="after")
+    def validate_model_training_mode(self):
+        if not supports_image_training_mode(self.model_type, self.training_mode):
+            raise ValueError(f"{self.model_type.value} does not support {self.training_mode.value} training")
+        return self
 
 
 class NewTaskWithCustomDatasetRequest(NewTaskRequestInstructText):
@@ -540,6 +567,7 @@ class ImageTaskDetails(TaskDetails):
     ds_repo: str | None = None
     base_model_repository: str = Field(..., description="The repository for the model")
     model_type: ImageModelType = ImageModelType.FLUX
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = None
 
     model_config = ConfigDict(protected_namespaces=())

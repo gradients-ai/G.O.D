@@ -22,6 +22,7 @@ from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.payload_models import DockerEvaluationResults
 from validator.evaluation.result_processing import normalize_rewards_and_compute_loss
 from validator.evaluation.result_processing import process_evaluation_results
@@ -273,9 +274,22 @@ async def run_evaluation_docker_image(
     models: list[str],
     model_type: ImageModelType,
     gpu_ids: list[int],
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE,
+    trigger_word: str | None = None,
     docker_image: str | None = None,
 ) -> DockerEvaluationResults:
-    image = docker_image or docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION
+    toolkit_eval_models = {
+        ImageModelType.FLUX2_KLEIN_4B,
+        ImageModelType.QWEN_IMAGE_EDIT_2511,
+        ImageModelType.HIDREAM_O1,
+        ImageModelType.MOSS_IMAGE_BASE,
+    }
+    if docker_image:
+        image = docker_image
+    elif model_type in toolkit_eval_models:
+        image = docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION_TOOLKIT
+    else:
+        image = docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION
     raw_data = await download_s3_file(test_split_url)
     test_split_path = unzip_to_temp_path(raw_data)
     dataset_dir = os.path.abspath(test_split_path)
@@ -291,8 +305,11 @@ async def run_evaluation_docker_image(
         "MODELS": ",".join(models),
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
+        "IMAGE_TRAINING_MODE": training_mode.value,
         **vcst.HF_CONTAINER_ENV_IMAGE,
     }
+    if trigger_word:
+        environment["TRIGGER_WORD"] = trigger_word
     command = ["/app/start.sh"]
 
     container = None

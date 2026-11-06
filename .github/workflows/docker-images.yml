@@ -110,6 +110,27 @@ jobs:
                   ],
               },
               {
+                  "id": "image-evaluator-toolkit",
+                  "image": "gradientsio/image-evaluator-toolkit",
+                  "channel_tag": "basilica",
+                  "dockerfile": "ops/docker/validator-image-toolkit.dockerfile",
+                  "patterns": [
+                      "validator/evaluation/**",
+                      "ops/docker/validator-image-toolkit.dockerfile",
+                      "ops/docker/scripts/image_eval_entrypoint.sh",
+                      "core/models/**",
+                      "core/training_templates/**",
+                      ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
+                  ],
+              },
+              {
                   "id": "trainer-downloader",
                   "image": "gradientsio/trainer-downloader",
                   "channel_tag": "latest",

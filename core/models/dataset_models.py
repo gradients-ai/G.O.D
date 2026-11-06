@@ -59,5 +59,9 @@ TextDatasetType = InstructTextDatasetType | DpoDatasetType | GrpoDatasetType | C
 
 
 class ImageTextPair(BaseModel):
-    image_url: str = Field(..., description="Presigned URL for the image file")
-    text_url: str = Field(..., description="Presigned URL for the text file")
+    image_url: str = Field(..., description="Presigned URL for the target image file")
+    text_url: str = Field(..., description="Presigned URL for the caption or edit-instruction file")
+    source_image_url: str | None = Field(
+        None,
+        description="Presigned source image URL for image-edit pairs; absent for text-to-image pairs",
+    )

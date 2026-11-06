@@ -72,6 +72,7 @@ async def run_image_task_prep(task: ImageRawTask, keypair: KeypairLike | None = 
     test_url, train_url = await prepare_image_task(
         image_text_pairs=task.image_text_pairs,
         dataset_zip_url=task.ds if not task.image_text_pairs else None,
+        training_mode=task.training_mode,
     )
     task.training_data = train_url
     task.test_data = test_url
@@ -180,5 +181,6 @@ def prepare_image_task_request(task: ImageRawTask) -> TrainRequestImage:
         hours_to_complete=task.hours_to_complete,
         dataset_zip=task.training_data,
         model_type=task.model_type,
+        training_mode=task.training_mode,
         trigger_word=task.trigger_word,
     )

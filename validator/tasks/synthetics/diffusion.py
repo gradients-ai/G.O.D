@@ -5,6 +5,7 @@ import random
 import re
 import tempfile
 import uuid
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
@@ -17,7 +18,9 @@ from fiber import Keypair
 import validator.tasks.synthetics.constants as synth_cst
 from core.logging import get_logger
 from core.models.dataset_models import ImageTextPair
+from core.models.image_models import IMAGE_MODEL_CAPABILITIES
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.payload_models import ImageModelInfo
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
@@ -26,6 +29,7 @@ from validator.db.sql.tasks import add_task
 from validator.infrastructure.fal_client import download_url
 from validator.infrastructure.fal_client import extract_image_urls
 from validator.infrastructure.fal_client import extract_text
+from validator.infrastructure.fal_client import persist_image_edit_pairs
 from validator.infrastructure.fal_client import persist_image_text_pairs
 from validator.infrastructure.fal_client import post_to_fal
 from validator.infrastructure.fal_client import upload_local_file
@@ -38,6 +42,9 @@ from validator.tasks.prep.augmentation import maybe_get_augmentation_config
 
 
 logger = get_logger(__name__)
+
+RECENT_PRODUCT_CONCEPTS: deque[str] = deque(maxlen=synth_cst.IMAGE_SYNTH_RECENT_CONCEPT_LIMIT)
+RECENT_EDIT_GOALS: deque[str] = deque(maxlen=synth_cst.IMAGE_SYNTH_RECENT_CONCEPT_LIMIT)
 
 
 IMAGE_STYLES = [
@@ -136,6 +143,19 @@ class ProductPromptSet:
     variant_prompts: list[str]
 
 
+@dataclass(frozen=True)
+class EditPromptPair:
+    source_prompt: str
+    edit_instruction: str
+
+
+@dataclass(frozen=True)
+class EditPromptSet:
+    goal_name: str
+    goal_description: str
+    pairs: list[EditPromptPair]
+
+
 def _load_json_from_text(text: str) -> dict:
     try:
         return json.loads(text)
@@ -218,8 +238,50 @@ def _get_product_prompt_set_from_response(text: str, num_prompts: int) -> Produc
     )
 
 
+def _get_edit_prompt_set_from_response(text: str, num_prompts: int) -> EditPromptSet:
+    result = _load_json_from_text(text)
+    goal_name = _clean_trigger(result.get("goal_name"), text)
+    goal_description = _clean_trigger(result.get("goal_description"), text)
+    raw_pairs = result.get("pairs")
+    if not isinstance(raw_pairs, list):
+        raise ValueError(f"Edit prompt response missing pairs list: {text}")
+
+    pairs = []
+    for raw_pair in raw_pairs:
+        if not isinstance(raw_pair, dict):
+            continue
+        source_prompt = raw_pair.get("source_prompt")
+        edit_instruction = raw_pair.get("edit_instruction")
+        if (
+            isinstance(source_prompt, str)
+            and source_prompt.strip()
+            and isinstance(edit_instruction, str)
+            and edit_instruction.strip()
+        ):
+            pairs.append(EditPromptPair(source_prompt.strip(), edit_instruction.strip()))
+    if len(pairs) < num_prompts:
+        raise ValueError(f"Generated {len(pairs)} valid edit pairs, expected at least {num_prompts}")
+    return EditPromptSet(goal_name, goal_description, pairs[:num_prompts])
+
+
 def _sanitize_ds_fragment(value: str) -> str:
     return re.sub(r"_+", "_", re.sub(r"[^a-z0-9]+", "_", value.lower())).strip("_")
+
+
+def _concept_similarity(left: str, right: str) -> float:
+    left_tokens = set(re.findall(r"[a-z]{4,}", left.casefold()))
+    right_tokens = set(re.findall(r"[a-z]{4,}", right.casefold()))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _reject_recent_concept(value: str, recent: deque[str], label: str) -> None:
+    if any(
+        _concept_similarity(value, previous) >= synth_cst.IMAGE_SYNTH_CONCEPT_SIMILARITY_LIMIT
+        for previous in recent
+    ):
+        raise ValueError(f"Generated {label} concept is too similar to a recent task")
 
 
 def _image_synth_prompt_template(template_name: str, **kwargs) -> str:
@@ -288,12 +350,80 @@ def _design_prompt_request(num_prompts: int, design_type: str) -> str:
     return _image_synth_prompt_template("design", num_prompts=num_prompts, design_type=design_type)
 
 
+def _product_creative_brief() -> str:
+    domain = random.choice(
+        (
+            "field science or environmental work",
+            "specialist cooking or fermentation",
+            "music making or sound capture",
+            "mobility, navigation, or travel",
+            "craft, repair, or fabrication",
+            "home climate, light, or acoustics",
+            "wellness, recovery, or movement",
+            "gardening, ecology, or animal care",
+            "learning, measurement, or communication",
+            "a playful everyday ritual",
+        )
+    )
+    materials = random.sample(
+        (
+            "recycled aluminum",
+            "translucent bio-resin",
+            "woven natural fiber",
+            "glazed ceramic",
+            "molded cork",
+            "technical textile",
+            "smoked glass",
+            "unfinished hardwood",
+            "soft-touch elastomer",
+            "powder-coated steel",
+            "paper composite",
+            "cast mineral",
+        ),
+        2,
+    )
+    form = random.choice(
+        (
+            "folding or transformable geometry",
+            "a compact monolithic silhouette",
+            "visible modular construction",
+            "an asymmetric sculptural form",
+            "a stackable or nesting system",
+            "a tactile hand-held form",
+            "a lightweight tensioned structure",
+            "a precise instrument-like form",
+        )
+    )
+    return f"Explore {domain}; combine {materials[0]} with {materials[1]}; favor {form}."
+
+
 def _product_prompt_request(num_prompts: int) -> str:
-    return _image_synth_prompt_template("product", num_prompts=num_prompts)
+    return _image_synth_prompt_template(
+        "product",
+        num_prompts=num_prompts,
+        creative_brief=_product_creative_brief(),
+        avoid_concepts="; ".join(RECENT_PRODUCT_CONCEPTS) or "none yet",
+    )
+
+
+def _edit_prompt_request(num_prompts: int) -> str:
+    return _image_synth_prompt_template(
+        "edit",
+        num_prompts=num_prompts,
+        creative_brief=_product_creative_brief(),
+        avoid_concepts="; ".join(RECENT_EDIT_GOALS) or "none yet",
+    )
 
 
 async def _post_to_fal_text(prompt: str) -> str:
-    result = await post_to_fal(synth_cst.FAL_TEXT_PROMPT_MODEL, {"prompt": prompt, "model": synth_cst.FAL_TEXT_PROMPT_LLM})
+    result = await post_to_fal(
+        synth_cst.FAL_TEXT_PROMPT_MODEL,
+        {
+            "prompt": prompt,
+            "model": synth_cst.FAL_TEXT_PROMPT_LLM,
+            "temperature": synth_cst.FAL_TEXT_PROMPT_TEMPERATURE,
+        },
+    )
     return extract_text(result)
 
 
@@ -311,7 +441,20 @@ async def generate_product_prompt_set(num_prompts: int) -> ProductPromptSet:
     logger.info("Calling FAL text prompt model for product prompt generation")
     result = await _post_to_fal_text(_product_prompt_request(num_prompts))
     prompt_set = _get_product_prompt_set_from_response(result, num_prompts)
+    _reject_recent_concept(prompt_set.product_description, RECENT_PRODUCT_CONCEPTS, "product")
+    RECENT_PRODUCT_CONCEPTS.append(prompt_set.product_description)
     logger.info(f"Generated {len(prompt_set.variant_prompts)} product prompts with trigger: {prompt_set.trigger}")
+    return prompt_set
+
+
+@retry_with_backoff
+async def generate_edit_prompt_set(num_prompts: int) -> EditPromptSet:
+    logger.info("Calling FAL text prompt model for creative edit-goal generation")
+    result = await _post_to_fal_text(_edit_prompt_request(num_prompts))
+    prompt_set = _get_edit_prompt_set_from_response(result, num_prompts)
+    _reject_recent_concept(prompt_set.goal_description, RECENT_EDIT_GOALS, "edit")
+    RECENT_EDIT_GOALS.append(prompt_set.goal_description)
+    logger.info("Generated %s pairs for edit goal: %s", len(prompt_set.pairs), prompt_set.goal_name)
     return prompt_set
 
 
@@ -602,6 +745,41 @@ async def generate_product_synthetic(num_prompts: int) -> tuple[list[ImageTextPa
     return image_text_pairs, _triggered_ds_prefix(synth_cst.PRODUCT_SYNTH_DS_PREFIX, prompt_set.trigger), prompt_set.trigger
 
 
+async def generate_edit_synthetic(num_prompts: int) -> tuple[list[ImageTextPair], str, None]:
+    prompt_set = await generate_edit_prompt_set(num_prompts)
+    source_model = random.choice(synth_cst.FAL_IMAGE_MODELS)
+    source_prompt_pairs = await generate_fal_images_for_prompts(
+        source_model,
+        [pair.source_prompt for pair in prompt_set.pairs],
+    )
+    semaphore = asyncio.Semaphore(synth_cst.FAL_IMAGE_GENERATION_CONCURRENCY)
+
+    async def generate_target(index: int) -> tuple[str, str, str]:
+        source_url, _ = source_prompt_pairs[index]
+        instruction = prompt_set.pairs[index].edit_instruction
+        async with semaphore:
+            logger.info("Generating edit target %s/%s", index + 1, len(prompt_set.pairs))
+            target_url = await generate_fal_image(
+                synth_cst.FAL_AVATAR_MODEL,
+                instruction,
+                source_url,
+            )
+        return source_url, target_url, instruction
+
+    generated_pairs = await asyncio.gather(
+        *(generate_target(index) for index in range(len(prompt_set.pairs)))
+    )
+    image_text_pairs = await persist_image_edit_pairs(generated_pairs)
+    ds_prefix = _triggered_ds_prefix(synth_cst.EDIT_SYNTH_DS_PREFIX, prompt_set.goal_name)
+    logger.info(
+        "Persisted %s pairs for edit goal '%s': %s",
+        len(image_text_pairs),
+        prompt_set.goal_name,
+        prompt_set.goal_description,
+    )
+    return image_text_pairs, ds_prefix, None
+
+
 async def generate_style_synthetic(config: Config, num_prompts: int) -> tuple[list[ImageTextPair], str, str | None]:
     use_combined_styles = random.random() < synth_cst.PROBABILITY_STYLE_COMBINATION
 
@@ -647,6 +825,15 @@ def pick_image_synth_category() -> str:
     categories = list(synth_cst.IMAGE_SYNTH_CATEGORY_WEIGHTS.keys())
     weights = list(synth_cst.IMAGE_SYNTH_CATEGORY_WEIGHTS.values())
     return random.choices(categories, weights=weights, k=1)[0]
+
+
+def pick_image_training_mode(model_type: ImageModelType) -> ImageTrainingMode:
+    capabilities = IMAGE_MODEL_CAPABILITIES[model_type]
+    if capabilities == frozenset({ImageTrainingMode.EDIT}):
+        return ImageTrainingMode.EDIT
+    if ImageTrainingMode.EDIT in capabilities and random.random() < synth_cst.IMAGE_EDIT_TASK_PROBABILITY:
+        return ImageTrainingMode.EDIT
+    return ImageTrainingMode.TEXT_TO_IMAGE
 
 
 async def generate_image_synthetic_by_category(
@@ -706,6 +893,7 @@ async def create_synthetic_image_task(
     models: AsyncGenerator[ImageModelInfo, None],
     *,
     max_num_prompts: int | None = None,
+    training_mode: ImageTrainingMode | None = None,
 ) -> RawTask:
     """Create a synthetic image task with a random image dataset category."""
     logger.info("Creating synthetic image task")
@@ -716,11 +904,25 @@ async def create_synthetic_image_task(
         )
     num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
     model_info = await anext(models)
-    use_higher_training_hours = model_info.model_type == ImageModelType.QWEN_IMAGE
-    Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
-    image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
-        config, num_prompts, pick_image_synth_category()
+    if training_mode is None:
+        training_mode = pick_image_training_mode(model_info.model_type)
+    elif training_mode not in IMAGE_MODEL_CAPABILITIES.get(model_info.model_type, frozenset()):
+        raise ValueError(f"{model_info.model_type.value} does not support {training_mode.value}")
+    # Qwen families and MOSS edit need the +0.5h bump: large TEs / uncached VL encode.
+    use_higher_training_hours = model_info.model_type in {
+        ImageModelType.QWEN_IMAGE,
+        ImageModelType.QWEN_IMAGE_EDIT_2511,
+    } or (
+        model_info.model_type == ImageModelType.MOSS_IMAGE_BASE
+        and training_mode == ImageTrainingMode.EDIT
     )
+    Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
+    if training_mode == ImageTrainingMode.EDIT:
+        image_text_pairs, ds_prefix, trigger_word = await generate_edit_synthetic(num_prompts)
+    else:
+        image_text_pairs, ds_prefix, trigger_word = await generate_image_synthetic_by_category(
+            config, num_prompts, pick_image_synth_category()
+        )
     if model_info.model_type == ImageModelType.IDEOGRAM4:
         image_text_pairs = await rewrite_pairs_with_ideogram_json_prompts(image_text_pairs)
 
@@ -746,6 +948,7 @@ async def create_synthetic_image_task(
             hours_to_complete=number_of_hours,
             account_id=NULL_ACCOUNT_ID,
             model_type=model_info.model_type,
+            training_mode=training_mode,
             trigger_word=trigger_word,
             augmentation_config=augmentation_config,
         )

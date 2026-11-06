@@ -1,0 +1,46 @@
+job: extension
+config:
+  name: last
+  process:
+    - type: diffusion_trainer
+      training_folder: /app/checkpoints
+      device: cuda
+      network:
+        type: lora
+        linear: 32
+        linear_alpha: 32
+      save:
+        dtype: bf16
+        save_every: 250
+        max_step_saves_to_keep: 4
+        save_format: diffusers
+      datasets:
+        - folder_path: /dataset/images
+          caption_ext: txt
+          caption_dropout_rate: 0.05
+          resolution: [512, 768, 1024, 2048]
+      train:
+        batch_size: 1
+        steps: 1000
+        lr: 0.00004
+        optimizer: adamw8bit
+        gradient_checkpointing: true
+        noise_scheduler: flowmatch
+        timestep_type: linear
+        dtype: bf16
+        cache_text_embeddings: false
+        train_unet: true
+        train_text_encoder: false
+        skip_first_sample: true
+        disable_sampling: true
+      model:
+        name_or_path: /cache/models
+        arch: hidream_o1
+        quantize: false
+        quantize_te: false
+        model_kwargs:
+          noise_scale: 8.0
+          noise_scale_inference: 8.0
+meta:
+  name: hidream_o1_lora
+  version: "1.0"

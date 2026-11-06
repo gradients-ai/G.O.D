@@ -1,5 +1,6 @@
 VALIDATOR_DOCKER_IMAGE = "gradientsio/text-evaluator:basilica"
 VALIDATOR_DOCKER_IMAGE_DIFFUSION = "gradientsio/image-evaluator:basilica"
+VALIDATOR_DOCKER_IMAGE_DIFFUSION_TOOLKIT = "gradientsio/image-evaluator-toolkit:basilica"
 
 # Env vars used to signal KL-regularized instruct training to miner containers and evaluators.
 USE_KL_ENV = "USE_KL"

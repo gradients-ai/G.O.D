@@ -14,6 +14,8 @@ from core.constants.training import YARN_VALID_FACTORS
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import ImageTextPair
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
+from core.models.image_models import supports_image_training_mode
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.reward_models import RewardFunction
@@ -169,7 +171,20 @@ class ImageRawTask(RawTask):
     image_text_pairs: list[ImageTextPair] | None = None
     task_type: TaskType = TaskType.IMAGETASK
     model_type: ImageModelType = ImageModelType.FLUX
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE
     trigger_word: str | None = None
+
+    @model_validator(mode="after")
+    def validate_image_training_mode(self) -> "ImageRawTask":
+        if not supports_image_training_mode(self.model_type, self.training_mode):
+            raise ValueError(f"{self.model_type.value} does not support {self.training_mode.value} training")
+        if (
+            self.training_mode == ImageTrainingMode.EDIT
+            and self.image_text_pairs
+            and any(pair.source_image_url is None for pair in self.image_text_pairs)
+        ):
+            raise ValueError("Every image-edit pair must include source_image_url")
+        return self
 
 
 # NOTE: As time goes on we will expand this class to be more of a 'submitted task'?
