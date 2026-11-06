@@ -83,6 +83,32 @@ class TrainRequestImage(TrainRequest):
     trigger_word: str | None = None
 
 
+class PreparedTrainingImage(BaseModel):
+    build_id: str
+    pull_ref: str
+    digest: str
+    variant: Literal["text", "image-flux", "image-toolkit"]
+
+
+class TrainerPrefetchEntry(PreparedTrainingImage):
+    priority: int = 100
+
+
+class TrainerPrefetchRequest(BaseModel):
+    entries: list[TrainerPrefetchEntry]
+
+
+class TrainerImageInventoryItem(PreparedTrainingImage):
+    status: Literal["queued", "downloading", "ready", "failed"]
+    last_error: str | None = None
+    last_used_at: datetime | None = None
+
+
+class TrainerImagesResponse(BaseModel):
+    images: list[TrainerImageInventoryItem]
+    queue_depth: int
+
+
 class TrainerProxyRequest(BaseModel):
     training_data: TrainRequestImage | TrainRequestText
     github_repo: str
@@ -91,6 +117,7 @@ class TrainerProxyRequest(BaseModel):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prepared_image: PreparedTrainingImage | None = None
 
 
 class TrainerJob(BaseModel):
@@ -115,6 +142,7 @@ class TrainerTaskLog(TrainerJob):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prepared_image: PreparedTrainingImage | None = None
     wandb_url: str | None = None
 
 

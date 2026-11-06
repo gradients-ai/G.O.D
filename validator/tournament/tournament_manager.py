@@ -1,5 +1,6 @@
 import asyncio
 import math
+import os
 import random
 import re
 from datetime import datetime
@@ -64,6 +65,7 @@ from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
+from validator.tournament.image_builds.batch import create_tournament_build_batch
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
@@ -1124,6 +1126,8 @@ async def process_pending_tournaments(config: Config) -> list[str]:
                     num_participants = await populate_tournament_participants(tournament.tournament_id, config, config.psql_db)
 
                     if num_participants > 0:
+                        if os.getenv("DEPOT_IMAGE_BUILDS_ENABLED", "false").lower() == "true":
+                            await create_tournament_build_batch(tournament.tournament_id, config)
                         activated = await activate_pending_tournament(tournament.tournament_id, config.psql_db)
                         if activated:
                             activated_tournaments.append(tournament.tournament_id)

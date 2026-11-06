@@ -5,6 +5,7 @@ from datetime import timezone
 
 import validator.db.constants as cst
 from core.logging import get_logger
+from core.models.payload_models import PreparedTrainingImage
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPIndividualScoreDbRow
 from core.models.pvp_models import PvPPairDbRow
@@ -1060,10 +1061,12 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
                 INSERT INTO {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
                 ({cst.TASK_ID}, {cst.HOTKEY}, {cst.CREATED_AT}, {cst.PRIORITY},
                  {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
-                 {cst.REQUESTED_DATASETS})
+                 {cst.REQUESTED_DATASETS}, {cst.IMAGE_BUILD_VARIANT}, {cst.IMAGE_BUILD_ID},
+                 {cst.IMAGE_PULL_REF}, {cst.IMAGE_DIGEST})
                 SELECT * FROM unnest(
                     $1::uuid[], $2::text[], $3::timestamptz[], $4::integer[],
-                    $5::text[], $6::text[], $7::text[], $8::jsonb[]
+                    $5::text[], $6::text[], $7::text[], $8::jsonb[],
+                    $9::text[], $10::uuid[], $11::text[], $12::text[]
                 )
                 ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO NOTHING
             """
@@ -1079,10 +1082,22 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
                 json.dumps(assignment.requested_datasets) if assignment.requested_datasets else None
                 for assignment in assignments
             ]
+            image_variants = [
+                assignment.prepared_image.variant if assignment.prepared_image else None for assignment in assignments
+            ]
+            image_build_ids = [
+                assignment.prepared_image.build_id if assignment.prepared_image else None for assignment in assignments
+            ]
+            image_pull_refs = [
+                assignment.prepared_image.pull_ref if assignment.prepared_image else None for assignment in assignments
+            ]
+            image_digests = [
+                assignment.prepared_image.digest if assignment.prepared_image else None for assignment in assignments
+            ]
 
             await connection.execute(
                 query, task_ids, hotkeys, timestamps, priorities, training_repos, training_commit_hashes, github_tokens,
-                requested_datasets
+                requested_datasets, image_variants, image_build_ids, image_pull_refs, image_digests
             )
 
             priority_counts = {}
@@ -1109,7 +1124,8 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
             SELECT {cst.TASK_ID}, {cst.HOTKEY}, {cst.TRAINING_STATUS}, {cst.N_TRAINING_ATTEMPTS},
                    {cst.CREATED_AT}, {cst.UPDATED_AT}, {cst.PRIORITY},
                    {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
-                   {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}
+                   {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}, {cst.IMAGE_BUILD_VARIANT},
+                   {cst.IMAGE_BUILD_ID}, {cst.IMAGE_PULL_REF}, {cst.IMAGE_DIGEST}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
             WHERE {cst.TRAINING_STATUS} = $1
             ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC, {cst.TASK_ID}
@@ -1145,6 +1161,16 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
                         requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
                         priority=row[cst.PRIORITY],
                         trainer_ip=row[cst.TRAINER_IP],
+                        prepared_image=(
+                            PreparedTrainingImage(
+                                build_id=str(row[cst.IMAGE_BUILD_ID]),
+                                pull_ref=row[cst.IMAGE_PULL_REF],
+                                digest=row[cst.IMAGE_DIGEST],
+                                variant=row[cst.IMAGE_BUILD_VARIANT],
+                            )
+                            if row[cst.IMAGE_BUILD_ID] and row[cst.IMAGE_PULL_REF] and row[cst.IMAGE_DIGEST]
+                            else None
+                        ),
                     )
                 )
 
