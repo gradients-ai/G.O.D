@@ -131,16 +131,42 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
-def _mean_losses_by_sample(records: list[dict], sample_count: int, repeats: int, runner: str) -> list[float]:
+def _mean_field_by_sample(
+    records: list[dict], field: str, sample_count: int, repeats: int, runner: str
+) -> list[float] | None:
+    if not records or any(record.get(field) is None for record in records):
+        return None
     grouped = defaultdict(list)
     for record in records:
-        grouped[Path(record["path"]).stem].append(float(record["loss"]))
+        grouped[Path(record["path"]).stem].append(float(record[field]))
     if len(grouped) != sample_count or any(len(values) != repeats for values in grouped.values()):
+        raise ValueError(f"{runner} returned incomplete {field} cases")
+    return [math.fsum(grouped[key]) / repeats for key in sorted(grouped)]
+
+
+def _mean_losses_by_sample(records: list[dict], sample_count: int, repeats: int, runner: str) -> list[float]:
+    means = _mean_field_by_sample(records, "loss", sample_count, repeats, runner)
+    if means is None:
         raise ValueError(f"{runner} returned incomplete objective-loss cases")
     masked = sum(1 for record in records if record.get("masked"))
     logger.info("%s scored %d cases, %d with an edit mask", runner, len(records), masked)
-    # fsum is exact, so the visit order of a shuffled dataloader cannot change the mean.
-    return [math.fsum(grouped[key]) / repeats for key in sorted(grouped)]
+    return means
+
+
+def _summarize_objective_records(
+    records: list[dict], sample_count: int, repeats: int, runner: str
+) -> dict:
+    summary = {"losses": _mean_losses_by_sample(records, sample_count, repeats, runner)}
+    changed = _mean_field_by_sample(records, "loss_changed", sample_count, repeats, runner)
+    unchanged = _mean_field_by_sample(records, "loss_unchanged", sample_count, repeats, runner)
+    if changed is not None:
+        summary["changed_losses"] = changed
+    if unchanged is not None:
+        summary["unchanged_losses"] = unchanged
+    coverages = [float(record["mask_coverage"]) for record in records if record.get("mask_coverage") is not None]
+    if coverages:
+        summary["mean_mask_coverage"] = math.fsum(coverages) / len(coverages)
+    return summary
 
 
 def _evaluation_config(
@@ -218,7 +244,7 @@ def _run_objective(
     sample_count: int,
     repeats: int,
     seed: int,
-) -> list[float]:
+) -> dict:
     output = model_dir / f"{label}_records.json"
     config_path = model_dir / f"{label}.yaml"
     config = _evaluation_config(
@@ -235,7 +261,7 @@ def _run_objective(
         ["python", "run.py", str(config_path)], cwd=AI_TOOLKIT_ROOT, env=_subprocess_env(), check=True
     )
     records = json.loads(output.read_text(encoding="utf-8"))
-    return _mean_losses_by_sample(records, sample_count, repeats, "AI Toolkit")
+    return _summarize_objective_records(records, sample_count, repeats, "AI Toolkit")
 
 
 def _hidream_checkpoint(work_dir: Path) -> Path:
@@ -316,7 +342,7 @@ def _run_hidream_edit_objective(
     sample_count: int,
     repeats: int,
     seed: int,
-) -> list[float]:
+) -> dict:
     lora_modules_from_file(lora)  # fail closed before launching Musubi if the file has no linear LoRA
     output = model_dir / f"{label}_records.json"
     output_dir = model_dir / f"{label}-unused-checkpoints"
@@ -389,7 +415,7 @@ def _run_hidream_edit_objective(
         check=True,
     )
     records = json.loads(output.read_text(encoding="utf-8"))
-    return _mean_losses_by_sample(records, sample_count, repeats, "Musubi")
+    return _summarize_objective_records(records, sample_count, repeats, "Musubi")
 
 
 def evaluate(config: dict, output_path: Path) -> dict:
@@ -451,13 +477,24 @@ def evaluate(config: dict, output_path: Path) -> dict:
                             config["repeats"],
                             config["seed"],
                         )
-                result[repo] = {
-                    "eval_loss": {
-                        "text_guided_losses": run(conditional, "conditional"),
-                        "no_text_losses": run(no_text, "no_text"),
-                    },
-                    "is_finetune": True,
+                guided = run(conditional, "conditional")
+                blank = run(no_text, "no_text")
+                eval_loss = {
+                    "text_guided_losses": guided["losses"],
+                    "no_text_losses": blank["losses"],
                 }
+                if "changed_losses" in guided:
+                    eval_loss["text_guided_changed_losses"] = guided["changed_losses"]
+                if "unchanged_losses" in guided:
+                    eval_loss["text_guided_unchanged_losses"] = guided["unchanged_losses"]
+                if "changed_losses" in blank:
+                    eval_loss["no_text_changed_losses"] = blank["changed_losses"]
+                if "unchanged_losses" in blank:
+                    eval_loss["no_text_unchanged_losses"] = blank["unchanged_losses"]
+                coverage = guided.get("mean_mask_coverage", blank.get("mean_mask_coverage"))
+                if coverage is not None:
+                    eval_loss["mean_mask_coverage"] = coverage
+                result[repo] = {"eval_loss": eval_loss, "is_finetune": True}
             except Exception as error:
                 logger.exception("Objective evaluation failed for %s", repo)
                 result[repo] = f"Image objective evaluation failed ({type(error).__name__})"

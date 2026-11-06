@@ -24,7 +24,9 @@ from safetensors import safe_open
 from safetensors.torch import load_file
 
 from validator.evaluation.edit_masks import cover_and_center_crop
+from validator.evaluation.edit_masks import mask_as_float
 from validator.evaluation.edit_masks import mask_weights
+from validator.evaluation.edit_masks import region_mean_losses
 from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import enable_deterministic_kernels
 
@@ -77,6 +79,7 @@ class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
         self.mask_dir = Path(mask_dir) if mask_dir else None
         self.records = []
         self.current_key = None
+        self._last_region_losses: dict | None = None
 
     def _build_network(self, args, accelerator, transformer, vae, weight_dtype):
         if not args.network_weights:
@@ -119,16 +122,21 @@ class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
         _, repeat = self.seeder.next(key)
         noise = torch.randn_like(latents)
         self.current_key = key
+        self._last_region_losses = None
         with torch.no_grad():
             loss, metrics = super().process_batch(args, accelerator, transformer, network, batch, latents, noise, *rest)
         masked = bool(self.mask_dir and (self.mask_dir / f"{key}.png").is_file())
-        self.records.append({"path": key, "repeat": repeat, "masked": masked, "loss": float(loss.item())})
+        record = {"path": key, "repeat": repeat, "masked": masked, "loss": float(loss.item())}
+        if self._last_region_losses:
+            record.update(self._last_region_losses)
+        self.records.append(record)
         if accelerator.is_main_process:
             self.output.write_text(json.dumps(self.records, allow_nan=False), encoding="utf-8")
         # A leaf with no path to the LoRA keeps backward and the optimizer step no-ops.
         return loss.detach().requires_grad_(), metrics
 
     def compute_loss(self, args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step):
+        self._last_region_losses = None
         mask_path = self.mask_dir / f"{self.current_key}.png" if self.mask_dir else None
         if mask_path is None or not mask_path.is_file():
             return super().compute_loss(args, output, timesteps, noise_scheduler, dit_dtype, network_dtype, global_step)
@@ -139,7 +147,16 @@ class GODHiDreamObjectiveEvaluator(HiDreamO1NetworkTrainer):
         width = width_patches * hidream_o1_utils.PATCH_SIZE
         pred = hidream_o1_utils.unpatchify_pixels(output.pred.float(), height, width)
         target = hidream_o1_utils.unpatchify_pixels(output.target.float(), height, width)
-        weights = torch.from_numpy(mask_weights(cover_and_center_crop(Image.open(mask_path), width, height)))
+        aligned = cover_and_center_crop(Image.open(mask_path), width, height)
+        mask_01 = torch.from_numpy(mask_as_float(aligned))[None, None]
+        per_pixel = (pred - target) ** 2
+        changed, unchanged, coverage = region_mean_losses(per_pixel, mask_01)
+        self._last_region_losses = {
+            "loss_changed": changed,
+            "loss_unchanged": unchanged,
+            "mask_coverage": coverage,
+        }
+        weights = torch.from_numpy(mask_weights(aligned))
         weights = weights.to(pred.device)[None, None]
         weights = weights / weights.mean()
         return ((pred - target) ** 2 * weights).mean(), {}

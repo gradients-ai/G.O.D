@@ -79,11 +79,44 @@ def test_edit_mask_skips_unchanged_and_global_edits():
 
 
 def test_edit_mask_weights_keep_a_floor_on_unchanged_pixels():
-    mask = Image.fromarray(np.array([[0, 255]], dtype=np.uint8), mode="L")
+    # ~80% coverage → floor clamps to the legacy max (0.2).
+    values = np.zeros((5, 5), dtype=np.uint8)
+    values.flat[:20] = 255  # 20/25 = 0.8
+    mask = Image.fromarray(values, mode="L")
 
     weights = edit_masks.mask_weights(mask)
 
-    assert weights[0].tolist() == pytest.approx([edit_masks.MASK_UNCHANGED_WEIGHT, 1.0])
+    assert float(weights[values == 0][0]) == pytest.approx(edit_masks.MASK_UNCHANGED_WEIGHT)
+    assert float(weights[values == 255][0]) == pytest.approx(1.0)
+
+
+def test_edit_mask_weights_boost_small_changed_regions():
+    # ~5% coverage should drop the unchanged floor so edit mass stays dominant.
+    values = np.zeros((20, 20), dtype=np.uint8)
+    values[:2, :10] = 255  # 20 / 400 = 0.05
+    mask = Image.fromarray(values, mode="L")
+
+    floor = edit_masks.unchanged_weight_for_coverage(0.05)
+    weights = edit_masks.mask_weights(mask)
+    changed_mass = float(weights[values == 255].sum())
+    total_mass = float(weights.sum())
+
+    assert floor == pytest.approx(edit_masks.MASK_UNCHANGED_WEIGHT_MIN)
+    assert floor < edit_masks.MASK_UNCHANGED_WEIGHT
+    assert weights[values == 0][0] == pytest.approx(floor)
+    assert weights[values == 255][0] == pytest.approx(1.0)
+    assert changed_mass / total_mass == pytest.approx(edit_masks.MASK_TARGET_CHANGED_MASS, abs=0.03)
+
+
+def test_region_mean_losses_split_changed_and_unchanged():
+    per_pixel = torch.tensor([[[[1.0, 2.0], [3.0, 4.0]]]])
+    mask = torch.tensor([[[[1.0, 1.0], [0.0, 0.0]]]])
+
+    changed, unchanged, coverage = edit_masks.region_mean_losses(per_pixel, mask)
+
+    assert coverage == pytest.approx(0.5)
+    assert changed == pytest.approx(1.5)
+    assert unchanged == pytest.approx(3.5)
 
 
 def test_musubi_mask_alignment_matches_bucket_cover_crop():
@@ -255,7 +288,7 @@ def test_hidream_edit_scores_each_model_in_its_own_directory(tmp_path: Path, mon
     def run(dataset, dataset_config, cache, lora, checkpoint, model_dir, label, *_rest):
         (model_dir / f"{label}-unused-checkpoints").mkdir()
         scored.append((lora, model_dir.name, label))
-        return [0.5]
+        return {"losses": [0.5]}
 
     monkeypatch.setattr(diffusion_objective, "_prepare_hidream_edit_cache", prepare)
     monkeypatch.setattr(diffusion_objective, "_run_hidream_edit_objective", run)

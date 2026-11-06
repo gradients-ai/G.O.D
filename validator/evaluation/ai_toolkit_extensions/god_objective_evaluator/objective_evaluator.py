@@ -7,7 +7,9 @@ import torch
 from extensions_built_in.sd_trainer.SDTrainer import SDTrainer
 from PIL import Image
 
+from validator.evaluation.edit_masks import mask_as_float
 from validator.evaluation.edit_masks import mask_weights
+from validator.evaluation.edit_masks import region_mean_losses
 from validator.evaluation.edit_masks import resize_and_crop
 from validator.evaluation.objective_seeding import CaseSeeder
 from validator.evaluation.objective_seeding import case_seed
@@ -28,6 +30,7 @@ class GODObjectiveEvaluator(SDTrainer):
         self.evaluation_records = []
         self.candidate_lora_loaded = False
         self.mask_shape_checked = False
+        self._last_region_losses: dict | None = None
 
     def hook_after_sd_init_before_load(self):
         super().hook_after_sd_init_before_load()
@@ -63,13 +66,37 @@ class GODObjectiveEvaluator(SDTrainer):
         self.candidate_lora_loaded = True
         return extra_weights
 
-    def calculate_loss(self, noise_pred, noise, noisy_latents, timesteps, batch, mask_multiplier=1.0, prior_pred=None, **kwargs):
-        if batch.mask_tensor is not None:
+    def _loss_target(self, noise_pred, noise, noisy_latents, timesteps, batch, prior_pred=None):
+        """Mirror SDTrainer's primary target selection for region metrics."""
+        if hasattr(self.sd, "get_loss_target"):
+            return self.sd.get_loss_target(noise=noise, batch=batch, timesteps=timesteps).detach()
+        if self.sd.is_flow_matching:
+            return (noise - batch.latents).detach()
+        if self.sd.prediction_type == "v_prediction":
+            return self.sd.noise_scheduler.get_velocity(batch.tensor, noise, timesteps)
+        if prior_pred is not None and not self.train_config.do_prior_divergence:
+            return prior_pred
+        return noise
 
+    def calculate_loss(self, noise_pred, noise, noisy_latents, timesteps, batch, mask_multiplier=1.0, prior_pred=None, **kwargs):
+        self._last_region_losses = None
+        if batch.mask_tensor is not None:
             if not isinstance(mask_multiplier, torch.Tensor) or mask_multiplier.shape[-2:] != noise_pred.shape[-2:]:
                 raise ValueError("Edit mask did not reach the loss at the prediction's spatial size")
             torch.broadcast_shapes(mask_multiplier.shape, noise_pred.shape)
             self.mask_shape_checked = True
+            mask_01 = getattr(batch, "_god_edit_mask_01", None)
+            if mask_01 is not None and not isinstance(noise_pred, dict):
+                target = self._loss_target(noise_pred, noise, noisy_latents, timesteps, batch, prior_pred)
+                per_pixel = torch.nn.functional.mse_loss(
+                    noise_pred.float(), target.float(), reduction="none"
+                )
+                changed, unchanged, coverage = region_mean_losses(per_pixel, mask_01)
+                self._last_region_losses = {
+                    "loss_changed": changed,
+                    "loss_unchanged": unchanged,
+                    "mask_coverage": coverage,
+                }
         return super().calculate_loss(
             noise_pred=noise_pred,
             noise=noise,
@@ -94,6 +121,8 @@ class GODObjectiveEvaluator(SDTrainer):
             (item.scale_to_width, item.scale_to_height),
             (item.crop_x, item.crop_y, item.crop_x + item.crop_width, item.crop_y + item.crop_height),
         )
+        values = mask_as_float(mask)
+        batch._god_edit_mask_01 = torch.from_numpy(values).unsqueeze(0).unsqueeze(0)
         weights = torch.from_numpy(mask_weights(mask))
         batch.mask_tensor = weights.unsqueeze(0).unsqueeze(0)
         return True
@@ -109,6 +138,7 @@ class GODObjectiveEvaluator(SDTrainer):
         sample_key = Path(item.path).stem
         masked = self._attach_edit_mask(batches[0], item)
         self.mask_shape_checked = False
+        self._last_region_losses = None
         _, repeat = self.evaluation_seeder.next(sample_key)
         original_backward = self.accelerator.backward
         self.accelerator.backward = lambda *_args, **_kwargs: None
@@ -119,9 +149,10 @@ class GODObjectiveEvaluator(SDTrainer):
         if masked and not self.mask_shape_checked:
             raise ValueError("Edit mask was attached but never reached the loss")
 
-        self.evaluation_records.append(
-            {"path": str(item.path), "repeat": repeat, "masked": masked, "loss": float(loss.item())}
-        )
+        record = {"path": str(item.path), "repeat": repeat, "masked": masked, "loss": float(loss.item())}
+        if self._last_region_losses:
+            record.update(self._last_region_losses)
+        self.evaluation_records.append(record)
         self.evaluation_output.write_text(
             json.dumps(self.evaluation_records, allow_nan=False), encoding="utf-8"
         )
