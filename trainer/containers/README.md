@@ -12,11 +12,13 @@ Helpers for support containers launched by the trainer runtime.
 
 ## Image model cache layouts
 
-The downloader preserves two image-model layouts. A FLUX repository is treated as a standalone checkpoint only when its
-repository tree has exactly one root `.safetensors` file, no root `model_index.json`, no Diffusers component directories,
-and no sharded-weight index. Its final cache directory has that checkpoint as its only top-level file. This contract keeps
-pinned miner repositories compatible with their legacy resolver, which selects a checkpoint only when it is the sole
-top-level file.
+The downloader preserves two image-model layouts. A FLUX repository is treated as a standalone checkpoint when its
+repository tree has one or more root `.safetensors` files, no root `model_index.json`, no Diffusers component directories,
+and no sharded-weight index. When several root checkpoints are present (for example bf16, fp8, and nf4 siblings), it
+keeps only the preferred full-precision file — named bf16/fp16 first, otherwise an unmarked file, never a quantized
+sibling when a fuller-precision option exists. Its final cache directory has that checkpoint as its only top-level file.
+This contract keeps pinned miner repositories compatible with their legacy resolver, which selects a checkpoint only when
+it is the sole top-level file.
 
 For every FLUX task, the downloader also places the exact auxiliary artifacts used by evaluation in `/cache/hf_cache`:
 `t5xxl_fp16.safetensors`, `clip_l.safetensors`, and `ae.safetensors`. Trainer containers receive their paths as

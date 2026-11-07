@@ -224,6 +224,10 @@ The endpoint implementation is `miner/endpoints/training_repo.py`. Tournament mi
 
 The validator can host Grafana/Loki/Prometheus for trainer logs.
 
+Live miner training logs (Grafana on the current observability host):
+
+http://185.141.218.122:3001/
+
 On the validator:
 
 ```bash
