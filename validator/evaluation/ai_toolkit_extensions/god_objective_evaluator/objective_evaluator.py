@@ -149,7 +149,13 @@ class GODObjectiveEvaluator(SDTrainer):
         if masked and not self.mask_shape_checked:
             raise ValueError("Edit mask was attached but never reached the loss")
 
-        record = {"path": str(item.path), "repeat": repeat, "masked": masked, "loss": float(loss.item())}
+        # SDTrainer replaces non-finite training losses with zeros before return. Treat a
+        # zero/non-finite case loss as evaluation failure rather than a perfect score.
+        case_loss = float(loss.item())
+        if not torch.isfinite(loss).item() or case_loss == 0.0:
+            raise ValueError(f"Non-finite or zero objective loss for {sample_key}: {case_loss}")
+
+        record = {"path": str(item.path), "repeat": repeat, "masked": masked, "loss": case_loss}
         if self._last_region_losses:
             record.update(self._last_region_losses)
         self.evaluation_records.append(record)
@@ -157,7 +163,7 @@ class GODObjectiveEvaluator(SDTrainer):
             json.dumps(self.evaluation_records, allow_nan=False), encoding="utf-8"
         )
         self.end_of_training_loop()
-        return OrderedDict(loss=float(loss.item()))
+        return OrderedDict(loss=case_loss)
 
     def save(self, step=None):
         # Evaluation must never mutate or emit a candidate checkpoint.
