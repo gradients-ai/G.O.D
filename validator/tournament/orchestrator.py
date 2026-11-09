@@ -712,6 +712,19 @@ async def _check_suitable_gpus(
                 free_gpu_count = sum(1 for gpu in trainer.gpus if gpu.available)
                 ratio = required_gpu_count / free_gpu_count
                 interconnect = _interconnect_for_gpu_ids(trainer.gpus, gpu_ids)
+
+                # >1-GPU jobs only go to SXM / NVLink boxes; PCIe would bottleneck.
+                if (
+                    required_gpu_count > 1
+                    and cst.MULTI_GPU_REQUIRES_HIGH_INTERCONNECT
+                    and not _is_high_interconnect(trainer.gpus, gpu_ids)
+                ):
+                    logger.info(
+                        f"Skipping trainer {trainer.trainer_ip} for {required_gpus.value}: "
+                        f"interconnect {interconnect} is not SXM/NVLink"
+                    )
+                    continue
+
                 logger.info(
                     f"Trainer {trainer.trainer_ip}: {len(gpu_ids)} GPUs available for requirement {required_gpus.value}, "
                     f"{free_gpu_count} total free GPUs, ratio: {ratio:.2f}, interconnect: {interconnect}"
@@ -748,6 +761,49 @@ def _interconnect_for_gpu_ids(gpus: list[GPUInfo], gpu_ids: list[int]) -> str:
             return GPUInterconnect.UNKNOWN.value
         return interconnect.value if hasattr(interconnect, "value") else str(interconnect)
     return GPUInterconnect.UNKNOWN.value
+
+
+_HIGH_INTERCONNECTS = {GPUInterconnect.SXM.value, GPUInterconnect.NVL.value}
+
+
+def _nvlink_connected(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
+    """True if the selected GPUs form one NVLink-connected group (linked to each
+    other, not merely each holding some link to a GPU outside the set)."""
+    id_set = set(gpu_ids)
+    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus if gpu.gpu_id in id_set}
+    if len(peers) != len(id_set):
+        return False
+    start = next(iter(id_set))
+    seen, stack = {start}, [start]
+    while stack:
+        current = stack.pop()
+        for peer in peers.get(current, ()):
+            if peer in id_set and peer not in seen:
+                seen.add(peer)
+                stack.append(peer)
+    return seen == id_set
+
+
+def _is_high_interconnect(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
+    """True if the selected GPUs are high-interconnect (SXM or NVLink).
+
+    - SXM / NVL form factor (NVSwitch fabric): any subset is fully connected.
+    - Otherwise, when the trainer reports NVLink topology (nvlink_peers), require the
+      selected GPUs to be mutually NVLink-connected — the actual bonded pair/group,
+      not just any two GPUs that each happen to carry a bridge.
+    - When no topology is reported but every selected GPU flags nvlink, accept as a
+      best effort (matches the adjacent-pair assumption used when picking the group).
+    - Everything else (plain PCIe / unknown) is low-interconnect.
+    """
+    if _interconnect_for_gpu_ids(gpus, gpu_ids) in _HIGH_INTERCONNECTS:
+        return True
+    id_set = set(gpu_ids)
+    selected = [gpu for gpu in gpus if gpu.gpu_id in id_set]
+    if not selected or not all(getattr(gpu, "nvlink", False) for gpu in selected):
+        return False
+    if any(gpu.nvlink_peers is None for gpu in selected):
+        return True  # no topology reported; nvlink flags are the best signal we have
+    return _nvlink_connected(gpus, gpu_ids)
 
 
 
