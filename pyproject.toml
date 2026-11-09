@@ -20,6 +20,7 @@ dependencies = [
 organic = [
     "astor",
     "asyncpg==0.29.0",
+    "datasketch>=1.6.0",
     "datasets>=2.16.0,<3.0.0",
     "docker==7.1.0",
     "huggingface-hub>=0.20.0",
