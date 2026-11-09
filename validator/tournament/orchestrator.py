@@ -766,33 +766,45 @@ def _interconnect_for_gpu_ids(gpus: list[GPUInfo], gpu_ids: list[int]) -> str:
 _HIGH_INTERCONNECTS = {GPUInterconnect.SXM.value, GPUInterconnect.NVL.value}
 
 
-def _nvlink_connected(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
-    """True if the selected GPUs form one NVLink-connected group (linked to each
-    other, not merely each holding some link to a GPU outside the set)."""
+def _selection_is_whole_nvlink_groups(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
+    """True if the selection is made of COMPLETE NVLink groups — no group is split.
+
+    Each NVLink group (its connected component over nvlink_peers) that the selection
+    touches must be fully inside the selection. So on a box bridged as pairs
+    {0-1, 2-3, ...} a 4x job may take two whole pairs (0-1-2-3), an 8x all four, but a
+    pair must never be split (e.g. 1+2 straddles two pairs and is rejected). Within a
+    group the link is NVLink; across groups a copy still crosses PCIe, which the caller
+    accepts for >1-group jobs.
+    """
     id_set = set(gpu_ids)
-    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus if gpu.gpu_id in id_set}
-    if len(peers) != len(id_set):
-        return False
-    start = next(iter(id_set))
-    seen, stack = {start}, [start]
-    while stack:
-        current = stack.pop()
-        for peer in peers.get(current, ()):
-            if peer in id_set and peer not in seen:
-                seen.add(peer)
-                stack.append(peer)
-    return seen == id_set
+    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus}
+    seen: set[int] = set()
+    for gid in id_set:
+        if gid in seen:
+            continue
+        component, stack = set(), [gid]  # full NVLink group of gid, across the whole box
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(peers.get(current, ()))
+        seen |= component
+        if not component <= id_set:  # part of this group sits outside the selection
+            return False
+    return True
 
 
 def _is_high_interconnect(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
-    """True if the selected GPUs are high-interconnect (SXM or NVLink).
+    """True if the selected GPUs are high-interconnect enough to run a >1-GPU job.
 
     - SXM / NVL form factor (NVSwitch fabric): any subset is fully connected.
-    - Otherwise, when the trainer reports NVLink topology (nvlink_peers), require the
-      selected GPUs to be mutually NVLink-connected — the actual bonded pair/group,
-      not just any two GPUs that each happen to carry a bridge.
-    - When no topology is reported but every selected GPU flags nvlink, accept as a
-      best effort (matches the adjacent-pair assumption used when picking the group).
+    - Otherwise every selected GPU must carry an NVLink bridge (rules out plain PCIe),
+      and when the trainer reports topology (nvlink_peers) the selection must consist of
+      WHOLE NVLink groups — e.g. one bonded pair for 2x, two pairs for 4x, four for 8x —
+      never a split pair. Cross-group traffic falls back to PCIe, accepted for >1 group.
+    - When no topology is reported but every selected GPU flags nvlink, accept as a best
+      effort (matches the adjacent-pair assumption used when picking the group).
     - Everything else (plain PCIe / unknown) is low-interconnect.
     """
     if _interconnect_for_gpu_ids(gpus, gpu_ids) in _HIGH_INTERCONNECTS:
@@ -803,7 +815,7 @@ def _is_high_interconnect(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
         return False
     if any(gpu.nvlink_peers is None for gpu in selected):
         return True  # no topology reported; nvlink flags are the best signal we have
-    return _nvlink_connected(gpus, gpu_ids)
+    return _selection_is_whole_nvlink_groups(gpus, gpu_ids)
 
 
 
