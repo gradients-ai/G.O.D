@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import json
 import os
 import random
@@ -18,12 +19,15 @@ from datasets import load_dataset
 
 import core.constants.datasets as core_cst
 import validator.tasks.datasets.constants as cst
+import validator.tournament.constants as t_cst
 from core.constants.credentials import BUCKET_NAME
 from core.downloads import download_s3_file
 from core.interfaces import KeypairLike
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import ImageTextPair
+from core.near_duplicate import compute_near_duplicate_rate
+from core.near_duplicate import near_duplicate_sample_indices
 from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache
@@ -148,6 +152,36 @@ def drop_duplicate_instruct_rows(dataset: Dataset) -> Dataset:
         logger.info(f"Dropped {dropped}/{len(dataset)} duplicate rows before train/test split")
         dataset = dataset.select(keep)
     return dataset
+
+
+class NearDuplicateDatasetError(ValueError):
+    """The train split's near-duplicate rate is at or above the limit."""
+
+
+def _near_duplicate_texts(task: AnyTextTypeRawTask, train_dataset: Dataset) -> list[str]:
+    """The texts model prep measures the rate on, so both stages agree."""
+    rows = train_dataset.select(near_duplicate_sample_indices(len(train_dataset)))
+    if isinstance(task, InstructTextRawTask):
+        prompt_columns = (cst.STANDARD_SYSTEM_COLUMN, cst.STANDARD_INSTRUCT_COLUMN, cst.STANDARD_INPUT_COLUMN)
+        texts = []
+        for row in rows:
+            prompt = " ".join(str(row[column]) for column in prompt_columns if row.get(column))
+            texts.append(f"{prompt} {row.get(cst.STANDARD_OUTPUT_COLUMN) or ''}")
+        return texts
+    return [str(row.get(cst.STANDARD_DPO_PROMPT_COLUMN) or "") for row in rows]
+
+
+async def reject_near_duplicate_dataset(task: AnyTextTypeRawTask, train_dataset: Dataset) -> None:
+    """Fail data prep on a near-duplicate dataset, before a GPU is spent on model prep. Organic tasks are exempt."""
+    if task.is_organic or not isinstance(task, (InstructTextRawTask, DpoRawTask, GrpoRawTask)):
+        return
+    texts = _near_duplicate_texts(task, train_dataset)
+    rate = await asyncio.to_thread(compute_near_duplicate_rate, texts)
+    if rate >= t_cst.MAX_NEAR_DUPLICATE_RATE:
+        raise NearDuplicateDatasetError(
+            f"Dataset {task.ds} near-duplicate rate {rate:.3f} >= {t_cst.MAX_NEAR_DUPLICATE_RATE}"
+        )
+    logger.info(f"Dataset {task.ds} near-duplicate rate {rate:.3f} is under the limit")
 
 
 def train_test_split_image(dataset_path: str) -> tuple[str, str]:
@@ -581,6 +615,7 @@ async def prepare_text_task(
 
     total_size = len(train_ds) + len(test_ds)
     check_ds_num_rows(total_size)
+    await reject_near_duplicate_dataset(task, train_ds)
 
     columns_to_sample = pick_columns_to_sample(task, train_ds)
 

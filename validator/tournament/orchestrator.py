@@ -1248,11 +1248,9 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
 
     Only text tasks (instruct/dpo/grpo) carry dataset stats; env tasks and any
     stats without a dataset are never rejected. Organic tasks are exempt: we log
-    but let them proceed. Instruct tasks are exempt too: duplicate rows are dropped
-    before the train/test split, so duplication can't contaminate the test set.
+    but let them proceed. Instruct tasks are gated too: dropping exact duplicate
+    rows before the split does not remove near-duplicates.
     """
-    if task.task_type == TaskType.INSTRUCTTEXTTASK:
-        return False
     dataset = getattr(baseline_stats, "dataset", None)
     if dataset is None:
         return False
