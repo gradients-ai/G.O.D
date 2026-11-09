@@ -210,11 +210,15 @@ async def _run_and_record_gate(
     tournament: TournamentData, next_round_id: str, winners: list[str], config: Config, psql_db: PSQLDB
 ) -> GateDecision:
     participants = await get_tournament_participants(tournament.tournament_id, psql_db)
-    refs = _repo_refs(participants, set(winners))
+    # Always compare against the boss, not only when it happens to advance into the field.
+    # The boss is protected in run_pairwise_dedup (never flagged), so including it means a
+    # challenger that just re-submits the boss code is caught even if no other entrant copied
+    # it. _repo_refs drops the boss automatically if it has no repo for this tournament.
+    refs = _repo_refs(participants, set(winners) | {EMISSION_BURN_HOTKEY})
     if len(refs) < 2:
         return GateDecision(halt=False)
 
-    logger.info(f"Dedup gate {next_round_id}: running Claude pairwise check on {len(refs)} R2 entrants")
+    logger.info(f"Dedup gate {next_round_id}: running Claude pairwise check on {len(refs)} repos (R2 entrants + boss)")
     result = await run_pairwise_dedup(refs, tournament.tournament_type, boss_hotkey=EMISSION_BURN_HOTKEY)
     clusters, verdicts = _to_records(result)
 
