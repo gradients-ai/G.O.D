@@ -265,3 +265,27 @@ async def test_non_batched_task_types_still_evaluate_in_parallel(monkeypatch):
 
     assert max_in_flight == 2
     assert output == {"a/one": {"eval_loss": 1.0}, "b/two": "Evaluation failed: boom"}
+
+
+@pytest.mark.asyncio
+async def test_grpo_retry_reuses_finished_repo_and_only_reruns_the_failed_one(monkeypatch):
+    calls: list[str] = []
+    capacity = {"b/two": False}
+
+    async def fake_single(*, repo, **_kwargs):
+        calls.append(repo)
+        if repo == "b/two" and not capacity["b/two"]:
+            raise EvaluationCapacityUnavailable("No Runpod offers")
+        return {"eval_loss": -1.0, "repo": repo}
+
+    monkeypatch.setattr(runpod, "_run_single_runpod_eval_repo", fake_single)
+    kwargs = _eval_repos_kwargs("grpo", ["a/one", "b/two"]) | {"task_id": "task-1"}
+
+    with pytest.raises(EvaluationCapacityUnavailable):
+        await runpod.run_runpod_eval_repos(**kwargs)
+    capacity["b/two"] = True
+    output = await runpod.run_runpod_eval_repos(**kwargs)
+
+    assert calls == ["a/one", "b/two", "b/two"]
+    assert output == {"a/one": {"eval_loss": -1.0, "repo": "a/one"}, "b/two": {"eval_loss": -1.0, "repo": "b/two"}}
+    assert runpod._COMPLETED_SEQUENTIAL_RESULTS == {}
