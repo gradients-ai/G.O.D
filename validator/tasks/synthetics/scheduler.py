@@ -251,7 +251,7 @@ def compute_training_hours(
 
     training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
-    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set (e.g. text R1).
+    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set.
     """
     gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
@@ -387,9 +387,6 @@ async def _is_dataset_degenerate(ds_name: str, task_type: TaskType, psql_db: PSQ
 
 async def _has_known_high_near_duplicate_rate(ds_name: str, task_type: TaskType, psql_db: PSQLDB) -> bool:
     """Skip datasets whose persisted near_duplicate_rate already exceeded the gate, before paying for prep."""
-    # Instruct drops duplicate rows before the train/test split instead of gating on the rate.
-    if task_type == TaskType.INSTRUCTTEXTTASK:
-        return False
     try:
         rates = await get_dataset_near_duplicate_rates(
             ds_name, psql_db, synth_cst.NEAR_DUP_HISTORY_LOOKBACK_DAYS, task_type

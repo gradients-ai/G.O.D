@@ -66,7 +66,7 @@ def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
 
 
 async def _max_training_hours_for_task(task, config: Config) -> float | None:
-    """Lower hours ceiling for round-1 group text tasks; None keeps the global max."""
+    """Hours above which a round-1 group text task is replaced. None means no extra limit."""
     if task.task_type != TaskType.INSTRUCTTEXTTASK:
         return None
     tourn_task = await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), config.psql_db)
@@ -79,6 +79,36 @@ async def _max_training_hours_for_task(task, config: Config) -> float | None:
     ):
         return cst.ROUND_ONE_TEXT_MAX_TRAINING_HOURS
     return None
+
+
+async def _apply_measured_training_hours(task, config: Config) -> bool:
+    """Write post-prep hours from measured stats.
+
+    Returns True when a round-1 text task measures longer than ROUND_ONE_TEXT_MAX_TRAINING_HOURS.
+    That task is marked for replacement. Its budget is not shortened to the limit.
+    """
+    new_hours = compute_hours_from_baseline_stats(
+        task.hours_to_complete,
+        task.baseline_stats,
+        task.task_type,
+        model_id=task.model_id,
+        model_params_count=task.model_params_count,
+        training_start_point=task.training_start_point,
+        ds=task.ds,
+    )
+    limit = await _max_training_hours_for_task(task, config)
+    if limit is not None and new_hours > limit:
+        logger.warning(
+            f"Round-1 text task {task.task_id} measured {new_hours}h > {limit}h; "
+            f"marking {TaskStatus.PREP_TASK_FAILURE.value} for replacement"
+        )
+        task.status = TaskStatus.PREP_TASK_FAILURE
+        await task_sql.update_task(task, config.psql_db)
+        return True
+
+    task.hours_to_complete = new_hours
+    task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+    return False
 
 
 async def _start_prep_cost_run(
@@ -682,6 +712,19 @@ async def _check_suitable_gpus(
                 free_gpu_count = sum(1 for gpu in trainer.gpus if gpu.available)
                 ratio = required_gpu_count / free_gpu_count
                 interconnect = _interconnect_for_gpu_ids(trainer.gpus, gpu_ids)
+
+                # >1-GPU jobs only go to SXM / NVLink boxes; PCIe would bottleneck.
+                if (
+                    required_gpu_count > 1
+                    and cst.MULTI_GPU_REQUIRES_HIGH_INTERCONNECT
+                    and not _is_high_interconnect(trainer.gpus, gpu_ids)
+                ):
+                    logger.info(
+                        f"Skipping trainer {trainer.trainer_ip} for {required_gpus.value}: "
+                        f"interconnect {interconnect} is not SXM/NVLink"
+                    )
+                    continue
+
                 logger.info(
                     f"Trainer {trainer.trainer_ip}: {len(gpu_ids)} GPUs available for requirement {required_gpus.value}, "
                     f"{free_gpu_count} total free GPUs, ratio: {ratio:.2f}, interconnect: {interconnect}"
@@ -718,6 +761,61 @@ def _interconnect_for_gpu_ids(gpus: list[GPUInfo], gpu_ids: list[int]) -> str:
             return GPUInterconnect.UNKNOWN.value
         return interconnect.value if hasattr(interconnect, "value") else str(interconnect)
     return GPUInterconnect.UNKNOWN.value
+
+
+_HIGH_INTERCONNECTS = {GPUInterconnect.SXM.value, GPUInterconnect.NVL.value}
+
+
+def _selection_is_whole_nvlink_groups(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
+    """True if the selection is made of COMPLETE NVLink groups — no group is split.
+
+    Each NVLink group (its connected component over nvlink_peers) that the selection
+    touches must be fully inside the selection. So on a box bridged as pairs
+    {0-1, 2-3, ...} a 4x job may take two whole pairs (0-1-2-3), an 8x all four, but a
+    pair must never be split (e.g. 1+2 straddles two pairs and is rejected). Within a
+    group the link is NVLink; across groups a copy still crosses PCIe, which the caller
+    accepts for >1-group jobs.
+    """
+    id_set = set(gpu_ids)
+    peers = {gpu.gpu_id: set(gpu.nvlink_peers or []) for gpu in gpus}
+    seen: set[int] = set()
+    for gid in id_set:
+        if gid in seen:
+            continue
+        component, stack = set(), [gid]  # full NVLink group of gid, across the whole box
+        while stack:
+            current = stack.pop()
+            if current in component:
+                continue
+            component.add(current)
+            stack.extend(peers.get(current, ()))
+        seen |= component
+        if not component <= id_set:  # part of this group sits outside the selection
+            return False
+    return True
+
+
+def _is_high_interconnect(gpus: list[GPUInfo], gpu_ids: list[int]) -> bool:
+    """True if the selected GPUs are high-interconnect enough to run a >1-GPU job.
+
+    - SXM / NVL form factor (NVSwitch fabric): any subset is fully connected.
+    - Otherwise every selected GPU must carry an NVLink bridge (rules out plain PCIe),
+      and when the trainer reports topology (nvlink_peers) the selection must consist of
+      WHOLE NVLink groups — e.g. one bonded pair for 2x, two pairs for 4x, four for 8x —
+      never a split pair. Cross-group traffic falls back to PCIe, accepted for >1 group.
+    - When no topology is reported but every selected GPU flags nvlink, accept as a best
+      effort (matches the adjacent-pair assumption used when picking the group).
+    - Everything else (plain PCIe / unknown) is low-interconnect.
+    """
+    if _interconnect_for_gpu_ids(gpus, gpu_ids) in _HIGH_INTERCONNECTS:
+        return True
+    id_set = set(gpu_ids)
+    selected = [gpu for gpu in gpus if gpu.gpu_id in id_set]
+    if not selected or not all(getattr(gpu, "nvlink", False) for gpu in selected):
+        return False
+    if any(gpu.nvlink_peers is None for gpu in selected):
+        return True  # no topology reported; nvlink flags are the best signal we have
+    return _selection_is_whole_nvlink_groups(gpus, gpu_ids)
 
 
 
@@ -1218,11 +1316,9 @@ def _exceeds_near_duplicate_threshold(task, baseline_stats) -> bool:
 
     Only text tasks (instruct/dpo/grpo) carry dataset stats; env tasks and any
     stats without a dataset are never rejected. Organic tasks are exempt: we log
-    but let them proceed. Instruct tasks are exempt too: duplicate rows are dropped
-    before the train/test split, so duplication can't contaminate the test set.
+    but let them proceed. Instruct tasks are gated too: dropping exact duplicate
+    rows before the split does not remove near-duplicates.
     """
-    if task.task_type == TaskType.INSTRUCTTEXTTASK:
-        return False
     dataset = getattr(baseline_stats, "dataset", None)
     if dataset is None:
         return False
@@ -1300,19 +1396,8 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
                 await task_sql.update_task(task, config.psql_db)
                 return True
 
-            if job.result.baseline_stats:
-                new_hours = compute_hours_from_baseline_stats(
-                    task.hours_to_complete,
-                    task.baseline_stats,
-                    task.task_type,
-                    model_id=task.model_id,
-                    model_params_count=task.model_params_count,
-                    training_start_point=task.training_start_point,
-                    ds=task.ds,
-                    max_hours=await _max_training_hours_for_task(task, config),
-                )
-                task.hours_to_complete = new_hours
-                task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+            if job.result.baseline_stats and await _apply_measured_training_hours(task, config):
+                return True
 
             task.status = TaskStatus.LOOKING_FOR_NODES
             await task_sql.update_task(task, config.psql_db)
@@ -1563,19 +1648,8 @@ async def process_awaiting_model_prep_tasks(config: Config):
                     await task_sql.update_task(task, config.psql_db)
                     return
 
-                if prep_result.baseline_stats:
-                    new_hours = compute_hours_from_baseline_stats(
-                        task.hours_to_complete,
-                        task.baseline_stats,
-                        task.task_type,
-                        model_id=task.model_id,
-                        model_params_count=task.model_params_count,
-                        training_start_point=task.training_start_point,
-                        ds=task.ds,
-                        max_hours=await _max_training_hours_for_task(task, config),
-                    )
-                    task.hours_to_complete = new_hours
-                    task.termination_at = datetime.utcnow() + timedelta(hours=new_hours)
+                if prep_result.baseline_stats and await _apply_measured_training_hours(task, config):
+                    return
 
                 task.status = TaskStatus.LOOKING_FOR_NODES
                 await task_sql.update_task(task, config.psql_db)

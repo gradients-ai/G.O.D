@@ -121,8 +121,10 @@ ROUND_ONE_IMAGE_MODEL_TYPES = (
 )
 ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 
-# Text R1 instruct tasks keep the throughput-based hours formula, but never exceed
-# this ceiling (creation and post-prep). Keeps the opening round short.
+# Text R1 instruct tasks keep the throughput-based hours formula unchanged.
+# A draw longer than this is discarded and another task is created (creation
+# estimate, and again after model prep from measured tokens). Hours are never
+# shortened to fit.
 ROUND_ONE_TEXT_MAX_TRAINING_HOURS = 2.5
 
 # The single R2 knockout task randomly uses one of these larger families.
@@ -316,3 +318,9 @@ PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS = 0.5
 # Tournament participation fees (in RAO)
 TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 700_000_000  # 0.7 TAO = 700,000,000 RAO
 TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 400_000_000  # 0.4 TAO = 400,000,000 RAO
+
+# Multi-GPU (>1 GPU) tasks must land on high-interconnect trainers (SXM or NVLink):
+# split across PCIe GPUs the cross-device traffic bottlenecks and the run stalls/OOMs.
+# When True, the scheduler skips PCIe/unknown trainers for >1-GPU requirements and waits
+# for a suitable box rather than placing a multi-GPU job somewhere it will struggle.
+MULTI_GPU_REQUIRES_HIGH_INTERCONNECT = True

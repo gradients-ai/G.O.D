@@ -23,6 +23,7 @@ Environment tournaments have been retired: they are no longer scheduled, no long
 - [Image Tournament Tips](#image-tournament-tips)
 - [Local Testing](#local-testing)
 - [Common Failure Modes](#common-failure-modes)
+- [Training Logs](#training-logs)
 - [Useful References](#useful-references)
 
 ## Quick Checklist
@@ -534,6 +535,14 @@ It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the r
 - Ignoring `hours_to_complete` and getting killed before a usable checkpoint exists.
 - Not handling every model type in the tournament you enter.
 - Assuming `--dataset` or `--dataset-zip` can be downloaded directly by your script instead of using the pre-downloaded cache path.
+
+## Training Logs
+
+Live training-container logs for tournament jobs are on Grafana:
+
+http://185.141.218.122:3001/
+
+Use this when a job fails mid-training and you need the container output the trainer shipped to Loki.
 
 ## Useful References
 

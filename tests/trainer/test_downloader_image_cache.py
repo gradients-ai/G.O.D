@@ -101,6 +101,39 @@ async def test_new_standalone_flux_downloads_only_root_checkpoint(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_multi_precision_flux_downloads_only_bf16_checkpoint(monkeypatch, tmp_path):
+    repo_id = "mikeyandfriends/PixelWave_FLUX.1-dev_03"
+    preferred = "pixelwave_flux1_dev_bf16_03.safetensors"
+    repo_files = {
+        ".gitattributes": b"lfs",
+        "README.md": b"model card",
+        preferred: b"bf16 weights",
+        "pixelwave_flux1_dev_fp8_03.safetensors": b"fp8 weights",
+        "pixelwave_flux1_dev_nf4_03.safetensors": b"nf4 weights",
+    }
+    _mock_repo_tree(monkeypatch, repo_files)
+
+    def fake_hf_hub_download(**kwargs):
+        assert kwargs["filename"] == preferred
+        checkpoint_path = Path(kwargs["local_dir"]) / preferred
+        checkpoint_path.write_bytes(repo_files[preferred])
+        return str(checkpoint_path)
+
+    monkeypatch.setattr(downloader, "hf_hub_download", fake_hf_hub_download)
+    monkeypatch.setattr(
+        downloader,
+        "snapshot_download",
+        lambda **kwargs: pytest.fail("multi-precision FLUX repos must not download a full snapshot"),
+    )
+
+    result = Path(await downloader.download_base_model(repo_id, str(tmp_path), ImageModelType.FLUX, anonymize=False))
+
+    assert [path.name for path in result.iterdir() if path.is_file()] == [preferred]
+    assert _legacy_image_base_model_resolver(result) == result / preferred
+    assert downloader._is_standalone_flux_cache(ImageModelType.FLUX, str(result))
+
+
+@pytest.mark.asyncio
 async def test_existing_standalone_flux_snapshot_is_normalized(monkeypatch, tmp_path):
     repo_id = "dataautogpt3/FLUX-MonochromeManga"
     checkpoint_name = "FLUX-DEV_MonochromeManga.safetensors"
