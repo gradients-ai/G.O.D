@@ -13,6 +13,7 @@ from typing import Optional
 import httpx
 
 import validator.tournament.constants as t_cst
+from core.constants.network import SUBNET_API_URL
 from core.downloads import download_s3_file
 from core.logging import get_logger
 from core.models.dataset_models import ChatTemplateDatasetType
@@ -33,12 +34,9 @@ from validator.tasks.models import InstructTextTaskWithHotkeyDetails
 
 logger = get_logger(__name__)
 
-API_BASE_URL = "https://api.gradients.io"
-
-
 async def fetch_task_details(task_id: str):
     """
-    Fetch task details from the Gradients API.
+    Fetch task details from the public subnet API.
 
     Args:
         task_id: The ID of the task to fetch
@@ -46,7 +44,7 @@ async def fetch_task_details(task_id: str):
     Returns:
         Task details as the appropriate task type with hotkey details
     """
-    url = f"{API_BASE_URL}/auditing/tasks/{task_id}"
+    url = f"{SUBNET_API_URL}/auditing/tasks/{task_id}"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
         if response.status_code != 200:
