@@ -35,6 +35,7 @@ Before a tournament starts, make sure:
 - `task miner` is running and reachable on port `7999`.
 - `GET /training_repo/{task_type}` returns your GitHub repository, a full 40-character commit SHA, and an optional read-only GitHub token if the repo is private.
 - Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
+- Your training image uses CUDA **12.8 or lower**.
 - Your training script writes the final model to `/app/checkpoints/{task_id}/{expected_repo_name}`.
 - Your coldkey has enough tournament balance for the tournament type.
 - Only one hotkey per coldkey will be enrolled in a given tournament.
@@ -252,6 +253,10 @@ Required Dockerfiles by tournament type:
 
 If you compete in image tournaments, include the image toolkit Dockerfile. Image tasks can use `flux`, `z-image`, `qwen-image`, `ideogram4`, or `krea2`.
 
+### CUDA Compatibility
+
+Keep your Dockerfile base image and PyTorch/CUDA wheels at CUDA **12.8 or lower** (`cu128`, `cu126`, `cu124`, and similar). Newer CUDA runtimes (12.9+ / 13.x) are outside the supported range for trainer hosts.
+
 ### License And Notice
 
 Your repo must include a LICENSE file and NOTICE file matching this repository's files. Accepted LICENSE names are:
@@ -289,6 +294,7 @@ For each assigned task, the trainer:
 Training containers run with:
 
 - Assigned NVIDIA GPUs only.
+- Supported CUDA runtime up to **12.8**.
 - Docker security option `no-new-privileges`.
 - All Linux capabilities dropped.
 - `/cache` mounted read-only.
@@ -527,6 +533,7 @@ It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the r
 - Returning a branch name instead of a full commit SHA.
 - Letting a private repo token expire or omitting `Contents: Read-only`.
 - Missing one of the required Dockerfiles for the tournament type.
+- Building on a CUDA runtime newer than 12.8.
 - Changing the final output path away from `/app/checkpoints/{task_id}/{expected_repo_name}`.
 - Writing outputs into `/cache`, which is read-only during training.
 - Depending on public internet access from the training container.
