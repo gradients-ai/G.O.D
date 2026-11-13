@@ -643,8 +643,10 @@ def _task_carves_calibration(task: AnyTextTypeRawTask | QuantRawTask) -> bool:
     """Whether prep carves a calibration set from the task's train rows.
 
     A quant task (fixed or freeform) always carves, whatever its carve_calibration flag, except a task with a given
-    split (test_data set) that carries raw calibration rows (calibration_data): those rows pass through. With a given
-    split the carve takes the rows from the given train file (the continuous-chunk compression tasks). An instruct task
+    split (test_data set) that carries raw calibration rows (calibration_data): those rows pass through. A given split
+    without calibration rows carves from the given train file only for a task on its own continuous chunk, whose
+    train rows are a share the compressed model did not train on; any other such task fails prep (see prepare_text_task).
+    An instruct task
     carves when flagged (a tournament round-1 task) and splits its own dataset; an instruct task with a given split is
     never carved.
     """
@@ -730,6 +732,12 @@ async def prepare_text_task(
     
     train_dataset_name = task.training_data if task.training_data else task.ds
     carve = _task_carves_calibration(task)
+    given_split_without_calibration = isinstance(task, QuantRawTask) and task.test_data and not task.calibration_data
+    if given_split_without_calibration and not t_cst.is_continuous_quant_task(task):
+        raise CalibrationUnavailableError(
+            f"Compression task {task.task_id} on {task.ds} was given a split that carries no calibration rows, and its train "
+            f"rows are the ones its input model was trained on"
+        )
     train_hashes: list[str] | None = None
     test_hashes: list[str] | None = None
 

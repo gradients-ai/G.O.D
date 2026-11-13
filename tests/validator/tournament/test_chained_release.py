@@ -311,7 +311,7 @@ class TestReleaseChainedTask:
         assert task.carve_calibration is True
         alert.assert_not_awaited()
 
-    async def test_an_upstream_without_calibration_rows_alerts_and_the_task_carves_its_own(self, release, monkeypatch, caplog):
+    async def test_an_upstream_without_calibration_rows_alerts_that_the_task_will_fail_prep(self, release, monkeypatch, caplog):
         alert = AsyncMock()
         monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
         task = _chained_freeform(release.upstream)
@@ -323,7 +323,9 @@ class TestReleaseChainedTask:
         alert.assert_awaited_once()
         key, message, _ = alert.await_args.args
         assert key == f"{task.task_id}:quant-upstream-no-calibration"
-        assert "published no calibration rows" in message and "carves its own" in message
+        assert "published no calibration rows" in message
+        assert "fail data prep and be replaced" in message and "its input model was trained on" in message
+        assert "carves its own" not in message
 
     async def test_a_task_on_its_own_data_carves_and_does_not_alert(self, release, monkeypatch):
         alert = AsyncMock()

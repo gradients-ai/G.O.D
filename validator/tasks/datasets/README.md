@@ -22,6 +22,7 @@ Dataset validation, column mapping, splitting and upload for validator tasks.
 | Calibration rows come only from the train side and never equal a test row. | `calibration.py` |
 | For a task that splits its dataset, carved row hashes are recorded per dataset, and later splits keep those rows out of the test pool. | `validator/db/sql/calibration.py` |
 | A task flagged to carve (a compression task, or a text task whose model is compressed later) fails data prep when its train side cannot give up a calibration set. | `preparation.py` |
+| A compression task with a given split carves its calibration set from the given train file only on its own continuous chunk, whose train rows its input model did not train on; any other given split without calibration rows fails data prep. | `preparation.py` |
 | Every compression task publishes a calibration set: prep fails when none can be carved or published. | `preparation.py`, `validator/tasks/requests.py` |
 
 ## See also

@@ -2589,8 +2589,8 @@ def _copy_upstream_data(task: AnyQuantRawTask, upstream: InstructTextRawTask, bo
 
     test_data is the raw test split the instruct task was scored on (quant prep tokenises it), and the
     dataset type carries the standard column names the upstream's prep wrote. calibration_data is the upstream's raw
-    calibration JSON, which quant prep tokenises and publishes; an upstream with none leaves the task's own prep to carve
-    its calibration rows (see _set_calibration_source). The budget is recomputed
+    calibration JSON, which quant prep tokenises and publishes; an upstream with none leaves the task without calibration
+    rows, so its data prep fails (see _set_calibration_source). The budget is recomputed
     here from the upstream's model and its prep stats (flat when it has none): the boss budget for the type with boss,
     else the non-boss one (the miner rounds R1-R3 on an input seed).
     """
@@ -2616,8 +2616,8 @@ async def _set_calibration_source(task: AnyQuantRawTask, config: Config, copied_
     """Leave a task released to PENDING with a calibration source: the upstream's raw rows (copied_from, see
     _copy_upstream_data) or its own prep's carve. carve_calibration is always set, so a task created with the flag off still
     carves when it holds no raw rows. An upstream that published no calibration rows should not exist (a flagged text task
-    fails prep when it carves nothing); the task then carves from the train file it copied, which the compressed model was
-    trained on, and the alert says so.
+    fails prep when it carves nothing); the compression task copied from it fails data prep with CalibrationUnavailableError
+    (its train rows are the ones its input model was trained on) and is replaced, and the alert says so.
     """
     task.carve_calibration = True
     if copied_from is None or copied_from.calibration_data:
@@ -2625,7 +2625,7 @@ async def _set_calibration_source(task: AnyQuantRawTask, config: Config, copied_
     await alert_seed_issue(
         f"{task.task_id}:quant-upstream-no-calibration",
         f"Quant task {task.task_id}: upstream task {copied_from.task_id} published no calibration rows, so the compression "
-        f"task carves its own from the upstream's train rows, which the compressed model was trained on",
+        f"task will fail data prep and be replaced rather than be calibrated on rows its input model was trained on",
         config,
     )
 

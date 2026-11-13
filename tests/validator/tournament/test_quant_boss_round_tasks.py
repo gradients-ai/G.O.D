@@ -291,6 +291,7 @@ async def test_the_own_upstream_release_alerts_when_the_upstream_published_no_ca
     alert.assert_awaited_once()
     assert alert.await_args.args[0] == f"{task.task_id}:quant-upstream-no-calibration"
     assert "published no calibration rows" in alert.await_args.args[1]
+    assert "fail data prep and be replaced" in alert.await_args.args[1]
 
 
 # --- GPU tier and hours of the continuous instruct task ------------------------------------------------------------

@@ -1402,8 +1402,9 @@ def _new_quant_task(
 
     Never augmented: quant tasks are text-tournament tasks outside round 1, which play their base unmodified.
     Both tracks take calibration_data (the raw rows carried from the source split) and are always flagged to carve:
-    prep carves a calibration set from the task's own split, or from the given train file when test_data is given,
-    unless the task already carries calibration_data. A task leaves prep only with its published calibration set.
+    prep carves a calibration set from the task's own split, or from the given train file when test_data is given and the
+    task is on its own continuous chunk, unless the task already carries calibration_data; any other given split without
+    calibration_data fails prep. A task leaves prep only with its published calibration set.
     """
     current_time = datetime.utcnow()
     fields = dict(

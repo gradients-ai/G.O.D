@@ -1585,7 +1585,7 @@ class TestReleaseLeavesACalibrationSource:
         assert task.carve_calibration is True
         assert qw.alerts.await_count == 0
 
-    async def test_a_text_task_that_published_no_calibration_rows_is_alerted_and_the_task_carves_its_own(self, qw, caplog):
+    async def test_a_text_task_that_published_no_calibration_rows_is_alerted_and_the_task_will_fail_prep(self, qw, caplog):
         task = await qw.create_round_task(1)
         text_task = qw.text_task(SeedRole.TEXT_R1)
         text_task.calibration_data = None

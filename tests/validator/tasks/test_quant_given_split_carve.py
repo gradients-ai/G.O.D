@@ -157,3 +157,23 @@ async def test_a_given_split_carve_is_not_recorded_per_dataset(seams):
     split = await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     assert seams.record_calls == [] and split.calibration_row_hashes != []
+
+
+@pytest.mark.parametrize("cls", [QuantFreeformRawTask, QuantFixedRawTask])
+async def test_a_non_continuous_given_split_without_calibration_rows_fails_prep_and_uploads_nothing(seams, cls):
+    task = _task(cls)
+    task.ds = "some-text-task-ds"  # not a continuous chunk: its train rows are the ones its input model was trained on
+
+    with pytest.raises(CalibrationUnavailableError, match="input model was trained on"):
+        await preparation.prepare_text_task(task, keypair=None, psql_db="db")
+
+    assert seams.uploads == {} and seams.record_calls == []
+
+
+async def test_a_non_continuous_given_split_carrying_calibration_rows_passes_them_through(seams):
+    task = _task(calibration_data="https://minio/cal.json")
+    task.ds = "some-text-task-ds"
+
+    split = await preparation.prepare_text_task(task, keypair=None, psql_db="db")
+
+    assert split.calibration_url == "https://minio/cal.json" and "calibration_data.json" not in seams.uploads

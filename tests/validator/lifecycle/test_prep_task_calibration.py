@@ -10,6 +10,7 @@ import pytest
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.task_models import TaskStatus
 from validator.lifecycle import tasks as lifecycle_tasks
+from validator.tasks.datasets import preparation
 from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.models import QuantFreeformRawTask
 
@@ -88,3 +89,16 @@ async def test_a_prep_that_returns_a_task_without_calibration_cannot_be_stored_a
 
     assert stored == [TaskStatus.PREPARING_DATA, TaskStatus.PREP_TASK_FAILURE]
     seams.notify.assert_not_awaited()  # a plain ValueError from the guard, not a calibration prep failure
+
+
+async def test_a_given_split_without_calibration_rows_ends_prep_task_failure_with_the_alert(seams):
+    """The real prep function: a non-continuous compression task given a split with no calibration rows fails before any IO."""
+    task = _task()
+    task.training_data, task.test_data = "s3://bucket/train.json", "s3://bucket/test.json"
+    seams.prep.side_effect = preparation.prepare_text_task
+
+    await lifecycle_tasks._prep_task(task, CONFIG)
+
+    assert seams.stored == [TaskStatus.PREPARING_DATA, TaskStatus.PREP_TASK_FAILURE]
+    seams.notify.assert_awaited_once()
+    assert "input model was trained on" in str(seams.notify.await_args.kwargs["error"])
