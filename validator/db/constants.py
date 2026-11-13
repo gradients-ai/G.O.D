@@ -151,8 +151,10 @@ KL_COEF = "kl_coef"
 # Image Text Pairs Table Columns
 IMAGE_URL = "image_url"
 TEXT_URL = "text_url"
+SOURCE_IMAGE_URL = "source_image_url"
 ID = "id"
 MODEL_TYPE = "model_type"
+TRAINING_MODE = "training_mode"
 TRIGGER_WORD = "trigger_word"
 
 # DPO Tasks Table Columns

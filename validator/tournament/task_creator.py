@@ -9,6 +9,7 @@ from core.constants.credentials import RAYONLABS_HF_USERNAME
 from core.constants.quant import QUANT_MODEL_SIZE_B
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
@@ -30,7 +31,6 @@ from validator.tasks.models import RawTask
 from validator.tasks.quant_input_repo import full_model_rejection
 from validator.tasks.quant_shapes import filter_quant_compatible
 from validator.tasks.requests import get_model_num_params
-from validator.tasks.synthetics import constants as synth_cst
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_DPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_GRPO
 from validator.tasks.synthetics.constants import PERCENTAGE_OF_TASKS_THAT_SHOULD_BE_INSTRUCT_TEXT
@@ -357,8 +357,7 @@ async def create_image_tournament_tasks(
             tournament_id,
             round_id,
             config,
-            t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION,
-            num_prompts=synth_cst.MAX_IMAGE_SYNTH_PAIRS,
+            tuple((model_type, ImageTrainingMode.TEXT_TO_IMAGE) for model_type in t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION),
         )
         # The crown needs every boss-round task: a round short of one stays pending and the next pass creates the rest.
         expected = sum(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION.values())
@@ -369,15 +368,19 @@ async def create_image_tournament_tasks(
     elif isinstance(round_data, GroupRound):
         tasks = await _create_group_image_tasks(round_data, tournament_id, config, image_models)
     elif is_final_round:
-        tasks = await _create_new_image_boss_round_tasks(
-            tournament_id, round_id, config, t_cst.FINAL_ROUND_IMAGE_TASK_DISTRIBUTION
-        )
+        tasks = await _create_new_image_boss_round_tasks(tournament_id, round_id, config, t_cst.FINAL_ROUND_IMAGE_TASK_SPECS)
     else:
+        training_mode = None
         if round_data.round_number == 2:
-            round_two_model_type = random.choice(t_cst.ROUND_TWO_IMAGE_MODEL_TYPES)
-            logger.info(f"Round 2 image tournament model type: {round_two_model_type.value}")
+            round_two_model_type, training_mode = random.choice(t_cst.ROUND_TWO_IMAGE_TASK_SPECS)
+            logger.info(
+                f"Round 2 image tournament model type: {round_two_model_type.value} "
+                f"({training_mode.value})"
+            )
             image_models = _image_models_of_type(config, round_two_model_type)
-        tasks = await _create_knockout_image_tasks(round_data, tournament_id, config, image_models)
+        tasks = await _create_knockout_image_tasks(
+            round_data, tournament_id, config, image_models, training_mode=training_mode
+        )
 
     return [str(task.task_id) for task in tasks]
 
@@ -408,7 +411,6 @@ async def _create_planned_image_round_task(round_data: GroupRound, tournament_id
         _image_models_of_type(config, spec.model_type),
         0,
         0,
-        num_prompts=synth_cst.MAX_IMAGE_SYNTH_PAIRS,
     )
     await _create_and_register_tournament_task(task, tournament_id, round_data.round_id, config, group_id=group_id)
     return [task]
@@ -435,6 +437,7 @@ async def _create_group_image_tasks(
             tasks_per_group,
             image_model_types=t_cst.ROUND_ONE_IMAGE_MODEL_TYPES if is_round_one else None,
             max_num_prompts=t_cst.ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS if is_round_one else None,
+            training_mode=t_cst.ROUND_ONE_IMAGE_TRAINING_MODE if is_round_one else None,
         )
         tasks.extend(group_tasks)
 
@@ -451,6 +454,7 @@ async def _create_single_group_image_tasks(
     tasks_per_group: int,
     image_model_types: tuple[ImageModelType, ...] | None = None,
     max_num_prompts: int | None = None,
+    training_mode: ImageTrainingMode | None = None,
 ) -> list[RawTask]:
     group_id = f"{round_id}_group_{group_index + 1:03d}"
     logger.info(f"  Group {group_index + 1} ({len(group.member_ids)} members):")
@@ -476,6 +480,7 @@ async def _create_single_group_image_tasks(
             task_index,
             group_index,
             max_num_prompts=max_num_prompts,
+            training_mode=training_mode,
         )
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         created.append(task)
@@ -484,21 +489,33 @@ async def _create_single_group_image_tasks(
 
 
 async def _create_knockout_image_tasks(
-    round_data: KnockoutRound, tournament_id: str, config: Config, image_models: list
+    round_data: KnockoutRound,
+    tournament_id: str,
+    config: Config,
+    image_models: list,
+    training_mode: ImageTrainingMode | None = None,
 ) -> list[RawTask]:
     num_pairs = len(round_data.pairs)
     logger.info(f"Creating image tournament for {num_pairs} knockout pairs ({t_cst.KNOCKOUT_PAIR_TASKS} per pair)")
     tasks = []
 
     for i, pair in enumerate(round_data.pairs):
-        pair_tasks = await _create_single_knockout_image_task(pair, i, tournament_id, round_data.round_id, config, image_models)
+        pair_tasks = await _create_single_knockout_image_task(
+            pair, i, tournament_id, round_data.round_id, config, image_models, training_mode=training_mode
+        )
         tasks.extend(pair_tasks)
 
     return tasks
 
 
 async def _create_single_knockout_image_task(
-    pair, pair_index: int, tournament_id: str, round_id: str, config: Config, image_models: list
+    pair,
+    pair_index: int,
+    tournament_id: str,
+    round_id: str,
+    config: Config,
+    image_models: list,
+    training_mode: ImageTrainingMode | None = None,
 ) -> list[RawTask]:
     pair_id = f"{round_id}_pair_{pair_index + 1:03d}"
     logger.info(f"  Pair {pair_index + 1} ({pair[0]} vs {pair[1]}):")
@@ -515,7 +532,9 @@ async def _create_single_knockout_image_task(
         return await _get_existing_tasks(existing_tasks, config)
 
     logger.info(f"    Pair {pair_index + 1} has no tasks, creating {t_cst.KNOCKOUT_PAIR_TASKS}")
-    task = await _create_single_image_task_with_retry(config, image_models, 0, pair_index)
+    task = await _create_single_image_task_with_retry(
+        config, image_models, 0, pair_index, training_mode=training_mode
+    )
     await _create_and_register_tournament_task(
         task, tournament_id, round_id, config, pair_id=pair_id
     )
@@ -529,7 +548,7 @@ async def _create_single_image_task_with_retry(
     group_index: int = None,
     is_final: bool = False,
     max_num_prompts: int | None = None,
-    num_prompts: int | None = None,
+    training_mode: ImageTrainingMode | None = None,
 ) -> RawTask:
     context = f"final image task {task_num + 1}" if is_final else f"image task {task_num + 1} for group {group_index + 1}"
     for attempt in range(1, t_cst.IMAGE_TASK_CREATION_MAX_ATTEMPTS + 1):
@@ -538,7 +557,7 @@ async def _create_single_image_task_with_retry(
                 config,
                 image_models,
                 max_num_prompts=max_num_prompts,
-                num_prompts=num_prompts,
+                training_mode=training_mode,
             )
         except Exception as e:
             if attempt == t_cst.IMAGE_TASK_CREATION_MAX_ATTEMPTS:
@@ -561,15 +580,15 @@ async def _create_task_by_type(
     instruct_datasets: list,
     dpo_datasets: list,
     allow_augmentation: bool = True,
-    num_prompts: int | None = None,
+    training_mode: ImageTrainingMode | None = None,
 ) -> RawTask:
     """Create a synthetic task of the specified type.
 
     allow_augmentation is instruct-only: the large boss-round instruct slot never republishes a
-    70B copy during model-prep. num_prompts is image-only: the exact number of image-text pairs to request.
+    70B copy during model-prep.
     """
     if task_type == TaskType.IMAGETASK:
-        return await create_synthetic_image_task(config, models, num_prompts=num_prompts)
+        return await create_synthetic_image_task(config, models, training_mode=training_mode)
     elif task_type == TaskType.INSTRUCTTEXTTASK:
         return await create_synthetic_instruct_text_task(
             config,
@@ -782,13 +801,19 @@ async def _create_single_probability_task(
         return await create_synthetic_grpo_task(config, models, instruct_datasets)
 
 
-async def create_new_task_of_same_type(task: RawTask, config: Config, num_prompts: int | None = None) -> RawTask:
-    """A new task of the same type (an image task keeps its family). num_prompts is image-only: the exact number of
-    image-text pairs to request, a random size when unset."""
+async def create_new_task_of_same_type(task: RawTask, config: Config) -> RawTask:
+    """A new task of the same type (an image task keeps its family and training mode)."""
     if task.task_type == TaskType.IMAGETASK:
         model_type = getattr(task, "model_type", None)
         models = _image_models_of_type(config, model_type) if model_type is not None else _get_image_models(config.keypair)
-        return await _create_task_by_type(task.task_type, config, models, [], [], num_prompts=num_prompts)
+        return await _create_task_by_type(
+            task.task_type,
+            config,
+            models,
+            [],
+            [],
+            training_mode=getattr(task, "training_mode", None),
+        )
 
     if task.task_type in QUANT_TASK_TYPES:
         if not is_chained(task):
@@ -1138,13 +1163,12 @@ async def _create_new_image_boss_round_tasks(
     tournament_id: str,
     round_id: str,
     config: Config,
-    distribution: dict[ImageModelType, int],
-    num_prompts: int | None = None,
+    specs: tuple[tuple[ImageModelType, ImageTrainingMode], ...],
 ) -> list[RawTask]:
-    """Create the boss round's image tasks, distribution[family] of each family, using new synthetic tasks. Idempotent per
-    family. num_prompts, when set, is the exact number of pairs each task requests; otherwise each draws a random size."""
+    """Create the boss round's image tasks, one per (model type, training mode) slot of specs, using new synthetic tasks.
+    Idempotent per slot."""
     pair_id = f"{round_id}_pair_001"
-    total_tasks = sum(distribution.values())
+    total_tasks = len(specs)
 
     existing_tasks = await _get_existing_tasks_by_identifier(round_id, config, pair_id=pair_id)
     existing_count = len(existing_tasks)
@@ -1156,32 +1180,34 @@ async def _create_new_image_boss_round_tasks(
     logger.info("Creating boss round image tasks using new synthetic tasks")
 
     existing_task_objects = await _get_existing_tasks(existing_tasks, config)
-    tasks = existing_task_objects
-
-    existing_counts_by_model_type = {
-        model_type: sum(1 for task in existing_task_objects if getattr(task, "model_type", None) == model_type)
-        for model_type in distribution
+    tasks = list(existing_task_objects)
+    filled_specs = {
+        (getattr(task, "model_type", None), getattr(task, "training_mode", None))
+        for task in existing_task_objects
     }
 
-    for model_type, target_count in distribution.items():
-        remaining_slots = total_tasks - len(tasks)
-        if remaining_slots <= 0:
+    for index, (model_type, training_mode) in enumerate(specs):
+        if len(tasks) >= total_tasks:
             break
-        already_created = existing_counts_by_model_type.get(model_type, 0)
-        num_to_create = min(max(target_count - already_created, 0), remaining_slots)
+        if (model_type, training_mode) in filled_specs:
+            continue
         model_gen = _image_models_of_type(config, model_type)
-        for i in range(num_to_create):
-            try:
-                task = await _create_single_image_task_with_retry(
-                    config, model_gen, i, is_final=True, num_prompts=num_prompts
-                )
-                await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
-                tasks.append(task)
-            except Exception as e:
-                logger.error(
-                    f"Failed to create {model_type.value} image task {i + 1}/{num_to_create}: {e}",
-                    exc_info=True,
-                )
+        try:
+            task = await _create_single_image_task_with_retry(
+                config,
+                model_gen,
+                index,
+                is_final=True,
+                training_mode=training_mode,
+            )
+            await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+            tasks.append(task)
+            filled_specs.add((model_type, training_mode))
+        except Exception as e:
+            logger.error(
+                f"Failed to create final {model_type.value} {training_mode.value} task: {e}",
+                exc_info=True,
+            )
 
     return tasks
 
@@ -1258,13 +1284,7 @@ async def replace_tournament_task(
             logger.info("Detected boss-round large instruct replacement; redrawing from the large-instruct pool")
             new_task = await _create_boss_round_large_instruct_replacement_task(config)
         else:
-            # A planned image tournament's tasks are all at the top of the pair range, so a replacement is too.
-            is_planned_image_task = original_task_obj.task_type == TaskType.IMAGETASK and await is_planned_image_tournament(
-                tournament_id, config.psql_db
-            )
-            new_task = await create_new_task_of_same_type(
-                original_task_obj, config, num_prompts=synth_cst.MAX_IMAGE_SYNTH_PAIRS if is_planned_image_task else None
-            )
+            new_task = await create_new_task_of_same_type(original_task_obj, config)
         logger.info(f"Successfully created new task {new_task.task_id} of type {new_task.task_type}")
     except Exception as e:
         logger.error(f"Failed to create new task of type {original_task_obj.task_type}: {str(e)}", exc_info=True)

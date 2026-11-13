@@ -144,6 +144,7 @@ def convert_task_to_task_details(task: AnyTypeTask) -> AnyTypeTaskDetails:
             ds_repo=task.ds,
             image_text_pairs=task.image_text_pairs,
             model_type=task.model_type,
+            training_mode=task.training_mode,
             created_at=task.created_at,
             started_at=task.started_at,
             finished_at=task.termination_at,
@@ -255,7 +256,13 @@ def hide_sensitive_data_till_finished(task: AnyTypeTask, force_hidden: bool = Fa
     """
     if force_hidden or is_task_in_flight(task):
         if task.task_type == TaskType.IMAGETASK:
-            task.image_text_pairs = [ImageTextPair(image_url="hidden", text_url="hidden")]
+            task.image_text_pairs = [
+                ImageTextPair(
+                    image_url="hidden",
+                    text_url="hidden",
+                    source_image_url="hidden" if task.training_mode.value == "edit" else None,
+                )
+            ]
         if task.task_type == TaskType.ENVIRONMENTTASK:
             task.eval_seed = None
         task.test_data = None

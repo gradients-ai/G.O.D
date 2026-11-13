@@ -172,3 +172,44 @@ async def persist_image_text_pairs(image_prompt_pairs: list[tuple[str, str]]) ->
         work_dir = Path(tmp_dir)
         tasks = [persist_one(index, image_url, prompt, work_dir) for index, (image_url, prompt) in enumerate(image_prompt_pairs)]
         return await asyncio.gather(*tasks)
+
+
+async def persist_image_edit_pairs(
+    edit_pairs: list[tuple[str, str, str]],
+) -> list[ImageTextPair]:
+    """Persist (source URL, target URL, edit instruction) triples."""
+    Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
+    semaphore = asyncio.Semaphore(synth_cst.FAL_IMAGE_GENERATION_CONCURRENCY)
+
+    async def persist_one(
+        index: int,
+        source_url: str,
+        target_url: str,
+        instruction: str,
+        work_dir: Path,
+    ) -> ImageTextPair:
+        async with semaphore:
+            source_path, target_path = await asyncio.gather(
+                download_url(source_url, work_dir / f"{index}_source"),
+                download_url(target_url, work_dir / f"{index}_target"),
+            )
+            text_path = work_dir / f"{index}.txt"
+            text_path.write_text(instruction)
+            source_s3_url, target_s3_url, text_s3_url = await asyncio.gather(
+                upload_local_file(source_path, "image_synth/edit_sources"),
+                upload_local_file(target_path, "image_synth/edit_targets"),
+                upload_local_file(text_path, "image_synth/edit_instructions"),
+            )
+            return ImageTextPair(
+                image_url=target_s3_url,
+                text_url=text_s3_url,
+                source_image_url=source_s3_url,
+            )
+
+    with tempfile.TemporaryDirectory(dir=TEMP_PATH_FOR_IMAGES) as tmp_dir:
+        work_dir = Path(tmp_dir)
+        tasks = [
+            persist_one(index, source_url, target_url, instruction, work_dir)
+            for index, (source_url, target_url, instruction) in enumerate(edit_pairs)
+        ]
+        return await asyncio.gather(*tasks)

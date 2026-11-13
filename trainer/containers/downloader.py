@@ -16,9 +16,12 @@ from huggingface_hub import snapshot_download
 import trainer.training_paths as train_paths
 from core.downloads import download_s3_file
 from core.models.dataset_models import FileFormat
+from core.models.image_models import AI_TOOLKIT_COMFY_FILES
+from core.models.image_models import AI_TOOLKIT_RUNTIME_REPOS
 from core.models.image_models import FLUX_TEXT_ENCODER_ARTIFACTS
 from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.image_models import select_standalone_flux_checkpoint
 from core.models.task_models import TaskType
 from core.tokenizer_utils import ensure_chat_template
@@ -500,6 +503,7 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
     """Download adapter file and save it in the adapters directory"""
     adapter_path = os.path.join(adapters_dir, filename)
     os.makedirs(adapters_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(adapter_path), exist_ok=True)
     
     if os.path.exists(adapter_path):
         print(f"Adapter {filename} already exists at {adapter_path}. Skipping download.", flush=True)
@@ -554,7 +558,16 @@ async def main():
             ImageModelType.QWEN_IMAGE.value,
             ImageModelType.IDEOGRAM4.value,
             ImageModelType.KREA2.value,
+            ImageModelType.FLUX2_KLEIN_4B.value,
+            ImageModelType.QWEN_IMAGE_EDIT_2511.value,
+            ImageModelType.HIDREAM_O1.value,
+            ImageModelType.MOSS_IMAGE_BASE.value,
         ],
+    )
+    parser.add_argument(
+        "--training-mode",
+        choices=[mode.value for mode in ImageTrainingMode],
+        default=ImageTrainingMode.TEXT_TO_IMAGE.value,
     )
     parser.add_argument("--anonymize", action="store_true", help="Anonymize model directory name and scrub identity")
     args = parser.parse_args()
@@ -578,7 +591,48 @@ async def main():
 
     if args.task_type == TaskType.IMAGETASK.value:
         await download_image_dataset(args.dataset, args.task_id, dataset_dir)
-        model_path = await download_base_model(args.model, model_dir, args.model_type, anonymize=args.anonymize)
+        is_hidream_edit = (
+            args.model_type == ImageModelType.HIDREAM_O1.value
+            and args.training_mode == ImageTrainingMode.EDIT.value
+        )
+        if is_hidream_edit:
+            print("Downloading HiDream O1 consolidated checkpoint...", flush=True)
+            model_path = await download_adapter(
+                repo_id="Comfy-Org/HiDream-O1-Image",
+                filename="checkpoints/hidream_o1_image_bf16.safetensors",
+                adapters_dir=adapters_dir,
+            )
+            print(f"HiDream O1 checkpoint downloaded to: {model_path}", flush=True)
+            # Musubi loads the processor and config from the hub repo; trainers run offline.
+            snapshot_download(
+                repo_id="HiDream-ai/HiDream-O1-Image",
+                cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                ignore_patterns=["*.safetensors", "*.bin", "*.pt", "*.pth", "*.gguf"],
+                token=_huggingface_token(),
+            )
+        else:
+            model_path = await download_base_model(
+                args.model,
+                model_dir,
+                args.model_type,
+                anonymize=args.anonymize,
+            )
+            for repo_id, allow_patterns in AI_TOOLKIT_RUNTIME_REPOS.get(args.model_type, ()):
+                print(f"Caching AI Toolkit runtime repo {repo_id}...", flush=True)
+                snapshot_download(
+                    repo_id=repo_id,
+                    cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                    allow_patterns=list(allow_patterns) if allow_patterns else None,
+                    token=_huggingface_token(),
+                )
+            for repo_id, filename in AI_TOOLKIT_COMFY_FILES.get(args.model_type, ()):
+                print(f"Caching AI Toolkit comfy file {repo_id}/{filename}...", flush=True)
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=filename,
+                    local_dir=cst.AI_TOOLKIT_MODELS_PATH,
+                    token=_huggingface_token(),
+                )
 
         if args.model_type == ImageModelType.Z_IMAGE.value:
             print("Downloading Z-Image adapter...", flush=True)
@@ -627,28 +681,29 @@ async def main():
             artifact_paths = await download_flux_evaluation_artifacts(adapters_dir)
             print(f"FLUX evaluation artifacts downloaded to: {', '.join(artifact_paths)}", flush=True)
 
-        from transformers import CLIPTokenizer
+        if not is_hidream_edit:
+            from transformers import CLIPTokenizer
 
-        print("Downloading clip models", flush=True)
-        hf_token = _huggingface_token()
-        CLIPTokenizer.from_pretrained(
-            "openai/clip-vit-large-patch14",
-            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
-            token=hf_token,
-        )
-        CLIPTokenizer.from_pretrained(
-            "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k",
-            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
-            token=hf_token,
-        )
-        snapshot_download(
-            repo_id="google/t5-v1_1-xxl",
-            repo_type="model",
-            cache_dir=cst.HUGGINGFACE_CACHE_PATH,
-            local_dir_use_symlinks=False,
-            allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
-            token=hf_token,
-        )
+            print("Downloading clip models", flush=True)
+            hf_token = _huggingface_token()
+            CLIPTokenizer.from_pretrained(
+                "openai/clip-vit-large-patch14",
+                cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                token=hf_token,
+            )
+            CLIPTokenizer.from_pretrained(
+                "laion/CLIP-ViT-bigG-14-laion2B-39B-b160k",
+                cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                token=hf_token,
+            )
+            snapshot_download(
+                repo_id="google/t5-v1_1-xxl",
+                repo_type="model",
+                cache_dir=cst.HUGGINGFACE_CACHE_PATH,
+                local_dir_use_symlinks=False,
+                allow_patterns=["tokenizer_config.json", "spiece.model", "special_tokens_map.json", "config.json"],
+                token=hf_token,
+            )
     elif args.task_type == TaskType.ENVIRONMENTTASK.value:
         model_path = await download_axolotl_base_model(args.model, model_dir, anonymize=args.anonymize)
         input_data_path = train_paths.get_text_dataset_path(args.task_id)

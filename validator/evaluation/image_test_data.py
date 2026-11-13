@@ -2,6 +2,7 @@
 
 import hashlib
 import io
+import json
 import logging
 import urllib.request
 import zipfile
@@ -9,6 +10,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from PIL import Image
+
 
 logger = logging.getLogger(__name__)
 
@@ -109,4 +111,91 @@ def decoded_images(rows):
         result.append({"name": name, "image": image, "caption": caption, "sha256": digest})
         if index == 1 or index == len(rows) or index % 8 == 0:
             logger.info("decoded test image %s/%s name=%s", index, len(rows), name)
+    return result
+
+
+def _safe_archive_path(base: Path, value: str) -> Path:
+    candidate = (base / value).resolve()
+    if candidate != base.resolve() and base.resolve() not in candidate.parents:
+        raise ValueError("Edit manifest path escapes its dataset directory")
+    return candidate
+
+
+def read_generation_dataset(source, download_path, training_mode: str):
+    """Materialize generation-eval rows, including source/target edit manifests."""
+    if training_mode != "edit":
+        return read_dataset(source, download_path)
+    if str(source).startswith(("https://", "http://")):
+        source = _download_dataset(str(source), Path(download_path))
+    source = Path(source)
+    extraction_root = Path(download_path).with_suffix("")
+    if extraction_root.exists():
+        raise ValueError(f"Generation dataset extraction path already exists: {extraction_root}")
+    extraction_root.mkdir(parents=True)
+    if source.is_dir():
+        dataset_root = source
+    else:
+        with zipfile.ZipFile(source) as archive:
+            names = archive.namelist()
+            if len(names) != len(set(names)):
+                raise ValueError("Duplicate archive entries")
+            for name in names:
+                destination = (extraction_root / name).resolve()
+                if destination != extraction_root.resolve() and extraction_root.resolve() not in destination.parents:
+                    raise ValueError("Archive entry escapes generation dataset directory")
+            archive.extractall(extraction_root)
+        dataset_root = extraction_root
+
+    manifests = list(dataset_root.rglob("manifest.jsonl"))
+    if len(manifests) != 1:
+        raise ValueError(f"Edit evaluation requires exactly one manifest.jsonl; found {len(manifests)}")
+    manifest = manifests[0]
+    rows = []
+    for line_number, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        sources = row.get("sources")
+        if not isinstance(sources, list) or len(sources) != 1:
+            raise ValueError(f"Edit manifest line {line_number} must contain exactly one source")
+        source_path = _safe_archive_path(manifest.parent, sources[0])
+        target_path = _safe_archive_path(manifest.parent, row.get("target", ""))
+        instruction = row.get("instruction")
+        if not source_path.is_file() or not target_path.is_file() or not isinstance(instruction, str):
+            raise ValueError(f"Invalid edit manifest line {line_number}")
+        rows.append(
+            (
+                str(row.get("sample_id") or line_number),
+                target_path.read_bytes(),
+                instruction,
+                source_path.read_bytes(),
+            )
+        )
+    if not rows:
+        raise ValueError("Empty edit evaluation dataset")
+    return rows
+
+
+def decoded_generation_images(rows, training_mode: str):
+    if training_mode != "edit":
+        return decoded_images(rows)
+    result = []
+    for name, target_raw, caption, source_raw in rows:
+        if not caption.strip():
+            raise ValueError("Edit evaluation requires an instruction for every pair")
+        target = adjust_image(Image.open(io.BytesIO(target_raw)))
+        source = adjust_image(Image.open(io.BytesIO(source_raw)))
+        digest = hashlib.sha256(
+            target.tobytes() + source.tobytes() + str(target.size).encode()
+        ).hexdigest()
+        result.append(
+            {
+                "name": name,
+                "image": target,
+                "source": source,
+                "source_raw": source_raw,
+                "caption": caption,
+                "sha256": digest,
+            }
+        )
     return result

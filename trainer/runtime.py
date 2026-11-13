@@ -32,6 +32,7 @@ from core.models.image_models import FLUX_CLIP_ARTIFACT
 from core.models.image_models import FLUX_T5_ARTIFACT
 from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.model_prep_models import BaselineStats
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
@@ -225,6 +226,7 @@ async def run_trainer_container_image(
     expected_repo_name: str,
     hours_to_complete: float,
     hotkey: str,
+    training_mode: str = ImageTrainingMode.TEXT_TO_IMAGE.value,
     trigger_word: str | None = None,
     baseline_stats: BaselineStats | None = None,
     log_labels: dict[str, str] | None = None,
@@ -248,6 +250,9 @@ async def run_trainer_container_image(
         "--hours-to-complete",
         str(hours_to_complete),
     ]
+
+    if training_mode != ImageTrainingMode.TEXT_TO_IMAGE.value:
+        command += ["--training-mode", training_mode]
 
     if trigger_word:
         command += ["--trigger-word", trigger_word]
@@ -483,6 +488,7 @@ def run_downloader_container(
     hotkey: str,
     file_format: FileFormat | None = None,
     model_type: ImageModelType | None = None,
+    training_mode: ImageTrainingMode | None = None,
     log_labels: dict[str, str] | None = None,
     anonymize: bool = True,
 ) -> tuple[int, Exception | None]:
@@ -503,6 +509,8 @@ def run_downloader_container(
 
     if model_type:
         command += ["--model-type", model_type]
+    if training_mode:
+        command += ["--training-mode", training_mode]
 
     if anonymize:
         command += ["--anonymize"]
@@ -930,6 +938,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             hotkey=task.hotkey,
             file_format=getattr(training_data, "file_format", None),
             model_type=training_data.model_type if task_type == TaskType.IMAGETASK else None,
+            training_mode=training_data.training_mode if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
             anonymize=model_prep_ran,
         )
@@ -994,6 +1003,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     model=model_for_container,
                     dataset_zip=training_data.dataset_zip,
                     model_type=training_data.model_type,
+                    training_mode=training_data.training_mode,
                     expected_repo_name=training_data.expected_repo_name,
                     hours_to_complete=training_data.hours_to_complete,
                     hotkey=task.hotkey,

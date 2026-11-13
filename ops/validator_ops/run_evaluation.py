@@ -128,6 +128,8 @@ async def run_evaluation_from_task_id(
                 original_model_repo=original_model,
                 models=models_to_evaluate,
                 model_type=task_details.model_type,
+                training_mode=task_details.training_mode,
+                trigger_word=task_details.trigger_word,
                 gpu_ids=gpu_ids,
             )
 

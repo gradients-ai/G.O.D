@@ -1,7 +1,9 @@
 from datetime import date
 
 from core.constants.environments import TrainingStartPoint
+from core.models.image_models import IMAGE_MODEL_CAPABILITIES
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.quant_models import QuantFormat
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
@@ -137,13 +139,14 @@ TOURN_DEDUP_CONCURRENCY = 8
 TEXT_TASKS_PER_GROUP = 1
 IMAGE_TASKS_PER_GROUP = 1
 
-# Image R1 has one smaller task for each family. Thirty source pairs map to at
-# most three test images and at most 0.75 competition hours.
+# Image R1 has one smaller text-to-image task for each family. Thirty source
+# pairs map to at most three test images and at most 0.75 competition hours.
 ROUND_ONE_IMAGE_MODEL_TYPES = (
-    ImageModelType.FLUX,
-    ImageModelType.IDEOGRAM4,
     ImageModelType.Z_IMAGE,
+    ImageModelType.FLUX2_KLEIN_4B,
+    ImageModelType.MOSS_IMAGE_BASE,
 )
+ROUND_ONE_IMAGE_TRAINING_MODE = ImageTrainingMode.TEXT_TO_IMAGE
 ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 
 # Text R1 instruct tasks keep the throughput-based hours formula unchanged.
@@ -152,19 +155,28 @@ ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS = 30
 # shortened to fit.
 ROUND_ONE_TEXT_MAX_TRAINING_HOURS = 2.5
 
-# The single R2 knockout task randomly uses one of these larger families.
 ROUND_TWO_IMAGE_MODEL_TYPES = (
     ImageModelType.QWEN_IMAGE,
     ImageModelType.KREA2,
+    ImageModelType.QWEN_IMAGE_EDIT_2511,
+    ImageModelType.HIDREAM_O1,
+)
+ROUND_TWO_IMAGE_TASK_SPECS: tuple[tuple[ImageModelType, ImageTrainingMode], ...] = tuple(
+    (model_type, mode)
+    for model_type in ROUND_TWO_IMAGE_MODEL_TYPES
+    for mode in sorted(IMAGE_MODEL_CAPABILITIES[model_type], key=lambda value: value.value)
 )
 
-# Final round task counts
-FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
-    ImageModelType.KREA2: 2,
-    ImageModelType.IDEOGRAM4: 2,
-    ImageModelType.QWEN_IMAGE: 1,
-    ImageModelType.Z_IMAGE: 1,
-}
+# Final boss-round mix: explicit (model, mode) slots. Length must match FINAL_ROUND_IMAGE_TASKS.
+FINAL_ROUND_IMAGE_TASK_SPECS: tuple[tuple[ImageModelType, ImageTrainingMode], ...] = (
+    (ImageModelType.FLUX2_KLEIN_4B, ImageTrainingMode.EDIT),
+    (ImageModelType.HIDREAM_O1, ImageTrainingMode.EDIT),
+    (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.EDIT),
+    (ImageModelType.KREA2, ImageTrainingMode.TEXT_TO_IMAGE),
+    (ImageModelType.HIDREAM_O1, ImageTrainingMode.TEXT_TO_IMAGE),
+    (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.TEXT_TO_IMAGE),
+)
+FINAL_ROUND_IMAGE_TASKS = len(FINAL_ROUND_IMAGE_TASK_SPECS)
 
 # Explicit text boss-round mix; FINAL_ROUND_TEXT_TASKS below = these + continuous-SFT.
 # One of the 3 instruct-text tasks is always forced onto a large model (see

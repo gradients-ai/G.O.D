@@ -31,6 +31,7 @@ from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import ImageTextPair
 from core.models.dataset_models import InstructTextDatasetType
+from core.models.image_models import ImageTrainingMode
 from core.near_duplicate import compute_near_duplicate_rate
 from core.near_duplicate import near_duplicate_sample_indices
 from validator.db.sql.calibration import get_calibration_row_hashes
@@ -72,18 +73,38 @@ class PreparedTextSplit(BaseModel):
 def create_zip_for_image_dataset(split_keys: set, zip_name: str, entries: dict, dataset_root: Path) -> Path:
     subfolder_name = Path(zip_name).stem
     zip_path = dataset_root / zip_name
+    is_edit_dataset = bool(split_keys) and all(entries[key][2] is not None for key in split_keys)
 
     if zip_path.exists():
         logger.error(f"Zip path {zip_path} exists. This should not happen. Deleting it.")
         zip_path.unlink()
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zipf:
+        manifest_rows = []
         for key in split_keys:
-            img_file, txt_file = entries[key]
+            img_file, txt_file, source_file = entries[key]
             with open(txt_file, "r") as f:
-                logger.info(f"Adding the following prompt to the zip: {f.read()}")
-            zipf.write(img_file, Path(subfolder_name) / img_file.relative_to(dataset_root))
-            zipf.write(txt_file, Path(subfolder_name) / txt_file.relative_to(dataset_root))
+                instruction = f.read().strip()
+                logger.info(f"Adding the following prompt to the zip: {instruction}")
+            if is_edit_dataset:
+                target_name = Path("targets") / img_file.name
+                source_name = Path("sources") / source_file.name
+                zipf.write(img_file, Path(subfolder_name) / target_name)
+                zipf.write(source_file, Path(subfolder_name) / source_name)
+                manifest_rows.append(
+                    {
+                        "sample_id": key,
+                        "instruction": instruction,
+                        "sources": [source_name.as_posix()],
+                        "target": target_name.as_posix(),
+                    }
+                )
+            else:
+                zipf.write(img_file, Path(subfolder_name) / img_file.relative_to(dataset_root))
+                zipf.write(txt_file, Path(subfolder_name) / txt_file.relative_to(dataset_root))
+        if is_edit_dataset:
+            manifest = "\n".join(json.dumps(row) for row in manifest_rows) + "\n"
+            zipf.writestr((Path(subfolder_name) / "manifest.jsonl").as_posix(), manifest)
 
     return zip_path
 
@@ -210,7 +231,7 @@ async def reject_near_duplicate_dataset(task: AnyTextTypeRawTask, train_dataset:
     logger.info(f"Dataset {task.ds} near-duplicate rate {rate:.3f} is under the limit")
 
 
-def train_test_split_image(dataset_path: str) -> tuple[str, str]:
+def train_test_split_image(dataset_path: str, require_controls: bool = False) -> tuple[str, str]:
     """
     Dataset path is a folder containing the images and text files.
     """
@@ -233,7 +254,15 @@ def train_test_split_image(dataset_path: str) -> tuple[str, str]:
         if file.suffix in cst.SUPPORTED_IMAGE_FILE_EXTENSIONS:
             txt_file = file.with_suffix(".txt")
             if txt_file.exists():
-                dataset_entries[file.stem] = (file, txt_file)
+                source_file = next(
+                    (
+                        dataset_path / "controls" / "0" / f"{file.stem}{extension}"
+                        for extension in cst.SUPPORTED_IMAGE_FILE_EXTENSIONS
+                        if (dataset_path / "controls" / "0" / f"{file.stem}{extension}").is_file()
+                    ),
+                    None,
+                )
+                dataset_entries[file.stem] = (file, txt_file, source_file)
 
     if len(dataset_entries) < core_cst.MIN_IMAGE_TEXT_PAIRS:
         raise ValueError(
@@ -245,6 +274,12 @@ def train_test_split_image(dataset_path: str) -> tuple[str, str]:
             f"Image dataset has {len(dataset_entries)} image/text pairs, "
             f"maximum allowed is {core_cst.MAX_IMAGE_TEXT_PAIRS}"
         )
+    if require_controls:
+        missing_controls = [key for key, (_, _, source_file) in dataset_entries.items() if source_file is None]
+        if missing_controls:
+            raise ValueError(
+                f"Image-edit dataset is missing controls/0 source images for {len(missing_controls)} pair(s)"
+            )
 
     keys = list(dataset_entries.keys())
     random.shuffle(keys)
@@ -864,6 +899,7 @@ async def prepare_text_task(
 async def prepare_image_task(
     image_text_pairs: list[ImageTextPair] | None = None,
     dataset_zip_url: str | None = None,
+    training_mode: ImageTrainingMode = ImageTrainingMode.TEXT_TO_IMAGE,
 ) -> tuple[str, str]:
     Path(cst.TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)
 
@@ -872,7 +908,10 @@ async def prepare_image_task(
             local_zip_path = await download_s3_file(dataset_zip_url, save_path=download_dir)
             dataset_path = unzip_to_temp_path(local_zip_path)
             try:
-                test_zip_path, train_zip_path = train_test_split_image(dataset_path=dataset_path)
+                test_zip_path, train_zip_path = train_test_split_image(
+                    dataset_path=dataset_path,
+                    require_controls=training_mode == ImageTrainingMode.EDIT,
+                )
                 test_url = await upload_file_to_minio(
                     file_path=str(test_zip_path),
                     bucket_name=BUCKET_NAME,
@@ -900,8 +939,18 @@ async def prepare_image_task(
             img_extension = tmp_img_path.suffix
             img_path = Path(source_dir) / f"{i}{img_extension}"
             shutil.move(tmp_img_path, img_path)
+            if pair.source_image_url:
+                controls_dir = Path(source_dir) / "controls" / "0"
+                controls_dir.mkdir(parents=True, exist_ok=True)
+                tmp_source_path = Path(await download_s3_file(pair.source_image_url))
+                shutil.move(tmp_source_path, controls_dir / f"{i}{tmp_source_path.suffix}")
+            elif training_mode == ImageTrainingMode.EDIT:
+                raise ValueError(f"Image-edit pair {i} is missing source_image_url")
 
-        test_zip_path, train_zip_path = train_test_split_image(dataset_path=source_dir)
+        test_zip_path, train_zip_path = train_test_split_image(
+            dataset_path=source_dir,
+            require_controls=training_mode == ImageTrainingMode.EDIT,
+        )
 
         test_url = await upload_file_to_minio(
             file_path=str(test_zip_path), bucket_name=BUCKET_NAME, object_name=f"{os.urandom(8).hex()}_test_data.zip"

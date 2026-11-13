@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.task_models import TaskType
 from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
@@ -133,6 +134,10 @@ async def test_image_round_one_single_large_group_creates_three_family_tasks(mon
         call.kwargs["max_num_prompts"] == t_cst.ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS
         for call in image_mock.call_args_list
     )
+    assert all(
+        call.kwargs["training_mode"] == ImageTrainingMode.TEXT_TO_IMAGE
+        for call in image_mock.call_args_list
+    )
 
 
 async def test_image_round_one_small_band_creates_three_tasks(monkeypatch):
@@ -143,32 +148,51 @@ async def test_image_round_one_small_band_creates_three_tasks(monkeypatch):
     )
 
     assert len(image_mock.call_args_list) == t_cst.SMALL_TOURNAMENT_GROUP_TASKS
+    assert all(
+        call.kwargs["training_mode"] == ImageTrainingMode.TEXT_TO_IMAGE
+        for call in image_mock.call_args_list
+    )
 
 
-async def test_image_round_two_uses_qwen_or_krea(monkeypatch):
+async def test_image_round_two_picks_model_and_capability_slot(monkeypatch):
     round_data = KnockoutRound(
         round_id="tourn_round_002",
         round_number=2,
         pairs=[("miner-a", "miner-b")],
     )
     selected_pool = object()
+    hidream_edit = (ImageModelType.HIDREAM_O1, ImageTrainingMode.EDIT)
     knockout_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(task_creator, "_get_image_models", lambda _keypair: MagicMock())
-    monkeypatch.setattr(task_creator.random, "choice", lambda choices: choices[0])
+    monkeypatch.setattr(task_creator.random, "choice", lambda choices: hidream_edit)
     monkeypatch.setattr(
         task_creator,
         "_image_models_of_type",
-        lambda _config, model_type: selected_pool
-        if model_type == ImageModelType.QWEN_IMAGE
-        else None,
+        lambda _config, model_type: selected_pool if model_type == ImageModelType.HIDREAM_O1 else None,
     )
     monkeypatch.setattr(task_creator, "_create_knockout_image_tasks", knockout_mock)
     monkeypatch.setattr(task_creator, "is_planned_image_tournament", AsyncMock(return_value=False))
 
     await task_creator.create_image_tournament_tasks(round_data, "tourn", MagicMock())
 
-    assert t_cst.ROUND_TWO_IMAGE_MODEL_TYPES == (
-        ImageModelType.QWEN_IMAGE,
-        ImageModelType.KREA2,
+    assert t_cst.ROUND_TWO_IMAGE_TASK_SPECS == (
+        (ImageModelType.QWEN_IMAGE, ImageTrainingMode.TEXT_TO_IMAGE),
+        (ImageModelType.KREA2, ImageTrainingMode.TEXT_TO_IMAGE),
+        (ImageModelType.QWEN_IMAGE_EDIT_2511, ImageTrainingMode.EDIT),
+        (ImageModelType.HIDREAM_O1, ImageTrainingMode.EDIT),
+        (ImageModelType.HIDREAM_O1, ImageTrainingMode.TEXT_TO_IMAGE),
     )
     assert knockout_mock.await_args.args[3] is selected_pool
+    assert knockout_mock.await_args.kwargs["training_mode"] == ImageTrainingMode.EDIT
+
+
+async def test_final_image_task_specs_cover_edit_and_t2i_slots():
+    assert t_cst.FINAL_ROUND_IMAGE_TASKS == 6
+    assert t_cst.FINAL_ROUND_IMAGE_TASK_SPECS == (
+        (ImageModelType.FLUX2_KLEIN_4B, ImageTrainingMode.EDIT),
+        (ImageModelType.HIDREAM_O1, ImageTrainingMode.EDIT),
+        (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.EDIT),
+        (ImageModelType.KREA2, ImageTrainingMode.TEXT_TO_IMAGE),
+        (ImageModelType.HIDREAM_O1, ImageTrainingMode.TEXT_TO_IMAGE),
+        (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.TEXT_TO_IMAGE),
+    )

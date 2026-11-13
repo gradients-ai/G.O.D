@@ -70,11 +70,13 @@ from validator.tournament.models import ContinuousSftTaskChunk
 logger = get_logger(__name__)
 
 SUPPORTED_TOURNAMENT_IMAGE_MODEL_TYPES = {
-    ImageModelType.FLUX,
     ImageModelType.Z_IMAGE,
     ImageModelType.QWEN_IMAGE,
-    ImageModelType.IDEOGRAM4,
     ImageModelType.KREA2,
+    ImageModelType.FLUX2_KLEIN_4B,
+    ImageModelType.QWEN_IMAGE_EDIT_2511,
+    ImageModelType.HIDREAM_O1,
+    ImageModelType.MOSS_IMAGE_BASE,
 }
 
 def maybe_get_yarn_factor() -> int | None:
