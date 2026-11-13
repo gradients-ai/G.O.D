@@ -12,17 +12,12 @@ import validator.tournament.performance_calculator as performance_calculator
 import validator.tournament.round_results as round_results
 from core.constants.environments import TrainingStartPoint
 from core.models.quant_models import QuantEvalGpu
-from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from core.models.tournament_models import TournamentType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
 from validator.tournament import thresholds
-from validator.tournament.models import RoundType
-from validator.tournament.models import TournamentData
-from validator.tournament.models import TournamentRoundData
-from validator.tournament.models import TournamentTask
+from validator.tournament.crown import HeadToHeadOutcome
 from validator.tournament.models import TrainingStatus
 from validator.tournament.thresholds import resolve_freeform_boss_task
 
@@ -204,46 +199,21 @@ def test_freeform_cap_verdicts_name_the_rule():
 
 @pytest.mark.asyncio
 async def test_freeform_boss_task_skips_the_loss_path(monkeypatch):
-    """A scored-fail challenger has a NaN loss but is still a result: it loses on the cap, not by default."""
+    """A scored-fail challenger has a NaN loss but is still a result: it is beyond both allowances on the cap."""
     results = [_boss(), _freeform(CHALLENGER, 10, quant_failure="did not load")]
-    persisted = {}
 
-    async def fake_results(task_id, psql_db):
-        return results
+    async def fail_loss_path(*_args, **_kwargs):
+        raise AssertionError("freeform must not reach the paired comparison")
 
-    async def fake_task(task_id, psql_db):
-        return SimpleNamespace(task_type=TaskType.QUANTFREEFORMTASK, ds="d", training_start_point=None, status=TaskStatus.SUCCESS)
-
-    async def fake_persist(**kwargs):
-        persisted.update(kwargs)
-
-    async def fail_loss_path(**_kwargs):
-        raise AssertionError("freeform must not reach the loss comparison")
-
-    async def fake_tournament(tournament_id, psql_db):
-        return TournamentData(tournament_id="t", tournament_type=TournamentType.QUANT)
-
-    async def fake_assigned(task_id, psql_db):
-        return 2
-
-    monkeypatch.setattr(round_results, "get_tournament", fake_tournament)
-    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", fake_assigned)
-    monkeypatch.setattr(round_results, "get_task", fake_task)
-    monkeypatch.setattr(round_results, "get_task_results_for_ranking", fake_results)
+    monkeypatch.setattr(round_results, "get_task_results_for_ranking", AsyncMock(return_value=results))
     monkeypatch.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
-    monkeypatch.setattr(round_results, "_resolve_boss_round_task_winner", fail_loss_path)
-    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", fake_persist)
-    completed = TournamentRoundData(
-        round_id="r", tournament_id="t", round_number=4, round_type=RoundType.KNOCKOUT, is_final_round=True
-    )
-    task = TournamentTask(tournament_id="t", round_id="r", task_id=TASK_ID)
+    monkeypatch.setattr(round_results, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={}))
+    monkeypatch.setattr(round_results, "get_per_example_losses", fail_loss_path)
+    task_object = SimpleNamespace(task_type=TaskType.QUANTFREEFORMTASK, training_start_point=None)
 
-    outcome = await round_results.get_knockout_winners(completed, [task], psql_db=None, config=None)
+    result = await round_results.quant_task_head_to_head(TASK_ID, "x", task_object, CHALLENGER, None)
 
-    assert outcome.winners == [EMISSION_BURN_HOTKEY]
-    assert persisted["winner_hotkey"] == EMISSION_BURN_HOTKEY
-    assert persisted["basis"] == "cap: challenger did not pass"
-
+    assert result.outcome == HeadToHeadOutcome.BEYOND and result.reason == "no valid challenger entry"
 
 
 def _quant_result(hotkey: str, loss: float | None, task_type: TaskType) -> MinerResultsText:
@@ -253,31 +223,13 @@ def _quant_result(hotkey: str, loss: float | None, task_type: TaskType) -> Miner
 
 
 async def _boss_round_slot(monkeypatch, task_type, results, training_statuses):
-    """One boss-round slot run through get_knockout_winners; returns what the round decision saw."""
-    seen = {}
-
-    async def fake_task(task_id, psql_db):
-        return SimpleNamespace(task_type=task_type, ds="d", training_start_point=None, status=TaskStatus.SUCCESS)
-
-    def fake_determine(task_winners, boss_hotkey, tournament_type, **kwargs):
-        seen["task_winners"] = list(task_winners)
-        return boss_hotkey
-
-    tournament = TournamentData(tournament_id="t", tournament_type=TournamentType.QUANT)
-    monkeypatch.setattr(round_results, "get_tournament", AsyncMock(return_value=tournament))
-    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", AsyncMock(return_value=2))
-    monkeypatch.setattr(round_results, "get_task", fake_task)
+    """One boss-round slot decided against the boss from its stored results (no per-example vectors)."""
     monkeypatch.setattr(round_results, "get_task_results_for_ranking", AsyncMock(return_value=results))
     monkeypatch.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
     monkeypatch.setattr(round_results, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value=training_statuses))
-    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", AsyncMock())
-    monkeypatch.setattr(round_results, "determine_boss_round_winner", fake_determine)
-    completed = TournamentRoundData(
-        round_id="r", tournament_id="t", round_number=4, round_type=RoundType.KNOCKOUT, is_final_round=True
-    )
-    task = TournamentTask(tournament_id="t", round_id="r", task_id=TASK_ID)
-    await round_results.get_knockout_winners(completed, [task], None, None)
-    return seen
+    monkeypatch.setattr(round_results, "get_per_example_losses", AsyncMock(return_value=(None, None)))
+    task_object = SimpleNamespace(task_type=task_type, training_start_point=None)
+    return await round_results.quant_task_head_to_head(TASK_ID, "x", task_object, CHALLENGER, None)
 
 
 SUCCESS, FAILURE = TrainingStatus.SUCCESS, TrainingStatus.FAILURE
@@ -289,9 +241,9 @@ async def test_the_challenger_takes_a_fixed_compression_whose_boss_entry_failed_
 
     statuses = {EMISSION_BURN_HOTKEY: FAILURE, CHALLENGER: SUCCESS}
 
-    seen = await _boss_round_slot(monkeypatch, TaskType.QUANTFIXEDTASK, results, statuses)
+    result = await _boss_round_slot(monkeypatch, TaskType.QUANTFIXEDTASK, results, statuses)
 
-    assert seen["task_winners"] == [CHALLENGER]
+    assert result.is_win
 
 
 @pytest.mark.asyncio
@@ -300,9 +252,9 @@ async def test_a_missing_challenger_score_is_a_boss_win(monkeypatch):
     results = [_quant_result(EMISSION_BURN_HOTKEY, 0.9, fixed), _quant_result(CHALLENGER, None, fixed)]
     statuses = {EMISSION_BURN_HOTKEY: SUCCESS, CHALLENGER: SUCCESS}
 
-    seen = await _boss_round_slot(monkeypatch, fixed, results, statuses)
+    result = await _boss_round_slot(monkeypatch, fixed, results, statuses)
 
-    assert seen["task_winners"] == [EMISSION_BURN_HOTKEY]
+    assert result.outcome == HeadToHeadOutcome.BEYOND
 
 
 # A scored fail carries adjusted_loss = inf and has no vector. It must never turn into nan, and a valid challenger takes it.

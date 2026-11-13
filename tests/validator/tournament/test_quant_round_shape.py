@@ -221,6 +221,8 @@ async def test_a_scored_fail_ranks_last_on_its_task(round_two):
 async def test_single_task_round_one_advances_the_top_eight_by_rank(monkeypatch):
     hotkeys = _hotkeys(12)
     losses = {hotkey: 1.0 + i / 100 for i, hotkey in enumerate(reversed(hotkeys))}
+    # The boss's entry on the round seed is the best of all, and still takes no slot.
+    losses[EMISSION_BURN_HOTKEY] = 0.5
 
     async def fake_results(task_id, psql_db):
         return [
@@ -229,6 +231,9 @@ async def test_single_task_round_one_advances_the_top_eight_by_rank(monkeypatch)
         ]
 
     monkeypatch.setattr(rr, "get_task_results_for_ranking", fake_results)
+    monkeypatch.setattr(
+        rr, "get_tournament_group_members", AsyncMock(return_value=[SimpleNamespace(hotkey=hk) for hk in hotkeys])
+    )
     monkeypatch.setattr(rr, "get_task", AsyncMock(return_value=SimpleNamespace(task_type=TaskType.INSTRUCTTEXTTASK)))
     monkeypatch.setattr(
         rr, "get_tournament", AsyncMock(return_value=TournamentData(tournament_id="t", tournament_type=TournamentType.QUANT))

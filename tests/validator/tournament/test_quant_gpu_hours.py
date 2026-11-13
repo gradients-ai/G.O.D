@@ -184,7 +184,7 @@ class TestQuantTrainTokens:
             (_task_stats(8_700.0, 1041.1, 26_000_000, 0), 8_000_000),
             (_task_stats(8_700.0, 10.0, 10_000, 1_000), 64_000),
         ],
-        ids=["small-split", "capped", "huge-split", "legacy-no-rows", "short-rows-floor"],
+        ids=["small-split", "capped", "huge-split", "no-record-count", "short-rows-floor"],
     )
     def test_freeform_is_capped_by_the_train_split(self, stats, expected):
         assert quant_hours_breakdown(FREEFORM, PARAMS_FA, stats, boss=False).train_tokens == expected

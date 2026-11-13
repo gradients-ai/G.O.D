@@ -39,7 +39,7 @@ from validator.lifecycle.eval_infra_errors import reference_requeue_sql
 from validator.lifecycle.quant_reference import rows_missing_a_reference
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeRawTask
-from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import ANY_QUANT_SEED_ROLES
 
 
 logger = get_logger(__name__)
@@ -223,7 +223,7 @@ async def hold_for_missing_reference(task: AnyTypeRawTask, error: Exception, con
     caller must then keep holding rather than treat the task as an ordinary one.
     """
     seed = await seeds_sql.get_seed_task_by_task_id(task.task_id, config.psql_db)
-    if seed is None or seed.role not in ANY_BOSS_ROUND_SEED_ROLES:
+    if seed is None or seed.role not in ANY_QUANT_SEED_ROLES:
         return False
     task_id = str(task.task_id)
     logger.error(f"Boss-round task {task_id} has no usable quant reference; held, not failed: {error}")
@@ -264,7 +264,7 @@ async def alert_on_eval_set_mismatch(task: AnyTypeRawTask, hotkeys: list[str], c
     """
     try:
         seed = await seeds_sql.get_seed_task_by_task_id(task.task_id, config.psql_db)
-        if seed is None or seed.role not in ANY_BOSS_ROUND_SEED_ROLES:
+        if seed is None or seed.role not in ANY_QUANT_SEED_ROLES:
             return False
         return await _alert_on_eval_set_mismatch(task, hotkeys, config)
     except Exception as e:

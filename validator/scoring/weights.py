@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from validator.db.sql.auditing import store_latest_scores_url
 from validator.db.sql.tournaments import get_active_tournament_participants
+from validator.db.sql.tournaments import get_boss_rank_comparisons
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_full_results
 from validator.db.sql.tournaments import get_tournament_participants
@@ -14,6 +15,7 @@ from validator.db.sql.tournaments import get_tournament_where_champion_first_won
 from validator.db.sql.tournaments import get_weekly_task_participation_data
 from validator.scoring.tournaments import get_quant_tournament_weights_from_data
 from validator.scoring.tournaments import get_tournament_weights_from_data
+from validator.tournament.models import BossRankComparison
 from validator.tournament.models import NodeWeightsResult
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentBurnData
@@ -318,6 +320,15 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
     )
 
 
+def _paid_node_id(hotkey: str, hotkey_to_node_id: dict[str, int]) -> int | None:
+    """The node a tournament share is added to; None leaves the share undistributed. The burn hotkey's share (a kept boss with
+    no known defending champion, and any contender share paid like it) is left undistributed so it reaches the burn node with
+    the rest of the undistributed weight: the burn node's weight is set, not added to, after the tournament shares."""
+    if hotkey == cts.EMISSION_BURN_HOTKEY:
+        return None
+    return hotkey_to_node_id.get(hotkey)
+
+
 def apply_tournament_weights(
     text_tournament_weights: dict[str, float],
     image_tournament_weights: dict[str, float],
@@ -336,7 +347,7 @@ def apply_tournament_weights(
     text_distributed = 0.0
     logger.info(f"Processing {len(text_tournament_weights)} text tournament winners")
     for hotkey, weight in text_tournament_weights.items():
-        node_id = hotkey_to_node_id.get(hotkey)
+        node_id = _paid_node_id(hotkey, hotkey_to_node_id)
         if node_id is not None:
             if hotkey == text_winner_hotkey:
                 text_contribution = weight * scaled_text_tournament_weight
@@ -363,7 +374,7 @@ def apply_tournament_weights(
     image_distributed = 0.0
     logger.info(f"Processing {len(image_tournament_weights)} image tournament winners")
     for hotkey, weight in image_tournament_weights.items():
-        node_id = hotkey_to_node_id.get(hotkey)
+        node_id = _paid_node_id(hotkey, hotkey_to_node_id)
         if node_id is not None:
             if hotkey == image_winner_hotkey:
                 image_contribution = weight * scaled_image_tournament_weight
@@ -405,7 +416,7 @@ def apply_quant_tournament_weights(
     quant_distributed = 0.0
     logger.info(f"Processing {len(quant_tournament_weights)} quant tournament winners")
     for hotkey, weight in quant_tournament_weights.items():
-        node_id = hotkey_to_node_id.get(hotkey)
+        node_id = _paid_node_id(hotkey, hotkey_to_node_id)
         if node_id is not None:
             if hotkey == quant_winner_hotkey:
                 quant_contribution = weight * scaled_quant_tournament_weight
@@ -564,6 +575,18 @@ async def get_node_weights_from_tournament_audit_data(
     return NodeWeightsResult(node_ids=all_node_ids, node_weights=all_node_weights)
 
 
+async def stored_boss_rank_comparisons(tournament_id: str, psql_db) -> list[BossRankComparison]:
+    """The tournament's stored boss rank comparisons; none (every contender paid) when they cannot be read."""
+    try:
+        return await get_boss_rank_comparisons(tournament_id, psql_db)
+    except Exception as e:
+        logger.warning(
+            f"Boss rank comparisons of tournament {tournament_id} could not be read ({type(e).__name__}: {e}); "
+            f"every contender is paid"
+        )
+        return []
+
+
 async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
     """
     Build TournamentAuditData with all necessary tournament information.
@@ -590,6 +613,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
             base_winner_hotkey=text_tournament.base_winner_hotkey,
             winner_hotkey=text_tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
+            boss_rank_comparisons=await stored_boss_rank_comparisons(text_tournament.tournament_id, psql_db),
         )
 
     # Fetch quant tournament data
@@ -603,6 +627,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
             base_winner_hotkey=quant_tournament.base_winner_hotkey,
             winner_hotkey=quant_tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
+            boss_rank_comparisons=await stored_boss_rank_comparisons(quant_tournament.tournament_id, psql_db),
         )
 
     # Fetch image tournament data

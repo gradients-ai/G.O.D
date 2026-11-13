@@ -118,6 +118,7 @@ class World:
             ),
         )
         mp.setattr(seed_tasks, "_retry_missing_boss_round_seeds", AsyncMock())
+        mp.setattr(seed_tasks.seeds_sql, "tournament_is_decided", AsyncMock(return_value=False))
         mp.setattr(seed_tasks, "replace_seed", self.replace)
         mp.setattr(seed_tasks, "send_to_discord", self.discord)
         mp.setattr(seed_tasks, "_SEED_ISSUE_ALERTED", set())

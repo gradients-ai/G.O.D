@@ -60,8 +60,10 @@ from validator.tournament import seed_tasks
 from validator.tournament import task_creator
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import QUANT_BOSS_SLOT_BY_ROLE
+from validator.tournament.models import QUANT_ROUND_SEED_ROLES
+from validator.tournament.models import QUANT_SLOT_BY_SEED_ROLE
 from validator.tournament.models import QUANT_SLOT_SPECS
+from validator.tournament.models import RETIRED_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import ChunkScheme
 from validator.tournament.models import ContinuousSftTaskChunk
@@ -87,6 +89,16 @@ REAL_REPOINT = seed_tasks.repoint_chained_quant_task
 MIGRATION = Path(__file__).parents[3] / "validator" / "db" / "migrations" / "20261113140000_quant_task_sources.sql"
 ROUND_SLOTS = (QuantSourceSlot.R1, QuantSourceSlot.R2, QuantSourceSlot.R3)
 BOSS_SLOTS = tuple(slot for slot in QuantSourceSlot if slot not in ROUND_SLOTS)
+# The slots a quant tournament creates a seed for: rounds 1-3 and the four boss-round compressions.
+CREATED_SLOTS = (
+    QuantSourceSlot.R1,
+    QuantSourceSlot.R2,
+    QuantSourceSlot.R3,
+    QuantSourceSlot.BOSS_R2_FREEFORM,
+    QuantSourceSlot.BOSS_R3_FIXED,
+    QuantSourceSlot.BOSS_CONTINUOUS_FREEFORM,
+    QuantSourceSlot.BOSS_CONTINUOUS_FIXED,
+)
 SUCCESS = TrainingStatus.SUCCESS.value
 FAILURE = TrainingStatus.FAILURE.value
 TRAINING = TrainingStatus.TRAINING.value
@@ -181,7 +193,7 @@ class QuantWorld:
             "get_continuous_sft_task_chunk",
             AsyncMock(
                 side_effect=lambda task_id, _db: ContinuousSftTaskChunk(
-                    task_id=task_id, lineage="qwen3-8b", train_index=CHUNK_INDEX, chunk_scheme=ChunkScheme.FIFTY_K
+                    task_id=task_id, lineage="qwen3-8b", train_index=CHUNK_INDEX, chunk_scheme=ChunkScheme.V2
                 )
             ),
         )
@@ -211,8 +223,14 @@ class QuantWorld:
             tournament_sql, "get_completed_tournaments_since", AsyncMock(side_effect=lambda _type, _since, _db: self.completed)
         )
 
+        # The quant tournament itself is running (no winner), so its boss-round seeds are still replaced.
+        running_quant = TournamentData(
+            tournament_id=QUANT_TID, tournament_type=TournamentType.QUANT, status=TournamentStatus.ACTIVE
+        )
+
         async def get_tournament(tournament_id, _db):
-            return next((t for t in [*self.tournaments, *self.completed] if t.tournament_id == tournament_id), None)
+            known = [*self.tournaments, *self.completed, running_quant]
+            return next((t for t in known if t.tournament_id == tournament_id), None)
 
         monkeypatch.setattr(tournament_sql, "get_tournament", get_tournament)
         monkeypatch.setattr(quant_sources, "_WAITING_SINCE", {})
@@ -358,6 +376,8 @@ class QuantWorld:
         round_data = GroupRound(
             round_id=f"{QUANT_TID}_round_{round_number:03d}", round_number=round_number, groups=[Group(member_ids=["a", "b"])]
         )
+        # The round attaches the round seed the boss trains: the seed is created first, as the first round's creation does.
+        await self.create_seeds()
         (task,) = await task_creator._create_seed_input_round_task(round_data, QUANT_TID, self.config)
         self.env.assigned.setdefault(str(task.task_id), [CHALLENGER])
         return task
@@ -413,13 +433,24 @@ class TestSlotTable:
         for spec in t_cst.QUANT_ROUND_PLAN:
             slot_spec = QUANT_SLOT_SPECS[spec.slot]
             assert (spec.task_type, spec.input_role) == (slot_spec.task_type, slot_spec.text_role)
-            assert slot_spec.quant_seed_role is None and spec.input_role in TEXT_SEED_ROLES
+            assert slot_spec.quant_seed_role in QUANT_ROUND_SEED_ROLES and spec.input_role in TEXT_SEED_ROLES
         assert [spec.slot for spec in t_cst.QUANT_ROUND_PLAN] == list(ROUND_SLOTS)
 
-    def test_the_boss_slots_follow_the_six_roles(self):
-        assert set(QUANT_BOSS_SLOT_BY_ROLE) == BOSS_ROUND_SEED_ROLES == set(seed_tasks.SEED_CREATION_ORDER)
-        for role, slot in QUANT_BOSS_SLOT_BY_ROLE.items():
-            assert slot.value == role.value and QUANT_SLOT_SPECS[slot].quant_seed_role == role
+    def test_every_slot_has_a_seed_role_and_seven_are_created(self):
+        assert set(QUANT_SLOT_BY_SEED_ROLE) == ANY_BOSS_ROUND_SEED_ROLES - RETIRED_BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES
+        assert set(seed_tasks.SEED_CREATION_ORDER) == BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES
+        assert [QUANT_SLOT_BY_SEED_ROLE[role] for role in seed_tasks.SEED_CREATION_ORDER] == list(CREATED_SLOTS)
+        assert BOSS_ROUND_SEED_ROLES == {
+            SeedRole.BOSS_R2_FREEFORM,
+            SeedRole.BOSS_R3_FIXED,
+            SeedRole.BOSS_CONTINUOUS_FREEFORM,
+            SeedRole.BOSS_CONTINUOUS_FIXED,
+        }
+        for role, slot in QUANT_SLOT_BY_SEED_ROLE.items():
+            assert QUANT_SLOT_SPECS[slot].quant_seed_role == role
+            if role in QUANT_ROUND_SEED_ROLES:
+                continue
+            assert slot.value == role.value
             assert QUANT_SLOT_SPECS[slot].task_type == (
                 TaskType.QUANTFREEFORMTASK if role.value.endswith("freeform") else TaskType.QUANTFIXEDTASK
             )
@@ -433,13 +464,13 @@ class TestSlotTable:
     def test_the_fixed_formats_of_the_boss_round_are_two_and_three_bit_and_drawn_per_tournament_and_role(self):
         assert set(t_cst.QUANT_BOSS_ROUND_FIXED_FORMATS) == {QuantFormat.W3A16_ASYM_G128, QuantFormat.W2A16_ASYM_G64}
         fixed_roles = [r for r in seed_tasks.SEED_CREATION_ORDER if r.value.endswith("fixed")]
-        assert len(fixed_roles) == 3
+        assert len(fixed_roles) == 2
         for role in fixed_roles:
             assert seed_tasks._boss_fixed_format("t1", role) == seed_tasks._boss_fixed_format("t1", role)
             assert seed_tasks._boss_fixed_format("t1", role) in t_cst.QUANT_BOSS_ROUND_FIXED_FORMATS
         drawn = {tuple(seed_tasks._boss_fixed_format(f"t{i}", role) for role in fixed_roles) for i in range(40)}
         assert len({fmt for combo in drawn for fmt in combo}) == 2  # both formats occur
-        assert any(len(set(combo)) == 2 for combo in drawn)  # the three tasks of one tournament can differ
+        assert any(len(set(combo)) == 2 for combo in drawn)  # the two tasks of one tournament can differ
 
 
 # ------------------------------------------------------------------------------------------------------ the SQL module
@@ -794,15 +825,15 @@ class TestBinding:
         await seed_tasks.process_tournament_seed_tasks(QUANT_TID, qw.config)  # no seed rows: left alone
         assert qw.alerts.await_count == 0
 
-    async def test_a_bound_quant_tournament_binds_first_creates_its_six_seeds_and_the_round(self, qw, first_round):
+    async def test_a_bound_quant_tournament_binds_first_creates_its_seven_seeds_and_the_round(self, qw, first_round):
         qw.sources.bindings.clear()
 
         created = await tm.create_first_round_for_active_tournament(QUANT_TID, qw.config, qw.config.psql_db)
 
         assert created is True and first_round.await_count == 1
         assert qw.sources.bindings[QUANT_TID].source_tournament_id == TEXT_TID
-        assert {r.role for r in qw.env.store.rows if r.tournament_id == QUANT_TID} == BOSS_ROUND_SEED_ROLES
-        assert {s.slot for s in qw.sources.sources} == set(BOSS_SLOTS)
+        assert {r.role for r in qw.env.store.rows if r.tournament_id == QUANT_TID} == set(seed_tasks.SEED_CREATION_ORDER)
+        assert {s.slot for s in qw.sources.sources} == set(CREATED_SLOTS)
 
     async def test_first_round_creation_twice_leaves_one_task_and_one_live_source_per_slot(self, qw, first_round):
         await tm.create_first_round_for_active_tournament(QUANT_TID, qw.config, qw.config.psql_db)
@@ -810,9 +841,9 @@ class TestBinding:
         await tm.create_first_round_for_active_tournament(QUANT_TID, qw.config, qw.config.psql_db)
 
         assert len(qw.env.tasks) == tasks_after_first
-        assert len(qw.created) + len(qw.continuous_calls) == 6
-        assert sorted(s.slot.value for s in qw.sources.sources) == sorted(slot.value for slot in BOSS_SLOTS)
-        assert len([r for r in qw.env.store.rows if r.tournament_id == QUANT_TID]) == 6
+        assert len(qw.created) + len(qw.continuous_calls) == 7
+        assert sorted(s.slot.value for s in qw.sources.sources) == sorted(slot.value for slot in CREATED_SLOTS)
+        assert len([r for r in qw.env.store.rows if r.tournament_id == QUANT_TID]) == 7
 
 
 # ------------------------------------------------------------------------------- the miner rounds on the text seeds
@@ -820,15 +851,17 @@ class TestBinding:
 
 class TestRoundTasks:
     @pytest.mark.parametrize("round_number", [1, 2, 3])
-    async def test_a_round_task_is_a_new_task_chained_on_the_text_seed_task_with_a_source_row(self, qw, round_number):
+    async def test_a_round_attaches_its_quant_seed_chained_on_the_text_seed_task(self, qw, round_number):
         slot = QuantSourceSlot(f"r{round_number}")
         text_role = QUANT_SLOT_SPECS[slot].text_role
 
         task = await qw.create_round_task(round_number)
 
+        seed = qw.quant_seed(QUANT_SLOT_SPECS[slot].quant_seed_role)
         text_task = qw.text_task(text_role)
-        assert task.task_id != text_task.task_id and task.upstream_task_id == text_task.task_id
-        assert task.status == TaskStatus.AWAITING_UPSTREAM
+        assert task.task_id == seed.task_id and seed.tournament_id == QUANT_TID
+        assert seed.attached_round_id == f"{QUANT_TID}_round_{round_number:03d}"  # its finalisation waits for the round
+        assert task.upstream_task_id == text_task.task_id and task.status == TaskStatus.AWAITING_UPSTREAM
         source = _source(qw, slot)
         assert (source.quant_task_id, source.source_tournament_id, source.source_role, source.source_task_id) == (
             task.task_id,
@@ -836,15 +869,16 @@ class TestRoundTasks:
             text_role,
             text_task.task_id,
         )
-        assert source.source_model_repo is None and not source.source_is_fallback
         assert qw.registered == [task.task_id]
+        assert qw.env.assigned[str(task.task_id)] == [EMISSION_BURN_HOTKEY]  # the boss trains it with its pinned code
         (_, _, boss) = [(t, u, b) for t, u, _, b in qw.created if t is task][0]
         assert boss is False  # the non-boss budget of a miner round
 
     async def test_the_round_resolves_the_source_from_the_bound_text_tournament_not_the_quant_one(self, qw):
         await qw.create_round_task(1)
 
-        assert {tid for tid in (r.tournament_id for r in qw.env.store.rows)} == {TEXT_TID}  # no quant seed rows exist
+        assert _source(qw, QuantSourceSlot.R1).source_tournament_id == TEXT_TID
+        assert {r.tournament_id for r in qw.env.store.rows if r.role in TEXT_SEED_ROLES} == {TEXT_TID}
 
     async def test_a_round_whose_text_role_has_no_live_seed_stays_pending(self, qw):
         for row in qw.env.store.rows:
@@ -854,7 +888,8 @@ class TestRoundTasks:
         with pytest.raises(task_creator.MissingBossRoundSeeds) as error:
             await qw.create_round_task(2)
 
-        assert error.value.roles == ["text_r2"] and qw.created == [] and qw.sources.sources == []
+        assert error.value.roles == ["quant_r2"] and qw.registered == []
+        assert QuantSourceSlot.R2 not in {s.slot for s in qw.sources.sources}
 
     async def test_a_round_never_creates_a_task_while_unbound(self, qw):
         qw.sources.bindings.clear()
@@ -867,29 +902,76 @@ class TestRoundTasks:
 
     async def test_a_restart_with_the_round_task_registered_creates_nothing(self, qw):
         first = await qw.create_round_task(1)
+        made = len(qw.created)
         again = await qw.create_round_task(1)
 
-        assert again.task_id == first.task_id and len(qw.created) == 1 and qw.registered == [first.task_id]
+        assert again.task_id == first.task_id and len(qw.created) == made and qw.registered == [first.task_id]
+
+
+def _fail_quant_role(qw: QuantWorld, role: SeedRole) -> None:
+    """The role is out of replacements: its latest row is `failed` and no seed of it is live."""
+    qw.env.store.rows.append(
+        TournamentSeedTask(tournament_id=QUANT_TID, role=role, attempt=3, task_id=uuid4(), status=SeedStatus.FAILED)
+    )
+
+
+async def _round_task_without_seed(qw: QuantWorld, round_number: int):
+    round_data = GroupRound(
+        round_id=f"{QUANT_TID}_round_{round_number:03d}", round_number=round_number, groups=[Group(member_ids=["a", "b"])]
+    )
+    (task,) = await task_creator._create_seed_input_round_task(round_data, QUANT_TID, qw.config)
+    return task
+
+
+class TestRoundTasksOfAFailedRole:
+    """A round whose quant seed role is `failed` plays a task of its own, which the boss has no entry on."""
+
+    @pytest.mark.parametrize("round_number", [1, 2, 3])
+    async def test_the_round_creates_its_own_task_with_no_boss(self, qw, round_number):
+        slot = QuantSourceSlot(f"r{round_number}")
+        _fail_quant_role(qw, QUANT_SLOT_SPECS[slot].quant_seed_role)
+
+        task = await _round_task_without_seed(qw, round_number)
+
+        text_task = qw.text_task(QUANT_SLOT_SPECS[slot].text_role)
+        assert task.upstream_task_id == text_task.task_id and task.status == TaskStatus.AWAITING_UPSTREAM
+        assert _source(qw, slot).quant_task_id == task.task_id and qw.registered == [task.task_id]
+        assert str(task.task_id) not in qw.env.assigned  # no boss assignment
+        assert await seeds_sql.get_seed_task_by_task_id(task.task_id, qw.config.psql_db) is None
+        (_, _, boss) = [(t, u, b) for t, u, _, b in qw.created if t is task][0]
+        assert boss is False
+
+    async def test_a_live_source_row_of_the_failed_seed_is_superseded(self, qw):
+        await qw.create_seeds()
+        failed = qw.quant_seed(SeedRole.QUANT_R1)
+        failed.status = SeedStatus.FAILED
+
+        task = await _round_task_without_seed(qw, 1)
+
+        assert task.task_id != failed.task_id and _source(qw, QuantSourceSlot.R1).quant_task_id == task.task_id
+        assert next(s for s in qw.sources.sources if s.quant_task_id == failed.task_id).superseded
 
     async def test_a_crash_between_creation_and_registration_registers_the_existing_task_and_creates_no_other(
         self, qw, monkeypatch
     ):
+        _fail_quant_role(qw, SeedRole.QUANT_R2)
         real_register = qw._register
         crash = AsyncMock(side_effect=_Cancelled)
         monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", crash)
         with pytest.raises(_Cancelled):
-            await qw.create_round_task(2)
+            await _round_task_without_seed(qw, 2)
         assert len(qw.created) == 1 and qw.registered == []
         orphan = _source(qw, QuantSourceSlot.R2).quant_task_id
 
         monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", real_register)
-        task = await qw.create_round_task(2)
+        task = await _round_task_without_seed(qw, 2)
 
         assert task.task_id == orphan and len(qw.created) == 1  # no second task
         assert qw.registered == [orphan]
         assert [s.slot for s in qw.sources.sources] == [QuantSourceSlot.R2] and not qw.sources.deleted
 
     async def test_a_concurrent_pass_that_took_the_slot_first_leaves_its_task_and_the_duplicate_is_deleted(self, qw, monkeypatch):
+        _fail_quant_role(qw, SeedRole.QUANT_R1)
         text_task = qw.text_task(SeedRole.TEXT_R1)
         winner = _held_quant(TaskType.QUANTFREEFORMTASK, text_task)
         qw.env.tasks[winner.task_id] = winner
@@ -911,7 +993,7 @@ class TestRoundTasks:
 
         monkeypatch.setattr(sources_sql, "insert_quant_task_source", racing_insert)
 
-        task = await qw.create_round_task(1)
+        task = await _round_task_without_seed(qw, 1)
 
         loser = qw.created[0][0]
         assert task.task_id == winner.task_id and loser.task_id != winner.task_id
@@ -919,14 +1001,17 @@ class TestRoundTasks:
         assert [s.quant_task_id for s in qw.sources.sources] == [winner.task_id]
 
     async def test_a_source_row_that_cannot_be_recorded_deletes_the_task_and_raises(self, qw, monkeypatch):
+        _fail_quant_role(qw, SeedRole.QUANT_R3)
         monkeypatch.setattr(sources_sql, "insert_quant_task_source", AsyncMock(side_effect=ConnectionError("db down")))
 
         with pytest.raises(ConnectionError):
-            await qw.create_round_task(3)
+            await _round_task_without_seed(qw, 3)
 
         created = qw.created[0][0]
         assert qw.sources.deleted == [created.task_id] and created.task_id not in qw.env.tasks and qw.registered == []
 
+
+class TestReplacingARoundTask:
     async def test_replacing_a_round_task_moves_the_slot_to_the_new_task(self, qw, monkeypatch):
         original = await qw.create_round_task(2)
         new_task = _held_quant(original.task_type, qw.text_task(SeedRole.TEXT_R2))
@@ -1013,7 +1098,9 @@ class _ReplaceHarness:
         (task,) = self.created
         live = _source(self.qw, QuantSourceSlot.R2)
         assert live.quant_task_id == task.task_id
-        assert [s.quant_task_id for s in self.qw.sources.sources if not s.superseded] == [task.task_id]
+        assert [
+            s.quant_task_id for s in self.qw.sources.sources if not s.superseded and s.slot == QuantSourceSlot.R2
+        ] == [task.task_id]
         assert self.qw.registered == [task.task_id]
         assert {n.hotkey for n in self.nodes[str(task.task_id)]} == {"hk1", "hk2"}
         assert len(self.nodes[str(task.task_id)]) == 2
@@ -1114,16 +1201,16 @@ class TestResumingATaskReplacement:
         assert harness.detached == [str(harness.original.task_id)]
 
 
-# ------------------------------------------------------------------------ the quant boss round's six compressions
+# ------------------------------------------------------------------------ the quant seeds: rounds 1-3 and the boss round
 
 
 class TestCompressionSeeds:
-    async def test_the_six_seeds_are_new_held_chained_tasks_on_the_text_seed_task_of_their_source_role(self, qw):
+    async def test_the_seven_seeds_are_new_held_chained_tasks_on_the_text_seed_task_of_their_source_role(self, qw):
         seeds = await qw.create_seeds()
 
-        assert list(seeds) == list(seed_tasks.SEED_CREATION_ORDER) and len(qw.sources.sources) == 6
+        assert list(seeds) == list(seed_tasks.SEED_CREATION_ORDER) and len(qw.sources.sources) == 7
         for role, seed in seeds.items():
-            slot = QUANT_BOSS_SLOT_BY_ROLE[role]
+            slot = QUANT_SLOT_BY_SEED_ROLE[role]
             text_task = qw.text_task(QUANT_SLOT_SPECS[slot].text_role)
             task = qw.env.tasks[seed.task_id]
             assert task.task_id != text_task.task_id and task.upstream_task_id == text_task.task_id
@@ -1143,19 +1230,27 @@ class TestCompressionSeeds:
 
         assert qw.text_snapshot() == before
         quant_rows = [r for r in qw.env.store.rows if r.tournament_id == QUANT_TID]
-        assert len(quant_rows) == 6 and all(
+        assert len(quant_rows) == 7 and all(
             (r.boss_repo, r.boss_commit) == (PINNED.training_repo, PINNED.training_commit_hash) for r in quant_rows
         )
 
-    async def test_round_two_and_three_compress_through_the_ordinary_chained_path_with_boss_hours(self, qw):
-        await qw.create_seeds()
+    async def test_the_round_one_to_three_models_compress_through_the_ordinary_chained_path(self, qw):
+        seeds = await qw.create_seeds()
 
-        assert len(qw.created) == 4 and all(boss is True for *_, boss in qw.created)
-        upstreams = {upstream.task_id for _, upstream, _, _ in qw.created}
-        assert upstreams == {qw.text_task(SeedRole.TEXT_R2).task_id, qw.text_task(SeedRole.TEXT_R3).task_id}
-        for task, _, fmt, _ in qw.created:
-            assert (fmt is not None) == (task.task_type == TaskType.QUANTFIXEDTASK)
+        assert len(qw.created) == 5
+        by_task = {task.task_id: (upstream, fmt, boss) for task, upstream, fmt, boss in qw.created}
+        for role in (SeedRole.QUANT_R1, SeedRole.QUANT_R2, SeedRole.QUANT_R3):
+            upstream, fmt, boss = by_task[seeds[role].task_id]
+            spec = next(plan for plan in t_cst.QUANT_ROUND_PLAN if plan.slot == QUANT_SLOT_BY_SEED_ROLE[role])
+            assert boss is False and upstream.task_id == qw.text_task(spec.input_role).task_id  # the miner-round budget
+            assert fmt == spec.quant_format  # R2 is the pinned W2A16-asym-g64, R1 and R3 are freeform
+        for role in (SeedRole.BOSS_R2_FREEFORM, SeedRole.BOSS_R3_FIXED):
+            upstream, fmt, boss = by_task[seeds[role].task_id]
+            assert boss is True
+            assert (fmt is not None) == (role == SeedRole.BOSS_R3_FIXED)
             assert fmt is None or fmt in t_cst.QUANT_BOSS_ROUND_FIXED_FORMATS
+        assert by_task[seeds[SeedRole.BOSS_R2_FREEFORM].task_id][0].task_id == qw.text_task(SeedRole.TEXT_R2).task_id
+        assert by_task[seeds[SeedRole.BOSS_R3_FIXED].task_id][0].task_id == qw.text_task(SeedRole.TEXT_R3).task_id
 
     async def test_the_continuous_seeds_take_the_chunk_index_from_the_text_tasks_chunk_record(self, qw):
         await qw.create_seeds()
@@ -1166,7 +1261,7 @@ class TestCompressionSeeds:
             assert upstream is text_task and train_index == CHUNK_INDEX and tournament_id == QUANT_TID
             assert task.upstream_task_id == text_task.task_id
         assert "3" in text_task.ds and str(CHUNK_INDEX) not in text_task.ds  # the name could not have given the index
-        source = inspect.getsource(seed_tasks._draw_compression_task)
+        source = inspect.getsource(seed_tasks.draw_compression_task)
         assert "get_continuous_sft_task_chunk" in source and "continuous_quant_train_index" not in source
 
     async def test_a_boss_seed_waits_for_a_text_role_with_no_live_seed_and_the_others_are_created(self, qw):
@@ -1176,11 +1271,8 @@ class TestCompressionSeeds:
 
         seeds = await qw.create_seeds()
 
-        assert set(seeds) == BOSS_ROUND_SEED_ROLES - {SeedRole.BOSS_R3_FREEFORM, SeedRole.BOSS_R3_FIXED}
-        assert {s.slot for s in qw.sources.sources} == set(BOSS_SLOTS) - {
-            QuantSourceSlot.BOSS_R3_FREEFORM,
-            QuantSourceSlot.BOSS_R3_FIXED,
-        }
+        assert set(seeds) == set(seed_tasks.SEED_CREATION_ORDER) - {SeedRole.QUANT_R3, SeedRole.BOSS_R3_FIXED}
+        assert {s.slot for s in qw.sources.sources} == set(CREATED_SLOTS) - {QuantSourceSlot.R3, QuantSourceSlot.BOSS_R3_FIXED}
 
     async def test_the_seeds_are_assigned_to_the_boss_and_the_quant_tournaments_code_pins_them(self, qw):
         for seed in (await qw.create_seeds()).values():
@@ -1193,8 +1285,9 @@ class TestCompressionSeeds:
         second = await qw.create_seeds()
 
         assert {r: s.task_id for r, s in first.items()} == {r: s.task_id for r, s in second.items()}
-        assert len(qw.created) + len(qw.continuous_calls) == 6
-        assert sorted(s.slot.value for s in qw.sources.sources if not s.superseded) == sorted(slot.value for slot in BOSS_SLOTS)
+        assert len(qw.created) + len(qw.continuous_calls) == 7
+        live = sorted(s.slot.value for s in qw.sources.sources if not s.superseded)
+        assert live == sorted(slot.value for slot in CREATED_SLOTS)
 
     async def test_a_crash_after_the_task_and_source_but_before_the_seed_row_adopts_the_task(self, qw, monkeypatch):
         real_insert = seeds_sql.insert_seed_task
@@ -1209,15 +1302,15 @@ class TestCompressionSeeds:
         monkeypatch.setattr(seeds_sql, "insert_seed_task", crashing_insert)
         with pytest.raises(_Cancelled):
             await qw.create_seeds()
-        orphan = _source(qw, QuantSourceSlot.BOSS_R2_FREEFORM).quant_task_id
+        orphan = _source(qw, QuantSourceSlot.R1).quant_task_id
         made_before = len(qw.created) + len(qw.continuous_calls)
         assert made_before == 1 and not [r for r in qw.env.store.rows if r.tournament_id == QUANT_TID]
 
         seeds = await qw.create_seeds()
 
-        assert seeds[SeedRole.BOSS_R2_FREEFORM].task_id == orphan
-        assert len(qw.created) + len(qw.continuous_calls) == 6  # the orphan plus five new, not seven
-        assert sorted(s.slot.value for s in qw.sources.sources) == sorted(slot.value for slot in BOSS_SLOTS)
+        assert seeds[SeedRole.QUANT_R1].task_id == orphan
+        assert len(qw.created) + len(qw.continuous_calls) == 7  # the orphan plus six new, not eight
+        assert sorted(s.slot.value for s in qw.sources.sources) == sorted(slot.value for slot in CREATED_SLOTS)
         assert not qw.sources.deleted
 
     async def test_a_failing_seed_row_insert_deletes_the_task_and_its_source(self, qw, monkeypatch):
@@ -1226,7 +1319,7 @@ class TestCompressionSeeds:
         assert await qw.create_seeds() == {}
 
         made = [t for t, *_ in qw.created] + [c[0] for c in qw.continuous_calls]
-        assert len(made) == 6 and sorted(qw.sources.deleted) == sorted(t.task_id for t in made)
+        assert len(made) == 7 and sorted(qw.sources.deleted) == sorted(t.task_id for t in made)
         assert qw.sources.sources == [] and not any(t.task_id in qw.env.tasks for t in made)
 
     async def test_a_slot_taken_by_a_concurrent_pass_deletes_the_duplicate_and_creates_no_seed(self, qw, monkeypatch):
@@ -1268,8 +1361,8 @@ class TestCompressionSeedLifecycle:
 
     async def test_a_boss_failure_is_the_bosss_failed_entry_not_a_redraw_and_nothing_halts(self, qw, monkeypatch):
         await qw.create_seeds()
-        seed = qw.quant_seed(SeedRole.BOSS_R2_FIXED)
-        task = qw.quant_task(SeedRole.BOSS_R2_FIXED)
+        seed = qw.quant_seed(SeedRole.BOSS_R3_FIXED)
+        task = qw.quant_task(SeedRole.BOSS_R3_FIXED)
         task.status = TaskStatus.TRAINING
         monkeypatch.setattr(
             tournament_sql,
@@ -1280,23 +1373,23 @@ class TestCompressionSeedLifecycle:
 
         await seed_tasks.process_tournament_seed_tasks(QUANT_TID, qw.config)
 
-        assert qw.quant_seed(SeedRole.BOSS_R2_FIXED).status == SeedStatus.TRAINED and seed.attempt == 1
+        assert qw.quant_seed(SeedRole.BOSS_R3_FIXED).status == SeedStatus.TRAINED and seed.attempt == 1
         assert len(qw.env.tasks) == before and await seed_tasks.seed_halt_reason(QUANT_TID, qw.config.psql_db) is None
 
     async def test_a_prep_failure_is_a_charged_replacement_that_moves_the_slot_to_a_new_task_on_the_same_text_seed(self, qw):
         await qw.create_seeds()
-        old = qw.quant_seed(SeedRole.BOSS_R3_FREEFORM)
+        old = qw.quant_seed(SeedRole.BOSS_R2_FREEFORM)
         old_task = qw.env.tasks[old.task_id]
         old_task.status = TaskStatus.PREP_TASK_FAILURE
 
         new = await seed_tasks.replace_seed(old, "prep failed", qw.config)
 
         assert new.attempt == 2 and new.task_id != old.task_id
-        live = _source(qw, QuantSourceSlot.BOSS_R3_FREEFORM)
+        live = _source(qw, QuantSourceSlot.BOSS_R2_FREEFORM)
         superseded = next(s for s in qw.sources.sources if s.quant_task_id == old.task_id)
         assert live.quant_task_id == new.task_id and superseded.superseded
-        assert live.source_task_id == superseded.source_task_id == qw.text_task(SeedRole.TEXT_R3).task_id
-        assert [r.status for r in qw.env.store.rows if r.role == SeedRole.BOSS_R3_FREEFORM] == [
+        assert live.source_task_id == superseded.source_task_id == qw.text_task(SeedRole.TEXT_R2).task_id
+        assert [r.status for r in qw.env.store.rows if r.role == SeedRole.BOSS_R2_FREEFORM] == [
             SeedStatus.REPLACED,
             SeedStatus.TRAINING,
         ]
@@ -1440,7 +1533,7 @@ class TestRelease:
     @pytest.mark.parametrize("role", sorted(BOSS_ROUND_SEED_ROLES, key=lambda r: r.value))
     async def test_every_boss_slot_is_released_on_the_exact_repo_and_the_source_row_names_it(self, qw, role):
         await qw.create_seeds()
-        slot = QUANT_BOSS_SLOT_BY_ROLE[role]
+        slot = QUANT_SLOT_BY_SEED_ROLE[role]
         text_role = QUANT_SLOT_SPECS[slot].text_role
         task = qw.quant_task(role)
         raw = qw.land(text_role)
@@ -1819,7 +1912,7 @@ class TestFailedOrMissingSource:
             "get_continuous_sft_task_chunk",
             AsyncMock(
                 return_value=ContinuousSftTaskChunk(
-                    task_id=other.task_id, lineage="qwen3-8b", train_index=CHUNK_INDEX + 1, chunk_scheme=ChunkScheme.FIFTY_K
+                    task_id=other.task_id, lineage="qwen3-8b", train_index=CHUNK_INDEX + 1, chunk_scheme=ChunkScheme.V2
                 )
             ),
         )
@@ -2036,8 +2129,13 @@ class TestIndependence:
         await qw.create_round_task(1)
         before = qw.text_snapshot()
 
+        text_task_ids = {str(t.task_id) for t in qw.text_tasks.values()}
+
         def forbidden(name):
             async def refuse(*args, **kwargs):
+                # A round marks its own quant seed attached: that is a quant row. No text seed row may be written.
+                if name == "mark_seed_attached" and str(args[0]) not in text_task_ids:
+                    return None
                 raise AssertionError(f"{name} must not be called by a quant task's creation or release")
 
             return refuse
@@ -2096,13 +2194,16 @@ class TestIndependence:
         for function in (
             task_creator._create_seed_input_round_task,
             seed_tasks._acquire_compression_task,
-            seed_tasks._draw_compression_task,
+            seed_tasks.draw_compression_task,
             orchestrator._release_on_text_boss_model,
             orchestrator._text_boss_model,
             quant_sources.record_new_quant_task,
         ):
             source = inspect.getsource(function)
-            for write in ("update_seed_status", "mark_seed_replaced", "set_seed_merged_output_repo", "mark_seed_attached"):
+            writes = ["update_seed_status", "mark_seed_replaced", "set_seed_merged_output_repo"]
+            if function is not task_creator._create_seed_input_round_task:  # it marks its own quant round seed attached
+                writes.append("mark_seed_attached")
+            for write in writes:
                 assert write not in source, f"{function.__name__} calls {write}"
 
     def test_the_link_is_never_derived_from_a_repo_or_ds_name(self):

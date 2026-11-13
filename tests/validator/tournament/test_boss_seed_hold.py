@@ -66,6 +66,7 @@ class Pipeline(World):
         monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", self._register)
         monkeypatch.setattr(task_creator, "_get_existing_tasks_by_identifier", self._existing)
         monkeypatch.setattr(task_creator.seeds_sql, "mark_seed_attached", AsyncMock())
+        monkeypatch.setattr(task_creator.seeds_sql, "tournament_is_decided", AsyncMock(return_value=False))
         monkeypatch.setattr(
             task_creator.seeds_sql, "get_latest_seed_tasks", AsyncMock(side_effect=lambda tid, db: list(self.seeds.values()))
         )

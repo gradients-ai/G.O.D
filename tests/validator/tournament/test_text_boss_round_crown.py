@@ -23,7 +23,11 @@ from validator.db.sql import tournament_seeds as seeds_sql
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
+from validator.tournament import crown
 from validator.tournament import task_creator
+from validator.tournament.crown import HeadToHead
+from validator.tournament.crown import HeadToHeadOutcome
+from validator.tournament.crown import crown_verdict
 from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import PairedLossComparison
@@ -39,9 +43,6 @@ from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingStatus
-from validator.tournament.text_crown import TextHeadToHead
-from validator.tournament.text_crown import text_crown_verdict
-from validator.tournament.text_crown import text_head_to_head
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import quant_challenger_takes_fixed_boss_task
 
@@ -66,9 +67,27 @@ BEHIND_025 = 1002.5
 BEHIND_026 = 1002.6
 
 
+def _paired(challenger_won: bool = True, is_draw: bool = False) -> PairedLossComparison:
+    return PairedLossComparison(
+        n_examples=100, n_decided=0 if is_draw else 100, challenger_example_wins=90 if challenger_won else 10,
+        boss_example_wins=10 if challenger_won else 90, win_rate=0.9 if challenger_won else 0.1,
+        win_rate_lower_bound=0.8 if challenger_won else 0.05, mean_gap_nats=0.1 if challenger_won else -0.1,
+        mean_gap_lower_bound=0.05 if challenger_won else -0.2, challenger_won=challenger_won, is_draw=is_draw,
+        reason="won" if challenger_won else "lost", required_win_rate=0.6, required_mean_gap_nats=0.01,
+    )  # fmt: skip
+
+
+PAIRED_WIN = _paired()
+
+
+def text_head_to_head(task_id, label, task_type, boss, challenger, paired=PAIRED_WIN):
+    """The scalar rule under test: the paired test, where the type has one, is passed unless the test says otherwise."""
+    return crown.text_head_to_head(task_id, label, task_type, boss, challenger, paired)
+
+
 def _verdict(challenger_scores: list[float | None], boss: float | None = BOSS_SCORE, task_type=TaskType.INSTRUCTTEXTTASK):
     results = [text_head_to_head(f"t{i}", f"task {i}", task_type, boss, score) for i, score in enumerate(challenger_scores)]
-    return text_crown_verdict(results)
+    return crown_verdict(results)
 
 
 def _crowned(challenger_scores) -> bool:
@@ -112,27 +131,27 @@ class TestExactDecimalBoundaries:
         result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, challenger)
 
         assert not result.is_win
-        assert text_crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
+        assert crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
 
     @pytest.mark.parametrize("boss, challenger", [(0.4, 0.401), (1.15, 1.152875)])
     def test_a_deficit_just_above_a_quarter_percent_is_still_refused(self, boss, challenger):
         over = boss + (challenger - boss) * (1 + 1e-6)
         result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, over)
 
-        assert not text_crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
+        assert not crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
 
     def test_the_second_non_win_limit_of_a_tenth_percent_is_inclusive(self):
         quarter = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.4, 0.401)
         tenth = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7007)
         over = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7 * (1 + 0.001 * (1 + 1e-6)))
 
-        assert text_crown_verdict([WIN_RESULT] * 5 + [tenth, quarter]).crowned_if_complete
-        assert not text_crown_verdict([WIN_RESULT] * 5 + [over, quarter]).crowned_if_complete
+        assert crown_verdict([WIN_RESULT] * 5 + [tenth, quarter]).crowned_if_complete
+        assert not crown_verdict([WIN_RESULT] * 5 + [over, quarter]).crowned_if_complete
 
     def test_an_infinite_deficit_stays_refused(self):
         unbounded = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.0, 0.001)
 
-        assert not text_crown_verdict([WIN_RESULT] * 6 + [unbounded]).crowned_if_complete
+        assert not crown_verdict([WIN_RESULT] * 6 + [unbounded]).crowned_if_complete
 
     @staticmethod
     def _win_paired() -> PairedLossComparison:
@@ -259,7 +278,7 @@ class TestTheCrownRule:
         assert verdict.complete is False and verdict.crowned is False
 
     def test_seven_tasks_are_complete(self):
-        verdict = _verdict([WIN] * t_cst.TEXT_CROWN_TASKS)
+        verdict = _verdict([WIN] * t_cst.CROWN_TASKS)
 
         assert verdict.complete and verdict.crowned and verdict.non_wins == 0 and verdict.decided == 7
 
@@ -300,16 +319,16 @@ class TestTheCrownRule:
 
     def test_the_reason_says_what_failed(self):
         assert "3 non-wins" in _verdict([BOSS_SCORE] * 3 + [WIN] * 4).reason
-        assert "0.260%" in _verdict([WIN] * 6 + [BEHIND_026]).reason
-        assert "neither deficit" in _verdict([WIN] * 5 + [BEHIND_011, BEHIND_025]).reason
-        assert "unbounded" in _verdict([WIN] * 6 + [None]).reason
+        assert "task 6 beyond the looser allowance" in _verdict([WIN] * 6 + [BEHIND_026]).reason
+        assert "neither within the tight allowance" in _verdict([WIN] * 5 + [BEHIND_011, BEHIND_025]).reason
+        assert "task 6 beyond" in _verdict([WIN] * 6 + [None]).reason
 
     def test_the_constants(self):
-        assert (t_cst.TEXT_CROWN_TASKS, t_cst.TEXT_CROWN_WIN_MARGIN) == (7, 0.01)
-        assert (t_cst.TEXT_CROWN_MAX_NON_WINS, t_cst.TEXT_CROWN_MAX_DEFICIT) == (2, 0.0025)
-        assert t_cst.TEXT_CROWN_SECOND_NON_WIN_MAX_DEFICIT == 0.001
+        assert (t_cst.CROWN_TASKS, t_cst.TEXT_CROWN_WIN_MARGIN) == (7, 0.01)
+        assert (t_cst.CROWN_MAX_NON_WINS, t_cst.TEXT_CROWN_LOOSER_ALLOWANCE) == (2, 0.0025)
+        assert t_cst.TEXT_CROWN_TIGHT_ALLOWANCE == 0.001
         assert t_cst.TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES == (TaskType.GRPOTASK, TaskType.DPOTASK)
-        # The legacy text boss round keeps its own mix and its own expected size.
+        # The unseeded text boss round keeps its own mix and its own expected size.
         assert t_cst.expected_boss_round_task_count(TournamentType.TEXT) == t_cst.FINAL_ROUND_TEXT_TASKS
         assert t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION == {
             TaskType.INSTRUCTTEXTTASK: 3,
@@ -319,7 +338,7 @@ class TestTheCrownRule:
 
     def test_the_head_to_head_model_is_strict(self):
         with pytest.raises(ValueError):
-            TextHeadToHead(task_id="t", label="x", task_type=TaskType.DPOTASK, is_win=True, deficit=0.0, surprise=1)
+            HeadToHead(task_id="t", label="x", task_type=TaskType.DPOTASK, outcome=HeadToHeadOutcome.WIN, surprise=1)
 
 
 class Cup:
@@ -334,6 +353,8 @@ class Cup:
         self.losses: dict[str, dict[str, float | None]] = {}
         self.training: dict[str, dict[str, TrainingStatus]] = {}
         self.unassigned: set[str] = set()
+        # (task_id, hotkey) pairs whose per-example vector is missing; every other scored entry has one (its score per row).
+        self.missing_vectors: set[tuple[str, str]] = set()
         self.registry: list[TournamentTask] = []
         self.rounds: list[TournamentRoundData] = []
         self.seed = TournamentSeedTask(
@@ -350,7 +371,7 @@ class Cup:
         self.ordering = [CHALLENGER, RUNNER_UP, OTHER]
         self.mark_attached = AsyncMock()
         self.create_next_round = AsyncMock()
-        self.third_place_legacy = AsyncMock(return_value="legacy-third")
+        self.third_place_knockout = AsyncMock(return_value="knockout-third")
         self._wire()
 
     # ----- building the tournament -------------------------------------------------------------------------------------
@@ -449,6 +470,12 @@ class Cup:
         async def training_status(task_id, hotkeys, _db):
             return self.training.get(str(task_id), {})
 
+        async def per_example_losses(task_id, hotkey, _db):
+            loss = self.losses.get(str(task_id), {}).get(hotkey)
+            if loss is None or (str(task_id), hotkey) in self.missing_vectors:
+                return None, None
+            return [loss] * 50, "fingerprint"
+
         async def get_task(task_id, _db):
             return self.tasks.get(str(task_id))
 
@@ -509,6 +536,7 @@ class Cup:
         for name, fake in [
             ("get_task_results_for_ranking", results),
             ("get_training_status_for_task_and_hotkeys", training_status),
+            ("get_per_example_losses", per_example_losses),
             ("get_task", get_task),
             ("get_tournament_rounds", tournament_rounds),
             ("get_tournament_tasks", tasks_of_round),
@@ -553,7 +581,10 @@ class Cup:
         mp.setattr(tm, "_notify_discord", AsyncMock())
         mp.setattr(tm, "create_benchmark_tasks_for_tournament_winner", AsyncMock(return_value=[]))
         mp.setattr(tm, "generate_diff_report_and_notify_tournament_completed", AsyncMock())
-        mp.setattr(tm, "get_pre_boss_knockout_loser", self.third_place_legacy)
+        mp.setattr(tm, "get_pre_boss_knockout_loser", self.third_place_knockout)
+        self.compared = AsyncMock(return_value=[])
+        mp.setattr(tm, "boss_rank_comparisons", self.compared)
+        mp.setattr(tm, "store_boss_rank_comparisons", AsyncMock())
         mp.setattr(
             tm,
             "get_challenger_participant_for_retained_boss",
@@ -565,7 +596,7 @@ class Cup:
         )
         mp.setattr(
             tm,
-            "resolve_legacy_boss_code_review",
+            "resolve_stored_boss_code_review",
             AsyncMock(return_value=SimpleNamespace(halt=False, disqualified=False, replacement_hotkey=None)),
         )
 
@@ -723,6 +754,7 @@ class TestEndingAfterRoundThree:
 
         await cup.advance(completed=round_three)
 
+        cup.compared.assert_awaited_once_with(TID, CHALLENGER, RUNNER_UP, None)
         assert cup.winners_set == [BOSS]
         assert cup.placements == [(TID, BOSS, CHALLENGER, RUNNER_UP)]
         assert (round_three.round_id, [CHALLENGER]) in cup.eliminated
@@ -763,6 +795,15 @@ class TestEndingAfterRoundThree:
 
         cup.create_next_round.assert_awaited_once()
         assert cup.create_next_round.await_args.args[2] == [CHALLENGER]
+        assert cup.placements == [] and cup.carried == [] and cup.winners_set == []
+
+    async def test_round_two_never_stops_even_with_the_crown_out_of_reach(self, cup, after_round_three):
+        after_round_three(self.IMPOSSIBLE)
+        round_two = cup.rounds[1]
+
+        await cup.advance(completed=round_two)
+
+        cup.create_next_round.assert_awaited_once()
         assert cup.placements == [] and cup.carried == [] and cup.winners_set == []
 
     async def test_one_deficit_over_the_limit_is_enough_to_stop(self, cup, after_round_three):
@@ -860,13 +901,13 @@ class TestStageOneComplete:
         assert _types(cup.created).count(TaskType.INSTRUCTTEXTTASK) == 0
         assert cup.status_updates == []
         assert cup.placements == [(TID, BOSS, CHALLENGER, RUNNER_UP)]  # runner-up of round 3, not a pre-boss knockout loser
-        self.assert_no_legacy_third_place(cup)
+        self.assert_no_knockout_third_place(cup)
         # the lineage is carried from the attached seed, in the normal final-round way
         assert cup.carried == [(LINEAGE, "lowest/loss-repo", cup.final_round.round_id, str(cup.seed.task_id))]
 
     @staticmethod
-    def assert_no_legacy_third_place(cup) -> None:
-        cup.third_place_legacy.assert_not_awaited()
+    def assert_no_knockout_third_place(cup) -> None:
+        cup.third_place_knockout.assert_not_awaited()
 
     async def test_the_boss_round_winners_are_persisted_with_the_margin_and_never_for_the_earlier_rounds(self, at_stage_one):
         cup = at_stage_one
@@ -889,6 +930,41 @@ class TestStageOneComplete:
             assert call["compared_hotkeys"] == [BOSS, CHALLENGER]
             assert call["basis"].startswith("the text crown rule")
         assert "deficit 0.110%" in continuous["basis"] and "win, challenger +2.000%" in grpo["basis"]
+
+    @pytest.mark.parametrize("side", [BOSS, CHALLENGER])
+    async def test_a_missing_per_example_vector_leaves_the_task_with_the_boss(self, at_stage_one, side):
+        cup = at_stage_one
+        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (BOSS_SCORE, WIN))
+        dpo = cup.boss_round_task(TaskType.DPOTASK)
+        grpo = cup.boss_round_task(TaskType.GRPOTASK)
+        cup.missing_vectors.update({(str(dpo.task_id), side), (str(grpo.task_id), side)})
+        cup.persisted.clear()
+
+        outcome = await rr.get_round_winners(cup.final_round, None, cup.config)
+
+        # 2% better on DPO but no pairable vectors: a non-win with no deficit (still within reach). GRPO needs no vectors.
+        assert outcome.needs_text_big_task
+        assert cup.persisted == []
+        head_to_head = await rr.text_task_head_to_head(dpo.task_id, "dpo", TaskType.DPOTASK, CHALLENGER, None)
+        assert not head_to_head.is_win and head_to_head.deficit == 0.0
+        assert (await rr.text_task_head_to_head(grpo.task_id, "grpo", TaskType.GRPOTASK, CHALLENGER, None)).is_win
+
+    async def test_a_boss_without_a_valid_score_loses_even_without_vectors(self, at_stage_one):
+        cup = at_stage_one
+        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (None, WIN))
+
+        dpo = cup.boss_round_task(TaskType.DPOTASK)
+
+        assert (await rr.text_task_head_to_head(dpo.task_id, "dpo", TaskType.DPOTASK, CHALLENGER, None)).is_win
+
+    async def test_rounds_one_to_three_use_the_paired_test_too(self, at_stage_one):
+        cup = at_stage_one
+        round_two = cup.round_tasks(f"{TID}_round_002")[0]
+        cup.missing_vectors.add((str(round_two.task_id), BOSS))
+
+        results = await rr.seeded_text_round_head_to_heads(TID, CHALLENGER, None)
+
+        assert [result.is_win for result in results] == [True, False, True]
 
     async def test_one_line_per_head_to_head_and_a_summary(self, at_stage_one, caplog):
         cup = at_stage_one
@@ -963,7 +1039,7 @@ class TestBigTaskComplete:
 
         assert cup.placements == [(TID, CHALLENGER, BOSS, RUNNER_UP)]
         assert cup.carried == [(LINEAGE, "lowest/loss-repo", cup.final_round.round_id, str(cup.seed.task_id))]
-        cup.third_place_legacy.assert_not_awaited()
+        cup.third_place_knockout.assert_not_awaited()
         assert cup.status_updates == []
 
     async def test_a_disqualified_challenger_still_advances_the_cursor_with_the_boss_model(self, at_stage_two, monkeypatch):
@@ -971,7 +1047,7 @@ class TestBigTaskComplete:
         self._score(cup, WIN, WIN, WIN, WIN)
         monkeypatch.setattr(
             tm,
-            "resolve_legacy_boss_code_review",
+            "resolve_stored_boss_code_review",
             AsyncMock(return_value=SimpleNamespace(halt=False, disqualified=True, replacement_hotkey=RUNNER_UP)),
         )
         monkeypatch.setattr(tm, "get_tournament_participant", AsyncMock(return_value=None))
@@ -987,7 +1063,7 @@ class TestBigTaskComplete:
         self._score(cup, WIN, WIN, WIN, WIN)
         monkeypatch.setattr(
             tm,
-            "resolve_legacy_boss_code_review",
+            "resolve_stored_boss_code_review",
             AsyncMock(return_value=SimpleNamespace(halt=False, disqualified=True, replacement_hotkey=None)),
         )
 
@@ -1018,6 +1094,15 @@ class TestBigTaskComplete:
 
         assert cup.placements == [(TID, BOSS, CHALLENGER, RUNNER_UP)]
         assert len(cup.carried) == 1
+        cup.compared.assert_awaited_once_with(TID, CHALLENGER, RUNNER_UP, None)
+
+    async def test_a_crowned_challenger_stores_no_boss_rank_comparison(self, at_stage_two):
+        cup = at_stage_two
+        self._score(cup, WIN, WIN, WIN, WIN)
+
+        await cup.advance()
+
+        cup.compared.assert_not_awaited()
 
     async def test_a_task_nobody_was_assigned_to_returns_the_round_to_pending_without_adding_anything(
         self, at_stage_two, monkeypatch
@@ -1036,7 +1121,7 @@ class TestBigTaskComplete:
 
 
 class TestSeededTextNeverDraws:
-    async def test_the_seeded_boss_round_never_touches_the_paired_test_or_the_draw_tally(self, cup, monkeypatch):
+    async def test_the_seeded_boss_round_never_uses_the_unseeded_task_verdict_or_the_draw_tally(self, cup, monkeypatch):
         boom = MagicMock(side_effect=AssertionError("must not be reached for a seeded text tournament"))
         monkeypatch.setattr(rr, "_resolve_boss_round_draws", boom)
         monkeypatch.setattr(rr, "_resolve_boss_round_task_winner", boom)
@@ -1159,20 +1244,20 @@ class TestReplacingAPrepFailedBossRoundTask:
 
 
 class TestOtherTournamentsKeepTheirBossRound:
-    async def test_an_unseeded_text_tournament_creates_its_legacy_boss_round(self, cup, monkeypatch):
+    async def test_an_unseeded_text_tournament_creates_its_unseeded_boss_round(self, cup, monkeypatch):
         cup.seeded = False
-        legacy = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
+        unseeded = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
         seeded = AsyncMock()
-        monkeypatch.setattr(task_creator, "_create_new_text_boss_round_tasks", legacy)
+        monkeypatch.setattr(task_creator, "_create_new_text_boss_round_tasks", unseeded)
         monkeypatch.setattr(task_creator, "_create_seeded_text_boss_round_tasks", seeded)
         knockout = KnockoutRound(pairs=[(CHALLENGER, BOSS)], round_id=cup.final_round.round_id, round_number=4)
 
         await task_creator.create_text_tournament_tasks(knockout, TID, cup.config, is_final_round=True)
 
-        legacy.assert_awaited_once()
+        unseeded.assert_awaited_once()
         seeded.assert_not_awaited()
 
-    async def test_an_unseeded_text_boss_round_is_decided_by_the_legacy_functions(self, cup, monkeypatch):
+    async def test_an_unseeded_text_boss_round_is_decided_by_the_unseeded_functions(self, cup, monkeypatch):
         cup.seeded = False
         task = cup.add_task(TaskType.INSTRUCTTEXTTASK)
         cup.score(task, 1.0, 0.5)
@@ -1224,15 +1309,15 @@ class TestOtherTournamentsKeepTheirBossRound:
         decide.assert_called_once()
         assert outcome.winners == [CHALLENGER]
 
-    async def test_round_one_to_three_of_a_legacy_text_tournament_still_use_the_legacy_group_round(self, cup, monkeypatch):
+    async def test_round_one_to_three_of_an_unseeded_text_tournament_still_use_the_group_round(self, cup, monkeypatch):
         cup.seeded = False
-        legacy = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
-        monkeypatch.setattr(task_creator, "_create_group_text_tasks", legacy)
+        group_tasks = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
+        monkeypatch.setattr(task_creator, "_create_group_text_tasks", group_tasks)
         group_round = GroupRound(groups=[], round_id="r2", round_number=2)
 
         await task_creator.create_text_tournament_tasks(group_round, TID, cup.config)
 
-        legacy.assert_awaited_once()
+        group_tasks.assert_awaited_once()
 
 
 class TestTheBossEvaluationQuery:

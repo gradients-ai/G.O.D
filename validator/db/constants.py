@@ -333,3 +333,12 @@ QUANT_SOURCE_TASK_ID = "source_task_id"
 QUANT_SOURCE_MODEL_REPO = "source_model_repo"
 QUANT_SOURCE_IS_FALLBACK = "source_is_fallback"
 QUANT_SOURCE_SUPERSEDED = "superseded"
+
+
+# Boss rank comparisons: a paid contender of a tournament the boss kept, compared with the boss on average round rank
+# (see validator/tournament/boss_rank_shares.py)
+TOURNAMENT_BOSS_RANK_COMPARISONS_TABLE = "tournament_boss_rank_comparisons"
+CONTENDER_AVERAGE_RANK = "contender_average_rank"
+BOSS_AVERAGE_RANK = "boss_average_rank"
+COMPARED_ROUND_NUMBERS = "compared_round_numbers"
+SHARE_TO_BOSS = "share_to_boss"

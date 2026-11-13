@@ -579,7 +579,7 @@ class TestCalibrationReference:
             lambda: _task(),  # freeform without calibration_data
         ],
     )
-    async def test_no_calibration_measurement_for_a_legacy_task(self, db, make):
+    async def test_no_calibration_measurement_for_an_uncalibrated_task(self, db, make):
         task = make()
         db.put(task)
         db.references[task.task_id] = {(HOTKEY, SKU): _reference(task.task_id)}

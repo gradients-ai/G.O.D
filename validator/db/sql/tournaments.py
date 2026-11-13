@@ -20,6 +20,7 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import get_task_winners
 from validator.tasks.details import normalise_float
+from validator.tournament.models import BossRankComparison
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation
 from validator.tournament.models import PendingDecoderRelease
@@ -809,6 +810,57 @@ async def update_tournament_placements(
         f"Updated tournament {tournament_id} placements: "
         f"winner={winner_hotkey}, second={second_place_hotkey}, third={third_place_hotkey}"
     )
+
+
+async def store_boss_rank_comparisons(tournament_id: str, comparisons: list[BossRankComparison], psql_db: PSQLDB) -> None:
+    """Replace the tournament's boss rank comparisons with these (one row per contender)."""
+    async with await psql_db.connection() as connection:
+        async with connection.transaction():
+            await connection.execute(
+                f"DELETE FROM {cst.TOURNAMENT_BOSS_RANK_COMPARISONS_TABLE} WHERE {cst.TOURNAMENT_ID} = $1", tournament_id
+            )
+            for comparison in comparisons:
+                await connection.execute(
+                    f"""
+                    INSERT INTO {cst.TOURNAMENT_BOSS_RANK_COMPARISONS_TABLE}
+                        ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.FINAL_POSITION}, {cst.CONTENDER_AVERAGE_RANK},
+                         {cst.BOSS_AVERAGE_RANK}, {cst.COMPARED_ROUND_NUMBERS}, {cst.SHARE_TO_BOSS})
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """,
+                    tournament_id,
+                    comparison.hotkey,
+                    comparison.final_position,
+                    comparison.contender_average_rank,
+                    comparison.boss_average_rank,
+                    comparison.compared_round_numbers,
+                    comparison.share_to_boss,
+                )
+    logger.info(f"Stored {len(comparisons)} boss rank comparison(s) for tournament {tournament_id}")
+
+
+async def get_boss_rank_comparisons(tournament_id: str, psql_db: PSQLDB) -> list[BossRankComparison]:
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.HOTKEY}, {cst.FINAL_POSITION}, {cst.CONTENDER_AVERAGE_RANK}, {cst.BOSS_AVERAGE_RANK},
+                   {cst.COMPARED_ROUND_NUMBERS}, {cst.SHARE_TO_BOSS}
+            FROM {cst.TOURNAMENT_BOSS_RANK_COMPARISONS_TABLE}
+            WHERE {cst.TOURNAMENT_ID} = $1
+            ORDER BY {cst.FINAL_POSITION}
+            """,
+            tournament_id,
+        )
+    return [
+        BossRankComparison(
+            hotkey=row[cst.HOTKEY],
+            final_position=row[cst.FINAL_POSITION],
+            contender_average_rank=row[cst.CONTENDER_AVERAGE_RANK],
+            boss_average_rank=row[cst.BOSS_AVERAGE_RANK],
+            compared_round_numbers=list(row[cst.COMPARED_ROUND_NUMBERS] or []),
+            share_to_boss=row[cst.SHARE_TO_BOSS],
+        )
+        for row in rows
+    ]
 
 
 async def update_tournament_winner_model(

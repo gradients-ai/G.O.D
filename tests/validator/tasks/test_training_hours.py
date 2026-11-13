@@ -136,7 +136,7 @@ class TestComputeHoursFromBaselineStats:
         hours = compute_hours_from_baseline_stats(2.0, stats, TaskType.INSTRUCTTEXTTASK, model_params_count=int(8e9))
         assert hours == compute_training_hours(90_000 * 400, 8e9, TaskType.INSTRUCTTEXTTASK)
 
-    def test_legacy_stats_without_num_records_keep_current_hours(self):
+    def test_stats_without_num_records_keep_current_hours(self):
         stats = _make_stats(total_tokens=40_000, num_records=0)
         assert compute_hours_from_baseline_stats(2.5, stats, TaskType.INSTRUCTTEXTTASK, model_params_count=int(8e9)) == 2.5
 

@@ -1,4 +1,4 @@
-"""Seed tasks: creation of the five roles, the boss pin, task filters, hours routing, trainer priority, the
+"""Seed tasks: creation of the input-seed roles, the boss pin, task filters, hours routing, trainer priority, the
 boss-round hold, and the replacement ladder with its halt."""
 
 import inspect
@@ -33,10 +33,13 @@ from validator.tournament import task_creator
 from validator.tournament import tournament_manager
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
+from validator.tournament.models import QUANT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_ROUND_SEED_ROLES
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
+from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentSeedTask
+from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentTaskTraining
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingRepoInfo
@@ -44,16 +47,17 @@ from validator.tournament.models import TrainingStatus
 
 
 TID = "tourn_seed_test"
-# The five seed roles of a role-seeded quant tournament. Quant tournaments are seeded with six compressions of the text boss's
-# models instead; the fixture below creates the role-seeded kind so that its rows are still evaluated, replaced and halted.
-LEGACY_SEED_CREATION_ORDER = (
+# The input-seed roles of a quant tournament seeded on its own instruct tasks. Nothing creates them (a quant tournament's seeds
+# are compressions of the text boss's models); the fixture below creates them so that rows of them are evaluated, replaced and
+# halted as the code still reads them.
+RETIRED_SEED_CREATION_ORDER = (
     SeedRole.INPUT_SMALL,
     SeedRole.INPUT_LARGE,
     SeedRole.BOSS_INSTRUCT,
     SeedRole.BOSS_CHAINED_FREEFORM,
     SeedRole.BOSS_CHAINED_FIXED,
 )
-LEGACY_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED})
+RETIRED_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED})
 BOSS_REPO = "https://github.com/org/boss-backup"
 BOSS_COMMIT = "a" * 40
 PINNED = TrainingRepoInfo(
@@ -205,7 +209,15 @@ def env(monkeypatch):
         "role_ever_attached",
     ):
         monkeypatch.setattr(seeds_sql, name, getattr(store, name))
-    monkeypatch.setattr(seed_tasks, "SEED_CREATION_ORDER", LEGACY_SEED_CREATION_ORDER)
+    # The tournament is still running (no winner): boss-round seeds may be replaced and re-created.
+    monkeypatch.setattr(
+        tournament_sql,
+        "get_tournament",
+        AsyncMock(
+            return_value=TournamentData(tournament_id=TID, tournament_type=TournamentType.QUANT, status=TournamentStatus.ACTIVE)
+        ),
+    )
+    monkeypatch.setattr(seed_tasks, "SEED_CREATION_ORDER", RETIRED_SEED_CREATION_ORDER)
     monkeypatch.setattr(seed_tasks, "_get_text_models", text_models)
     monkeypatch.setattr(seed_tasks, "_get_instruct_text_datasets", MagicMock(return_value="datasets"))
     monkeypatch.setattr(seed_tasks, "filter_quant_compatible", lambda pool: pool)
@@ -261,7 +273,7 @@ class TestCreation:
             SeedRole.BOSS_CHAINED_FREEFORM,
             SeedRole.BOSS_CHAINED_FIXED,
         ]
-        assert {row.role for row in env.store.rows} == INPUT_SEED_ROLES | {SeedRole.BOSS_INSTRUCT} | LEGACY_BOSS_ROUND_SEED_ROLES
+        assert {row.role for row in env.store.rows} == INPUT_SEED_ROLES | {SeedRole.BOSS_INSTRUCT} | RETIRED_BOSS_ROUND_SEED_ROLES
         assert len(env.store.rows) == 5 and len(env.instruct_calls) == 3 and len(env.chained_calls) == 2
         assert all(seed.status == SeedStatus.TRAINING and seed.attempt == 1 for seed in seeds)
 
@@ -295,7 +307,7 @@ class TestCreation:
         assert all(str(upstream.task_id) == str(seeds[SeedRole.BOSS_INSTRUCT].task_id) for upstream, _, _ in by_type.values())
         expected = draw_quant_format(random.Random(f"{TID}:seed:quant_format:{TaskType.QUANTFIXEDTASK.value}"))
         assert by_type[TaskType.QUANTFIXEDTASK][1] == expected
-        for role in LEGACY_BOSS_ROUND_SEED_ROLES:
+        for role in RETIRED_BOSS_ROUND_SEED_ROLES:
             task = env.tasks[seeds[role].task_id]
             assert task.status == TaskStatus.AWAITING_UPSTREAM
             assert str(task.upstream_task_id) == str(seeds[SeedRole.BOSS_INSTRUCT].task_id)
@@ -357,7 +369,7 @@ class TestOnlyTheQuantTournamentIsSeeded:
 
         assert [call.args for call in process.await_args_list] == [("text-1", env.config), ("quant-1", env.config)]
 
-    def test_the_legacy_text_and_image_task_creation_never_reads_seeds(self):
+    def test_the_unseeded_text_and_image_task_creation_never_reads_seeds(self):
         # create_text_tournament_tasks is not listed: it asks whether the tournament is seeded and attaches the seed if so.
         for creator in (
             task_creator._create_new_text_boss_round_tasks,
@@ -366,7 +378,7 @@ class TestOnlyTheQuantTournamentIsSeeded:
         ):
             assert "seeds_sql" not in inspect.getsource(creator)
         # replace_tournament_task asks the one question "is this a seeded text tournament" (a text tournament without seed
-        # rows answers no and keeps the legacy redraw); it reads no other seed state.
+        # rows answers no and keeps the unseeded redraw); it reads no other seed state.
         used = set(re.findall(r"seeds_sql\.(\w+)", inspect.getsource(task_creator.replace_tournament_task)))
         assert used == {"is_seeded_text_tournament"}
 
@@ -456,7 +468,10 @@ class TestTournamentFilters:
 class TestHoursRouting:
     @pytest.mark.parametrize(
         ("role", "non_boss", "boss"),
-        [(role, role in INPUT_SEED_ROLES | TEXT_ROUND_SEED_ROLES, role in ANY_BOSS_ROUND_SEED_ROLES) for role in SeedRole],
+        [
+            (role, role in INPUT_SEED_ROLES | TEXT_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES, role in ANY_BOSS_ROUND_SEED_ROLES)
+            for role in SeedRole
+        ],
     )
     async def test_seed_roles_route_hours_without_a_round(self, env, role, non_boss, boss):
         task = _instruct()
@@ -839,7 +854,7 @@ class TestStatusAndReplacement:
 
         live = _live(env)
         assert live[SeedRole.BOSS_INSTRUCT].attempt == 2
-        assert all(live[role].attempt == 2 for role in LEGACY_BOSS_ROUND_SEED_ROLES)
+        assert all(live[role].attempt == 2 for role in RETIRED_BOSS_ROUND_SEED_ROLES)
 
     @pytest.mark.parametrize("db_status", [TaskStatus.PREP_TASK_FAILURE.value, TaskStatus.FAILURE.value])
     async def test_a_seed_that_failed_with_the_db_status_string_is_replaced(self, outcome, db_status):
@@ -994,7 +1009,7 @@ class TestBossRoundSeedsAreNeverReplacedLate:
     async def test_no_attached_boss_round_role_is_replaced(self, outcome):
         env = outcome.env
         seeds = await self._seeds(env)
-        for role in LEGACY_BOSS_ROUND_SEED_ROLES:
+        for role in RETIRED_BOSS_ROUND_SEED_ROLES:
             env.store.attached.add(seeds[role].task_id)
             env.tasks[seeds[role].task_id].status = TaskStatus.PREP_TASK_FAILURE
         snapshot = len(env.tasks)
@@ -1180,7 +1195,7 @@ class TestTournamentStartedBeforeSeeding:
     async def test_no_seed_is_created_or_trained_for_it(self, env, caplog):
         with caplog.at_level("INFO"):
             for _ in range(2):
-                await seed_tasks.process_tournament_seed_tasks("legacy-tournament", env.config)
+                await seed_tasks.process_tournament_seed_tasks("unseeded-tournament", env.config)
 
         assert env.store.rows == []
         assert not env.pool_calls and not env.tasks
@@ -1235,8 +1250,8 @@ class TestBossRoundWithAMissingRole:
         live = {seed.role: seed for seed in await seeds_sql.get_active_seed_tasks(TID, None)}
         assert SeedRole.BOSS_CHAINED_FIXED in live
         tasks = await task_creator._attach_boss_round_seeds(live, TID, "round_4", "round_4_pair_001", env.config)
-        assert len(tasks) == len(LEGACY_BOSS_ROUND_SEED_ROLES) == len(registered)
-        assert all(row.attached_round_id == "round_4" for row in env.store.rows if row.role in LEGACY_BOSS_ROUND_SEED_ROLES)
+        assert len(tasks) == len(RETIRED_BOSS_ROUND_SEED_ROLES) == len(registered)
+        assert all(row.attached_round_id == "round_4" for row in env.store.rows if row.role in RETIRED_BOSS_ROUND_SEED_ROLES)
 
     async def test_an_attached_role_is_never_redrawn(self, env, monkeypatch):
         seeds = await self._with_missing_role(env)
@@ -1328,7 +1343,7 @@ class TestBossSideSeedFailure:
         return _FakeDb(fetch=[rows, [{db_cst.HOTKEY: hotkey} for hotkey in quant_failed]])
 
     async def test_prep_failure_of_any_boss_round_seed_is_boss_side_when_the_challenger_is_usable(self, env):
-        for role in LEGACY_BOSS_ROUND_SEED_ROLES:
+        for role in RETIRED_BOSS_ROUND_SEED_ROLES:
             task_id = await self._seed(env, role)
             for boss_row in (None, "failure"):
                 db = self._db(boss_row, "success")
@@ -1344,7 +1359,7 @@ class TestBossSideSeedFailure:
         ],
     )
     async def test_prep_failure_without_a_usable_challenger_is_not_credited(self, env, boss_row, challenger_row, quant_failed):
-        for role in LEGACY_BOSS_ROUND_SEED_ROLES:
+        for role in RETIRED_BOSS_ROUND_SEED_ROLES:
             task_id = await self._seed(env, role)
             db = self._db(boss_row, challenger_row, quant_failed)
             assert await seeds_sql.boss_side_seed_failure(task_id, TaskStatus.PREP_TASK_FAILURE, db) is None

@@ -33,7 +33,7 @@ def _rows() -> list[dict]:
         rows[N_ROWS - i] = dict(rows[i])
     return rows
 
-def _legacy_split(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+def _base_split(rows: list[dict]) -> tuple[list[dict], list[dict]]:
     """The base split, reimplemented: one shuffled seed-42 train_test_split of min(10%, 1,000) rows."""
     split = Dataset.from_list(rows).train_test_split(
         test_size=min(int(len(rows) * cst.TRAIN_TEST_SPLIT_PERCENTAGE), cst.MAX_TEST_DATA_POINTS), shuffle=True, seed=42
@@ -93,8 +93,8 @@ def seams(monkeypatch):
 def _file(state, suffix: str) -> list[dict]:
     return state.uploads[suffix]
 
-async def test_legacy_task_matches_the_base_split_and_uploads_no_calibration(seams):
-    train, test = _legacy_split(seams.rows)
+async def test_uncalibrated_task_matches_the_base_split_and_uploads_no_calibration(seams):
+    train, test = _base_split(seams.rows)
 
     split = await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db=None)
 
@@ -105,7 +105,7 @@ async def test_legacy_task_matches_the_base_split_and_uploads_no_calibration(sea
     assert seams.record_calls == []
 
 async def test_carving_leaves_the_test_split_identical_and_train_is_the_rest(seams):
-    train, test = _legacy_split(seams.rows)
+    train, test = _base_split(seams.rows)
 
     split = await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db="db")
 
@@ -122,9 +122,9 @@ async def test_carving_leaves_the_test_split_identical_and_train_is_the_rest(sea
     assert split.calibration_url is not None and len(split.calibration_row_hashes) == len(calibration)
 
 async def test_no_calibration_row_is_a_test_row_even_with_a_duplicate_in_train(seams):
-    _, test = _legacy_split(seams.rows)
+    _, test = _base_split(seams.rows)
     test_keys = {json.dumps(_standard(r), sort_keys=True) for r in test}
-    assert any(json.dumps(_standard(r), sort_keys=True) in test_keys for r in _legacy_split(seams.rows)[0])  # fixture has one
+    assert any(json.dumps(_standard(r), sort_keys=True) in test_keys for r in _base_split(seams.rows)[0])  # fixture has one
 
     await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db="db")
 
@@ -153,7 +153,7 @@ async def test_without_a_database_nothing_is_recorded_but_the_carve_still_happen
     assert "calibration_data.json" in seams.uploads
 
 async def test_recorded_rows_never_land_in_test_and_are_appended_to_train(seams):
-    train, test = _legacy_split(seams.rows)
+    train, test = _base_split(seams.rows)
     # Record rows the base split would have TESTED, plus some it would have trained on.
     tested = [raw_row_hash(r) for r in test[:30]]
     trained = [raw_row_hash(r) for r in train[:30]]
@@ -171,7 +171,7 @@ async def test_recorded_rows_never_land_in_test_and_are_appended_to_train(seams)
     assert len(new_train) + len(new_test) == N_ROWS
 
 async def test_a_record_that_matches_no_row_is_a_no_op(seams):
-    train, test = _legacy_split(seams.rows)
+    train, test = _base_split(seams.rows)
     seams.recorded[DS] = {"0" * 32}
 
     await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")

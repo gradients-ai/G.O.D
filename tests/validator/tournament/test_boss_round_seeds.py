@@ -1,7 +1,8 @@
 """The quant boss round on the upfront seeds (validator/tournament/README.md, "Quant tournament flow").
 
-The boss round attaches the six compression seeds (Free and Fixed of the text boss's round-2, round-3 and continuous models)
-and adds training rows for the challenger only; the challenger trains from the same task.model_id as the boss. Two
+The boss round attaches the four compression seeds (the text boss's round-2 model freeform, its round-3 model fixed and its
+continuous model freeform and fixed) and adds training rows for the challenger only; the challenger trains from the same
+task.model_id as the boss. A role out of replacements plays a task of its own that the boss has no entry on. Two
 compressions chained on a BOSS_INSTRUCT seed and released on the boss's output of it are also supported (the release tests
 below). Nothing the boss trains is scheduled at or after the boss round.
 """
@@ -29,8 +30,11 @@ from validator.tasks.synthetics.scheduler import quant_training_hours
 from validator.tournament import orchestrator
 from validator.tournament import seed_tasks
 from validator.tournament import task_creator
+from validator.tournament import tournament_manager as tm
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import LEGACY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import RETIRED_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import UNCREATED_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import KnockoutRound
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentData
@@ -247,8 +251,8 @@ class TestAttach:
         registered: list[str] = []
         tasks = {}
         for role in SeedRole:
-            if role in LEGACY_BOSS_ROUND_SEED_ROLES:
-                continue  # a tournament has the six compression roles or the two chained ones, never both
+            if role in RETIRED_BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES:
+                continue  # a tournament has the four compression roles or the two chained ones, never both
             task = _instruct()
             tasks[str(task.task_id)] = task
             seeds[role] = TournamentSeedTask(tournament_id=TID, role=role, task_id=task.task_id)
@@ -279,12 +283,12 @@ class TestAttach:
             monkeypatch.setattr(task_creator, name, drawn)
         return SimpleNamespace(seeds=seeds, tasks=tasks, registered=registered, drawn=drawn, marked=marked)
 
-    async def test_the_boss_round_draws_nothing_and_attaches_exactly_the_six_compression_seeds(self, creator):
+    async def test_the_boss_round_draws_nothing_and_attaches_exactly_the_four_compression_seeds(self, creator):
         tasks = await task_creator._create_quant_boss_round_tasks(TID, ROUND_ID, CONFIG)
 
         expected = {str(creator.seeds[role].task_id) for role in BOSS_ROUND_SEED_ROLES}
         assert {str(task.task_id) for task in tasks} == expected
-        assert set(creator.registered) == expected and len(creator.registered) == 6
+        assert set(creator.registered) == expected and len(creator.registered) == 4
         assert str(creator.seeds[SeedRole.BOSS_INSTRUCT].task_id) not in creator.registered
         creator.drawn.assert_not_called()
         # The durable "ever attached" marker is written for every boss-round seed, with the round id.
@@ -295,7 +299,7 @@ class TestAttach:
         await task_creator._create_quant_boss_round_tasks(TID, ROUND_ID, CONFIG)
         await task_creator._create_quant_boss_round_tasks(TID, ROUND_ID, CONFIG)
 
-        assert len(creator.registered) == 6
+        assert len(creator.registered) == 4
 
     async def test_a_missing_boss_seed_fails_the_attempt_instead_of_drawing_a_task(self, creator):
         del creator.seeds[SeedRole.BOSS_R3_FIXED]
@@ -306,7 +310,7 @@ class TestAttach:
         assert creator.registered == []
         creator.drawn.assert_not_called()
 
-    async def test_a_role_that_failed_is_skipped_and_the_others_are_attached(self, creator, monkeypatch):
+    async def test_a_role_that_failed_plays_a_task_of_its_own_without_the_boss(self, creator, monkeypatch):
         failed = creator.seeds.pop(SeedRole.BOSS_R3_FIXED)
         failed_row = failed.model_copy(update={"status": SeedStatus.FAILED})
         monkeypatch.setattr(
@@ -314,13 +318,50 @@ class TestAttach:
             "get_latest_seed_tasks",
             AsyncMock(side_effect=lambda tid, db: [*creator.seeds.values(), failed_row]),
         )
+        own_task = _instruct()
+        without_boss = AsyncMock(return_value=own_task)
+        monkeypatch.setattr(task_creator, "_create_boss_round_task_without_boss", without_boss)
 
         tasks = await task_creator._create_quant_boss_round_tasks(TID, ROUND_ID, CONFIG)
 
-        assert len(tasks) == 5 and str(failed.task_id) not in creator.registered
+        assert len(tasks) == 4 and str(failed.task_id) not in creator.registered
         assert {str(task.task_id) for task in tasks} == {
             str(creator.seeds[role].task_id) for role in BOSS_ROUND_SEED_ROLES - {SeedRole.BOSS_R3_FIXED}
-        }
+        } | {str(own_task.task_id)}
+        without_boss.assert_awaited_once_with(SeedRole.BOSS_R3_FIXED, TID, ROUND_ID, PAIR_ID, CONFIG)
+
+    async def test_the_task_of_a_failed_role_is_drawn_like_its_seed_and_registered_under_the_pair(self, creator, monkeypatch):
+        own_task = _instruct()
+        binding = SimpleNamespace(quant_tournament_id=TID, source_tournament_id="text")
+        text_seed = TournamentSeedTask(tournament_id="text", role=SeedRole.TEXT_R3, task_id=uuid.uuid4())
+        drawn = AsyncMock(return_value=own_task)
+        monkeypatch.setattr(seed_tasks, "draw_compression_task", drawn)
+        monkeypatch.setattr(task_creator.quant_sources, "bind_quant_source_tournament", AsyncMock(return_value=binding))
+        monkeypatch.setattr(task_creator.quant_sources, "slot_text_seed", AsyncMock(return_value=text_seed))
+        monkeypatch.setattr(
+            task_creator.quant_sources,
+            "record_new_quant_task",
+            AsyncMock(side_effect=lambda source, config, replacing: source),
+        )
+        monkeypatch.setattr(task_creator.quant_sources_sql, "get_live_quant_task_source", AsyncMock(return_value=None))
+        monkeypatch.setattr(task_creator.tournament_sql, "get_tournament_task_by_task_id", AsyncMock(return_value=None))
+
+        task = await task_creator._create_boss_round_task_without_boss(SeedRole.BOSS_R3_FIXED, TID, ROUND_ID, PAIR_ID, CONFIG)
+
+        assert task is own_task and creator.registered == [str(own_task.task_id)]
+        drawn.assert_awaited_once_with(SeedRole.BOSS_R3_FIXED, TID, text_seed, CONFIG)
+        creator.marked.assert_not_awaited()  # no seed row: it is the challenger's task alone
+
+    async def test_the_task_of_a_failed_role_waits_while_its_text_seed_is_being_replaced(self, creator, monkeypatch):
+        binding = SimpleNamespace(quant_tournament_id=TID, source_tournament_id="text")
+        monkeypatch.setattr(task_creator.quant_sources, "bind_quant_source_tournament", AsyncMock(return_value=binding))
+        monkeypatch.setattr(task_creator.quant_sources, "slot_text_seed", AsyncMock(return_value=None))
+        monkeypatch.setattr(task_creator.quant_sources_sql, "get_live_quant_task_source", AsyncMock(return_value=None))
+
+        with pytest.raises(task_creator.MissingBossRoundSeeds) as error:
+            await task_creator._create_boss_round_task_without_boss(SeedRole.BOSS_R3_FIXED, TID, ROUND_ID, PAIR_ID, CONFIG)
+
+        assert error.value.roles == ["text_r3"] and creator.registered == []
 
     async def test_a_role_with_a_pending_replacement_still_raises(self, creator, monkeypatch):
         replaced = creator.seeds.pop(SeedRole.BOSS_R2_FREEFORM).model_copy(update={"status": SeedStatus.REPLACED})
@@ -335,9 +376,9 @@ class TestAttach:
 
         assert error.value.roles == ["boss_r2_freeform"] and creator.registered == []
 
-    async def test_a_tournament_of_the_earlier_design_attaches_its_two_legacy_compressions(self, creator, monkeypatch):
+    async def test_a_tournament_of_the_earlier_design_attaches_its_two_chained_compressions(self, creator, monkeypatch):
         creator.seeds.clear()
-        for role in LEGACY_BOSS_ROUND_SEED_ROLES:
+        for role in RETIRED_BOSS_ROUND_SEED_ROLES:
             task = _instruct()
             creator.tasks[str(task.task_id)] = task
             creator.seeds[role] = TournamentSeedTask(tournament_id=TID, role=role, task_id=task.task_id)
@@ -565,6 +606,7 @@ class TestSeedReplacementGuard:
         monkeypatch.setattr(seed_tasks, "live_seed_tasks", AsyncMock(return_value={seed.role: seed}))
         monkeypatch.setattr(seed_tasks, "_create_seed", draw)
         monkeypatch.setattr(seed_tasks, "_retry_missing_boss_round_seeds", AsyncMock())  # covered in test_seed_tasks
+        monkeypatch.setattr(seed_tasks.seeds_sql, "tournament_is_decided", AsyncMock(return_value=False))
         monkeypatch.setattr(seed_tasks, "_SEED_ISSUE_ALERTED", set())
         return SimpleNamespace(seed=seed, task=task, replace=draw, update=update, state=state)
 
@@ -599,3 +641,50 @@ class TestSeedReplacementGuard:
         processing.replace.assert_not_awaited()
         processing.update.assert_awaited_once()
         assert processing.update.await_args.args[3] == SeedStatus.READY
+
+
+class TestBossAssignmentOnTheBossRound:
+    """The boss is assigned to every boss-round task except a quant task the round plays for a failed seed role."""
+
+    @pytest.fixture
+    def assigned(self, monkeypatch):
+        seed_task, own_task = uuid.uuid4(), uuid.uuid4()
+        assigned: list[tuple[str, str]] = []
+
+        async def assign(task_id, node, _db):
+            assigned.append((str(task_id), node.hotkey))
+
+        async def seed_of(task_id, _db):
+            if str(task_id) != str(seed_task):
+                return None
+            return TournamentSeedTask(tournament_id=TID, role=SeedRole.BOSS_R2_FREEFORM, task_id=seed_task)
+
+        round_tasks = [
+            SimpleNamespace(task_id=str(seed_task), pair_id=PAIR_ID),
+            SimpleNamespace(task_id=str(own_task), pair_id=PAIR_ID),
+        ]
+        monkeypatch.setattr(tm, "get_tournament_tasks", AsyncMock(return_value=round_tasks))
+        monkeypatch.setattr(tm.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
+        monkeypatch.setattr(tm.task_sql, "assign_node_to_task", assign)
+        monkeypatch.setattr(tm.task_sql, "set_expected_repo_name", AsyncMock())
+        monkeypatch.setattr(tm, "get_node_by_hotkey", AsyncMock(side_effect=lambda hotkey, _db: SimpleNamespace(hotkey=hotkey)))
+        monkeypatch.setattr(tm.seeds_sql, "get_seed_task_by_task_id", seed_of)
+        return SimpleNamespace(seed_task=str(seed_task), own_task=str(own_task), assigned=assigned)
+
+    @pytest.mark.parametrize(
+        ("tournament_type", "boss_on_own_task"), [(TournamentType.QUANT, False), (TournamentType.TEXT, True)]
+    )
+    async def test_the_boss_is_not_assigned_to_the_task_of_a_failed_quant_role(
+        self, assigned, monkeypatch, tournament_type, boss_on_own_task
+    ):
+        monkeypatch.setattr(
+            tm, "get_tournament", AsyncMock(return_value=TournamentData(tournament_id=TID, tournament_type=tournament_type))
+        )
+        challenger = "5Challenger"
+        round_structure = KnockoutRound(pairs=[(challenger, EMISSION_BURN_HOTKEY)], round_id=ROUND_ID, round_number=4)
+
+        await tm.assign_nodes_to_tournament_tasks(TID, round_structure, None, is_final_round=True)
+
+        assert (assigned.seed_task, EMISSION_BURN_HOTKEY) in assigned.assigned
+        assert (assigned.own_task, challenger) in assigned.assigned
+        assert ((assigned.own_task, EMISSION_BURN_HOTKEY) in assigned.assigned) is boss_on_own_task

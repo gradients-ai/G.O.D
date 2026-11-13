@@ -1,7 +1,7 @@
 """Chained quant tasks: quant tasks fed by an upstream instruct task (`upstream_task_id`).
 
 Chained quant tasks are on a seed the boss trained:
-  * Miner rounds R1-R3 (QUANT_ROUND_PLAN) and the quant boss round's six compression seeds: tasks chained on a seed of the
+  * The quant seeds of rounds 1-3 (QUANT_ROUND_PLAN) and of the quant boss round: tasks chained on a seed of the
     bound TEXT tournament (text_r1/text_r2/text_r3/text_continuous). The text boss's model on the seed is the one shared input
     (the repo, or the text task's base model when the text boss produced none); every player compresses it. They are released
     by orchestrator._release_on_text_boss_model, not by the rules below.

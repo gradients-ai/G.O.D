@@ -239,7 +239,7 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
 CONTINUOUS_SFT_TRAINING_HOURS = 2.5
 
 # The chunk scheme of every continuous-SFT task this code creates; its train_index counts chunks of that scheme.
-CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.FIFTY_K
+CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.V2
 
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1
@@ -355,10 +355,12 @@ MULTI_GPU_REQUIRES_HIGH_INTERCONNECT = True
 # Quant tournament
 # =====================================================================================================
 
-# Quant tournament rounds. Each of rounds 1-3 is one quant task (one group, the boss excluded) on the text boss's model of the
-# matching text round: round 1 compresses the model the text boss trained on the bound text tournament's text_r1 seed task,
-# round 2 its text_r2 model and round 3 its text_r3 model. Every miner compresses that one model. Standings are the
-# average rank over every round played, ranks within the surviving cohort; the lone survivor of round 3 plays the boss round.
+# Quant tournament rounds. Each of rounds 1-3 is one quant task (one group) on the text boss's model of the matching text
+# round: round 1 compresses the model the text boss trained on the bound text tournament's text_r1 seed task, round 2 its
+# text_r2 model and round 3 its text_r3 model. Every miner compresses that one model, and so does the quant boss: the task is
+# the round's quant seed, which the boss trains as soon as the source model lands. Advancement is the average rank over every
+# round played, ranks within the surviving challenger cohort (the boss never takes a slot); round 3 is always played, even
+# by a lone survivor of round 2, and its winner plays the boss round.
 QUANT_ROUND_PLAN = (
     QuantRoundSpec(
         round_number=1,
@@ -392,16 +394,13 @@ QUANT_INPUT_LISTING_RETRY_DELAY_SECONDS = 5
 # Every validator derives the same seed from the round id; bump the version to reshuffle all rounds.
 R2_TIEBREAK_SEED_SALT = "quant-r2-tiebreak-v1"
 
-# The quant boss round is six compression tasks, three freeform and three fixed: the freeform and the fixed compression of the
-# text boss's round-2, round-3 and continuous models. The quant boss trains its six entries as soon as each source model has
-# landed (they are seed tasks); the challenger trains the same tasks in the boss round and compresses the same model.
-# The challenger is crowned by winning 5 of the 6 (QUANT_BOSS_ROUND_ALLOWED_LOSSES). A freeform task is won with at least
-# QUANT_FREEFORM_BOSS_BYTE_MARGIN fewer effective bytes; a fixed task needs the paired per-example test and, on top of it,
-# a scalar loss QUANT_FIXED_BOSS_MIN_IMPROVEMENT better. The fixed tasks use 2-bit or 3-bit formats only
-# (QUANT_BOSS_ROUND_FIXED_FORMATS).
+# The quant boss round is four compression tasks: the text boss's round-2 model freeform, its round-3 model fixed, and its
+# continuous model freeform and fixed. The quant boss trains its four entries as soon as each source model has landed (they
+# are seed tasks); the challenger trains the same tasks in the boss round and compresses the same model. The crown is decided
+# over these four and rounds 1-3 (crown.py). The fixed tasks use 2-bit or 3-bit formats only (QUANT_BOSS_ROUND_FIXED_FORMATS).
 FINAL_ROUND_QUANT_TASK_DISTRIBUTION: dict[TaskType, int] = {
-    TaskType.QUANTFREEFORMTASK: 3,
-    TaskType.QUANTFIXEDTASK: 3,
+    TaskType.QUANTFREEFORMTASK: 2,
+    TaskType.QUANTFIXEDTASK: 2,
 }
 FINAL_ROUND_QUANT_TASKS = sum(FINAL_ROUND_QUANT_TASK_DISTRIBUTION.values())
 
@@ -409,8 +408,8 @@ FINAL_ROUND_QUANT_TASKS = sum(FINAL_ROUND_QUANT_TASK_DISTRIBUTION.values())
 # mapped type. After its first completed tournament the mapping is never consulted again.
 BOSS_SEED_TOURNAMENT_TYPE: dict[TournamentType, TournamentType] = {TournamentType.QUANT: TournamentType.TEXT}
 
-# The formats the three fixed tasks of the quant boss round draw from: 2-bit and 3-bit only, so the win margin stays reachable.
-# Drawn per tournament and role (a restart or a replacement redraws the same format; the three tasks may differ).
+# The formats the two fixed tasks of the quant boss round draw from: 2-bit and 3-bit only, so the win margin stays reachable.
+# Drawn per tournament and role (a restart or a replacement redraws the same format; the two tasks may differ).
 QUANT_BOSS_ROUND_FIXED_FORMATS = (QuantFormat.W3A16_ASYM_G128, QuantFormat.W2A16_ASYM_G64)
 
 # quant_failure for every player of a chained task when no upstream instruct output is usable.
@@ -418,22 +417,22 @@ UPSTREAM_FAILURE_REASON = "upstream instruct run failed"
 # quant_failure for a player of an own-model quant round (OWN_R1_MODEL) whose round-1 repo is missing or not a full model.
 NO_USABLE_R1_MODEL_REASON = "no usable round-1 model"
 
-# The challenger takes the freeform boss task only by being under the cap with at least this fraction
-# fewer effective bytes than the boss: total bytes (artifact + decoder) x the loss penalty
-# exp(curvature x max(0, r - knee)^2). Byte counts and the penalty are deterministic, so no bootstrap.
+# A freeform head-to-head against the boss is a win when the challenger is under the cap with at least this fraction fewer
+# effective bytes than the boss: total bytes (artifact + decoder) x the loss penalty exp(curvature x max(0, r - knee)^2).
+# Byte counts and the penalty are deterministic, so no bootstrap.
 QUANT_FREEFORM_BOSS_BYTE_MARGIN = 0.03
+# A freeform non-win is within the tight allowance when the challenger has at most this fraction more effective bytes than
+# the boss (fewer bytes by less than QUANT_FREEFORM_BOSS_BYTE_MARGIN included), within the looser allowance at most this one.
+QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE = 0.01
+QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE = 0.02
 
 # Fixed quant is judged by the same paired per-example test as text; freeform is decided on effective bytes, not loss.
 QUANT_PAIRED_TASK_TYPES = (TaskType.QUANTFIXEDTASK,)
 
-# Fixed quant boss-round task: the challenger needs the paired per-example test and, on top of it, a scalar loss at least
-# this fraction better than the boss's.
+# A fixed head-to-head against the boss is a win when the challenger passes the paired per-example test and, on top of it,
+# has a scalar loss at least this fraction better than the boss's. A draw on the paired test is within both allowances; a
+# task the boss takes on the paired test is beyond them.
 QUANT_FIXED_BOSS_MIN_IMPROVEMENT = 0.01
-
-# The quant boss round is built with FINAL_ROUND_QUANT_TASKS tasks and the challenger is crowned by winning all but this many
-# of them (determine_boss_round_winner): 5 of 6. The bar is always the built size, so a task that was never attached (its seed
-# failed) or never decided is simply not a win. Nothing is asked of the lost tasks.
-QUANT_BOSS_ROUND_ALLOWED_LOSSES = 1
 
 # A quant task held on a text seed is released on the text task's own base model (the fallback) when the text boss's run
 # succeeded but its output is not usable (a hub lookup can fail or lag right after the run). The fallback is final, so while
@@ -619,7 +618,7 @@ SEED_CURSOR_KEY_SUFFIX = "_seed"
 
 # Rounds 1-3 of a seeded text tournament are one instruct task each, in one group: the task is trained by the boss at
 # tournament start and by the round's miners when the round is reached. The standings of a round come from that task
-# alone, the boss excluded.
+# alone; the boss's entry is ranked in them but never takes an advancement slot.
 TEXT_ROUND_PLAN = (
     TextRoundSpec(round_number=1, seed_role=SeedRole.TEXT_R1, model_size_b=SEED_INPUT_SMALL_SIZE_B, advance=8),
     TextRoundSpec(round_number=2, seed_role=SeedRole.TEXT_R2, model_size_b=SEED_INPUT_SMALL_SIZE_B, advance=4),
@@ -637,15 +636,17 @@ TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES = (TaskType.GRPOTASK, TaskType.DPOTASK)
 # meeting it despite floating-point rounding (a pair exactly 1% apart can compute as 0.99999999999999%).
 CROWN_BOUNDARY_RELATIVE_TOLERANCE = 1e-9
 
-# Head-to-heads of the crown rule: the tasks of rounds 1-3 plus the four boss-round tasks.
-TEXT_CROWN_TASKS = 7
+# Head-to-heads of the crown rule, the same for text and quant: the tasks of rounds 1-3 plus the four boss-round tasks.
+CROWN_TASKS = 7
+# The challenger is crowned with at most this many non-wins, every non-win within the looser allowance and, with two
+# non-wins, at least one of them within the tight allowance (crown.crown_verdict).
+CROWN_MAX_NON_WINS = 2
 
-# A task is a win when the challenger beats the boss by at least this fraction of the boss's score magnitude (see
-# challenger_beats_boss). Any other task is a non-win whose deficit is how far the challenger trails the boss, as a
-# fraction of the same magnitude (0 when it is level, or ahead by less than this margin).
+# A text task is a win when the challenger beats the boss by at least this fraction of the boss's score magnitude (see
+# challenger_beats_boss) and, on a task with per-example losses (PAIRED_BOSS_ROUND_TASK_TYPES), also passes the paired
+# per-example test. Any other task is a non-win whose deficit is how far the challenger trails the boss, as a fraction of
+# the same magnitude (0 when it is level or ahead).
 TEXT_CROWN_WIN_MARGIN = 0.01
-# The challenger is crowned when it has at most this many non-wins, no deficit above TEXT_CROWN_MAX_DEFICIT, and, with
-# exactly two non-wins, at least one deficit at most TEXT_CROWN_SECOND_NON_WIN_MAX_DEFICIT.
-TEXT_CROWN_MAX_NON_WINS = 2
-TEXT_CROWN_MAX_DEFICIT = 0.0025
-TEXT_CROWN_SECOND_NON_WIN_MAX_DEFICIT = 0.001
+# A text non-win is within the tight allowance with a deficit of at most this, within the looser one at most this.
+TEXT_CROWN_TIGHT_ALLOWANCE = 0.001
+TEXT_CROWN_LOOSER_ALLOWANCE = 0.0025

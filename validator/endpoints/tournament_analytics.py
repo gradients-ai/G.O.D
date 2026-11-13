@@ -30,6 +30,7 @@ from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.weights import get_tournament_burn_details
+from validator.scoring.weights import stored_boss_rank_comparisons
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_TTL
 from validator.tournament.cost_calculator import calculate_weekly_costs
@@ -269,6 +270,8 @@ async def get_tournament_details(
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
             final_positions={p.hotkey: p.final_position for p in participants if p.final_position is not None},
+            # The same stored comparisons the weight setter reads, so a redirected share shows as it is set.
+            boss_rank_comparisons=await stored_boss_rank_comparisons(tournament.tournament_id, config.psql_db),
         )
         # Environment tournaments are retired from weight setting, so the dynamic split no longer
         # carries an environment base. Historical environment tournaments are still scored for

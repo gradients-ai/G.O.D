@@ -91,8 +91,10 @@ from validator.tournament import chaining
 from validator.tournament import quant_sources
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import ANY_QUANT_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
+from validator.tournament.models import QUANT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import GpuRequirement
@@ -932,7 +934,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
 
     if boss_entries_deferred:
         logger.info(
-            f"A miner-round row is waiting for GPUs; {len(boss_entries_deferred)} boss entry row(s) (MBA / compressions) "
+            f"A miner-round row is waiting for GPUs; {len(boss_entries_deferred)} boss entry row(s) (boss input / compressions) "
             f"yield this cycle and are retried in the next"
         )
 
@@ -1977,13 +1979,13 @@ async def _is_non_boss_tournament_task(task, config: Config) -> bool:
     """True for a task of a quant tournament round that is not the final (boss) round; organic tasks and the tasks of
     the text and image tournaments are neither.
 
-    An input seed and a text round seed (rounds 1-3) are non-boss tasks, even before a round attaches them; a
+    An input seed and a text or quant round seed (rounds 1-3) are non-boss tasks, even before a round attaches them; a
     boss-round seed is a boss task even before the boss round attaches it. The task a round of a seeded text tournament drew
     for itself (its seed role failed) is a non-boss task like the seed it stands in for.
     """
     role = await _seed_role(task, config)
     if role is not None:
-        return role in INPUT_SEED_ROLES or role in TEXT_ROUND_SEED_ROLES
+        return role in INPUT_SEED_ROLES or role in TEXT_ROUND_SEED_ROLES or role in QUANT_ROUND_SEED_ROLES
     if not await _belongs_to_quant_tournament(task, config):
         tournament_id = await get_tournament_id_by_task_id(task.task_id, config.psql_db)
         if not tournament_id or not await seeds_sql.is_seeded_text_tournament(tournament_id, config.psql_db):
@@ -3010,7 +3012,7 @@ async def _boss_round_seed_cycle(config: Config) -> None:
                     if boss_status not in (TrainingStatus.SUCCESS.value, TrainingStatus.FAILURE.value):
                         logger.warning(f"boss entry {role.label} {seed.task_id} still training")
                     await _add_challenger_rows(role, task, config)
-                    if boss_status == TrainingStatus.SUCCESS.value and role in ANY_BOSS_ROUND_SEED_ROLES:
+                    if boss_status == TrainingStatus.SUCCESS.value and role in ANY_QUANT_SEED_ROLES:
                         # Trained at seed time but its seed-time evaluation is not settled: alert; it is evaluated now.
                         await boss_seed_eval.alert_if_boss_evaluation_missing(task, config)
                 except Exception as e:

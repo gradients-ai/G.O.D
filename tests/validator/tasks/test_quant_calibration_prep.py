@@ -201,7 +201,7 @@ async def test_fixed_calibration_failure_never_fails_prep_and_redacts_the_url(pr
     assert not any("secret" in message for message in prep.warnings)
 
 
-async def test_legacy_task_prep_is_unchanged_and_has_no_calibration(prep):
+async def test_uncalibrated_task_prep_is_unchanged_and_has_no_calibration(prep):
     prep.calibration_url = None
 
     task = await _run(_freeform())

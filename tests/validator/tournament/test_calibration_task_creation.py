@@ -61,7 +61,7 @@ def test_new_quant_task_carves_a_given_split_only_when_asked():
         assert asked.carve_calibration is True and default.carve_calibration is False
 
 
-def test_a_default_quant_task_is_legacy():
+def test_a_default_quant_task_has_no_calibration():
     task = scheduler._new_quant_task(
         TaskType.QUANTFREEFORMTASK, model_id="m", ds="ds", dataset_type=DATASET_TYPE, hours_to_complete=2.0
     )

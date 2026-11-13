@@ -51,6 +51,7 @@ from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
 from validator.db.sql.tournaments import reactivate_tournament_participants
 from validator.db.sql.tournaments import set_tournament_participant_decoder_snapshot
+from validator.db.sql.tournaments import store_boss_rank_comparisons
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_placements
@@ -61,8 +62,11 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.boss_rank_shares import boss_rank_comparisons
 from validator.tournament.challenger_code_review import evaluate_round2_code_reviews
-from validator.tournament.challenger_code_review import resolve_legacy_boss_code_review
+from validator.tournament.challenger_code_review import resolve_stored_boss_code_review
+from validator.tournament.crown import CrownVerdict
+from validator.tournament.crown import crown_verdict
 from validator.tournament.decoder_snapshot import DECODER_SNAPSHOT_CONCURRENCY
 from validator.tournament.decoder_snapshot import DecoderMissing
 from validator.tournament.decoder_snapshot import DecoderNotRunnable
@@ -84,7 +88,7 @@ from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import TEXT_SEED_ROLES
+from validator.tournament.models import SWAPPED_SEED_ROLES
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
@@ -120,14 +124,17 @@ from validator.tournament.repo_uploader import upload_tournament_participant_rep
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
 from validator.tournament.round_results import find_groups_with_no_valid_scores
 from validator.tournament.round_results import get_quant_pre_boss_runner_up
+from validator.tournament.round_results import get_quant_round_runner_up
 from validator.tournament.round_results import get_round_winners
 from validator.tournament.round_results import get_seeded_text_runner_up
+from validator.tournament.round_results import quant_round_head_to_heads
 from validator.tournament.round_results import seeded_text_round_head_to_heads
 from validator.tournament.round_results import select_round2_entrants
 from validator.tournament.seed_tasks import alert_seed_issue
 from validator.tournament.seed_tasks import boss_side_failure_key
 from validator.tournament.seed_tasks import create_seed_tasks
 from validator.tournament.seed_tasks import process_tournament_seed_tasks
+from validator.tournament.seed_tasks import retire_unattached_quant_seeds
 from validator.tournament.seed_tasks import seed_creation_order
 from validator.tournament.seed_tasks import seed_halt_reason
 from validator.tournament.task_creator import MissingBossRoundSeeds
@@ -138,7 +145,6 @@ from validator.tournament.task_creator import create_seeded_text_big_task
 from validator.tournament.task_creator import create_text_tournament_tasks
 from validator.tournament.task_creator import own_r1_model_repo
 from validator.tournament.task_creator import replace_tournament_task
-from validator.tournament.text_crown import text_crown_verdict
 
 
 logger = get_logger(__name__)
@@ -412,6 +418,15 @@ async def _ensure_own_r1_model(task_id: str, tournament_id: str, hotkey: str, ps
     logger.warning(f"Own-model quant task {task_id}: {hotkey[:8]} has no usable R1 model; scored as a fail")
     await submissions_and_scoring_sql.set_task_node_quant_failure(task_id, hotkey, t_cst.NO_USABLE_R1_MODEL_REASON, psql_db)
 
+async def _boss_plays_boss_round_task(tournament_id: str, task_id: str, psql_db: PSQLDB) -> bool:
+    """Whether the boss is assigned to a boss-round task: always, except a quant boss-round task with no seed row (the task the
+    round plays for a boss-round seed role out of replacements), on which the boss has no entry."""
+    tournament = await get_tournament(tournament_id, psql_db)
+    if tournament is None or tournament.tournament_type != TournamentType.QUANT:
+        return True
+    return await seeds_sql.get_seed_task_by_task_id(task_id, psql_db) is not None
+
+
 async def assign_nodes_to_tournament_tasks(
     tournament_id: str, round_structure: Round, psql_db: PSQLDB, is_final_round: bool = False
 ) -> None:
@@ -477,10 +492,11 @@ async def assign_nodes_to_tournament_tasks(
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(pair_task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
 
-                participants_to_assign = list(pair)
+                boss_plays = not is_final_round or await _boss_plays_boss_round_task(tournament_id, pair_task.task_id, psql_db)
+                participants_to_assign = [hotkey for hotkey in pair if boss_plays or hotkey != EMISSION_BURN_HOTKEY]
 
                 # For final rounds, also assign the boss contestant
-                if is_final_round and EMISSION_BURN_HOTKEY not in participants_to_assign:
+                if is_final_round and boss_plays and EMISSION_BURN_HOTKEY not in participants_to_assign:
                     participants_to_assign.append(EMISSION_BURN_HOTKEY)
                     logger.info(
                         f"Final round detected - adding boss contestant {EMISSION_BURN_HOTKEY} to task {pair_task.task_id}"
@@ -526,14 +542,9 @@ async def create_next_round(
             and await seeds_sql.is_seeded_text_tournament(tournament.tournament_id, psql_db)
         )
         next_round_is_final = len(winners) == 1
-        # A lone survivor of the round-2 viability cut skips round 3: the boss round is round 3.
-        skips_t3 = is_quant_tournament and next_round_number == 3 and next_round_is_final
-        if skips_t3:
-            logger.info(f"Single viable miner {winners} after round 2: round 3 is skipped, next round is the boss round")
-        # A seeded text tournament always plays rounds 1-3, even with one miner left.
-        is_single_group_round = (is_quant_tournament and next_round_number in (2, 3) and not skips_t3) or (
-            is_seeded_text and next_round_number in (2, 3)
-        )
+        # A quant or seeded text tournament always plays rounds 1-3, even with one miner left: each round's result against
+        # the boss's entry is one of the crown's head-to-heads.
+        is_single_group_round = (is_quant_tournament or is_seeded_text) and next_round_number in (2, 3)
 
         # Text/image knockout tournaments need even pairs
         if is_single_group_round:
@@ -626,7 +637,48 @@ async def _complete_with_defending_champion(
     await _publish_boss_round_decoded(tournament, config, psql_db)
 
 
-async def _complete_seeded_text_without_boss_round(
+def _last_miner_round_number(tournament: TournamentData, is_seeded_text: bool) -> int | None:
+    """The round after whose cut the last contender meets the boss: round 3 of a quant or seeded text tournament; None for
+    any other tournament (it has no crown rule)."""
+    if tournament.tournament_type == TournamentType.QUANT:
+        return t_cst.QUANT_ROUND_PLAN[-1].round_number
+    if is_seeded_text:
+        return t_cst.TEXT_ROUND_PLAN[-1].round_number
+    return None
+
+
+async def _round_crown_verdict(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> CrownVerdict:
+    """The crown rule on the last contender's head-to-heads against the boss in rounds 1-3, the four boss-round tasks still
+    to come counting as wins (crown_verdict).
+
+    Text raises on a missing round task (a data fault, never a loss). Quant leaves out a round that holds no single task;
+    such a round can never be decided, and the boss round's verdict crowns only with all CROWN_TASKS decided, so the crown is
+    out of reach: the verdict says so without playing the boss round.
+    """
+    if tournament.tournament_type == TournamentType.QUANT:
+        head_to_heads = await quant_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
+        track = "Quant"
+    else:
+        head_to_heads = await seeded_text_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
+        track = "Text"
+    for head_to_head in head_to_heads:
+        logger.info(
+            f"{track} crown {head_to_head.label} task {head_to_head.task_id}: boss={head_to_head.boss_score} "
+            f"challenger={head_to_head.challenger_score} -> {head_to_head.describe()}"
+        )
+    verdict = crown_verdict(head_to_heads)
+    missing_rounds = len(t_cst.QUANT_ROUND_PLAN) - len(head_to_heads)
+    if tournament.tournament_type == TournamentType.QUANT and missing_rounds > 0:
+        return verdict.model_copy(
+            update={
+                "crowned_if_complete": False,
+                "reason": f"{missing_rounds} of rounds 1-3 not decided, so the seven head-to-heads can never all be decided",
+            }
+        )
+    return verdict
+
+
+async def _complete_without_boss_round(
     tournament: TournamentData,
     completed_round: TournamentRoundData,
     challenger_hotkey: str,
@@ -634,19 +686,27 @@ async def _complete_seeded_text_without_boss_round(
     config: Config,
     psql_db: PSQLDB,
 ) -> None:
-    """End a seeded text tournament after round 3 with the boss retained: the challenger can no longer be crowned, so no
-    boss round is created and nobody trains anything further.
+    """End a quant or seeded text tournament after round 3 with the boss retained: the last contender can no longer be
+    crowned, so no boss round is created and nothing is attached or dispatched for it.
 
-    The continuous lineage is carried forward first (its seed was never attached), then the placements are written (the
-    challenger second, the runner-up of round 3 third; this also sets the winner, which is the re-entry guard), then the
-    same completion steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the
-    boss's repository, so it leaves the placements as they are.
+    Text: the continuous lineage is carried forward first (its seed was never attached). Quant: the quant seeds no round
+    attached and the boss has not started are retired (retire_unattached_quant_seeds). Then the placements are written: the
+    boss first, the last contender second and third whoever a played and lost boss round would have placed third (the
+    runner-up of round 3's standings); this also sets the winner, which is the re-entry guard. Then the same completion
+    steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the boss's
+    repository, so it leaves the placements as they are.
     """
     logger.warning(f"Tournament {tournament.tournament_id} ends after round {completed_round.round_number}: {reason}")
-    await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
+    if tournament.tournament_type == TournamentType.QUANT:
+        retired = await retire_unattached_quant_seeds(tournament.tournament_id, config)
+        logger.info(f"Tournament {tournament.tournament_id}: quant seeds retired: {[role.value for role in retired]}")
+        third_place = await get_quant_round_runner_up(tournament.tournament_id, completed_round, challenger_hotkey, psql_db)
+    else:
+        await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
+        third_place = await get_seeded_text_runner_up(tournament.tournament_id, challenger_hotkey, psql_db)
     # Like a challenger beaten in a boss round, it is out: it must not keep drawing participation weight.
     await eliminate_tournament_participants(tournament.tournament_id, completed_round.round_id, [challenger_hotkey], psql_db)
-    third_place = await get_seeded_text_runner_up(tournament.tournament_id, challenger_hotkey, psql_db)
+    await _record_boss_rank_comparisons(tournament.tournament_id, challenger_hotkey, third_place, psql_db)
     await update_tournament_placements(tournament.tournament_id, EMISSION_BURN_HOTKEY, challenger_hotkey, third_place, psql_db)
     await _complete_with_defending_champion(
         tournament,
@@ -658,6 +718,22 @@ async def _complete_seeded_text_without_boss_round(
             f"second place {challenger_hotkey}, third place {third_place}."
         ),
     )
+
+
+async def _record_boss_rank_comparisons(
+    tournament_id: str, second_place: str | None, third_place: str | None, psql_db: PSQLDB
+) -> None:
+    """Store, before the placements, how each contender in 2nd and 3rd place compares with the boss on average rank over
+    rounds 1-3 (boss_rank_shares); the weight setter pays a contender the boss outranks like the boss. Called only when the
+    boss kept the crown of a quant or seeded text tournament. Never raises: a failure is logged and nothing is stored, so
+    both contenders are paid."""
+    try:
+        comparisons = await boss_rank_comparisons(tournament_id, second_place, third_place, psql_db)
+        await store_boss_rank_comparisons(tournament_id, comparisons, psql_db)
+    except Exception as e:
+        logger.error(
+            f"Tournament {tournament_id}: boss rank comparisons not stored ({type(e).__name__}: {e}); places 2 and 3 are paid"
+        )
 
 
 async def _publish_boss_round_decoded(tournament: TournamentData, config: Config, psql_db: PSQLDB) -> None:
@@ -847,12 +923,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
             # New tournaments are reviewed before round 2. This only finishes a review
             # that the old boss-round gate already stored on the tournament row.
-            integrity = await resolve_legacy_boss_code_review(
+            integrity = await resolve_stored_boss_code_review(
                 tournament, completed_round, challenger, psql_db
             )
             if integrity.halt:
                 logger.info(
-                    f"Legacy boss-round code review is holding tournament {tournament.tournament_id}; "
+                    f"Stored boss-round code review is holding tournament {tournament.tournament_id}; "
                     "winner persistence, repository upload, and diff report will not run"
                 )
                 return
@@ -872,7 +948,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     else None
                 )
                 logger.warning(
-                    f"Boss challenger {challenger.hotkey} disqualified by a legacy code review; "
+                    f"Boss challenger {challenger.hotkey} disqualified by the stored code review; "
                     f"boss retains and second place is {second_place}"
                 )
             else:
@@ -923,6 +999,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     f"for tournament {tournament.tournament_id}; omitting 3rd place"
                 )
                 third_place = None
+
+            if winner == EMISSION_BURN_HOTKEY and (tournament.tournament_type == TournamentType.QUANT or is_seeded_text):
+                await _record_boss_rank_comparisons(tournament.tournament_id, second_place, third_place, psql_db)
 
             await update_tournament_placements(
                 tournament.tournament_id,
@@ -1007,20 +1086,14 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     )
                     return
                 logger.info(f"R2 field after integrity gates: {winners}")
-            if is_seeded_text and completed_round.round_number == t_cst.TEXT_ROUND_PLAN[-1].round_number:
-                # Round 3's winner is about to meet the boss. Three tasks are decided (rounds 1-3): if the crown is already out
-                # of reach the tournament ends here and no boss round is built.
+            if completed_round.round_number == _last_miner_round_number(tournament, is_seeded_text):
+                # The round-3 cut leaves the last contender, about to meet the boss. Rounds 1-3 are its first three
+                # head-to-heads: if the crown is already out of reach the tournament ends here and no boss round is built.
                 challenger_hotkey = next((hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY), None)
                 if challenger_hotkey is not None:
-                    head_to_heads = await seeded_text_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
-                    verdict = text_crown_verdict(head_to_heads)
-                    for head_to_head in head_to_heads:
-                        logger.info(
-                            f"Text crown {head_to_head.label} task {head_to_head.task_id}: boss={head_to_head.boss_score} "
-                            f"challenger={head_to_head.challenger_score} -> {head_to_head.describe()}"
-                        )
-                    if not verdict.crowned_if_complete:
-                        await _complete_seeded_text_without_boss_round(
+                    verdict = await _round_crown_verdict(tournament, challenger_hotkey, psql_db)
+                    if not verdict.can_still_be_crowned:
+                        await _complete_without_boss_round(
                             tournament,
                             completed_round,
                             challenger_hotkey,
@@ -1029,7 +1102,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                             psql_db,
                         )
                         return
-                    logger.info(f"Text crown after round {completed_round.round_number}: still possible - {verdict.reason}")
+                    logger.info(f"Crown after round {completed_round.round_number}: still possible - {verdict.reason}")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -2321,9 +2394,10 @@ async def is_tourn_task_completed(
 
     elif task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:
         seed = await seeds_sql.get_seed_task_by_task_id(tournament_task.task_id, config.psql_db)
-        if seed is not None and seed.role in TEXT_SEED_ROLES and seed.status != SeedStatus.FAILED:
-            # A text seed is redrawn by the seed loop, which moves its place in the round to the new task. Once the role is
-            # out of replacements (`failed`) the loop is done with it: the ordinary replacement below takes over.
+        if seed is not None and seed.role in SWAPPED_SEED_ROLES and seed.status != SeedStatus.FAILED:
+            # A text or quant round seed is redrawn by the seed loop, which moves its place in the round to the new task.
+            # Once the role is out of replacements (`failed`) the loop is done with it: the ordinary replacement below
+            # takes over.
             return False, "seed task failed prep; the seed is redrawn"
         logger.info(f"Task {task_obj.task_id} failed during preparation, creating replacement immediately.")
         new_task_id = await replace_tournament_task(

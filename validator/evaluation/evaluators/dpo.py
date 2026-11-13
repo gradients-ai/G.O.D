@@ -343,6 +343,7 @@ def evaluate_dpo_model(
     except Exception as e:
         # Optional add-on: never let it discard the eval_loss the trainer already produced.
         logger.error(f"Per-pair DPO loss extraction failed, continuing without the vector: {e}", exc_info=True)
+        evaluation_results["per_example_losses_failed"] = True
         return evaluation_results
 
     finite = [loss for loss in per_pair_losses if math.isfinite(loss)]

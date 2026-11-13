@@ -1335,7 +1335,7 @@ async def create_continuous_instruct_task(config: Config, *, model_id: str, trai
         training_start_point=TrainingStartPoint.DEFAULT,
         chat_template="tokenizer_default",
     )
-    logger.info(f"CONTINUOUS_INSTRUCT_TASK: C on {model_id} with dataset {ds}, hours={hours}")
+    logger.info(f"CONTINUOUS_INSTRUCT_TASK: continuous chat chunk on {model_id} with dataset {ds}, hours={hours}")
     task = await add_task(task, config.psql_db)
     logger.info(f"CONTINUOUS_INSTRUCT_TASK: saved task {task.task_id}")
     return task
@@ -1466,7 +1466,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         raise RuntimeError(
             f"continuous_sft_state[{lineage}] is in the {state.chunk_scheme.value} chunk scheme (train_index="
             f"{state.train_index}), but the content service now serves {t_cst.CONTINUOUS_SFT_CHUNK_SCHEME.value} "
-            f"chunks; apply migration 20261113120000_continuous_sft_50k_chunks.sql before creating this task"
+            f"chunks; apply migration 20261113120000_continuous_sft_chunk_scheme.sql before creating this task"
         )
     base_model = state.last_winner_repo or seed_model
 

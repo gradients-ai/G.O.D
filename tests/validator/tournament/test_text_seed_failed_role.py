@@ -29,6 +29,7 @@ from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
 from validator.tournament import seed_tasks
 from validator.tournament import task_creator
+from validator.tournament.crown import text_head_to_head
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentData
@@ -36,7 +37,6 @@ from validator.tournament.models import TournamentSeedTask
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingStatus
-from validator.tournament.text_crown import text_head_to_head
 
 
 @pytest.fixture
@@ -214,7 +214,7 @@ class TestAttachedSeedThatFails:
         (registered,) = world.registry.values()
         assert registered.task_id != old.task_id
         assert (registered.round_id, registered.group_id) == (f"{ROUND_ID}_1", f"{ROUND_ID}_1_group_001")
-        assert len(drawn) == 1 and drawn[0][0] == ("pool", *t_cst.TEXT_ROUND_PLAN[0].model_size_b)  # not the legacy small redraw
+        assert len(drawn) == 1 and drawn[0][0] == ("pool", *t_cst.TEXT_ROUND_PLAN[0].model_size_b)  # not the unseeded redraw
         assert world.env.assigned[str(registered.task_id)] == ["m1", "m2"]
         assert EMISSION_BURN_HOTKEY not in world.env.assigned[str(registered.task_id)]
         assert str(old.task_id) not in world.env.assigned or old.task_id not in world.registry

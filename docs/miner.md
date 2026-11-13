@@ -2,7 +2,7 @@
 
 This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text, quant and image tournaments.
 
-Environment tournaments have been retired: they are no longer scheduled, no longer accept entries, and no longer contribute to emissions. Historical environment tournaments remain queryable through the analytics endpoints.
+Environment tournaments are retired: they are not scheduled, accept no entries and carry no emissions. Historical environment tournaments remain queryable through the analytics endpoints.
 
 ## Table Of Contents
 
@@ -60,7 +60,7 @@ Tournament scheduling is weekly and independent for each tournament type. Times 
 | Text | Monday at 11:00 UTC |
 | Image | Monday at 13:00 UTC |
 
-Environment tournaments are retired and are no longer scheduled.
+Environment tournaments are retired and not scheduled.
 
 The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
 
@@ -172,7 +172,7 @@ The miner exposes:
 GET /training_repo/{task_type}
 ```
 
-where `task_type` is one of `text`, `quant` or `image`. (`environment` is retired; requests for it are no longer made.) A miner opts into the quant tournament by answering `GET /training_repo/quant`; a miner that does not is simply not entered. See [Quant Tournament: Miner Guide](miner_quant.md#entering).
+where `task_type` is one of `text`, `quant` or `image`. (`environment` is retired and never requested.) A miner opts into the quant tournament by answering `GET /training_repo/quant`; a miner that does not is simply not entered. See [Quant Tournament: Miner Guide](miner_quant.md#entering).
 
 Requests are verified by Fiber dependencies in `miner/endpoints/training_repo.py`, including low-stake validator blacklisting.
 
@@ -284,7 +284,7 @@ The validation compares normalized line content against this repository's LICENS
 
 Repositories are scanned for obfuscation at the submitted commit. Obfuscated or compiled-only submissions are rejected. Avoid files such as `.pyc`, `.bin`, `.dll`, packed source, minified logic, or anything meant to hide how the method works.
 
-Do not hide datasets, pretrained models, or private artifacts inside your Docker image. Environment tournaments explicitly allow supplementary SFT only through the requested dataset whitelist.
+Do not hide datasets, pretrained models, or private artifacts inside your Docker image. Extra datasets are allowed only through the [requested dataset whitelist](#requested-datasets).
 
 ## How Validators Run Your Code
 
@@ -374,8 +374,8 @@ Your container may receive:
 | `TRANSFORMERS_CACHE` | Image | Points to the Hugging Face cache path. |
 | `MINER_DATASETS_DIR` | Text | Parent directory for approved requested datasets. |
 | `MINER_DATASETS` | Text | Comma-separated downloaded dataset directory names. |
-| `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
-| `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
+| `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss. Absent/unset means no KL penalty. |
+| `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Only set when `USE_KL=1`. |
 | `QUANT_SPEC` | `QuantFixedTask` | The same `QuantFixedSpec` JSON as `--quant-spec`: the weight/activation format to produce. |
 | `QUANT_TARGET` | `QuantFixedTask`, `QuantFreeformTask` | `QuantTarget` JSON (env only, never a flag): the reference loss and, on freeform, the knee and cap. Normally present: training waits for the reference. Absent only on organic tasks or if the reference measurement gave up after repeated failures. See [QUANT_TARGET](miner_quant.md#quanttarget). |
 | `QUANT_CALIBRATION_PATH` | `QuantFixedTask`, `QuantFreeformTask` | Optional path to a calibration set JSON. See [The calibration set](miner_quant.md#calibration-set). |
@@ -433,31 +433,38 @@ Requested datasets are mounted read-only.
 
 Text tournaments use `InstructTextTask`, `DpoTask`, `GrpoTask`, and the continuous-SFT chat task.
 
-Each miner round is one instruct task, played by every remaining miner in a single group. The boss (the defending text champion) trains the three round tasks and the continuous-SFT task with its pinned code when the tournament starts, so its results are in before the rounds are played. Round 1 starts at once, so miners train it in parallel with the boss.
+Each round is one instruct task on a model from the standard pool, played by every remaining miner in a single group. The boss (the defending text champion) trains the three round tasks and the continuous-SFT task with its pinned code when the tournament starts, so its results are in before the rounds are played. Round 1 starts at once, so miners train it in parallel with the boss.
 
-| Round | Model size | Task | Advance |
+| Round | Task | Model size | Advance |
 | --- | --- | --- | --- |
-| 1 | 1-4B | one instruct task, one group | top 8 |
-| 2 | 1-4B | one instruct task, one group | top 4 |
-| 3 | 4-8B | one instruct task, one group | top 1 |
-| Boss round | | continuous-SFT, GRPO, DPO, then one large instruct task | |
+| 1 | instruct, one group | 1-4B | top 8 |
+| 2 | instruct, one group | 1-4B | top 4 |
+| 3 | instruct, one group | 4-8B | top 1 |
+| Boss round | continuous-SFT, GRPO, DPO, then the big instruct task | big task 30-72B | |
 
-- Standings in rounds 1-3 are taken from that round's task. The boss is not part of them.
-- The boss round has four tasks. The continuous-SFT task is the one the boss already trained at the start; the challenger trains it now. One GRPO task and one DPO task are created with the round, and both the boss and the challenger train them.
-- The large instruct task (a model between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (30B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (72B)) is always last. It is created only after the first three boss-round tasks are scored, and only if the challenger can still be crowned. Otherwise nobody trains it.
-- The continuous-SFT task belongs to a lineage that carries across tournaments: each tournament trains the next chunk of the lineage's data, starting from that lineage's previous winner (or a fixed seed model on the first run). Currently there is one lineage, `qwen3-8b`, seeded from `Qwen/Qwen3-8B-Base`. The task trains for a fixed number of hours on 4xH100, and its held-out test set is sized to the chunk.
+- Standings in rounds 1-3 are taken from that round's task. The boss's entry is ranked in them with the same ordering used between miners, but it never takes an advancement slot; a boss entry with no valid result ranks behind every valid entry.
+- Every round 1-3 runs in full, and rounds 2 and 3 are played even with one miner left: the rounds decide 2nd and 3rd place, and each is one of the challenger's head-to-heads with the boss.
+- The boss round has four tasks. The continuous-SFT task is the one the boss trained at the start; the challenger trains it now. One GRPO task and one DPO task are created with the round, and both the boss and the challenger train them.
+- The big instruct task (a model between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (30B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (72B)) is always last. It is created only after the other three boss-round tasks are scored, and only if the challenger can still be crowned. Otherwise nobody trains it.
+- The continuous-SFT task belongs to a lineage that carries across tournaments: each tournament trains the next chunk of the lineage's data, starting from that lineage's previous winner (or a fixed seed model on the first run). There is one lineage, `qwen3-8b`, seeded from `Qwen/Qwen3-8B-Base`.
 
-**Crown rule.** The challenger and the boss are compared on 7 tasks: the tasks of rounds 1-3 and the 4 boss-round tasks. On each task the two models are compared on their task score (adjusted loss for instruct, DPO and continuous-SFT tasks, where lower is better; reward for GRPO, where higher is better). A task is a win when the challenger is at least 1% better than the boss, measured against the boss's score. Any other task is a non-win with a deficit: how far the challenger is behind the boss, as a fraction of the boss's score, or 0 when it is ahead by less than 1%. The challenger is crowned when:
+**Crown rule.** The challenger is compared with the boss on 7 head-to-heads: its results on the tasks of rounds 1-3 against the boss's, and the 4 boss-round tasks. Each is a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. The challenger is crowned when exactly these 7 are decided, with at most two non-wins, none beyond the looser allowance and, with two non-wins, at least one within the tight allowance.
 
-- it has at most two non-wins;
-- no deficit is above 0.25%;
-- with two non-wins, at least one deficit is at most 0.1%.
+| Task | Win | Tight allowance | Looser allowance |
+| --- | --- | --- | --- |
+| instruct, continuous-SFT, DPO | passes the paired per-example test against the boss and scores at least 1% better | at most 0.1% behind | at most 0.25% behind |
+| GRPO | scores at least 1% better | at most 0.1% behind | at most 0.25% behind |
 
-In short: the challenger wins 6 of 7 by at least 1% and loses the 7th by at most 0.25%, or wins 5 by at least 1%, loses one by at most 0.1% and one by at most 0.25%.
+- The score is the adjusted loss for instruct, DPO and continuous-SFT (lower is better) and the reward for GRPO (higher is better). Percentages are relative to the boss's score. A non-win's deficit is how far you trail the boss, and 0 when you are level or ahead.
+- The paired per-example test compares your per-example losses with the boss's on the identical held-out rows ([`validator/tournament/thresholds.py: compare_paired_losses`](../validator/tournament/thresholds.py)). It is used only against the boss; miners are never compared with each other on it.
+- If per-example losses are missing on either side or cannot be paired (including when no example is comparable), the boss keeps the task: it is a non-win, judged against the allowances on its score.
+- A task on which you have no valid result is beyond both allowances, so it rules out the crown. A task on which the boss has no valid result while you have one is a win.
 
-A task on which the challenger has no valid result is a non-win with an unbounded deficit. A task on which the boss has no valid result, while the challenger has one, is a win. A task on which neither has a valid result is a non-win with an unbounded deficit.
+**Early stop.** The crown is checked once the round-3 cut leaves the challenger: the rule is applied to its round 1-3 head-to-heads with the four boss-round tasks counted as wins. If the crown is already out of reach, no boss round is created and the boss is retained. In the boss round the big task is created last, and only while the crown is still possible.
 
-**Early stop.** The rule is checked after round 3 and after the first three boss-round tasks are scored, on the tasks decided so far, counting every task still to come as a win. When no result of the remaining tasks could crown the challenger, the tournament ends with the boss retained and no further task is created.
+**Placements.** Without a crown the boss keeps 1st and the contenders take 2nd and 3rd; a paid contender the boss outranks on average over rounds 1-3 has its share paid like the boss's: see [Placements](#placements).
+
+The full mechanics, shared with the quant tournament, are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
 
 Your submission's `config.json` must not declare a smaller `max_position_embeddings` than the base model the task specifies. A smaller value shortens the evaluation sequence length, which drops the longer held-out rows and would score you on a different, shorter subset than everyone else — so it is treated as not a fine-tune of the task model and scores zero. A larger value is fine.
 
@@ -465,9 +472,10 @@ Your submission's `config.json` must not declare a smaller `max_position_embeddi
 
 Quant tournaments are their own tournament type, with their own boss (the quant champion) and pool, and are entered separately by answering `GET /training_repo/quant`. They use `QuantFixedTask` and `QuantFreeformTask` only; no miner trains an instruct model.
 
-- A quant tournament takes its models from a text tournament: the active text tournament that has its boss tasks ready and is not already feeding a quant tournament. Until one exists the quant tournament waits and nothing is created. Each quant task is its own task, linked to the text task and the model it compresses.
-- There are three miner rounds, each a single group compressing the text boss's model from the matching text round: round 1 is freeform and compresses the round-1 model (it starts as soon as that model is available), round 2 is fixed-format (`W2A16-asym-g64`) on the round-2 model, round 3 is freeform on the round-3 model. The top 8, then the top 4, then 1 advance (round 3 is skipped when only one miner is left).
-- The boss round has six tasks: a freeform and a fixed compression of each of the text boss's round-2 model, round-3 model and continuous-SFT model. The quant boss trains its six entries as soon as each source model is available. The challenger does no instruct training. The challenger must win 5 of the 6 tasks to be crowned. To win a freeform task it needs at least 3% fewer effective bytes than the boss (`validator/tournament/constants.py: QUANT_FREEFORM_BOSS_BYTE_MARGIN`). To win a fixed task it must pass the paired per-example test and be at least 1% better on the scalar loss. The fixed tasks of the boss round use 2-bit or 3-bit formats only.
+- A quant tournament takes its models from a text tournament that has its boss tasks and is not already feeding a quant tournament: an active one, else one completed within the last 7 days. Until one exists the quant tournament waits and nothing is created. Each quant task is its own task, linked to the text task and the model it compresses.
+- Three rounds, each a single group compressing the text boss's model from the matching text round: R1 freeform on the round-1 model (top 8), R2 fixed `W2A16-asym-g64` on the round-2 model (top 4), R3 freeform on the round-3 model (top 1). The quant boss's entries are ranked in each round but never take an advancement slot, and rounds 2 and 3 are played even with one miner left.
+- The boss round has four tasks: freeform on the text boss's round-2 model, fixed 2-3 bit on its round-3 model, and freeform and fixed 2-3 bit on its continuous-SFT model.
+- The crown uses the same 7 head-to-heads, early stop and placements as text, with compression wins and allowances: see [The boss round](miner_quant.md#the-boss-round).
 - A quant tournament with no completed quant tournament of its own takes its boss from the latest completed text tournament.
 - `decoder/decode.py` is required at registration.
 
@@ -493,14 +501,14 @@ Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
 ## Scoring And Weights
 
-The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
+The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants.
 
 Weights are set in `validator/scoring/constants.py`. Each type has a guaranteed minimum share that never moves; the remaining flex pool (`EMISSION_FLEX_POOL`, 0.275) is split between the types by a participation-driven balancer (an oversubscribed type cedes flex toward a starved one — see `validator/scoring/emission_balance.py`). A type's base therefore always lies between its minimum and its minimum plus the whole flex pool, and text + quant + image always sum to exactly 1.0:
 
 | Tournament type | Guaranteed minimum | Max weight (minimum + flex) |
 | --- | --- | --- |
 | Text | 0.15 | 0.425 |
-| Quant | 0.35 | 0.625 |
+| Quant (compression) | 0.35 | 0.625 |
 | Image | 0.225 | 0.50 |
 
 Each pool pays its own type's latest completed tournament, until a newer tournament of that type completes. Text and quant each carry their own boss, advanced only by tournaments of their own type.
@@ -509,19 +517,23 @@ The minimums apply at all times. A type with no winner yet pays nobody, and its 
 
 Active tournament participants receive `0.0001` weight each.
 
-Within a tournament, up to the top three ranks are paid (`TOURNAMENT_PAID_RANKS`), distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` — roughly a 76/19/5 split across three paid ranks, or 80/20 if a clean 3rd place can't be identified (see "3rd Place" below).
+Within a tournament, up to the top three ranks are paid (`TOURNAMENT_PAID_RANKS`), distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` — roughly a 76/19/5 split across three paid ranks, or 80/20 if a clean 3rd place can't be identified (see "Placements" below).
 
 Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.10` performance threshold (`EMISSION_MULTIPLIER_THRESHOLD`). The excess is multiplied by `2.0` (`EMISSION_MULTIPLIER_RATE`) and capped by tournament type. A champion's weight does not decay over time — a long-reigning champion earns the same as a freshly-crowned one.
 
-### 3rd Place
+### Placements
 
-A tournament pays a 3rd place only when it can be identified unambiguously:
+1st is the champion: the challenger if it was crowned, otherwise the boss. With a crown the boss is 2nd; without one the challenger is 2nd. A tournament pays a 3rd place only when it can be identified unambiguously:
 
 - **Text**: the next miner after the challenger in round 3's standings (`validator/tournament/round_results.py: get_seeded_text_runner_up`).
+- **Quant**: the next miner after the challenger in the cumulative standings after round 3 (`validator/tournament/round_results.py: get_quant_round_runner_up`). When the round-3 viability cut leaves the challenger alone, it is the best of the miners that advanced from round 2 on their round 1+2 standings, re-ranked among them.
 - **Image**: the loser of the last single-pair knockout round before the boss round.
-- **Quant**: the best non-challenger, non-boss miner in the pre-boss round's standings by cumulative average rank; if round 3 was skipped, the ranking is round 1 + round 2 among the four that advanced (`validator/tournament/round_results.py: get_quant_pre_boss_runner_up`).
 
-If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
+If no valid 3rd place exists (a tie at the cutoff or another degenerate case), the tournament pays only the top two ranks, renormalized.
+
+The places are the same whether the boss round was played and lost or not played (early stop).
+
+In text and quant, when there is no crown, each paid contender (2nd, 3rd) is compared with the boss on average rank over the rounds of 1-3 in which both are ranked (rounds 1 and 2 for a quant 3rd place taken from them). In these ranks an exact score tie, and every entry with no valid result, share one rank. If the boss's average is strictly better, that place's share is paid like the boss's own share; a tie or a better contender is paid, and so is a contender whose ranks cannot be computed. For example, if the boss outranks the 3rd-place miner but not the 2nd, 2nd is paid and 3rd's share goes to the boss. The comparison is fixed when the tournament completes, appears in the published audit data, and the tournament details endpoint applies it as the weight setter does. The boss's share, and every share paid like it, goes to the defending champion's hotkey; it is burned only when no defending champion hotkey is known or that hotkey is not registered. See [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
 
 ## Image Tournament Tips
 

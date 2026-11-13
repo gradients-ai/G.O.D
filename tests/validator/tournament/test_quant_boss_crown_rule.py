@@ -1,10 +1,10 @@
-"""The QUANT dethrone rule: the boss round is six compression tasks and the challenger must win five of them.
+"""The QUANT crown: seven head-to-heads against the boss, rounds 1-3 and the four-task boss round, on the shared rule.
 
-Freeform needs 3% fewer effective bytes; fixed needs the paired per-example test and a 1% better scalar loss. Nothing is
-asked of the sixth task, and the bar is always the built size: a task that is missing, undecided, drawn or without a
-result is simply not a win.
+Freeform wins with 3% fewer effective bytes, fixed with the paired per-example test plus a 1% better scalar loss. At most two
+non-wins, all within the looser allowance, and with two of them one within the tight allowance (crown.py). Driven through
+get_round_winners with the database faked: rounds 1-3 hold one seed task each, the boss round four.
 
-Also pins TEXT and IMAGE to the rule they have always had: quant must not leak into determine_boss_round_winner for them.
+Also pins TEXT and IMAGE to the rule they have always had in determine_boss_round_winner.
 """
 
 import itertools
@@ -20,318 +20,256 @@ from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
-from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import RoundType
+from validator.tournament.models import SeedRole
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingStatus
-from validator.tournament.round_results import _quant_boss_round_crowned
 from validator.tournament.round_results import determine_boss_round_winner
 
 
 BOSS = EMISSION_BURN_HOTKEY
 CHALLENGER = "5Challenger"
-FREEFORM_ID = "11111111-2222-3333-4444-000000000002"
 FIXED, FREEFORM = TaskType.QUANTFIXEDTASK, TaskType.QUANTFREEFORMTASK
 SUCCESS, FAILURE = TrainingStatus.SUCCESS, TrainingStatus.FAILURE
-BUILT = 6
+TID = "t"
 
-
-def crown(task_winners: list[str], expected_task_count: int | None = BUILT) -> str:
-    return determine_boss_round_winner(task_winners, BOSS, TournamentType.QUANT, expected_task_count=expected_task_count)
-
-
-def winners(challenger_wins: int, boss_wins: int) -> list[str]:
-    return [CHALLENGER] * challenger_wins + [BOSS] * boss_wins
-
-
-# --- determine_boss_round_winner, QUANT -----------------------------------------------------------------------------
-
-
-def test_the_quant_boss_round_is_six_tasks_and_five_must_be_won():
-    assert t_cst.expected_boss_round_task_count(TournamentType.QUANT) == t_cst.FINAL_ROUND_QUANT_TASKS == 6
-    assert t_cst.QUANT_BOSS_ROUND_ALLOWED_LOSSES == 1
-    assert t_cst.FINAL_ROUND_QUANT_TASKS - t_cst.QUANT_BOSS_ROUND_ALLOWED_LOSSES == 5
-
-
-@pytest.mark.parametrize(
-    "challenger_wins,boss_wins,crowned",
-    [
-        (6, 0, True),
-        (5, 1, True),  # the sixth, lost or drawn or without a result, is not looked at
-        (4, 2, False),
-        (3, 3, False),
-        (1, 5, False),
-        (0, 6, False),
-        # Five tasks attached (a seed failed and was never attached): all five must be won.
-        (5, 0, True),
-        (4, 1, False),
-        # Four or fewer cannot reach five wins.
-        (4, 0, False),
-        (3, 0, False),
-        (1, 0, False),
-    ],
+# How a task went for the challenger.
+WIN, TIGHT, LOOSER, BEYOND, NO_VECTORS, BOSS_FAILED, BOSS_FAILED_NO_VECTORS, NOBODY = (
+    "win", "tight", "looser", "beyond", "no_vectors", "boss_failed", "boss_failed_no_vectors", "nobody",
+)  # fmt: skip
+# The seven tasks: rounds 1-3 (freeform, fixed, freeform), then the boss round (R2 model freeform, R3 model fixed,
+# continuous model freeform and fixed).
+KINDS = (FREEFORM, FIXED, FREEFORM, FREEFORM, FIXED, FREEFORM, FIXED)
+BOSS_ROUND_ROLES = (
+    SeedRole.BOSS_R2_FREEFORM,
+    SeedRole.BOSS_R3_FIXED,
+    SeedRole.BOSS_CONTINUOUS_FREEFORM,
+    SeedRole.BOSS_CONTINUOUS_FIXED,
 )
-def test_crown_table_against_the_built_size(challenger_wins, boss_wins, crowned):
-    expected = CHALLENGER if crowned else BOSS
-    assert crown(winners(challenger_wins, boss_wins)) == expected
+TASK_IDS = [f"11111111-2222-3333-4444-{i:012d}" for i in range(1, 8)]
+ROWS = 200
 
 
-def test_the_bar_is_the_built_size_whatever_the_caller_passes():
-    """Four decided tasks won outright do not crown, even if a caller passes the decided count as the expected size."""
-    assert crown(winners(4, 0), expected_task_count=4) == BOSS
-    assert crown(winners(4, 0), expected_task_count=None) == BOSS
-    assert crown(winners(5, 0), expected_task_count=5) == CHALLENGER
+def test_the_quant_boss_round_is_four_tasks():
+    assert t_cst.FINAL_ROUND_QUANT_TASKS == 4
+    assert t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION == {FREEFORM: 2, FIXED: 2}
 
 
-def test_no_decided_tasks_keeps_the_boss():
-    assert crown([]) == BOSS
-
-
-def test_the_boss_only_ever_wins_by_the_challenger_missing_five():
-    assert crown(winners(0, 6)) == BOSS and crown([BOSS]) == BOSS
-
-
-@pytest.mark.parametrize(
-    "opponent_wins,built_size,crowned",
-    [(6, 6, True), (5, 6, True), (4, 6, False), (0, 6, False)],
-)
-def test_crown_rule_function_table(opponent_wins, built_size, crowned):
-    assert _quant_boss_round_crowned(opponent_wins, built_size)[0] is crowned
-
-
-def test_the_crown_reason_names_the_wins_and_the_bar():
-    crowned, reason = _quant_boss_round_crowned(4, 6)
-    assert not crowned and "4 of 6" in reason and "requires 5" in reason
-
-
-# --- per-task resolution of the freeform slot -----------------------------------------------------------------------
-
-
-def _freeform(
-    hotkey: str, total_bytes: int | None, passed_bar: bool = True, quant_failure: str | None = None
-) -> MinerResultsText:
+def _freeform(hotkey: str, total_bytes: int, passed_bar: bool = True) -> MinerResultsText:
     return MinerResultsText(
-        hotkey=hotkey,
-        test_loss=float("nan") if quant_failure else 1.0,
-        synth_loss=1.0,
-        is_finetune=True,
-        task_type=FREEFORM,
-        artifact_bytes=total_bytes,
-        decoder_bytes=None if total_bytes is None else 0,
-        passed_bar=passed_bar,
-        quant_failure=quant_failure,
+        hotkey=hotkey, test_loss=1.0, synth_loss=1.0, is_finetune=True, task_type=FREEFORM, artifact_bytes=total_bytes,
+        decoder_bytes=0, passed_bar=passed_bar,
+    )  # fmt: skip
+
+
+def _fixed(hotkey: str, loss: float) -> MinerResultsText:
+    return MinerResultsText(
+        hotkey=hotkey, test_loss=loss, synth_loss=loss, is_finetune=True, task_type=FIXED, adjusted_loss=loss
     )
 
 
-async def _freeform_verdict(monkeypatch, challenger_bytes: int, boss_bytes: int = 2000) -> BossRoundTaskVerdict:
-    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", AsyncMock())
-    return await round_results._resolve_freeform_boss_round_task(
-        FREEFORM_ID, _freeform(BOSS, boss_bytes), _freeform(CHALLENGER, challenger_bytes), psql_db=None
-    )
-
-
-@pytest.mark.asyncio
-async def test_freeform_win_needs_three_percent_fewer_effective_bytes(monkeypatch):
-    assert t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN == 0.03
-    assert (await _freeform_verdict(monkeypatch, 1942)).winner_hotkey == BOSS  # 2.9% fewer: not a win
-    assert (await _freeform_verdict(monkeypatch, 1938)).winner_hotkey == CHALLENGER  # 3.1% fewer: a win
-
-
-@pytest.mark.asyncio
-async def test_freeform_within_one_percent_worse_is_a_narrow_loss(monkeypatch):
-    assert t_cst.BOSS_ROUND_FREEFORM_ALLOWED_LOSS_WITHIN == 0.01
-    narrow = await _freeform_verdict(monkeypatch, 2020)
-    assert narrow.winner_hotkey == BOSS and narrow.challenger_within_allowed_loss is True
-    just_outside = await _freeform_verdict(monkeypatch, 2021)
-    assert just_outside.winner_hotkey == BOSS and just_outside.challenger_within_allowed_loss is False
-    equal = await _freeform_verdict(monkeypatch, 2000)
-    assert equal.challenger_within_allowed_loss is True
-
-
-@pytest.mark.asyncio
-async def test_freeform_challenger_over_the_cap_is_a_clear_loss(monkeypatch):
-    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", AsyncMock())
-    verdict = await round_results._resolve_freeform_boss_round_task(
-        FREEFORM_ID, _freeform(BOSS, 2000), _freeform(CHALLENGER, 10, passed_bar=False), psql_db=None
-    )
-    assert verdict.winner_hotkey == BOSS and verdict.challenger_within_allowed_loss is False
-
-
-# --- the whole six-task boss round through get_round_winners -------------------------------------------------------------
-
-
-WIN, CLEAR_LOSS, NARROW_LOSS, DRAW, BOSS_ONLY, NOBODY, BOSS_FAILED = (
-    "win", "clear_loss", "narrow_loss", "draw", "boss_only", "nobody", "boss_failed",
-)
-# The six roles of the round: freeform and fixed for the round-2, round-3 and continuous source models.
-ROLES = (FREEFORM, FIXED, FREEFORM, FIXED, FREEFORM, FIXED)
-TASK_IDS = [f"11111111-2222-3333-4444-{i:012d}" for i in range(1, 7)]
-
-
-def _fixed_result(hotkey: str, loss: float | None) -> MinerResultsText:
-    return MinerResultsText(hotkey=hotkey, test_loss=1.0, synth_loss=1.0, is_finetune=True, task_type=FIXED, adjusted_loss=loss)
-
-
-class Round:
-    """A quant boss round with scripted per-task evidence. outcomes[i] is how role i went, or None when it was never attached."""
+class Tournament:
+    """A quant tournament after its boss round: outcomes[i] is how task i went (rounds 1-3, then the boss round), or None
+    for a boss-round task that was never attached."""
 
     def __init__(self, monkeypatch, outcomes: list[str | None]):
-        self.monkeypatch = monkeypatch
-        self.outcomes = outcomes
-        self.verdicts: dict[str, BossRoundTaskVerdict] = {}
+        self.mp = monkeypatch
         self.results: dict[str, list] = {}
+        self.vectors: dict[tuple[str, str], list[float]] = {}
         self.statuses: dict[str, dict] = {}
-        self.task_types: dict[str, TaskType] = {}
-        self.attached: list[TournamentTask] = []
-        for task_id, task_type, outcome in zip(TASK_IDS, ROLES, outcomes):
+        self.kinds: dict[str, TaskType] = {}
+        self.round_tasks: dict[str, list[TournamentTask]] = {}
+        self.seed_roles: dict[str, SeedRole] = {}
+        self.boss_side_failures: set[str] = set()
+        for index, (task_id, kind, outcome) in enumerate(zip(TASK_IDS, KINDS, outcomes)):
             if outcome is None:
                 continue
-            self.attached.append(TournamentTask(tournament_id="t", round_id="r", task_id=task_id))
-            self.task_types[task_id] = task_type
-            self._script(task_id, task_type, outcome)
+            round_id = f"r{index + 1}" if index < 3 else "boss"
+            registered = TournamentTask(tournament_id=TID, round_id=round_id, task_id=task_id)
+            self.round_tasks.setdefault(round_id, []).append(registered)
+            self.kinds[task_id] = kind
+            if index >= 3:
+                self.seed_roles[task_id] = BOSS_ROUND_ROLES[index - 3]
+            self._script(task_id, kind, outcome)
 
-    def _script(self, task_id: str, task_type: TaskType, outcome: str) -> None:
-        both_ok = {BOSS: SUCCESS, CHALLENGER: SUCCESS}
-        self.statuses[task_id] = both_ok
-        if task_type == FREEFORM:
-            bytes_by_outcome = {WIN: 1900, CLEAR_LOSS: 2100, NARROW_LOSS: 2010, DRAW: 2000}
-            if outcome in bytes_by_outcome:
-                self.results[task_id] = [_freeform(BOSS, 2000), _freeform(CHALLENGER, bytes_by_outcome[outcome])]
-            elif outcome == BOSS_ONLY:
-                self.results[task_id] = [_freeform(BOSS, 2000)]
-            elif outcome == BOSS_FAILED:
-                self.results[task_id] = [_freeform(CHALLENGER, 1900)]
-                self.statuses[task_id] = {BOSS: FAILURE, CHALLENGER: SUCCESS}
-            else:
-                self.results[task_id] = []
-            return
-        if outcome in (WIN, CLEAR_LOSS, NARROW_LOSS, DRAW):
-            self.results[task_id] = [_fixed_result(BOSS, 1.0), _fixed_result(CHALLENGER, 0.9)]
-            self.verdicts[task_id] = {
-                WIN: BossRoundTaskVerdict(winner_hotkey=CHALLENGER, decided_by="per-example win rate"),
-                CLEAR_LOSS: BossRoundTaskVerdict(winner_hotkey=BOSS, decided_by="per-example win rate"),
-                NARROW_LOSS: BossRoundTaskVerdict(
-                    winner_hotkey=BOSS, decided_by="per-example win rate", challenger_within_allowed_loss=True
-                ),
-                DRAW: BossRoundTaskVerdict(
-                    winner_hotkey=BOSS, decided_by="a draw", is_draw=True, challenger_within_allowed_loss=True
-                ),
-            }[outcome]
-        elif outcome == BOSS_ONLY:
-            self.results[task_id] = [_fixed_result(BOSS, 1.0)]
-        elif outcome == BOSS_FAILED:
-            self.results[task_id] = [_fixed_result(CHALLENGER, 0.9)]
+    def _script(self, task_id: str, kind: TaskType, outcome: str) -> None:
+        self.statuses[task_id] = {BOSS: SUCCESS, CHALLENGER: SUCCESS}
+        if outcome in (BOSS_FAILED, BOSS_FAILED_NO_VECTORS):
             self.statuses[task_id] = {BOSS: FAILURE, CHALLENGER: SUCCESS}
-        else:
+        if outcome == NOBODY:  # e.g. a seed that failed prep: nobody has a result on it
             self.results[task_id] = []
+            return
+        if kind == FREEFORM:
+            challenger_bytes = {WIN: 96_000, TIGHT: 100_500, LOOSER: 101_500, BEYOND: 103_000}.get(outcome, 96_000)
+            self.results[task_id] = [_freeform(BOSS, 100_000), _freeform(CHALLENGER, challenger_bytes)]
+            return
+        challenger_loss = {WIN: 0.9, TIGHT: 1.0, LOOSER: 1.0, BEYOND: 1.1, NO_VECTORS: 0.5}.get(outcome, 0.9)
+        self.results[task_id] = [_fixed(BOSS, 1.0), _fixed(CHALLENGER, challenger_loss)]
+        if outcome in (BOSS_FAILED, BOSS_FAILED_NO_VECTORS):
+            self.results[task_id] = [_fixed(BOSS, float("inf")), _fixed(CHALLENGER, challenger_loss)]
+        if outcome not in (NO_VECTORS, BOSS_FAILED_NO_VECTORS):
+            self.vectors[(task_id, BOSS)] = [1.0] * ROWS
+            self.vectors[(task_id, CHALLENGER)] = [challenger_loss] * ROWS
 
-    async def run(self):
-        mp = self.monkeypatch
+    async def run(self) -> str:
+        mp = self.mp
+        rounds = [
+            TournamentRoundData(round_id=f"r{n}", tournament_id=TID, round_number=n, round_type=RoundType.GROUP)
+            for n in (1, 2, 3)
+        ]
+        final = TournamentRoundData(
+            round_id="boss", tournament_id=TID, round_number=4, round_type=RoundType.KNOCKOUT, is_final_round=True
+        )
 
-        async def fake_task(task_id, psql_db):
+        async def task_of(task_id, _db):
             return SimpleNamespace(
-                task_type=self.task_types[str(task_id)], ds="d", training_start_point=None, status=TaskStatus.SUCCESS
+                task_type=self.kinds[str(task_id)], ds="d", training_start_point=None, status=TaskStatus.SUCCESS
             )
 
-        async def fake_results(task_id, psql_db):
+        async def results(task_id, _db):
             return self.results[str(task_id)]
 
-        async def fake_fixed(**kwargs):
-            return self.verdicts[str(kwargs["task_id"])]
+        async def losses(task_id, hotkey, _db):
+            vector = self.vectors.get((str(task_id), hotkey))
+            return (vector, "fingerprint") if vector is not None else (None, None)
 
-        async def no_seed_failure(*args, **kwargs):
-            return None
+        async def aligned(task_type, task_id, anchor, other, other_losses, _db, start_point=None):
+            return other_losses
 
-        tournament = TournamentData(tournament_id="t", tournament_type=TournamentType.QUANT)
-        mp.setattr(round_results, "get_tournament_tasks", AsyncMock(return_value=self.attached))
+        async def seed_of(task_id, _db):
+            role = self.seed_roles.get(str(task_id))
+            return SimpleNamespace(role=role) if role else None
+
+        mp.setattr(
+            round_results,
+            "get_tournament_tasks",
+            AsyncMock(side_effect=lambda round_id, _db: self.round_tasks.get(round_id, [])),
+        )
+        mp.setattr(round_results, "get_tournament_rounds", AsyncMock(return_value=rounds + [final]))
+        tournament = TournamentData(tournament_id=TID, tournament_type=TournamentType.QUANT)
         mp.setattr(round_results, "get_tournament", AsyncMock(return_value=tournament))
+        pair = SimpleNamespace(hotkey1=CHALLENGER, hotkey2=BOSS)
+        mp.setattr(round_results, "get_tournament_pairs", AsyncMock(return_value=[pair]))
         mp.setattr(round_results, "count_hotkeys_assigned_to_task", AsyncMock(return_value=2))
-        mp.setattr(round_results, "get_task", fake_task)
-        mp.setattr(round_results, "boss_side_seed_failure", no_seed_failure)
-        mp.setattr(round_results, "get_task_results_for_ranking", fake_results)
+        mp.setattr(round_results, "get_task", task_of)
+        mp.setattr(
+            round_results,
+            "boss_side_seed_failure",
+            AsyncMock(
+                side_effect=lambda task_id, _status, _db: (
+                    self.seed_roles[task_id] if task_id in self.boss_side_failures else None
+                )
+            ),
+        )
+        mp.setattr(round_results, "get_seed_task_by_task_id", seed_of)
+        mp.setattr(round_results, "get_task_results_for_ranking", results)
         mp.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
-        mp.setattr(round_results, "_resolve_boss_round_task_winner", fake_fixed)
-        mp.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", AsyncMock())
+        mp.setattr(round_results, "get_per_example_losses", losses)
+        mp.setattr(round_results, "sku_aligned_losses", aligned)
+        self.persisted = AsyncMock()
+        mp.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", self.persisted)
         mp.setattr(
             round_results,
             "get_training_status_for_task_and_hotkeys",
-            AsyncMock(side_effect=lambda task_id, hotkeys, db: self.statuses[str(task_id)]),
+            AsyncMock(side_effect=lambda task_id, hotkeys, _db: self.statuses[str(task_id)]),
         )
-        completed = TournamentRoundData(
-            round_id="r", tournament_id="t", round_number=4, round_type=RoundType.KNOCKOUT, is_final_round=True
-        )
-        outcome = await round_results.get_round_winners(completed, psql_db=None, config=None)
-        # A quant boss round never adds replacement tasks, drawn or not.
+        outcome = await round_results.get_round_winners(final, psql_db=None, config=None)
         assert outcome.deferred_reason is None and outcome.draw_resolution is None
         return outcome.winners[0]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "outcomes,crowned",
+    "outcomes, crowned",
     [
-        ([WIN] * 6, True),
-        # Five wins and a sixth that went any way at all.
-        ([WIN] * 5 + [CLEAR_LOSS], True),
-        ([WIN] * 5 + [NARROW_LOSS], True),
-        ([WIN] * 5 + [DRAW], True),
-        ([WIN] * 5 + [BOSS_ONLY], True),
-        ([WIN] * 5 + [NOBODY], True),
-        ([CLEAR_LOSS] + [WIN] * 5, True),
-        ([WIN, WIN, WIN, WIN, CLEAR_LOSS, WIN], True),
-        # Four wins, however narrow the two losses.
-        ([WIN] * 4 + [NARROW_LOSS, NARROW_LOSS], False),
-        ([WIN] * 4 + [DRAW, DRAW], False),
-        ([WIN] * 4 + [CLEAR_LOSS, NARROW_LOSS], False),
-        ([WIN] * 4 + [BOSS_ONLY, NOBODY], False),
-        ([WIN] * 3 + [CLEAR_LOSS] * 3, False),
-        ([CLEAR_LOSS] * 6, False),
-        ([NOBODY] * 6, False),
-        # Five attached: all five must be won.
-        ([WIN] * 5 + [None], True),
-        ([None] + [WIN] * 5, True),
-        ([WIN] * 4 + [CLEAR_LOSS, None], False),
-        ([WIN] * 4 + [DRAW, None], False),
-        ([WIN] * 4 + [NARROW_LOSS, None], False),
-        # Four attached cannot reach five.
-        ([WIN] * 4 + [None, None], False),
-        ([None, None] + [WIN] * 4, False),
-        ([WIN, None, WIN, None, WIN, WIN], False),
-        # Nothing decided: the boss.
-        ([None] * 6, False),
+        ([WIN] * 7, True),
+        # Six wins: the seventh within the looser allowance (freeform 2% more bytes, fixed a draw).
+        ([WIN] * 6 + [TIGHT], True),
+        ([WIN] * 5 + [LOOSER, WIN], True),
+        ([WIN] * 6 + [BEYOND], False),
+        ([LOOSER] + [WIN] * 6, True),
+        ([BEYOND] + [WIN] * 6, False),
+        # Five wins: one tight and one looser.
+        ([TIGHT, WIN, LOOSER] + [WIN] * 4, True),
+        ([LOOSER, WIN, LOOSER] + [WIN] * 4, False),
+        ([WIN, TIGHT, WIN, LOOSER] + [WIN] * 3, True),  # the fixed draw is the tight one
+        ([WIN] * 4 + [TIGHT, WIN, TIGHT], True),
+        ([WIN] * 4 + [TIGHT, TIGHT, TIGHT], False),
+        # A fixed task the boss takes on the paired test, and missing vectors, are beyond.
+        ([WIN] * 4 + [BEYOND, WIN, WIN], False),
+        ([WIN] * 4 + [NO_VECTORS, WIN, WIN], False),
+        # The boss's fixed entry is a scored fail: the challenger takes it, with or without vectors.
+        ([WIN] * 4 + [BOSS_FAILED_NO_VECTORS, WIN, BOSS_FAILED], True),
+        # A boss-round task never attached is undecided: no crown.
+        ([WIN] * 6 + [None], False),
     ],
 )
-async def test_the_six_task_round_through_get_round_winners(monkeypatch, outcomes, crowned):
-    winner = await Round(monkeypatch, outcomes).run()
+async def test_the_seven_head_to_heads_through_get_round_winners(monkeypatch, outcomes, crowned):
+    winner = await Tournament(monkeypatch, outcomes).run()
     assert winner == (CHALLENGER if crowned else BOSS)
 
 
 @pytest.mark.asyncio
-async def test_boss_entries_failed_on_every_task_crowns_the_challenger(monkeypatch):
-    assert await Round(monkeypatch, [BOSS_FAILED] * 6).run() == CHALLENGER
+async def test_only_the_boss_round_tasks_are_persisted(monkeypatch):
+    tournament = Tournament(monkeypatch, [WIN] * 6 + [BEYOND])
+    await tournament.run()
+
+    persisted = [call.kwargs["task_id"] for call in tournament.persisted.call_args_list]
+    assert persisted == TASK_IDS[3:]
+    assert tournament.persisted.call_args_list[-1].kwargs["winner_hotkey"] == BOSS
 
 
 @pytest.mark.asyncio
-async def test_one_failed_boss_entry_counts_as_a_challenger_win(monkeypatch):
-    assert await Round(monkeypatch, [WIN] * 4 + [BOSS_FAILED, CLEAR_LOSS]).run() == CHALLENGER
-    assert await Round(monkeypatch, [WIN] * 3 + [BOSS_FAILED, CLEAR_LOSS, CLEAR_LOSS]).run() == BOSS
+async def test_a_boss_side_seed_failure_is_the_challengers(monkeypatch):
+    tournament = Tournament(monkeypatch, [WIN] * 6 + [BEYOND])
+    tournament.boss_side_failures.add(TASK_IDS[6])
+
+    assert await tournament.run() == CHALLENGER
+    persisted = tournament.persisted.call_args_list[-1].kwargs
+    assert persisted["winner_hotkey"] == CHALLENGER and persisted["compared_hotkeys"] == [BOSS, CHALLENGER]
+    assert "boss-side seed failure" in persisted["basis"]
 
 
 @pytest.mark.asyncio
-async def test_a_task_neither_side_has_a_result_on_is_not_a_win(monkeypatch):
-    assert await Round(monkeypatch, [WIN] * 4 + [NOBODY, NOBODY]).run() == BOSS
+async def test_a_task_the_round_plays_for_a_failed_boss_round_seed_is_won_by_a_valid_challenger_entry(monkeypatch):
+    tournament = Tournament(monkeypatch, [WIN] * 7)
+    own_task = TASK_IDS[5]  # a freeform slot: the boss was never assigned, so it has no row and no result
+    tournament.seed_roles.pop(own_task)
+    tournament.statuses[own_task] = {CHALLENGER: SUCCESS}
+    tournament.results[own_task] = [_freeform(CHALLENGER, 150_000)]
+
+    assert await tournament.run() == CHALLENGER
+
+
+def _extra_boss_round_task(tournament: "Tournament", index: int) -> None:
+    task_id = f"21111111-2222-3333-4444-{index:012d}"
+    tournament.round_tasks["boss"].append(TournamentTask(tournament_id=TID, round_id="boss", task_id=task_id))
+    tournament.kinds[task_id] = FREEFORM
+    tournament.seed_roles[task_id] = SeedRole.BOSS_R3_FREEFORM
+    tournament._script(task_id, FREEFORM, WIN)
 
 
 @pytest.mark.asyncio
-async def test_challenger_entry_failed_on_two_tasks_does_not_crown(monkeypatch):
-    rnd = Round(monkeypatch, [WIN] * 4 + [BOSS_ONLY, BOSS_ONLY])
-    rnd.statuses[TASK_IDS[4]] = {BOSS: SUCCESS, CHALLENGER: FAILURE}
-    rnd.statuses[TASK_IDS[5]] = {BOSS: SUCCESS, CHALLENGER: FAILURE}
-    assert await rnd.run() == BOSS
+async def test_a_boss_round_of_more_than_four_tasks_never_crowns(monkeypatch):
+    tournament = Tournament(monkeypatch, [WIN] * 7)
+    _extra_boss_round_task(tournament, 1)
+    _extra_boss_round_task(tournament, 2)
+
+    assert await tournament.run() == BOSS
+
+
+@pytest.mark.asyncio
+async def test_seven_tasks_of_another_shape_never_crown(monkeypatch):
+    """Round 3 holds no task and the boss round five: seven decided, but not rounds 1-3 and the four boss-round tasks."""
+    tournament = Tournament(monkeypatch, [WIN] * 7)
+    tournament.round_tasks["r3"] = []
+    _extra_boss_round_task(tournament, 1)
+
+    assert await tournament.run() == BOSS
 
 
 # --- TEXT and IMAGE keep their existing rule -----------------------------------------------------------------

@@ -20,22 +20,23 @@ You may return a different repo or commit for `quant` than for `text` and `image
 
 ## Overview
 
-Rounds 1 to 3 give every miner the same bf16 model to compress: the text boss's model from the matching text round. The boss round gives the challenger and the boss six compression tasks, on the text boss's round-2, round-3 and continuous-SFT models. No miner trains an instruct model in a quant tournament. Each quant task is its own task, linked to the text task and the model it compresses.
+Rounds 1 to 3 give every miner, and the boss, the same bf16 model to compress: the text boss's model from the matching text round. The boss round gives the challenger and the boss four compression tasks, on the text boss's round-2, round-3 and continuous-SFT models. No miner trains an instruct model in a quant tournament. Each quant task is its own task, linked to the text task and the model it compresses.
 
 ```text
 SOURCES      the text tournament's boss trains its text tasks
              ├── round-1 model ────────► what every miner compresses in R1
-             ├── round-2 model ────────► what every miner compresses in R2; also two boss-round tasks
-             ├── round-3 model ────────► what every miner compresses in R3; also two boss-round tasks
-             └── continuous-SFT model ─► two boss-round tasks
+             ├── round-2 model ────────► what every miner compresses in R2; also the boss-round freeform task
+             ├── round-3 model ────────► what every miner compresses in R3; also the boss-round fixed task
+             └── continuous-SFT model ─► a freeform and a fixed boss-round task
 
 ROUNDS       R1 freeform ──top 8──► R2 fixed ──top 4──► R3 freeform ──top 1──► BOSS ROUND
              every entrant,         W2A16-asym-g64      survivors of the       challenger vs boss,
-             boss excluded                              viability cut          six tasks, wins 5 of 6
+             boss ranked too                            viability cut          four tasks; crown on
+                                                                               7 head-to-heads
 ```
 
 > [!IMPORTANT]
-> The champion (boss) does not play rounds 1 to 3. Its pinned code trains the text tasks whose outputs you compress ([Source models](#source-models-and-the-boss-entries)).
+> The quant boss plays rounds 1 to 3: its entries are ranked in each round's standings but never take an advancement slot, and they are its head-to-heads with the challenger. The models you compress are trained by the text boss's pinned code ([Source models](#source-models-and-the-boss-entries)).
 
 There are two tracks:
 
@@ -48,10 +49,10 @@ There are two tracks:
 
 | Round | Task | Input model | Who plays | Advance |
 | --- | --- | --- | --- | --- |
-| R1 | `QuantFreeformTask` | text boss's round-1 model (starts as soon as that model lands) | every entrant, boss excluded | top 8 |
-| R2 | `QuantFixedTask`, always `W2A16-asym-g64` | text boss's round-2 model | the 8 | top 4, then a viability cut |
-| R3 | `QuantFreeformTask` | text boss's round-3 model | survivors | top 1 |
-| Boss | three `QuantFreeformTask` and three `QuantFixedTask` | text boss's round-2, round-3 and continuous-SFT models, one freeform and one fixed task on each | challenger vs boss | win 5 of 6 |
+| R1 | `QuantFreeformTask` | text boss's round-1 model, 1-4B (starts as soon as that model lands) | every entrant, and the boss | top 8 |
+| R2 | `QuantFixedTask`, always `W2A16-asym-g64` | text boss's round-2 model, 1-4B | the 8, and the boss | top 4, then a viability cut |
+| R3 | `QuantFreeformTask` | text boss's round-3 model, 4-8B | survivors, and the boss | top 1 |
+| Boss | two `QuantFreeformTask` and two `QuantFixedTask` | freeform on the round-2 model; fixed 2-3 bit on the round-3 model; freeform and fixed 2-3 bit on the continuous-SFT model | challenger vs boss | crown rule below |
 
 Source: [`validator/tournament/constants.py: QUANT_ROUND_PLAN`](../validator/tournament/constants.py), `FINAL_ROUND_QUANT_TASK_DISTRIBUTION`.
 
@@ -62,51 +63,64 @@ The text tournament's boss trains its text tasks when the text tournament starts
 | Source | Text task it comes from | Used for |
 | --- | --- | --- |
 | round-1 model | the text round-1 task (instruct, 1-4 B) | the input of R1 |
-| round-2 model | the text round-2 task (instruct, 1-4 B) | the input of R2, and of a freeform and a fixed boss-round task |
-| round-3 model | the text round-3 task (instruct, 4-8 B) | the input of R3, and of a freeform and a fixed boss-round task |
+| round-2 model | the text round-2 task (instruct, 1-4 B) | the input of R2, and of the freeform boss-round task |
+| round-3 model | the text round-3 task (instruct, 4-8 B) | the input of R3, and of the fixed boss-round task |
 | continuous-SFT model | the text continuous-SFT task | the input of a freeform and a fixed boss-round task |
 
 In rounds 1 to 3 your input model is the text boss's output on a text task, never the raw base. You also get that task's train split and calibration set. In the boss round the challenger does no instruct training: it compresses the same model the boss compresses.
 
-**Boss baseline.** The quant boss trains its six boss-round entries with its pinned code as soon as each source model is available, and they are evaluated and stored. The boss round trains and evaluates the challenger's six entries and compares them with the stored ones.
+**Boss entries.** The quant boss trains its entries with its pinned code as soon as each source model is available, and they are evaluated and stored. Its R1-R3 entries are the rounds' own tasks, with the same training budget as the miners, and are ranked in the rounds; the boss round trains and evaluates the challenger's four entries and compares them with the boss's.
 
 ### Advancement
 
 Cuts use average rank over every round played so far, within the surviving cohort ([`validator/tournament/round_results.py: get_group_winners`](../validator/tournament/round_results.py)).
 
+- The boss's entries are ranked with the same ordering, but the boss never takes an advancement slot. A boss entry with no valid result ranks behind every valid entry.
 - A scored fail counts as played and ranks last on that task.
 - A training failure leaves no result. A miner missing a result in any round sorts below every miner with a result in all rounds, whatever its average rank.
-- After R2, a miner whose best possible R3 rank cannot put it top or joint top overall is dropped. If one miner is left, R3 is skipped and it meets the boss.
+- After R2, a miner whose best possible R3 rank cannot put it top or joint top overall is dropped. Every round runs in full: rounds 2 and 3 are played even with one miner left, since each is one of the challenger's head-to-heads with the boss.
 - A tournament needs at least 4 entrants ([`MIN_MINERS_FOR_TOURN`](../validator/tournament/constants.py)).
 
 ### The boss round
 
-The boss round has six tasks: a freeform compression and a fixed compression of each of the text boss's round-2 model, round-3 model and continuous-SFT model. The boss's entries were trained as each source model became available; the challenger trains its six entries with its own code.
+The boss round has four tasks: a freeform compression of the text boss's round-2 model, a fixed compression of its round-3 model, and a freeform and a fixed compression of its continuous-SFT model. The boss's entries were trained as each source model became available; the challenger trains its four entries with its own code.
 
 | Task | Type | What each player does | Decided by |
 | --- | --- | --- | --- |
-| Freeform compression (3 tasks) | `QuantFreeformTask` | compresses the shared input into an artifact and decoder | effective size `S` |
-| Fixed compression (3 tasks) | `QuantFixedTask` | compresses the shared input into a drawn format | paired per-example test |
+| Freeform compression (2 tasks) | `QuantFreeformTask` | compresses the shared input into an artifact and decoder | effective size `S` |
+| Fixed compression (2 tasks) | `QuantFixedTask` | compresses the shared input into a drawn format | paired per-example test |
 
-The fixed tasks of the boss round use 2-bit or 3-bit formats only: each draws `W3A16-asym-g128` or `W2A16-asym-g64` ([`validator/tournament/constants.py: QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py)). Both players get the same format on a task; the three fixed tasks may differ. Each task has one bf16 reference, the input model on the same GPU type.
+The fixed tasks of the boss round use 2-bit or 3-bit formats only: each draws `W3A16-asym-g128` or `W2A16-asym-g64` ([`validator/tournament/constants.py: QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py)). Both players get the same format on a task; the two fixed tasks may differ. Each task has one bf16 reference, the input model on the same GPU type.
 
-The challenger is crowned if it wins at least 5 of the 6 tasks. A task that could not be decided is not a win.
+### The crown
 
-| Task type | Challenger wins when | Otherwise |
-| --- | --- | --- |
-| freeform | under the cap, and the boss is not under the cap or its `S` is at least 3 % smaller than the boss's | boss keeps it; never a draw |
-| fixed | passes the paired gate below and its scalar loss `r` is at least 1 % better than the boss's | boss keeps it |
+The challenger is compared with the boss on 7 head-to-heads, each input model and format played once: its R1, R2 and R3 results against the boss's, and the 4 boss-round tasks. Each is a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. The challenger is crowned when exactly these 7 are decided, with at most two non-wins, none beyond the looser allowance and, with two non-wins, at least one within the tight allowance.
 
-The margins, in [`validator/tournament/constants.py`](../validator/tournament/constants.py):
-
-| Margin | Value | Meaning | Why |
+| Format | Win | Tight allowance | Looser allowance |
 | --- | --- | --- | --- |
-| Freeform win margin (`QUANT_FREEFORM_BOSS_BYTE_MARGIN`) | 3 % | to beat the boss, your `S` must be at least 3 % smaller | the title should change hands for a real improvement, not a rounding difference |
-| Fixed minimum improvement | 1 % | your scalar loss must be at least 1 % better than the boss's, on top of the paired test | a statistically clean but tiny difference should not change the title |
+| freeform | a valid entry with at most 97 % of the boss's effective bytes `S` (at least 3 % fewer) | at most 1 % more effective bytes, or fewer by less than 3 % | at most 2 % more effective bytes |
+| fixed | passes the paired test below and has a scalar loss `r` at least 1 % better | a draw on the paired test | a draw on the paired test |
 
-**The fixed task** is decided example by example: to win you must be reliably better than the boss, ahead on at least 55 % of examples with a mean gap of at least 0.01 nats and 1 % of the boss's loss, each holding at 99 % confidence ([`validator/tournament/thresholds.py: compare_paired_losses`](../validator/tournament/thresholds.py)). Why: two quantised models differ by small amounts on every example, so a single averaged number can flip on noise; the paired test only crowns a difference that holds across the eval set.
+- A valid freeform entry is under the cap, with no scored fail and a byte count.
+- On a fixed task, a draw on the paired test includes passing it without the 1 % minimum. A task the boss takes outright (it would pass the paired test against you with the sides swapped) is beyond both allowances.
+- If per-example losses are missing on either side of a fixed task, or cannot be paired (including when no example is comparable), the boss keeps it, beyond both allowances, unless the boss's own entry is a scored fail or absent.
+- A task on which the challenger has no valid entry is beyond both allowances, so it rules out the crown. A task on which the boss has no valid entry while the challenger has one is a win.
+- If the boss's seed task for a boss-round slot runs out of replacements, the round plays a task of its own for that slot with no boss entry; any valid entry of the challenger wins it, so the crown is still decided over seven.
 
-The crown logic is [`validator/tournament/round_results.py: determine_boss_round_winner`](../validator/tournament/round_results.py).
+The win margins, in [`validator/tournament/constants.py`](../validator/tournament/constants.py):
+
+| Margin | Value | Meaning |
+| --- | --- | --- |
+| Freeform win margin (`QUANT_FREEFORM_BOSS_BYTE_MARGIN`) | 3 % | to beat the boss, your `S` must be at least 3 % smaller |
+| Fixed minimum improvement (`QUANT_FIXED_BOSS_MIN_IMPROVEMENT`) | 1 % | your scalar loss must be at least 1 % better than the boss's, on top of the paired test |
+
+**The paired test** is decided example by example: to win you must be reliably better than the boss, ahead on at least 55 % of examples with a mean gap of at least 0.01 nats and 1 % of the boss's loss, each holding at 99 % confidence ([`validator/tournament/thresholds.py: compare_paired_losses`](../validator/tournament/thresholds.py)). It is used only against the boss; miners are never compared with each other on it.
+
+**Early stop.** The crown is checked once the R3 cut leaves the challenger: the rule is applied to its R1-R3 head-to-heads with the four boss-round tasks counted as wins. If the crown is already out of reach, no boss round is created and the boss is retained. A round 1-3 with no decidable task rules the crown out. Once the tournament is decided, the boss's entries no round attached are cancelled if it has not started them; ones already started finish and are not used.
+
+**Placements.** Without a crown the boss keeps 1st and the contenders take 2nd and 3rd; a paid contender the boss outranks on average rank over R1-R3 has its share paid like the boss's ([Placements](miner.md#placements)).
+
+The full mechanics, shared with the text tournament, are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
 
 ## What Your Code Receives
 
@@ -289,7 +303,7 @@ On top of the generic checks in the [Miner Guide](miner.md#training-repository-r
 
 Each tournament type has its own pool. The guaranteed minimums are text 0.15, quant 0.35 and image 0.225; the remaining 0.275 is a flex pool that moves with how many miners entered the recent tournaments of each type ([`validator/scoring/constants.py`](../validator/scoring/constants.py), [`validator/scoring/emission_balance.py`](../validator/scoring/emission_balance.py)). The quant pool therefore lies between 0.35 and 0.625.
 
-The pool pays the latest completed quant tournament's top three, in the same ratio as the other types, until a newer quant tournament completes. The quant boss is carried forward only by quant tournaments, and is paid from this pool; the text boss is paid from the text pool.
+The pool pays the latest completed quant tournament's top three, in the same ratio as the other types, until a newer quant tournament completes; [Placements](miner.md#placements) says who they are, including the no-crown rule. The quant boss is carried forward only by quant tournaments, and is paid from this pool; the text boss is paid from the text pool.
 
 The minimums apply at all times. A type with no winner yet pays nobody, and its share goes to the burn address. See [Scoring And Weights](miner.md#scoring-and-weights).
 

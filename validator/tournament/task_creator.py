@@ -48,9 +48,13 @@ from validator.tasks.synthetics.scheduler import repoint_chained_quant_task
 from validator.tournament import constants as t_cst
 from validator.tournament import quant_sources
 from validator.tournament.chaining import is_chained
+from validator.tournament.crown import is_text_big_task
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import LEGACY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import QUANT_SLOT_BY_SEED_ROLE
+from validator.tournament.models import QUANT_SLOT_SPECS
+from validator.tournament.models import RETIRED_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import UNCREATED_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import QuantRoundSpec
@@ -61,7 +65,6 @@ from validator.tournament.models import TextRoundSpec
 from validator.tournament.models import TournamentSeedTask
 from validator.tournament.models import TournamentTask
 from validator.tournament.task_results import get_task_results_for_ranking
-from validator.tournament.text_crown import is_text_big_task
 
 
 logger = get_logger(__name__)
@@ -274,7 +277,7 @@ async def _create_seeded_text_boss_round_tasks(tournament_id: str, round_id: str
 async def create_seeded_text_big_task(tournament_id: str, round_id: str, config: Config) -> RawTask:
     """Stage 2 of a seeded text tournament's boss round: the big task, an instruct task on a 30-72B model.
 
-    Made the way the legacy boss round makes its large-instruct slot: drawn from the large-instruct pool, KL on and no
+    Made the way the unseeded text boss round makes its large-instruct slot: drawn from the large-instruct pool, KL on and no
     augmentation (republishing a 70B copy during model-prep exceeds the prep timeout). Idempotent: a round that already
     holds an instruct task returns it. Raises when the task cannot be created.
     """
@@ -1236,8 +1239,10 @@ async def replace_tournament_task(
     already_assigned: set[str] = set()
     if resumed:
         already_assigned = {node.hotkey for node in await task_sql.get_nodes_assigned_to_task(new_task.task_id, config.psql_db)}
+    # A miner-round task of a quant tournament (its round seed's role failed) has no boss run behind its replacement either.
+    is_quant_round_task = is_quant_task and group_id is not None
     for node in original_assigned_nodes:
-        if is_seeded_text_round_task and node.hotkey == EMISSION_BURN_HOTKEY:
+        if (is_seeded_text_round_task or is_quant_round_task) and node.hotkey == EMISSION_BURN_HOTKEY:
             continue
         if node.hotkey not in already_assigned:
             await task_sql.assign_node_to_task(new_task.task_id, node, config.psql_db)
@@ -1306,19 +1311,15 @@ def quant_round_spec(round_number: int) -> QuantRoundSpec:
 
 
 async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: str, config: Config) -> list[RawTask]:
-    """R1-R3: the round's one quant task, chained on the seed task of the BOUND text tournament whose boss model it compresses
-    (QUANT_ROUND_PLAN: round 1 text_r1, round 2 text_r2, round 3 text_r3).
+    """R1-R3: the round's one quant task is the round's quant seed (QUANT_ROUND_PLAN: round 1 quant_r1 on the text boss's
+    text_r1 model, round 2 quant_r2 on its text_r2 model, round 3 quant_r3 on its text_r3 model).
 
-    The task is new (its own id, `upstream_task_id` the text seed task), held in AWAITING_UPSTREAM until the text boss's model
-    has landed; the release then makes it an ordinary quant task on that model, copies the seed's split and calibration and
-    sets the non-boss hours. Its source row (quant_task_sources) records the link. The fixed format is the round's pinned one
-    (R2: W2A16-asym-g64), else drawn from a round-seeded rng.
-
-    Idempotent across restarts, in this order: (1) the round already has its task: return it; (2) the slot has a live source
-    row but the task is not registered in the round (the process stopped between creation and registration): register that
-    task, create nothing; (3) create the task and its source row; a concurrent pass that took the slot first leaves its task as
-    the one, and the duplicate is deleted. Raises MissingBossRoundSeeds only while the text role's replacement is pending (or the
-    tournament is not bound), so the round stays PENDING; a `failed` role's row is used and the task takes the fallback model.
+    The quant boss trains the seed as soon as its source model lands; the round registers the seed task under its group and
+    marks it attached, so the round's miners train the same task and the boss's entry is ranked with theirs. Idempotent: a
+    round that already has its task returns it (and sets a marker a stop left unset). Raises MissingBossRoundSeeds while the
+    role has no live seed and is not `failed` (the tournament is not bound yet, or a replacement is pending), so the round
+    stays PENDING and is retried. A `failed` role (out of replacements) does not block the round: it plays a task of its own
+    with no boss entry (_create_round_task_without_boss).
     """
     round_id = round_data.round_id
     spec = quant_round_spec(round_data.round_number)
@@ -1326,16 +1327,53 @@ async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: s
     existing = await _get_existing_tasks_by_identifier(round_id, config, group_id=group_id)
     if existing:
         logger.info(f"Round {round_data.round_number} already has its quant task, skipping task creation")
-        return await _get_existing_tasks(existing, config)
+        held = await _get_existing_tasks(existing, config)
+        for task in held:
+            if await seeds_sql.get_seed_task_by_task_id(task.task_id, config.psql_db) is not None:
+                await seeds_sql.mark_seed_attached(task.task_id, round_id, config.psql_db)
+        return held
 
+    seed_role = QUANT_SLOT_SPECS[spec.slot].quant_seed_role
+    seed = next(
+        (row for row in await seeds_sql.get_active_seed_tasks(tournament_id, config.psql_db) if row.role == seed_role), None
+    )
+    if seed is None:
+        if not await _role_is_failed(tournament_id, seed_role, config.psql_db):
+            raise MissingBossRoundSeeds(tournament_id, [seed_role.value])
+        return [await _create_round_task_without_boss(round_data, tournament_id, config)]
+    task = await task_sql.get_task(seed.task_id, config.psql_db)
+    if task is None:
+        raise RuntimeError(f"Tournament {tournament_id}: seed {seed_role.value} task {seed.task_id} is gone")
+    await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
+    # Durable "ever attached" marker (idempotent): from here on the seed is only replaced for a prep failure.
+    await seeds_sql.mark_seed_attached(task.task_id, round_id, config.psql_db)
+    logger.info(f"Round {round_id}: attached seed {seed_role.value} task {task.task_id}")
+    return [task]
+
+
+async def _create_round_task_without_boss(round_data: GroupRound, tournament_id: str, config: Config) -> RawTask:
+    """The task of a quant round whose seed role is `failed`: a new held quant task on the round's text seed, with no seed
+    row and no boss assignment, so the boss has no entry on it. It supersedes the failed seed's source row for the slot.
+
+    Idempotent: a live source row of the slot whose task is not a seed (a stop between creation and registration) is
+    registered instead of creating another task. The fixed format is the round's pinned one, else drawn from a round-seeded
+    rng.
+    """
+    round_id = round_data.round_id
+    spec = quant_round_spec(round_data.round_number)
+    group_id = f"{round_id}_group_001"
     binding = await quant_sources.bind_quant_source_tournament(tournament_id, config)
     if binding is None:
         raise MissingBossRoundSeeds(tournament_id, [spec.input_role.value])
     task = None
     live = await quant_sources_sql.get_live_quant_task_source(tournament_id, spec.slot, config.psql_db)
+    replacing_task_id = None
     if live is not None:
-        task = await task_sql.get_task(live.quant_task_id, config.psql_db)
-        logger.warning(f"Round {round_id}: registering the existing task {live.quant_task_id} of slot {spec.slot.value}")
+        if await seeds_sql.get_seed_task_by_task_id(live.quant_task_id, config.psql_db) is None:
+            task = await task_sql.get_task(live.quant_task_id, config.psql_db)
+            logger.warning(f"Round {round_id}: registering the existing task {live.quant_task_id} of slot {spec.slot.value}")
+        else:
+            replacing_task_id = live.quant_task_id
     if task is None:
         text_seed = await quant_sources.slot_text_seed(binding, spec.slot, config)
         if text_seed is None:
@@ -1350,7 +1388,7 @@ async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: s
             quant_format = draw_quant_format(random.Random(f"{round_id}:quant_format:0"))
         created = await create_chained_quant_task(config, spec.task_type, upstream, quant_format=quant_format, boss=False)
         source = await quant_sources.record_new_quant_task(
-            quant_sources.new_task_source(UUID(str(created.task_id)), binding, spec.slot, text_seed), config
+            quant_sources.new_task_source(UUID(str(created.task_id)), binding, spec.slot, text_seed), config, replacing_task_id
         )
         is_ours = source.quant_task_id == UUID(str(created.task_id))
         task = created if is_ours else await task_sql.get_task(source.quant_task_id, config.psql_db)
@@ -1358,7 +1396,8 @@ async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: s
             raise RuntimeError(f"Round {round_id}: the task {source.quant_task_id} of slot {spec.slot.value} is gone")
     if await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), config.psql_db) is None:
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
-    return [task]
+    logger.warning(f"Round {round_id}: seed of slot {spec.slot.value} failed; plays its own task {task.task_id} (no boss entry)")
+    return task
 
 
 async def _get_round_one_tasks(tournament_id: str, psql_db: PSQLDB) -> list[TournamentTask]:
@@ -1429,27 +1468,40 @@ def _quant_models(config: Config) -> AsyncGenerator[str, None]:
 async def _attach_boss_round_seeds(
     seeds: dict[SeedRole, TournamentSeedTask], tournament_id: str, round_id: str, pair_id: str, config: Config
 ) -> list[RawTask]:
-    """Register the boss round's compression seed tasks under the round's pair; no task is drawn.
+    """Register the boss round's compression seed tasks under the round's pair; nothing is drawn for a live seed.
 
-    Every role that has a live seed is attached. A role whose latest row is `failed` (out of replacements) is skipped: it does
-    not halt the tournament or block the round, the crown rule counts the missing task as not won. A role with no live seed
-    and no failed row (a replacement is pending) raises, so the round stays PENDING and is retried instead of running short of
-    tasks. A tournament whose seeds are the two compressions chained on a BOSS_INSTRUCT seed attaches those two.
-    Idempotent: a seed already registered in the round is not inserted again.
+    Every role that has a live seed is attached. A role whose latest row is `failed` (out of replacements) does not halt the
+    tournament or block the round: the round plays a task of its own for that slot with no boss entry
+    (_create_boss_round_task_without_boss), which a challenger with a valid entry takes against the boss, so the crown is
+    still decided over seven tasks. A role with no live seed and no failed row (a replacement is pending) raises, so the
+    round stays PENDING and is retried instead of running short of tasks. A tournament whose seeds are the two compressions
+    chained on a BOSS_INSTRUCT seed attaches those two. A tournament that also holds rows of BOSS_R2_FIXED and
+    BOSS_R3_FREEFORM attaches them too; its boss round then holds more tasks than the crown rule is defined on, and the boss
+    retains (round_results._get_quant_boss_round_outcome). Idempotent: a task already registered in the round is not
+    inserted again.
     """
     latest = {row.role: row for row in await seeds_sql.get_latest_seed_tasks(tournament_id, config.psql_db)}
-    role_set = LEGACY_BOSS_ROUND_SEED_ROLES if latest.keys() & LEGACY_BOSS_ROUND_SEED_ROLES else BOSS_ROUND_SEED_ROLES
+    if latest.keys() & RETIRED_BOSS_ROUND_SEED_ROLES:
+        role_set = RETIRED_BOSS_ROUND_SEED_ROLES
+    else:
+        role_set = BOSS_ROUND_SEED_ROLES | (latest.keys() & UNCREATED_BOSS_ROUND_SEED_ROLES)
     roles = [role for role in SeedRole if role in role_set]
     failed = {role for role, row in latest.items() if row.status == SeedStatus.FAILED}
     missing = [role.value for role in roles if role not in seeds and role not in failed]
     if missing:
         raise MissingBossRoundSeeds(tournament_id, missing)
-    attachable = [role for role in roles if role in seeds]
-    if not attachable:
-        raise MissingBossRoundSeeds(tournament_id, [role.value for role in roles])
     registered = {str(task.task_id) for task in await _get_existing_tasks_by_identifier(round_id, config, pair_id=pair_id)}
     tasks: list[RawTask] = []
-    for role in attachable:
+    for role in roles:
+        if role not in seeds:
+            if role in QUANT_SLOT_BY_SEED_ROLE:
+                tasks.append(await _create_boss_round_task_without_boss(role, tournament_id, round_id, pair_id, config))
+            else:
+                logger.error(
+                    f"Boss round {round_id}: seed {role.value} failed and has no slot to play a task of its own; the round "
+                    f"goes on without it and the crown cannot be decided over seven tasks"
+                )
+            continue
         task = await task_sql.get_task(seeds[role].task_id, config.psql_db)
         if task is None:
             raise RuntimeError(f"Tournament {tournament_id}: boss-round seed {role.value} task {seeds[role].task_id} is gone")
@@ -1459,7 +1511,55 @@ async def _attach_boss_round_seeds(
         # Durable "ever attached" marker (idempotent): the seed is never replaced from here on, whatever happens to its row.
         await seeds_sql.mark_seed_attached(task.task_id, round_id, config.psql_db)
         tasks.append(task)
+    if not tasks:
+        raise MissingBossRoundSeeds(tournament_id, [role.value for role in roles])
     return tasks
+
+
+async def _create_boss_round_task_without_boss(
+    role: SeedRole, tournament_id: str, round_id: str, pair_id: str, config: Config
+) -> RawTask:
+    """The boss-round task of a slot whose seed role is `failed`: a new held quant task drawn like the role's seed (same text
+    seed, format and budget), registered under the round's pair with no seed row, so the boss has no entry on it and is not
+    assigned to it (assign_nodes_to_tournament_tasks). It supersedes the failed seed's source row for the slot.
+
+    Idempotent: a live source row of the slot whose task is not a seed (a stop between creation and registration) is
+    registered instead of drawing another task. Raises MissingBossRoundSeeds while the quant tournament is not bound or the
+    slot's text seed has no final row (a text replacement is pending), so the round stays PENDING, alerted once, and is
+    retried.
+    """
+    # seed_tasks imports this module, so the draw is imported here.
+    from validator.tournament.seed_tasks import draw_compression_task
+
+    slot = QUANT_SLOT_BY_SEED_ROLE[role]
+    text_role = QUANT_SLOT_SPECS[slot].text_role
+    binding = await quant_sources.bind_quant_source_tournament(tournament_id, config)
+    if binding is None:
+        raise MissingBossRoundSeeds(tournament_id, [text_role.value])
+    task = None
+    replacing_task_id = None
+    live = await quant_sources_sql.get_live_quant_task_source(tournament_id, slot, config.psql_db)
+    if live is not None:
+        if await seeds_sql.get_seed_task_by_task_id(live.quant_task_id, config.psql_db) is None:
+            task = await task_sql.get_task(live.quant_task_id, config.psql_db)
+        else:
+            replacing_task_id = live.quant_task_id
+    if task is None:
+        text_seed = await quant_sources.slot_text_seed(binding, slot, config)
+        if text_seed is None:
+            raise MissingBossRoundSeeds(tournament_id, [text_role.value])
+        created = await draw_compression_task(role, tournament_id, text_seed, config)
+        source = await quant_sources.record_new_quant_task(
+            quant_sources.new_task_source(UUID(str(created.task_id)), binding, slot, text_seed), config, replacing_task_id
+        )
+        is_ours = source.quant_task_id == UUID(str(created.task_id))
+        task = created if is_ours else await task_sql.get_task(source.quant_task_id, config.psql_db)
+        if task is None:
+            raise RuntimeError(f"Boss round {round_id}: the task {source.quant_task_id} of slot {slot.value} is gone")
+    if await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), config.psql_db) is None:
+        await _create_and_register_tournament_task(task, tournament_id, round_id, config, pair_id=pair_id)
+    logger.warning(f"Boss round {round_id}: seed {role.value} failed; plays its own task {task.task_id} (no boss entry)")
+    return task
 
 
 async def _create_quant_boss_round_tasks(tournament_id: str, round_id: str, config: Config) -> list[RawTask]:

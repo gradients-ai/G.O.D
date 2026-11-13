@@ -2,8 +2,10 @@
 
 R1 freeform on the text tournament's text_r1 seed, R2 fixed on text_r2, R3 freeform on text_r3: one chained quant task per
 round, a new task held until the text boss's model has landed, released on that model with the seed's split and calibration
-and non-boss hours. Cuts 8 / 4 / 1 by average rank (ties by the most recent round), the seed hiding rule and the endpoints
-that apply it.
+and non-boss hours. The round's task is normally its quant seed (attached; see test_quant_text_linkage.py); the creation tests
+here take a round whose quant seed role is `failed`, which creates the same task without the boss. Cuts 8 / 4 / 1 by average
+rank (ties by the most recent round) among the challengers, the boss ranked alongside them in each round, the seed hiding
+rule and the endpoints that apply it.
 """
 
 import math
@@ -43,6 +45,7 @@ from validator.tasks.synthetics.scheduler import quant_training_hours
 from validator.tournament import constants as t_cst
 from validator.tournament import orchestrator
 from validator.tournament import task_creator
+from validator.tournament.boss_rank_shares import compare_with_boss
 from validator.tournament.models import INPUT_SEED_ROLES
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
@@ -171,6 +174,11 @@ def creation(monkeypatch):
         SeedRole.TEXT_R3: _seed_task(model_params_count=6_000_000_000),
     }
     rows = [_text_row(role, task) for role, task in seeds.items()]
+    # The quant tournament's round seed roles are out of replacements: each round creates its own task.
+    failed_quant_rows = [
+        TournamentSeedTask(tournament_id=TID, role=role, attempt=3, task_id=uuid4(), status=SeedStatus.FAILED)
+        for role in (SeedRole.QUANT_R1, SeedRole.QUANT_R2, SeedRole.QUANT_R3)
+    ]
     by_id = {task.task_id: task for task in seeds.values()}
     store = FakeQuantSourceStore().install(monkeypatch)
     store.bind(TID, TEXT_TID)
@@ -191,13 +199,22 @@ def creation(monkeypatch):
 
     monkeypatch.setattr(scheduler, "add_task", add_with_id)
     monkeypatch.setattr(task_creator.seeds_sql, "get_active_seed_tasks", AsyncMock(return_value=rows))
-    monkeypatch.setattr(task_creator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=rows))
+    monkeypatch.setattr(task_creator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=rows + failed_quant_rows))
+    monkeypatch.setattr(task_creator.seeds_sql, "get_seed_task_by_task_id", AsyncMock(return_value=None))
     monkeypatch.setattr(task_creator.tournament_sql, "get_tournament_task_by_task_id", AsyncMock(return_value=None))
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(side_effect=lambda task_id, psql_db: by_id.get(task_id)))
     monkeypatch.setattr(task_creator, "_get_existing_tasks_by_identifier", AsyncMock(return_value=[]))
     monkeypatch.setattr(task_creator, "_get_existing_tasks", AsyncMock(return_value=[]))
     monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", register)
-    return SimpleNamespace(seeds=seeds, rows=rows, register=register, hours_calls=hours_calls, store=store, by_id=by_id)
+    return SimpleNamespace(
+        seeds=seeds,
+        rows=rows,
+        failed_quant_rows=failed_quant_rows,
+        register=register,
+        hours_calls=hours_calls,
+        store=store,
+        by_id=by_id,
+    )
 
 
 async def _create(round_number: int) -> None:
@@ -286,7 +303,9 @@ async def test_rerun_with_the_round_task_present_creates_nothing(creation, monke
 
 async def test_a_missing_text_seed_keeps_the_round_pending(creation, monkeypatch):
     monkeypatch.setattr(task_creator.seeds_sql, "get_active_seed_tasks", AsyncMock(return_value=[creation.rows[1]]))
-    monkeypatch.setattr(task_creator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[creation.rows[1]]))
+    monkeypatch.setattr(
+        task_creator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[creation.rows[1], *creation.failed_quant_rows])
+    )
     # the missing role's row is gone from the store: nothing final, and the text tournament is still running
 
     with pytest.raises(task_creator.MissingBossRoundSeeds) as error:
@@ -596,7 +615,7 @@ async def test_a_scored_fail_in_round_two_ranks_last(tournament):
     assert a.recent_round_rank == 4.0 and a.total_rank == 1 + 4
 
 
-async def test_the_viability_cull_after_round_two_leaves_a_lone_survivor_who_skips_round_three(tournament):
+async def test_the_viability_cull_after_round_two_leaves_a_lone_survivor(tournament):
     cohort = [f"h{i}" for i in range(4)]
     # h0 leads both rounds by a margin the others cannot close in a three-round cut.
     r2 = [_fixed(hk, 1.0 + i / 10) for i, hk in enumerate(cohort)]
@@ -646,14 +665,35 @@ async def test_third_place_is_the_pre_boss_round_three_standing(tournament):
     assert third == "B"
 
 
-async def test_third_place_when_round_three_is_skipped_is_the_round_two_standing_of_the_top_four(tournament):
+async def test_third_place_after_a_lone_round_three_survivor_is_the_first_two_round_standing_of_the_top_four(tournament):
+    """8 miners in the same order in R1 and R2: the viability cut keeps h0 alone, who plays round 3 and the boss in round 4.
+    Round 3's group names nobody else, so third place is the best of the round-2 advance set after h0."""
     cohort = [f"h{i}" for i in range(8)]
     r2 = [_fixed(hk, 1.0 + i / 10) for i, hk in enumerate(cohort)]
-    tournament({T1_TASK: _by_bytes(cohort), T2_TASK: r2}, {1: cohort, 2: cohort})
+    results = {T1_TASK: _by_bytes(cohort), T2_TASK: r2, T3_TASK: _by_bytes(["h0"])}
+    tournament(results, {1: cohort, 2: cohort})
+    assert await rr.get_group_winners(_round_data(2), [_round_task(2, T2_TASK)], psql_db=None) == ["h0"]
 
-    third = await rr.get_quant_pre_boss_runner_up(TID, _round_data(3, is_final=True), "h0", None)
+    tournament(results, {1: cohort, 2: cohort, 3: ["h0"]})
+
+    assert await rr.get_quant_pre_boss_runner_up(TID, _round_data(4, is_final=True), "h0", None) == "h1"
+    assert await rr.get_quant_round_runner_up(TID, _round_data(3), "h0", None) == "h1"  # the early stop after round 3
+
+
+async def test_the_third_place_from_rounds_one_and_two_is_compared_with_the_boss_over_those_rounds(tournament):
+    cohort = [f"h{i}" for i in range(8)]
+    r1 = _by_bytes(["h0", BOSS, "h1", *cohort[2:]])  # the boss second in R1
+    r2 = [_fixed(hk, 1.0 + i / 10) for i, hk in enumerate(["h0", "h1", BOSS, *cohort[2:]])]  # third in R2
+    r3 = _by_bytes([BOSS, "h0"])
+    tournament({T1_TASK: r1, T2_TASK: r2, T3_TASK: r3}, {1: cohort, 2: cohort, 3: ["h0"]})
+
+    third = await rr.get_quant_round_runner_up(TID, _round_data(3), "h0", None)
+    comparison = compare_with_boss(await rr.round_ranks_with_boss(TID, psql_db=None), third, 3)
 
     assert third == "h1"
+    assert comparison.compared_round_numbers == [1, 2]
+    assert (comparison.contender_average_rank, comparison.boss_average_rank) == (2.5, 2.5)
+    assert comparison.share_to_boss is False
 
 
 # --------------------------------------------------------------------------------------------- hiding
@@ -831,3 +871,83 @@ async def test_the_task_endpoints_apply_the_hiding_rule(monkeypatch):
     monkeypatch.setattr(tasks_endpoint.task_sql, "get_task_by_id", AsyncMock(return_value=task))
     shown = await tasks_endpoint.get_task_details(task.task_id, config)
     assert shown.ds_repo == "org/ds"
+
+
+# --------------------------------------------------------------------------------------------- the boss in the rounds
+
+BOSS = EMISSION_BURN_HOTKEY
+
+
+async def test_the_boss_is_ranked_in_each_round_but_takes_no_advancement_slot(tournament):
+    entrants = [f"h{i:02d}" for i in range(10)]
+    # The boss's entry on the round seed is second best of the round.
+    results = _by_bytes([entrants[0], BOSS, *entrants[1:]])
+    tournament({T1_TASK: results}, {1: entrants})
+
+    winners = await rr.get_group_winners(_round_data(1), [_round_task(1, T1_TASK)], psql_db=None)
+    ranks = await rr.round_ranks_with_boss(TID, psql_db=None)
+
+    assert winners == entrants[:8] and BOSS not in winners
+    (round_one,) = ranks.rounds
+    assert round_one.round_number == 1 and round_one.task_ids == [T1_TASK]
+    assert round_one.ranks[BOSS] == 2
+    assert round_one.ranks[entrants[0]] == 1 and round_one.ranks[entrants[1]] == 3 and round_one.ranks[entrants[9]] == 11
+
+
+async def test_a_boss_entry_with_no_valid_result_ranks_behind_every_valid_entry(tournament):
+    cohort = ["A", "B", "C"]
+    r1 = [*_by_bytes(["A", "B", "C"]), _freeform_fail(BOSS)]
+    r2 = [_fixed("B", 1.0), _fixed("C", 1.1)]  # the boss has no row at all, A scored nothing
+    tournament({T1_TASK: r1, T2_TASK: r2}, {1: cohort, 2: cohort})
+
+    ranks = await rr.round_ranks_with_boss(TID, psql_db=None)
+
+    first, second = ranks.rounds
+    assert first.ranks == {"A": 1, "B": 2, "C": 3, BOSS: 4}
+    assert (second.ranks["B"], second.ranks["C"]) == (1, 2)
+    assert second.ranks["A"] == second.ranks[BOSS] == 3  # both behind every valid entry, level with each other
+
+
+async def test_an_exact_tie_with_the_boss_shares_the_rank(tournament):
+    cohort = ["A", "B", "C"]
+    r1 = [_freeform("B", 100), _freeform(BOSS, 200), _freeform("A", 200), _freeform("C", 300)]
+    tournament({T1_TASK: r1}, {1: cohort})
+
+    (first,) = (await rr.round_ranks_with_boss(TID, psql_db=None)).rounds
+
+    assert first.ranks == {"B": 1, BOSS: 2, "A": 2, "C": 4}
+    # Advancement among the challengers is untouched: A still advances ahead of C, behind B.
+    assert await rr.get_group_winners(_round_data(1), [_round_task(1, T1_TASK)], psql_db=None) == ["B", "A", "C"]
+
+
+async def test_the_average_rank_over_rounds_one_to_three(tournament):
+    cohort = ["A", "B"]
+    r1 = _by_bytes([BOSS, "A", "B"])
+    r2 = [_fixed("A", 1.0), _fixed(BOSS, 1.1), _fixed("B", 1.2)]
+    r3 = _by_bytes(["A", "B", BOSS])
+    tournament({T1_TASK: r1, T2_TASK: r2, T3_TASK: r3}, {1: cohort, 2: cohort, 3: ["A"]})
+
+    ranks = await rr.round_ranks_with_boss(TID, psql_db=None)
+
+    assert [round_ranks.round_number for round_ranks in ranks.rounds] == [1, 2, 3]
+    assert ranks.average_rank(BOSS) == pytest.approx((1 + 2 + 2) / 3)  # round 3's field is A and the boss: B is not in it
+    assert ranks.average_rank("A") == pytest.approx((2 + 1 + 1) / 3)
+    assert ranks.average_rank("B") == pytest.approx((3 + 3) / 2)
+    assert ranks.average_rank("nobody") is None
+
+
+async def test_a_text_tournament_ranks_its_boss_the_same_way(tournament, monkeypatch):
+    cohort = ["A", "B"]
+    loss = {"A": 1.2, BOSS: 1.1, "B": 1.3}
+    text = [
+        MinerResultsText(hotkey=hk, test_loss=value, synth_loss=value, is_finetune=True, task_type=TaskType.INSTRUCTTEXTTASK)
+        for hk, value in loss.items()
+    ]
+    tournament({T1_TASK: text}, {1: cohort})
+    monkeypatch.setattr(
+        rr, "get_tournament", AsyncMock(return_value=TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT))
+    )
+
+    ranks = await rr.round_ranks_with_boss(TID, psql_db=None)
+
+    assert ranks.rounds[0].ranks == {BOSS: 1, "A": 2, "B": 3}

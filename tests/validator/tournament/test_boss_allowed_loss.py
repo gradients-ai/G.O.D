@@ -1,9 +1,8 @@
-"""What counts as a narrow loss on each compression task, for the boss-battle analytics, and how a six-task round is judged.
+"""What counts as a narrow loss on each compression task, for the boss-battle analytics.
 
-Crowning needs five wins of six and never reads the narrowness of a loss; the analytics still report it
-(within_allowed_loss). Fixed (paired test) is narrow unless the boss would have beaten the challenger under the same paired
-bar with the sides swapped, a draw included; freeform is narrow at 1.01x the boss's effective bytes. The crown rule itself
-is in test_quant_boss_crown_rule.py.
+The crown rule has its own allowances (crown.py, tested in test_crown.py and test_quant_boss_crown_rule.py); the analytics
+still report within_allowed_loss. Fixed (paired test) is narrow unless the boss would have beaten the challenger under the
+same paired bar with the sides swapped, a draw included; freeform is narrow at 1.01x the boss's effective bytes.
 """
 
 import inspect
@@ -15,7 +14,6 @@ import numpy as np
 import pytest
 
 import validator.tournament.performance_calculator as performance_calculator
-from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
@@ -26,7 +24,6 @@ from validator.tournament import round_results
 from validator.tournament import thresholds
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
-from validator.tournament.models import SeedRole
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
@@ -35,6 +32,7 @@ from validator.tournament.thresholds import challenger_within_freeform_allowed_l
 from validator.tournament.thresholds import challenger_within_paired_allowed_loss
 from validator.tournament.thresholds import compare_paired_losses
 from validator.tournament.thresholds import compare_paired_losses_swapped
+from validator.tournament.thresholds import resolve_freeform_boss_task
 
 
 BOSS = EMISSION_BURN_HOTKEY
@@ -188,71 +186,6 @@ def _final_round() -> TournamentRoundData:
     )
 
 
-class Scenario:
-    """One boss round: per task, a type, the ranked results (or None for no results) and the verdict the resolver gives."""
-
-    def __init__(self, monkeypatch):
-        self.monkeypatch = monkeypatch
-        self.rows: list[TournamentTask] = []
-        self.task_types: dict[str, TaskType] = {}
-        self.results: dict[str, list | None] = {}
-        self.verdicts: dict[str, round_results.BossRoundTaskVerdict] = {}
-        self.determine_calls: list[dict] = []
-        self.score_updates = AsyncMock()
-        self.dead_seeds: set[str] = set()  # tasks whose boss-round seed died on the boss's side after attach
-
-    def add(self, task_type: TaskType, results: list | None, verdict=None) -> str:
-        row = _task_row(len(self.rows))
-        self.rows.append(row)
-        self.task_types[row.task_id] = task_type
-        self.results[row.task_id] = results
-        if verdict is not None:
-            self.verdicts[row.task_id] = verdict
-        return row.task_id
-
-    async def run(self):
-        mp = self.monkeypatch
-
-        async def tournament(_tid, _db):
-            return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.QUANT)
-
-        async def resolver(**kwargs):
-            return self.verdicts[kwargs["task_id"]]
-
-        real_determine = round_results.determine_boss_round_winner
-
-        def spy(*args, **kwargs):
-            self.determine_calls.append(kwargs)
-            return real_determine(*args, **kwargs)
-
-        async def get_task(task_id, _db):
-            return SimpleNamespace(
-                task_id=task_id, task_type=self.task_types[task_id], quant_spec=None, status=TaskStatus.SUCCESS
-            )
-
-        async def results(task_id, _db):
-            return self.results[task_id]
-
-        async def dead_seed(task_id, _status, _db):
-            return SeedRole.BOSS_CHAINED_FIXED if task_id in self.dead_seeds else None
-
-        mp.setattr(round_results, "boss_side_seed_failure", dead_seed)
-        mp.setattr(
-            round_results,
-            "get_nodes_assigned_to_task",
-            AsyncMock(return_value=[SimpleNamespace(hotkey=BOSS), SimpleNamespace(hotkey=CHALLENGER)]),
-        )
-        mp.setattr(round_results, "get_tournament", tournament)
-        mp.setattr(round_results, "count_hotkeys_assigned_to_task", AsyncMock(return_value=2))
-        mp.setattr(round_results, "get_task", get_task)
-        mp.setattr(round_results, "get_task_results_for_ranking", results)
-        mp.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
-        mp.setattr(round_results, "_resolve_boss_round_task_winner", resolver)
-        mp.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", self.score_updates)
-        mp.setattr(round_results, "determine_boss_round_winner", spy)
-        return await round_results.get_knockout_winners(_final_round(), self.rows, psql_db=None, config=None)
-
-
 def _pair(task_type: TaskType, boss_loss: float, challenger_loss: float):
     return [_text(BOSS, boss_loss, task_type), _text(CHALLENGER, challenger_loss, task_type)]
 
@@ -263,86 +196,6 @@ def _won(winner: str = CHALLENGER):
 
 def _kept(within: bool):
     return round_results.BossRoundTaskVerdict(winner_hotkey=BOSS, decided_by="x", challenger_within_allowed_loss=within)
-
-
-def _add_wins(scenario: Scenario, freeform: int, fixed: int) -> None:
-    """Tasks the challenger wins: freeform on 10% fewer bytes, fixed on a won verdict."""
-    for _ in range(freeform):
-        scenario.add(FREEFORM, [_freeform(BOSS, 10_000), _freeform(CHALLENGER, 9_000)])
-    for _ in range(fixed):
-        scenario.add(FIXED, _pair(FIXED, 1.0, 0.9), _won())
-
-
-async def test_the_quant_round_pins_the_built_size_of_six(monkeypatch):
-    scenario = Scenario(monkeypatch)
-    _add_wins(scenario, freeform=3, fixed=2)
-    scenario.add(FIXED, _pair(FIXED, 1.0, 1.001), _kept(True))
-
-    outcome = await scenario.run()
-
-    (call,) = scenario.determine_calls
-    assert call["expected_task_count"] == t_cst.FINAL_ROUND_QUANT_TASKS == 6
-    assert "challenger_losses" not in call
-    assert outcome.winners == [CHALLENGER]
-
-
-async def test_a_lost_freeform_task_does_not_block_the_crown_narrow_or_clear(monkeypatch):
-    # The challenger is under the cap with 0.5% more bytes (narrow) or 5% more (clear): not 3% fewer, so the boss keeps it.
-    for challenger_bytes in (10_050, 10_500):
-        scenario = Scenario(monkeypatch)
-        _add_wins(scenario, freeform=2, fixed=3)
-        scenario.add(FREEFORM, [_freeform(BOSS, 10_000), _freeform(CHALLENGER, challenger_bytes)])
-        assert (await scenario.run()).winners == [CHALLENGER]
-
-
-async def test_a_task_with_no_results_is_the_bosss_and_a_second_miss_blocks(monkeypatch):
-    scenario = Scenario(monkeypatch)
-    _add_wins(scenario, freeform=3, fixed=2)
-    scenario.add(FIXED, None)
-    assert (await scenario.run()).winners == [CHALLENGER]
-
-    second = Scenario(monkeypatch)
-    _add_wins(second, freeform=3, fixed=1)
-    second.add(FIXED, None)
-    second.add(FIXED, None)
-    assert (await second.run()).winners == [BOSS]
-
-
-async def test_a_drawn_fixed_is_not_a_win_and_never_queues_a_replacement(monkeypatch):
-    draw = round_results.BossRoundTaskVerdict(
-        winner_hotkey=BOSS, decided_by="a draw", is_draw=True, challenger_within_allowed_loss=True
-    )
-    scenario = Scenario(monkeypatch)
-    _add_wins(scenario, freeform=3, fixed=2)
-    scenario.add(FIXED, _pair(FIXED, 1.0, 1.0), draw)
-    outcome = await scenario.run()
-    assert outcome.winners == [CHALLENGER]
-    assert outcome.draw_resolution is None and outcome.deferred_reason is None
-
-    second = Scenario(monkeypatch)
-    _add_wins(second, freeform=2, fixed=2)
-    second.add(FIXED, _pair(FIXED, 1.0, 1.0), draw)
-    second.add(FREEFORM, [_freeform(BOSS, 10_000), _freeform(CHALLENGER, 10_050)])
-    outcome = await second.run()
-    assert outcome.winners == [BOSS] and outcome.draw_resolution is None
-
-
-async def test_the_quant_round_pins_the_built_size_even_when_tasks_are_missing(monkeypatch):
-    scenario = Scenario(monkeypatch)
-    _add_wins(scenario, freeform=0, fixed=1)
-
-    outcome = await scenario.run()
-
-    assert scenario.determine_calls[0]["expected_task_count"] == 6
-    assert outcome.winners == [BOSS]  # a lone decided task, won, is one win of six
-
-    four = Scenario(monkeypatch)
-    _add_wins(four, freeform=2, fixed=2)
-    assert (await four.run()).winners == [BOSS]  # four attached cannot reach five wins
-
-    five = Scenario(monkeypatch)
-    _add_wins(five, freeform=3, fixed=2)
-    assert (await five.run()).winners == [CHALLENGER]  # five attached must all be won
 
 
 # --- _resolve_boss_round_task_winner: the reversed paired bar on the aligned vectors --------------------------
@@ -509,7 +362,7 @@ async def test_analytics_freeform_uses_effective_bytes_like_crowning(challenger_
         boss_result=boss_result,
         challenger_result=challenger_result,
     )
-    verdict = round_results.resolve_freeform_boss_task(boss_result, challenger_result, t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN)
+    verdict = resolve_freeform_boss_task(boss_result, challenger_result, t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN)
 
     assert analytics.challenger_won is expected_won is (verdict.winner_hotkey == CHALLENGER)
     assert analytics.within_allowed_loss is expected_within
@@ -545,30 +398,3 @@ async def test_analytics_failed_challenger_score_is_not_within(monkeypatch):
 
     assert diff.challenger_won is False and diff.challenger_score is None
     assert diff.within_allowed_loss is False
-
-
-async def test_a_boss_side_seed_failure_is_the_challengers_slot(monkeypatch, caplog):
-    scenario = Scenario(monkeypatch)
-    scenario.dead_seeds.add(scenario.add(FIXED, None))  # first in the round, so the challenger is found from the nodes
-    _add_wins(scenario, freeform=3, fixed=1)
-    scenario.add(FREEFORM, [_freeform(BOSS, 10_000), _freeform(CHALLENGER, 10_050)])
-
-    with caplog.at_level("ERROR"):
-        outcome = await scenario.run()
-
-    assert outcome.winners == [CHALLENGER]  # the dead slot is the fifth win
-    assert "boss-side seed boss_chained_fixed failed prep after attach" in caplog.text
-
-
-async def test_a_boss_side_seed_failure_persists_the_challengers_score_row(monkeypatch):
-    scenario = Scenario(monkeypatch)
-    dead_id = scenario.add(FIXED, None)
-    scenario.dead_seeds.add(dead_id)
-    scenario.add(FREEFORM, [_freeform(BOSS, 10_000), _freeform(CHALLENGER, 9_000)])
-
-    await scenario.run()
-
-    (call,) = [c for c in scenario.score_updates.await_args_list if c.kwargs["task_id"] == dead_id]
-    assert call.kwargs["winner_hotkey"] == CHALLENGER
-    assert call.kwargs["compared_hotkeys"] == [BOSS, CHALLENGER]
-    assert "boss-side seed failure" in call.kwargs["basis"]

@@ -1,4 +1,7 @@
-"""Freeform scorecard: the pure builder and the per-task assembly (scored, scored fail, unscored, legacy, completed or not)."""
+"""Freeform scorecard: the pure builder and the per-task assembly.
+
+Covers scored, scored fail, unscored, without file data, completed or not.
+"""
 
 import math
 import uuid
@@ -118,9 +121,9 @@ class TestBuild:
         assert card.bytes.effective_bytes == pytest.approx(4_003_567)
         assert card.quality.passed_bar is False
 
-    def test_legacy_row_has_empty_file_lists_and_unknown_match(self) -> None:
-        legacy = _row(artifact_files=None, artifact_revision=None, decode_artifact_files=None, decoded_files=None)
-        card = build_quant_scorecard(legacy, None, reference_loss=None)
+    def test_row_without_file_data_has_empty_file_lists_and_unknown_match(self) -> None:
+        bare = _row(artifact_files=None, artifact_revision=None, decode_artifact_files=None, decoded_files=None)
+        card = build_quant_scorecard(bare, None, reference_loss=None)
 
         assert card.artifact.files == []
         assert card.artifact.revision is None

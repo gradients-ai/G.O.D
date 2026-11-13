@@ -15,6 +15,7 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.models import ANY_BOSS_COMPRESSION_SEED_ROLES
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
+from validator.tournament.models import SWAPPED_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import SeedRole
@@ -405,7 +406,7 @@ async def is_unattached_boss_round_seed(task_id: UUID | str, psql_db: PSQLDB) ->
     return not await is_task_attached_to_round(task_id, psql_db)
 
 
-async def _tournament_is_decided(tournament_id: str, psql_db: PSQLDB) -> bool:
+async def tournament_is_decided(tournament_id: str, psql_db: PSQLDB) -> bool:
     """Whether the tournament will play no more rounds: it has a winner, or it is neither pending nor active."""
     tournament = await tournament_sql.get_tournament(tournament_id, psql_db)
     if tournament is None:
@@ -416,21 +417,22 @@ async def _tournament_is_decided(tournament_id: str, psql_db: PSQLDB) -> bool:
 async def boss_round_seed_ready_to_finalise(task_id: UUID | str, psql_db: PSQLDB) -> bool:
     """Whether a task may be finalised (leave TRAINING for PREEVALUATION, or be ranked and closed from TRAINING).
 
-    Always true for a non-seed task, an input seed and the boss round's input. A seed attached to a round later (a
-    boss-round compression seed or a text seed) is held until a round has attached it, at least one non-boss player is
-    assigned, and every assigned player has a terminal training row or a persisted quant_failure. A text seed is also
-    released once its tournament is decided without ever attaching it (no longer pending or active, or a winner is set),
-    so it closes with the boss's stored result instead of waiting in TRAINING for good. The hold is on finalisation only:
-    each player's entry is evaluated as soon as its own training row succeeds, so the boss's entry is scored at seed time
-    and stored, and the task is ranked once, from the stored rows of both players. Every path that finalises a TRAINING
-    tournament task, or moves it to PREEVALUATION, applies this.
+    Always true for a non-seed task, an input seed and the boss round's input. A seed attached to a round later (a text
+    seed, a quant round seed or a boss-round compression seed) is held until a round has attached it, at least one non-boss
+    player is assigned, and every assigned player has a terminal training row or a persisted quant_failure. Once its
+    tournament is decided (no longer pending or active, or a winner is set) a seed no round attached is released, and so is
+    any text or quant round seed: it closes with the boss's stored result instead of waiting in TRAINING for good. The hold is
+    on finalisation only: each player's entry is evaluated as soon as its own training row succeeds, so the boss's entry is
+    scored at seed time and stored, and the task is ranked once, from the stored rows of both players. Every path that
+    finalises a TRAINING tournament task, or moves it to PREEVALUATION, applies this.
     """
     seed = await get_seed_task_by_task_id(task_id, psql_db)
     if seed is None or seed.role not in ATTACHED_SEED_ROLES:
         return True
-    if seed.role in TEXT_SEED_ROLES and await _tournament_is_decided(seed.tournament_id, psql_db):
+    attached = await is_task_attached_to_round(task_id, psql_db)
+    if (seed.role in SWAPPED_SEED_ROLES or not attached) and await tournament_is_decided(seed.tournament_id, psql_db):
         return True
-    if not await is_task_attached_to_round(task_id, psql_db):
+    if not attached:
         return False
     hotkeys = [node.hotkey for node in await task_sql.get_nodes_assigned_to_task(str(task_id), psql_db)]
     if not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in hotkeys):

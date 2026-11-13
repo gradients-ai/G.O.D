@@ -8,6 +8,7 @@ import pytest
 
 from core.models.task_models import TaskType
 from validator.endpoints.tournament_analytics import get_tournament_details
+from validator.tournament.models import BossRankComparison
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
@@ -452,3 +453,19 @@ if __name__ == "__main__":
                 traceback.print_exc()
     
     asyncio.run(manual_test())
+
+
+@pytest.mark.asyncio
+async def test_the_displayed_scores_use_the_stored_boss_rank_comparisons(
+    mock_config, mock_tournament_sql, mock_task_sql, mock_tournament_scoring, mock_constants
+):
+    """The same comparisons the weight setter reads, so a share redirected to the boss's side shows as it is set."""
+    comparison = BossRankComparison(hotkey="5Contender", final_position=2, share_to_boss=True)
+    with patch(
+        "validator.endpoints.tournament_analytics.stored_boss_rank_comparisons", AsyncMock(return_value=[comparison])
+    ) as stored:
+        await get_tournament_details(MOCK_TOURNAMENT_ID, mock_config)
+
+    stored.assert_awaited_once_with(MOCK_TOURNAMENT_ID, mock_config.psql_db)
+    results_with_winners = mock_tournament_scoring.call_args.args[1]
+    assert results_with_winners.boss_rank_comparisons == [comparison]

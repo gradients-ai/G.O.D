@@ -169,7 +169,7 @@ class TestFreeformFinalizePenalty:
         assert written["past"] == pytest.approx(2500.0 * (2.1 / 2.0 - 1.04) ** 2)
         assert written["out"] is None
 
-    async def test_legacy_task_reranks_under_the_cliff_at_its_bar_cap(self, persisted) -> None:
+    async def test_task_without_penalty_reranks_under_the_cliff_at_its_bar_cap(self, persisted) -> None:
         persisted([_row("in", 2.098, artifact_bytes=900), _row("out", 2.12, artifact_bytes=1)])
         results = await finalize_task_scores_from_raw_losses(_freeform_task(), ["in", "out"], CONFIG)
         by_hotkey = {r.hotkey: r for r in results}

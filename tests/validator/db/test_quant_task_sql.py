@@ -140,7 +140,7 @@ async def test_get_freeform_task_keeps_pinned_penalty():
     assert (task.penalty_knee, task.penalty_curvature) == (0.03, 900.0)
 
 
-async def test_get_legacy_freeform_task_is_the_cliff_at_its_bar_cap():
+async def test_get_freeform_task_without_penalty_is_the_cliff_at_its_bar_cap():
     psql, _ = _mock_psql(fetchrow=[_base_fields(TaskType.QUANTFREEFORMTASK), _freeform_row()])
     task = await task_sql.get_task(TASK_ID, psql)
 

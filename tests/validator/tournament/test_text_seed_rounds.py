@@ -45,6 +45,7 @@ from validator.tournament import task_creator
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import QUANT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import Group
@@ -181,9 +182,10 @@ class TestSeedCreation:
         assert {role: s.task_id for role, s in first.items()} == {role: s.task_id for role, s in second.items()}
         assert len(world.env.store.rows) == 4 and len(world.env.instruct_calls) == 3 and len(world.continuous_calls) == 1
 
-    def test_a_quant_tournament_creates_its_own_six_compression_roles(self):
+    def test_a_quant_tournament_creates_its_own_seven_compression_roles(self):
         assert seed_tasks.seed_creation_order(TournamentType.QUANT) == seed_tasks.SEED_CREATION_ORDER
-        assert set(seed_tasks.SEED_CREATION_ORDER) == BOSS_ROUND_SEED_ROLES and len(seed_tasks.SEED_CREATION_ORDER) == 6
+        assert set(seed_tasks.SEED_CREATION_ORDER) == BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES
+        assert len(seed_tasks.SEED_CREATION_ORDER) == 7
         assert not set(seed_tasks.SEED_CREATION_ORDER) & TEXT_SEED_ROLES
         assert seed_tasks.seed_creation_order(TEXT) == seed_tasks.TEXT_SEED_CREATION_ORDER
 
@@ -294,23 +296,23 @@ class TestAttachingASeedToItsRound:
     async def test_the_final_round_of_a_seeded_tournament_is_built_by_the_seeded_boss_round(self, world, monkeypatch):
         await world.create_seeds()
         seeded = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
-        legacy = AsyncMock()
+        unseeded = AsyncMock()
         monkeypatch.setattr(task_creator, "_create_seeded_text_boss_round_tasks", seeded)
-        monkeypatch.setattr(task_creator, "_create_new_text_boss_round_tasks", legacy)
+        monkeypatch.setattr(task_creator, "_create_new_text_boss_round_tasks", unseeded)
         knockout = KnockoutRound(pairs=[("a", EMISSION_BURN_HOTKEY)], round_id="round_final", round_number=4)
 
         await task_creator.create_text_tournament_tasks(knockout, TID, world.env.config, is_final_round=True)
 
         seeded.assert_awaited_once()
-        legacy.assert_not_awaited()
+        unseeded.assert_not_awaited()
 
-    async def test_an_unseeded_text_tournament_keeps_the_legacy_group_round(self, world, monkeypatch):
-        legacy = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
-        monkeypatch.setattr(task_creator, "_create_group_text_tasks", legacy)
+    async def test_an_unseeded_text_tournament_keeps_the_unseeded_group_round(self, world, monkeypatch):
+        group_tasks = AsyncMock(return_value=[SimpleNamespace(task_id=uuid4())])
+        monkeypatch.setattr(task_creator, "_create_group_text_tasks", group_tasks)
 
         await task_creator.create_text_tournament_tasks(world.round_of(2), TID, world.env.config)
 
-        legacy.assert_awaited_once()
+        group_tasks.assert_awaited_once()
         assert world.registry == {}
 
     async def test_nodes_are_assigned_to_the_attached_seed_and_the_boss_is_left_alone(self, world, monkeypatch):
@@ -391,13 +393,13 @@ class TestRoundStructure:
         assert inserted["round"].is_final_round is True
         assert [sorted(pair) for pair in inserted["pairs"]] == [sorted([MINERS[0], EMISSION_BURN_HOTKEY])]
 
-    async def test_a_legacy_text_tournament_keeps_its_knockout_after_round_one(self, world, inserted):
+    async def test_an_unseeded_text_tournament_keeps_its_knockout_after_round_one(self, world, inserted):
         await _next(MINERS[:2], _completed(1))  # no seed rows: an unseeded text tournament
 
         assert inserted["round"].round_type == RoundType.KNOCKOUT and inserted["round"].round_number == 2
         assert [sorted(pair) for pair in inserted["pairs"]] == [sorted(MINERS[:2])]
 
-    async def test_a_legacy_text_lone_survivor_goes_straight_to_the_final(self, world, inserted):
+    async def test_an_unseeded_text_lone_survivor_goes_straight_to_the_final(self, world, inserted):
         await _next(MINERS[:1], _completed(2))
 
         assert inserted["round"].is_final_round is True and inserted["round"].round_type == RoundType.KNOCKOUT
@@ -478,7 +480,7 @@ class TestStandings:
 
         assert selected == [hk for hk in MINERS if hk != MINERS[1]][: t_cst.TEXT_ROUND_PLAN[0].advance]
 
-    async def test_a_legacy_text_round_one_keeps_the_top_two(self, world, monkeypatch):
+    async def test_an_unseeded_text_round_one_keeps_the_top_two(self, world, monkeypatch):
         ordered = MINERS[:6]
         monkeypatch.setattr(rr, "get_tournament_tasks", AsyncMock(return_value=[]))
         monkeypatch.setattr(rr, "_small_tournament_ordered_hotkeys", AsyncMock(return_value=ordered))
@@ -533,12 +535,13 @@ class TestTheFinalisationHold:
 
         assert await self._ready(world, seed) is True
 
-    async def test_a_boss_round_seed_is_not_released_by_a_decided_tournament(self, world):
-        world.winner = EMISSION_BURN_HOTKEY
+    async def test_an_unattached_boss_round_seed_is_released_only_once_the_tournament_is_decided(self, world):
         row = TournamentSeedTask(tournament_id=TID, role=SeedRole.BOSS_CHAINED_FIXED, task_id=uuid4())
         world.env.store.rows.append(row)
-
         assert await self._ready(world, row) is False
+
+        world.winner = EMISSION_BURN_HOTKEY  # no round will attach it now: it closes with the boss's stored result
+        assert await self._ready(world, row) is True
 
     async def test_a_non_seed_task_is_never_held(self, world):
         assert await seeds_sql.boss_round_seed_ready_to_finalise(uuid4(), world.env.config.psql_db) is True
@@ -874,9 +877,9 @@ class TestTrainingRowsOfAnAttachedSeed:
         assert [call.args[0] for call in add.await_args_list] == [SeedRole.TEXT_R1]  # attached; the other is not yet
         alert.assert_not_awaited()  # the quant-reference check is for quant compressions only
 
-    def test_every_attached_role_is_a_boss_round_or_a_text_seed(self):
-        # Every boss-round role is attached after it was trained.
-        assert ATTACHED_SEED_ROLES == ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES
+    def test_every_attached_role_is_a_boss_round_a_text_or_a_quant_round_seed(self):
+        # Every boss-round role and every round seed is attached after it was trained.
+        assert ATTACHED_SEED_ROLES == ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES | QUANT_ROUND_SEED_ROLES
 
 
 class TestTheAdapterMerge:
@@ -999,16 +1002,16 @@ class TestRoleHousekeeping:
             "Text continuous",
         ]
         assert [SeedRole(v).label for v in ("boss_r2_freeform", "boss_r2_fixed", "boss_r3_freeform", "boss_r3_fixed")] == [
-            "Free R2",
-            "Fixed R2",
-            "Free R3",
-            "Fixed R3",
+            "R2 model freeform",
+            "R2 model fixed",
+            "R3 model freeform",
+            "R3 model fixed",
         ]
         assert [SeedRole(v).label for v in ("boss_continuous_freeform", "boss_continuous_fixed")] == [
-            "Free continuous",
-            "Fixed continuous",
+            "Continuous model freeform",
+            "Continuous model fixed",
         ]
-        # The six quant compressions are the quant boss round's tasks: attached to the round after they were trained.
+        # The four quant compressions are the quant boss round's tasks: attached to the round after they were trained.
         assert BOSS_ROUND_SEED_ROLES <= ATTACHED_SEED_ROLES
         assert TEXT_SEED_ROLES == TEXT_ROUND_SEED_ROLES | {SeedRole.TEXT_CONTINUOUS}
         assert math.isclose(sum(spec.advance for spec in t_cst.TEXT_ROUND_PLAN), 13)

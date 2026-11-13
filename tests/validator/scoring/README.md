@@ -10,12 +10,13 @@ Tests for scoring and tournament scoring pipelines.
 - `test_quant_ranking.py`: quant rank keys, freeform bar, quant task scoring, and SKU normalisation (a uniform per-SKU drift leaves ranking unchanged).
 - `test_quant_structural_precheck.py`: fixed-track structural check before dispatch (scored fail vs retried error),
   freeform never checked, token-authenticated `repo_info` and artifact byte reads.
-- `test_scorecard.py`: the freeform scorecard: the pure builder and the per-task assembly (scored, scored fail, unscored, legacy, completed or not).
+- `test_scorecard.py`: the freeform scorecard: the pure builder and the per-task assembly (scored, scored fail, unscored, without file data, completed or not).
 - `test_scorecard_endpoint.py`: the freeform scorecard through the real `/auditing/tasks/{id}` route: NaN and infinite floats are null, never a 500.
 - `test_quant_chained_bar.py`: the chained freeform task's common bar on the shared input (upstream-failed players
   are scored fails), and the finalize-time `quant_failure` write (COALESCE, never NULLed).
 - `test_quant_emission_split.py`: the three-way emission split (text 0.15 / quant 0.35 / image 0.225 minimums plus the 0.275 flex pool), the minimums applying with no completed quant tournament (no payee, the quant share left undistributed), and the per-type caps.
 - `test_emission_balance.py`: the participation-driven flex-pool allocator over text, quant and image.
 - `test_infra_errors_not_scored.py`: no infrastructure failure is scored as the miner's: `process_miners_pool` re-queues it, scored fails stay scored.
+- `test_boss_rank_shares.py`: paid places when the boss keeps the crown: each of 2nd and 3rd compared with the boss on average rank over rounds 1-3, a contender the boss strictly outranks paid like the boss, through the rank weights and the node weights.
 - `test_tournament_scoring_pipeline.py`: tournament scoring pipeline coverage.
 - `__init__.py`: package marker.

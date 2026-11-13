@@ -414,7 +414,7 @@ class TestFreeformPenaltyRanking:
         assert rank_metric_for(result, PENALTY) > 800
 
 
-LEGACY_CASES = [
+CLIFF_CASES = [
     ("below", 2.0, 5000, 0, None),
     ("on_bar", 2.1, 700, 50, None),
     ("just_over", 2.1000001, 10, 0, None),
@@ -424,7 +424,7 @@ LEGACY_CASES = [
 ]
 
 
-class TestLegacyBitIdentity:
+class TestCliffMatchesTheOldKey:
     @staticmethod
     def _old_key(loss, total_bytes, quant_failure):
         if quant_failure or (math.isfinite(loss) and total_bytes is None and loss <= 2.1):
@@ -433,7 +433,7 @@ class TestLegacyBitIdentity:
             return (1.0, loss / 2.0, math.inf)
         return (0.0, float(total_bytes), loss / 2.0)
 
-    @pytest.mark.parametrize(("hotkey", "loss", "artifact_bytes", "decoder_bytes", "failure"), LEGACY_CASES)
+    @pytest.mark.parametrize(("hotkey", "loss", "artifact_bytes", "decoder_bytes", "failure"), CLIFF_CASES)
     def test_cliff_key_equals_the_old_key(self, hotkey, loss, artifact_bytes, decoder_bytes, failure) -> None:
         result = _freeform(hotkey, loss, artifact_bytes=artifact_bytes, decoder_bytes=decoder_bytes, quant_failure=failure)
         assert quant_rank_key(result, QuantFreeformPenalty.cliff(1.05)) == self._old_key(loss, result.total_bytes, failure)
@@ -445,7 +445,7 @@ class TestLegacyBitIdentity:
         assert quant_rank_key(result, None) == (0.0, 700.0 * math.exp(0.25), 1.0)
 
     def test_row_without_penalty_ranks_on_exact_bytes(self) -> None:
-        result = _freeform("legacy", 2.0, artifact_bytes=700)
+        result = _freeform("unpenalised", 2.0, artifact_bytes=700)
         result.passed_bar = True
         assert result.freeform_penalty is None
         assert quant_rank_key(result, None) == (0.0, 700.0, 1.0)

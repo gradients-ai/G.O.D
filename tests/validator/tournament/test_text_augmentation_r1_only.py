@@ -24,9 +24,9 @@ from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.synthetics import scheduler
 from validator.tournament import constants as t_cst
+from validator.tournament import seed_tasks
 from validator.tournament import task_creator
-from validator.tournament.models import Group
-from validator.tournament.models import GroupRound
+from validator.tournament.models import QUANT_SLOT_SPECS
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentSeedTask
 
@@ -100,7 +100,7 @@ def _fixed_task(**overrides) -> QuantFixedRawTask:
 
 @pytest.mark.parametrize("round_number", [1, 2, 3])
 async def test_miner_round_task_never_augments(seams, monkeypatch, round_number):
-    """R1-R3 chain on a text seed task (which may carry the augmentation): the round task itself rolls none."""
+    """R1-R3 chain on a text seed task (which may carry the augmentation): the round's quant seed task itself rolls none."""
     role = t_cst.QUANT_ROUND_PLAN[round_number - 1].input_role
     seed = TournamentSeedTask(tournament_id="text_tourn", role=role, attempt=1, task_id=uuid4(), status=SeedStatus.TRAINING)
     FakeQuantSourceStore().install(monkeypatch).bind("tourn", "text_tourn")
@@ -122,13 +122,11 @@ async def test_miner_round_task_never_augments(seams, monkeypatch, round_number)
         model_params_count=1_500_000_000,
     )
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=upstream))
-    groups = [Group(member_ids=["a", "b"])]
-    round_data = GroupRound(round_id=f"tourn_round_{round_number:03d}", round_number=round_number, groups=groups)
+    quant_role = QUANT_SLOT_SPECS[t_cst.QUANT_ROUND_PLAN[round_number - 1].slot].quant_seed_role
 
-    await task_creator.create_quant_tournament_tasks(round_data, "tourn", MagicMock())
+    task = await seed_tasks.draw_compression_task(quant_role, "tourn", seed, MagicMock())
 
-    (task,) = [call.args[0] for call in seams.call_args_list]
-    assert task.augmentation_config is None
+    assert task.augmentation_config is None and task.upstream_task_id == seed.task_id
 
 
 @pytest.mark.parametrize("task_type", [TaskType.QUANTFIXEDTASK, TaskType.QUANTFREEFORMTASK])

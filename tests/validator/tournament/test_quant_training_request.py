@@ -228,7 +228,7 @@ class TestQuantTargetFromReference:
         assert target.bar == pytest.approx(2.08) and target.knee_loss == pytest.approx(2.08)
         assert target.cap_loss == pytest.approx(2.16)
 
-    def test_legacy_freeform_target_is_the_cliff(self):
+    def test_freeform_target_without_penalty_is_the_cliff(self):
         task = _freeform_task(penalty_knee=None, penalty_curvature=None, bar_cap=0.05)
         target = orchestrator.quant_target_from_reference(task, self._reference(2.0))
 
@@ -360,11 +360,11 @@ class TestCalibrationRequest:
 
         assert request.training_data.calibration is None
 
-    async def test_legacy_freeform_request_carries_none(self, calibration_store):
+    async def test_uncalibrated_freeform_request_carries_none(self, calibration_store):
         assert (await _request(_freeform_task())).training_data.calibration is None
         calibration_store.new_url.assert_not_called()
 
-    async def test_legacy_fixed_request_carries_none(self, calibration_store):
+    async def test_uncalibrated_fixed_request_carries_none(self, calibration_store):
         assert (await _request(_fixed_task())).training_data.calibration is None
         calibration_store.new_url.assert_not_called()
 
@@ -428,7 +428,7 @@ class TestCalibrationRequest:
 
         assert request.calibration == calibration
 
-    async def test_a_legacy_request_json_only_adds_a_null_calibration_key(self, db_lookups):
+    async def test_an_uncalibrated_request_json_only_adds_a_null_calibration_key(self, db_lookups):
         request = await _request(_freeform_task())
         dumped = request.training_data.model_dump(mode="json")
 
@@ -467,7 +467,7 @@ class TestCalibrationReadiness:
 
         assert not await orchestrator._reference_ready(_calibration_task(), HOTKEY, SimpleNamespace(psql_db=None))
 
-    async def test_legacy_freeform_never_reads_calibration_rows(self, sku_rows, monkeypatch):
+    async def test_uncalibrated_freeform_never_reads_calibration_rows(self, sku_rows, monkeypatch):
         read = AsyncMock()
         monkeypatch.setattr(orchestrator, "get_quant_calibration_references", read)
         task = _freeform_task(training_start_point=TrainingStartPoint.OWN_R1_MODEL)

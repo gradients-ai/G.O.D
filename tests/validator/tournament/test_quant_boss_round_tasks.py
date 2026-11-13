@@ -1,5 +1,5 @@
-"""The quant boss round: six tasks, the freeform and the fixed compression of the text boss's round-2, round-3 and continuous
-models (no instruct, chat or DPO).
+"""The quant boss round: four tasks, the text boss's round-2 model freeform, its round-3 model fixed and its continuous model
+freeform and fixed (no instruct, chat or DPO).
 
 Also the continuous-chunk machinery for the continuous instruct task and its compressions (a CHATTASK on a raw quant-pool
 base trained on a continuous chat chunk, 2x its normal GPU tier; compressions of its own output on a different chunk): the
@@ -8,7 +8,9 @@ creation, hours, GPU tier, row-share and URL-redaction behaviour of that code.
 
 import logging
 import random
+import re
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -40,12 +42,14 @@ from validator.tournament import orchestrator
 from validator.tournament import task_creator
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import LEGACY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import RETIRED_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import UNCREATED_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import GpuRequirement
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentSeedTask
 from validator.tournament.models import TournamentType
+from validator.tournament.seed_tasks import SEED_CREATION_ORDER
 
 
 BASE = "org/random-base"
@@ -95,14 +99,14 @@ async def world(monkeypatch):
     return World(monkeypatch)
 
 
-async def test_the_quant_round_is_six_compression_tasks():
-    assert t_cst.FINAL_ROUND_QUANT_TASKS == 6
-    assert t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION == {TaskType.QUANTFREEFORMTASK: 3, TaskType.QUANTFIXEDTASK: 3}
-    assert t_cst.expected_boss_round_task_count(TournamentType.QUANT) == 6
+async def test_the_quant_round_is_four_compression_tasks():
+    assert t_cst.FINAL_ROUND_QUANT_TASKS == 4
+    assert t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION == {TaskType.QUANTFREEFORMTASK: 2, TaskType.QUANTFIXEDTASK: 2}
+    assert t_cst.expected_boss_round_task_count(TournamentType.QUANT) == 4
     assert not hasattr(t_cst, "CHAINED_BOSS_SLOTS")
 
 
-async def test_c_is_a_default_start_chat_task_without_kl_on_the_tokenizer_default_template(world):
+async def test_the_continuous_instruct_task_is_a_default_start_chat_task_without_kl_on_the_tokenizer_default_template(world):
     c = await world.c_task()
 
     assert isinstance(c, ChatRawTask) and c.task_type == TaskType.CHATTASK
@@ -115,7 +119,7 @@ async def test_c_is_a_default_start_chat_task_without_kl_on_the_tokenizer_defaul
     assert c.training_data and c.test_data
 
 
-async def test_c_hours_are_the_creation_estimate_on_40k_rows_with_doubled_gpus(world):
+async def test_the_continuous_instruct_hours_are_the_creation_estimate_on_40k_rows_with_doubled_gpus(world):
     c = await world.c_task()
 
     expected = scheduler._get_training_hours_from_num_rows(
@@ -126,7 +130,7 @@ async def test_c_hours_are_the_creation_estimate_on_40k_rows_with_doubled_gpus(w
     assert expected < scheduler._get_training_hours_from_num_rows(rows, BASE, TaskType.CHATTASK)
 
 
-async def test_tasks_5_and_6_are_own_upstream_on_the_same_chunk_with_mbb_s_base(world):
+async def test_the_continuous_compressions_are_own_upstream_on_the_same_chunk_with_the_instruct_task_s_base(world):
     c = await world.c_task()
     for task_type in QUANT_TASK_TYPES:
         fmt = None
@@ -145,7 +149,7 @@ async def test_tasks_5_and_6_are_own_upstream_on_the_same_chunk_with_mbb_s_base(
         assert t_cst.continuous_sft_lineage_from_ds(task.ds) is None
 
 
-async def test_tasks_5_and_6_hours_are_the_normal_quant_formula_with_no_instruct_term(world):
+async def test_the_continuous_compression_hours_are_the_normal_quant_formula_with_no_instruct_term(world):
     c = await world.c_task()
     freeform = await world.compression(c, TaskType.QUANTFREEFORMTASK)
     fixed = await world.compression(c, TaskType.QUANTFIXEDTASK, scheduler.draw_quant_format(random.Random(1)))
@@ -216,7 +220,7 @@ async def test_a_failed_chunk_refetch_holds_the_compression_task(world, monkeypa
     orchestrator.task_sql.update_task.assert_not_awaited()
 
 
-async def test_the_own_upstream_release_still_copies_b_s_data_for_b_s_compressions(world, monkeypatch):
+async def test_the_own_upstream_release_still_copies_an_instruct_upstream_s_data_for_its_compressions(world, monkeypatch):
     upstream = InstructTextRawTask(
         task_id=uuid4(), model_id=BASE, ds="org/ds", field_instruction="i", field_output="o",
         status=TaskStatus.SUCCESS.value, is_organic=False, account_id=uuid4(), hours_to_complete=3.0,
@@ -247,7 +251,7 @@ def _chat_task(params: int, ds: str) -> ChatRawTask:
     [(1.0, GpuRequirement.H100_2X), (1.7, GpuRequirement.H100_2X), (3.5, GpuRequirement.H100_2X), (4.0, GpuRequirement.H100_2X),
      (5.0, GpuRequirement.H100_4X), (8.0, GpuRequirement.H100_4X)],
 )
-def test_c_trains_on_double_its_tier(params_b, expected):
+def test_the_continuous_instruct_task_trains_on_double_its_tier(params_b, expected):
     c_ds = t_cst.continuous_chat_ds(1, TID, "x")
     assert gpu_requirements.get_task_gpu_requirement(_chat_task(int(params_b * 1e9), c_ds)) == expected
 
@@ -300,7 +304,7 @@ def _chunk(n: int, order: list[int] | None = None) -> Dataset:
     return Dataset.from_dict({"id": ids, "text": [f"row {i}" for i in ids]})
 
 
-def _mbb(tournament: str, index: int = 3) -> SimpleNamespace:
+def _continuous_instruct_task(tournament: str, index: int = 3) -> SimpleNamespace:
     return SimpleNamespace(
         task_id=uuid4(), task_type=TaskType.CHATTASK, ds=t_cst.continuous_chat_ds(index, tournament, "label")
     )
@@ -317,7 +321,7 @@ def _ids(dataset: Dataset) -> set[int]:
 def test_the_selection_equals_the_per_row_hash_order_and_reads_the_table_once(monkeypatch):
     chunk = _chunk(300)
     monkeypatch.setattr(t_cst, "QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS", 100)
-    task = _mbb("t1")
+    task = _continuous_instruct_task("t1")
     _, seed = t_cst.continuous_rows_part(task)
     expected_order = sorted(range(len(chunk)), key=lambda i: preparation._row_hash(seed, chunk[i]))
 
@@ -333,14 +337,14 @@ def test_the_selection_equals_the_per_row_hash_order_and_reads_the_table_once(mo
 def test_the_two_shares_are_disjoint_and_exactly_40k_rows_each():
     chunk = _chunk(95_000)
 
-    mbb = preparation.select_continuous_rows(_mbb("t1"), chunk)
+    instruct = preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk)
     compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
 
-    assert len(mbb) == len(compression) == t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS == 40_000
-    assert not _ids(mbb) & _ids(compression)
+    assert len(instruct) == len(compression) == t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS == 40_000
+    assert not _ids(instruct) & _ids(compression)
 
 
-def test_free_and_fixed_mbb_get_identical_rows():
+def test_the_freeform_and_fixed_compressions_get_identical_rows():
     chunk = _chunk(95_000)
     free = preparation.select_continuous_rows(_compression_task("t1", task_type=TaskType.QUANTFREEFORMTASK), chunk)
     fixed = preparation.select_continuous_rows(_compression_task("t1", task_type=TaskType.QUANTFIXEDTASK), chunk)
@@ -350,67 +354,70 @@ def test_free_and_fixed_mbb_get_identical_rows():
 
 def test_shares_are_reproducible_per_tournament_and_different_across_tournaments():
     chunk = _chunk(95_000)
-    first = _ids(preparation.select_continuous_rows(_mbb("t1"), chunk))
+    first = _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
 
-    assert first == _ids(preparation.select_continuous_rows(_mbb("t1"), chunk))
-    assert first != _ids(preparation.select_continuous_rows(_mbb("t2"), chunk))
+    assert first == _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
+    assert first != _ids(preparation.select_continuous_rows(_continuous_instruct_task("t2"), chunk))
 
 
 def test_shares_do_not_depend_on_the_row_order_of_the_file():
     ids = list(range(95_000))
     shuffled = random.Random(5).sample(ids, len(ids))
 
-    for task in (_mbb("t1"), _compression_task("t1")):
+    for task in (_continuous_instruct_task("t1"), _compression_task("t1")):
         assert _ids(preparation.select_continuous_rows(task, _chunk(0, ids))) == _ids(
             preparation.select_continuous_rows(task, _chunk(0, shuffled))
         )
 
 
-def test_a_calibration_carve_from_the_compression_rows_never_overlaps_mbb_rows():
+def test_a_calibration_carve_from_the_compression_rows_never_overlaps_the_instruct_rows():
     chunk = _chunk(95_000)
-    mbb = _ids(preparation.select_continuous_rows(_mbb("t1"), chunk))
+    instruct = _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
     compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
     hashed = with_row_hashes(compression)
     carved = carve_calibration("seed", hashed[ROW_HASH_COLUMN], set(), [100] * len(hashed))
 
     assert carved is not None and carved.calibration_indices
-    assert not {compression[i]["id"] for i in carved.calibration_indices} & mbb
+    assert not {compression[i]["id"] for i in carved.calibration_indices} & instruct
 
 
 def test_a_small_chunk_is_split_into_disjoint_halves_with_a_warning(caplog):
     chunk = _chunk(60_000)
 
     with caplog.at_level(logging.WARNING):
-        mbb = preparation.select_continuous_rows(_mbb("t1"), chunk)
+        instruct = preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk)
         compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
 
-    assert len(mbb) == len(compression) == 30_000 and not _ids(mbb) & _ids(compression)
+    assert len(instruct) == len(compression) == 30_000 and not _ids(instruct) & _ids(compression)
     assert "disjoint halves" in caplog.text
 
 
 def test_other_tasks_are_never_split():
     chunk = _chunk(95_000)
     ordinary = SimpleNamespace(task_id=uuid4(), task_type=TaskType.CHATTASK, ds="org/ds")
-    legacy_ds = "continuous-quant:3:label"  # no tournament id
-    legacy = SimpleNamespace(task_id=uuid4(), task_type=TaskType.QUANTFIXEDTASK, ds=legacy_ds)
+    untagged_ds = "continuous-quant:3:label"  # no tournament id
+    untagged = SimpleNamespace(task_id=uuid4(), task_type=TaskType.QUANTFIXEDTASK, ds=untagged_ds)
     assert preparation.select_continuous_rows(ordinary, chunk) is chunk
-    assert preparation.select_continuous_rows(legacy, chunk) is chunk
+    assert preparation.select_continuous_rows(untagged, chunk) is chunk
 
 
-def test_the_boss_round_roles_are_the_six_compression_seeds():
+def test_the_boss_round_roles_are_the_four_compression_seeds():
     assert {role.value for role in BOSS_ROUND_SEED_ROLES} == {
         "boss_r2_freeform",
-        "boss_r2_fixed",
-        "boss_r3_freeform",
         "boss_r3_fixed",
         "boss_continuous_freeform",
         "boss_continuous_fixed",
     }
+    # The R2 model fixed and the R3 model freeform roles are not created; rows of them load as boss-round seeds.
+    assert {role.value for role in UNCREATED_BOSS_ROUND_SEED_ROLES} == {"boss_r2_fixed", "boss_r3_freeform"}
+    assert UNCREATED_BOSS_ROUND_SEED_ROLES <= ANY_BOSS_ROUND_SEED_ROLES and not UNCREATED_BOSS_ROUND_SEED_ROLES & set(
+        SEED_CREATION_ORDER
+    )
     assert SeedRole.BOSS_INSTRUCT not in BOSS_ROUND_SEED_ROLES  # the boss input is never attached to the round
     # The chained compressions are still read as boss-round seeds, but are not counted for a new round.
-    assert LEGACY_BOSS_ROUND_SEED_ROLES == {SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED}
-    assert ANY_BOSS_ROUND_SEED_ROLES == BOSS_ROUND_SEED_ROLES | LEGACY_BOSS_ROUND_SEED_ROLES
-    assert not LEGACY_BOSS_ROUND_SEED_ROLES & BOSS_ROUND_SEED_ROLES
+    assert RETIRED_BOSS_ROUND_SEED_ROLES == {SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED}
+    assert ANY_BOSS_ROUND_SEED_ROLES == BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES | RETIRED_BOSS_ROUND_SEED_ROLES
+    assert not RETIRED_BOSS_ROUND_SEED_ROLES & BOSS_ROUND_SEED_ROLES
 
 
 async def test_a_quant_boss_round_with_no_seeds_raises(monkeypatch):
@@ -422,17 +429,17 @@ async def test_a_quant_boss_round_with_no_seeds_raises(monkeypatch):
     assert sorted(error.value.roles) == sorted(role.value for role in BOSS_ROUND_SEED_ROLES)
 
 
-def _boss_seeds() -> dict[SeedRole, TournamentSeedTask]:
+def _boss_seeds(roles=BOSS_ROUND_SEED_ROLES) -> dict[SeedRole, TournamentSeedTask]:
     return {
         role: TournamentSeedTask(tournament_id=TID, role=role, attempt=1, task_id=uuid4(), status=SeedStatus.TRAINED)
-        for role in BOSS_ROUND_SEED_ROLES
+        for role in roles
     }
 
 
 def _attach_world(monkeypatch, seeds):
     task_types = {
         role: TaskType.QUANTFREEFORMTASK if role.value.endswith("freeform") else TaskType.QUANTFIXEDTASK
-        for role in BOSS_ROUND_SEED_ROLES
+        for role in ANY_BOSS_ROUND_SEED_ROLES
     }
     tasks = {seed.task_id: SimpleNamespace(task_id=seed.task_id, task_type=task_types[role]) for role, seed in seeds.items()}
     registered, attached = [], []
@@ -452,20 +459,29 @@ def _attach_world(monkeypatch, seeds):
     return registered, attached
 
 
-async def test_the_quant_boss_round_attaches_exactly_the_six_compression_seeds(monkeypatch):
+async def test_the_quant_boss_round_attaches_exactly_the_four_compression_seeds(monkeypatch):
     seeds = _boss_seeds()
     registered, attached = _attach_world(monkeypatch, seeds)
 
     returned = await task_creator._create_quant_boss_round_tasks(TID, "round_4", MagicMock())
 
-    assert len(registered) == 6 and len(returned) == 6
-    assert [task.task_type for task in registered].count(TaskType.QUANTFREEFORMTASK) == 3
-    assert [task.task_type for task in registered].count(TaskType.QUANTFIXEDTASK) == 3
+    assert len(registered) == 4 and len(returned) == 4
+    assert [task.task_type for task in registered].count(TaskType.QUANTFREEFORMTASK) == 2
+    assert [task.task_type for task in registered].count(TaskType.QUANTFIXEDTASK) == 2
     assert all(task.task_type in QUANT_TASK_TYPES for task in registered)
     assert set(attached) == {seeds[role].task_id for role in BOSS_ROUND_SEED_ROLES}
 
 
-async def test_the_final_round_dispatch_returns_the_six_task_ids_and_never_an_instruct_or_chat_task(monkeypatch):
+async def test_a_tournament_holding_rows_of_the_r2_fixed_and_r3_freeform_roles_attaches_them_too(monkeypatch):
+    seeds = _boss_seeds(BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES)
+    registered, attached = _attach_world(monkeypatch, seeds)
+
+    returned = await task_creator._create_quant_boss_round_tasks(TID, "round_4", MagicMock())
+
+    assert len(registered) == 6 and len(returned) == 6 and set(attached) == {seed.task_id for seed in seeds.values()}
+
+
+async def test_the_final_round_dispatch_returns_the_four_task_ids_and_never_an_instruct_or_chat_task(monkeypatch):
     seeds = _boss_seeds()
     _attach_world(monkeypatch, seeds)
     round_data = SimpleNamespace(round_id="round_4")
@@ -584,3 +600,12 @@ async def test_malformed_responses_raise_without_a_url_in_the_error(monkeypatch,
         await scheduler.create_continuous_instruct_task(MagicMock(), model_id=BASE, train_index=3, tournament_id=TID)
 
     assert "s3cr3t" not in str(error.value) and "https://" not in str(error.value)
+
+
+def test_the_latest_role_check_lists_every_seed_role():
+    """Every role a row may carry, the ones nothing creates included, passes the newest tournament_seed_tasks CHECK."""
+    migrations = Path(__file__).parents[3] / "validator" / "db" / "migrations"
+    latest = sorted(path for path in migrations.glob("*.sql") if "tournament_seed_tasks_role_check" in path.read_text())[-1]
+    up = latest.read_text().split("-- migrate:down")[0]
+
+    assert set(re.findall(r"'([a-z0-9_]+)'", up)) == {role.value for role in SeedRole}

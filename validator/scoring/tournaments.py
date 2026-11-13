@@ -382,7 +382,7 @@ def tournament_scores_to_weights(
 # The final_positions-empty fallback below has no positional data at all - it derives
 # "finalists" from the final round's raw task participant_scores, which for ENVIRONMENT
 # can contain more than 2 hotkeys. It must stay capped at 2 regardless of TOURNAMENT_PAID_RANKS.
-_LEGACY_FALLBACK_MAX_PAID_RANKS = 2
+_NO_POSITIONS_FALLBACK_MAX_PAID_RANKS = 2
 
 
 def _resolve_burn_placeholder(hotkey: str | None, base_winner_hotkey: str | None) -> str | None:
@@ -392,12 +392,46 @@ def _resolve_burn_placeholder(hotkey: str | None, base_winner_hotkey: str | None
     return hotkey
 
 
+def _positions_paid_to_boss(tournament_data: TournamentResultsWithWinners) -> set[int]:
+    """Paid places (2nd, 3rd) whose share is paid like the boss's own share: the tournament was kept by the boss
+    (winner_hotkey is the EMISSION_BURN_HOTKEY placeholder) and the stored comparison says the boss's average rank over
+    rounds 1-3 is strictly better than that contender's (validator/tournament/boss_rank_shares.py). Applies only when the
+    contender still holds that place. Never raises: on any error every contender is paid."""
+    try:
+        if tournament_data.winner_hotkey != cts.EMISSION_BURN_HOTKEY:
+            return set()
+        positions: set[int] = set()
+        for comparison in tournament_data.boss_rank_comparisons:
+            held = tournament_data.final_positions.get(comparison.hotkey) == comparison.final_position
+            if comparison.share_to_boss and held and comparison.final_position in (2, 3):
+                positions.add(comparison.final_position)
+                logger.info(f"Tournament {tournament_data.tournament_id}: {comparison.describe()}")
+            elif comparison.share_to_boss:
+                logger.warning(
+                    f"Tournament {tournament_data.tournament_id}: stored comparison for {comparison.hotkey} names place "
+                    f"{comparison.final_position}, which it does not hold; it is paid"
+                )
+            else:
+                logger.info(f"Tournament {tournament_data.tournament_id}: {comparison.describe()}")
+        return positions
+    except Exception as e:
+        logger.warning(
+            f"Tournament {tournament_data.tournament_id}: boss rank comparisons could not be applied "
+            f"({type(e).__name__}: {e}); every contender is paid"
+        )
+        return set()
+
+
 def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | None) -> dict[str, float]:
     """Pay emissions only to the two boss-round finalists.
 
     The champion takes rank 1 and the other finalist takes rank 2; everyone eliminated
     in an earlier round earns nothing. This avoids cross-round accumulated-point ties
     that can collapse the real runner-up out of the second paid rank.
+
+    With final_positions, a paid place whose stored boss rank comparison sends its share to the
+    boss (_positions_paid_to_boss) adds that place's weight to the champion, exactly as the
+    boss's own rank-1 weight is paid; the per-type fractions still sum to 1.
     """
     if not tournament_data:
         return {}
@@ -413,11 +447,12 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
         # expense - invisible with 2 paid ranks (a lone rank-1-of-1 happens to equal rank1+rank2),
         # but a real distortion once a 3rd rank is added.
         total_participants = min(len(tournament_data.final_positions), cts.TOURNAMENT_PAID_RANKS)
+        shares_to_boss = _positions_paid_to_boss(tournament_data)
         weights: dict[str, float] = {}
         for hotkey, position in tournament_data.final_positions.items():
             if position > cts.TOURNAMENT_PAID_RANKS:
                 continue
-            resolved = _resolve_burn_placeholder(hotkey, base_winner)
+            resolved = champion if position in shares_to_boss else _resolve_burn_placeholder(hotkey, base_winner)
             if not resolved:
                 continue
             weights[resolved] = weights.get(resolved, 0.0) + exponential_decline_mapping(total_participants, position)
@@ -439,13 +474,13 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
         paid.append(champion)
     paid.extend(hotkey for hotkey in finalists if hotkey != champion)
 
-    if len(paid) > _LEGACY_FALLBACK_MAX_PAID_RANKS:
+    if len(paid) > _NO_POSITIONS_FALLBACK_MAX_PAID_RANKS:
         logger.warning(
             f"Boss round resolved {len(paid)} paid participants {paid}; expected "
-            f"{_LEGACY_FALLBACK_MAX_PAID_RANKS}. Paying the top {_LEGACY_FALLBACK_MAX_PAID_RANKS} by placement."
+            f"{_NO_POSITIONS_FALLBACK_MAX_PAID_RANKS}. Paying the top {_NO_POSITIONS_FALLBACK_MAX_PAID_RANKS} by placement."
         )
 
-    total = min(len(paid), _LEGACY_FALLBACK_MAX_PAID_RANKS)
+    total = min(len(paid), _NO_POSITIONS_FALLBACK_MAX_PAID_RANKS)
     return {hotkey: exponential_decline_mapping(total, rank) for rank, hotkey in enumerate(paid, start=1)}
 
 

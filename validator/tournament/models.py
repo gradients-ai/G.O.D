@@ -125,7 +125,7 @@ class TournamentData(BaseModel):
     )
     code_review: str | None = Field(
         default=None,
-        description="Legacy boss-round review. The live cheat check is per participant and runs before round 2.",
+        description="Stored boss-round review. The live cheat check is per participant and runs before round 2.",
     )
     winning_performance_difference: float | None = Field(
         default=None,
@@ -309,19 +309,19 @@ class GroupMatchStanding(BaseModel):
         return self.matches_attended < self.total_matches
 
 
-class T1T2Ranks(BaseModel):
+class FirstTwoRoundRanks(BaseModel):
     """A cohort member's rank on the R1 and R2 tasks, ranked within the cohort."""
 
-    t1: int
-    t2: int
+    round1: int
+    round2: int
 
 
-class T3ViabilityVerdict(BaseModel):
+class Round3ViabilityVerdict(BaseModel):
     """Whether a cohort member can still finish top or joint top over R1+R2+R3."""
 
     hotkey: str
-    t1_rank: int
-    t2_rank: int
+    round1_rank: int
+    round2_rank: int
     viable: bool
     # Smallest achievable (own rank total - best rival total) over every R3 rank assignment; <= 0 is viable.
     best_case_margin: int
@@ -435,12 +435,40 @@ class TournamentResults(BaseModel):
     rounds: list[TournamentRoundResult]
 
 
+class BossRankComparison(BaseModel):
+    """A contender in a paid place (2nd or 3rd) of a tournament the boss kept, compared with the boss on average rank.
+
+    The averages are over ``compared_round_numbers``: the rounds 1-3 in which both the contender and the boss have a rank
+    (RoundRanks). ``share_to_boss`` is true when the boss's average is strictly lower (better) than the contender's: the
+    contender's share of the pool is then paid like the boss's own share. With no compared round both averages are None
+    and the contender is paid.
+    """
+
+    hotkey: str
+    final_position: int
+    contender_average_rank: float | None = None
+    boss_average_rank: float | None = None
+    compared_round_numbers: list[int] = Field(default_factory=list)
+    share_to_boss: bool = False
+
+    def describe(self) -> str:
+        if self.contender_average_rank is None or self.boss_average_rank is None:
+            return f"place {self.final_position} {self.hotkey}: no round ranks both it and the boss, paid"
+        outcome = "share to the boss" if self.share_to_boss else "paid"
+        return (
+            f"place {self.final_position} {self.hotkey}: boss average rank {self.boss_average_rank:.3f} vs contender "
+            f"{self.contender_average_rank:.3f} over rounds {self.compared_round_numbers}, {outcome}"
+        )
+
+
 class TournamentResultsWithWinners(BaseModel):
     tournament_id: str
     rounds: list[TournamentRoundResult]
     base_winner_hotkey: str | None = None
     winner_hotkey: str | None = None
     final_positions: dict[str, int] = Field(default_factory=dict)
+    # Stored when the tournament completed with the boss kept (seeded text and quant only); empty otherwise.
+    boss_rank_comparisons: list[BossRankComparison] = Field(default_factory=list)
 
 
 class PairedLossComparison(BaseModel):
@@ -1041,8 +1069,8 @@ class DedupResult(BaseModel):
 class ChunkScheme(str, Enum):
     """How the content service cuts the continuous-SFT data: the unit a train_index counts in."""
 
-    HUNDRED_K = "100k"
-    FIFTY_K = "50k"  # chunk k of HUNDRED_K is chunks 2k and 2k+1 of this scheme
+    V1 = "v1"
+    V2 = "v2"  # chunk k of V1 is chunks 2k and 2k+1 of this scheme
 
 
 class ContinuousSftState(BaseModel):
@@ -1055,7 +1083,7 @@ class ContinuousSftState(BaseModel):
 
     lineage: str
     train_index: int = 0
-    chunk_scheme: ChunkScheme = ChunkScheme.FIFTY_K
+    chunk_scheme: ChunkScheme = ChunkScheme.V2
     last_winner_repo: str | None = None
     updated_at: datetime | None = None
 
@@ -1170,27 +1198,33 @@ class SeedRole(str, Enum):
     BOSS_R2_FIXED = "boss_r2_fixed"
     BOSS_R3_FREEFORM = "boss_r3_freeform"
     BOSS_R3_FIXED = "boss_r3_fixed"
+    QUANT_R1 = "quant_r1"
+    QUANT_R2 = "quant_r2"
+    QUANT_R3 = "quant_r3"
 
     @property
     def label(self) -> str:
         """The name used in docs, logs and alerts (the values stay the stable identifiers)."""
         return {
-            SeedRole.INPUT_SMALL: "M1/2",
-            SeedRole.INPUT_LARGE: "M3",
-            SeedRole.BOSS_INSTRUCT: "MBA",
-            SeedRole.BOSS_CHAINED_FREEFORM: "Free MBA",
-            SeedRole.BOSS_CHAINED_FIXED: "Fixed MBA",
-            SeedRole.BOSS_CONTINUOUS_INSTRUCT: "MBB",
-            SeedRole.BOSS_CONTINUOUS_FREEFORM: "Free continuous",
-            SeedRole.BOSS_CONTINUOUS_FIXED: "Fixed continuous",
+            SeedRole.INPUT_SMALL: "Small input model",
+            SeedRole.INPUT_LARGE: "Large input model",
+            SeedRole.BOSS_INSTRUCT: "Boss instruct model",
+            SeedRole.BOSS_CHAINED_FREEFORM: "Boss instruct model freeform",
+            SeedRole.BOSS_CHAINED_FIXED: "Boss instruct model fixed",
+            SeedRole.BOSS_CONTINUOUS_INSTRUCT: "Boss continuous instruct model",
+            SeedRole.BOSS_CONTINUOUS_FREEFORM: "Continuous model freeform",
+            SeedRole.BOSS_CONTINUOUS_FIXED: "Continuous model fixed",
             SeedRole.TEXT_R1: "Text R1",
             SeedRole.TEXT_R2: "Text R2",
             SeedRole.TEXT_R3: "Text R3",
             SeedRole.TEXT_CONTINUOUS: "Text continuous",
-            SeedRole.BOSS_R2_FREEFORM: "Free R2",
-            SeedRole.BOSS_R2_FIXED: "Fixed R2",
-            SeedRole.BOSS_R3_FREEFORM: "Free R3",
-            SeedRole.BOSS_R3_FIXED: "Fixed R3",
+            SeedRole.BOSS_R2_FREEFORM: "R2 model freeform",
+            SeedRole.BOSS_R2_FIXED: "R2 model fixed",
+            SeedRole.BOSS_R3_FREEFORM: "R3 model freeform",
+            SeedRole.BOSS_R3_FIXED: "R3 model fixed",
+            SeedRole.QUANT_R1: "Quant R1",
+            SeedRole.QUANT_R2: "Quant R2",
+            SeedRole.QUANT_R3: "Quant R3",
         }[self]
 
 
@@ -1207,8 +1241,9 @@ class ContinuousRowsPart(str, Enum):
 class QuantSourceSlot(str, Enum):
     """The place a quant task takes in a quant tournament, and so which text seed task's boss model it compresses.
 
-    r1, r2 and r3 are the miner rounds (one quant task each); the boss_* slots are the six compressions of the quant boss
-    round: the freeform and the fixed one of the text boss's round-2, round-3 and continuous models.
+    r1, r2 and r3 are the miner rounds (one quant task each, trained by the quant boss as a seed and by the round's miners);
+    the boss_* slots are the compressions of the quant boss round: the R2 model freeform, the R3 model fixed and the
+    continuous model freeform and fixed. Nothing creates boss_r2_fixed or boss_r3_freeform; rows of them load.
     """
 
     R1 = "r1"
@@ -1223,8 +1258,8 @@ class QuantSourceSlot(str, Enum):
 
 
 class QuantSlotSpec(BaseModel):
-    """What a slot is made of: the text seed role whose boss model it compresses, its quant task type and, for a boss-round
-    slot, the quant seed role that holds its task (a miner round's task is not a seed)."""
+    """What a slot is made of: the text seed role whose boss model it compresses, its quant task type and the quant seed role
+    that holds its task (the boss trains every slot's task as a seed)."""
 
     text_role: SeedRole
     task_type: TaskType
@@ -1232,9 +1267,15 @@ class QuantSlotSpec(BaseModel):
 
 
 QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
-    QuantSourceSlot.R1: QuantSlotSpec(text_role=SeedRole.TEXT_R1, task_type=TaskType.QUANTFREEFORMTASK),
-    QuantSourceSlot.R2: QuantSlotSpec(text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK),
-    QuantSourceSlot.R3: QuantSlotSpec(text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK),
+    QuantSourceSlot.R1: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R1, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R1
+    ),
+    QuantSourceSlot.R2: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.QUANT_R2
+    ),
+    QuantSourceSlot.R3: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R3
+    ),
     QuantSourceSlot.BOSS_R2_FREEFORM: QuantSlotSpec(
         text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R2_FREEFORM
     ),
@@ -1258,8 +1299,8 @@ QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
         quant_seed_role=SeedRole.BOSS_CONTINUOUS_FIXED,
     ),
 }
-# The slot of each quant boss-round seed role.
-QUANT_BOSS_SLOT_BY_ROLE: dict[SeedRole, QuantSourceSlot] = {
+# The slot of each quant seed role (rounds 1-3 and the boss round).
+QUANT_SLOT_BY_SEED_ROLE: dict[SeedRole, QuantSourceSlot] = {
     spec.quant_seed_role: slot for slot, spec in QUANT_SLOT_SPECS.items() if spec.quant_seed_role is not None
 }
 
@@ -1308,23 +1349,30 @@ class QuantRoundSpec(BaseModel):
     quant_format: QuantFormat | None = None  # a fixed round's pinned format; None draws one from the round id
 
 
-# The quant boss round's tasks: six compressions (freeform and fixed) of the text boss's round-2, round-3 and continuous models.
+# The quant boss round's tasks: four compressions of the text boss's models, the R2 model freeform, the R3 model fixed, and
+# the continuous model freeform and fixed.
 BOSS_ROUND_SEED_ROLES = frozenset(
     {
         SeedRole.BOSS_R2_FREEFORM,
-        SeedRole.BOSS_R2_FIXED,
-        SeedRole.BOSS_R3_FREEFORM,
         SeedRole.BOSS_R3_FIXED,
         SeedRole.BOSS_CONTINUOUS_FREEFORM,
         SeedRole.BOSS_CONTINUOUS_FIXED,
     }
 )
-# Boss round roles that are two compressions chained on a BOSS_INSTRUCT seed. Nothing creates these roles; rows of them are
-# read like a boss-round seed.
-LEGACY_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED})
+# Boss-round roles nothing creates (the R2 model fixed and the R3 model freeform). Rows of them are read like a boss-round
+# seed, and a boss round whose tournament holds them attaches them too (the crown rule then never crowns it).
+UNCREATED_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_R2_FIXED, SeedRole.BOSS_R3_FREEFORM})
+# Retired boss round roles of the earlier layout: two compressions chained on a BOSS_INSTRUCT seed. Nothing creates these
+# roles; rows of them are read like a boss-round seed.
+RETIRED_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED})
 # Every role a row may carry that is a boss-round seed: where rows are READ (hold, attach, completion, ranks), not where
 # roles are created or counted for a new boss round.
-ANY_BOSS_ROUND_SEED_ROLES = BOSS_ROUND_SEED_ROLES | LEGACY_BOSS_ROUND_SEED_ROLES
+ANY_BOSS_ROUND_SEED_ROLES = BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES | RETIRED_BOSS_ROUND_SEED_ROLES
+# The quant tournament's round seeds: the one quant task of each of rounds 1-3, trained by the quant boss as soon as its
+# source model lands and by the round's miners once the round attaches it.
+QUANT_ROUND_SEED_ROLES = frozenset({SeedRole.QUANT_R1, SeedRole.QUANT_R2, SeedRole.QUANT_R3})
+# Every quant seed role a row may carry: the boss's compression entries whose result is stored at seed time.
+ANY_QUANT_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES
 # The instruct seeds only the boss trains: upstreams of the chained compression seeds.
 BOSS_INSTRUCT_SEED_ROLES = frozenset({SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CONTINUOUS_INSTRUCT})
 # The boss's compression entries. A boss-side training failure of one is the boss's failed entry, never redrawn: a redraw
@@ -1335,8 +1383,32 @@ ANY_BOSS_COMPRESSION_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES - BOSS_INSTRUCT_SEED
 # trained by the boss at tournament start and attached to their round later.
 TEXT_ROUND_SEED_ROLES = frozenset({SeedRole.TEXT_R1, SeedRole.TEXT_R2, SeedRole.TEXT_R3})
 TEXT_SEED_ROLES = TEXT_ROUND_SEED_ROLES | {SeedRole.TEXT_CONTINUOUS}
+# Seeds a round attaches by registering the seed task itself in the round's group or pair: a prep failure after attach is
+# redrawn and the replacement takes the attached task's place (replace_seed).
+SWAPPED_SEED_ROLES = TEXT_SEED_ROLES | QUANT_ROUND_SEED_ROLES
 # Every role whose task is attached to a round after it was trained: its finalisation is held until it is attached.
-ATTACHED_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES
+ATTACHED_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES | QUANT_ROUND_SEED_ROLES
+
+
+class RoundRanks(BaseModel):
+    """The 1-based rank of every entry in one of rounds 1-3, the boss (EMISSION_BURN_HOTKEY) included, ranked together."""
+
+    round_number: int
+    round_id: str
+    task_ids: list[str]
+    ranks: dict[str, int]
+
+
+class TournamentRoundRanks(BaseModel):
+    """Per-round ranks of the boss and the challengers over rounds 1-3 of a tournament (round_results.round_ranks_with_boss)."""
+
+    tournament_id: str
+    rounds: list[RoundRanks]
+
+    def average_rank(self, hotkey: str) -> float | None:
+        """Mean rank over the rounds the hotkey was ranked in; None when it was ranked in none."""
+        ranks = [round_ranks.ranks[hotkey] for round_ranks in self.rounds if hotkey in round_ranks.ranks]
+        return sum(ranks) / len(ranks) if ranks else None
 
 
 class TextRoundSpec(BaseModel):

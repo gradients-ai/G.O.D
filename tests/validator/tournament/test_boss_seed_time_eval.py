@@ -49,6 +49,7 @@ from validator.tournament import orchestrator
 from validator.tournament import round_results
 from validator.tournament import thresholds
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
@@ -153,6 +154,7 @@ class Store:
         mp.setattr(task_sql, "get_nodes_assigned_to_task", AsyncMock(side_effect=self._nodes))
         mp.setattr(seeds_sql, "get_seed_task_by_task_id", AsyncMock(side_effect=self._seed))
         mp.setattr(seeds_sql, "is_task_attached_to_round", AsyncMock(side_effect=lambda task_id, db: self.attached))
+        mp.setattr(seeds_sql, "tournament_is_decided", AsyncMock(return_value=False))
         mp.setattr(tournament_sql, "get_training_status_for_task", AsyncMock(side_effect=lambda task_id, db: dict(self.training)))
         mp.setattr(tournament_sql, "get_tasks_with_all_training_completed", AsyncMock(side_effect=self._all_completed))
         # Evaluation rows.
@@ -638,8 +640,8 @@ class TestOtherTasksUnchanged:
 
 
 class TestVectorsAreKeptForUnattachedSeeds:
-    async def test_is_paired_comparison_task_counts_boss_round_seeds(self):
-        """The boss's seed-time vector and fingerprint must be stored before the boss round exists."""
+    async def test_is_paired_comparison_task_counts_every_attached_seed(self):
+        """The boss's seed-time vector and fingerprint must be stored before the round that attaches the seed exists."""
         calls = []
 
         class Connection:
@@ -661,6 +663,7 @@ class TestVectorsAreKeptForUnattachedSeeds:
         assert await tournament_performance.is_paired_comparison_task("task", Db())
         query, params = calls[0]
         assert db_cst.TOURNAMENT_SEED_TASKS_TABLE in query
-        # Every boss-round role, including the two chained on a BOSS_INSTRUCT seed.
-        assert set(params[2]) == {role.value for role in ANY_BOSS_ROUND_SEED_ROLES}
+        # Every seed role a round attaches: boss-round roles (the chained ones included), text and quant round seeds.
+        assert set(params[2]) == {role.value for role in ATTACHED_SEED_ROLES}
+        assert {role.value for role in ANY_BOSS_ROUND_SEED_ROLES} <= set(params[2])
         assert not set(params[2]) & {role.value for role in INPUT_SEED_ROLES}

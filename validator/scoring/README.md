@@ -9,9 +9,9 @@ Task scoring, tournament scoring, scoring schemas, and metagraph weight setting.
 - `quant_ranking.py`: quant rank keys and the freeform effective-size penalty.
 - `scorecard.py`: the public scorecard of a freeform result (`build_quant_scorecard`, pure; `quant_scorecards_for_task`, the I/O). See "Freeform hub listing and scorecard" below.
 - `tasks.py`: miner result scoring and task result processing.
-- `tournaments.py`: tournament-specific score-to-weight and pairwise scoring logic.
+- `tournaments.py`: tournament-specific score-to-weight and pairwise scoring logic. `get_boss_round_pair_weights` pays the paid places; `_resolve_burn_placeholder` maps the boss's place to the defending champion's hotkey when one is known, and `_positions_paid_to_boss` pays a place like the boss's when the stored boss rank comparison says so (rule in `validator/tournament/README.md`, "Crown, early stop and placements").
 - `emission_balance.py`: the participation-driven split of the flex pool over text, quant and image.
-- `weights.py`: metagraph weight setting entrypoint and allocation logic. The quant champion earns only its base share: no loss-ratio emission boost is computed for quant (freeform is decided on effective bytes, so a loss ratio says nothing about how the crown was won). `get_tournament_burn_details` raises instead of returning a non-finite pool, so weights are never set from `inf`/`nan`; the weight setter logs it and retries.
+- `weights.py`: metagraph weight setting entrypoint and allocation logic. The quant champion earns only its base share: no loss-ratio emission boost is computed for quant (freeform is decided on effective bytes, so a loss ratio says nothing about how the crown was won). A share left on the burn hotkey (a kept boss with no known defending champion, and any place paid like it) is left undistributed (`_paid_node_id`) and reaches the burn address with the rest of the undistributed weight, as is a share whose hotkey is not registered. `stored_boss_rank_comparisons` reads the stored boss rank comparisons for the weight setter and the tournament details endpoint alike. `get_tournament_burn_details` raises instead of returning a non-finite pool, so weights are never set from `inf`/`nan`; the weight setter logs it and retries.
 - `__init__.py`: package marker.
 
 ## Tournament emission split
@@ -27,7 +27,8 @@ Three pools: text, quant and image. Constants are in `constants.py`, the allocat
   A type with no completed tournament and winner yet has no payee: its share is not paid out and goes to the burn
   address (the undistributed weight added to `EMISSION_BURN_HOTKEY` in `weights.py`).
 - **Payees.** Each pool pays its own type's latest completed tournament's top three (`TOURNAMENT_PAID_RANKS`, decay base
-  `TOURNAMENT_SIMPLE_DECAY_BASE`) until a newer one of that type completes. `get_quant_tournament_weights_from_data` in
+  `TOURNAMENT_SIMPLE_DECAY_BASE`) until a newer one of that type completes. Who holds those places, and when a
+  contender's share goes to the boss, is in `validator/tournament/README.md`, "Crown, early stop and placements". `get_quant_tournament_weights_from_data` in
   `tournaments.py` is quant's counterpart of the text and image readers; quant fields sit on `TournamentAuditData` and
   `TournamentBurnData` (`validator/tournament/models.py`).
 
@@ -46,10 +47,10 @@ Three pools: text, quant and image. Constants are in `constants.py`, the allocat
   `reference_loss`. A row with a finite loss and no reference on its SKU raises `QuantReferenceUnavailable`;
   lifecycle re-evaluates such rows first (`validator/lifecycle/quant_reference.py`).
 - **Chained quant tasks.** Every quant tournament task compresses one shared input: the text boss's output on the
-  text task it is linked to (`quant_task_sources`): R1-R3 on the text round tasks, the six boss-round tasks on the
+  text task it is linked to (`quant_task_sources`): R1-R3 on the text round tasks, the four boss-round tasks on the
   round-2, round-3 and continuous-SFT tasks. They need nothing special here: the knee
-  and cap are those multiples of that input's bf16 loss on each row's SKU, one task-common reference per task, and the
-  boss-round fixed task takes the paired gate on `sku_aligned_losses`. The per-hotkey own-model references
+  and cap are those multiples of that input's bf16 loss on each row's SKU, one task-common reference per task, and every
+  fixed head-to-head with the boss (R2 and the boss-round fixed tasks) takes the paired gate on `sku_aligned_losses`. The per-hotkey own-model references
   (`OWN_UPSTREAM_MODEL`, `OWN_R1_MODEL`) are supported for tasks that carry such a start point; no quant tournament
   creates one.
 - **Fixed-track structural pre-check.** `_evaluate_quant_submissions` computes the expected tensor set once per
@@ -113,7 +114,7 @@ the same SKU, which cancels a drift that scales served and reference loss alike 
   boss scalars, the emission projection) compares across SKUs. `passed_bar` (under the cap) and `freeform_penalty` (`ln P` as scored) are persisted per row; the tournament
   re-ranks from those two columns, so a retuned constant never moves a scored task. Ties on `S` break on normalised
   loss.
-- **Paired gates** (`tournament/thresholds.sku_aligned_losses`): the boss-round fixed task, quant
+- **Paired gates** (`tournament/thresholds.sku_aligned_losses`): the fixed head-to-heads with the boss, quant
   fixed knockouts, the emission projection and the paired analytics view express the other side's per-example losses
   on the anchor's SKU (the boss; in a knockout, the side with the lower normalised loss):
   `x_i * ref_i(anchor) / ref_i(own)`. That is each side's per-example normalisation by its own SKU reference,

@@ -8,21 +8,21 @@ from validator.tournament import constants as t_cst
 
 
 class TestQuantFinalRoundComposition:
-    def test_distribution_is_three_freeform_and_three_fixed(self):
+    def test_distribution_is_two_freeform_and_two_fixed(self):
         assert t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION == {
-            TaskType.QUANTFREEFORMTASK: 3,
-            TaskType.QUANTFIXEDTASK: 3,
+            TaskType.QUANTFREEFORMTASK: 2,
+            TaskType.QUANTFIXEDTASK: 2,
         }
 
     def test_final_round_total_is_the_sum_of_the_distribution(self):
-        assert t_cst.FINAL_ROUND_QUANT_TASKS == sum(t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION.values()) == 6
+        assert t_cst.FINAL_ROUND_QUANT_TASKS == sum(t_cst.FINAL_ROUND_QUANT_TASK_DISTRIBUTION.values()) == 4
 
     def test_expected_boss_round_task_count_per_type(self):
-        assert t_cst.expected_boss_round_task_count(TournamentType.QUANT) == 6
+        assert t_cst.expected_boss_round_task_count(TournamentType.QUANT) == 4
         assert t_cst.expected_boss_round_task_count(TournamentType.TEXT) == t_cst.FINAL_ROUND_TEXT_TASKS
 
-    def test_the_crown_is_five_wins_of_six_with_the_per_task_margins(self):
-        assert t_cst.FINAL_ROUND_QUANT_TASKS - t_cst.QUANT_BOSS_ROUND_ALLOWED_LOSSES == 5
+    def test_the_crown_is_seven_head_to_heads_with_the_per_task_margins(self):
+        assert t_cst.CROWN_TASKS == len(t_cst.QUANT_ROUND_PLAN) + t_cst.FINAL_ROUND_QUANT_TASKS == 7
         assert t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN == 0.03
         assert t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT == 0.01
 

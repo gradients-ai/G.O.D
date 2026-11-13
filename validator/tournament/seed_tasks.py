@@ -1,16 +1,17 @@
 """Seed tasks: everything the boss trains, created and trained upfront when a tournament's first round is created.
 
 See validator/tournament/README.md. A text tournament has four seeds (TEXT_SEED_CREATION_ORDER): the instruct task of rounds
-1-3 and the continuous-SFT task of the boss round. A quant tournament has six (SEED_CREATION_ORDER): the freeform and the fixed
-compression of the text boss's round-2, round-3 and continuous models. A quant seed is a new chained quant task on a seed of
-the BOUND text tournament (see quant_sources.py), held until the text boss's model has landed, then trained by the quant boss
-with the quant tournament's pinned code. Each seed is an ordinary task assigned to the boss's node (EMISSION_BURN_HOTKEY) and
-trained with the boss participant's pinned repo + commit by the normal pipeline (prep -> model prep -> LOOKING_FOR_NODES ->
-orchestrator). The input-seed roles (input_small, input_large, boss_instruct, boss_chained_*) are not created; rows of them still
-load and are replaced.
-Seeds are not tournament_tasks rows: the boss round attaches its compression seeds later. This module owns creation, status,
-replacement and the halt (only an input-seed role halts a tournament; a text or quant role out of replacements is
-`failed`, alerts once and the tournament goes on without it).
+1-3 and the continuous-SFT task of the boss round. A quant tournament has seven (SEED_CREATION_ORDER): the quant task of each
+of rounds 1-3 (R1 freeform, R2 fixed, R3 freeform on the text boss's round-1, round-2 and round-3 models) and the four
+boss-round compressions (the R2 model freeform, the R3 model fixed, the continuous model freeform and fixed). A quant seed is
+a new chained quant task on a seed of the BOUND text tournament (see quant_sources.py), held until the text boss's model has
+landed, then trained by the quant boss with the quant tournament's pinned code. Each seed is an ordinary task assigned to
+the boss's node (EMISSION_BURN_HOTKEY) and trained with the boss participant's pinned repo + commit by the normal pipeline
+(prep -> model prep -> LOOKING_FOR_NODES -> orchestrator). Nothing creates the input-seed roles (input_small, input_large,
+boss_instruct, boss_chained_*) or the boss-round roles boss_r2_fixed and boss_r3_freeform; rows of them load.
+Seeds are not tournament_tasks rows until their round attaches them (rounds 1-3 their round seed, the boss round its own).
+This module owns creation, status, replacement and the halt (only an input-seed role halts a tournament; a text or quant
+role out of replacements is `failed`, alerts once and the tournament goes on without it).
 
 Entry points:
   * live_seed_tasks(tournament_id, db) -> dict[SeedRole, TournamentSeedTask]: the current row of every role.
@@ -60,12 +61,16 @@ from validator.tournament import constants as t_cst
 from validator.tournament import quant_sources
 from validator.tournament.models import ANY_BOSS_COMPRESSION_SEED_ROLES
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import ANY_QUANT_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
-from validator.tournament.models import QUANT_BOSS_SLOT_BY_ROLE
+from validator.tournament.models import QUANT_ROUND_SEED_ROLES
+from validator.tournament.models import QUANT_SLOT_BY_SEED_ROLE
 from validator.tournament.models import QUANT_SLOT_SPECS
+from validator.tournament.models import SWAPPED_SEED_ROLES
 from validator.tournament.models import TEXT_ROUND_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
+from validator.tournament.models import UNCREATED_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentSeedTask
@@ -80,11 +85,12 @@ from validator.tournament.task_creator import swap_seed_task_registration
 
 logger = get_logger(__name__)
 
-# A quant tournament's seeds: the freeform and fixed compression of the text boss's round-2, round-3 and continuous models.
+# A quant tournament's seeds: the quant task of rounds 1-3, then the four boss-round compressions.
 SEED_CREATION_ORDER = (
+    SeedRole.QUANT_R1,
+    SeedRole.QUANT_R2,
+    SeedRole.QUANT_R3,
     SeedRole.BOSS_R2_FREEFORM,
-    SeedRole.BOSS_R2_FIXED,
-    SeedRole.BOSS_R3_FREEFORM,
     SeedRole.BOSS_R3_FIXED,
     SeedRole.BOSS_CONTINUOUS_FREEFORM,
     SeedRole.BOSS_CONTINUOUS_FIXED,
@@ -126,6 +132,12 @@ SEED_ADAPTER_MERGE_MAX_FAILURES = 6
 SEED_ADAPTER_MERGE_UNKNOWN_CYCLES_BEFORE_DISPATCH = 10
 # Tasks that ended without a usable result: the seed is replaced.
 _DEAD_TASK_STATUSES = frozenset({TaskStatus.PREP_TASK_FAILURE, TaskStatus.FAILURE})
+# Task statuses before any prep or training has started on the task: a retired seed in one of them has cost nothing yet.
+_UNSTARTED_TASK_STATUSES = frozenset({TaskStatus.AWAITING_UPSTREAM, TaskStatus.PENDING, TaskStatus.LOOKING_FOR_NODES})
+# The round each quant round seed role is the task of.
+_ROUND_NUMBER_OF_QUANT_ROUND_SEED_ROLE = {
+    QUANT_SLOT_SPECS[spec.slot].quant_seed_role: spec.round_number for spec in t_cst.QUANT_ROUND_PLAN
+}
 
 # Tournaments already pinged about a halt. Process-local on purpose (a restart re-alerts a condition needing a human).
 _SEED_HALT_ALERTED: set[str] = set()
@@ -173,7 +185,7 @@ async def seed_halt_reason(tournament_id: str, psql_db: PSQLDB) -> str | None:
     on that task, the ordinary crown rule decides it (the challenger takes a task the boss has no valid score on), and the
     tournament goes on (an alert says so when the role fails).
     """
-    never_halting = BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES
+    never_halting = BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES | TEXT_SEED_ROLES
     failed = [seed for seed in await seeds_sql.get_failed_seed_tasks(tournament_id, psql_db) if seed.role not in never_halting]
     if not failed:
         return None
@@ -321,18 +333,30 @@ async def _discard_unrecorded_task(task_id: UUID, config: Config) -> None:
         logger.error(f"Could not delete unrecorded seed task {task_id}; remove it by hand", exc_info=True)
 
 
-async def _draw_compression_task(role: SeedRole, tournament_id: str, text_seed: TournamentSeedTask, config: Config) -> RawTask:
-    """A new held quant task for a boss-round compression role, chained on the text seed task of its source role.
+async def draw_compression_task(role: SeedRole, tournament_id: str, text_seed: TournamentSeedTask, config: Config) -> RawTask:
+    """A new held quant task for a quant seed role, chained on the text seed task of its source role.
 
-    The round-2 and round-3 compressions copy the text task's data at release (create_chained_quant_task); the continuous ones
-    carry the same chunk as the text continuous task from creation, its index read from the text task's chunk record. Both
-    players train the task, so it takes the boss budget. A fixed role plays a 2-bit or 3-bit format seeded by tournament and role.
+    The compressions of the round-1, round-2 and round-3 models copy the text task's data at release
+    (create_chained_quant_task); the continuous ones carry the same chunk as the text continuous task from creation, its index
+    read from the text task's chunk record. A round role (rounds 1-3) takes the miner-round budget and its round's format (the
+    pinned one of QUANT_ROUND_PLAN, else one seeded by tournament and role); a boss-round role takes the boss budget and, when
+    fixed, a 2-bit or 3-bit format seeded by tournament and role.
     """
-    spec = QUANT_SLOT_SPECS[QUANT_BOSS_SLOT_BY_ROLE[role]]
+    slot = QUANT_SLOT_BY_SEED_ROLE[role]
+    spec = QUANT_SLOT_SPECS[slot]
     upstream = await task_sql.get_task(text_seed.task_id, config.psql_db)
     if upstream is None:
         raise ValueError(f"text seed {text_seed.role.value} task {text_seed.task_id} is gone")
-    quant_format = _boss_fixed_format(tournament_id, role) if spec.task_type == TaskType.QUANTFIXEDTASK else None
+    is_round_role = role in QUANT_ROUND_SEED_ROLES
+    quant_format = None
+    if spec.task_type == TaskType.QUANTFIXEDTASK:
+        round_spec = next((plan for plan in t_cst.QUANT_ROUND_PLAN if plan.slot == slot), None)
+        if round_spec is not None and round_spec.quant_format is not None:
+            quant_format = round_spec.quant_format
+        elif is_round_role:
+            quant_format = _seed_quant_format(tournament_id, spec.task_type)
+        else:
+            quant_format = _boss_fixed_format(tournament_id, role)
     if spec.text_role == SeedRole.TEXT_CONTINUOUS:
         if not isinstance(upstream, ChatRawTask):
             raise ValueError(f"text seed {text_seed.role.value} task {text_seed.task_id} is not a continuous-SFT chat task")
@@ -349,13 +373,13 @@ async def _draw_compression_task(role: SeedRole, tournament_id: str, text_seed: 
         )
     if not isinstance(upstream, InstructTextRawTask):
         raise ValueError(f"text seed {text_seed.role.value} task {text_seed.task_id} is not an instruct task")
-    return await create_chained_quant_task(config, spec.task_type, upstream, quant_format=quant_format, boss=True)
+    return await create_chained_quant_task(config, spec.task_type, upstream, quant_format=quant_format, boss=not is_round_role)
 
 
 async def _acquire_compression_task(
     role: SeedRole, tournament_id: str, attempt: int, replacing_task_id: UUID | None, config: Config
 ) -> RawTask | None:
-    """The quant task of a boss-round compression role, with its source row recorded; None when it cannot be had now.
+    """The quant task of a quant seed role, with its source row recorded; None when it cannot be had now.
 
     The source row (quant_task_sources) is the link to the text seed task and holds the slot, so a task never exists without
     it and a slot never has two live tasks. A live source row whose task has no seed row yet (the process stopped between the
@@ -367,7 +391,7 @@ async def _acquire_compression_task(
     binding = await quant_sources.bind_quant_source_tournament(tournament_id, config)
     if binding is None:
         return None
-    slot = QUANT_BOSS_SLOT_BY_ROLE[role]
+    slot = QUANT_SLOT_BY_SEED_ROLE[role]
     live = await quant_sources_sql.get_live_quant_task_source(tournament_id, slot, config.psql_db)
     if live is not None and live.quant_task_id != replacing_task_id:
         recorded = await seeds_sql.get_seed_task_by_task_id(live.quant_task_id, config.psql_db)
@@ -390,7 +414,7 @@ async def _acquire_compression_task(
             f"{QUANT_SLOT_SPECS[slot].text_role.value} seed; deferring {role.value}"
         )
         return None
-    task = await _draw_compression_task(role, tournament_id, text_seed, config)
+    task = await draw_compression_task(role, tournament_id, text_seed, config)
     source = await quant_sources.record_new_quant_task(
         quant_sources.new_task_source(UUID(str(task.task_id)), binding, slot, text_seed), config, replacing_task_id
     )
@@ -421,7 +445,7 @@ async def _create_seed(
         await alert_seed_issue(f"{tournament_id}:{role.value}:boss_info", f"{message}. It is retried every cycle.", config)
         return None
     try:
-        if role in BOSS_ROUND_SEED_ROLES:
+        if role in QUANT_SLOT_BY_SEED_ROLE:
             task = await _acquire_compression_task(role, tournament_id, attempt, replacing_task_id, config)
         else:
             task = await _draw_seed_task(role, tournament_id, live, config, rejected)
@@ -537,11 +561,12 @@ async def _evaluate_seed(seed: TournamentSeedTask, task: RawTask | None, config:
         return None, "task is gone"
     if seed.role in TEXT_SEED_ROLES:
         return await _evaluate_text_seed(seed, task, config)
-    if seed.role in ANY_BOSS_COMPRESSION_SEED_ROLES and task.status != TaskStatus.PREP_TASK_FAILURE:
+    is_compression_role = seed.role in ANY_BOSS_COMPRESSION_SEED_ROLES or seed.role in QUANT_ROUND_SEED_ROLES
+    if is_compression_role and task.status != TaskStatus.PREP_TASK_FAILURE:
         if await _boss_row_status(seed, config) == TrainingStatus.FAILURE.value:
             # The boss's code cannot do this compression (e.g. a boss with no quant code): a redraw cannot change that and
-            # only burns GPUs, and the cap would halt the tournament. This failed run is the boss's entry, and in the boss
-            # round the challenger takes the task if its own run succeeds.
+            # only burns GPUs, and the cap would halt the tournament. This failed run is the boss's entry: it ranks behind
+            # every valid entry, and a challenger with a valid entry takes the task against the boss.
             if seed.status != SeedStatus.TRAINING:
                 return None, None
             logger.warning(
@@ -697,7 +722,15 @@ async def _alert_role_out_of_replacements(tournament_id: str, role: SeedRole, de
             config,
         )
         return
-    if role not in BOSS_ROUND_SEED_ROLES:
+    if role in QUANT_ROUND_SEED_ROLES:
+        await alert_seed_issue(
+            f"{tournament_id}:{role.value}:out-of-replacements",
+            f"Tournament {tournament_id}: seed {role.value} {detail}. The tournament is not halted; the round plays a task "
+            f"of its own that the boss has no result on, which a challenger with a valid entry takes against the boss.",
+            config,
+        )
+        return
+    if role not in BOSS_ROUND_SEED_ROLES and role not in UNCREATED_BOSS_ROUND_SEED_ROLES:
         await _alert_halt(tournament_id, f"seed {role.value} {detail}", config)
         return
     await alert_seed_issue(
@@ -720,20 +753,30 @@ def boss_side_failure_key(tournament_id: str, task_id: UUID | str) -> str:
 
 async def _replacement_blocked(seed: TournamentSeedTask, reason: str, config: Config, prep_failed: bool = False) -> bool:
     """Whether a seed must not be replaced: it was attached to its round (the round resolves the seed; a boss-round
-    draw now would train the boss after R3). A seed the round has not attached yet may still be replaced, even
-    when the round row exists: a role without an attached task is exactly what leaves that round PENDING. An attached
-    text seed is replaced only for a prep failure (nobody has trained, the replacement takes over its place)."""
-    if seed.role in TEXT_SEED_ROLES:
-        if prep_failed or not await _was_attached(seed, config.psql_db):
+    draw now would train the boss after R3), or it is a quant seed no round attached of a decided tournament (no round will
+    attach it). A seed the round has not attached yet may otherwise still be replaced, even when the round row exists: a
+    role without an attached task is exactly what leaves that round PENDING. An attached text or quant round seed is
+    replaced only for a prep failure (nobody has trained, the replacement takes over its place)."""
+    attached = await _was_attached(seed, config.psql_db)
+    if not attached and seed.role in ANY_QUANT_SEED_ROLES and await seeds_sql.tournament_is_decided(
+        seed.tournament_id, config.psql_db
+    ):
+        logger.info(
+            f"Tournament {seed.tournament_id}: quant seed {seed.role.value} task {seed.task_id} failed ({reason}) and is not "
+            f"replaced: the tournament is decided and no round will attach it"
+        )
+        return True
+    if seed.role in SWAPPED_SEED_ROLES:
+        if prep_failed or not attached:
             return False
         await alert_seed_issue(
             f"{seed.tournament_id}:{seed.task_id}:text-seed-attached-failure",
-            f"Tournament {seed.tournament_id}: text seed {seed.role.value} task {seed.task_id} failed ({reason}) but is not "
+            f"Tournament {seed.tournament_id}: round seed {seed.role.value} task {seed.task_id} failed ({reason}) but is not "
             f"replaced (it was attached to its round); the round's completion check reports it",
             config,
         )
         return True
-    if seed.role not in ANY_BOSS_ROUND_SEED_ROLES or not await _was_attached(seed, config.psql_db):
+    if seed.role not in ANY_BOSS_ROUND_SEED_ROLES or not attached:
         return False
     await alert_seed_issue(
         boss_side_failure_key(seed.tournament_id, seed.task_id),
@@ -780,7 +823,7 @@ async def _resume_interrupted_swaps(tournament_id: str, config: Config) -> None:
     loop replaced it) is left as it is."""
     history = await seeds_sql.get_seed_task_history(tournament_id, config.psql_db)
     for seed in await seeds_sql.get_active_seed_tasks(tournament_id, config.psql_db):
-        if seed.role not in TEXT_SEED_ROLES or seed.attached_round_id is not None:
+        if seed.role not in SWAPPED_SEED_ROLES or seed.attached_round_id is not None:
             continue
         previous = next((row for row in history if row.role == seed.role and row.attempt == seed.attempt - 1), None)
         if previous is None:
@@ -852,8 +895,8 @@ async def replace_seed(
         await alert_seed_issue(f"{tournament_id}:{seed.role.value}:replace-draw", message, config)
         return None
     new_task = await task_sql.get_task(new_seed.task_id, config.psql_db)
-    if seed.role in TEXT_SEED_ROLES and await _was_attached(seed, config.psql_db) and new_task is not None:
-        # An attached text seed (a prep failure): the replacement takes over the round's place and the assigned nodes.
+    if seed.role in SWAPPED_SEED_ROLES and await _was_attached(seed, config.psql_db) and new_task is not None:
+        # An attached round seed (a prep failure): the replacement takes over the round's place and the assigned nodes.
         await _swap_attached_seed(seed, new_seed, new_task, config)
     await seeds_sql.mark_seed_replaced(tournament_id, seed.role, seed.attempt, prep_rejected, config.psql_db)
 
@@ -892,16 +935,27 @@ async def replace_seed(
 
 
 async def _retry_missing_boss_round_seeds(tournament_id: str, config: Config) -> None:
-    """Re-create a boss-round role that has no live row (its re-draw failed earlier), until the boss round attached
-    one of the role's seeds. A boss round row without that attachment does not stop it: such a round is PENDING
-    and raises on the missing role until the retry succeeds. Respects SEED_MAX_REPLACEMENTS like replace_seed."""
+    """Re-create a quant seed role that has no live row (its re-draw failed earlier), until a round attached one of the
+    role's seeds. A round row without that attachment does not stop it: such a round is PENDING and raises on the missing
+    role until the retry succeeds. A round seed role (rounds 1-3) is never created once its round exists. Respects
+    SEED_MAX_REPLACEMENTS like replace_seed. Nothing is re-created once the tournament is decided (a winner is set, or it
+    is no longer pending or active)."""
+    if await seeds_sql.tournament_is_decided(tournament_id, config.psql_db):
+        return  # no boss round will attach a re-created role
     live = await live_seed_tasks(tournament_id, config.psql_db)
     latest = {row.role: row for row in await seeds_sql.get_latest_seed_tasks(tournament_id, config.psql_db)}
     # A quant tournament holding rows of the BOSS_INSTRUCT compression roles re-creates only those two roles.
     roles = tuple(CHAINED_SEED_TASK_TYPES) if latest.keys() & set(CHAINED_SEED_TASK_TYPES) else SEED_CREATION_ORDER
+    created_rounds: set[int] | None = None
     for role in roles:
         if role in live:
             continue
+        if role in _ROUND_NUMBER_OF_QUANT_ROUND_SEED_ROLE:
+            if created_rounds is None:
+                rounds = await tournament_sql.get_tournament_rounds(tournament_id, config.psql_db)
+                created_rounds = {round_data.round_number for round_data in rounds}
+            if _ROUND_NUMBER_OF_QUANT_ROUND_SEED_ROLE[role] in created_rounds:
+                continue  # its round exists and has its task: a seed now would never be attached
         previous = latest.get(role)
         if previous is not None and previous.status != SeedStatus.REPLACED:
             continue  # failed: out of replacements, the role stays without a task
@@ -923,8 +977,50 @@ async def _retry_missing_boss_round_seeds(tournament_id: str, config: Config) ->
             logger.warning(f"Tournament {tournament_id}: re-created missing seed {role.value} (attempt {seed.attempt})")
 
 
+async def retire_unattached_quant_seeds(tournament_id: str, config: Config) -> list[SeedRole]:
+    """Stop the boss's work on the quant seeds no round attached, once the tournament is decided (it ended early, or without a
+    boss round): nothing will ever attach them.
+
+    A live quant seed (a round seed or a boss-round seed) whose task has not started training (held for its source model,
+    waiting for prep or for nodes, or in TRAINING with the boss's row still pending) gets the boss's pending training row and
+    its task failed and its row marked failed, as replace_seed retires a held task: nothing dispatches, releases or
+    replaces it. A seed whose task is in prep or already training or done is left alone: the finalisation hold releases it
+    (boss_round_seed_ready_to_finalise) and it closes with the boss's stored result. Returns the retired roles.
+    """
+    retired: list[SeedRole] = []
+    for seed in await seeds_sql.get_active_seed_tasks(tournament_id, config.psql_db):
+        if seed.role not in ANY_QUANT_SEED_ROLES or await _was_attached(seed, config.psql_db):
+            continue
+        task = await task_sql.get_task(seed.task_id, config.psql_db)
+        boss_status = await _boss_row_status(seed, config) if task is not None else None
+        unstarted = task is not None and (
+            task.status in _UNSTARTED_TASK_STATUSES
+            or (task.status == TaskStatus.TRAINING and boss_status in (None, TrainingStatus.PENDING.value))
+        )
+        if not unstarted:
+            logger.debug(
+                f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} is "
+                f"{task.status.value if task is not None else 'gone'}; left as it is"
+            )
+            continue
+        if boss_status == TrainingStatus.PENDING.value:
+            await tournament_sql.update_tournament_task_training_status(
+                str(seed.task_id), EMISSION_BURN_HOTKEY, TrainingStatus.FAILURE, config.psql_db
+            )
+        task.status = TaskStatus.FAILURE
+        await task_sql.update_task(task, config.psql_db)
+        await seeds_sql.update_seed_status(tournament_id, seed.role, seed.attempt, SeedStatus.FAILED, config.psql_db)
+        retired.append(seed.role)
+        logger.warning(
+            f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} retired before the boss trained it: "
+            f"the tournament is decided and no round will attach it"
+        )
+    return retired
+
+
 async def process_tournament_seed_tasks(tournament_id: str, config: Config) -> None:
-    """Advance the status of one tournament's seeds, replacing the ones that failed.
+    """Advance the status of one tournament's seeds, replacing the ones that failed. Once a quant tournament is decided, its
+    seeds no round attached and the boss has not started are retired first (retire_unattached_quant_seeds).
 
     A tournament with no seed rows at all started before the seed design (create_seed_tasks writes the input seeds when
     the tournament's first round is created and replaced rows stay in the history, so a seeded tournament always has rows): it is
@@ -937,7 +1033,9 @@ async def process_tournament_seed_tasks(tournament_id: str, config: Config) -> N
             logger.info(f"Tournament {tournament_id} has no seed tasks (it started before seeding existed); not seeding it")
         return
     is_text = any(row.role in TEXT_SEED_ROLES for row in history)
-    if is_text:
+    if not is_text and await seeds_sql.tournament_is_decided(tournament_id, config.psql_db):
+        await retire_unattached_quant_seeds(tournament_id, config)
+    if any(row.role in SWAPPED_SEED_ROLES for row in history):
         try:
             await _resume_interrupted_swaps(tournament_id, config)
         except Exception as e:

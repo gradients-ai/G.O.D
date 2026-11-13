@@ -921,8 +921,8 @@ class TestGetBossRoundPairWeightsThirdPlace:
         assert weights[DAVE] == pytest.approx(1 / 21)
         assert cts.EMISSION_BURN_HOTKEY not in weights
 
-    def test_legacy_fallback_still_capped_at_two_ranks(self):
-        """Regression: with TOURNAMENT_PAID_RANKS bumped to 3, the legacy fallback path
+    def test_no_positions_fallback_still_capped_at_two_ranks(self):
+        """Regression: with TOURNAMENT_PAID_RANKS bumped to 3, the fallback path
         (final_positions empty, deriving finalists from raw final-round task participants -
         which for ENVIRONMENT can list more than 2 hotkeys) must still pay only 2, since it
         has no verified positional data to trust a 3rd place from."""

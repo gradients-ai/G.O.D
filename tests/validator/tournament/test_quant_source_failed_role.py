@@ -17,7 +17,7 @@ import pytest
 
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.task_models import TaskStatus
-from tests.validator.tournament.test_quant_text_linkage import BOSS_SLOTS
+from tests.validator.tournament.test_quant_text_linkage import CREATED_SLOTS
 from tests.validator.tournament.test_quant_text_linkage import FAILURE
 from tests.validator.tournament.test_quant_text_linkage import QUANT_TID
 from tests.validator.tournament.test_quant_text_linkage import SUCCESS
@@ -31,7 +31,7 @@ from validator.db.sql import tournaments as tournament_sql
 from validator.tournament import constants as t_cst
 from validator.tournament import orchestrator
 from validator.tournament import quant_sources
-from validator.tournament.models import BOSS_ROUND_SEED_ROLES
+from validator.tournament import seed_tasks
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import QuantSourceSlot
 from validator.tournament.models import SeedRole
@@ -223,10 +223,11 @@ class TestCreationWithAFailedTextRole:
 
         seeds = await qw.create_seeds()
 
-        assert set(seeds) == BOSS_ROUND_SEED_ROLES
-        assert {source.slot for source in qw.sources.sources} == set(BOSS_SLOTS)
+        assert set(seeds) == set(seed_tasks.SEED_CREATION_ORDER)
+        assert {source.slot for source in qw.sources.sources} == set(CREATED_SLOTS)
         failed_task = qw.text_task(SeedRole.TEXT_R3).task_id
-        assert _source(qw, QuantSourceSlot.BOSS_R3_FREEFORM).source_task_id == failed_task
+        assert _source(qw, QuantSourceSlot.BOSS_R3_FIXED).source_task_id == failed_task
+        assert _source(qw, QuantSourceSlot.R3).source_task_id == failed_task
 
 
 # ---------------------------------------------------------------------------------------- release on a failed text seed

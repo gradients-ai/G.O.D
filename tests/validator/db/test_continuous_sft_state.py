@@ -49,7 +49,7 @@ class TestStateMockBranches:
     async def test_get_state_maps_row_fields(self):
         row = {
             cst.CONTINUOUS_SFT_TRAIN_INDEX: 7,
-            cst.CONTINUOUS_SFT_CHUNK_SCHEME: "50k",
+            cst.CONTINUOUS_SFT_CHUNK_SCHEME: "v2",
             cst.CONTINUOUS_SFT_LAST_WINNER_REPO: "org/x",
             cst.CONTINUOUS_SFT_UPDATED_AT: None,
         }
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS continuous_sft_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS last_source_round_id TEXT;
-ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT '50k';
+ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT 'v2';
 CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks (
     task_id UUID PRIMARY KEY,
     lineage TEXT NOT NULL,

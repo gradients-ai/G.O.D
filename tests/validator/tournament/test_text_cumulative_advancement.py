@@ -17,9 +17,9 @@ from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 
 
-T1_TASK = "11111111-2222-3333-4444-555555555555"
-T2_TASK = "21111111-2222-3333-4444-555555555555"
-T3_TASK = "31111111-2222-3333-4444-555555555555"
+ROUND1_TASK = "11111111-2222-3333-4444-555555555555"
+ROUND2_TASK = "21111111-2222-3333-4444-555555555555"
+ROUND3_TASK = "31111111-2222-3333-4444-555555555555"
 TOURNAMENT_ID = "t"
 
 
@@ -79,7 +79,7 @@ def tournament(monkeypatch):
     """Fake a tournament DB: results per task, cohort per round (round number -> hotkeys)."""
 
     def _wire(results: dict[str, list[MinerResultsText]], cohorts: dict[int, list[str]]):
-        task_ids = {1: T1_TASK, 2: T2_TASK, 3: T3_TASK}
+        task_ids = {1: ROUND1_TASK, 2: ROUND2_TASK, 3: ROUND3_TASK}
 
         async def fake_results(task_id, psql_db):
             return [result.model_copy() for result in results[task_id]]
@@ -113,12 +113,18 @@ def test_round_advance_sizes():
 
 @pytest.mark.asyncio
 async def test_ranks_are_taken_within_the_cohort_not_the_full_field(tournament):
-    # E won T1 outright but was eliminated. Against the full field A=2/B=3 on T1; within the cohort A=1/B=2.
-    # T2 reverses A and B, so with cohort ranks both average 1.5 and B wins on the most recent round's rank (T2).
+    # E won R1 outright but was eliminated. Against the full field A=2/B=3 on R1; within the cohort A=1/B=2.
+    # R2 reverses A and B, so with cohort ranks both average 1.5 and B wins on the most recent round's rank (R2).
     tournament(
         {
-            T1_TASK: [_instruct("E", 0.5), _instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2), _instruct("D", 1.3)],
-            T2_TASK: [_freeform("B", 100), _freeform("A", 200), _freeform("C", 300), _freeform("D", 400)],
+            ROUND1_TASK: [
+                _instruct("E", 0.5),
+                _instruct("A", 1.0),
+                _instruct("B", 1.1),
+                _instruct("C", 1.2),
+                _instruct("D", 1.3),
+            ],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("A", 200), _freeform("C", 300), _freeform("D", 400)],
         },
         {1: ["E", "A", "B", "C", "D"], 2: ["A", "B", "C", "D"]},
     )
@@ -127,7 +133,7 @@ async def test_ranks_are_taken_within_the_cohort_not_the_full_field(tournament):
 
     assert "E" not in ordered
     standings = await rr._small_tournament_standings(
-        [_task(1, T1_TASK), _task(2, T2_TASK)], None, {"A", "B", "C", "D"}, recent_round_id="r2", seed_round_id="r2"
+        [_task(1, ROUND1_TASK), _task(2, ROUND2_TASK)], None, {"A", "B", "C", "D"}, recent_round_id="r2", seed_round_id="r2"
     )
     by_hotkey = {s.hotkey: s for s in standings}
     assert (by_hotkey["A"].recent_round_rank, by_hotkey["B"].recent_round_rank) == (2.0, 1.0)
@@ -136,57 +142,57 @@ async def test_ranks_are_taken_within_the_cohort_not_the_full_field(tournament):
 
 
 @pytest.mark.asyncio
-async def test_round_two_advances_the_top_four_by_mean_rank_over_t1_and_t2(tournament):
+async def test_round_two_advances_the_top_four_by_mean_rank_over_rounds_one_and_two(tournament):
     hotkeys = [f"h{i}" for i in range(8)]
-    # T1 order h0..h7; T2 order reversed for the bottom half so mean ranks differ.
-    t1 = [_instruct(hk, 1.0 + i / 10) for i, hk in enumerate(hotkeys)]
-    t2_order = ["h1", "h0", "h2", "h3", "h7", "h6", "h5", "h4"]
-    t2 = [_freeform(hk, 100 * (i + 1)) for i, hk in enumerate(t2_order)]
-    tournament({T1_TASK: t1, T2_TASK: t2}, {1: hotkeys, 2: hotkeys})
-    tasks = [_task(2, T2_TASK)]
+    # R1 order h0..h7; R2 order reversed for the bottom half so mean ranks differ.
+    round1 = [_instruct(hk, 1.0 + i / 10) for i, hk in enumerate(hotkeys)]
+    round2_order = ["h1", "h0", "h2", "h3", "h7", "h6", "h5", "h4"]
+    round2 = [_freeform(hk, 100 * (i + 1)) for i, hk in enumerate(round2_order)]
+    tournament({ROUND1_TASK: round1, ROUND2_TASK: round2}, {1: hotkeys, 2: hotkeys})
+    tasks = [_task(2, ROUND2_TASK)]
 
     top_four = await rr.quant_cumulative_winners(TOURNAMENT_ID, _round(2), t_cst.QUANT_ROUND_TWO_ADVANCE, None)
     winners = await rr.get_group_winners(_round(2), tasks, psql_db=None)
 
     assert top_four == ["h1", "h0", "h2", "h3"]  # h0 and h1 tie on mean rank; h1 won the latest round
-    # h2 (3,3) and h3 (4,4) trail h0 (1,2) by too much to tie after T3, so the viability cut drops them.
+    # h2 (3,3) and h3 (4,4) trail h0 (1,2) by too much to tie after R3, so the viability cut drops them.
     assert winners == ["h1", "h0"]
 
 
 @pytest.mark.asyncio
-async def test_round_three_advances_one_by_mean_rank_over_t1_t2_t3(tournament):
+async def test_round_three_advances_one_by_mean_rank_over_rounds_one_to_three(tournament):
     cohort = ["A", "B", "C", "D"]
     # Mean ranks: A (1+3+2)/3=2, B (2+1+1)/3=1.33, C (3+2+4)/3=3, D (4+4+3)/3=3.67
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2), _instruct("D", 1.3)],
-            T2_TASK: [_freeform("B", 100), _freeform("C", 200), _freeform("A", 300), _freeform("D", 400)],
-            T3_TASK: [_fixed("B", 1.0), _fixed("A", 1.1), _fixed("D", 1.2), _fixed("C", 1.3)],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2), _instruct("D", 1.3)],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("C", 200), _freeform("A", 300), _freeform("D", 400)],
+            ROUND3_TASK: [_fixed("B", 1.0), _fixed("A", 1.1), _fixed("D", 1.2), _fixed("C", 1.3)],
         },
         {1: cohort, 2: cohort, 3: cohort},
     )
 
-    winners = await rr.get_group_winners(_round(3), [_task(3, T3_TASK)], psql_db=None)
+    winners = await rr.get_group_winners(_round(3), [_task(3, ROUND3_TASK)], psql_db=None)
 
     assert winners == ["B"]
 
 
 @pytest.mark.asyncio
 async def test_a_cohort_member_absent_from_a_round_ranks_last_on_it(tournament):
-    # B has no T2 result at all: it ranks 3 (len+1) there, so its mean (1+3)/2 loses to A's (2+1)/2... A=1.5, B=2.0.
+    # B has no R2 result at all: it ranks 3 (len+1) there, so its mean (1+3)/2 loses to A's (2+1)/2... A=1.5, B=2.0.
     tournament(
         {
-            T1_TASK: [_instruct("B", 1.0), _instruct("A", 1.1)],
-            T2_TASK: [_freeform("A", 100)],
+            ROUND1_TASK: [_instruct("B", 1.0), _instruct("A", 1.1)],
+            ROUND2_TASK: [_freeform("A", 100)],
         },
         {1: ["A", "B"], 2: ["A", "B"]},
     )
     standings = await rr._small_tournament_standings(
-        [_task(1, T1_TASK), _task(2, T2_TASK)], None, {"A", "B"}, recent_round_id="r2", seed_round_id="r2"
+        [_task(1, ROUND1_TASK), _task(2, ROUND2_TASK)], None, {"A", "B"}, recent_round_id="r2", seed_round_id="r2"
     )
 
     by_hotkey = {s.hotkey: s for s in standings}
-    assert by_hotkey["B"].total_rank == 1 + 2  # len(ranked)+1 on T2
+    assert by_hotkey["B"].total_rank == 1 + 2  # len(ranked)+1 on R2
     assert by_hotkey["B"].has_error
     assert [s.hotkey for s in standings] == ["A", "B"]
 
@@ -196,14 +202,18 @@ async def test_a_scored_fail_ranks_last_on_its_task(tournament):
     cohort = ["A", "B", "C"]
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2)],
-            T2_TASK: [_freeform("B", 100), _freeform("A", 200), _freeform("C", 300)],
-            T3_TASK: [_fixed("B", 1.0), _fixed("C", 1.1), _fixed_fail("A")],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2)],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("A", 200), _freeform("C", 300)],
+            ROUND3_TASK: [_fixed("B", 1.0), _fixed("C", 1.1), _fixed_fail("A")],
         },
         {1: cohort, 2: cohort, 3: cohort},
     )
     standings = await rr._small_tournament_standings(
-        [_task(1, T1_TASK), _task(2, T2_TASK), _task(3, T3_TASK)], None, set(cohort), recent_round_id="r3", seed_round_id="r3"
+        [_task(1, ROUND1_TASK), _task(2, ROUND2_TASK), _task(3, ROUND3_TASK)],
+        None,
+        set(cohort),
+        recent_round_id="r3",
+        seed_round_id="r3",
     )
 
     a = next(s for s in standings if s.hotkey == "A")
@@ -213,11 +223,11 @@ async def test_a_scored_fail_ranks_last_on_its_task(tournament):
 
 @pytest.mark.asyncio
 async def test_mean_rank_tie_goes_to_the_better_rank_in_the_most_recent_round(tournament):
-    # A: T1 1, T2 2. B: T1 2, T2 1. Both mean 1.5; B was better in the latest round (T2).
+    # A: R1 1, R2 2. B: R1 2, R2 1. Both mean 1.5; B was better in the latest round (R2).
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1)],
-            T2_TASK: [_freeform("B", 100), _freeform("A", 200)],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1)],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("A", 200)],
         },
         {1: ["A", "B"], 2: ["A", "B"]},
     )
@@ -232,20 +242,20 @@ async def test_gap_then_seeded_shuffle_break_ties_left_after_the_recent_round_ra
     cohort = {"A", "B"}
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1)],
-            T2_TASK: [_freeform("B", 100), _freeform("A", 200)],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1)],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("A", 200)],
         },
         {1: ["A", "B"], 2: ["A", "B"]},
     )
-    tasks = [_task(2, T1_TASK), _task(2, T2_TASK)]
+    tasks = [_task(2, ROUND1_TASK), _task(2, ROUND2_TASK)]
     standings = await rr._small_tournament_standings(tasks, None, cohort, seed_round_id="r2")
     assert [s.hotkey for s in standings] == ["B", "A"]
 
     # Equal summed gaps (1.0 each): the per-round seeded shuffle decides.
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 2.0)],
-            T2_TASK: [_freeform("B", 100), _freeform("A", 200)],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 2.0)],
+            ROUND2_TASK: [_freeform("B", 100), _freeform("A", 200)],
         },
         {1: ["A", "B"], 2: ["A", "B"]},
     )
@@ -259,9 +269,9 @@ async def test_runner_up_is_best_non_challenger_of_the_pre_boss_group(tournament
     cohort = ["A", "B", "C", "D"]
     tournament(
         {
-            T1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2), _instruct("D", 1.3)],
-            T2_TASK: [_freeform("A", 100), _freeform("B", 200), _freeform("C", 300), _freeform("D", 400)],
-            T3_TASK: [_fixed("A", 1.0), _fixed("B", 1.1), _fixed("C", 1.2), _fixed("D", 1.3)],
+            ROUND1_TASK: [_instruct("A", 1.0), _instruct("B", 1.1), _instruct("C", 1.2), _instruct("D", 1.3)],
+            ROUND2_TASK: [_freeform("A", 100), _freeform("B", 200), _freeform("C", 300), _freeform("D", 400)],
+            ROUND3_TASK: [_fixed("A", 1.0), _fixed("B", 1.1), _fixed("C", 1.2), _fixed("D", 1.3)],
         },
         {1: cohort, 2: cohort, 3: cohort},
     )
@@ -273,7 +283,7 @@ async def test_runner_up_is_best_non_challenger_of_the_pre_boss_group(tournament
 
 @pytest.mark.asyncio
 async def test_runner_up_is_none_for_a_knockout_pre_boss_round(tournament, monkeypatch):
-    tournament({T1_TASK: [_instruct("A", 1.0)]}, {1: ["A"]})
+    tournament({ROUND1_TASK: [_instruct("A", 1.0)]}, {1: ["A"]})
 
     async def knockout_rounds(tournament_id, psql_db):
         return [_round(3).model_copy(update={"round_type": RoundType.KNOCKOUT})]

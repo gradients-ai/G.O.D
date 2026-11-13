@@ -12,7 +12,7 @@ from validator.tournament import task_creator
 
 def _patch_replace_seams(monkeypatch, original_task):
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original_task))
-    # a legacy text tournament: no seed rows, so a group-round task keeps the earlier redraw
+    # an unseeded text tournament: no seed rows, so a group-round task keeps the earlier redraw
     monkeypatch.setattr(task_creator.seeds_sql, "is_seeded_text_tournament", AsyncMock(return_value=False))
     monkeypatch.setattr(task_creator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
     monkeypatch.setattr(task_creator.task_sql, "detach_task_from_tournament", AsyncMock())
