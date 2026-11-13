@@ -187,12 +187,14 @@ class TestAdvancement:
         assert winners == miners[:advances]
 
     async def test_round_two_cuts_by_average_rank_not_by_the_round_two_task(self, world):
-        # Round 2's task alone would advance E, F, A, B; average rank over rounds 1-2 advances A, E, B, F.
-        world.play_in_order(1, ABCDEF)
-        world.play_in_order(2, ["E", "F", "A", "B", "C", "D"], members=ABCDEF)
+        # Round 2's task alone would advance E, F, A, B; average rank over rounds 1-2 advances A, B, E, C.
+        world.play(1, ABCDEF, {BOSS: BEST, "A": 1.0, "B": 1.1, "C": 1.2, "D": 1.3, "E": 2.0, "F": 2.1})
+        world.play(2, ABCDEF, {BOSS: BEST, "E": 1.0, "F": 1.1, "A": 1.2, "B": 1.3, "C": 1.4, "D": 1.5})
 
-        assert await world.winners(2) == ["A", "E", "B", "F"]
-        assert (await world.ordered(2))[:4] == ["A", "E", "B", "F"]
+        # Average ranks: A 2, B 3, C 4, D 5, E 3, F 4. Ties go to the smaller summed gap to the best (both bests 1.0), not to
+        # the round-2 winner: B (0.1+0.3)=0.4 beats E (1.0+0.0)=1.0 at 3, and C (0.2+0.4)=0.6 beats F (1.1+0.1)=1.2 at 4.
+        assert await world.winners(2) == ["A", "B", "E", "C"]
+        assert (await world.ordered(2))[:4] == ["A", "B", "E", "C"]
 
     async def test_round_three_picks_the_best_average_over_all_three_rounds(self, world):
         cohort = ["A", "B", "C", "D"]

@@ -1741,7 +1741,7 @@ async def _small_tournament_standings(
     surviving cohort and a cohort member absent from a match ranks last on it. ``recent_round_id`` marks the
     matches of the most recent round played, whose average rank is the tiebreak after average rank (default: the round
     of the last task, so a single-round call ties on that round); ``seed_round_id`` seeds the final shuffle.
-    Ordered by average rank, then most-recent-round rank, then summed normalised gap, then the seeded shuffle.
+    Ordered by average rank, then summed normalised gap, then the seeded shuffle.
 
     ``share_tied_ranks`` gives entries with exactly the same metric on a match the same rank on it (the best of their
     positions) instead of their positions in the ranking order; advancement never sets it.
@@ -1837,7 +1837,6 @@ async def _small_tournament_standings(
         key=lambda standing: (
             standing.has_error,
             standing.average_rank,
-            standing.recent_round_rank,
             standing.summed_gap,
             shuffle_index[standing.hotkey],
         ),
@@ -2213,9 +2212,9 @@ async def get_round_winners(completed_round: TournamentRoundData, psql_db: PSQLD
     return outcome.model_copy(update={"winners": unique_winners})
 
 
-def _standing_tie_key(standing: GroupMatchStanding) -> tuple[bool, float, float, float]:
+def _standing_tie_key(standing: GroupMatchStanding) -> tuple[bool, float, float]:
     """Everything the standings order on before the seeded shuffle."""
-    return standing.has_error, standing.average_rank, standing.recent_round_rank, standing.summed_gap
+    return standing.has_error, standing.average_rank, standing.summed_gap
 
 
 def _shared_standing_ranks(standings: list[GroupMatchStanding]) -> dict[str, int]:

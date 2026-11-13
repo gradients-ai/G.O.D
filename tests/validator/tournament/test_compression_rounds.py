@@ -588,15 +588,17 @@ async def test_a_small_field_advances_min_of_n_and_eight(tournament, scored, adv
     assert len(winners) == advance
 
 
-async def test_round_two_takes_the_best_four_by_average_rank_and_the_latest_round_breaks_ties(tournament):
+async def test_round_two_takes_the_best_four_by_average_rank_and_the_summed_gap_breaks_ties(tournament):
     cohort = [f"h{i}" for i in range(8)]
-    # R1 order h0..h7. R2 (fixed): h1 beats h0, so h0 and h1 tie on average rank 1.5 and h1 wins on R2; h4 is absent from R2.
+    # R1 order h0..h7 (bytes 100, 200, ...). R2 (fixed): h1 beats h0, so h0 and h1 tie on average rank 1.5; h4 is absent from R2.
     r2 = [_fixed(hk, 1.0 + i / 10) for i, hk in enumerate(["h1", "h0", "h3", "h2", "h5", "h6", "h7"])]
     tournament({T1_TASK: _by_bytes(cohort), T2_TASK: r2}, {1: cohort, 2: cohort})
 
     top_four = await rr.quant_cumulative_winners(TID, _round_data(2), t_cst.QUANT_ROUND_TWO_ADVANCE, None)
 
-    assert top_four == ["h1", "h0", "h3", "h2"]  # h2 and h3 tie on 3.5 too; h3 was better in R2
+    # Ties go to the smaller summed gap to the best, not to the better round 2. R1 gap (bytes-100)/100, R2 gap (loss-1.0)/1.0:
+    # h0 0 + 0.1 = 0.1 beats h1 1 + 0 = 1.0 (h1 won round 2); h2 2 + 0.3 = 2.3 beats h3 3 + 0.2 = 3.2 (h3 won round 2).
+    assert top_four == ["h0", "h1", "h2", "h3"]
     # h4 (absent from R2) ranks last there and misses the cut
     standings = await rr._cumulative_standings(TID, _round_data(2), None)
     by_hotkey = {s.hotkey: s for s in standings}
@@ -638,7 +640,7 @@ async def test_round_three_crowns_the_best_average_rank_over_all_three_rounds(to
     assert winners == ["A"]
 
 
-async def test_a_three_round_tie_goes_to_the_better_round_three_rank(tournament):
+async def test_a_three_round_tie_goes_to_the_smaller_summed_gap(tournament):
     cohort = ["A", "B", "C"]
     r1 = _by_bytes(["A", "B", "C"])  # A1 B2 C3
     r2 = [_fixed("C", 1.0), _fixed("A", 1.1), _fixed("B", 1.2)]  # C1 A2 B3
@@ -646,11 +648,14 @@ async def test_a_three_round_tie_goes_to_the_better_round_three_rank(tournament)
     tournament({T1_TASK: r1, T2_TASK: r2, T3_TASK: r3}, {1: cohort, 2: cohort, 3: cohort})
     assert [s.hotkey for s in await rr._cumulative_standings(TID, _round_data(3), None)] == ["A", "B", "C"]
 
-    r3 = _by_bytes(["B", "C", "A"])  # B1 C2 A3 -> A 1+2+3=6, B 2+3+1=6, C 3+1+2=6: a three-way tie on 2.0
+    # B1 C2 A3 -> A 1+2+3=6, B 2+3+1=6, C 3+1+2=6: a three-way tie on 2.0. Round-three bytes B 1000, C 1100, A 1200.
+    r3 = [_freeform("B", 1000), _freeform("C", 1100), _freeform("A", 1200)]
     tournament({T1_TASK: r1, T2_TASK: r2, T3_TASK: r3}, {1: cohort, 2: cohort, 3: cohort})
     standings = await rr._cumulative_standings(TID, _round_data(3), None)
     assert {s.average_rank for s in standings} == {2.0}
-    assert [s.hotkey for s in standings] == ["B", "C", "A"]  # ordered by the round-three rank
+    # Summed gaps (R1 (bytes-100)/100, R2 (loss-1.0)/1.0, R3 (bytes-1000)/1000):
+    # A 0 + 0.1 + 0.2 = 0.3, B 1 + 0.2 + 0 = 1.2, C 2 + 0 + 0.1 = 2.1. A was last in round three yet wins the tie.
+    assert [s.hotkey for s in standings] == ["A", "B", "C"]
 
 
 async def test_third_place_is_the_pre_boss_round_three_standing(tournament):

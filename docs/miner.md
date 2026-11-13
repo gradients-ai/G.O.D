@@ -58,6 +58,12 @@ Three tournaments run every week. Times are UTC. `quant` is the API value of the
 
 Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
 
+### Advancing
+
+Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in.
+
+A tie on average rank goes to the smaller summed gap. On each task, a miner's gap is how far its value is behind the task's best entry, relative to that best; the gaps are added over the rounds played. A tie left after that is settled by a seeded draw.
+
 ## Training repository
 
 Every repository needs the following, whatever the tournament.

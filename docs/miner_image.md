@@ -44,7 +44,7 @@ Source: [`IMAGE_ROUND_PLAN`, `ROUND_ONE_IMAGE_MODEL_TYPES`, `ROUND_TWO_IMAGE_TAS
 - Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
 - With fewer miners than slots, all advance.
 - A miner with no valid result on a task ranks behind every miner with one on it. A miner missing a result in any round sorts below every miner with a result in all rounds.
-- Ties on average rank go to the better rank in the most recent round, then to the smaller summed gap to each task's best entry, then to a seeded draw.
+- Ties on average rank are broken as in [Advancing](miner.md#advancing).
 - The boss is ranked in each round but never takes an advancement slot.
 
 The miner that advances from round 3 is the challenger.

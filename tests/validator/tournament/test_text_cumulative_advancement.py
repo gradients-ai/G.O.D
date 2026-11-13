@@ -41,11 +41,18 @@ def _result(hotkey: str, loss: float) -> MinerResultsText:
 @pytest.fixture
 def tournament(monkeypatch):
     """Fake a seeded text tournament: per round, hotkeys best first (the boss is added with the best loss on every task)
-    and the group's members."""
+    and the group's members. ``losses`` optionally gives explicit per-round losses (hotkey -> loss) instead of the
+    default 1.0 + i/10 derived from the order."""
 
-    def wire(orders: dict[int, list[str]], members: dict[int, list[str]]):
+    def wire(
+        orders: dict[int, list[str]],
+        members: dict[int, list[str]],
+        losses: dict[int, dict[str, float]] | None = None,
+    ):
+        losses = losses or {}
         results = {
-            TASKS[n]: [_result(EMISSION_BURN_HOTKEY, 0.01)] + [_result(hk, 1.0 + i / 10) for i, hk in enumerate(order)]
+            TASKS[n]: [_result(EMISSION_BURN_HOTKEY, 0.01)]
+            + [_result(hk, losses[n][hk] if n in losses else 1.0 + i / 10) for i, hk in enumerate(order)]
             for n, order in orders.items()
         }
 
@@ -87,10 +94,15 @@ def test_round_advance_sizes():
 @pytest.mark.asyncio
 async def test_round_two_cuts_by_average_rank_not_by_the_round_two_task(tournament):
     miners = list("ABCDEF")
-    # Round-2 task order alone would advance E, F, A, B; average rank over R1+R2 advances A, B, C, E.
+    round_two = ["E", "F", "A", "B", "C", "D"]
+    # Round-2 task order alone would advance E, F, A, B; average rank over R1+R2 advances A, B, E, C.
     tournament(
-        {1: miners, 2: ["E", "F", "A", "B", "C", "D"]},
+        {1: miners, 2: round_two},
         {1: miners, 2: miners},
+        losses={
+            1: {"A": 1.0, "B": 1.1, "C": 1.2, "D": 1.3, "E": 2.0, "F": 2.1},
+            2: {"E": 1.0, "F": 1.1, "A": 1.2, "B": 1.3, "C": 1.4, "D": 1.5},
+        },
     )
     # Average ranks: A (1+3)/2=2, B (2+4)/2=3, C (3+5)/2=4, D (4+6)/2=5, E (5+1)/2=3, F (6+2)/2=4.
     round_two_alone = await rr._quant_ordered_hotkeys(await rr.get_tournament_tasks("r2", None), None, cohort=set(miners))
@@ -98,8 +110,9 @@ async def test_round_two_cuts_by_average_rank_not_by_the_round_two_task(tourname
 
     winners = await _winners(2)
 
-    # E ties B on average rank 3 and won round 2, so E ranks ahead of B; F ties C on 4 and was better in round 2.
-    assert winners == ["A", "E", "B", "F"]
+    # Ties on average rank go to the smaller summed gap to the best (R1 best 1.0, R2 best 1.0), not to the round-2 winner:
+    # B (0.1+0.3)=0.4 beats E (1.0+0.0)=1.0 at rank 3, and C (0.2+0.4)=0.6 beats F (1.1+0.1)=1.2 at rank 4.
+    assert winners == ["A", "B", "E", "C"]
 
 
 @pytest.mark.asyncio
@@ -115,11 +128,16 @@ async def test_round_three_picks_the_best_average_over_all_three_rounds(tourname
 
 
 @pytest.mark.asyncio
-async def test_a_tie_on_average_rank_goes_to_the_better_most_recent_round(tournament):
-    # A: R1 1, R2 2. B: R1 2, R2 1. Both average 1.5; B won the latest round.
-    tournament({1: ["A", "B"], 2: ["B", "A"]}, {1: ["A", "B"], 2: ["A", "B"]})
+async def test_a_tie_on_average_rank_goes_to_the_smaller_summed_gap(tournament):
+    # A: R1 1, R2 2. B: R1 2, R2 1. Both average 1.5. B won the latest round but A has the smaller summed gap:
+    # A (0 + (1.1-1.0)/1.0)=0.1, B ((2.0-1.0)/1.0 + 0)=1.0.
+    tournament(
+        {1: ["A", "B"], 2: ["B", "A"]},
+        {1: ["A", "B"], 2: ["A", "B"]},
+        losses={1: {"A": 1.0, "B": 2.0}, 2: {"B": 1.0, "A": 1.1}},
+    )
 
-    assert await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None) == ["B", "A"]
+    assert await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None) == ["A", "B"]
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>
 
 - A [scored fail](#scored-fail-or-infrastructure-error) counts as played and ranks last on that task.
 - A miner missing a result in any round sorts below every miner with a result in all rounds.
-- Ties on average rank go to the better rank in the most recent round, then to the smaller summed gap to each task's best entry, then to a seeded draw.
+- Ties on average rank are broken as in [Advancing](miner.md#advancing).
 - If the text boss produced no usable model (its run failed, or its output is not a full model), the task uses that text task's base model.
 
 </details>
