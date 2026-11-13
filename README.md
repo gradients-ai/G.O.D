@@ -1,70 +1,62 @@
-<h1 align="center">G.O.D</h1>
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/banner-dark.svg"><img src="docs/assets/readme/banner-light.svg" alt="G.O.D: Gradients on Demand, Bittensor subnet 56" width="100%"></picture>
+</p>
+
+<h3 align="center">The best training recipes are found by open competition.</h3>
 
 <p align="center">
-  Gradients on Demand: Bittensor subnet 56, where open-source training code competes in weekly tournaments for the subnet's emissions.
+  Every week, miners' code trains text and image models and compresses language models on the same tasks and the same hardware. Up to three places per tournament are paid from the subnet's miner emissions, and the winning code is <a href="https://github.com/gradients-opensource">published in the open</a>.
 </p>
 
 <p align="center">
-  <a href="docs/miner.md">Miner hub</a> ·
-  <a href="docs/developer.md">Developer guide</a> ·
-  <a href="https://gradients.io">gradients.io</a>
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-paper-dark.svg"><img src="docs/assets/readme/cta-paper-light.svg" alt="Read the paper" height="40"></picture></a>
+  <a href="https://gradients.io"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-train-dark.svg"><img src="docs/assets/readme/cta-train-light.svg" alt="Train on gradients.io" height="40"></picture></a>
+  <a href="docs/miner.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-compete-dark.svg"><img src="docs/assets/readme/cta-compete-light.svg" alt="Compete as a miner" height="40"></picture></a>
+</p>
+
+<br>
+
+<p align="center">
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-1-dark.svg"><img src="docs/assets/readme/stat-1-light.svg" alt="100% win rate against TogetherAI, Databricks and Google Cloud" width="270"></picture></a>
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-2-dark.svg"><img src="docs/assets/readme/stat-2-light.svg" alt="82.8% of experiments won against HuggingFace AutoTrain" width="270"></picture></a>
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-3-dark.svg"><img src="docs/assets/readme/stat-3-light.svg" alt="180 fine-tuning tasks, on models from 70M to 70B parameters" width="270"></picture></a>
+  <br>
+  Results reported in <a href="https://arxiv.org/abs/2506.07940">Gradients: When Markets Meet Fine-tuning</a> (arXiv:2506.07940).
+</p>
+
+## Three tournaments
+
+<p align="center">
+  <a href="docs/miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-text-dark.svg"><img src="docs/assets/readme/card-text-light.svg" alt="Text tournament. Fine-tune a given language model on an instruct, chat, DPO or GRPO task. Ranked by lowest loss on held-out data; on GRPO, highest reward. Open the text guide." width="270"></picture></a>
+  <a href="docs/miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-image-dark.svg"><img src="docs/assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a small set of captioned images. Ranked by lowest denoising loss on held-out images. Open the image guide." width="270"></picture></a>
+  <a href="docs/miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-compression-dark.svg"><img src="docs/assets/readme/card-compression-light.svg" alt="Compression tournament. Compress a given language model: a fixed quantised format, or freeform, any format with your own decoder. Ranked by lowest loss in the fixed format; in freeform by fewest bytes, with a penalty on loss. Open the compression guide." width="270"></picture></a>
 </p>
 
 ## How it works
 
-Miners submit code, not compute. Each miner enters a tournament with a GitHub repository and a pinned commit. For every task the validator has trainers build and run that code on validator-managed GPUs, then evaluates and ranks the output.
+Miners compete with training code. Each miner enters a tournament with a GitHub repository at a pinned commit. For every task the validator runs that code on its own GPUs, then evaluates and ranks the resulting models.
 
-Rounds narrow the field to one challenger. The challenger then meets the defending champion, the boss, in a boss round that decides the crown.
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/steps-1-2-dark.svg"><img src="docs/assets/readme/steps-1-2-light.svg" alt="01 Enter: a GitHub repository at a pinned commit. 02 Rounds: same tasks, same hardware; one challenger remains." width="405"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/steps-3-4-dark.svg"><img src="docs/assets/readme/steps-3-4-light.svg" alt="03 Boss round: the challenger is compared with the boss, task by task. 04 Crown: beat the boss to take it; the winning code is published." width="405"></picture>
+</p>
 
-```mermaid
-flowchart LR
-    enter["Miners enter<br/>a repo and a pinned commit"] --> rounds["Rounds<br/>miners in a round run the same tasks,<br/>the field narrows"]
-    rounds -->|"one challenger"| boss["Boss round<br/>challenger vs boss"]
-    boss -->|"challenger wins"| crown["Challenger takes the crown"]
-    boss -->|"boss holds"| keeps["Boss keeps the crown"]
-```
+The crown is decided head-to-head against the boss, the defending champion. In text and compression that is seven tasks: the three round tasks, which the boss also runs, and the four boss-round tasks. In image it is the six boss-round tasks. The challenger needs at least five wins, under the [crown rule](docs/miner.md#the-boss-and-the-crown); otherwise the boss keeps the crown.
 
-## Tournaments at a glance
+## Start here
 
-| Tournament | Miners compete on | Guide |
-| --- | --- | --- |
-| Text | Code that trains language models | [Text guide](docs/miner_text.md) |
-| Image | Code that trains image models | [Image guide](docs/miner_image.md) |
-| Compression | Code that compresses language models | [Compression guide](docs/miner_compression.md) |
-
-Schedule, fees and how to enter: [miner hub](docs/miner.md#tournaments).
-
-## Quick start
-
-### Miners
-
-1. Write a training repository for one tournament and pin a commit.
-2. Complete subnet registration, return the repository from `miner/endpoints/training_repo.py` and run the miner service.
-3. Fund your coldkey balance with the entry fee.
-
-Every step, with commands: [miner hub](docs/miner.md#what-miners-do).
-
-### Validators
-
-A validator needs Postgres, S3-compatible storage and a hotkey with subnet registration. From a fresh machine: [Running a validator](docs/developer.md#running-a-validator).
-
-A trainer needs Docker with GPU support: [Running a trainer](docs/developer.md#running-a-trainer).
-
-### Developers
-
-Install, lint and test: [Setup](docs/developer.md#setup) and [Testing and linting](docs/developer.md#testing-and-linting).
+Miners start at the [miner hub](docs/miner.md).
 
 ## Documentation
 
 | I want to... | Read |
 | --- | --- |
 | Enter a tournament | [Miner hub](docs/miner.md) |
+| Know one tournament's rules | [Text](docs/miner_text.md), [image](docs/miner_image.md) or [compression](docs/miner_compression.md) guide |
 | Know how the crown is decided | [The boss and the crown](docs/miner.md#the-boss-and-the-crown) |
 | Know how emissions are paid | [Payouts](docs/miner.md#payouts) |
 | See results and balances | [Results](docs/miner.md#results) |
-| Run a validator or a trainer | [Developer guide](docs/developer.md) |
-| Re-evaluate a task locally | [Evaluations and manual tools](docs/developer.md#evaluations-and-manual-tools) |
-| Change this codebase | [Developer guide](docs/developer.md), [AGENTS.md](AGENTS.md), then the `README.md` in each module |
+| Run a validator or a trainer, or change this codebase | [Developer guide](docs/developer.md) |
 | Use the Gradients API | [SKILL.md](SKILL.md) |
 
 ## Licence

@@ -1,8 +1,15 @@
-# Compression tournament: miner guide
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/header-compression-dark.svg"><img src="assets/readme/header-compression-light.svg" alt="Compression tournament: miner guide" width="100%"></picture>
+</p>
 
 The compression tournament ranks miners on compressing a given model: lowest loss in a prescribed format, or smallest size at a bounded loss. This guide is the contract for miners who enter it.
 
-[Miner hub](miner.md) · [Text guide](miner_text.md) · [Image guide](miner_image.md)
+<p align="center">
+  <a href="miner.md"><b>Miner hub</b></a> &nbsp;·&nbsp;
+  <a href="miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-text-dark.svg"><img src="assets/readme/icon-text-light.svg" alt="" width="20" align="top"></picture> <b>Text</b></a> &nbsp;·&nbsp;
+  <a href="miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-image-dark.svg"><img src="assets/readme/icon-image-light.svg" alt="" width="20" align="top"></picture> <b>Image</b></a> &nbsp;·&nbsp;
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-compression-dark.svg"><img src="assets/readme/icon-compression-light.svg" alt="" width="20" align="top"></picture> <b>Compression</b>
+</p>
 
 [At a glance](#at-a-glance) · [Rounds](#rounds) · [The boss round](#the-boss-round) · [What your code receives](#what-your-code-receives) · [Output contract](#output-contract) · [Scoring](#scoring) · [The crown](#the-crown) · [Local testing](#local-testing) · [Checklist](#checklist)
 

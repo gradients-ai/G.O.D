@@ -1,8 +1,15 @@
-# Miner hub
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/header-hub-dark.svg"><img src="assets/readme/header-hub-light.svg" alt="Miner hub: what the three G.O.D tournaments share" width="100%"></picture>
+</p>
 
 Everything a miner needs that is the same in every tournament: schedule, fees, repository rules, how your code runs, entry, payouts, results and fair play. Rules cite the code that enforces them. Where a page and the code differ, the code is right.
 
-Guides: [Text](miner_text.md) · [Image](miner_image.md) · [Compression](miner_compression.md) · [Developer guide](developer.md)
+<p align="center">
+  <a href="miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-text-dark.svg"><img src="assets/readme/icon-text-light.svg" alt="" width="20" align="top"></picture> <b>Text</b></a> &nbsp;·&nbsp;
+  <a href="miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-image-dark.svg"><img src="assets/readme/icon-image-light.svg" alt="" width="20" align="top"></picture> <b>Image</b></a> &nbsp;·&nbsp;
+  <a href="miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-compression-dark.svg"><img src="assets/readme/icon-compression-light.svg" alt="" width="20" align="top"></picture> <b>Compression</b></a> &nbsp;·&nbsp;
+  <a href="developer.md"><b>Developer guide</b></a>
+</p>
 
 On this page: [What miners do](#what-miners-do) · [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting)
 
@@ -32,6 +39,16 @@ Path to your first entry:
 ## Tournaments
 
 Three tournaments run every week. Times are UTC. `quant` is the API value of the compression tournament.
+
+<p align="center">
+  <a href="miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-text-dark.svg"><img src="assets/readme/card-text-light.svg" alt="Text tournament. Fine-tune a given language model on an instruct, chat, DPO or GRPO task. Ranked by lowest loss on held-out data; on GRPO, highest reward. Open the text guide." width="270"></picture></a>
+  <a href="miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-image-dark.svg"><img src="assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a small set of captioned images. Ranked by lowest denoising loss on held-out images. Open the image guide." width="270"></picture></a>
+  <a href="miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-compression-dark.svg"><img src="assets/readme/card-compression-light.svg" alt="Compression tournament. Compress a given language model: a fixed quantised format, or freeform, any format with your own decoder. Ranked by lowest loss in the fixed format; in freeform by fewest bytes, with a penalty on loss. Open the compression guide." width="270"></picture></a>
+</p>
+
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/week-dark.svg"><img src="assets/readme/week-light.svg" alt="The tournament week, times in UTC: text, image and compression start on Monday; the completion target is Friday." width="100%"></picture>
+</p>
 
 | Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
 | --- | --- | --- | --- | --- |
@@ -265,6 +282,11 @@ A week from the miner's seat:
 
 The boss is a tournament's defending champion. The challenger is the one miner left after the rounds. The challenger takes the crown by beating the boss under the rule below. Otherwise the boss keeps it.
 
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-1-dark.svg"><img src="assets/readme/crown-1-light.svg" alt="Text and compression: seven head-to-heads against the boss, the tasks of rounds 1-3 and the four boss-round tasks. The crown takes 7, 6 or 5 wins, under the rule below." width="470"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-2-dark.svg"><img src="assets/readme/crown-2-light.svg" alt="Image: six head-to-heads against the boss, the six boss-round tasks. The crown takes at least 5 wins of the 6." width="470"></picture>
+</p>
+
 ### Text and compression
 
 The crown is decided over seven head-to-heads between the challenger and the boss: the task of each of rounds 1-3, which the boss also runs, and the four boss-round tasks. Each head-to-head compares the two on the value the task is judged by, which your guide names, and has one of four outcomes for the challenger.
@@ -309,6 +331,10 @@ A champion defends without doing anything. The boss is entered from the publishe
 ## Payouts
 
 The top three of a tournament are paid. The validator sets a weight on the hotkey that entered, and that weight is the hotkey's share of the subnet's miner emission. It is paid from the moment the tournament completes until the next tournament of its kind completes.
+
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/payouts-dark.svg"><img src="assets/readme/payouts-light.svg" alt="Each tournament's share of the miner emission between its base minimum and its maximum, and the split over three paid places. The numbers are in the tables below." width="100%"></picture>
+</p>
 
 Keep that hotkey registered on the subnet. A share whose hotkey is not registered is burned.
 
