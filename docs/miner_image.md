@@ -95,7 +95,7 @@ An edit manifest has one JSON object per line: `sample_id`, `instruction` (the e
 | --- | --- |
 | Task size | 10 to 50 pairs, drawn at random; at most 30 in round 1 |
 | Held out | a tenth of the pairs, rounded up |
-| Time budget | 0.5 to 1 hour, rising with the task size in 15-minute steps. Qwen-Image, Qwen-Image-Edit-2511 and MOSS-Image-Base edit tasks get 0.5 hours more |
+| Time budget | 0.5 to 1 hour, rising with the task size in 15-minute steps. Qwen-Image tasks, Qwen-Image-Edit-2511 tasks and MOSS-Image-Base edit tasks get 0.5 hours more, for 1 to 1.5 hours |
 
 Source: [`train_test_split_image`, `create_zip_for_image_dataset`](../validator/tasks/datasets/preparation.py), [`MIN_IMAGE_SYNTH_PAIRS`, `MAX_IMAGE_SYNTH_PAIRS`, `QWEN_IMAGE_EXTRA_COMPETITION_HOURS`](../validator/tasks/synthetics/constants.py), [`_image_competition_hours_for_dataset_size`](../validator/tasks/synthetics/diffusion.py).
 
@@ -169,7 +169,7 @@ Your LoRA is applied to the task's base model and scored on the held-out images.
 
 Source: [`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`](../validator/evaluation/constants.py), [`_calculate_weighted_loss_for_image_eval`](../validator/scoring/tasks.py).
 
-- On an edit task the loss is weighted toward the region the edit changed; unchanged pixels count at 0.2.
+- On an edit task the loss is weighted toward the region the edit changed; unchanged pixels count at 0.2 or less.
 - The LoRA is loaded per module, with its own rank and alpha. A LoRA none of whose keys match the model, or whose weights are all zero, fails. So does a LoRA too large for the evaluator's GPU.
 - A LoRA that leaves the base model unchanged, or an evaluation that returns no loss or a zero loss, has no valid result.
 - Entries on a task are ranked by the task score.
