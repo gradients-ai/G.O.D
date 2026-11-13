@@ -52,6 +52,10 @@ CONTINUOUS_SFT_TRAIN_INDEX = "train_index"
 CONTINUOUS_SFT_LAST_WINNER_REPO = "last_winner_repo"
 CONTINUOUS_SFT_LAST_SOURCE_ROUND_ID = "last_source_round_id"
 CONTINUOUS_SFT_UPDATED_AT = "updated_at"
+CONTINUOUS_SFT_CHUNK_SCHEME = "chunk_scheme"
+
+# One row per continuous-SFT task: the cursor value and chunk scheme the task was created with.
+CONTINUOUS_SFT_TASK_CHUNKS_TABLE = "continuous_sft_task_chunks"
 
 # PvP Pair Results Table Columns
 PVP_HOTKEY_A = "hotkey_a"

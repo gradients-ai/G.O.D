@@ -8,17 +8,27 @@ revert to chatml would corrupt every continuous-SFT eval loss).
 
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
+from tenacity import stop_after_attempt
 
 from core.constants.environments import TrainingStartPoint
 from core.models.dataset_models import FileFormat
 from core.models.task_models import TaskType
 from validator.tasks.synthetics import scheduler
+from validator.tournament import constants as t_cst
+from validator.tournament.models import ChunkScheme
 from validator.tournament.models import ContinuousSftState
+from validator.tournament.models import ContinuousSftTaskChunk
 
 
 SEED = "Qwen/Qwen3-8B-Base"
+
+
+async def _assign_task_id(task, psql_db):
+    task.task_id = uuid4()  # add_task assigns the id of the stored task
+    return task
 
 
 def _patch(monkeypatch, *, state, response):
@@ -26,8 +36,9 @@ def _patch(monkeypatch, *, state, response):
     monkeypatch.setattr(scheduler, "get_continuous_sft_state", AsyncMock(return_value=state))
     ccs = AsyncMock(return_value=response)
     monkeypatch.setattr(scheduler, "call_content_service", ccs)
-    add_task = AsyncMock(side_effect=lambda task, psql_db: task)  # echo the task back
+    add_task = AsyncMock(side_effect=_assign_task_id)
     monkeypatch.setattr(scheduler, "add_task", add_task)
+    monkeypatch.setattr(scheduler, "record_continuous_sft_task_chunk", AsyncMock())
     return ccs, add_task
 
 
@@ -49,7 +60,7 @@ async def test_builds_expected_chatrawtask(monkeypatch):
     assert task.training_data == "https://s3/train"
     assert task.test_data == "https://s3/test"
     assert task.ds == "continuous-sft:qwen:chunk-00003"
-    assert task.hours_to_complete == 4.0  # fallback budget; prep resizes via the throughput pipeline
+    assert task.hours_to_complete == t_cst.CONTINUOUS_SFT_TRAINING_HOURS  # fixed budget, unchanged after prep
     assert task.is_organic is False
     assert task.augmentation_config is None
 
@@ -99,3 +110,34 @@ async def test_raises_on_malformed_content_service_response(monkeypatch, bad_res
     with pytest.raises(ValueError):
         await scheduler.create_continuous_sft_task(MagicMock(), "qwen", SEED)
     add_task.assert_not_called()  # never persist a task pointing at nothing
+
+
+async def test_records_the_task_chunk_after_add_task(monkeypatch):
+    state = ContinuousSftState(lineage="qwen", train_index=7, last_winner_repo=None)
+    _, add_task = _patch(monkeypatch, state=state, response=_good_response())
+    config = MagicMock()
+    task = await scheduler.create_continuous_sft_task(config, "qwen", SEED)
+    record = scheduler.record_continuous_sft_task_chunk
+    record.assert_awaited_once_with(
+        ContinuousSftTaskChunk(task_id=task.task_id, lineage="qwen", train_index=7, chunk_scheme=ChunkScheme.V2),
+        config.psql_db,
+    )
+
+
+async def test_failed_chunk_record_deletes_the_task_and_reraises(monkeypatch):
+    state = ContinuousSftState(lineage="qwen", train_index=7, last_winner_repo=None)
+    _, add_task = _patch(monkeypatch, state=state, response=_good_response())
+    monkeypatch.setattr(scheduler, "record_continuous_sft_task_chunk", AsyncMock(side_effect=RuntimeError("write failed")))
+    delete_task = AsyncMock()
+    monkeypatch.setattr(scheduler, "delete_task", delete_task)
+    config = MagicMock()
+
+    # One attempt only: the creator's retry wrapper (which re-raises the original error) would otherwise sleep between tries.
+    single_attempt = scheduler.create_continuous_sft_task.retry_with(stop=stop_after_attempt(1))
+    with pytest.raises(RuntimeError, match="write failed"):
+        await single_attempt(config, "qwen", SEED)
+
+    # Every task stored along the way is deleted again.
+    stored = [call.args[0].task_id for call in add_task.call_args_list]
+    assert len(stored) == 1
+    assert [call.args for call in delete_task.await_args_list] == [(stored[0], config.psql_db)]

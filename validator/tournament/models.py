@@ -915,17 +915,35 @@ class DedupResult(BaseModel):
     unresolved_pairs: list[tuple[str, str]] = []
 
 
+class ChunkScheme(str, Enum):
+    """How the content service cuts the continuous-SFT data: the unit a train_index counts in."""
+
+    V1 = "v1"
+    V2 = "v2"  # chunk k of V1 is chunks 2k and 2k+1 of this scheme
+
+
 class ContinuousSftState(BaseModel):
     """Per-lineage state for the continuous-SFT boss task (one row per lineage slug).
 
-    train_index: monotonic cursor passed to the stateless content service (advanced by one per task).
+    train_index: monotonic cursor passed to the stateless content service; it is moved past the chunk(s) a task
+        trained when it completes, counted in chunk_scheme units. A lineage with no row starts at index 0 in the current scheme.
     last_winner_repo: previous lowest-eval-loss winner, carried forward as the next base; None first run.
     """
 
     lineage: str
     train_index: int = 0
+    chunk_scheme: ChunkScheme = ChunkScheme.V2
     last_winner_repo: str | None = None
     updated_at: datetime | None = None
+
+
+class ContinuousSftTaskChunk(BaseModel):
+    """The cursor value and chunk scheme one continuous-SFT task was created with."""
+
+    task_id: UUID
+    lineage: str
+    train_index: int
+    chunk_scheme: ChunkScheme
 
 
 class GpuCostCategoryBreakdown(BaseModel):

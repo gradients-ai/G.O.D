@@ -6,6 +6,7 @@ from core.models.image_models import ImageModelType
 from core.models.image_models import ImageTrainingMode
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
+from validator.tournament.models import ChunkScheme
 
 
 TOURNAMENT_INTERVAL_HOURS = 120
@@ -225,10 +226,13 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
     return continuous_sft_seed_repo(continuous_sft_lineage_from_ds(ds))
 
 
-# Initial/fallback budget only: GPUs stay forced at 4xH100 (gpu_requirements.py), but hours are
-# resized post-prep by the general throughput pipeline (2-epoch budget over the measured chunk,
-# capped at MAX_TRAINING_HOURS). This value survives only if prep produces no baseline stats.
-CONTINUOUS_SFT_TRAINING_HOURS = 4.0
+# Fixed training budget: every continuous-SFT task gets exactly this many hours, pinned as both floor and
+# cap after prep (compute_hours_from_baseline_stats ignores the measured stats for these tasks). GPUs stay
+# a forced 4xH100 (gpu_requirements.py).
+CONTINUOUS_SFT_TRAINING_HOURS = 2.5
+
+# The chunk scheme of every continuous-SFT task this code creates; its train_index counts chunks of that scheme.
+CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.V2
 
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1

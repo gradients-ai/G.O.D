@@ -137,6 +137,39 @@ async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str |
         return row[cst.REPO] if row else None
 
 
+async def get_evaluated_repo_for_hotkey(task_id: UUID, hotkey: str, psql_db: PSQLDB) -> str | None:
+    """The repo a hotkey submitted for a task (its latest submission), when its stored test loss is finite; else None.
+
+    Unlike get_lowest_loss_repo_for_task this does not filter on quality_score, so it can pick a specific hotkey's
+    model even when that hotkey is not the ranked winner. It is only meant for a task whose round is already ranked,
+    where score_reason holds the ranking's verdict rather than a scorer error, so only a finite test loss is required.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT submissions.{cst.REPO}, task_nodes.{cst.TEST_LOSS}
+            FROM {cst.SUBMISSIONS_TABLE} submissions
+            JOIN {cst.TASK_NODES_TABLE} task_nodes
+              ON submissions.{cst.TASK_ID} = task_nodes.{cst.TASK_ID}
+              AND submissions.{cst.HOTKEY} = task_nodes.{cst.HOTKEY}
+              AND submissions.{cst.NETUID} = task_nodes.{cst.NETUID}
+            WHERE submissions.{cst.TASK_ID} = $1
+              AND submissions.{cst.HOTKEY} = $2
+              AND task_nodes.{cst.NETUID} = $3
+              AND task_nodes.{cst.TEST_LOSS} IS NOT NULL
+            ORDER BY submissions.{cst.CREATED_ON} DESC
+            LIMIT 1
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+        )
+    if row is None or not math.isfinite(row[cst.TEST_LOSS]):
+        return None
+    return row[cst.REPO]
+
+
 def _row_count(command_tag: str) -> int:
     try:
         return int(command_tag.split()[-1])
