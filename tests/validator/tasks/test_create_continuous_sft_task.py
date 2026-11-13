@@ -17,6 +17,7 @@ from core.constants.environments import TrainingStartPoint
 from core.models.dataset_models import FileFormat
 from core.models.task_models import TaskType
 from validator.tasks.synthetics import scheduler
+from validator.tournament import constants as t_cst
 from validator.tournament.models import ChunkScheme
 from validator.tournament.models import ContinuousSftState
 from validator.tournament.models import ContinuousSftTaskChunk
@@ -59,7 +60,7 @@ async def test_builds_expected_chatrawtask(monkeypatch):
     assert task.training_data == "https://s3/train"
     assert task.test_data == "https://s3/test"
     assert task.ds == "continuous-sft:qwen:chunk-00003"
-    assert task.hours_to_complete == 2.5  # fixed budget, unchanged after prep
+    assert task.hours_to_complete == t_cst.CONTINUOUS_SFT_TRAINING_HOURS  # fixed budget, unchanged after prep
     assert task.is_organic is False
     assert task.augmentation_config is None
 
@@ -118,7 +119,7 @@ async def test_records_the_task_chunk_after_add_task(monkeypatch):
     task = await scheduler.create_continuous_sft_task(config, "qwen", SEED)
     record = scheduler.record_continuous_sft_task_chunk
     record.assert_awaited_once_with(
-        ContinuousSftTaskChunk(task_id=task.task_id, lineage="qwen", train_index=7, chunk_scheme=ChunkScheme.FIFTY_K),
+        ContinuousSftTaskChunk(task_id=task.task_id, lineage="qwen", train_index=7, chunk_scheme=ChunkScheme.V2),
         config.psql_db,
     )
 

@@ -41,12 +41,12 @@ class TestLineages:
         # Slug must stay off the retired `qwen` row, which still holds that chain's winner.
         assert t_cst.CONTINUOUS_SFT_LINEAGES == {"qwen3-8b": "Qwen/Qwen3-8B-Base"}
 
-    def test_training_hours_is_two_and_a_half(self):
+    def test_training_hours_constant(self):
         # Fixed budget, pinned after prep too.
         assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
 
-    def test_chunk_scheme_is_fifty_k(self):
-        assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.FIFTY_K
+    def test_chunk_scheme_is_v2(self):
+        assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.V2
 
 
 class TestDsRoundTrip:

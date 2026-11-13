@@ -106,17 +106,17 @@ async def get_continuous_sft_task_chunk(task_id: UUID, psql_db: PSQLDB) -> Conti
 
 
 def next_train_index_after(chunk: ContinuousSftTaskChunk | None, current_train_index: int) -> int:
-    """The cursor (in FIFTY_K units) a completed task leaves behind; never below the current cursor.
+    """The cursor (in v2 chunk units) a completed task leaves behind; never below the current cursor.
 
-    FIFTY_K task: the next chunk, index + 1. HUNDRED_K task: its chunk k is the FIFTY_K chunks
+    V2 task: the next chunk, index + 1. V1 task: its chunk k is the V2 chunks
     2k and 2k+1, so both are consumed and the next unread one is 2k + 2. No record means the task was
-    created before the scheme switch (a HUNDRED_K task whose index was not recorded): the migration
+    created before the scheme switch (a V1 task whose index was not recorded): the migration
     doubled the cursor the task was created from, so the current value is 2k and the next unread
     chunk is current + 2.
     """
     if chunk is None:
         following = current_train_index + 2
-    elif chunk.chunk_scheme == ChunkScheme.FIFTY_K:
+    elif chunk.chunk_scheme == ChunkScheme.V2:
         following = chunk.train_index + 1
     else:
         following = 2 * chunk.train_index + 2
@@ -128,7 +128,7 @@ async def advance_continuous_sft_state(
 ) -> None:
     """Advance a lineage's train cursor and record its winner (upsert; creates the row on first run).
 
-    The cursor moves past the chunk the task trained on, in FIFTY_K units (see next_train_index_after, which
+    The cursor moves past the chunk the task trained on, in v2 chunk units (see next_train_index_after, which
     the SQL CASE mirrors so the arithmetic runs on the current row inside the one statement), and never
     backwards. task_id selects the task's chunk record; without one the cursor moves by two, as for a task
     created before the scheme switch. winner_repo=None is preserved via COALESCE (a failed/empty week doesn't
@@ -149,17 +149,17 @@ async def advance_continuous_sft_state(
                     ({cst.CONTINUOUS_SFT_LINEAGE}, {train_index}, {cst.CONTINUOUS_SFT_CHUNK_SCHEME},
                      {cst.CONTINUOUS_SFT_LAST_WINNER_REPO}, {cst.CONTINUOUS_SFT_LAST_SOURCE_ROUND_ID})
                 VALUES ($1,
-                        CASE $5::text WHEN '{ChunkScheme.FIFTY_K.value}' THEN $4::int + 1
-                                      WHEN '{ChunkScheme.HUNDRED_K.value}' THEN 2 * $4::int + 2
+                        CASE $5::text WHEN '{ChunkScheme.V2.value}' THEN $4::int + 1
+                                      WHEN '{ChunkScheme.V1.value}' THEN 2 * $4::int + 2
                                       ELSE 2 END,
-                        '{ChunkScheme.FIFTY_K.value}', $2, $3)
+                        '{ChunkScheme.V2.value}', $2, $3)
                 ON CONFLICT ({cst.CONTINUOUS_SFT_LINEAGE}) DO UPDATE
                 SET {train_index} = GREATEST(
                         {state_table}.{train_index},
-                        CASE $5::text WHEN '{ChunkScheme.FIFTY_K.value}' THEN $4::int + 1
-                                      WHEN '{ChunkScheme.HUNDRED_K.value}' THEN 2 * $4::int + 2
+                        CASE $5::text WHEN '{ChunkScheme.V2.value}' THEN $4::int + 1
+                                      WHEN '{ChunkScheme.V1.value}' THEN 2 * $4::int + 2
                                       ELSE {state_table}.{train_index} + 2 END),
-                    {cst.CONTINUOUS_SFT_CHUNK_SCHEME} = '{ChunkScheme.FIFTY_K.value}',
+                    {cst.CONTINUOUS_SFT_CHUNK_SCHEME} = '{ChunkScheme.V2.value}',
                     {cst.CONTINUOUS_SFT_LAST_WINNER_REPO} =
                         COALESCE($2, {state_table}.{cst.CONTINUOUS_SFT_LAST_WINNER_REPO}),
                     {cst.CONTINUOUS_SFT_LAST_SOURCE_ROUND_ID} = $3,

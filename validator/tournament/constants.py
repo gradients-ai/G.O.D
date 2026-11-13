@@ -221,7 +221,7 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
 CONTINUOUS_SFT_TRAINING_HOURS = 2.5
 
 # The chunk scheme of every continuous-SFT task this code creates; its train_index counts chunks of that scheme.
-CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.FIFTY_K
+CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.V2
 
 # Knockout round task counts
 KNOCKOUT_PAIR_TASKS = 1

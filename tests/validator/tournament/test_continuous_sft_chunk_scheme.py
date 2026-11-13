@@ -58,7 +58,7 @@ class MigrationSim:
     def __init__(self, rows: dict[str, dict]) -> None:
         self.rows = rows  # lineage -> {"train_index": int, ["chunk_scheme": str]}
         self.has_column = any("chunk_scheme" in row for row in rows.values())
-        self.column_default = "50k" if self.has_column else None
+        self.column_default = "v2" if self.has_column else None
         self.chunks_table_exists = False
 
     def insert_row(self, lineage: str, train_index: int = 0) -> None:
@@ -74,38 +74,38 @@ class MigrationSim:
 
     def _run_one(self, stmt: str) -> None:
         if re.fullmatch(
-            r"ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT '100k' "
-            r"CHECK \(chunk_scheme IN \('100k', ?'50k'\)\)",
+            r"ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT 'v1' "
+            r"CHECK \(chunk_scheme IN \('v1', ?'v2'\)\)",
             stmt,
         ):
             if not self.has_column:
                 self.has_column = True
-                self.column_default = "100k"
+                self.column_default = "v1"
                 for row in self.rows.values():
-                    row["chunk_scheme"] = "100k"
+                    row["chunk_scheme"] = "v1"
         elif re.fullmatch(
-            r"UPDATE continuous_sft_state SET train_index = train_index \* 2, chunk_scheme = '50k' "
-            r"WHERE chunk_scheme = '100k'",
+            r"UPDATE continuous_sft_state SET train_index = train_index \* 2, chunk_scheme = 'v2' "
+            r"WHERE chunk_scheme = 'v1'",
             stmt,
         ):
             assert self.has_column
             for row in self.rows.values():
-                if row["chunk_scheme"] == "100k":
+                if row["chunk_scheme"] == "v1":
                     row["train_index"] *= 2
-                    row["chunk_scheme"] = "50k"
-        elif stmt == "ALTER TABLE continuous_sft_state ALTER COLUMN chunk_scheme SET DEFAULT '50k'":
+                    row["chunk_scheme"] = "v2"
+        elif stmt == "ALTER TABLE continuous_sft_state ALTER COLUMN chunk_scheme SET DEFAULT 'v2'":
             assert self.has_column
-            self.column_default = "50k"
+            self.column_default = "v2"
         elif stmt.startswith("CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks"):
             self.chunks_table_exists = True
         elif stmt == "DROP TABLE IF EXISTS continuous_sft_task_chunks":
             self.chunks_table_exists = False
         elif re.fullmatch(
-            r"UPDATE continuous_sft_state SET train_index = \(train_index \+ 1\) / 2 WHERE chunk_scheme = '50k'", stmt
+            r"UPDATE continuous_sft_state SET train_index = \(train_index \+ 1\) / 2 WHERE chunk_scheme = 'v2'", stmt
         ):
             assert self.has_column
             for row in self.rows.values():
-                if row["chunk_scheme"] == "50k":
+                if row["chunk_scheme"] == "v2":
                     row["train_index"] = (row["train_index"] + 1) // 2
         elif stmt == "ALTER TABLE continuous_sft_state DROP COLUMN IF EXISTS chunk_scheme":
             self.has_column = False
@@ -122,7 +122,7 @@ class TestMigration:
         sim = MigrationSim({"a": {"train_index": 5}, "b": {"train_index": 0}, "c": {"train_index": 17}})
         sim.run(up)
         assert {k: v["train_index"] for k, v in sim.rows.items()} == {"a": 10, "b": 0, "c": 34}
-        assert all(row["chunk_scheme"] == "50k" for row in sim.rows.values())
+        assert all(row["chunk_scheme"] == "v2" for row in sim.rows.values())
         assert sim.chunks_table_exists
 
     def test_second_application_is_a_no_op(self):
@@ -130,14 +130,14 @@ class TestMigration:
         sim = MigrationSim({"a": {"train_index": 5}})
         sim.run(up)
         sim.run(up)
-        assert sim.rows == {"a": {"train_index": 10, "chunk_scheme": "50k"}}
+        assert sim.rows == {"a": {"train_index": 10, "chunk_scheme": "v2"}}
 
     def test_rows_created_afterwards_default_to_the_new_scheme(self):
         up, _ = _sections()
         sim = MigrationSim({"a": {"train_index": 5}})
         sim.run(up)
         sim.insert_row("new")
-        assert sim.rows["new"] == {"train_index": 0, "chunk_scheme": "50k"}
+        assert sim.rows["new"] == {"train_index": 0, "chunk_scheme": "v2"}
         sim.run(up)  # a repeat must not double the new row either
         assert sim.rows["new"]["train_index"] == 0
 
@@ -151,7 +151,7 @@ class TestMigration:
         up, down = _sections()
         sim = MigrationSim({"a": {"train_index": 5}})
         sim.run(up)
-        sim.rows["a"]["train_index"] = cursor  # the cursor after some 50k tasks have run
+        sim.rows["a"]["train_index"] = cursor  # the cursor after some v2 tasks have run
         sim.run(down)
         assert sim.rows["a"] == {"train_index": expected}
 
@@ -168,7 +168,7 @@ class TestMigration:
         up, _ = _sections()
         create = next(s for s in up if s.startswith("CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks"))
         assert "task_id UUID PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE" in create
-        assert "chunk_scheme TEXT NOT NULL CHECK (chunk_scheme IN ('100k', '50k'))" in create
+        assert "chunk_scheme TEXT NOT NULL CHECK (chunk_scheme IN ('v1', 'v2'))" in create
 
 
 # ------------------------------------------------------------------------------------------------
@@ -258,12 +258,12 @@ class FakeContinuousDb:
         row = self.state.get(lineage)
         if row is None:
             first = csft.next_train_index_after(chunk, 0)
-            self.state[lineage] = {"train_index": first, "chunk_scheme": "50k", "winner": winner, "round": source_round_id}
+            self.state[lineage] = {"train_index": first, "chunk_scheme": "v2", "winner": winner, "round": source_round_id}
         elif row["round"] == source_round_id:
             return None
         else:
             row["train_index"] = csft.next_train_index_after(chunk, row["train_index"])
-            row["chunk_scheme"] = "50k"
+            row["chunk_scheme"] = "v2"
             row["winner"] = winner if winner is not None else row["winner"]
             row["round"] = source_round_id
         out = self.state[lineage]
@@ -276,7 +276,7 @@ class FakeContinuousDb:
     def apply_migration(self) -> None:
         """Run the migration file's up statements over the state rows (previous-scheme rows have no column)."""
         rows = {
-            k: {"train_index": v["train_index"], **({} if v["chunk_scheme"] == "100k" else {"chunk_scheme": v["chunk_scheme"]})}
+            k: {"train_index": v["train_index"], **({} if v["chunk_scheme"] == "v1" else {"chunk_scheme": v["chunk_scheme"]})}
             for k, v in self.state.items()
         }
         up, _ = _sections()
@@ -286,7 +286,7 @@ class FakeContinuousDb:
             self.state[lineage]["chunk_scheme"] = row["chunk_scheme"]
 
 
-def _chunk(task_id: UUID, index: int, scheme: ChunkScheme = ChunkScheme.FIFTY_K, lineage: str = LINEAGE):
+def _chunk(task_id: UUID, index: int, scheme: ChunkScheme = ChunkScheme.V2, lineage: str = LINEAGE):
     return ContinuousSftTaskChunk(task_id=task_id, lineage=lineage, train_index=index, chunk_scheme=scheme)
 
 
@@ -312,18 +312,18 @@ def _wire_creation(monkeypatch, db: FakeContinuousDb):
 # next_train_index_after
 # ------------------------------------------------------------------------------------------------
 class TestNextTrainIndex:
-    def test_fifty_k_task_leaves_next_chunk(self):
-        assert csft.next_train_index_after(_chunk(uuid4(), 10, ChunkScheme.FIFTY_K), 10) == 11
+    def test_v2_task_leaves_next_chunk(self):
+        assert csft.next_train_index_after(_chunk(uuid4(), 10, ChunkScheme.V2), 10) == 11
 
-    def test_hundred_k_task_consumes_both_halves(self):
-        assert csft.next_train_index_after(_chunk(uuid4(), 5, ChunkScheme.HUNDRED_K), 10) == 12
+    def test_v1_task_consumes_two_chunks(self):
+        assert csft.next_train_index_after(_chunk(uuid4(), 5, ChunkScheme.V1), 10) == 12
 
     def test_no_record_is_current_plus_two(self):
         assert csft.next_train_index_after(None, 10) == 12
 
     def test_never_moves_backwards(self):
-        assert csft.next_train_index_after(_chunk(uuid4(), 3, ChunkScheme.FIFTY_K), 10) == 10
-        assert csft.next_train_index_after(_chunk(uuid4(), 1, ChunkScheme.HUNDRED_K), 10) == 10
+        assert csft.next_train_index_after(_chunk(uuid4(), 3, ChunkScheme.V2), 10) == 10
+        assert csft.next_train_index_after(_chunk(uuid4(), 1, ChunkScheme.V1), 10) == 10
 
 
 class TestAdvanceSql:
@@ -331,7 +331,7 @@ class TestAdvanceSql:
 
     async def test_single_guarded_statement_mirrors_next_train_index_after(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
+        db.seed(LINEAGE, 10, "v2")
         task_id = uuid4()
         await csft.record_continuous_sft_task_chunk(_chunk(task_id, 10), db)
         db.statements.clear()
@@ -341,18 +341,18 @@ class TestAdvanceSql:
         assert len(inserts) == 1
         sql, args = inserts[0]
         flat = " ".join(sql.split()).replace("( ", "(")
-        assert args == (LINEAGE, "org/a", "r1", 10, "50k")
+        assert args == (LINEAGE, "org/a", "r1", 10, "v2")
         assert "IS DISTINCT FROM $3" in flat
         assert "GREATEST(continuous_sft_state.train_index," in flat
-        assert "WHEN '50k' THEN $4::int + 1" in flat
-        assert "WHEN '100k' THEN 2 * $4::int + 2" in flat
+        assert "WHEN 'v2' THEN $4::int + 1" in flat
+        assert "WHEN 'v1' THEN 2 * $4::int + 2" in flat
         assert "ELSE continuous_sft_state.train_index + 2" in flat
-        assert "chunk_scheme = '50k'" in flat
+        assert "chunk_scheme = 'v2'" in flat
         assert "COALESCE($2, continuous_sft_state.last_winner_repo)" in flat
 
     async def test_no_record_passes_null_index_and_scheme(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
+        db.seed(LINEAGE, 10, "v2")
         await csft.advance_continuous_sft_state(LINEAGE, "org/a", "r1", db, task_id=uuid4())
         _, args = [(s, a) for s, a in db.statements if "INSERT INTO continuous_sft_state" in s][0]
         assert args == (LINEAGE, "org/a", "r1", None, None)
@@ -365,24 +365,24 @@ class TestTaskInFlightAcrossTheSwitch:
     async def test_task_without_record_moves_cursor_to_12(self):
         # Created at previous-scheme index 5 before the migration (no record); the migration then set the cursor to 10.
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 5, "100k")
+        db.seed(LINEAGE, 5, "v1")
         db.apply_migration()
         assert db.state[LINEAGE]["train_index"] == 10
         await csft.advance_continuous_sft_state(LINEAGE, "org/w", "r1", db, task_id=uuid4())
-        assert db.state[LINEAGE]["train_index"] == 12  # never 11: the second half of chunk 5 is consumed
+        assert db.state[LINEAGE]["train_index"] == 12  # never 11: the second chunk of the pair is consumed
 
     async def test_recorded_previous_scheme_task_moves_cursor_to_12(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 5, "100k")
+        db.seed(LINEAGE, 5, "v1")
         db.apply_migration()
         task_id = uuid4()
-        await csft.record_continuous_sft_task_chunk(_chunk(task_id, 5, ChunkScheme.HUNDRED_K), db)
+        await csft.record_continuous_sft_task_chunk(_chunk(task_id, 5, ChunkScheme.V1), db)
         await csft.advance_continuous_sft_state(LINEAGE, "org/w", "r1", db, task_id=task_id)
         assert db.state[LINEAGE]["train_index"] == 12
 
     async def test_new_scheme_task_created_at_10_moves_cursor_to_11(self, monkeypatch):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 5, "100k")
+        db.seed(LINEAGE, 5, "v1")
         config, served = _wire_creation(monkeypatch, db)
         db.apply_migration()
 
@@ -392,9 +392,9 @@ class TestTaskInFlightAcrossTheSwitch:
         await csft.advance_continuous_sft_state(LINEAGE, "org/w", "r1", db, task_id=task.task_id)
         assert db.state[LINEAGE]["train_index"] == 11
 
-    async def test_cursor_walks_both_halves_after_the_switch(self, monkeypatch):
+    async def test_cursor_walks_past_both_chunks_after_the_switch(self, monkeypatch):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 5, "100k")
+        db.seed(LINEAGE, 5, "v1")
         config, served = _wire_creation(monkeypatch, db)
         db.apply_migration()
         for round_number in range(1, 5):
@@ -406,7 +406,7 @@ class TestTaskInFlightAcrossTheSwitch:
 
     def test_migration_applied_twice_doubles_once(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 5, "100k")
+        db.seed(LINEAGE, 5, "v1")
         db.apply_migration()
         db.apply_migration()
         assert db.state[LINEAGE]["train_index"] == 10
@@ -418,7 +418,7 @@ class TestTaskInFlightAcrossTheSwitch:
 class TestAdvanceRules:
     async def test_same_round_twice_changes_nothing(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
+        db.seed(LINEAGE, 10, "v2")
         task_id = uuid4()
         await csft.record_continuous_sft_task_chunk(_chunk(task_id, 10), db)
         await csft.advance_continuous_sft_state(LINEAGE, "org/a", "r1", db, task_id=task_id)
@@ -428,7 +428,7 @@ class TestAdvanceRules:
 
     async def test_stale_low_task_index_never_moves_cursor_back(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 20, "50k")
+        db.seed(LINEAGE, 20, "v2")
         task_id = uuid4()
         await csft.record_continuous_sft_task_chunk(_chunk(task_id, 3), db)
         await csft.advance_continuous_sft_state(LINEAGE, "org/a", "r1", db, task_id=task_id)
@@ -436,7 +436,7 @@ class TestAdvanceRules:
 
     async def test_week_without_winner_still_advances_and_keeps_repo(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k", winner="org/prev")
+        db.seed(LINEAGE, 10, "v2", winner="org/prev")
         task_id = uuid4()
         await csft.record_continuous_sft_task_chunk(_chunk(task_id, 10), db)
         await csft.advance_continuous_sft_state(LINEAGE, None, "r1", db, task_id=task_id)
@@ -445,8 +445,8 @@ class TestAdvanceRules:
 
     async def test_lineages_advance_independently(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
-        db.seed(OTHER_LINEAGE, 40, "50k", winner="org/other")
+        db.seed(LINEAGE, 10, "v2")
+        db.seed(OTHER_LINEAGE, 40, "v2", winner="org/other")
         task_id = uuid4()
         await csft.record_continuous_sft_task_chunk(_chunk(task_id, 10), db)
         await csft.advance_continuous_sft_state(LINEAGE, "org/a", "round-x", db, task_id=task_id)
@@ -457,7 +457,7 @@ class TestAdvanceRules:
         db = FakeContinuousDb()
         await csft.advance_continuous_sft_state(LINEAGE, "org/a", "r1", db)
         assert db.state[LINEAGE]["train_index"] == 2  # no record: next_train_index_after(None, 0)
-        assert db.state[LINEAGE]["chunk_scheme"] == "50k"
+        assert db.state[LINEAGE]["chunk_scheme"] == "v2"
 
     async def test_first_insert_with_new_scheme_record(self):
         db = FakeContinuousDb()
@@ -472,13 +472,13 @@ class TestAdvanceRules:
 # ------------------------------------------------------------------------------------------------
 class TestStateAndCreation:
     def test_defaults_are_the_new_scheme(self):
-        assert ContinuousSftState(lineage=LINEAGE).chunk_scheme == ChunkScheme.FIFTY_K
-        assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.FIFTY_K
+        assert ContinuousSftState(lineage=LINEAGE).chunk_scheme == ChunkScheme.V2
+        assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.V2
 
     async def test_get_state_returns_the_stored_scheme(self):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
-        assert (await csft.get_continuous_sft_state(LINEAGE, db)).chunk_scheme == ChunkScheme.FIFTY_K
+        db.seed(LINEAGE, 10, "v2")
+        assert (await csft.get_continuous_sft_state(LINEAGE, db)).chunk_scheme == ChunkScheme.V2
 
     async def test_new_lineage_starts_at_zero_in_the_new_scheme(self, monkeypatch):
         db = FakeContinuousDb()
@@ -489,7 +489,7 @@ class TestStateAndCreation:
 
     async def test_deletes_the_task_when_recording_fails(self, monkeypatch):
         db = FakeContinuousDb()
-        db.seed(LINEAGE, 10, "50k")
+        db.seed(LINEAGE, 10, "v2")
         db.fail_chunk_insert = True
         config, _ = _wire_creation(monkeypatch, db)
         delete_task = AsyncMock()

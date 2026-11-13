@@ -52,14 +52,14 @@ class TestStateMockBranches:
     async def test_get_state_maps_row_fields(self):
         row = {
             cst.CONTINUOUS_SFT_TRAIN_INDEX: 7,
-            cst.CONTINUOUS_SFT_CHUNK_SCHEME: "50k",
+            cst.CONTINUOUS_SFT_CHUNK_SCHEME: "v2",
             cst.CONTINUOUS_SFT_LAST_WINNER_REPO: "org/x",
             cst.CONTINUOUS_SFT_UPDATED_AT: None,
         }
         psql, _ = _mock_psql(fetchrow=row)
         state = await csft.get_continuous_sft_state("qwen", psql)
         assert (state.lineage, state.train_index, state.last_winner_repo) == ("qwen", 7, "org/x")
-        assert state.chunk_scheme == ChunkScheme.FIFTY_K
+        assert state.chunk_scheme == ChunkScheme.V2
 
     async def test_advance_idempotent_skip_returns_without_raising(self):
         # RETURNING produced no row (same source_round_id) -> function no-ops, does not raise.
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS continuous_sft_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS last_source_round_id TEXT;
-ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT '50k';
+ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT 'v2';
 CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks (
     task_id UUID PRIMARY KEY,
     lineage TEXT NOT NULL,
@@ -191,13 +191,13 @@ class TestStateRealDb:
         return (await csft.get_continuous_sft_state("qwen", db)).train_index
 
     async def test_new_scheme_record_moves_cursor_past_its_chunk(self, cst_db):
-        assert await self._advance_with_record(cst_db, 10, ChunkScheme.FIFTY_K, seed_cursor=10) == 11
+        assert await self._advance_with_record(cst_db, 10, ChunkScheme.V2, seed_cursor=10) == 11
 
-    async def test_previous_scheme_record_consumes_both_halves(self, cst_db):
-        assert await self._advance_with_record(cst_db, 5, ChunkScheme.HUNDRED_K, seed_cursor=10) == 12
+    async def test_previous_scheme_record_consumes_two_chunks(self, cst_db):
+        assert await self._advance_with_record(cst_db, 5, ChunkScheme.V1, seed_cursor=10) == 12
 
     async def test_stale_new_scheme_record_never_moves_cursor_back(self, cst_db):
-        assert await self._advance_with_record(cst_db, 3, ChunkScheme.FIFTY_K, seed_cursor=20) == 20
+        assert await self._advance_with_record(cst_db, 3, ChunkScheme.V2, seed_cursor=20) == 20
 
     async def test_first_insert_with_new_scheme_record(self, cst_db):
-        assert await self._advance_with_record(cst_db, 0, ChunkScheme.FIFTY_K) == 1
+        assert await self._advance_with_record(cst_db, 0, ChunkScheme.V2) == 1

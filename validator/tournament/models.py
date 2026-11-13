@@ -918,8 +918,8 @@ class DedupResult(BaseModel):
 class ChunkScheme(str, Enum):
     """How the content service cuts the continuous-SFT data: the unit a train_index counts in."""
 
-    HUNDRED_K = "100k"
-    FIFTY_K = "50k"  # chunk k of HUNDRED_K is chunks 2k and 2k+1 of this scheme
+    V1 = "v1"
+    V2 = "v2"  # chunk k of V1 is chunks 2k and 2k+1 of this scheme
 
 
 class ContinuousSftState(BaseModel):
@@ -932,7 +932,7 @@ class ContinuousSftState(BaseModel):
 
     lineage: str
     train_index: int = 0
-    chunk_scheme: ChunkScheme = ChunkScheme.FIFTY_K
+    chunk_scheme: ChunkScheme = ChunkScheme.V2
     last_winner_repo: str | None = None
     updated_at: datetime | None = None
 
