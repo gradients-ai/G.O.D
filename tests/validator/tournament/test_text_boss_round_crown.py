@@ -653,8 +653,8 @@ class TestStageOneCreation:
         assert all(row.pair_id == pair_id for row in registered.values())
         assert sorted(t.value for t in _types(cup.created)) == sorted([TaskType.GRPOTASK.value, TaskType.DPOTASK.value])
         cup.mark_attached.assert_awaited_once_with(cup.seed.task_id, cup.final_round.round_id, None)
-        # the standard pool, not the large-instruct band, and no big task
-        assert all(models == ("pool", None, None) for _, models, _ in cup.created)
+        # the standard pool capped for DPO and GRPO, not the large-instruct band, and no big task
+        assert all(models == ("pool", None, t_cst.PREFERENCE_TASK_MAX_SIZE_B) for _, models, _ in cup.created)
         assert not any(task_creator.is_text_big_task(t.task_type) for t in cup.tasks.values())
 
     async def test_a_second_pass_creates_nothing(self, cup):

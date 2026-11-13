@@ -258,7 +258,7 @@ async def _create_seeded_text_boss_round_tasks(tournament_id: str, round_id: str
         await seeds_sql.mark_seed_attached(continuous.task_id, round_id, config.psql_db)
     tasks = [continuous]
 
-    standard_models = _get_text_models(config.keypair)
+    standard_models = _get_text_models(config.keypair, largest_size_b=t_cst.PREFERENCE_TASK_MAX_SIZE_B)
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)
     for task_type in t_cst.TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES:
@@ -830,6 +830,9 @@ async def create_new_task_of_same_type(task: RawTask, config: Config, max_num_pr
         return await recreate_chained_quant_task(config, task)
 
     model_params_b = int(task.model_params_count / t_cst.MODEL_PARAMS_TO_BILLIONS)
+    size_cap_b = (
+        t_cst.PREFERENCE_TASK_MAX_SIZE_B if task.task_type in (TaskType.DPOTASK, TaskType.GRPOTASK) else float("inf")
+    )
 
     # Handle case where model params is 0 or very small
     if model_params_b < t_cst.DEFAULT_MODEL_MIN_SIZE_B:
@@ -839,13 +842,16 @@ async def create_new_task_of_same_type(task: RawTask, config: Config, max_num_pr
             f"{t_cst.DEFAULT_MODEL_MAX_SIZE_B}B"
         )
         models = _get_text_models(
-            config.keypair, smallest_size_b=t_cst.DEFAULT_MODEL_MIN_SIZE_B, largest_size_b=t_cst.DEFAULT_MODEL_MAX_SIZE_B
+            config.keypair,
+            smallest_size_b=t_cst.DEFAULT_MODEL_MIN_SIZE_B,
+            largest_size_b=min(t_cst.DEFAULT_MODEL_MAX_SIZE_B, size_cap_b),
         )
     else:
+        largest_size_b = min(model_params_b * t_cst.MODEL_SIZE_RANGE_MULTIPLIER_MAX, size_cap_b)
         models = _get_text_models(
             config.keypair,
-            smallest_size_b=model_params_b * t_cst.MODEL_SIZE_RANGE_MULTIPLIER_MIN,
-            largest_size_b=model_params_b * t_cst.MODEL_SIZE_RANGE_MULTIPLIER_MAX,
+            smallest_size_b=min(model_params_b * t_cst.MODEL_SIZE_RANGE_MULTIPLIER_MIN, largest_size_b),
+            largest_size_b=largest_size_b,
         )
     instruct_datasets = _get_instruct_text_datasets(config.keypair)
     dpo_datasets = _get_dpo_datasets(config.keypair)

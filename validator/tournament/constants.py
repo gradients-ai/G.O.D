@@ -194,6 +194,9 @@ FINAL_ROUND_TEXT_TASK_DISTRIBUTION: dict[TaskType, int] = {
 BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B = 30.0
 BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B = 72.0
 
+# DPO and GRPO tasks draw models no larger than this, replacements included.
+PREFERENCE_TASK_MAX_SIZE_B = 8.0
+
 # --- Continuous-SFT boss task ---------------------------------------------------------------
 # Chat-SFT lineages carried across tournaments; each round trains the next stage-1 chunk from the
 # lineage's previous winner (or seed on first run).
