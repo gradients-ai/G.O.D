@@ -475,18 +475,19 @@ async def _create_single_image_task_with_retry(
     is_final: bool = False,
     max_num_prompts: int | None = None,
 ) -> RawTask:
-    while True:
+    context = f"final image task {task_num + 1}" if is_final else f"image task {task_num + 1} for group {group_index + 1}"
+    for attempt in range(1, t_cst.IMAGE_TASK_CREATION_MAX_ATTEMPTS + 1):
         try:
-            task = await create_synthetic_image_task(
+            return await create_synthetic_image_task(
                 config,
                 image_models,
                 max_num_prompts=max_num_prompts,
             )
-            break
         except Exception as e:
-            context = f"final image task {task_num + 1}" if is_final else f"image task {task_num + 1} for group {group_index + 1}"
-            logger.warning(f"Failed to create {context}: {e}. Retrying...")
-    return task
+            if attempt == t_cst.IMAGE_TASK_CREATION_MAX_ATTEMPTS:
+                raise RuntimeError(f"Failed to create {context} after {attempt} attempts") from e
+            logger.warning(f"Failed to create {context} (attempt {attempt}): {e}. Retrying...")
+            await asyncio.sleep(t_cst.IMAGE_TASK_CREATION_RETRY_DELAY_SECONDS)
 
 
 async def _image_models_of_type(config: Config, model_type: ImageModelType):
