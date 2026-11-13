@@ -67,7 +67,7 @@ Z-Image, Qwen-Image, and Krea2 use the ComfyUI denoising-MSE evaluator.
 FLUX.2, Qwen-Image-Edit, HiDream, and MOSS use their pinned training backend to evaluate the native held-out
 training objective: AI Toolkit for supported text-to-image/edit paths and
 Musubi for HiDream O1 editing. Conditional and empty-text passes reuse the
-same deterministic seeds and preserve GOD's existing `DiffusionLosses` result
+same deterministic seeds and return the same `DiffusionLosses` result
 contract and remote per-repository evaluation flow. Generated-image pixel
 comparison is not used for ranking.
 
@@ -97,7 +97,7 @@ dilated, with unchanged pixels kept at weight 0.2 so damage to the rest of
 the image still costs. Samples with almost no change, or a near-global
 change, are scored without a mask.
 
-Candidate LoRAs are applied from the file the same way legacy Comfy eval
+Candidate LoRAs are applied from the file the same way the ComfyUI evaluator
 loads them: per-module ranks and alphas (missing `alpha` defaults to that
 module's rank). LoRA keys that match no evaluation module, or a LoRA with no
 non-zero weights, fail that candidate with a reason rather than scoring the
