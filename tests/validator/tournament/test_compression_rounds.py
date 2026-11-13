@@ -59,7 +59,7 @@ from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentSeedTask
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
-from validator.tournament.tournament_manager import _quant_round_field
+from validator.tournament.tournament_manager import _round_field_without_boss
 from validator.tournament.tournament_manager import organise_tournament_round
 
 
@@ -119,7 +119,7 @@ def test_each_miner_round_is_one_group_without_the_boss(round_number):
     )
 
     assert isinstance(round_data, GroupRound) and len(round_data.groups) == 1
-    assert _quant_round_field([*(n.hotkey for n in nodes), EMISSION_BURN_HOTKEY]) == [n.hotkey for n in nodes]
+    assert _round_field_without_boss([*(n.hotkey for n in nodes), EMISSION_BURN_HOTKEY]) == [n.hotkey for n in nodes]
 
 
 # --------------------------------------------------------------------------------------------- creation

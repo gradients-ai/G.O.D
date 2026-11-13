@@ -404,13 +404,29 @@ class TestRoundStructure:
 
         assert inserted["round"].is_final_round is True and inserted["round"].round_type == RoundType.KNOCKOUT
 
-    async def test_image_keeps_its_structure(self, world, inserted):
+    async def test_an_image_tournament_with_a_three_task_round_one_keeps_its_knockout_round_two(
+        self, world, inserted, monkeypatch
+    ):
         world.tournament_type = TournamentType.IMAGE
         await world.create_seeds()  # even stray seed rows never change an image tournament
+        monkeypatch.setattr(rr, "is_planned_image_tournament", AsyncMock(return_value=False))
 
         await _next(MINERS[:2], _completed(1), TournamentType.IMAGE)
 
         assert inserted["round"].round_type == RoundType.KNOCKOUT
+
+    @pytest.mark.parametrize("completed_round", [1, 2])
+    async def test_a_planned_image_tournament_plays_rounds_two_and_three_as_single_group_rounds_without_the_boss(
+        self, world, inserted, monkeypatch, completed_round
+    ):
+        monkeypatch.setattr(rr, "is_planned_image_tournament", AsyncMock(return_value=True))
+
+        await _next([*MINERS[:1], EMISSION_BURN_HOTKEY], _completed(completed_round), TournamentType.IMAGE)
+
+        assert inserted["round"].round_number == completed_round + 1
+        assert inserted["round"].round_type == RoundType.GROUP and inserted["round"].is_final_round is False
+        (group,) = inserted["structure"].groups
+        assert group.member_ids == MINERS[:1]
 
     def test_the_organiser_flag_alone_makes_rounds_one_to_three_single_group(self):
         nodes = [SimpleNamespace(hotkey=hk) for hk in MINERS[:6]]
@@ -478,10 +494,10 @@ class TestStandings:
     async def test_the_boss_result_does_not_change_the_miners_ranks(self, world, standings):
         await world.create_seeds()
         tasks = standings(MINERS)
-        best = await rr._text_seeded_ordered_hotkeys(_completed(1), tasks, None)
+        best = await rr.planned_round_ordered_hotkeys(_completed(1), tasks, None)
         standings(MINERS, boss_loss=50.0)
 
-        assert await rr._text_seeded_ordered_hotkeys(_completed(1), tasks, None) == best == MINERS
+        assert await rr.planned_round_ordered_hotkeys(_completed(1), tasks, None) == best == MINERS
 
     async def test_the_round_two_backfill_uses_the_same_ordering(self, world, standings, monkeypatch):
         await world.create_seeds()

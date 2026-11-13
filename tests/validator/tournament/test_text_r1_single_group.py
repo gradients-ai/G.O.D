@@ -163,6 +163,7 @@ async def test_image_round_two_uses_qwen_or_krea(monkeypatch):
         else None,
     )
     monkeypatch.setattr(task_creator, "_create_knockout_image_tasks", knockout_mock)
+    monkeypatch.setattr(task_creator, "is_planned_image_tournament", AsyncMock(return_value=False))
 
     await task_creator.create_image_tournament_tasks(round_data, "tourn", MagicMock())
 

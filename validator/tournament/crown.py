@@ -1,13 +1,14 @@
-"""The crown rule of a seeded tournament, the same for text and quant: seven head-to-heads between the challenger and the boss.
+"""The crown rule of a tournament, the same for text, image and compression: seven head-to-heads between the challenger and
+the boss.
 
 Pure functions and models only. The seven tasks are the task of each of rounds 1-3 and the four tasks of the boss round.
 Each head-to-head is a win or a non-win; a non-win is within the smaller allowance (strictly better than the boss), within the
 larger allowance (level with the boss, or worse by at most CROWN_LARGER_ALLOWANCE) or beyond both (worse by more). Only what
-a win is depends on the task (text_head_to_head, freeform_head_to_head, fixed_head_to_head); the non-win bands are the same
-(non_win_outcome). The challenger is crowned when it has at most CROWN_MAX_NON_WINS non-wins, every non-win is within the
-larger allowance and, with two non-wins, at least one is within the smaller allowance (crown_verdict). With all seven decided
-that is: six wins and a seventh within the larger allowance, or five wins, one non-win within the smaller allowance and the
-other within the larger one.
+a win is depends on the task (text_head_to_head, image_head_to_head, freeform_head_to_head, fixed_head_to_head); the non-win
+bands are the same (non_win_outcome). The challenger is crowned when it has at most CROWN_MAX_NON_WINS non-wins, every non-win
+is within the larger allowance and, with two non-wins, at least one is within the smaller allowance (crown_verdict). With all
+seven decided that is: six wins and a seventh within the larger allowance, or five wins, one non-win within the smaller
+allowance and the other within the larger one.
 """
 
 import math
@@ -37,10 +38,11 @@ class HeadToHead(BaseModel):
     """One task of the crown rule, decided.
 
     ``boss_score`` and ``challenger_score`` are the compared scalars: the adjusted loss (higher is better for GRPO) on a text
-    or fixed task, the effective bytes on a freeform task; None for a side with no valid result. ``deficit`` is how far the
-    challenger trails the boss relative to the boss's value (0.0 when level, ahead or a win, infinite when it cannot be
-    measured); None only on a result that has no comparison to measure. ``improvement`` is how much better the challenger is, as a fraction of the boss's value (negative when
-    behind); None when it cannot be measured.
+    or fixed task, the weighted loss on an image task, the effective bytes on a freeform task; None for a side with no valid
+    result. ``deficit`` is how far the challenger trails the boss relative to the boss's value (0.0 when level, ahead or a
+    win, infinite when it cannot be measured); None only on a result that has no comparison to measure. ``improvement`` is
+    how much better the challenger is, as a fraction of the boss's value (negative when behind); None when it cannot be
+    measured.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -152,25 +154,26 @@ def text_needs_paired_test(task_type: TaskType) -> bool:
     return task_type in t_cst.PAIRED_BOSS_ROUND_TASK_TYPES
 
 
-def text_head_to_head(
+def scalar_head_to_head(
     task_id: str,
     label: str,
     task_type: TaskType,
     boss_score: float | None,
     challenger_score: float | None,
+    win_margin: float,
     paired: PairedLossComparison | None = None,
 ) -> HeadToHead:
-    """Decide one text task.
+    """Decide one task on its scalar score, with the paired per-example test where the task type has one.
 
     A challenger with no valid score: beyond both allowances, whatever the boss has. A boss with no valid score while the
     challenger has one: a win. Otherwise the deficit is how far the challenger's score trails the boss's, relative to the
-    boss's magnitude (0 when level or ahead), and the task is a win when the score is at least TEXT_CROWN_WIN_MARGIN better
+    boss's magnitude (0 when level or ahead), and the task is a win when the score is at least ``win_margin`` better
     (strictly better against a boss score of exactly 0) and, for a type with per-example losses (text_needs_paired_test),
     ``paired`` is a comparison the challenger won. ``paired`` None for such a type, or a comparison with no comparable
     example (is_unpairable), means the per-example vectors were missing or could not be paired: the boss keeps the task. A
     non-win is banded on the score alone (non_win_outcome): within the smaller allowance when the score is strictly better than
-    the boss's, within the larger one when level or worse by at most CROWN_LARGER_ALLOWANCE, beyond both otherwise. GRPO is
-    decided on the scalar alone.
+    the boss's, within the larger one when level or worse by at most CROWN_LARGER_ALLOWANCE, beyond both otherwise. A type
+    without per-example losses (GRPO, image) is decided on the scalar alone.
     """
     fields = dict(
         task_id=str(task_id), label=label, task_type=task_type, boss_score=boss_score, challenger_score=challenger_score
@@ -186,12 +189,12 @@ def text_head_to_head(
 
     task_is_higher_better = higher_is_better(task_type)
     strictly_better = challenger_score > boss_score if task_is_higher_better else challenger_score < boss_score
-    margin_met = challenger_beats_boss(boss_score, challenger_score, task_is_higher_better, t_cst.TEXT_CROWN_WIN_MARGIN) and (
+    margin_met = challenger_beats_boss(boss_score, challenger_score, task_is_higher_better, win_margin) and (
         boss_score != 0 or strictly_better
     )
     deficit = _relative_deficit(boss_score, challenger_score, task_is_higher_better)
     improvement = _improvement(boss_score, challenger_score, task_is_higher_better)
-    margin = f"{t_cst.TEXT_CROWN_WIN_MARGIN * 100:g}%"
+    margin = f"{win_margin * 100:g}%"
 
     if text_needs_paired_test(task_type):
         if is_unpairable(paired):
@@ -210,6 +213,25 @@ def text_head_to_head(
         return HeadToHead(**fields, outcome=HeadToHeadOutcome.WIN, deficit=0.0, improvement=improvement, reason=reason)
     outcome = non_win_outcome(deficit, strictly_better)
     return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason)
+
+
+def text_head_to_head(
+    task_id: str,
+    label: str,
+    task_type: TaskType,
+    boss_score: float | None,
+    challenger_score: float | None,
+    paired: PairedLossComparison | None = None,
+) -> HeadToHead:
+    """Decide one text task: scalar_head_to_head with TEXT_CROWN_WIN_MARGIN."""
+    return scalar_head_to_head(
+        task_id, label, task_type, boss_score, challenger_score, t_cst.TEXT_CROWN_WIN_MARGIN, paired=paired
+    )
+
+
+def image_head_to_head(task_id: str, label: str, boss_score: float | None, challenger_score: float | None) -> HeadToHead:
+    """Decide one image task on its weighted loss (lower is better) with IMAGE_CROWN_WIN_MARGIN and no paired test."""
+    return scalar_head_to_head(task_id, label, TaskType.IMAGETASK, boss_score, challenger_score, t_cst.IMAGE_CROWN_WIN_MARGIN)
 
 
 def valid_freeform_bytes(result: MinerResultsText | None) -> float | None:

@@ -323,7 +323,9 @@ class TestCrown:
             AsyncMock(return_value={challenger: TrainingStatus.SUCCESS.value}),
         )
 
-        results = await rr.seeded_text_round_head_to_heads(TID, challenger, None)
+        results = await rr.round_head_to_heads(
+            TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), challenger, None
+        )
 
         assert len(results) == len(t_cst.TEXT_ROUND_PLAN)
         for result in results:

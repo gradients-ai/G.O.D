@@ -706,15 +706,27 @@ async def create_synthetic_image_task(
     models: AsyncGenerator[ImageModelInfo, None],
     *,
     max_num_prompts: int | None = None,
+    num_prompts: int | None = None,
 ) -> RawTask:
-    """Create a synthetic image task with a random image dataset category."""
+    """Create a synthetic image task with a random image dataset category.
+
+    num_prompts requests exactly that many image-text pairs; without it the count is drawn at random up to max_num_prompts
+    (the synth maximum when unset).
+    """
     logger.info("Creating synthetic image task")
-    prompt_cap = min(max_num_prompts or synth_cst.MAX_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
-    if prompt_cap < synth_cst.MIN_IMAGE_SYNTH_PAIRS:
-        raise ValueError(
-            f"max_num_prompts must be at least {synth_cst.MIN_IMAGE_SYNTH_PAIRS}, got {prompt_cap}"
-        )
-    num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
+    if num_prompts is not None:
+        if not synth_cst.MIN_IMAGE_SYNTH_PAIRS <= num_prompts <= synth_cst.MAX_IMAGE_SYNTH_PAIRS:
+            raise ValueError(
+                f"num_prompts must be between {synth_cst.MIN_IMAGE_SYNTH_PAIRS} and {synth_cst.MAX_IMAGE_SYNTH_PAIRS}, "
+                f"got {num_prompts}"
+            )
+    else:
+        prompt_cap = min(max_num_prompts or synth_cst.MAX_IMAGE_SYNTH_PAIRS, synth_cst.MAX_IMAGE_SYNTH_PAIRS)
+        if prompt_cap < synth_cst.MIN_IMAGE_SYNTH_PAIRS:
+            raise ValueError(
+                f"max_num_prompts must be at least {synth_cst.MIN_IMAGE_SYNTH_PAIRS}, got {prompt_cap}"
+            )
+        num_prompts = random.randint(synth_cst.MIN_IMAGE_SYNTH_PAIRS, prompt_cap)
     model_info = await anext(models)
     use_higher_training_hours = model_info.model_type == ImageModelType.QWEN_IMAGE
     Path(TEMP_PATH_FOR_IMAGES).mkdir(parents=True, exist_ok=True)

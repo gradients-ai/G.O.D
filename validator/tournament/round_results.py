@@ -2,10 +2,13 @@ import hashlib
 import math
 import random
 from collections import Counter
+from collections.abc import Callable
 from collections.abc import Iterable
 from itertools import permutations
+from typing import Any
 
 import numpy as np
+from pydantic import BaseModel
 
 from core.logging import get_logger
 from core.models.task_models import QUANT_TASK_TYPES
@@ -28,6 +31,7 @@ from validator.db.sql.tournaments import get_tournament_pairs
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
+from validator.db.sql.tournaments import is_planned_image_tournament
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResults
 from validator.scoring.models import MinerResultsText
@@ -39,6 +43,7 @@ from validator.tournament.crown import HeadToHeadOutcome
 from validator.tournament.crown import crown_verdict
 from validator.tournament.crown import fixed_head_to_head
 from validator.tournament.crown import freeform_head_to_head
+from validator.tournament.crown import image_head_to_head
 from validator.tournament.crown import is_text_big_task
 from validator.tournament.crown import is_valid_score
 from validator.tournament.crown import text_head_to_head
@@ -922,20 +927,40 @@ async def quant_round_head_to_heads(tournament_id: str, challenger_hotkey: str, 
     return results
 
 
-async def _text_task_scores(
-    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB
-) -> tuple[float | None, float | None]:
-    """(boss, challenger) adjusted loss on one task, as the unseeded boss round reads them; None for a side with no valid
-    result or whose training failed."""
+class TaskScores(BaseModel):
+    """The two sides of a head-to-head against the boss on one task: each side's adjusted loss (None for no valid result or a
+    failed training) and whether its training failed."""
+
+    boss: float | None
+    challenger: float | None
+    boss_failed: bool
+    challenger_failed: bool
+
+
+class CrownEvaluationFault(Exception):
+    """Crown tasks on which both sides trained and neither has a valid result: the evaluation data is missing, so the tasks
+    cannot be decided. ``task_ids`` names every such task."""
+
+    def __init__(self, task_ids: list[str]):
+        super().__init__(f"both sides trained and neither has a valid result on task(s) {', '.join(task_ids)}")
+        self.task_ids = task_ids
+
+
+async def _task_scores(task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB) -> TaskScores:
+    """The boss's and the challenger's adjusted loss on one task, as the unseeded boss round reads them; None for a side with
+    no valid result or whose training failed."""
     miner_results = await get_task_results_for_ranking(task_id, psql_db)
     ranked = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
     scores = {result.hotkey: result.adjusted_loss for result in ranked}
     statuses = await get_training_status_for_task_and_hotkeys(task_id, [boss_hotkey, challenger_hotkey], psql_db)
-
-    def side(hotkey: str) -> float | None:
-        return None if statuses.get(hotkey) == TrainingStatus.FAILURE else scores.get(hotkey)
-
-    return side(boss_hotkey), side(challenger_hotkey)
+    boss_failed = statuses.get(boss_hotkey) == TrainingStatus.FAILURE
+    challenger_failed = statuses.get(challenger_hotkey) == TrainingStatus.FAILURE
+    return TaskScores(
+        boss=None if boss_failed else scores.get(boss_hotkey),
+        challenger=None if challenger_failed else scores.get(challenger_hotkey),
+        boss_failed=boss_failed,
+        challenger_failed=challenger_failed,
+    )
 
 
 async def text_task_head_to_head(
@@ -943,50 +968,84 @@ async def text_task_head_to_head(
 ) -> HeadToHead:
     """The challenger against the boss on one text task (text_head_to_head), from stored results. For a type with per-example
     losses, the two stored vectors are compared with the paired test when both sides have a valid score and they pair."""
-    boss_score, challenger_score = await _text_task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
+    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
     paired = None
-    if text_needs_paired_test(task_type) and is_valid_score(boss_score) and is_valid_score(challenger_score):
+    if text_needs_paired_test(task_type) and is_valid_score(scores.boss) and is_valid_score(scores.challenger):
         pair = await _pairable_losses(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
         if pair is not None:
             paired = compare_paired_losses(*pair)
             _log_paired_comparison(task_id, task_type, paired)
-    return text_head_to_head(task_id, label, task_type, boss_score, challenger_score, paired)
+    return text_head_to_head(task_id, label, task_type, scores.boss, scores.challenger, paired)
 
 
-async def seeded_text_round_head_to_heads(
-    tournament_id: str, challenger_hotkey: str, psql_db: PSQLDB
-) -> list[HeadToHead]:
-    """The challenger's head-to-heads against the boss on the tasks of rounds 1-3 (the seed task each round attached, on
-    which both players have a result). Raises when a round or its task is missing: that is a data fault, never a loss."""
-    rounds = await get_tournament_rounds(tournament_id, psql_db)
+async def image_task_head_to_head(task_id: str, label: str, challenger_hotkey: str, psql_db: PSQLDB) -> HeadToHead:
+    """The challenger against the boss on one image task (image_head_to_head), from stored results.
+
+    Raises CrownEvaluationFault when both sides trained and neither has a valid result: that is missing evaluation data, not
+    a loss. When either training failed the head-to-head is decided as usual (no challenger result is beyond; a failed boss
+    entry against a valid challenger is a win).
+    """
+    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
+    if not (scores.boss_failed or scores.challenger_failed or is_valid_score(scores.boss) or is_valid_score(scores.challenger)):
+        raise CrownEvaluationFault([str(task_id)])
+    return image_head_to_head(task_id, label, scores.boss, scores.challenger)
+
+
+async def _task_head_to_head(
+    tournament_type: TournamentType, task_id: str, label: str, task_type: TaskType, challenger_hotkey: str, psql_db: PSQLDB
+) -> HeadToHead:
+    """The challenger against the boss on one task of a text or an image tournament."""
+    if tournament_type == TournamentType.IMAGE:
+        return await image_task_head_to_head(task_id, label, challenger_hotkey, psql_db)
+    return await text_task_head_to_head(task_id, label, task_type, challenger_hotkey, psql_db)
+
+
+async def round_head_to_heads(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> list[HeadToHead]:
+    """The challenger's head-to-heads against the boss on the tasks of rounds 1-3 of a seeded text or a planned image
+    tournament (the one task each round played, on which both players have an entry). Raises ValueError when a round or its
+    task is missing: that is a data fault, never a loss. An image round with an evaluation fault raises
+    CrownEvaluationFault after every round has been read, naming all faulted tasks."""
+    rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     results: list[HeadToHead] = []
-    for spec in t_cst.TEXT_ROUND_PLAN:
+    faulted: list[str] = []
+    for spec in t_cst.round_plan(tournament.tournament_type):
         played = next((round_data for round_data in rounds if round_data.round_number == spec.round_number), None)
         tasks = await get_tournament_tasks(played.round_id, psql_db) if played else []
         if len(tasks) != 1:
             raise ValueError(
-                f"Tournament {tournament_id} round {spec.round_number} holds {len(tasks)} task(s), expected its one seed task"
+                f"Tournament {tournament.tournament_id} round {spec.round_number} holds {len(tasks)} task(s), expected its one "
+                f"task"
             )
         task_object = await get_task(tasks[0].task_id, psql_db)
         if task_object is None:
-            raise ValueError(f"Tournament {tournament_id} round {spec.round_number} task {tasks[0].task_id} is gone")
-        results.append(
-            await text_task_head_to_head(
-                tasks[0].task_id, f"round {spec.round_number}", task_object.task_type, challenger_hotkey, psql_db
+            raise ValueError(f"Tournament {tournament.tournament_id} round {spec.round_number} task {tasks[0].task_id} is gone")
+        try:
+            results.append(
+                await _task_head_to_head(
+                    tournament.tournament_type,
+                    tasks[0].task_id,
+                    f"round {spec.round_number}",
+                    task_object.task_type,
+                    challenger_hotkey,
+                    psql_db,
+                )
             )
-        )
+        except CrownEvaluationFault as fault:
+            faulted.extend(fault.task_ids)
+    if faulted:
+        raise CrownEvaluationFault(faulted)
     return results
 
 
-async def get_seeded_text_runner_up(tournament_id: str, challenger_hotkey: str, psql_db: PSQLDB) -> str | None:
-    """Third place of a seeded text tournament: the next miner after the challenger in the cumulative standings after round 3,
-    the order that picked the round's winner. None when round 3 or another ranked miner is missing."""
-    final_miner_round = t_cst.TEXT_ROUND_PLAN[-1].round_number
-    rounds = await get_tournament_rounds(tournament_id, psql_db)
+async def get_planned_runner_up(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> str | None:
+    """Third place of a seeded text or planned image tournament: the next miner after the challenger in the cumulative
+    standings after round 3, the order that picked the round's winner. None when round 3 or another ranked miner is missing."""
+    final_miner_round = t_cst.round_plan(tournament.tournament_type)[-1].round_number
+    rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     played = next((round_data for round_data in rounds if round_data.round_number == final_miner_round), None)
     if played is None:
         return None
-    ordered = await _text_seeded_ordered_hotkeys(played, await get_tournament_tasks(played.round_id, psql_db), psql_db)
+    ordered = await planned_round_ordered_hotkeys(played, await get_tournament_tasks(played.round_id, psql_db), psql_db)
     return next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
 
 
@@ -1004,6 +1063,61 @@ async def _boss_round_challenger(
         if challenger:
             return challenger
     return None
+
+
+async def _boss_round_head_to_heads(
+    tournament: TournamentData,
+    challenger: str,
+    round_tasks: list[TournamentTask],
+    boss_round_label: Callable[[Any], str],
+    psql_db: PSQLDB,
+) -> tuple[list[HeadToHead], list[tuple[str, HeadToHead]]]:
+    """The challenger's head-to-heads on rounds 1-3 and on every boss-round task present (each paired with its task id).
+    Raises CrownEvaluationFault naming every faulted task of both."""
+    faulted: list[str] = []
+    earlier_rounds: list[HeadToHead] = []
+    try:
+        earlier_rounds = await round_head_to_heads(tournament, challenger, psql_db)
+    except CrownEvaluationFault as fault:
+        faulted.extend(fault.task_ids)
+    boss_round: list[tuple[str, HeadToHead]] = []
+    for task in round_tasks:
+        task_object = await get_task(task.task_id, psql_db)
+        if task_object is None:
+            logger.error(f"Boss round task {task.task_id} is gone; it cannot be decided")
+            continue
+        try:
+            head_to_head = await _task_head_to_head(
+                tournament.tournament_type,
+                task.task_id,
+                boss_round_label(task_object),
+                task_object.task_type,
+                challenger,
+                psql_db,
+            )
+        except CrownEvaluationFault as fault:
+            faulted.extend(fault.task_ids)
+            continue
+        boss_round.append((task.task_id, head_to_head))
+    if faulted:
+        raise CrownEvaluationFault(faulted)
+    return earlier_rounds, boss_round
+
+
+async def _persist_boss_round_winners(
+    boss_round: list[tuple[str, HeadToHead]], challenger: str, win_margin: float, rule: str, psql_db: PSQLDB
+) -> None:
+    """Store each boss-round task's winner and threshold-adjusted quality scores (``rule`` names the crown rule in the
+    stored basis). Rounds 1-3 keep the scores their own rankings stored."""
+    for task_id, head_to_head in boss_round:
+        await update_threshold_adjusted_quality_scores_for_task(
+            task_id=task_id,
+            winner_hotkey=challenger if head_to_head.is_win else EMISSION_BURN_HOTKEY,
+            threshold_percentage=win_margin,
+            compared_hotkeys=[EMISSION_BURN_HOTKEY, challenger],
+            psql_db=psql_db,
+            basis=f"the {rule} crown rule ({head_to_head.describe()})",
+        )
 
 
 def _text_boss_round_label(task_object) -> str:
@@ -1034,21 +1148,9 @@ async def _get_seeded_text_boss_round_outcome(
         logger.error(f"Boss round {completed_round.round_id}: no challenger found; the boss retains")
         return RoundOutcome(winners=[boss_hotkey])
 
-    earlier_rounds = await seeded_text_round_head_to_heads(tournament.tournament_id, challenger, psql_db)
-    boss_round: list[tuple[str, HeadToHead]] = []
-    for task in round_tasks:
-        task_object = await get_task(task.task_id, psql_db)
-        if task_object is None:
-            logger.error(f"Boss round task {task.task_id} is gone; it cannot be decided")
-            continue
-        boss_round.append(
-            (
-                task.task_id,
-                await text_task_head_to_head(
-                    task.task_id, _text_boss_round_label(task_object), task_object.task_type, challenger, psql_db
-                ),
-            )
-        )
+    earlier_rounds, boss_round = await _boss_round_head_to_heads(
+        tournament, challenger, round_tasks, _text_boss_round_label, psql_db
+    )
 
     decided = earlier_rounds + [head_to_head for _, head_to_head in boss_round]
     verdict = crown_verdict(decided)
@@ -1080,16 +1182,58 @@ async def _get_seeded_text_boss_round_outcome(
         incomplete = "" if verdict.complete else f" ({verdict.decided} of the {t_cst.CROWN_TASKS} tasks decided)"
         logger.info(f"Text crown, boss round {completed_round.round_id}: {outcome}{incomplete} - {verdict.reason}")
 
-    for task_id, head_to_head in boss_round:
-        await update_threshold_adjusted_quality_scores_for_task(
-            task_id=task_id,
-            winner_hotkey=challenger if head_to_head.is_win else boss_hotkey,
-            threshold_percentage=t_cst.TEXT_CROWN_WIN_MARGIN,
-            compared_hotkeys=[boss_hotkey, challenger],
-            psql_db=psql_db,
-            basis=f"the text crown rule ({head_to_head.describe()})",
-        )
+    await _persist_boss_round_winners(boss_round, challenger, t_cst.TEXT_CROWN_WIN_MARGIN, "text", psql_db)
     return RoundOutcome(winners=winners)
+
+
+def _image_boss_round_label(task_object) -> str:
+    return f"boss round {task_object.model_type.value}"
+
+
+async def _get_image_boss_round_outcome(
+    completed_round: TournamentRoundData,
+    round_tasks: list[TournamentTask],
+    tournament: TournamentData,
+    psql_db: PSQLDB,
+) -> RoundOutcome:
+    """Resolve the boss round of a planned image tournament on the crown rule (see crown.py).
+
+    The head-to-heads are rounds 1-3 plus the boss-round tasks, all created together. A round that does not hold exactly the
+    IMAGE_BOSS_ROUND_TASK_DISTRIBUTION tasks leaves the verdict incomplete, so the boss retains. An evaluation fault (a task
+    where both sides trained and neither has a result) defers the round with the faulted task ids and persists nothing. The
+    persisted per-task winners cover the boss-round tasks only.
+    """
+    boss_hotkey = EMISSION_BURN_HOTKEY
+    challenger = await _boss_round_challenger(completed_round, round_tasks, psql_db)
+    if challenger is None:
+        logger.error(f"Boss round {completed_round.round_id}: no challenger found; the boss retains")
+        return RoundOutcome(winners=[boss_hotkey])
+
+    try:
+        earlier_rounds, boss_round = await _boss_round_head_to_heads(
+            tournament, challenger, round_tasks, _image_boss_round_label, psql_db
+        )
+    except CrownEvaluationFault as fault:
+        reason = f"evaluation fault: both sides trained and neither has a result on task(s) {', '.join(fault.task_ids)}"
+        logger.error(f"Image crown, boss round {completed_round.round_id}: {reason}; the round is held")
+        return RoundOutcome(deferred_reason=reason, evaluation_fault_task_ids=fault.task_ids)
+
+    expected = sum(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION.values())
+    if len(boss_round) != expected:
+        logger.error(
+            f"Image crown, boss round {completed_round.round_id}: holds {len(boss_round)} decided task(s), expected "
+            f"{expected}; the boss retains"
+        )
+
+    decided = earlier_rounds + [head_to_head for _, head_to_head in boss_round]
+    verdict = crown_verdict(decided)
+    _log_head_to_heads("Image crown", decided)
+    outcome = "challenger crowned" if verdict.crowned else "boss retains"
+    incomplete = "" if verdict.complete else f" ({verdict.decided} of the {t_cst.CROWN_TASKS} tasks decided)"
+    logger.info(f"Image crown, boss round {completed_round.round_id}: {outcome}{incomplete} - {verdict.reason}")
+
+    await _persist_boss_round_winners(boss_round, challenger, t_cst.IMAGE_CROWN_WIN_MARGIN, "image", psql_db)
+    return RoundOutcome(winners=[challenger] if verdict.crowned else [boss_hotkey])
 
 
 async def get_knockout_winners(
@@ -1212,6 +1356,12 @@ async def get_knockout_winners(
             tournament.tournament_id, psql_db
         ):
             return await _get_seeded_text_boss_round_outcome(completed_round, round_tasks, tournament, psql_db)
+
+        # A planned image boss round is decided on the image crown rule and never draws either.
+        if tournament.tournament_type == TournamentType.IMAGE and await is_planned_image_tournament(
+            tournament.tournament_id, psql_db
+        ):
+            return await _get_image_boss_round_outcome(completed_round, round_tasks, tournament, psql_db)
 
         for task in round_tasks:
             logger.info(f"Processing boss round task {task.task_id}")
@@ -1465,6 +1615,16 @@ async def _get_small_tournament_group_winners(round_tasks: list[TournamentTask],
     return winners
 
 
+async def plays_round_plan(tournament: TournamentData, psql_db: PSQLDB) -> bool:
+    """Whether a tournament plays the round plan of rounds 1-3: compression, a seeded text tournament or a planned image
+    tournament."""
+    if tournament.tournament_type == TournamentType.QUANT:
+        return True
+    if tournament.tournament_type == TournamentType.TEXT:
+        return await is_seeded_text_tournament(tournament.tournament_id, psql_db)
+    return await is_planned_image_tournament(tournament.tournament_id, psql_db)
+
+
 def take_standings_slots(ordered: list[str], exclude: set[str], slots: int) -> list[str]:
     """Walk a cumulative ranking, skipping excluded hotkeys, until ``slots`` are filled."""
     return [hotkey for hotkey in ordered if hotkey not in exclude][:slots]
@@ -1489,11 +1649,9 @@ async def select_round2_entrants(
             f"R2 backfill for {tournament.tournament_id}: excluded={sorted(exclude_hotkeys)}, selected={selected}"
         )
         return selected
-    if tournament.tournament_type == TournamentType.TEXT and await is_seeded_text_tournament(
-        tournament.tournament_id, psql_db
-    ):
-        ordered = await _text_seeded_ordered_hotkeys(completed_round, round_tasks, psql_db)
-        selected = take_standings_slots(ordered, exclude, t_cst.TEXT_ROUND_PLAN[0].advance)
+    if tournament.tournament_type != TournamentType.QUANT and await plays_round_plan(tournament, psql_db):
+        ordered = await planned_round_ordered_hotkeys(completed_round, round_tasks, psql_db)
+        selected = take_standings_slots(ordered, exclude, t_cst.round_plan(tournament.tournament_type)[0].advance)
         logger.info(
             f"R2 backfill for {tournament.tournament_id}: excluded={sorted(exclude_hotkeys)}, selected={selected}"
         )
@@ -1910,7 +2068,7 @@ async def _get_quant_group_winners(
 
 async def _group_members_of_round(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> set[str]:
     """The hotkeys of the group(s) the round's tasks belong to: the round's challengers (the boss is never a member of a
-    seeded round; its entry is on the round's seed task)."""
+    round of the round plan; its entry is on the round's task)."""
     group_ids = {task.group_id for task in round_tasks if task.group_id}
     members: set[str] = set()
     for group_id in group_ids:
@@ -1918,27 +2076,31 @@ async def _group_members_of_round(round_tasks: list[TournamentTask], psql_db: PS
     return members
 
 
-async def _text_seeded_ordered_hotkeys(
+async def planned_round_ordered_hotkeys(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
 ) -> list[str]:
-    """Advancement order of a seeded text round: round 1 by its own task, rounds 2 and 3 by average rank over every round
-    played so far (_quant_cumulative_ordered_hotkeys, as in compression). Ranked among the group's members, so the boss's
-    result on the seed task never takes a slot (its rank in the round is round_ranks_with_boss)."""
+    """Advancement order of a seeded text or planned image round: round 1 by its own task, rounds 2 and 3 by average rank
+    over every round played so far (_quant_cumulative_ordered_hotkeys, as in compression). Ranked among the group's members,
+    so the boss's result on the round's task never takes a slot (its rank in the round is round_ranks_with_boss)."""
     if completed_round.round_number == 1:
         cohort = await _group_members_of_round(round_tasks, psql_db)
         return await _quant_ordered_hotkeys(round_tasks, psql_db, cohort=cohort)
     return await _quant_cumulative_ordered_hotkeys(completed_round.tournament_id, completed_round, psql_db)
 
 
-async def _get_text_seeded_group_winners(
-    completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
+async def get_planned_group_winners(
+    completed_round: TournamentRoundData, round_tasks: list[TournamentTask], tournament_type: TournamentType, psql_db: PSQLDB
 ) -> list[str]:
-    """Winners of a seeded text tournament's single-group round: the top TEXT_ROUND_PLAN advance of its members by
-    _text_seeded_ordered_hotkeys."""
-    advance = next(spec.advance for spec in t_cst.TEXT_ROUND_PLAN if spec.round_number == completed_round.round_number)
-    ordered = await _text_seeded_ordered_hotkeys(completed_round, round_tasks, psql_db)
+    """Winners of a seeded text or planned image tournament's single-group round: the top advance of the tournament's round
+    plan among its members by planned_round_ordered_hotkeys."""
+    advance = next(
+        spec.advance for spec in t_cst.round_plan(tournament_type) if spec.round_number == completed_round.round_number
+    )
+    ordered = await planned_round_ordered_hotkeys(completed_round, round_tasks, psql_db)
     winners = [hotkey for hotkey in ordered if hotkey != EMISSION_BURN_HOTKEY][:advance]
-    logger.info(f"advancing top {len(winners)} of text round {completed_round.round_number}: {winners}")
+    logger.info(
+        f"advancing top {len(winners)} of {tournament_type.value} round {completed_round.round_number}: {winners}"
+    )
     return winners
 
 
@@ -1952,13 +2114,12 @@ async def get_group_winners(
         tournament = await get_tournament(completed_round.tournament_id, psql_db)
         if tournament is not None and tournament.tournament_type == TournamentType.QUANT:
             return await _get_quant_group_winners(completed_round, round_tasks, psql_db)
-        is_text_miner_round = (
+        if (
             tournament is not None
-            and tournament.tournament_type == TournamentType.TEXT
-            and completed_round.round_number in {spec.round_number for spec in t_cst.TEXT_ROUND_PLAN}
-        )
-        if is_text_miner_round and await is_seeded_text_tournament(completed_round.tournament_id, psql_db):
-            return await _get_text_seeded_group_winners(completed_round, round_tasks, psql_db)
+            and await plays_round_plan(tournament, psql_db)
+            and completed_round.round_number in {spec.round_number for spec in t_cst.round_plan(tournament.tournament_type)}
+        ):
+            return await get_planned_group_winners(completed_round, round_tasks, tournament.tournament_type, psql_db)
     if completed_round.round_number == 1 and len(round_tasks) > 1 and len(distinct_groups) == 1:
         return await _get_small_tournament_group_winners(round_tasks, psql_db)
 
@@ -2084,8 +2245,8 @@ async def _round_ranks_with_boss(round_data: TournamentRoundData, psql_db: PSQLD
 
 
 async def round_ranks_with_boss(tournament_id: str, psql_db: PSQLDB) -> TournamentRoundRanks:
-    """Per-round ranks of the boss and every challenger in rounds 1-3 of a seeded text or quant tournament, recomputed from
-    the stored results (so also after the tournament completed).
+    """Per-round ranks of the boss and every challenger in rounds 1-3 of a seeded text, planned image or quant tournament,
+    recomputed from the stored results (so also after the tournament completed).
 
     Each round's field is its group's challengers plus the boss, ranked on that round's task by the order advancement uses
     (rank on the task, then the normalised gap), entries tied on the task sharing a rank (_round_ranks_with_boss); the boss
@@ -2094,8 +2255,7 @@ async def round_ranks_with_boss(tournament_id: str, psql_db: PSQLDB) -> Tourname
     tournament = await get_tournament(tournament_id, psql_db)
     if tournament is None:
         raise ValueError(f"Tournament {tournament_id} not found")
-    plan = t_cst.QUANT_ROUND_PLAN if tournament.tournament_type == TournamentType.QUANT else t_cst.TEXT_ROUND_PLAN
-    round_numbers = {spec.round_number for spec in plan}
+    round_numbers = {spec.round_number for spec in t_cst.round_plan(tournament.tournament_type)}
     rounds = sorted(
         (
             round_data

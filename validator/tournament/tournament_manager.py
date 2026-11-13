@@ -19,6 +19,7 @@ from core.logging import get_logger
 from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import submissions_and_scoring as submissions_and_scoring_sql
@@ -49,6 +50,7 @@ from validator.db.sql.tournaments import get_training_status_for_task
 from validator.db.sql.tournaments import insert_tournament_groups_with_members
 from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
+from validator.db.sql.tournaments import is_planned_image_tournament
 from validator.db.sql.tournaments import reactivate_tournament_participants
 from validator.db.sql.tournaments import set_tournament_participant_decoder_snapshot
 from validator.db.sql.tournaments import store_boss_rank_comparisons
@@ -122,13 +124,15 @@ from validator.tournament.registration_lint import RegistrationLintFailed
 from validator.tournament.registration_lint import check_registration_lint
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
+from validator.tournament.round_results import CrownEvaluationFault
 from validator.tournament.round_results import find_groups_with_no_valid_scores
+from validator.tournament.round_results import get_planned_runner_up
 from validator.tournament.round_results import get_quant_pre_boss_runner_up
 from validator.tournament.round_results import get_quant_round_runner_up
 from validator.tournament.round_results import get_round_winners
-from validator.tournament.round_results import get_seeded_text_runner_up
+from validator.tournament.round_results import plays_round_plan
 from validator.tournament.round_results import quant_round_head_to_heads
-from validator.tournament.round_results import seeded_text_round_head_to_heads
+from validator.tournament.round_results import round_head_to_heads
 from validator.tournament.round_results import select_round2_entrants
 from validator.tournament.seed_tasks import alert_seed_issue
 from validator.tournament.seed_tasks import boss_side_failure_key
@@ -152,6 +156,8 @@ logger = get_logger(__name__)
 # Rounds we have already pinged Discord about for having zero-score groups. Process-local on
 # purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
 _EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
+# Rounds already pinged about crown tasks with an evaluation fault. Same reason as the set above.
+_CROWN_EVALUATION_FAULT_ROUNDS_ALERTED: set[str] = set()
 # Rounds already pinged about a failed draw-decider creation. Same reason as the set above: the
 # retry runs on a 60s loop and would otherwise hammer the webhook until someone intervenes.
 _DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
@@ -198,8 +204,8 @@ def organise_tournament_round(
     random.shuffle(nodes_copy)
 
     # Quant rounds 1-3 are one group each (QUANT_ROUND_PLAN: one chained quant task per round, the boss
-    # excluded); only the boss round is a knockout. A seeded text tournament's rounds 1-3 are the same
-    # (single_group_rounds: TEXT_ROUND_PLAN).
+    # excluded); only the boss round is a knockout. A seeded text tournament's and a planned image tournament's rounds 1-3
+    # are the same (single_group_rounds: TEXT_ROUND_PLAN, IMAGE_ROUND_PLAN).
     is_single_group_tournament = tournament_type == TournamentType.QUANT or single_group_rounds
     if is_single_group_tournament and (round_number == 1 or (round_number in (2, 3) and not is_final_round)):
         single_group = Group(member_ids=[node.hotkey for node in nodes_copy], task_ids=[])
@@ -450,8 +456,15 @@ async def assign_nodes_to_tournament_tasks(
                     and task_obj.task_type in QUANT_TASK_TYPES
                     and task_obj.training_start_point == TrainingStartPoint.OWN_R1_MODEL
                 )
+                # The boss trains each round's task of a planned image tournament alongside the group, without being a member.
+                boss_enters = (
+                    bool(task_obj)
+                    and task_obj.task_type == TaskType.IMAGETASK
+                    and await is_planned_image_tournament(tournament_id, psql_db)
+                )
+                task_participants = [*participants_to_assign, EMISSION_BURN_HOTKEY] if boss_enters else participants_to_assign
 
-                for hotkey in participants_to_assign:
+                for hotkey in task_participants:
                     if hotkey in already_assigned_hotkeys:
                         logger.info(f"Node {hotkey} already assigned to task {tournament_task.task_id}")
                         if is_own_model_task:
@@ -521,8 +534,9 @@ async def assign_nodes_to_tournament_tasks(
                         logger.warning(f"Could not find node for hotkey {hotkey} during task assignment")
 
 
-def _quant_round_field(winners: list[str]) -> list[str]:
-    """Quant R2/R3 entrants: the boss does not play them, and a lone challenger still plays as a group of one."""
+def _round_field_without_boss(winners: list[str]) -> list[str]:
+    """R2/R3 entrants of a tournament that plays the round plan: the boss is not a member of the group, and a lone challenger
+    still plays as a group of one."""
     return [hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY]
 
 
@@ -537,18 +551,15 @@ async def create_next_round(
         logger.info(f"Creating next round with {len(winners)} winners: {winners}")
 
         is_quant_tournament = tournament.tournament_type == TournamentType.QUANT
-        is_seeded_text = (
-            tournament.tournament_type == TournamentType.TEXT
-            and await seeds_sql.is_seeded_text_tournament(tournament.tournament_id, psql_db)
-        )
+        single_group_rounds = await plays_round_plan(tournament, psql_db)
         next_round_is_final = len(winners) == 1
-        # A quant or seeded text tournament always plays rounds 1-3, even with one miner left: each round's result against
-        # the boss's entry is one of the crown's head-to-heads.
-        is_single_group_round = (is_quant_tournament or is_seeded_text) and next_round_number in (2, 3)
+        # A tournament that plays the round plan always plays rounds 1-3, even with one miner left: each round's result
+        # against the boss's entry is one of the crown's head-to-heads.
+        is_single_group_round = single_group_rounds and next_round_number in (2, 3)
 
         # Text/image knockout tournaments need even pairs
         if is_single_group_round:
-            winners = _quant_round_field(winners)
+            winners = _round_field_without_boss(winners)
             next_round_is_final = False
         elif len(winners) == 2:
             if EMISSION_BURN_HOTKEY in winners:
@@ -586,7 +597,7 @@ async def create_next_round(
             winner_nodes, config,
             organiser_type,
             round_id=next_round_id, round_number=next_round_number, is_final_round=next_round_is_final,
-            single_group_rounds=is_seeded_text,
+            single_group_rounds=single_group_rounds,
         )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
@@ -637,30 +648,27 @@ async def _complete_with_defending_champion(
     await _publish_boss_round_decoded(tournament, config, psql_db)
 
 
-def _last_miner_round_number(tournament: TournamentData, is_seeded_text: bool) -> int | None:
-    """The round after whose cut the last contender meets the boss: round 3 of a quant or seeded text tournament; None for
-    any other tournament (it has no crown rule)."""
-    if tournament.tournament_type == TournamentType.QUANT:
-        return t_cst.QUANT_ROUND_PLAN[-1].round_number
-    if is_seeded_text:
-        return t_cst.TEXT_ROUND_PLAN[-1].round_number
-    return None
+def _last_miner_round_number(tournament: TournamentData, plays_plan: bool) -> int | None:
+    """The round after whose cut the last contender meets the boss: the last round of the round plan of a tournament that
+    plays one; None for any other tournament (it has no crown rule)."""
+    return t_cst.round_plan(tournament.tournament_type)[-1].round_number if plays_plan else None
 
 
 async def _round_crown_verdict(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> CrownVerdict:
     """The crown rule on the last contender's head-to-heads against the boss in rounds 1-3, the four boss-round tasks still
     to come counting as wins (crown_verdict).
 
-    Text raises on a missing round task (a data fault, never a loss). Quant leaves out a round that holds no single task;
-    such a round can never be decided, and the boss round's verdict crowns only with all CROWN_TASKS decided, so the crown is
-    out of reach: the verdict says so without playing the boss round.
+    Text and image raise ValueError on a missing round task (a data fault, never a loss); image also raises
+    CrownEvaluationFault when a round task has both sides trained and no result on either. Quant leaves out a round that
+    holds no single task; such a round can never be decided, and the boss round's verdict crowns only with all CROWN_TASKS
+    decided, so the crown is out of reach: the verdict says so without playing the boss round.
     """
     if tournament.tournament_type == TournamentType.QUANT:
         head_to_heads = await quant_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
         track = "Quant"
     else:
-        head_to_heads = await seeded_text_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
-        track = "Text"
+        head_to_heads = await round_head_to_heads(tournament, challenger_hotkey, psql_db)
+        track = "Image" if tournament.tournament_type == TournamentType.IMAGE else "Text"
     for head_to_head in head_to_heads:
         logger.info(
             f"{track} crown {head_to_head.label} task {head_to_head.task_id}: boss={head_to_head.boss_score} "
@@ -686,11 +694,12 @@ async def _complete_without_boss_round(
     config: Config,
     psql_db: PSQLDB,
 ) -> None:
-    """End a quant or seeded text tournament after round 3 with the boss retained: the last contender can no longer be
-    crowned, so no boss round is created and nothing is attached or dispatched for it.
+    """End a quant, seeded text or planned image tournament after round 3 with the boss retained: the last contender can no
+    longer be crowned, so no boss round is created and nothing is attached or dispatched for it.
 
     Text: the continuous lineage is carried forward first (its seed was never attached). Quant: the quant seeds no round
-    attached and the boss has not started are retired (retire_unattached_quant_seeds). Then the placements are written: the
+    attached and the boss has not started are retired (retire_unattached_quant_seeds). Image has no seeds and no lineage, so
+    nothing is retired or carried. Then the placements are written: the
     boss first, the last contender second and third whoever a played and lost boss round would have placed third (the
     runner-up of round 3's standings); this also sets the winner, which is the re-entry guard. Then the same completion
     steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the boss's
@@ -703,7 +712,7 @@ async def _complete_without_boss_round(
         third_place = await get_quant_round_runner_up(tournament.tournament_id, completed_round, challenger_hotkey, psql_db)
     else:
         await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
-        third_place = await get_seeded_text_runner_up(tournament.tournament_id, challenger_hotkey, psql_db)
+        third_place = await get_planned_runner_up(tournament, challenger_hotkey, psql_db)
     # Like a challenger beaten in a boss round, it is out: it must not keep drawing participation weight.
     await eliminate_tournament_participants(tournament.tournament_id, completed_round.round_id, [challenger_hotkey], psql_db)
     await _record_boss_rank_comparisons(tournament.tournament_id, challenger_hotkey, third_place, psql_db)
@@ -725,7 +734,7 @@ async def _record_boss_rank_comparisons(
 ) -> None:
     """Store, before the placements, how each contender in 2nd and 3rd place compares with the boss on average rank over
     rounds 1-3 (boss_rank_shares); the weight setter pays a contender the boss outranks like the boss. Called only when the
-    boss kept the crown of a quant or seeded text tournament. Never raises: a failure is logged and nothing is stored, so
+    boss kept the crown of a tournament that plays the round plan. Never raises: a failure is logged and nothing is stored, so
     both contenders are paid."""
     try:
         comparisons = await boss_rank_comparisons(tournament_id, second_place, third_place, psql_db)
@@ -837,9 +846,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await _alert_empty_score_groups(tournament, completed_round, empty_score_groups, config)
             return
 
-        is_seeded_text = tournament.tournament_type == TournamentType.TEXT and await seeds_sql.is_seeded_text_tournament(
-            tournament.tournament_id, psql_db
-        )
+        plays_plan = await plays_round_plan(tournament, psql_db)
+        is_seeded_text = plays_plan and tournament.tournament_type == TournamentType.TEXT
+        is_planned_image = plays_plan and tournament.tournament_type == TournamentType.IMAGE
         outcome = await get_round_winners(completed_round, psql_db, config)
 
         # A boss-round task that separated nothing is excluded from the dethrone tally and earns the
@@ -854,6 +863,15 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 # A seeded text boss round never draws: it is deferred for its big task, or for tasks with no nodes.
                 if outcome.needs_text_big_task:
                     await _add_seeded_text_big_task(tournament, completed_round, outcome, config, psql_db)
+                else:
+                    await _return_boss_round_for_node_assignment(tournament, completed_round, outcome, config, psql_db)
+            elif is_planned_image:
+                # A planned image boss round never draws: it is deferred for tasks with no nodes, or held for an evaluation
+                # fault.
+                if outcome.evaluation_fault_task_ids:
+                    await _alert_crown_evaluation_fault(
+                        tournament, completed_round, outcome.evaluation_fault_task_ids, config
+                    )
                 else:
                     await _return_boss_round_for_node_assignment(tournament, completed_round, outcome, config, psql_db)
             else:
@@ -985,9 +1003,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     third_place = await get_pre_boss_knockout_loser(
                         tournament, completed_round, challenger.hotkey, psql_db
                     )
-            elif is_seeded_text:
+            elif plays_plan:
                 # No pre-boss knockout: third is the runner-up of round 3's standings.
-                third_place = await get_seeded_text_runner_up(tournament.tournament_id, challenger.hotkey, psql_db)
+                third_place = await get_planned_runner_up(tournament, challenger.hotkey, psql_db)
             elif tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
                 third_place = await get_pre_boss_knockout_loser(
                     tournament, completed_round, challenger.hotkey, psql_db
@@ -1000,7 +1018,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 )
                 third_place = None
 
-            if winner == EMISSION_BURN_HOTKEY and (tournament.tournament_type == TournamentType.QUANT or is_seeded_text):
+            if winner == EMISSION_BURN_HOTKEY and plays_plan:
                 await _record_boss_rank_comparisons(tournament.tournament_id, second_place, third_place, psql_db)
 
             await update_tournament_placements(
@@ -1086,12 +1104,16 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     )
                     return
                 logger.info(f"R2 field after integrity gates: {winners}")
-            if completed_round.round_number == _last_miner_round_number(tournament, is_seeded_text):
+            if completed_round.round_number == _last_miner_round_number(tournament, plays_plan):
                 # The round-3 cut leaves the last contender, about to meet the boss. Rounds 1-3 are its first three
                 # head-to-heads: if the crown is already out of reach the tournament ends here and no boss round is built.
                 challenger_hotkey = next((hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY), None)
                 if challenger_hotkey is not None:
-                    verdict = await _round_crown_verdict(tournament, challenger_hotkey, psql_db)
+                    try:
+                        verdict = await _round_crown_verdict(tournament, challenger_hotkey, psql_db)
+                    except CrownEvaluationFault as fault:
+                        await _alert_crown_evaluation_fault(tournament, completed_round, fault.task_ids, config)
+                        return
                     if not verdict.can_still_be_crowned:
                         await _complete_without_boss_round(
                             tournament,
@@ -2057,12 +2079,11 @@ async def _add_boss_round_deciders(
     Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries. The
     partial batch is rolled back by the creator, so the retry starts from the same state this one did.
     """
-    # A seeded text boss round has no draws (it is decided on the crown rule, not the paired test), so it has no deciders.
-    if tournament.tournament_type == TournamentType.TEXT and await seeds_sql.is_seeded_text_tournament(
-        tournament.tournament_id, psql_db
-    ):
+    # A boss round of a seeded text or planned image tournament has no draws (it is decided on the crown rule), so it has no
+    # deciders.
+    if tournament.tournament_type != TournamentType.QUANT and await plays_round_plan(tournament, psql_db):
         raise RuntimeError(
-            f"Tournament {tournament.tournament_id} is a seeded text tournament: its boss round never adds deciders"
+            f"Tournament {tournament.tournament_id} plays the round plan: its boss round never adds deciders"
         )
 
     # Nothing to create - the round already holds tasks that never got nodes (a crash between
@@ -2214,6 +2235,32 @@ async def _alert_empty_score_groups(
         f"{len(empty_score_groups)} group(s) completed with no valid scores:\n{detail}\n"
         f"The next round has NOT been created and no one has been eliminated. "
         f"Evaluation data is missing for these groups — fix the scores, then the cycle will advance on its own.",
+        config,
+    )
+
+
+async def _alert_crown_evaluation_fault(
+    tournament: TournamentData, completed_round: TournamentRoundData, task_ids: list[str], config: Config
+) -> None:
+    """Hold a round whose crown tasks have an evaluation fault, once per round per process (as _alert_empty_score_groups).
+
+    Nothing is advanced, decided or changed: the round stays completed and unadvanced, so the next cycle reads the results
+    again and the round proceeds on its own once the evaluation results exist.
+    """
+    logger.error(
+        f"HOLDING tournament {tournament.tournament_id} at round {completed_round.round_id}: both entries trained and neither "
+        f"has a result on task(s) {task_ids}"
+    )
+    await _alert_once(
+        completed_round.round_id,
+        _CROWN_EVALUATION_FAULT_ROUNDS_ALERTED,
+        f"Tournament crown evaluation fault\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"Task(s) {', '.join(task_ids)}: the contender's and the boss's trainings both succeeded and neither has an "
+        f"evaluation result.\n"
+        f"Nothing has been advanced or decided. Evaluation data is missing for these tasks; the round resolves on its own "
+        f"once the results exist.",
         config,
     )
 

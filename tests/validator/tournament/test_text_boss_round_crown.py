@@ -547,7 +547,7 @@ class Cup:
             ("is_seeded_text_tournament", seeded_flag),
         ]:
             mp.setattr(rr, name, fake)
-        mp.setattr(rr, "_text_seeded_ordered_hotkeys", AsyncMock(side_effect=lambda *_: list(self.ordering)))
+        mp.setattr(rr, "planned_round_ordered_hotkeys", AsyncMock(side_effect=lambda *_: list(self.ordering)))
 
         mp.setattr(seeds_sql, "is_seeded_text_tournament", seeded_flag)
         mp.setattr(seeds_sql, "get_active_seed_tasks", active_seeds)
@@ -832,7 +832,7 @@ class TestEndingAfterRoundThree:
         round_three = after_round_three(self.POSSIBLE)
         cup.registry = [row for row in cup.registry if not row.round_id.endswith("_002")]
 
-        with pytest.raises(ValueError, match="expected its one seed task"):
+        with pytest.raises(ValueError, match="expected its one task"):
             await cup.advance(completed=round_three)
 
         assert cup.placements == [] and cup.winners_set == []
@@ -962,7 +962,9 @@ class TestStageOneComplete:
         round_two = cup.round_tasks(f"{TID}_round_002")[0]
         cup.missing_vectors.add((str(round_two.task_id), BOSS))
 
-        results = await rr.seeded_text_round_head_to_heads(TID, CHALLENGER, None)
+        results = await rr.round_head_to_heads(
+            TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), CHALLENGER, None
+        )
 
         assert [result.is_win for result in results] == [True, False, True]
 
@@ -1279,8 +1281,11 @@ class TestOtherTournamentsKeepTheirBossRound:
         decide.assert_called_once()
         assert outcome.winners == [CHALLENGER]
 
-    async def test_an_image_boss_round_is_untouched(self, cup, monkeypatch):
+    async def test_the_six_task_boss_round_of_an_image_tournament_with_a_three_task_round_one_is_untouched(
+        self, cup, monkeypatch
+    ):
         cup.tournament = cup.tournament.model_copy(update={"tournament_type": TournamentType.IMAGE})
+        monkeypatch.setattr(rr, "is_planned_image_tournament", AsyncMock(return_value=False))
         task = cup.add_task(TaskType.IMAGETASK)
         cup.score(task, 1.0, 0.5)
         cup.registry.append(

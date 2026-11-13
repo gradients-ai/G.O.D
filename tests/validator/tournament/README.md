@@ -55,6 +55,9 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | `test_round3_viability.py` | The viability cut after round 2, and third place when one miner survives. |
 | `test_text_cumulative_advancement.py` | Advancement by mean rank over the rounds played, within the surviving miners. |
 | `test_group_standings_tiebreak.py` | Standings tie-breaks: average rank, summed gap, seeded shuffle. |
+| `test_image_round_plan.py` | The image round plan, the boss-round mix, `round_plan`, and telling a planned image tournament from one with a three-task round 1. |
+| `test_image_rounds.py` | Image rounds 1-3: the boss assigned to each round's task, standings without the boss, advancement 8 / 4 / 1 on average rank, the boss's rank, third place and the empty-score check. |
+| `test_image_task_creation.py` | Image task creation: one task per planned round, the four boss-round tasks, the three-task round 1 structure, replacements, and the exact pair count of a synthetic image task. |
 | `test_text_r1_single_group.py` | Round 1 is one group for text and image, and how many tasks it holds. |
 | `test_empty_score_group_guard.py` | A group with no valid challenger score halts advancement. |
 | `test_majority_failure_gate.py` | A task where most trainings failed is held for manual review. |
@@ -69,6 +72,7 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | --- | --- |
 | `test_crown.py` | The crown rule and each task kind's win and non-win bands, as pure functions. |
 | `test_text_boss_round_crown.py` | The text boss round: its tasks, the crown, the early stop and the flow around them. |
+| `test_image_boss_round_crown.py` | The planned image boss round: the crown, the early stop after round 3, the evaluation-fault hold and third place. |
 | `test_quant_boss_crown_rule.py` | The compression crown over seven head-to-heads. |
 | `test_quant_early_stop.py` | The compression early stop, and retirement of unattached seeds. |
 | `test_paired_boss_round.py` | The paired per-example test. |

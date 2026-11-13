@@ -9,6 +9,7 @@ from core.models.tournament_models import TournamentType
 from validator.tournament.models import QUANT_SLOT_SPECS
 from validator.tournament.models import ChunkScheme
 from validator.tournament.models import ContinuousRowsPart
+from validator.tournament.models import ImageRoundSpec
 from validator.tournament.models import QuantRoundSpec
 from validator.tournament.models import QuantSourceSlot
 from validator.tournament.models import SeedRole
@@ -158,7 +159,6 @@ ROUND_TWO_IMAGE_MODEL_TYPES = (
 )
 
 # Final round task counts
-FINAL_ROUND_IMAGE_TASKS = 6
 FINAL_ROUND_IMAGE_TASK_DISTRIBUTION = {
     ImageModelType.KREA2: 2,
     ImageModelType.IDEOGRAM4: 2,
@@ -618,6 +618,39 @@ TEXT_ROUND_PLAN = (
     TextRoundSpec(round_number=3, seed_role=SeedRole.TEXT_R3, model_size_b=SEED_INPUT_LARGE_SIZE_B, advance=1),
 )
 
+# Rounds 1-3 of an image tournament are one task each, in one group: the boss trains the task alongside the miners and is
+# ranked in the round but never takes an advancement slot. Round 1 advances on its task; rounds 2 and 3 on average rank
+# over every round played so far, among the remaining miners.
+IMAGE_ROUND_PLAN = (
+    ImageRoundSpec(round_number=1, model_type=ImageModelType.FLUX, advance=8),
+    ImageRoundSpec(round_number=2, model_type=ImageModelType.IDEOGRAM4, advance=4),
+    ImageRoundSpec(round_number=3, model_type=ImageModelType.KREA2, advance=1),
+)
+
+# The four boss-round tasks of an image tournament, all created together; with the three round tasks they are the CROWN_TASKS
+# head-to-heads of the crown rule.
+IMAGE_BOSS_ROUND_TASK_DISTRIBUTION = {
+    ImageModelType.KREA2: 1,
+    ImageModelType.IDEOGRAM4: 1,
+    ImageModelType.QWEN_IMAGE: 1,
+    ImageModelType.Z_IMAGE: 1,
+}
+
+
+def round_plan(
+    tournament_type: TournamentType,
+) -> tuple[QuantRoundSpec, ...] | tuple[TextRoundSpec, ...] | tuple[ImageRoundSpec, ...]:
+    """The plan of rounds 1-3 of a tournament type that plays one: every spec has a round_number, text and image specs
+    an advance count too."""
+    if tournament_type == TournamentType.QUANT:
+        return QUANT_ROUND_PLAN
+    if tournament_type == TournamentType.TEXT:
+        return TEXT_ROUND_PLAN
+    if tournament_type == TournamentType.IMAGE:
+        return IMAGE_ROUND_PLAN
+    raise ValueError(f"No round plan for tournament type {tournament_type}")
+
+
 # --- Boss round of a seeded text tournament ---------------------------------------------------------------------------
 # Four tasks: the continuous-SFT seed (attached), one GRPO and one DPO task (created with the round), then the big task
 # (an instruct task on a 30-72B model, drawn from the BOSS_ROUND_LARGE_INSTRUCT_* pool) which is created only when the
@@ -629,7 +662,7 @@ TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES = (TaskType.GRPOTASK, TaskType.DPOTASK)
 # meeting it despite floating-point rounding (a pair exactly 1% apart can compute as 0.99999999999999%).
 CROWN_BOUNDARY_RELATIVE_TOLERANCE = 1e-9
 
-# Head-to-heads of the crown rule, the same for text and quant: the tasks of rounds 1-3 plus the four boss-round tasks.
+# Head-to-heads of the crown rule, the same for text, image and quant: the tasks of rounds 1-3 plus the four boss-round tasks.
 CROWN_TASKS = 7
 # The challenger is crowned with at most this many non-wins, every non-win within the larger allowance and, with two
 # non-wins, at least one of them within the smaller allowance (crown.crown_verdict).
@@ -643,3 +676,8 @@ CROWN_LARGER_ALLOWANCE = 0.01
 # challenger_beats_boss) and, on a task with per-example losses (PAIRED_BOSS_ROUND_TASK_TYPES), also passes the paired
 # per-example test. Any other task is a non-win banded by CROWN_LARGER_ALLOWANCE on the score.
 TEXT_CROWN_WIN_MARGIN = 0.01
+
+# An image task is a win when the challenger's weighted loss is lower than the boss's by at least this fraction of the boss's
+# loss (see challenger_beats_boss). The task is decided on the scalar alone, with no paired test; any other result is a non-win
+# banded by CROWN_LARGER_ALLOWANCE.
+IMAGE_CROWN_WIN_MARGIN = 0.01

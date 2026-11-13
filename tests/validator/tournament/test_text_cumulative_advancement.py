@@ -119,7 +119,7 @@ async def test_a_tie_on_average_rank_goes_to_the_better_most_recent_round(tourna
     # A: R1 1, R2 2. B: R1 2, R2 1. Both average 1.5; B won the latest round.
     tournament({1: ["A", "B"], 2: ["B", "A"]}, {1: ["A", "B"], 2: ["A", "B"]})
 
-    assert await rr._text_seeded_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None) == ["B", "A"]
+    assert await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None) == ["B", "A"]
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_a_miner_with_no_result_in_a_round_ranks_last_on_it(tournament):
     tournament({1: ["B", "A"], 2: ["A"]}, {1: ["A", "B"], 2: ["A", "B"]})
 
     assert await _winners(2) == ["A", "B"]
-    ordered = await rr._text_seeded_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
+    ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
     assert ordered == ["A", "B"]
 
 
@@ -159,4 +159,4 @@ async def test_third_place_is_the_runner_up_of_the_cumulative_standings(tourname
     # Round 3's task alone ranks C, B, A; cumulative: A (1+1+3)/3, B (2+2+2)/3, C (3+3+1)/3. Challenger A, third B.
     tournament({1: cohort, 2: cohort, 3: ["C", "B", "A"]}, {1: cohort, 2: cohort, 3: cohort})
 
-    assert await rr.get_seeded_text_runner_up(TID, "A", None) == "B"
+    assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"

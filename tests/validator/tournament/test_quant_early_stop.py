@@ -109,7 +109,7 @@ class QuantCup:
         mp.setattr(tm, "upload_participant_repository", AsyncMock(return_value="uploaded/repo"))
         mp.setattr(tm, "schedule_boss_round_publication", self.publication)
         mp.setattr(tm, "quant_round_head_to_heads", self.round_head_to_heads)
-        mp.setattr(tm, "seeded_text_round_head_to_heads", AsyncMock(side_effect=AssertionError("text only")))
+        mp.setattr(tm, "round_head_to_heads", AsyncMock(side_effect=AssertionError("text only")))
         mp.setattr(tm, "get_quant_round_runner_up", self.runner_up)
         mp.setattr(tm, "retire_unattached_quant_seeds", self.retire)
         self.comparisons = AsyncMock(return_value=["compared"])

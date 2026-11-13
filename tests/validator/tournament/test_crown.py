@@ -2,8 +2,9 @@
 
 Win: text is the paired per-example test plus a 1% better score on instruct, chat and DPO, GRPO the score alone; freeform
 is 3% fewer effective bytes; fixed is the paired test plus a 1% better scalar. Every other result is banded on the value
-alone, the same for the three kinds: strictly better than the boss is within the smaller allowance, level or at most 1%
-worse is within the larger allowance, more than 1% worse is beyond.
+alone, the same for every kind: strictly better than the boss is within the smaller allowance, level or at most 1%
+worse is within the larger allowance, more than 1% worse is beyond. Image is the weighted loss alone (lower is better) with
+a 1% win margin and no paired test.
 """
 
 import math
@@ -11,6 +12,7 @@ import math
 import pytest
 
 from core.models.task_models import TaskType
+from core.models.task_models import higher_is_better
 from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
 from validator.tournament.crown import HeadToHead
@@ -18,7 +20,9 @@ from validator.tournament.crown import HeadToHeadOutcome
 from validator.tournament.crown import crown_verdict
 from validator.tournament.crown import fixed_head_to_head
 from validator.tournament.crown import freeform_head_to_head
+from validator.tournament.crown import image_head_to_head
 from validator.tournament.crown import text_head_to_head
+from validator.tournament.crown import text_needs_paired_test
 from validator.tournament.models import PairedLossComparison
 
 
@@ -98,6 +102,7 @@ class TestTheSharedVerdict:
     def test_the_constants(self):
         assert (t_cst.CROWN_TASKS, t_cst.CROWN_MAX_NON_WINS) == (7, 2)
         assert t_cst.TEXT_CROWN_WIN_MARGIN == 0.01
+        assert t_cst.IMAGE_CROWN_WIN_MARGIN == 0.01
         assert t_cst.CROWN_LARGER_ALLOWANCE == 0.01
         assert t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN == 0.03
         assert t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT == 0.01
@@ -175,6 +180,87 @@ class TestTextAgainstTheBoss:
         result = text_head_to_head("t", "x", TaskType.DPOTASK, 1.0, None, None)
 
         assert result.outcome == BEYOND and math.isinf(result.deficit)
+
+
+class TestImageAgainstTheBoss:
+    def test_image_is_lower_is_better_and_takes_no_paired_test(self):
+        assert not higher_is_better(TaskType.IMAGETASK)
+        assert not text_needs_paired_test(TaskType.IMAGETASK)
+
+    @pytest.mark.parametrize("boss", [1.0, 1.15, 2.3, 0.7, 123.456789])
+    def test_exactly_one_percent_lower_is_a_win(self, boss):
+        result = image_head_to_head("t", "x", boss, boss * 0.99)
+
+        assert result.is_win and result.task_type == TaskType.IMAGETASK
+
+    @pytest.mark.parametrize(
+        "challenger, outcome",
+        [
+            (0.99 * (1 + 1e-6), SMALLER),  # lower, short of the win margin
+            (0.995, SMALLER),
+            (1.0 - 1e-12, SMALLER),
+            (1.0, LARGER),  # equal
+            (1.0 + 1e-12, LARGER),
+            (1.01, LARGER),  # exactly 1% higher
+            (1.01 * (1 + 1e-6), BEYOND),
+            (2.0, BEYOND),
+        ],
+    )
+    def test_the_bands(self, challenger, outcome):
+        assert image_head_to_head("t", "x", 1.0, challenger).outcome == outcome
+
+    @pytest.mark.parametrize("boss", [1.15, 2.3, 0.7, 123.456789])
+    def test_float_awkward_one_percent_higher_is_larger(self, boss):
+        assert image_head_to_head("t", "x", boss, boss * 1.01).outcome == LARGER
+
+    @pytest.mark.parametrize("challenger", [None, math.nan, math.inf])
+    @pytest.mark.parametrize("boss", [1.0, None])
+    def test_no_valid_challenger_is_beyond(self, boss, challenger):
+        result = image_head_to_head("t", "x", boss, challenger)
+
+        assert result.outcome == BEYOND and math.isinf(result.deficit)
+
+    @pytest.mark.parametrize("boss", [None, math.nan])
+    def test_no_valid_boss_with_a_valid_challenger_is_a_win(self, boss):
+        assert image_head_to_head("t", "x", boss, 5.0).is_win
+
+    def test_a_boss_loss_of_zero_is_never_beaten(self):
+        level = image_head_to_head("t", "x", 0.0, 0.0)
+        worse = image_head_to_head("t", "x", 0.0, 0.001)
+
+        assert level.outcome == LARGER and not level.is_win
+        assert worse.outcome == BEYOND and math.isinf(worse.deficit)
+
+    def test_the_scalars_and_the_improvement_are_reported(self):
+        result = image_head_to_head("t7", "image round 1", 2.0, 1.9)
+
+        assert (result.task_id, result.label) == ("t7", "image round 1")
+        assert (result.boss_score, result.challenger_score) == (2.0, 1.9)
+        assert result.improvement == pytest.approx(0.05)
+
+    @staticmethod
+    def _seven(*challengers: float | None) -> list[HeadToHead]:
+        return [image_head_to_head(f"t{i}", f"task {i}", 1.0, challenger) for i, challenger in enumerate(challengers)]
+
+    WON, SHORT, LEVEL, ONE_UP, WORSE = 0.9, 0.995, 1.0, 1.01, 1.5
+
+    @pytest.mark.parametrize(
+        "name, challengers, crowned",
+        [
+            ("seven wins", [WON] * 7, True),
+            ("six wins and one within the smaller allowance", [WON] * 6 + [SHORT], True),
+            ("six wins and one level", [WON] * 6 + [LEVEL], True),
+            ("six wins and one exactly 1% higher", [WON] * 6 + [ONE_UP], True),
+            ("five wins, one within the smaller and one within the larger allowance", [WON] * 5 + [SHORT, LEVEL], True),
+            ("five wins, two within the smaller allowance", [WON] * 5 + [SHORT, SHORT], True),
+            ("five wins, two within the larger allowance", [WON] * 5 + [LEVEL, ONE_UP], False),
+            ("six wins and one beyond", [WON] * 6 + [WORSE], False),
+            ("six wins and one without a result", [WON] * 6 + [None], False),
+            ("four wins, three within the smaller allowance", [WON] * 4 + [SHORT] * 3, False),
+        ],
+    )
+    def test_the_crown_over_seven_image_head_to_heads(self, name, challengers, crowned):
+        assert crown_verdict(self._seven(*challengers)).crowned is crowned, name
 
 
 def _freeform(total_bytes: float | None, passed_bar: bool = True, quant_failure: str | None = None) -> MinerResultsText:
