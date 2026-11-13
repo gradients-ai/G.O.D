@@ -156,7 +156,7 @@ task install
 task miner-config   # writes .1.env
 ```
 
-Set your answer in `miner/endpoints/training_repo.py` (next section), then start the service:
+Set your answer in `miner/endpoints/training_repo.py` and `.1.env` (next section), then start the service:
 
 ```bash
 task miner
@@ -171,29 +171,27 @@ The validator calls `GET /training_repo/{task_type}` on your miner on each enrol
 > [!IMPORTANT]
 > Answering a tournament's endpoint with a repository enters you in that tournament and charges its fee.
 
-You control the answer in `miner/endpoints/training_repo.py`. The file as shipped answers every tournament with one repository, so change it. Return a repository for each tournament you enter and decline the others:
+You control the answer in `miner/endpoints/training_repo.py`. The file answers only the tournaments listed in the `MINER_TOURNAMENT_TYPES` setting, a comma-separated list of `text`, `image` and `quant`, and declines the rest with a 404. The setting is empty by default, so a miner enters nothing until you set it. Add it to `.1.env` and restart the miner:
+
+```bash
+echo "MINER_TOURNAMENT_TYPES=text" >> .1.env
+```
+
+The file then returns the repository set in `get_training_repo`, so change `github_repo` and `commit_hash` there to your own:
 
 ```python
-from fastapi import HTTPException
-
-REPOS = {
-    TournamentType.TEXT: ("https://github.com/YOUR_USERNAME/YOUR_TEXT_REPO", "0123456789abcdef0123456789abcdef01234567"),
-}
-
-
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
-    if task_type not in REPOS:
+    if task_type.value not in entered_tournaments():
         raise HTTPException(status_code=404, detail="not entering this tournament")
-    github_repo, commit_hash = REPOS[task_type]
     return TrainingRepoResponse(
-        github_repo=github_repo,
-        commit_hash=commit_hash,
+        github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
+        commit_hash="0123456789abcdef0123456789abcdef01234567",
         github_token=None,
         requested_datasets=None,
     )
 ```
 
-To enter another tournament, add its `TournamentType` (`TEXT`, `IMAGE` or `QUANT`) to `REPOS`. Each entry can name a different repository or commit.
+To use a different repository or commit per tournament, branch on `task_type` before the return.
 
 | Field | Rule |
 | --- | --- |

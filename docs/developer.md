@@ -161,7 +161,7 @@ With `S3_SECURE=false`, for example a local MinIO, set the value on the validato
 
 ### Miner: `.1.env`
 
-`task miner-config` writes `WALLET_NAME`, `HOTKEY_NAME`, `SUBTENSOR_NETWORK`, `SUBTENSOR_ADDRESS` when given, `NETUID`, `ENV`, `REFRESH_NODES` and `MIN_STAKE_THRESHOLD`.
+`task miner-config` writes `WALLET_NAME`, `HOTKEY_NAME`, `SUBTENSOR_NETWORK`, `SUBTENSOR_ADDRESS` when given, `NETUID`, `ENV`, `REFRESH_NODES` and `MIN_STAKE_THRESHOLD`. Add `MINER_TOURNAMENT_TYPES` by hand: a comma-separated list of the tournaments the miner enters (`text`, `image`, `quant`). `miner/endpoints/training_repo.py` declines any type not listed, and the default is none.
 
 ## Running a validator
 
