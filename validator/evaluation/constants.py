@@ -1,4 +1,7 @@
 from core.constants.datasets import GRPO_DEFAULT_FIELD_PROMPT
+from core.models.quant_models import QuantActivationFormat
+from core.models.quant_models import QuantEvalSku
+from core.models.quant_models import QuantFormat
 
 
 DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT = 0.5
@@ -35,6 +38,73 @@ GRPO_KL_SEQUENCE_LENGTH = 512
 
 BASILICA_GPU_MODELS = ["A100"]
 BASILICA_SGLANG_MIN_GPU_MEMORY_GB = 80
+
+# Quant evaluation (vLLM prompt-logprob scorer). vLLM picks the kernel per GPU class (Machete and
+# CutlassW4A8 on H100, Marlin on A100), so quant evals run on the H100 family only: SXM and PCIe are
+# both allowed, and neither is preferred, so a task never waits for one SKU. Each submission is scored
+# in its own deployment. Within the family, Humming's W3 tiling and Machete's stream-K decomposition
+# read the SM count, so the two SKUs can differ in the low decimals; every result records its SKU
+# (eval_gpu). The evaluator reads its GPU before loading any model and refuses (an evaluation error,
+# never a scored fail) one whose device name and SM count match no entry here, unless
+# QUANT_EVAL_ALLOW_ANY_GPU is set (test boxes only; logged loudly and recorded as override).
+QUANT_EVAL_GPU_MODELS = ["H100"]
+QUANT_EVAL_ALLOWED_SKUS = (
+    QuantEvalSku(label="H100 SXM", device_name="NVIDIA H100 80GB HBM3", sm_count=132, runpod_gpu_type="NVIDIA H100 80GB HBM3"),
+    QuantEvalSku(label="H100 PCIe", device_name="NVIDIA H100 PCIe", sm_count=114, runpod_gpu_type="NVIDIA H100 PCIe"),
+)
+# dstack's "H100" names the GPU class, not a SKU (H100 NVL is not listed above), so Runpod offers are
+# narrowed by instance type (the Runpod GPU type id) to the allowed SKUs.
+QUANT_EVAL_RUNPOD_INSTANCE_TYPES = [sku.runpod_gpu_type for sku in QUANT_EVAL_ALLOWED_SKUS]
+# A bf16 reference measured on its own (the pre-pass: own-model, task-common and calibration references) may also
+# run on an 80 GB A100. Only quant kernels differ by GPU class; a bf16 model scores within the low decimals anywhere.
+# Such a reference is stored under its own SKU label, and every score is normalised by the reference on the SKU its
+# entry was scored on (reference_on), so an A100 row is never a denominator for an H100 entry: it only sets the
+# target published to the miner, and the scoring deployment measures its own SKU's reference in place.
+# Entries themselves stay on QUANT_EVAL_ALLOWED_SKUS.
+QUANT_REFERENCE_EXTRA_SKUS = (
+    QuantEvalSku(label="A100 SXM", device_name="NVIDIA A100-SXM4-80GB", sm_count=108, runpod_gpu_type="NVIDIA A100-SXM4-80GB"),
+    QuantEvalSku(label="A100 PCIe", device_name="NVIDIA A100 80GB PCIe", sm_count=108, runpod_gpu_type="NVIDIA A100 80GB PCIe"),
+)
+QUANT_REFERENCE_ALLOWED_SKUS = QUANT_EVAL_ALLOWED_SKUS + QUANT_REFERENCE_EXTRA_SKUS
+QUANT_REFERENCE_GPU_MODELS = ["H100", "A100"]
+QUANT_REFERENCE_RUNPOD_INSTANCE_TYPES = [sku.runpod_gpu_type for sku in QUANT_REFERENCE_ALLOWED_SKUS]
+QUANT_VLLM_MAX_NUM_SEQS = 1
+QUANT_VLLM_LOGPROBS_MODE = "raw_logprobs"
+QUANT_VLLM_SEED = 0
+# What the quant engine reads besides the repo's weights and config.json (see quant_vllm): the HF tokenizer, as
+# quant prep used; HF-format config only, never params.json; safetensors only, so consolidated*.safetensors cannot
+# switch the loader to Mistral format; and no sampling defaults from the repo's generation_config.json.
+QUANT_VLLM_TOKENIZER_MODE = "hf"
+QUANT_VLLM_CONFIG_FORMAT = "hf"
+QUANT_VLLM_LOAD_FORMAT = "safetensors"
+QUANT_VLLM_GENERATION_CONFIG = "vllm"
+# Set in-process before vLLM is imported. The engine stays in this process (so apply_model needs no
+# pickling), and FlashInfer's top-k/top-p sampler is off: it JIT-compiles with nvcc, which the image lacks.
+QUANT_VLLM_ENV = {
+    "VLLM_ENABLE_V1_MULTIPROCESSING": "0",
+    "VLLM_USE_FLASHINFER_SAMPLER": "0",
+}
+# Results-file key the quant evaluator writes the same-deployment bf16 reference under, next to the repo's result.
+QUANT_REFERENCE_RESULT_KEY = "quant_reference"
+# Reported quant_failure reasons are cut to this length.
+QUANT_FAILURE_REASON_MAX_CHARS = 350
+# A repo's config.json over this size is not parsed (an honest one is a few KB; a huge one is a memory and disk
+# attack on the shared eval container, so it is a scored fail before json.loads sees it).
+QUANT_CONFIG_MAX_BYTES = 1 << 20
+# vLLM 0.31.0 kernel classes each fixed-track format must load through on H100.
+QUANT_EXPECTED_KERNEL_CLASSES: dict[QuantFormat, frozenset[str]] = {
+    QuantFormat.W4A16_SYM_G128: frozenset({"MacheteLinearKernel"}),
+    QuantFormat.W4A8_FP8_G128: frozenset({"CutlassW4A8LinearKernel"}),
+    QuantFormat.W3A16_ASYM_G128: frozenset({"HummingLinearKernel"}),
+    QuantFormat.W2A16_ASYM_G64: frozenset({"HummingLinearKernel"}),
+}
+# vLLM 0.31.0 compressed-tensors scheme classes and the activation format each one runs. The kernel
+# class alone does not pin it: a W4A8-int8 checkpoint routes to Machete like W4A16.
+QUANT_SCHEME_ACTIVATIONS: dict[str, QuantActivationFormat] = {
+    "CompressedTensorsWNA16": QuantActivationFormat.BF16,
+    "CompressedTensorsW4A8Fp8": QuantActivationFormat.FP8,
+    "CompressedTensorsWNA8Int": QuantActivationFormat.INT8,
+}
 
 EVAL_BASILICA_CPU = "4"
 EVAL_BASILICA_MEMORY = "64Gi"

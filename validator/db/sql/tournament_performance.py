@@ -1,10 +1,11 @@
 from uuid import UUID
 
+from validator.db import constants as cst
+from validator.db.database import PSQLDB
+from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import BossRoundTaskPair
 from validator.tournament.models import RoundType
 from validator.tournament.models import TaskScore
-from validator.db import constants as cst
-from validator.db.database import PSQLDB
 
 
 async def is_final_round_task(task_id: UUID, psql_db: PSQLDB) -> bool:
@@ -27,6 +28,10 @@ async def is_paired_comparison_task(task_id: UUID, psql_db: PSQLDB) -> bool:
     Gates persistence of per-example loss vectors. Group rounds rank N miners rather than comparing
     two, so pairwise win rates do not give an ordering there and the vectors would go unread -
     storing one for every miner on every group task would bloat task_nodes for no gain.
+
+    A boss-round seed counts before the boss round attaches it: the
+    boss's entry is evaluated at seed time and its stored vector and eval-set fingerprint are what the
+    boss round later compares the challenger's against.
     """
     async with await psql_db.connection() as connection:
         query = f"""
@@ -36,9 +41,14 @@ async def is_paired_comparison_task(task_id: UUID, psql_db: PSQLDB) -> bool:
                 JOIN {cst.TOURNAMENT_ROUNDS_TABLE} tr ON tr.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
                 WHERE tt.{cst.TASK_ID}::text = $1::text
                   AND (tr.{cst.IS_FINAL_ROUND} = true OR tr.{cst.ROUND_TYPE} = $2)
+            ) OR EXISTS (
+                SELECT 1
+                FROM {cst.TOURNAMENT_SEED_TASKS_TABLE} s
+                WHERE s.{cst.TASK_ID}::text = $1::text AND s.{cst.SEED_ROLE} = ANY($3::text[])
             )
         """
-        return bool(await connection.fetchval(query, str(task_id), RoundType.KNOCKOUT.value))
+        boss_round_roles = sorted(role.value for role in ANY_BOSS_ROUND_SEED_ROLES)
+        return bool(await connection.fetchval(query, str(task_id), RoundType.KNOCKOUT.value, boss_round_roles))
 
 
 async def get_boss_round_winner_task_pairs(tournament_id: str, psql_db: PSQLDB) -> list[BossRoundTaskPair]:

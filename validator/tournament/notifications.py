@@ -22,6 +22,35 @@ async def notify_model_prep_failure_limit(task_id: str, prep_identity: str, disc
         logger.error(f"Failed to send Discord notification for model prep failures: {e}")
 
 
+async def notify_quant_decode_infra_error(task_id: str, hotkey: str, detail: str, discord_url: str | None):
+    """Best-effort alert that a freeform decode needs a human: our fault, so it is held, never scored."""
+    if not discord_url:
+        return
+    try:
+        message = (
+            "Quant freeform decode needs attention (infra, not scored).\n"
+            f"Task ID: {task_id}\n"
+            f"Hotkey: {hotkey}\n"
+            f"Detail: {detail}\n"
+            "Training stays SUCCESS; the task is held before PREEVALUATION. Re-run the decode on the trainer with "
+            f"`python -m trainer.quant_decode.rerun {task_id} {hotkey}` and the orchestrator picks the result up "
+            "on its next cycle."
+        )
+        await send_to_discord(discord_url, message)
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for quant decode infra error: {e}")
+
+
+async def notify_freeform_release_problem(subject: str, detail: str, discord_url: str | None):
+    """Best-effort alert that a freeform publication (decoder release, decoded model) was refused or failed."""
+    if not discord_url:
+        return
+    try:
+        await send_to_discord(discord_url, f"Freeform publication problem: {subject}\n{detail}")
+    except Exception as e:
+        logger.error(f"Failed to send Discord notification for freeform release problem: {e}")
+
+
 async def send_to_discord(webhook: str, message: str):
     async with httpx.AsyncClient() as client:
         payload = {"content": message}

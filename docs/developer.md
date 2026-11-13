@@ -14,7 +14,7 @@ The repo is organized by runtime boundary:
 | `validator/` | Validator API, tournament lifecycle, task creation, evaluation, scoring, persistence, infrastructure integrations, and transfer accounting. |
 | `ops/` | Dockerfiles, compose files, config generation, observability, manual probes, tournament tools, and operational scripts. |
 | `tests/` | Unit and integration tests grouped by domain. |
-| `docs/` | The two maintained docs: this guide and `miner.md`. |
+| `docs/` | The maintained docs: this guide, `miner.md`, and its quant companion `miner_quant.md`. |
 
 Inside `validator/`, the major boundaries are:
 
@@ -100,6 +100,17 @@ Validator config prompts for wallet, hotkey, subtensor network, DB settings, S3-
 echo "MODEL_HASH_SALT=$(openssl rand -hex 32)" >> .vali.env
 ```
 
+Evaluation containers authenticate to Hugging Face with `HF_READ_ONLY_TOKEN` from `.vali.env`. It must be a token
+with read access to the `gradients-io-tournaments` organisation, where the tournament repos are uploaded.
+
+```bash
+echo "HF_READ_ONLY_TOKEN=<read-only-token-with-gradients-io-tournaments-access>" >> .vali.env
+```
+
+The validator reads every tournament upload from `<TOURNAMENT_HF_USERNAME>/<expected_repo_name>`; unset, that org is
+`gradients-io-tournaments`. A test validator points it at a scratch org, and its trainers' `HUGGINGFACE_USERNAME` must
+name the same org, since the trainer uploads there.
+
 For local/dev validator features that call the content service, add:
 
 ```bash
@@ -113,9 +124,23 @@ HUGGINGFACE_TOKEN=<token>
 HUGGINGFACE_USERNAME=<username>
 WANDB_TOKEN=<token>
 ORCHESTRATOR_IPS=<validator-ip-or-comma-separated-ips>
+S3_COMPATIBLE_ENDPOINT=<endpoint>
+S3_COMPATIBLE_ACCESS_KEY=<key>
+S3_COMPATIBLE_SECRET_KEY=<secret>
+S3_REGION=us-east-1
 ```
 
-`ORCHESTRATOR_IPS` controls which validator IPs may call the trainer. Localhost is always allowed.
+Optional: `QUANT_DECODE_WORK_ROOT=<dir>` is where the freeform quant decode runs (default
+`~/.local/share/god-trainer/quant_decode`; `task trainer-config` prompts for it). It must be a directory of its own: the
+trainer creates it (or adopts it if empty), writes a `.god-quant-decode-root` marker, and chmods it `0o700`; a non-empty
+directory without the marker is refused untouched and every decode on it ends as `infra_error`. It needs about 3x the
+largest bf16 model free, and it must be a path on the trainer host (the decoder sandbox bind-mounts host paths).
+
+`ORCHESTRATOR_IPS` controls which validator IPs may call the trainer. Localhost is always allowed. The `S3_*` values
+are the validator's S3-compatible store: the freeform quant decode uploads its decoded shards there, and
+`validator/infrastructure/minio_client.py` reads them at import. `task trainer-config` prompts for them. The store is
+reached over HTTPS; set `S3_SECURE=false` (validator and trainer alike) only for a plain-HTTP store such as a local
+MinIO, whose endpoint the trainer's and the evaluator's containers must also be able to resolve.
 
 ## Running A Validator
 
@@ -154,6 +179,25 @@ task db-dump
 task db-restore
 ```
 
+### Deploy order
+
+Apply the DB migrations (`task dbup`) before starting the new validator code. Text and image paths also read and write the
+new schema objects (`tasks.carve_calibration`, `evaluations.infra_error_attempts`, `tournament_participants.decoder_*`,
+the `tournament_seed_tasks` and `quant_task_sources` tables), so new code on an unmigrated database
+fails for every task type. Rolling the code back after migrating is safe: every migration is additive, nullable or defaulted.
+
+Three quant migrations (`20261019120000`, `20261019150000`, `20261020100000`) sort before the latest migration already
+applied in production (`20261020040000`). `dbmate up`, as the Taskfile runs it, applies them; `dbmate --strict` would refuse.
+
+`20261113120000_continuous_sft_50k_chunks.sql` switches the continuous-SFT chunk layout: it doubles every lineage cursor once. Apply it (that is, deploy) between two tournaments, in the same window in which the content service switches layout; applied earlier or later, a task would read the wrong chunk. `20261113130000_text_seed_roles.sql` adds the text seed roles and the quant boss-round roles, and `20261113140000_quant_task_sources.sql` adds `quant_tournament_sources` and `quant_task_sources`.
+
+### Task details responses
+
+The public task endpoints (`get_task_details`, the by-account and completed-organic listings) return one details model per
+task type. Quant tasks return `QuantFixedTaskDetails` (the common fields plus `base_model_repository` and the required
+`quant_spec` format) or `QuantFreeformTaskDetails` (the common fields plus `base_model_repository`); neither exposes the
+dataset, calibration or seed information, and seed tasks stay hidden by the same rule as other tasks.
+
 ## Running A Trainer On A New Machine
 
 Trainer nodes execute miner code. They need Docker, NVIDIA drivers, NVIDIA Container Toolkit, the repo, and the Python package installed. Training containers should target CUDA **12.8 or lower**.
@@ -180,6 +224,10 @@ ORCHESTRATOR_IPS=<validator-ip>
 HUGGINGFACE_TOKEN=<token>
 HUGGINGFACE_USERNAME=<username>
 WANDB_TOKEN=<token>
+S3_COMPATIBLE_ENDPOINT=<endpoint>
+S3_COMPATIBLE_ACCESS_KEY=<key>
+S3_COMPATIBLE_SECRET_KEY=<secret>
+S3_REGION=us-east-1
 ```
 
 4. Start the trainer:
@@ -216,6 +264,7 @@ Check the tournament repo endpoint:
 
 ```bash
 curl http://localhost:7999/training_repo/text
+curl http://localhost:7999/training_repo/quant
 ```
 
 The endpoint implementation is `miner/endpoints/training_repo.py`. Tournament miners should read `docs/miner.md`.
@@ -334,3 +383,6 @@ uv run --extra dev pytest -q -o addopts='' tests/validator/scoring/test_tourname
 - Keep miner-facing contracts in `core/models/payload_models.py` and the focused owner modules under `core/models/` when they cross process boundaries.
 - Keep validator-only schemas in the validator domain that owns them.
 - Prefer focused tests around changed behavior. For pure reorg work, run import smoke, `compileall`, and undefined-name lint.
+- Tournament types: `text`, `quant` and `image` (`core/models/tournament_models.py: TournamentType`; `environment` is retired). Each has its own schedule slot (Monday 09:00 quant, 11:00 text, 13:00 image UTC), fee (text 0.7, quant 0.6, image 0.4 TAO; `validator/tournament/constants.py`), and emission pool (minimums text 0.15, quant 0.35, image 0.225, flex 0.275; `validator/scoring/constants.py`); there are two bosses, the text champion and the quant champion. There is no feature flag: quant is scheduled weekly like the other two. The miner endpoint is `GET /training_repo/{task_type}` with the tournament type as its value; `GET /tournament/fees` returns `text_tournament_fee_rao`, `image_tournament_fee_rao` and the additive `quant_tournament_fee_rao`, and the tournament endpoints carry additive `quant` / `quant_*` fields next to the text and image ones.
+- Tournament structure: a text tournament is three single-group instruct rounds (1-4B top 8, 1-4B top 4, 4-8B top 1; `TEXT_ROUND_PLAN`) and a four-task boss round (continuous-SFT, GRPO, DPO, then one large instruct task on a 30-72B model), judged by the 7-task crown rule in `validator/tournament/text_crown.py`, with an early stop once a crown is out of reach. A quant tournament is three rounds (top 8, 4, 1; `QUANT_ROUND_PLAN`) and a six-task boss round (the challenger must win 5 of 6). `tournament_seed_tasks` holds every task a boss trains ahead of the round that uses it: the text roles `text_r1`, `text_r2`, `text_r3`, `text_continuous` (trained by the text boss at tournament start) and the quant roles `boss_r2_freeform`, `boss_r2_fixed`, `boss_r3_freeform`, `boss_r3_fixed`, `boss_continuous_freeform`, `boss_continuous_fixed` (trained by the quant boss as each source model lands). Each quant task is a task of its own, linked to its text task and model in `quant_task_sources` (`validator/tournament/quant_sources.py`); a quant tournament is bound to one text tournament in `quant_tournament_sources`. Continuous-SFT tasks train one chunk per tournament for a fixed `CONTINUOUS_SFT_TRAINING_HOURS` on 4xH100.
+- Quant task types: `QuantFixedTask` and `QuantFreeformTask` (`core/models/task_models.py`) are tournament-only; there is no organic create endpoint. They are the two tracks of the compression task: fixed names the weight/activation format (`QuantFixedSpec` in `core/models/quant_models.py`) and lowest test loss wins; freeform allows any format plus a miner decoder, entries must stay within `QUANT_BAR_CAP` of the uncompressed reference loss, and smallest total bytes wins. Both persist to `quant_tasks` and rank through `MinerResultsText` (`TEXT_TASK_TYPES`).

@@ -33,6 +33,7 @@ from validator.app.dependencies import get_config
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql import submissions_and_scoring as submissions_and_scoring_sql
 from validator.db.sql import tasks as task_sql
+from validator.db.sql import tournament_seeds as seeds_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.db.sql.nodes import get_all_nodes
 from validator.lifecycle.constants import MAX_CONCURRENT_JOBS
@@ -528,7 +529,10 @@ async def get_task_details_by_account(
 ) -> list[AnyTypeTaskDetails]:
     offset = (page - 1) * limit
     tasks = await task_sql.get_tasks_by_account_id(config.psql_db, account_id, limit, offset)
-    tasks = [hide_sensitive_data_till_finished(task) for task in tasks]
+    hidden_seed_task_ids = await seeds_sql.get_hidden_seed_task_ids([str(task.task_id) for task in tasks], config.psql_db)
+    tasks = [
+        hide_sensitive_data_till_finished(task, force_hidden=str(task.task_id) in hidden_seed_task_ids) for task in tasks
+    ]
 
     return [convert_task_to_task_details(task) for task in tasks]
 
@@ -541,7 +545,8 @@ async def get_task_details(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found.")
 
-    task = hide_sensitive_data_till_finished(task)
+    hidden_seed_task_ids = await seeds_sql.get_hidden_seed_task_ids([str(task_id)], config.psql_db)
+    task = hide_sensitive_data_till_finished(task, force_hidden=str(task.task_id) in hidden_seed_task_ids)
     return convert_task_to_task_details(task)
 
 

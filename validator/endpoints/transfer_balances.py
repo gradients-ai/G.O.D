@@ -65,18 +65,19 @@ async def get_tournament_fees() -> TournamentFeesResponse:
     Get tournament participation fees for all tournament types
 
     Returns:
-        TournamentFeesResponse: Fee information for text and image tournaments
+        TournamentFeesResponse: Fee information for text, quant and image tournaments
     """
     logger.info("Getting tournament participation fees")
 
     response = TournamentFeesResponse(
         text_tournament_fee_rao=t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO,
         image_tournament_fee_rao=t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO,
+        quant_tournament_fee_rao=t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO,
     )
 
     logger.info(
         f"Returning tournament fees - Text: {response.text_tournament_fee_rao:,} RAO, "
-        f"Image: {response.image_tournament_fee_rao:,} RAO"
+        f"Quant: {response.quant_tournament_fee_rao:,} RAO, Image: {response.image_tournament_fee_rao:,} RAO"
     )
     return response
 
@@ -198,7 +199,7 @@ def factory_router() -> APIRouter:
         methods=["GET"],
         response_model=TournamentFeesResponse,
         summary="Get tournament participation fees",
-        description="Get participation fees for text and image tournaments",
+        description="Get participation fees for text, quant and image tournaments",
         tags=["tournaments"],
     )
 

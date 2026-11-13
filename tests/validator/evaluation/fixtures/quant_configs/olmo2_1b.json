@@ -1,0 +1,153 @@
+{
+ "honest_save": {
+  "_name_or_path": "/cache/models/submission",
+  "architectures": [
+   "Olmo2ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": null,
+  "chunk_size_feed_forward": 0,
+  "dtype": "bfloat16",
+  "eos_token_id": 100257,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "id2label": {
+   "0": "LABEL_0",
+   "1": "LABEL_1"
+  },
+  "initializer_range": 0.02,
+  "intermediate_size": 8192,
+  "is_encoder_decoder": false,
+  "label2id": {
+   "LABEL_0": 0,
+   "LABEL_1": 1
+  },
+  "max_position_embeddings": 4096,
+  "model_type": "olmo2",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 16,
+  "num_key_value_heads": 16,
+  "output_attentions": false,
+  "output_hidden_states": false,
+  "pad_token_id": 100277,
+  "problem_type": null,
+  "quantization_config": {
+   "format": "pack-quantized",
+   "quant_method": "compressed-tensors"
+  },
+  "return_dict": true,
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "rope_theta": 500000,
+   "rope_type": "default"
+  },
+  "tie_word_embeddings": false,
+  "transformers_version": "5.17.0",
+  "use_cache": true,
+  "vocab_size": 100352
+ },
+ "honest_save_raw": {
+  "architectures": [
+   "Olmo2ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": null,
+  "dtype": "bfloat16",
+  "eos_token_id": 100257,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "initializer_range": 0.02,
+  "intermediate_size": 8192,
+  "max_position_embeddings": 4096,
+  "model_type": "olmo2",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 16,
+  "num_key_value_heads": 16,
+  "pad_token_id": 100277,
+  "quantization_config": {
+   "format": "pack-quantized",
+   "quant_method": "compressed-tensors"
+  },
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "rope_theta": 500000,
+   "rope_type": "default"
+  },
+  "tie_word_embeddings": false,
+  "transformers_version": "5.17.0",
+  "use_cache": true,
+  "vocab_size": 100352
+ },
+ "input_model": {
+  "_name_or_path": "allenai/OLMo-2-0425-1B",
+  "architectures": [
+   "Olmo2ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "bos_token_id": null,
+  "chunk_size_feed_forward": 0,
+  "dtype": "float32",
+  "eos_token_id": 100257,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "id2label": {
+   "0": "LABEL_0",
+   "1": "LABEL_1"
+  },
+  "initializer_range": 0.02,
+  "intermediate_size": 8192,
+  "is_encoder_decoder": false,
+  "label2id": {
+   "LABEL_0": 0,
+   "LABEL_1": 1
+  },
+  "max_position_embeddings": 4096,
+  "model_type": "olmo2",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 16,
+  "num_key_value_heads": 16,
+  "output_attentions": false,
+  "output_hidden_states": false,
+  "pad_token_id": 100277,
+  "problem_type": null,
+  "return_dict": true,
+  "rms_norm_eps": 1e-06,
+  "rope_parameters": {
+   "rope_theta": 500000,
+   "rope_type": "default"
+  },
+  "tie_word_embeddings": false,
+  "transformers_version": "5.17.0",
+  "use_cache": true,
+  "vocab_size": 100352
+ },
+ "input_model_raw": {
+  "architectures": [
+   "Olmo2ForCausalLM"
+  ],
+  "attention_bias": false,
+  "attention_dropout": 0.0,
+  "eos_token_id": 100257,
+  "hidden_act": "silu",
+  "hidden_size": 2048,
+  "initializer_range": 0.02,
+  "intermediate_size": 8192,
+  "max_position_embeddings": 4096,
+  "model_type": "olmo2",
+  "num_attention_heads": 16,
+  "num_hidden_layers": 16,
+  "num_key_value_heads": 16,
+  "pad_token_id": 100277,
+  "rms_norm_eps": 1e-06,
+  "rope_scaling": null,
+  "rope_theta": 500000,
+  "tie_word_embeddings": false,
+  "torch_dtype": "float32",
+  "transformers_version": "4.50.3",
+  "use_cache": true,
+  "vocab_size": 100352
+ }
+}

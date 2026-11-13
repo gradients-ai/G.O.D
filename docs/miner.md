@@ -1,6 +1,6 @@
 # Miner Guide
 
-This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text and image tournaments.
+This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text, quant and image tournaments.
 
 Environment tournaments have been retired: they are no longer scheduled, no longer accept entries, and no longer contribute to emissions. Historical environment tournaments remain queryable through the analytics endpoints.
 
@@ -37,6 +37,7 @@ Before a tournament starts, make sure:
 - Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
 - Your training image uses CUDA **12.8 or lower**.
 - Your training script writes the final model to `/app/checkpoints/{task_id}/{expected_repo_name}`.
+- For quant tournaments, also follow the [quant tournament checklist](miner_quant.md#checklist-for-miners) (decoder, output manifest).
 - Your coldkey has enough tournament balance for the tournament type.
 - Only one hotkey per coldkey will be enrolled in a given tournament.
 - You have tested the exact Dockerfile and entrypoint locally with the example scripts.
@@ -55,6 +56,7 @@ Tournament scheduling is weekly and independent for each tournament type. Times 
 
 | Tournament type | Scheduled start |
 | --- | --- |
+| Quant | Monday at 09:00 UTC |
 | Text | Monday at 11:00 UTC |
 | Image | Monday at 13:00 UTC |
 
@@ -62,7 +64,7 @@ Environment tournaments are retired and are no longer scheduled.
 
 The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
 
-The first tournament of a type can be created immediately when no previous tournament exists. After that, the previous tournament must be completed and the next scheduled window must arrive.
+The first tournament of a type can be created immediately when no previous tournament of that type exists. After that, the previous tournament must be completed and the next scheduled window must arrive.
 
 ### Weekly Completion Deadline
 
@@ -107,9 +109,10 @@ Tournament fees are deducted from your coldkey balance after your repository pas
 | Tournament type | Fee |
 | --- | --- |
 | Text | 0.7 TAO |
+| Quant | 0.6 TAO |
 | Image | 0.4 TAO |
 
-Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Only **one tournament entry is allowed per coldkey**: if multiple hotkeys under the same coldkey respond during registration, one is kept and the rest are rejected (no second fee is charged). Transfer TAO from your coldkey to the collection address:
+There is one fee per entry per tournament type: entering text and quant is two entries and two fees. Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Only **one tournament entry is allowed per coldkey**: if multiple hotkeys under the same coldkey respond during registration, one is kept and the rest are rejected (no second fee is charged). Transfer TAO from your coldkey to the collection address:
 
 ```text
 5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo
@@ -131,6 +134,7 @@ A pending tournament activates only after enough validated miners are available:
 | Tournament type | Minimum validated miners |
 | --- | --- |
 | Text | 4 |
+| Quant | 4 |
 | Image | 4 |
 
 If too few miners validate, the pending tournament waits and retries participant collection.
@@ -168,7 +172,7 @@ The miner exposes:
 GET /training_repo/{task_type}
 ```
 
-where `task_type` is one of `text` or `image`. (`environment` is retired; requests for it are no longer made.)
+where `task_type` is one of `text`, `quant` or `image`. (`environment` is retired; requests for it are no longer made.) A miner opts into the quant tournament by answering `GET /training_repo/quant`; a miner that does not is simply not entered. See [Quant Tournament: Miner Guide](miner_quant.md#entering).
 
 Requests are verified by Fiber dependencies in `miner/endpoints/training_repo.py`, including low-stake validator blacklisting.
 
@@ -195,7 +199,7 @@ Important details:
 - `commit_hash` must be a full 40-character hex commit SHA. Branch names such as `main` are rejected.
 - Use `git rev-parse HEAD` to get the commit you want validators to run.
 - The repository and commit must remain accessible until the tournament completes.
-- You may return different repositories or commits for `text` and `image`.
+- You may return different repositories or commits for `text`, `quant` and `image`.
 - One miner is kept per coldkey, per IP address, and per GitHub account. Multiple hotkeys under the same coldkey cannot all enter the same tournament: only one entry is kept, and the others are rejected. If duplicates exist, entries with a valid GitHub token are preferred; otherwise the first kept candidate in the registration pass wins.
 
 ### Private Repositories
@@ -248,10 +252,13 @@ Required Dockerfiles by tournament type:
 | Tournament type | Required Dockerfile |
 | --- | --- |
 | Text | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
-| Environment | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
+| Quant | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
 | Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
 
 If you compete in image tournaments, include the image toolkit Dockerfile. Image tasks can use `flux`, `z-image`, `qwen-image`, `ideogram4`, or `krea2`.
+
+Quant-tournament entrants must also have `decoder/decode.py` at the repo root at registration; text and image entrants do not. See
+[Freeform track: artifact and decoder](miner_quant.md#freeform-track-artifact-and-decoder).
 
 ### CUDA Compatibility
 
@@ -308,17 +315,18 @@ Your Dockerfile entrypoint receives standardized CLI arguments.
 
 ### Text Trainer
 
-Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, and `ChatTask`:
+Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, `ChatTask`, `QuantFixedTask`, and `QuantFreeformTask`:
 
 ```bash
 --task-id             # Unique task UUID/string
---model               # Base or starting model identifier
---dataset             # Original task dataset URL
+--model               # Model to train: a directory name under /cache/models
+--dataset             # Presigned train-split URL string (no network: read /cache/datasets/{task_id}_train_data.json)
 --dataset-type        # JSON string describing columns or rewards
---task-type           # InstructTextTask, DpoTask, GrpoTask, or ChatTask
+--task-type           # InstructTextTask, DpoTask, GrpoTask, ChatTask, QuantFixedTask, or QuantFreeformTask
 --file-format         # Always s3 for tournament tasks
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
+--quant-spec          # QuantFixedTask only: QuantFixedSpec JSON (also in the QUANT_SPEC env var)
 ```
 
 `--dataset-type` is one of the Pydantic schemas in `core/models/dataset_models.py`:
@@ -329,8 +337,16 @@ Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, and `ChatTask`:
 | `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
 | `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
 | `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
+| `QuantFixedTask`, `QuantFreeformTask` | The instruct or chat-template payload above, describing the train split passed as `--dataset`. |
 
 For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
+
+### Quant Tasks
+
+`QuantFixedTask` and `QuantFreeformTask` (quant tournament only) use the text trainer invocation above. `--dataset` is the task's train split;
+the held-out split used for scoring is never given to miners. They add the `QUANT_TARGET` and `QUANT_CALIBRATION_PATH`
+env vars (listed below) and require an output manifest, `quant_manifest.json`, in the output directory. See
+[What your code receives](miner_quant.md#what-your-code-receives) and [Output Contract](miner_quant.md#output-contract).
 
 ### Image Trainer
 
@@ -360,6 +376,9 @@ Your container may receive:
 | `MINER_DATASETS` | Text | Comma-separated downloaded dataset directory names. |
 | `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
 | `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
+| `QUANT_SPEC` | `QuantFixedTask` | The same `QuantFixedSpec` JSON as `--quant-spec`: the weight/activation format to produce. |
+| `QUANT_TARGET` | `QuantFixedTask`, `QuantFreeformTask` | `QuantTarget` JSON (env only, never a flag): the reference loss and, on freeform, the knee and cap. Normally present: training waits for the reference. Absent only on organic tasks or if the reference measurement gave up after repeated failures. See [QUANT_TARGET](miner_quant.md#quanttarget). |
+| `QUANT_CALIBRATION_PATH` | `QuantFixedTask`, `QuantFreeformTask` | Optional path to a calibration set JSON. See [The calibration set](miner_quant.md#calibration-set). |
 
 ## Cache And Output Paths
 
@@ -370,7 +389,7 @@ Use these paths or the helpers in `trainer/training_paths.py`. The uploader depe
 | Final model output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
 | Text dataset | `/cache/datasets/{task_id}_train_data.json` |
 | Image dataset zip | `/cache/datasets/{task_id}_tourn.zip` |
-| Cached models | `/cache/models/{model_id with "/" replaced by "--"}` |
+| Cached models | `/cache/models/<--model>` (use the `--model` argument verbatim; do not derive it from the repo id) |
 | Requested datasets | `/cache/miner_datasets/{dataset_id with "/" replaced by "--"}` |
 | WandB logs | `/app/checkpoints/wandb_logs` |
 
@@ -394,7 +413,7 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 
 Only datasets in `core/datasets/whitelisted_sft_datasets.json` are accepted. Non-whitelisted entries are filtered out, and at most two are kept by `core/datasets/whitelist.py`.
 
-If downloads succeed, your text/environment container receives:
+If downloads succeed, your text/quant container receives:
 
 ```python
 import os
@@ -412,31 +431,47 @@ Requested datasets are mounted read-only.
 
 ### Text Tournaments
 
-Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
+Text tournaments use `InstructTextTask`, `DpoTask`, `GrpoTask`, and the continuous-SFT chat task.
 
-- Round 1 is always a single group with every participant. The group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance into the pre-boss knockout.
-- Later rounds with 8 or fewer miners use pairwise knockout. Later rounds with more than 8 use a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**.
-- Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
-- **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
-- The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) plays a single task selected the same way as any other knockout pair — no forced model.
-- The final boss round creates 6 tasks: 3 instruct (one of which always trains a large model, between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (30B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (72B)), 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen3-8b`, seeded from `Qwen/Qwen3-8B-Base`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run).
-- **Boss-round instruct, DPO and continuous-SFT (chat) tasks are decided per held-out sample.** Both models are scored on the identical held-out set and compared sample by sample. To take a task the challenger must clear **both** of:
-  - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
-  - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.01 nats, the same value as the tie dead zone, that scales to 1% of the loss above a boss loss of 1.0 so it is never a weaker requirement than the old margin.
+Each miner round is one instruct task, played by every remaining miner in a single group. The boss (the defending text champion) trains the three round tasks and the continuous-SFT task with its pinned code when the tournament starts, so its results are in before the rounds are played. Round 1 starts at once, so miners train it in parallel with the boss.
 
-  Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. The bootstrap seed is fixed, so every validator reaches the same verdict.
+| Round | Model size | Task | Advance |
+| --- | --- | --- | --- |
+| 1 | 1-4B | one instruct task, one group | top 8 |
+| 2 | 1-4B | one instruct task, one group | top 4 |
+| 3 | 4-8B | one instruct task, one group | top 1 |
+| Boss round | | continuous-SFT, GRPO, DPO, then one large instruct task | |
 
-  There is no minimum number of decided samples. The mean gap is taken over the *whole* held-out set, so it is a requirement on total improvement rather than on a count: improving 20 of 800 samples by 0.25 nats averages 0.007 and fails, while improving the same 20 by 1.0 nats averages 0.026 and passes. A saturated task — where the models differ on few samples and by little — fails on that gap regardless.
+- Standings in rounds 1-3 are taken from that round's task. The boss is not part of them.
+- The boss round has four tasks. The continuous-SFT task is the one the boss already trained at the start; the challenger trains it now. One GRPO task and one DPO task are created with the round, and both the boss and the challenger train them.
+- The large instruct task (a model between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (30B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (72B)) is always last. It is created only after the first three boss-round tasks are scored, and only if the challenger can still be crowned. Otherwise nobody trains it.
+- The continuous-SFT task belongs to a lineage that carries across tournaments: each tournament trains the next chunk of the lineage's data, starting from that lineage's previous winner (or a fixed seed model on the first run). Currently there is one lineage, `qwen3-8b`, seeded from `Qwen/Qwen3-8B-Base`. The task trains for a fixed number of hours on 4xH100, and its held-out test set is sized to the chunk.
 
-  On KL-weighted instruct tasks the per-sample comparison uses raw cross-entropy, and the challenger must additionally not be worse once the KL penalty is applied.
+**Crown rule.** The challenger and the boss are compared on 7 tasks: the tasks of rounds 1-3 and the 4 boss-round tasks. On each task the two models are compared on their task score (adjusted loss for instruct, DPO and continuous-SFT tasks, where lower is better; reward for GRPO, where higher is better). A task is a win when the challenger is at least 1% better than the boss, measured against the boss's score. Any other task is a non-win with a deficit: how far the challenger is behind the boss, as a fraction of the boss's score, or 0 when it is ahead by less than 1%. The challenger is crowned when:
 
-  If *every* sample falls inside the dead zone the two models are indistinguishable on that task and it is recorded as a **draw**, not as a win for the defending champion. The defender still holds the task for the purposes of the win count, but no one outperformed anyone.
-- **GRPO boss-round tasks** keep the previous rule: beat the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative rewards).
-- The challenger must win at least 5 of the 6 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
+- it has at most two non-wins;
+- no deficit is above 0.25%;
+- with two non-wins, at least one deficit is at most 0.1%.
 
-For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
+In short: the challenger wins 6 of 7 by at least 1% and loses the 7th by at most 0.25%, or wins 5 by at least 1%, loses one by at most 0.1% and one by at most 0.25%.
+
+A task on which the challenger has no valid result is a non-win with an unbounded deficit. A task on which the boss has no valid result, while the challenger has one, is a win. A task on which neither has a valid result is a non-win with an unbounded deficit.
+
+**Early stop.** The rule is checked after round 3 and after the first three boss-round tasks are scored, on the tasks decided so far, counting every task still to come as a win. When no result of the remaining tasks could crown the challenger, the tournament ends with the boss retained and no further task is created.
 
 Your submission's `config.json` must not declare a smaller `max_position_embeddings` than the base model the task specifies. A smaller value shortens the evaluation sequence length, which drops the longer held-out rows and would score you on a different, shorter subset than everyone else — so it is treated as not a fine-tune of the task model and scores zero. A larger value is fine.
+
+### Quant Tournaments
+
+Quant tournaments are their own tournament type, with their own boss (the quant champion) and pool, and are entered separately by answering `GET /training_repo/quant`. They use `QuantFixedTask` and `QuantFreeformTask` only; no miner trains an instruct model.
+
+- A quant tournament takes its models from a text tournament: the active text tournament that has its boss tasks ready and is not already feeding a quant tournament. Until one exists the quant tournament waits and nothing is created. Each quant task is its own task, linked to the text task and the model it compresses.
+- There are three miner rounds, each a single group compressing the text boss's model from the matching text round: round 1 is freeform and compresses the round-1 model (it starts as soon as that model is available), round 2 is fixed-format (`W2A16-asym-g64`) on the round-2 model, round 3 is freeform on the round-3 model. The top 8, then the top 4, then 1 advance (round 3 is skipped when only one miner is left).
+- The boss round has six tasks: a freeform and a fixed compression of each of the text boss's round-2 model, round-3 model and continuous-SFT model. The quant boss trains its six entries as soon as each source model is available. The challenger does no instruct training. The challenger must win 5 of the 6 tasks to be crowned. To win a freeform task it needs at least 3% fewer effective bytes than the boss (`validator/tournament/constants.py: QUANT_FREEFORM_BOSS_BYTE_MARGIN`). To win a fixed task it must pass the paired per-example test and be at least 1% better on the scalar loss. The fixed tasks of the boss round use 2-bit or 3-bit formats only.
+- A quant tournament with no completed quant tournament of its own takes its boss from the latest completed text tournament.
+- `decoder/decode.py` is required at registration.
+
+Everything else is in the [Quant Tournament: Miner Guide](miner_quant.md).
 
 ### Image Tournaments
 
@@ -460,12 +495,17 @@ Image tasks currently use `1xH100` in the tournament GPU requirement code.
 
 The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
 
-Weights are set in `validator/scoring/constants.py`. Each type has a guaranteed minimum share that never moves; the remaining flex pool (`EMISSION_FLEX_POOL`, 0.20) is split between the types by a participation-driven balancer (an oversubscribed type cedes flex toward a starved one — see `validator/scoring/emission_balance.py`). A type's base therefore always lies between its minimum and its minimum plus the whole flex pool, and text + image always sum to exactly 1.0:
+Weights are set in `validator/scoring/constants.py`. Each type has a guaranteed minimum share that never moves; the remaining flex pool (`EMISSION_FLEX_POOL`, 0.275) is split between the types by a participation-driven balancer (an oversubscribed type cedes flex toward a starved one — see `validator/scoring/emission_balance.py`). A type's base therefore always lies between its minimum and its minimum plus the whole flex pool, and text + quant + image always sum to exactly 1.0:
 
 | Tournament type | Guaranteed minimum | Max weight (minimum + flex) |
 | --- | --- | --- |
-| Text | 0.50 | 0.70 |
-| Image | 0.30 | 0.50 |
+| Text | 0.15 | 0.425 |
+| Quant | 0.35 | 0.625 |
+| Image | 0.225 | 0.50 |
+
+Each pool pays its own type's latest completed tournament, until a newer tournament of that type completes. Text and quant each carry their own boss, advanced only by tournaments of their own type.
+
+The minimums apply at all times. A type with no winner yet pays nobody, and its share goes to the burn address.
 
 Active tournament participants receive `0.0001` weight each.
 
@@ -477,7 +517,9 @@ Champions can earn boosted tournament allocation when boss-round performance exc
 
 A tournament pays a 3rd place only when it can be identified unambiguously:
 
-- **Text/Image**: the loser of the last single-pair knockout round before the boss round.
+- **Text**: the next miner after the challenger in round 3's standings (`validator/tournament/round_results.py: get_seeded_text_runner_up`).
+- **Image**: the loser of the last single-pair knockout round before the boss round.
+- **Quant**: the best non-challenger, non-boss miner in the pre-boss round's standings by cumulative average rank; if round 3 was skipped, the ranking is round 1 + round 2 among the four that advanced (`validator/tournament/round_results.py: get_quant_pre_boss_runner_up`).
 
 If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
 
@@ -541,6 +583,7 @@ It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the r
 - Submitting a lightly-disguised copy of another entry — duplicates are detected and eliminated (see [Checking For Duplicate Submissions](#checking-for-duplicate-submissions)).
 - Ignoring `hours_to_complete` and getting killed before a usable checkpoint exists.
 - Not handling every model type in the tournament you enter.
+- For quant tournaments, see the [quant tournament checklist](miner_quant.md#checklist-for-miners) (decoder, output manifest).
 - Assuming `--dataset` or `--dataset-zip` can be downloaded directly by your script instead of using the pre-downloaded cache path.
 
 ## Training Logs
@@ -553,6 +596,7 @@ Use this when a job fails mid-training and you need the container output the tra
 
 ## Useful References
 
+- [Quant Tournament: Miner Guide](miner_quant.md): the quant tournament's entry, rounds, tasks, scoring, the checkpoint and decoder contracts, and evaluation.
 - `miner/endpoints/training_repo.py`: miner repository response endpoint.
 - `core/models/payload_models.py`: `TrainingRepoResponse`, trainer request models, and runtime payloads.
 - `core/models/dataset_models.py`: dataset type schemas.

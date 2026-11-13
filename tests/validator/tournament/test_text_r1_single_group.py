@@ -6,7 +6,6 @@ from unittest.mock import MagicMock
 
 from core.models.image_models import ImageModelType
 from core.models.task_models import TaskType
-from core.oversampled_later_models import OVERSAMPLED_LATER_MODELS
 from validator.tournament import constants as t_cst
 from validator.tournament import task_creator
 from validator.tournament.models import Group
@@ -14,9 +13,6 @@ from validator.tournament.models import GroupRound
 from validator.tournament.models import KnockoutRound
 from validator.tournament.models import TournamentType
 from validator.tournament.tournament_manager import organise_tournament_round
-
-
-POOL_IDS = {m.model_id for m in OVERSAMPLED_LATER_MODELS}
 
 
 def _make_nodes(n: int) -> list:
@@ -107,11 +103,8 @@ async def test_text_round_one_single_group_creates_three_tasks(monkeypatch):
         _group_round(1, members_per_group=60), "tourn", MagicMock(), is_final_round=False
     )
 
-    overrides = [call.kwargs.get("model_id_override") for call in instruct_mock.call_args_list]
-    assert len(overrides) == t_cst.SMALL_TOURNAMENT_GROUP_TASKS
-    picked = [override for override in overrides if override is not None]
-    assert len(picked) == 1
-    assert picked[0] in POOL_IDS
+    assert instruct_mock.await_count == t_cst.SMALL_TOURNAMENT_GROUP_TASKS
+    assert all("model_id_override" not in call.kwargs for call in instruct_mock.call_args_list)
 
 
 async def test_text_later_single_group_still_creates_one_task(monkeypatch):

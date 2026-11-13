@@ -38,7 +38,7 @@ async def validate_repo_obfuscation(
 
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
 
-        logger.info(f"Obfuscation detection output: {proc.stdout}")
+        logger.info(f"Obfuscation detection output: {sanitize_git_text(proc.stdout, github_token)}")
 
         if proc.returncode == 0:
             logger.info(f"Repo {repo_url} is not obfuscated (exit code 0)")
@@ -54,12 +54,14 @@ async def validate_repo_obfuscation(
         logger.error(f"Obfuscation detection failed for repo {repo_url}: {str(e)}")
         return False
 
-async def validate_repo_license(repo_url: str, github_token: str | None = None) -> bool:
+async def validate_repo_license(repo_url: str, github_token: str | None = None, commit_hash: str | None = None) -> bool:
     """
     Validate that a repository has verbatim LICENSE and NOTICE files matching the current repository.
 
     Args:
         repo_url: The repository URL to validate
+        commit_hash: The commit the entrant pinned; its tree is checked, not the default branch. A commit
+            missing from the clone fails validation.
 
     Returns:
         bool: True if repo has valid LICENSE and NOTICE files, False otherwise
@@ -80,6 +82,18 @@ async def validate_repo_license(repo_url: str, github_token: str | None = None) 
                 sanitized_stderr = sanitize_git_text(clone_proc.stderr, github_token)
                 logger.error(f"Failed to clone repository {repo_url}: {sanitized_stderr}")
                 return False
+
+            if commit_hash:
+                checkout_proc = subprocess.run(
+                    ["git", "-C", temp_dir, "checkout", "--quiet", commit_hash],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                )
+                if checkout_proc.returncode != 0:
+                    sanitized_stderr = sanitize_git_text(checkout_proc.stderr, github_token)
+                    logger.error(f"Commit {commit_hash} not found in {repo_url} for license validation: {sanitized_stderr}")
+                    return False
 
             temp_path = Path(temp_dir)
             current_file_path = Path(__file__).resolve()

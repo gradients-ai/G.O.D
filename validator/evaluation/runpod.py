@@ -26,9 +26,6 @@ from core.logging import get_logger
 from core.logging import update_environment_logger_labels
 from validator.db.database import PSQLDB
 from validator.db.sql import tasks as tasks_sql
-from validator.evaluation.basilica import DeploymentNotReadyError
-from validator.evaluation.basilica import EvaluationCapacityUnavailable
-from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.basilica import _BasilicaEvalContext
 from validator.evaluation.basilica import _db_call_with_retry
 from validator.evaluation.basilica import _evaluation_cost_run_key
@@ -36,6 +33,13 @@ from validator.evaluation.basilica import _finish_evaluation_cost_run
 from validator.evaluation.basilica import _release_reserved_gpus
 from validator.evaluation.basilica import _start_evaluation_cost_run
 from validator.evaluation.db_utils import persist_deployment_ids_for_repo
+from validator.evaluation.errors import DeploymentNotReadyError
+from validator.evaluation.errors import EvaluationCapacityUnavailable
+from validator.evaluation.errors import EvaluationInfraError
+from validator.evaluation.errors import EvaluationRetryableError
+from validator.evaluation.errors import as_infra_error
+from validator.evaluation.errors import describe_error
+from validator.evaluation.errors import is_infra_error
 from validator.evaluation.evaluation_logging import _log_eval_step
 from validator.infrastructure.dstack_client import DstackClient
 from validator.infrastructure.dstack_client import parse_dstack_submitted_at
@@ -109,6 +113,15 @@ def _got_no_offers(run: dict) -> bool:
     return str(submission.get("status_message", "")).lower() == "no offers"
 
 
+def _is_transient_dstack_error(exc: BaseException) -> bool:
+    """True when ``exc`` is the dstack control plane (or the network to it) failing, not the eval itself.
+
+    Such errors leave the run's real state unknown, so the caller polls again (inside the ready/poll
+    deadline) or re-queues the evaluation as retryable instead of scoring the miner as failed.
+    """
+    return is_infra_error(exc)
+
+
 def _job_submission_id(run: dict) -> str | None:
     submission = run.get("latest_job_submission") or {}
     value = submission.get("id")
@@ -152,6 +165,8 @@ def _build_service_plan(
     source: str,
     env: dict[str, str],
     gpu_count: int,
+    gpu_models: list[str] = vcst.BASILICA_GPU_MODELS,
+    instance_types: list[str] | None = None,
 ) -> dict:
     configuration: dict = {
         "type": "service",
@@ -166,7 +181,7 @@ def _build_service_plan(
         "probes": [{"type": "http", "url": "/health"}],
         "resources": {
             "gpu": {
-                "name": ["A100"],
+                "name": gpu_models,
                 "count": {"min": gpu_count, "max": gpu_count},
             },
             # Min only — a bare size string is treated by dstack as min=max and
@@ -178,6 +193,9 @@ def _build_service_plan(
     regions = [part.strip() for part in os.getenv("EVAL_RUNPOD_REGIONS", "").split(",") if part.strip()]
     if regions:
         configuration["regions"] = regions
+    if instance_types:
+        # dstack's GPU name "H100" matches every H100 SKU; instance types narrow it to one.
+        configuration["instance_types"] = instance_types
     gateway = os.getenv("EVAL_RUNPOD_GATEWAY")
     if gateway:
         configuration["gateway"] = True if gateway.lower() == "true" else gateway
@@ -323,6 +341,8 @@ async def _create_or_recover_run(
     source: str,
     env: dict[str, str],
     gpu_count: int,
+    gpu_models: list[str] = vcst.BASILICA_GPU_MODELS,
+    instance_types: list[str] | None = None,
 ) -> RunpodDeployment:
     control_token = env["EVAL_RUNNER_CONTROL_TOKEN"]
     if "public_sglang" in source and not env.get("SWE_INFINITE_MODEL_BASE_URL"):
@@ -348,6 +368,8 @@ async def _create_or_recover_run(
                 source=source,
                 env=env,
                 gpu_count=gpu_count,
+                gpu_models=gpu_models,
+                instance_types=instance_types,
             )
         )
     except Exception as apply_exc:
@@ -384,7 +406,21 @@ async def _wait_ready(
     deadline = time.monotonic() + vcst.EVAL_DEPLOYMENT_READY_TIMEOUT_SECONDS
     async with httpx.AsyncClient(timeout=10.0) as http:
         while time.monotonic() < deadline:
-            run = await client.get_run(deployment.run_name)
+            try:
+                run = await client.get_run(deployment.run_name)
+            except Exception as exc:
+                if not (ctx.requeue_infra_errors and _is_transient_dstack_error(exc)):
+                    raise
+                # Waiting for capacity can take the whole ready window; a slow or flaky dstack API in that
+                # window says nothing about the run, so keep polling until the deadline.
+                ctx.eval_logger.warning(
+                    "[%s] dstack get_run failed while waiting for %s; polling again: %r",
+                    ctx.repo,
+                    deployment.deployment_id,
+                    exc,
+                )
+                await asyncio.sleep(5)
+                continue
             deployment.run = run
             deployment.url = client.resolve_service_url(run) or deployment.url
             status = _status(run)
@@ -419,7 +455,19 @@ async def _poll_result(
     async with httpx.AsyncClient(timeout=30.0) as http:
         while time.monotonic() < deadline:
             await _fetch_logs(client, deployment, ctx.eval_logger, ctx.repo)
-            run = await client.get_run(deployment.run_name)
+            try:
+                run = await client.get_run(deployment.run_name)
+            except Exception as exc:
+                if not (ctx.requeue_infra_errors and _is_transient_dstack_error(exc)):
+                    raise
+                ctx.eval_logger.warning(
+                    "[%s] dstack get_run failed while polling %s; polling again: %r",
+                    ctx.repo,
+                    deployment.deployment_id,
+                    exc,
+                )
+                await asyncio.sleep(vcst.EVAL_BASILICA_FAILED_POLL_RECHECK_SECONDS)
+                continue
             deployment.run = run
             status = _status(run)
             if _got_no_offers(run):
@@ -488,6 +536,8 @@ async def _run_single_runpod_eval_repo(
     source: str,
     env: dict[str, str],
     gpu_count: int | None,
+    gpu_models: list[str] = vcst.BASILICA_GPU_MODELS,
+    instance_types: list[str] | None = None,
     task_id: UUID | None,
     psql_db: PSQLDB | None,
     repo_to_hotkey: dict[str, str],
@@ -496,6 +546,7 @@ async def _run_single_runpod_eval_repo(
     local_logging: bool | None,
     deployment_id_persister: Callable[[str, str], Awaitable[None]] | None,
     reserve_deployment_id: bool,
+    requeue_infra_errors: bool = False,
 ) -> dict | str:
     eval_id = str(uuid.uuid4())
     if not local_logging:
@@ -518,6 +569,7 @@ async def _run_single_runpod_eval_repo(
         eval_logger=eval_logger,
         deleted_deployment_names=set(),
         log_eval_step=lambda step, **fields: _log_eval_step(eval_logger, step, backend="runpod", **fields),
+        requeue_infra_errors=requeue_infra_errors,
     )
     client = DstackClient()
     requested_gpus = max(1, gpu_count or 1)
@@ -684,14 +736,14 @@ async def _run_single_runpod_eval_repo(
                 gpu_count=requested_gpus,
                 ctx=ctx,
                 backend="runpod",
-                gpu_type="A100",
+                gpu_type=",".join(gpu_models),
             )
             ctx.log_eval_step(
                 "deploy_start",
                 deployment=deployment_id,
                 image=image,
                 gpu_count=requested_gpus,
-                gpu_models="A100",
+                gpu_models=",".join(gpu_models),
             )
             deployment = await _create_or_recover_run(
                 client=client,
@@ -700,6 +752,8 @@ async def _run_single_runpod_eval_repo(
                 source=source,
                 env=run_env,
                 gpu_count=requested_gpus,
+                gpu_models=gpu_models,
+                instance_types=instance_types,
             )
             deployment = await _wait_ready(client, deployment, ctx)
             update_environment_logger_labels(
@@ -798,6 +852,9 @@ async def _run_single_runpod_eval_repo(
             )
             if isinstance(exc, EvaluationRetryableError):
                 raise
+            if requeue_infra_errors and _is_transient_dstack_error(exc):
+                # The control plane failed, not the eval: re-queue instead of scoring the miner as failed.
+                raise EvaluationInfraError(f"Transient dstack error for {deployment_id}: {describe_error(exc)}") from exc
             remaining = vcst.EVAL_BASILICA_MAX_RETRIES - attempt
             ctx.log_eval_step(
                 "attempt_failed",
@@ -822,6 +879,13 @@ async def _run_single_runpod_eval_repo(
                     remaining,
                 )
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
+    if requeue_infra_errors:
+        # Every exception in the attempt loop is the deployment or dstack failing (per-repo verdicts come back inside the
+        # result dict), so exhausting the attempts is an infra error, never the miner's scored fail.
+        last_described = describe_error(last_error) if last_error is not None else "no attempt made"
+        raise EvaluationInfraError(
+            f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {last_described}"
+        ) from last_error
     return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {last_error}"
 
 
@@ -843,6 +907,9 @@ async def run_runpod_eval_repos(
     deployment_id_persister: Callable[[str, str], Awaitable[None]] | None = None,
     reserve_deployment_id: bool = False,
     propagate_retryable: bool = True,
+    gpu_models: list[str] = vcst.BASILICA_GPU_MODELS,
+    runpod_instance_types: list[str] | None = None,
+    requeue_infra_errors: bool = False,
     **_ignored,
 ) -> dict[str, dict | str | EvaluationRetryableError]:
     deployment_ids_by_repo = deployment_ids_by_repo or {}
@@ -863,6 +930,8 @@ async def run_runpod_eval_repos(
             source=source,
             env=build_env_for_repo(repo),
             gpu_count=gpu_count,
+            gpu_models=gpu_models,
+            instance_types=runpod_instance_types,
             task_id=task_id,
             psql_db=psql_db,
             repo_to_hotkey=repo_to_hotkey,
@@ -871,6 +940,7 @@ async def run_runpod_eval_repos(
             local_logging=local_logging,
             deployment_id_persister=effective_persister,
             reserve_deployment_id=reserve_deployment_id,
+            requeue_infra_errors=requeue_infra_errors,
         )
 
     results: list[dict | str | BaseException]
@@ -908,6 +978,12 @@ async def run_runpod_eval_repos(
             if propagate_retryable:
                 raise result
             output[repo] = result
+        elif requeue_infra_errors and isinstance(result, Exception):
+            # An exception that escaped the per-repo runner is our code or its clients failing, never the repo's verdict.
+            infra_error = as_infra_error(result, f"Evaluation of {repo} raised")
+            if propagate_retryable:
+                raise infra_error from result
+            output[repo] = infra_error
         elif isinstance(result, BaseException):
             output[repo] = f"Evaluation failed: {result}"
         else:

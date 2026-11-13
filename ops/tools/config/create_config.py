@@ -78,6 +78,16 @@ def generate_trainer_config() -> dict[str, Any]:
         wandb_token=input("📊 Enter wandb token (default: default): ") or "default",
         huggingface_token=input("🤗 Enter huggingface token (default: default): ") or "default",
         huggingface_username=input("🏗️ Enter your huggingface username where you would like to save the models: "),
+        # The freeform quant decode uploads its bf16 shards to the validator's S3-compatible store.
+        s3_compatible_endpoint=input("🎯 Enter s3 compatible endpoint: "),
+        s3_compatible_access_key=input("🎯 Enter s3 compatible access key: "),
+        s3_compatible_secret_key=input("🎯 Enter s3 compatible secret key: "),
+        s3_region=input("🎯 Enter s3 region (default: us-east-1): ") or "us-east-1",
+        quant_decode_work_root=input(
+            "📁 Enter the freeform quant decode work root, a directory of its own with ~3x the largest bf16 model free "
+            "(default: ~/.local/share/god-trainer/quant_decode): "
+        )
+        or None,
     )
 
     return vars(config)

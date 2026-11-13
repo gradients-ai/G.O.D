@@ -7,7 +7,10 @@ Helpers for support containers launched by the trainer runtime.
 - `cache_cleanup.py`: removes stale cache entries and old trainer artifacts.
 - `dataset_cache.py`: downloads approved miner-requested Hugging Face datasets into the shared cache volume.
 - `downloader.py`: pre-downloads models and task datasets before training.
-- `uploader.py`: uploads completed model artifacts to Hugging Face.
+- `uploader.py`: uploads completed model artifacts to Hugging Face. With `UPLOAD_VERBATIM=1` (set by the runtime for
+  quant tasks) it uploads the output root as-is: no checkpoint-subfolder detection and no README.md /
+  `adapter_config.json` patching and no training-state ignore patterns, so the bytes match `quant_manifest.json`.
+  The `gradientsio/trainer-uploader:latest` image must be rebuilt for this flag to take effect.
 - `__init__.py`: package marker.
 
 ## Image model cache layouts

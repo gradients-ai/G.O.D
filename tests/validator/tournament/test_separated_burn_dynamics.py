@@ -221,11 +221,12 @@ class TestSeparatedBurnDynamics:
 
             assert result.text_performance_diff == 0.4
             assert result.image_performance_diff == 0.1
-            assert result.text_tournament_weight <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
-            assert result.image_tournament_weight <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-            # No burn: text + image are normalized to fill the entire emission pie.
+            # No quant tournament has completed, but its guaranteed minimum is still reserved.
+            assert result.quant_tournament_weight >= cts.TOURNAMENT_QUANT_WEIGHT * 0.9
+            # No burn: the three type pools are normalized to fill the entire emission pie.
             assert result.burn_weight == 0.0
-            assert result.text_tournament_weight + result.image_tournament_weight == pytest.approx(1.0)
+            total = result.text_tournament_weight + result.quant_tournament_weight + result.image_tournament_weight
+            assert total == pytest.approx(1.0)
 
     def test_participation_proportion_calculation(self):
         """Test that participation proportions are calculated correctly."""
@@ -306,15 +307,16 @@ class TestSeparatedBurnDynamics:
         ):
             result = await get_tournament_burn_details(mock_psql_db)
 
-            total = result.text_tournament_weight + result.image_tournament_weight
+            total = result.text_tournament_weight + result.quant_tournament_weight + result.image_tournament_weight
             assert total == pytest.approx(1.0)
             assert result.burn_weight == 0.0
-            # Ratios match the anchor split (0.35 : 0.25).
-            expected_ratio = cts.TOURNAMENT_TEXT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
-            assert result.text_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
+            # Ratios match the anchor split (text 0.25 : quant 0.35 : image 0.25).
+            expected_ratio = cts.TOURNAMENT_QUANT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
+            assert result.quant_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
             # Champion and runner-up pools are the same merged pool per type.
             assert result.text_base_weight == pytest.approx(result.text_tournament_weight)
             assert result.image_base_weight == pytest.approx(result.image_tournament_weight)
+            assert result.quant_base_weight == pytest.approx(result.quant_tournament_weight)
 
 
 if __name__ == "__main__":

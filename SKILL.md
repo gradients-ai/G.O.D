@@ -334,13 +334,18 @@ Important safety and practical notes for agents
 
 Tournament system overview
 - Tournaments are separate from paid organic jobs, but share the same ecosystem.
-- Miners expose GET /training_repo/{task_type} from their miner.
+- Miners expose GET /training_repo/{task_type} from their miner, where task_type is text, quant or image; a miner enters the quant tournament by answering for quant.
 - Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
-- Tournament types include text and image. Environment tournaments have been retired and are no longer scheduled or emission-weighted; historical environment tournament rows remain queryable through the analytics endpoints.
+- Tournament types are text, quant (model compression) and image, each scheduled weekly with no feature flag. Environment tournaments have been retired and are no longer scheduled or emission-weighted; historical environment tournament rows remain queryable through the analytics endpoints.
 - Typical cadence:
+  - quant tournaments start Mondays at 09:00 UTC
   - text tournaments start Mondays at 11:00 UTC
   - image tournaments start Mondays at 13:00 UTC
-- Fees are burned and can be queried from the public API.
+- Fees are burned and can be queried from the public API: text 0.7 TAO, quant 0.6 TAO, image 0.4 TAO per entry, one fee per entry per type. GET /tournament/fees returns text_tournament_fee_rao, image_tournament_fee_rao and quant_tournament_fee_rao.
+- There are two champions (bosses): the text champion and the quant champion. Each type has its own emission pool (guaranteed minimums text 0.15, quant 0.35, image 0.225, plus a 0.275 flex pool moved by entrant counts). The minimums always apply: a type with no winner yet pays nobody and its share goes to the burn address.
+- Text tournament: three single-group instruct rounds (1-4B top 8, 1-4B top 4, 4-8B top 1), then a boss round of continuous-SFT, GRPO, DPO and one large instruct task (30-72B). The boss trains the round tasks and the continuous task at tournament start. The challenger is compared with the boss on 7 tasks (rounds 1-3 and the 4 boss-round tasks): it wins 6 by at least 1% and loses the 7th by at most 0.25%, or wins 5 by at least 1%, loses one by at most 0.1% and one by at most 0.25%. The tournament stops early once a crown is out of reach.
+- Quant tournament: three rounds (top 8, top 4, top 1) each compressing the text boss's model from the matching text round, then a six-task boss round (freeform and fixed compressions of the text boss's round-2, round-3 and continuous models). The challenger must win 5 of 6: freeform needs at least 3% fewer effective bytes, fixed needs the paired per-example test and at least 1% better loss, with 2-bit or 3-bit formats only. Each quant task is its own task, linked to the text task and model it came from.
+- Continuous-SFT: one chunk of the lineage's data per tournament, with a fixed training budget on 4xH100.
 
 Tournament miner endpoint
 - Miners expose /training_repo/{task_type}

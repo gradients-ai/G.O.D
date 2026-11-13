@@ -15,30 +15,48 @@ import validator.tasks.prep.constants as prep_cst
 import validator.tasks.synthetics.constants as synth_cst
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
+from core.logging import redact_url_queries
+from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import FileFormat
+from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import EnvBaselineStats
 from core.models.payload_models import ImageModelInfo
 from core.models.payload_models import ImageModelsResponse
 from core.models.payload_models import InstructTextDatasetColumnsResponse
+from core.models.quant_models import LAUNCH_QUANT_FORMATS
+from core.models.quant_models import QuantFixedSpec
+from core.models.quant_models import QuantFormat
+from core.models.quant_models import QuantHoursBreakdown
+from core.models.quant_models import QuantWorkload
 from core.models.reward_models import RewardFunction
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
+from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import get_continuous_sft_state
+from validator.db.sql.continuous_sft import record_continuous_sft_task_chunk
 from validator.db.sql.tasks import add_task
 from validator.db.sql.tasks import get_dataset_near_duplicate_rates
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
+from validator.scoring.constants import QUANT_BAR_CAP
+from validator.scoring.constants import QUANT_PENALTY_CURVATURE
+from validator.scoring.constants import QUANT_PENALTY_KNEE
 from validator.tasks.datasets.models import Dataset
 from validator.tasks.details import retry_with_backoff
 from validator.tasks.models import ChatRawTask
+from validator.tasks.models import ContinuousChunk
 from validator.tasks.models import DpoRawTask
 from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
+from validator.tasks.models import QuantFixedRawTask
+from validator.tasks.models import QuantFreeformRawTask
+from validator.tasks.models import QuantPreppedSplit
 from validator.tasks.models import RawTask
 from validator.tasks.prep.augmentation import maybe_get_augmentation_config
 from validator.tasks.prep.augmentation import skip_augmentation_for_params
@@ -46,6 +64,7 @@ from validator.tasks.requests import get_model_num_params
 from validator.tasks.rewards.templates import sample_template_groups
 from validator.tournament import constants as t_cst
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.models import ContinuousSftTaskChunk
 
 
 logger = get_logger(__name__)
@@ -246,14 +265,19 @@ def compute_training_hours(
     measured_tokens_per_sec: float | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
     max_hours: float | None = None,
+    gpu_count_multiplier: int = 1,
 ) -> float:
     """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
 
     training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
-    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set.
+    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set. gpu_count_multiplier is the
+    task's multiple of its size tier (the continuous instruct task trains on 2x: tournament constants
+    gpu_count_multiplier), so the budget divides by the GPUs the task really gets.
     """
-    gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
+    gpus = get_tournament_gpu_requirement(
+        task_type, int(num_params), training_start_point=training_start_point, gpu_count_multiplier=gpu_count_multiplier
+    ).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
     if measured_tokens_per_sec:
         lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
@@ -278,7 +302,9 @@ def get_grpo_training_hours(num_params: float | None) -> float:
     return min(data_cst.MAX_TRAINING_HOURS, max(data_cst.TRAINING_HOURS_MIN, hours))
 
 
-def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None, task_type: TaskType | None = None) -> float:
+def _get_training_hours_from_num_rows(
+    num_rows: int, model_id: str | None = None, task_type: TaskType | None = None, gpu_count_multiplier: int = 1
+) -> float:
     """Pre-prep estimate using ASSUMED_TOKENS_PER_ROW until measured stats arrive."""
     num_params = get_model_num_params(model_id) if model_id is not None else None
     if not num_params:
@@ -286,7 +312,9 @@ def _get_training_hours_from_num_rows(num_rows: int, model_id: str | None = None
     if task_type == TaskType.GRPOTASK:
         return get_grpo_training_hours(num_params)
     tokens_per_epoch = num_rows * data_cst.ASSUMED_TOKENS_PER_ROW
-    return compute_training_hours(tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK)
+    return compute_training_hours(
+        tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK, gpu_count_multiplier=gpu_count_multiplier
+    )
 
 
 def compute_hours_from_baseline_stats(
@@ -301,15 +329,17 @@ def compute_hours_from_baseline_stats(
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput.
 
-    Continuous-SFT flows through like any SFT task (its 4xH100 is handled via
-    training_start_point), but params are sized from the lineage SEED (resolved from ds here, so
-    no caller can get it wrong) — the task's own model_id is the carried winner, whose params are
-    unfetchable (LoRA adapter / custom arch).
+    A continuous-SFT task (CONTINUOUS_SFT start point, or a ds that resolves to a lineage) gets exactly
+    CONTINUOUS_SFT_TRAINING_HOURS whatever the stats, current_hours or max_hours are. Other SFT tasks
+    are sized from the measured tokens and throughput.
     """
+    if training_start_point == TrainingStartPoint.CONTINUOUS_SFT or t_cst.continuous_sft_lineage_from_ds(ds):
+        return t_cst.CONTINUOUS_SFT_TRAINING_HOURS
+    if task_type in QUANT_TASK_TYPES:
+        return current_hours
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours if max_hours is None else min(current_hours, max_hours)
 
-    model_id = t_cst.continuous_sft_seed_repo_for_ds(ds) or model_id
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
     if not num_params:
         num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
@@ -328,8 +358,141 @@ def compute_hours_from_baseline_stats(
     )
     measured_tps = baseline_stats.throughput.tokens_per_sec if baseline_stats.throughput else None
     return compute_training_hours(
-        effective_tokens, num_params, task_type, measured_tps, training_start_point, max_hours=max_hours
+        effective_tokens,
+        num_params,
+        task_type,
+        measured_tps,
+        training_start_point,
+        max_hours=max_hours,
+        gpu_count_multiplier=t_cst.gpu_count_multiplier(task_type, ds),
     )
+
+
+def quant_fixed_hours(params_b: float) -> float:
+    """Fixed-track budget: flat below the first anchor, linear to the second, flat above it."""
+    (low_b, low_hours), (high_b, high_hours) = data_cst.QUANT_FIXED_HOURS_BY_PARAMS_B
+    fraction = min(max((params_b - low_b) / (high_b - low_b), 0.0), 1.0)
+    return low_hours + fraction * (high_hours - low_hours)
+
+
+def quant_flat_hours(task_type: TaskType, model_params_count: int, boss: bool) -> float:
+    """Flat quant budget: freeform a constant, fixed by model size; boss gets no extra. The no-stats fallback."""
+    if task_type == TaskType.QUANTFREEFORMTASK:
+        return data_cst.QUANT_FREEFORM_EARLY_HOURS
+    if task_type == TaskType.QUANTFIXEDTASK:
+        return quant_fixed_hours((model_params_count or data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS) / 1e9)
+    raise ValueError(f"{task_type} is not a quant task type")
+
+
+def quant_workload(task_type: TaskType) -> QuantWorkload:
+    """The priced workload of the track."""
+    if task_type == TaskType.QUANTFREEFORMTASK:
+        return data_cst.QUANT_FREEFORM_WORKLOAD
+    if task_type == TaskType.QUANTFIXEDTASK:
+        return data_cst.QUANT_FIXED_WORKLOAD
+    raise ValueError(f"{task_type} is not a quant task type")
+
+
+def _has_usable_quant_stats(baseline_stats) -> bool:
+    """Instruct/dpo/grpo stats with a positive measured throughput and a positive mean sequence length."""
+    if baseline_stats is None or isinstance(baseline_stats, EnvBaselineStats):
+        return False
+    throughput = getattr(baseline_stats, "throughput", None)
+    if throughput is None or throughput.tokens_per_sec <= 0:
+        return False
+    return baseline_stats.dataset.seq_length_distribution.mean > 0
+
+
+def quant_measured_tokens_per_sec(baseline_stats) -> float:
+    """The prep's per-GPU fwd+bwd rate: the hardened probe's median-of-windows reading, else the 3-step reading."""
+    probes = getattr(baseline_stats, "device", None)
+    hardened = getattr(probes, "train_tokens_per_sec", None)
+    if hardened and hardened > 0:
+        return hardened
+    return baseline_stats.throughput.tokens_per_sec
+
+
+def _quant_per_gpu_tokens_per_sec(measured_tokens_per_sec: float, num_params: float) -> float:
+    """Measured per-GPU probe throughput, clamped to the analytic band like compute_training_hours."""
+    analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
+    lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
+    return min(max(measured_tokens_per_sec, analytic_tps * lo), analytic_tps * hi)
+
+
+def _quant_train_tokens(workload: QuantWorkload, dataset_stats) -> int:
+    """Training tokens priced: the workload's budget, lowered to the epoch cap of the train split when one applies."""
+    if workload.train_max_epochs is None or not dataset_stats.total_tokens or not dataset_stats.num_records:
+        return workload.train_tokens
+    split_tokens = max(dataset_stats.total_tokens, dataset_stats.num_records * data_cst.EFFECTIVE_MIN_TOKENS_PER_ROW)
+    return min(workload.train_tokens, int(workload.train_max_epochs * split_tokens))
+
+
+def _quant_token_work(workload: QuantWorkload, mean_seq: float, train_tokens: int) -> float:
+    """Probe-token equivalents of the evaluation passes, the further forward-only tokens and the training tokens."""
+    evaluation = workload.eval_passes * data_cst.QUANT_EVAL_ROWS_PER_PASS * mean_seq * data_cst.QUANT_FORWARD_TOKEN_FACTOR
+    forward = workload.forward_tokens * data_cst.QUANT_FORWARD_TOKEN_FACTOR
+    training = train_tokens * data_cst.QUANT_TRAIN_TOKEN_FACTOR
+    return evaluation + training + forward
+
+
+def quant_hours_breakdown(
+    task_type: TaskType, num_params: float, baseline_stats, boss: bool
+) -> QuantHoursBreakdown | None:
+    """Token, model-size and host seconds plus the clamped quarter-hour budget; None when the stats are unusable."""
+    if not _has_usable_quant_stats(baseline_stats):
+        return None
+    workload = quant_workload(task_type)
+    num_params = num_params or data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    params_b = num_params / 1e9
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params)).gpu_count
+    tps_per_gpu = _quant_per_gpu_tokens_per_sec(quant_measured_tokens_per_sec(baseline_stats), num_params)
+    train_tokens = _quant_train_tokens(workload, baseline_stats.dataset)
+    token_work = _quant_token_work(workload, baseline_stats.dataset.seq_length_distribution.mean, train_tokens)
+    token_seconds = token_work / (tps_per_gpu * gpus)
+    model_seconds = workload.model_seconds_per_b_params * params_b / gpus
+    host_seconds = workload.host_seconds_per_b_params * params_b + workload.host_fixed_seconds
+    boss_multiplier = data_cst.QUANT_BOSS_HOURS_MULTIPLIER[task_type] if boss else 1.0
+    plan_seconds = (token_seconds + model_seconds + host_seconds) * workload.hours_slack
+    raw_hours = plan_seconds / 3600 * boss_multiplier
+    hours = min(data_cst.MAX_TRAINING_HOURS, max(data_cst.QUANT_TRAINING_HOURS_MIN, math.ceil(raw_hours * 4) / 4))
+    breakdown = QuantHoursBreakdown(
+        token_seconds=token_seconds,
+        model_seconds=model_seconds,
+        host_seconds=host_seconds,
+        gpus=gpus,
+        train_tokens=train_tokens,
+        slack=workload.hours_slack,
+        hours=hours,
+    )
+    logger.info(
+        f"QUANT_HOURS: {task_type.value} params={params_b:.2f}B boss={boss} tps/gpu={tps_per_gpu:.0f} "
+        f"token={token_seconds:.0f}s model={model_seconds:.0f}s host={host_seconds:.0f}s "
+        f"gpus={gpus} train_tokens={train_tokens} slack={workload.hours_slack} -> {hours}h"
+    )
+    return breakdown
+
+
+def quant_training_hours(task_type: TaskType, model_params_count: int, boss: bool, baseline_stats=None) -> float:
+    """Stats-based quant budget when the stats are usable, else the flat role budget."""
+    num_params = model_params_count or data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    breakdown = quant_hours_breakdown(task_type, num_params, baseline_stats, boss)
+    if breakdown is None:
+        return quant_flat_hours(task_type, model_params_count, boss)
+    return breakdown.hours
+
+
+def quant_hours_after_prep(task, baseline_stats, boss: bool) -> float:
+    """Post-prep hours of a quant task from its own stats; the task's current hours when the stats are unusable."""
+    params = task.model_params_count or get_model_num_params(task.model_id) or data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    if not _has_usable_quant_stats(baseline_stats):
+        return task.hours_to_complete
+    return quant_training_hours(task.task_type, int(params), boss, baseline_stats)
+
+
+def _quant_creation_hours(task_type: TaskType, model_id: str, boss: bool) -> float:
+    """Hours at creation: the flat role budget for the model's size (prep resizes from the task's own stats)."""
+    params = get_model_num_params(model_id) or data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
+    return quant_flat_hours(task_type, int(params), boss)
 
 
 def apply_baseline_ctx_scale(hours: float, baseline_stats) -> float:
@@ -693,8 +856,12 @@ async def create_synthetic_instruct_text_task(
     model_id_override: str | None = None,
     allow_augmentation: bool = True,
     allow_yarn: bool = True,
+    carve_calibration: bool = False,
 ) -> RawTask:
-    """models may be None only with model_id_override set (the pool is never drawn from then)."""
+    """models may be None only with model_id_override set (the pool is never drawn from then).
+
+    carve_calibration marks a tournament round-1 task: its prep carves a calibration set from its train side.
+    """
     if model_id_override:
         model_id = model_id_override
     else:
@@ -733,6 +900,7 @@ async def create_synthetic_instruct_text_task(
         augmentation_config=augmentation_config,
         use_kl=use_kl,
         kl_coef=kl_coef,
+        carve_calibration=carve_calibration,
     )
     logger.info(
         f"INSTRUCT_TASK: Successfully created task with dataset {dataset.dataset_id}, "
@@ -744,6 +912,544 @@ async def create_synthetic_instruct_text_task(
     return task
 
 
+def draw_quant_format(rng: random.Random) -> QuantFormat:
+    """Fixed-track format for one task. Callers seed rng from the round so a resumed round redraws the same one."""
+    return rng.choice(LAUNCH_QUANT_FORMATS)
+
+
+async def create_synthetic_quant_task(
+    config: Config,
+    task_type: TaskType,
+    models: AsyncGenerator[str, None] | None,
+    datasets: AsyncGenerator[Dataset, None] | None,
+    *,
+    quant_format: QuantFormat | None = None,
+    model_id_override: str | None = None,
+    ds_override: tuple[str, InstructTextDatasetType, int] | None = None,
+    prepped_split: QuantPreppedSplit | None = None,
+    rng: random.Random | None = None,
+    boss: bool = False,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    carve_calibration: bool = False,
+) -> RawTask:
+    """Create a fixed- or freeform-track quant task on instruct data.
+
+    models may be None only with model_id_override set, datasets only with ds_override
+    (dataset id, columns, num_rows). With prepped_split (only alongside ds_override, whose columns
+    must then be the split's standard ones) prep reuses those files instead of splitting ds.
+    A fixed task plays quant_format, else a format drawn from rng.
+    The format is drawn once, before the retried body, so a retry never redraws from an advanced rng.
+    boss selects the boss-round budget (no multiplier: QUANT_BOSS_HOURS_MULTIPLIER is 1.0 for both types).
+    training_start_point OWN_R1_MODEL marks a task whose miners each start from their own round-1 model; R1-R3 do
+    not use it (they are chained on a seed, see create_chained_quant_task).
+    carve_calibration (freeform without a prepped_split only) has prep carve a calibration set from the task's own split.
+    """
+    if task_type == TaskType.QUANTFIXEDTASK:
+        quant_format = quant_format or draw_quant_format(rng or random.Random())
+    return await _create_synthetic_quant_task_pinned(
+        config,
+        task_type,
+        models,
+        datasets,
+        quant_format=quant_format,
+        model_id_override=model_id_override,
+        ds_override=ds_override,
+        prepped_split=prepped_split,
+        boss=boss,
+        training_start_point=training_start_point,
+        carve_calibration=carve_calibration,
+    )
+
+
+@retry_with_backoff
+async def _create_synthetic_quant_task_pinned(
+    config: Config,
+    task_type: TaskType,
+    models: AsyncGenerator[str, None] | None,
+    datasets: AsyncGenerator[Dataset, None] | None,
+    *,
+    quant_format: QuantFormat | None,
+    model_id_override: str | None,
+    ds_override: tuple[str, InstructTextDatasetType, int] | None,
+    prepped_split: QuantPreppedSplit | None = None,
+    boss: bool = False,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+    carve_calibration: bool = False,
+) -> RawTask:
+    """create_synthetic_quant_task's body with the fixed format already drawn (None for freeform).
+
+    No YaRN (a rope change alters config.json, which the fixed-track structural check compares) and
+    no KL.
+    """
+    if model_id_override:
+        model_id = model_id_override
+    else:
+        assert models is not None, "a models pool is required when model_id_override is not set"
+        model_id = await anext(models)
+
+    if ds_override:
+        ds, dataset_type, num_rows = ds_override
+    else:
+        assert datasets is not None, "a datasets pool is required when ds_override is not set"
+        ds, dataset_type, num_rows = await _draw_quant_instruct_dataset(config, datasets)
+
+    number_of_hours = _quant_creation_hours(task_type, model_id, boss)
+    quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
+    task = _new_quant_task(
+        task_type,
+        model_id=model_id,
+        ds=ds,
+        dataset_type=dataset_type,
+        hours_to_complete=number_of_hours,
+        quant_spec=quant_spec,
+        training_start_point=training_start_point,
+        carve_calibration=carve_calibration,
+        **_prepped_split_fields(prepped_split),
+    )
+    logger.info(
+        f"QUANT_TASK: {task_type.value} on {model_id} with dataset {ds}, spec={quant_spec.name if quant_spec else None}, "
+        f"prepped_split={prepped_split is not None}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"QUANT_TASK: Task saved to database with ID: {task.task_id}")
+    return task
+
+
+async def _draw_quant_instruct_dataset(
+    config: Config, datasets: AsyncGenerator[Dataset, None]
+) -> tuple[str, InstructTextDatasetType, int]:
+    """A fresh instruct dataset for a quant task: (dataset id, columns, num_rows)."""
+    # Quant tasks train on instruct data, so the instruct dataset-history filters apply.
+    dataset = await get_dataset(datasets, task_type=TaskType.INSTRUCTTEXTTASK, keypair=config.keypair, psql_db=config.psql_db)
+    columns = await _get_columns_for_instruct_dataset(dataset.dataset_id, config.keypair)
+    dataset_type = InstructTextDatasetType(
+        field_instruction=columns.field_instruction,
+        field_input=columns.field_input,
+        field_output=columns.field_output,
+        field_system=None,
+    )
+    return dataset.dataset_id, dataset_type, dataset.num_rows
+
+
+@retry_with_backoff
+async def create_chained_quant_task(
+    config: Config,
+    task_type: TaskType,
+    upstream: InstructTextRawTask,
+    *,
+    quant_format: QuantFormat | None,
+    boss: bool = True,
+) -> RawTask:
+    """Create a chained task held in AWAITING_UPSTREAM on an instruct task (a boss-round instruct or an input seed).
+
+    Both players compress the same upstream output, chosen at release, so model_id is the upstream's
+    base until the release sets it to that output. No augmentation: it would change the trained model.
+    The instruct slot carries the fine-tuning, so hours are the flat boss budget for the type; boss=False (the miner
+    rounds R1-R3 on an input seed) takes the non-boss budget instead, which the release recomputes from the seed.
+
+    The data is the upstream's (raw columns here; the release re-copies the prepped upstream's columns
+    and URLs). The fixed format is drawn by the caller.
+    """
+    ds = upstream.ds
+    dataset_type = _upstream_dataset_type(upstream)
+    quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
+    task = _new_quant_task(
+        task_type,
+        model_id=upstream.model_id,
+        ds=ds,
+        dataset_type=dataset_type,
+        hours_to_complete=_chained_hours(upstream, task_type, boss=boss),
+        quant_spec=quant_spec,
+        upstream_task_id=upstream.task_id,
+        status=TaskStatus.AWAITING_UPSTREAM,
+        model_params_count=upstream.model_params_count,
+    )
+    logger.info(
+        f"QUANT_TASK: chained {task_type.value} on upstream {upstream.task_id} ({upstream.model_id}) with dataset {ds}, "
+        f"spec={quant_spec.name if quant_spec else None}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"QUANT_TASK: Task saved to database with ID: {task.task_id}")
+    return task
+
+
+@retry_with_backoff
+async def create_own_upstream_quant_task(
+    config: Config,
+    task_type: TaskType,
+    upstream: InstructTextRawTask | ChatRawTask,
+    *,
+    quant_format: QuantFormat | None,
+    train_index: int | None = None,
+    tournament_id: str | None = None,
+) -> RawTask:
+    """Create a boss-round task whose players each compress their OWN output on the upstream instruct task.
+
+    The start point is OWN_UPSTREAM_MODEL: there is no shared input, so the release sets each player's
+    starting_model_repo to that player's own upstream output rather than model_id. Held in AWAITING_UPSTREAM.
+
+    train_index None: the data is the upstream's (create_chained_quant_task's columns), copied from it at
+    release, and the hours follow the upstream's stats. With train_index and tournament_id: the task carries
+    the SAME continuous chunk as the upstream from creation, with model_id the upstream's base; at prep it takes the
+    second, disjoint share of the chunk's train rows (select_continuous_rows), the release leaves that data alone,
+    calibration is carved from those rows, and hours are the normal quant budget (boss multiplier 1.0, no instruct term)
+    from the task's own prep stats once they exist.
+    """
+    quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
+    if train_index is None:
+        data_fields = dict(
+            ds=upstream.ds,
+            dataset_type=_upstream_dataset_type(upstream),
+            hours_to_complete=_chained_hours(upstream, task_type),
+        )
+    else:
+        chunk = await _fetch_continuous_quant_chunk(config, train_index)
+        data_fields = dict(
+            ds=t_cst.continuous_quant_ds(train_index, tournament_id, chunk.label),
+            dataset_type=_continuous_quant_dataset_type(),
+            hours_to_complete=_quant_creation_hours(task_type, upstream.model_id, boss=True),
+            file_format=FileFormat.S3,
+            training_data=chunk.train_url,
+            test_data=chunk.test_url,
+            carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
+        )
+    task = _new_quant_task(
+        task_type,
+        model_id=upstream.model_id,
+        quant_spec=quant_spec,
+        upstream_task_id=upstream.task_id,
+        status=TaskStatus.AWAITING_UPSTREAM,
+        model_params_count=upstream.model_params_count,
+        training_start_point=TrainingStartPoint.OWN_UPSTREAM_MODEL,
+        **data_fields,
+    )
+    logger.info(
+        f"QUANT_TASK: own-upstream {task_type.value} on upstream {upstream.task_id} ({upstream.model_id}) with dataset "
+        f"{task.ds}, spec={quant_spec.name if quant_spec else None}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"QUANT_TASK: Task saved to database with ID: {task.task_id}")
+    return task
+
+
+@retry_with_backoff
+async def create_chained_continuous_quant_task(
+    config: Config,
+    task_type: TaskType,
+    upstream: ChatRawTask,
+    *,
+    quant_format: QuantFormat | None,
+    train_index: int,
+    tournament_id: str,
+) -> RawTask:
+    """Create a held quant task that compresses the model the text boss trains on a continuous-SFT task.
+
+    The task carries the SAME continuous chunk as the upstream from creation (train_index is the one recorded for the
+    upstream task, never read from a name), so its data is not copied at release; model_id is the upstream's base until
+    the release sets it to the boss's output. Start point DEFAULT: it is released as a SHARED input, both players compress
+    the text boss's model. Calibration is carved from the chunk's train rows. Hours are the flat boss-round quant budget for
+    the base's size (the upstream's persisted size when prep has written one; its base may be an adapter repo, which
+    cannot be sized from the hub); prep resizes them from the task's own stats.
+    """
+    quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
+    chunk = await _fetch_continuous_quant_chunk(config, train_index)
+    task = _new_quant_task(
+        task_type,
+        model_id=upstream.model_id,
+        ds=t_cst.continuous_quant_ds(train_index, tournament_id, chunk.label),
+        dataset_type=_continuous_quant_dataset_type(),
+        hours_to_complete=quant_flat_hours(task_type, upstream.model_params_count, boss=True),
+        quant_spec=quant_spec,
+        file_format=FileFormat.S3,
+        training_data=chunk.train_url,
+        test_data=chunk.test_url,
+        carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
+        upstream_task_id=upstream.task_id,
+        status=TaskStatus.AWAITING_UPSTREAM,
+        model_params_count=upstream.model_params_count,
+        training_start_point=TrainingStartPoint.DEFAULT,
+    )
+    logger.info(
+        f"QUANT_TASK: chained continuous {task_type.value} on upstream {upstream.task_id} ({upstream.model_id}) with dataset "
+        f"{task.ds}, spec={quant_spec.name if quant_spec else None}"
+    )
+    task = await add_task(task, config.psql_db)
+    logger.info(f"QUANT_TASK: Task saved to database with ID: {task.task_id}")
+    return task
+
+
+def repoint_chained_quant_task(
+    task: QuantFixedRawTask | QuantFreeformRawTask,
+    upstream: InstructTextRawTask | ChatRawTask,
+    *,
+    pinned_data: bool,
+    upstream_train_index: int | None = None,
+) -> None:
+    """Move a held chained task onto a replacement upstream, in place.
+
+    A replacement redraws the base and the data, so the base, its size and the hours follow the new
+    upstream; a task pinned to the old upstream's data moves to the new data (a task with data of its own
+    keeps it).
+
+    A task on its own continuous chunk (a compression of a continuous-SFT task) keeps its data: only the upstream, the base
+    and the size move. Its chunk must be the replacement's, so upstream_train_index (the index recorded for the new upstream
+    task) has to equal the task's own; a different chunk raises, because moving the task would compress a model trained on
+    other data than the one the task carries (a replaced continuous task is the same chunk of the same lineage in the same week).
+    """
+    if t_cst.is_continuous_quant_task(task):
+        own_index = t_cst.continuous_quant_train_index(task.ds)
+        if upstream_train_index != own_index:
+            raise ValueError(
+                f"Task {task.task_id} carries continuous chunk {own_index} but the new upstream {upstream.task_id} trained on "
+                f"chunk {upstream_train_index}; not re-pointing it"
+            )
+        task.upstream_task_id = upstream.task_id
+        task.model_id = upstream.model_id
+        task.model_params_count = upstream.model_params_count
+        task.hours_to_complete = quant_flat_hours(task.task_type, upstream.model_params_count, boss=True)
+        return
+    task.upstream_task_id = upstream.task_id
+    task.model_id = upstream.model_id
+    task.model_params_count = upstream.model_params_count
+    task.hours_to_complete = _chained_hours(upstream, task.task_type)
+    if pinned_data:
+        task.ds = upstream.ds
+        task.dataset_type = _upstream_dataset_type(upstream)
+
+
+def _upstream_dataset_type(upstream: InstructTextRawTask) -> InstructTextDatasetType:
+    return InstructTextDatasetType(
+        field_instruction=upstream.field_instruction,
+        field_input=upstream.field_input,
+        field_output=upstream.field_output,
+        field_system=upstream.field_system,
+        format=upstream.format,
+        no_input_format=upstream.no_input_format,
+    )
+
+
+def _chained_hours(upstream: InstructTextRawTask, task_type: TaskType, *, boss: bool = True) -> float:
+    return quant_training_hours(task_type, upstream.model_params_count, boss=boss, baseline_stats=upstream.baseline_stats)
+
+
+async def recreate_chained_quant_task(config: Config, task: QuantFixedRawTask | QuantFreeformRawTask) -> RawTask:
+    """A fresh held copy of a chained task: same upstream, data, columns, spec or bar cap, hours and start point (an
+    own-upstream task stays OWN_UPSTREAM_MODEL, so it is released per player rather than as a shared input).
+
+    A compression task of the continuous instruct task, on its own chunk, gets freshly signed urls for the same chunk: the failed
+    task's own urls are never copied (after prep its test_data is the tokenised eval set).
+    """
+    chunk_fields: dict[str, Any] = {}
+    train_index = t_cst.continuous_quant_train_index(task.ds)
+    if train_index is not None:
+        chunk = await _fetch_continuous_quant_chunk(config, train_index)
+        chunk_fields = dict(
+            file_format=FileFormat.S3,
+            training_data=chunk.train_url,
+            test_data=chunk.test_url,
+            carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
+        )
+    fresh = _new_quant_task(
+        task.task_type,
+        model_id=task.model_id,
+        ds=task.ds,
+        dataset_type=task.dataset_type,
+        hours_to_complete=task.hours_to_complete,
+        quant_spec=getattr(task, "quant_spec", None),
+        bar_cap=getattr(task, "bar_cap", QUANT_BAR_CAP),
+        penalty_knee=getattr(task, "penalty_knee", None),
+        penalty_curvature=getattr(task, "penalty_curvature", None),
+        upstream_task_id=task.upstream_task_id,
+        status=TaskStatus.AWAITING_UPSTREAM,
+        model_params_count=task.model_params_count,
+        training_start_point=task.training_start_point,
+        **chunk_fields,
+    )
+    logger.info(f"QUANT_TASK: recreating chained {task.task_type.value} {task.task_id} on upstream {task.upstream_task_id}")
+    return await add_task(fresh, config.psql_db)
+
+
+def _continuous_quant_dataset_type() -> ChatTemplateDatasetType:
+    """ShareGPT chat data under the base's own template (as the continuous-SFT task), the other fields ChatRawTask's."""
+    chat_defaults = ChatRawTask.model_fields
+    return ChatTemplateDatasetType(
+        chat_template="tokenizer_default",
+        chat_column=chat_defaults["chat_column"].default,
+        chat_role_field=chat_defaults["chat_role_field"].default,
+        chat_content_field=chat_defaults["chat_content_field"].default,
+        chat_user_reference=chat_defaults["chat_user_reference"].default,
+        chat_assistant_reference=chat_defaults["chat_assistant_reference"].default,
+    )
+
+
+async def _fetch_continuous_quant_chunk(config: Config, train_index: int) -> ContinuousChunk:
+    """One continuous chunk (train url, test url, ds label), freshly signed by the content service.
+
+    The urls are presigned, so neither the logs nor the errors raised here carry them.
+    """
+    response = await call_content_service(
+        service_cst.GET_CONTINUOUS_SFT_DATA_ENDPOINT, config.keypair, {"train_index": train_index}
+    )
+    if not isinstance(response, dict):
+        raise ValueError("Expected dict response from continuous-SFT data endpoint")
+    train_url, test_url = response.get("train_s3_url"), response.get("test_s3_url")
+    if not train_url or not test_url:
+        raise ValueError(f"continuous-SFT data response for train_index={train_index} is missing a train or test url")
+    logger.info(f"Retrieved continuous chunk data for train_index={train_index}")
+    return ContinuousChunk(
+        train_url=train_url, test_url=test_url, label=response.get("ds") or f"train-index-{train_index}"
+    )
+
+
+@retry_with_backoff
+async def create_continuous_instruct_task(config: Config, *, model_id: str, train_index: int, tournament_id: str) -> RawTask:
+    """The boss round's continuous instruct task: a raw quant-pool base trained on a continuous chat chunk.
+
+    A ChatRawTask under the base's own chat template (ShareGPT, as the continuous-SFT task) with start point DEFAULT:
+    CONTINUOUS_SFT would force 4xH100, while this task's GPU tier comes from its size doubled (gpu_count_multiplier). No KL, no
+    augmentation, so the evaluator's tokenizer is the raw base's (original_model). The ds carries the chunk and the tournament
+    that seeds the row split: prep takes the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS rows of the chunk
+    (select_continuous_rows), and the creation estimate prices that many rows.
+    """
+    chunk = await _fetch_continuous_quant_chunk(config, train_index)
+    ds = t_cst.continuous_chat_ds(train_index, tournament_id, chunk.label)
+    hours = _get_training_hours_from_num_rows(
+        t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS,
+        model_id,
+        TaskType.CHATTASK,
+        gpu_count_multiplier=t_cst.CONTINUOUS_INSTRUCT_GPU_MULTIPLIER,
+    )
+    current_time = datetime.utcnow()
+    task = ChatRawTask(
+        model_id=model_id,
+        ds=ds,
+        status=TaskStatus.PENDING,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=current_time + timedelta(hours=hours),
+        hours_to_complete=hours,
+        account_id=service_cst.NULL_ACCOUNT_ID,
+        file_format=FileFormat.S3,
+        training_data=chunk.train_url,
+        test_data=chunk.test_url,
+        training_start_point=TrainingStartPoint.DEFAULT,
+        chat_template="tokenizer_default",
+    )
+    logger.info(f"CONTINUOUS_INSTRUCT_TASK: C on {model_id} with dataset {ds}, hours={hours}")
+    task = await add_task(task, config.psql_db)
+    logger.info(f"CONTINUOUS_INSTRUCT_TASK: saved task {task.task_id}")
+    return task
+
+
+async def recreate_quant_task(
+    config: Config,
+    task: QuantFixedRawTask | QuantFreeformRawTask,
+    *,
+    dataset_type: InstructTextDatasetType | None = None,
+    prepped_split: QuantPreppedSplit | None = None,
+    carve_calibration: bool = False,
+) -> RawTask:
+    """A fresh copy of a quant task: same model, data, columns, spec or bar cap and hours.
+
+    The failed task's own split URLs are never copied (a prepped task's test_data is the tokenised
+    eval set, not the raw split); a caller that pins the data re-resolves it into dataset_type and
+    prepped_split.
+    """
+    fresh = _new_quant_task(
+        task.task_type,
+        model_id=task.model_id,
+        ds=task.ds,
+        dataset_type=dataset_type or task.dataset_type,
+        hours_to_complete=task.hours_to_complete,
+        quant_spec=getattr(task, "quant_spec", None),
+        bar_cap=getattr(task, "bar_cap", QUANT_BAR_CAP),
+        penalty_knee=getattr(task, "penalty_knee", None),
+        penalty_curvature=getattr(task, "penalty_curvature", None),
+        model_params_count=task.model_params_count,
+        training_start_point=task.training_start_point,
+        carve_calibration=carve_calibration,
+        **_prepped_split_fields(prepped_split),
+    )
+    recreating = f"QUANT_TASK: recreating {task.task_type.value} {task.task_id} on {task.model_id} with dataset {task.ds}"
+    logger.info(redact_url_queries(recreating))
+    return await add_task(fresh, config.psql_db)
+
+
+def _prepped_split_fields(prepped_split: QuantPreppedSplit | None) -> dict[str, Any]:
+    """_new_quant_task's data kwargs for a reused split: S3 files, so prep takes the given-split path."""
+    if prepped_split is None:
+        return {}
+    return dict(
+        file_format=FileFormat.S3,
+        training_data=prepped_split.training_data,
+        test_data=prepped_split.test_data,
+        calibration_data=prepped_split.calibration_data,
+    )
+
+
+def _new_quant_task(
+    task_type: TaskType,
+    *,
+    model_id: str,
+    ds: str,
+    dataset_type: InstructTextDatasetType | ChatTemplateDatasetType,
+    hours_to_complete: float,
+    quant_spec: QuantFixedSpec | None = None,
+    bar_cap: float = QUANT_BAR_CAP,
+    penalty_knee: float | None = QUANT_PENALTY_KNEE,
+    penalty_curvature: float | None = QUANT_PENALTY_CURVATURE,
+    file_format: FileFormat = FileFormat.HF,
+    training_data: str | None = None,
+    test_data: str | None = None,
+    calibration_data: str | None = None,
+    carve_calibration: bool = False,
+    upstream_task_id: UUID | None = None,
+    status: TaskStatus = TaskStatus.PENDING,
+    model_params_count: int = 0,
+    training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
+) -> QuantFixedRawTask | QuantFreeformRawTask:
+    """A synthetic quant task (pending unless status says otherwise); quant_spec is required for the
+    fixed track and ignored otherwise.
+
+    Never augmented: quant tasks are text-tournament tasks outside round 1, which play their base unmodified.
+    Both tracks take calibration_data (carried from the source split) and carve_calibration (prep carves a calibration set:
+    from the task's own split, or, when test_data is given, from the given train file; see
+    QUANT_CONTINUOUS_CARVE_CALIBRATION for the continuous compression tasks).
+    """
+    current_time = datetime.utcnow()
+    fields = dict(
+        model_id=model_id,
+        ds=ds,
+        dataset_type=dataset_type,
+        file_format=file_format,
+        training_data=training_data,
+        test_data=test_data,
+        upstream_task_id=upstream_task_id,
+        status=status,
+        model_params_count=model_params_count,
+        training_start_point=training_start_point,
+        is_organic=False,
+        created_at=current_time,
+        termination_at=current_time + timedelta(hours=hours_to_complete),
+        hours_to_complete=hours_to_complete,
+        account_id=service_cst.NULL_ACCOUNT_ID,
+        yarn_factor=None,
+        augmentation_config=None,
+    )
+    calibration = dict(calibration_data=calibration_data, carve_calibration=carve_calibration)
+    if task_type == TaskType.QUANTFIXEDTASK:
+        return QuantFixedRawTask(**fields, quant_spec=quant_spec, **calibration)
+    if task_type == TaskType.QUANTFREEFORMTASK:
+        return QuantFreeformRawTask(
+            **fields,
+            bar_cap=bar_cap,
+            penalty_knee=penalty_knee,
+            penalty_curvature=penalty_curvature,
+            **calibration,
+        )
+    raise ValueError(f"{task_type} is not a quant task type")
+
+
 @retry_with_backoff
 async def create_continuous_sft_task(config: Config, lineage: str, seed_model: str) -> RawTask:
     """Create one lineage's continuous-SFT boss task: fixed chat-SFT from the carried-forward winner
@@ -752,10 +1458,16 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
     The content service is stateless: we pass the monotonic train_index and it re-materializes
     train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
     across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
-    Fixed 4xH100; hours start at the fallback budget and are resized post-prep by the general
-    throughput pipeline. No augmentation, so the carried base is never perturbed.
+    Fixed 4xH100 and a fixed hours budget (the same after prep). No augmentation, so the carried base is
+    never perturbed.
     """
     state = await get_continuous_sft_state(lineage, config.psql_db)
+    if state.chunk_scheme != t_cst.CONTINUOUS_SFT_CHUNK_SCHEME:
+        raise RuntimeError(
+            f"continuous_sft_state[{lineage}] is in the {state.chunk_scheme.value} chunk scheme (train_index="
+            f"{state.train_index}), but the content service now serves {t_cst.CONTINUOUS_SFT_CHUNK_SCHEME.value} "
+            f"chunks; apply migration 20261113120000_continuous_sft_50k_chunks.sql before creating this task"
+        )
     base_model = state.last_winner_repo or seed_model
 
     response = await call_content_service(
@@ -801,6 +1513,21 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         f"base_model={base_model} hours={number_of_hours} ds={ds_label}"
     )
     task = await add_task(task, config.psql_db)
+    try:
+        await record_continuous_sft_task_chunk(
+            ContinuousSftTaskChunk(
+                task_id=task.task_id,
+                lineage=lineage,
+                train_index=state.train_index,
+                chunk_scheme=t_cst.CONTINUOUS_SFT_CHUNK_SCHEME,
+            ),
+            config.psql_db,
+        )
+    except Exception:
+        # No continuous-SFT task may exist without its chunk record: carry-forward would misread its cursor.
+        logger.error(f"CONTINUOUS_SFT_TASK: recording chunk for task {task.task_id} failed; deleting the task")
+        await task_sql.delete_task(task.task_id, config.psql_db)
+        raise
     logger.info(f"CONTINUOUS_SFT_TASK: saved task {task.task_id}")
 
     return task

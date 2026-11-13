@@ -463,3 +463,8 @@ def get_tournament_weights_from_data(
     text_weights = _compute_weights(TournamentType.TEXT, text_tournament_data)
     image_weights = _compute_weights(TournamentType.IMAGE, image_tournament_data)
     return text_weights, image_weights
+
+
+def get_quant_tournament_weights_from_data(quant_tournament_data: TournamentResultsWithWinners | None) -> dict[str, float]:
+    """Rank weights for the quant tournament's paid positions, on the same ladder as text and image."""
+    return _compute_weights(TournamentType.QUANT, quant_tournament_data)

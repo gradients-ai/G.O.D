@@ -14,10 +14,12 @@ from core.constants.network import NETUID
 from core.logging import get_logger
 from core.models.dataset_models import ImageTextPair
 from core.models.reward_models import RewardFunction
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
 from validator.infrastructure.minio_client import async_minio_client
+from validator.tasks.models import AnyQuantRawTask
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import AnyTypeTask
 from validator.tasks.models import ChatRawTask
@@ -34,6 +36,11 @@ from validator.tasks.models import ImageTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import InstructTextTask
 from validator.tasks.models import NetworkStats
+from validator.tasks.models import QuantFixedRawTask
+from validator.tasks.models import QuantFixedTask
+from validator.tasks.models import QuantFreeformRawTask
+from validator.tasks.models import QuantFreeformTask
+from validator.tasks.models import QuantRawTask
 
 
 if TYPE_CHECKING:
@@ -41,6 +48,26 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+# Every task that belongs to a tournament: a round's task or a seed task (the boss's upfront training).
+TOURNAMENT_AND_SEED_TASK_IDS = (
+    f"SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE} "
+    f"UNION SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_SEED_TASKS_TABLE}"
+)
+
+# quant_tasks.reference_hotkey is unused: never read or written.
+_QUANT_SELECT = (
+    f"qt.{cst.DATASET_TYPE}, qt.{cst.FILE_FORMAT}, qt.{cst.QUANT_SPEC}, "
+    f"qt.{cst.BAR_CAP}, qt.{cst.PENALTY_KNEE}, qt.{cst.PENALTY_CURVATURE}, qt.{cst.UPSTREAM_TASK_ID}"
+)
+_QUANT_RAW_TASK_CLASSES: dict[str, type[QuantRawTask]] = {
+    TaskType.QUANTFIXEDTASK.value: QuantFixedRawTask,
+    TaskType.QUANTFREEFORMTASK.value: QuantFreeformRawTask,
+}
+_QUANT_TASK_CLASSES: dict[str, type[QuantRawTask]] = {
+    TaskType.QUANTFIXEDTASK.value: QuantFixedTask,
+    TaskType.QUANTFREEFORMTASK.value: QuantFreeformTask,
+}
 
 
 def _node_from_row(row) -> Node:
@@ -137,6 +164,40 @@ async def get_lowest_loss_repo_for_task(task_id: UUID, psql_db: PSQLDB) -> str |
         return row[cst.REPO] if row else None
 
 
+async def get_evaluated_repo_for_hotkey(task_id: UUID, hotkey: str, psql_db: PSQLDB, *, ranked: bool = False) -> str | None:
+    """The repo a hotkey submitted for a task, when its stored evaluation is valid: a finite test loss and no failure reason.
+
+    Works before the task is ranked, unlike get_lowest_loss_repo_for_task, which needs a positive quality_score that only
+    ranking writes. Before ranking the only score_reason on a row is the scorer's own error text. With ``ranked`` the task
+    has been ranked, so the reason holds the ranking's verdict ("Winner at ...", "Lost to winner ...") rather than a scorer
+    error: it is ignored and only a finite test loss is required.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT submissions.{cst.REPO}, task_nodes.{cst.TEST_LOSS}, task_nodes.{cst.SCORE_REASON}
+            FROM {cst.SUBMISSIONS_TABLE} submissions
+            JOIN {cst.TASK_NODES_TABLE} task_nodes
+              ON submissions.{cst.TASK_ID} = task_nodes.{cst.TASK_ID}
+              AND submissions.{cst.HOTKEY} = task_nodes.{cst.HOTKEY}
+              AND submissions.{cst.NETUID} = task_nodes.{cst.NETUID}
+            WHERE submissions.{cst.TASK_ID} = $1
+              AND submissions.{cst.HOTKEY} = $2
+              AND task_nodes.{cst.NETUID} = $3
+              AND task_nodes.{cst.TEST_LOSS} IS NOT NULL
+            ORDER BY submissions.{cst.CREATED_ON} DESC
+            LIMIT 1
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+        )
+    if row is None or not math.isfinite(row[cst.TEST_LOSS]) or (row[cst.SCORE_REASON] and not ranked):
+        return None
+    return row[cst.REPO]
+
+
 def _row_count(command_tag: str) -> int:
     try:
         return int(command_tag.split()[-1])
@@ -177,8 +238,13 @@ async def _insert_base_task(connection: Connection, task: AnyTypeRawTask) -> dic
         {cst.AUGMENTATION_CONFIG},
         {cst.AUGMENTED_MODEL_ID},
         {cst.BASELINE_STATS},
-        {cst.TRAINING_START_POINT})
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        {cst.TRAINING_START_POINT},
+        {cst.CALIBRATION_DATA},
+        {cst.CALIBRATION_FINGERPRINT},
+        {cst.CALIBRATION_N_EXAMPLES},
+        {cst.CARVE_CALIBRATION})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                $21, $22, $23, $24)
         RETURNING *
     """
     return await connection.fetchrow(
@@ -203,6 +269,10 @@ async def _insert_base_task(connection: Connection, task: AnyTypeRawTask) -> dic
         task.augmented_model_id,
         task.baseline_stats.model_dump() if task.baseline_stats else None,
         task.training_start_point.value,
+        task.calibration_data,
+        task.calibration_fingerprint,
+        task.calibration_n_examples,
+        task.carve_calibration,
     )
 
 
@@ -220,6 +290,8 @@ async def _insert_task_specific_data(connection: Connection, task: AnyTypeRawTas
         await _insert_env_task(connection, task, task_record)
     elif isinstance(task, ChatRawTask):
         await _insert_chat_task(connection, task, task_record)
+    elif isinstance(task, QuantRawTask):
+        await _insert_quant_task(connection, task, task_record)
 
 
 async def _insert_instruct_text_task(connection: Connection, task: InstructTextRawTask, task_record: dict) -> None:
@@ -363,6 +435,38 @@ async def _insert_env_task(connection: Connection, task: EnvRawTask, task_record
     )
 
 
+async def _insert_quant_task(connection: Connection, task: AnyQuantRawTask, task_record: dict) -> None:
+    query = f"""
+        INSERT INTO {cst.QUANT_TASKS_TABLE}
+        ({cst.TASK_ID}, {cst.DATASET_TYPE}, {cst.FILE_FORMAT}, {cst.QUANT_SPEC}, {cst.BAR_CAP},
+        {cst.PENALTY_KNEE}, {cst.PENALTY_CURVATURE}, {cst.UPSTREAM_TASK_ID}, {cst.SYNTHETIC_DATA})
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    """
+    is_fixed = isinstance(task, QuantFixedRawTask)
+    await connection.execute(
+        query,
+        task_record[cst.TASK_ID],
+        task.dataset_type.model_dump(),
+        task.file_format,
+        task.quant_spec.model_dump() if is_fixed else None,
+        None if is_fixed else task.bar_cap,
+        None if is_fixed else task.penalty_knee,
+        None if is_fixed else task.penalty_curvature,
+        task.upstream_task_id,
+        task.synthetic_data,
+    )
+
+
+def _quant_task_from_row(
+    task_type: str, row: dict, task_classes: dict[str, type[QuantRawTask]] = _QUANT_RAW_TASK_CLASSES
+) -> QuantRawTask:
+    """Build the quant task for task_type from a tasks row joined with quant_tasks.
+
+    task_classes picks raw vs with-repository classes.
+    """
+    return task_classes[task_type](**dict(row))
+
+
 async def get_nodes_assigned_to_task(task_id: str, psql_db: PSQLDB) -> list[Node]:
     """Get all nodes assigned to a task for the current NETUID"""
     async with await psql_db.connection() as connection:
@@ -404,6 +508,27 @@ async def count_hotkeys_assigned_to_task(task_id: str, psql_db: PSQLDB) -> int:
         )
 
 
+async def is_hotkey_assigned_to_task(task_id: str, hotkey: str, psql_db: PSQLDB) -> bool:
+    """Whether a hotkey has a task_nodes row on a task, read from task_nodes alone.
+
+    No nodes join, for the reason in count_hotkeys_assigned_to_task: a hotkey without a nodes row
+    (a deregistered miner) is still assigned.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        return await connection.fetchval(
+            f"""
+            SELECT EXISTS (
+                SELECT 1 FROM {cst.TASK_NODES_TABLE}
+                WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+            )
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+        )
+
+
 async def get_tasks_with_status(
     status: TaskStatus,
     psql_db: PSQLDB,
@@ -418,10 +543,11 @@ async def get_tasks_with_status(
     delay_timestamp_clause = (
         "" if include_not_ready_tasks else f"AND ({cst.NEXT_DELAY_AT} IS NULL OR {cst.NEXT_DELAY_AT} <= NOW())"
     )
+    # Seed tasks (the boss's upfront tasks) are tournament tasks even before the boss round attaches them to a round.
     if tournament_filter == "exclude":
-        tournament_tasks_clause = f"AND {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE})"
+        tournament_tasks_clause = f"AND {cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
     elif tournament_filter == "only":
-        tournament_tasks_clause = f"AND {cst.TASK_ID} IN (SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE})"
+        tournament_tasks_clause = f"AND {cst.TASK_ID} IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
     elif tournament_filter == "all":
         tournament_tasks_clause = ""
 
@@ -523,6 +649,13 @@ async def get_tasks_with_status(
                         ON t.{cst.TASK_ID} = gt.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
                 """
+            elif task_type in _QUANT_RAW_TASK_CLASSES:
+                specific_query = f"""
+                    SELECT t.*, {_QUANT_SELECT}
+                    FROM {cst.TASKS_TABLE} t
+                    LEFT JOIN {cst.QUANT_TASKS_TABLE} qt ON t.{cst.TASK_ID} = qt.{cst.TASK_ID}
+                    WHERE t.{cst.TASK_ID} = $1
+                """
             else:
                 logger.warning(f"Unknown task type {task_type} for task_id {row[cst.TASK_ID]}")
                 continue
@@ -544,6 +677,8 @@ async def get_tasks_with_status(
                     tasks.append(ChatRawTask(**task_data))
                 elif task_type == TaskType.ENVIRONMENTTASK.value:
                     tasks.append(EnvRawTask(**task_data))
+                elif task_type in _QUANT_RAW_TASK_CLASSES:
+                    tasks.append(_quant_task_from_row(task_type, task_data))
 
         logger.info(f"Retrieved {len(tasks)} tasks with status {status.value}")
         return tasks
@@ -827,6 +962,19 @@ async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeR
                         WHERE {cst.TASK_ID} = $1
                     """
                     await connection.execute(query, updated_task.task_id, *specific_values)
+            elif updated_task.task_type in QUANT_TASK_TYPES:
+                quant_fields = await get_table_fields(cst.QUANT_TASKS_TABLE, connection)
+                quant_specific_fields = [f for f in quant_fields if f != cst.TASK_ID]
+                specific_updates = {k: v for k, v in updates.items() if k in quant_specific_fields}
+                if specific_updates:
+                    specific_clause = ", ".join([f"{column} = ${i + 2}" for i, column in enumerate(specific_updates.keys())])
+                    specific_values = list(specific_updates.values())
+                    query = f"""
+                        UPDATE {cst.QUANT_TASKS_TABLE}
+                        SET {specific_clause}
+                        WHERE {cst.TASK_ID} = $1
+                    """
+                    await connection.execute(query, updated_task.task_id, *specific_values)
 
             if updated_task.assigned_miners is not None:
                 await connection.execute(
@@ -852,7 +1000,7 @@ async def get_current_task_stats(psql_db: PSQLDB, include_tournament_tasks=False
         tournament_tasks_clause = (
             ""
             if include_tournament_tasks
-            else f"WHERE {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE})"
+            else f"WHERE {cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
         )
 
         # Always exclude benchmark tasks from stats
@@ -896,7 +1044,7 @@ async def get_detailed_task_stats(psql_db: PSQLDB, include_tournament_tasks=Fals
     tournament_tasks_clause = (
         ""
         if include_tournament_tasks
-        else f"WHERE {cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE})"
+        else f"WHERE {cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
     )
 
     # Always exclude benchmark tasks from stats
@@ -1110,6 +1258,13 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
                     ON t.{cst.TASK_ID} = gt.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
             """
+        elif task_type in _QUANT_RAW_TASK_CLASSES:
+            specific_query = f"""
+                SELECT t.*, {_QUANT_SELECT}
+                FROM {cst.TASKS_TABLE} t
+                LEFT JOIN {cst.QUANT_TASKS_TABLE} qt ON t.{cst.TASK_ID} = qt.{cst.TASK_ID}
+                WHERE t.{cst.TASK_ID} = $1
+            """
         else:
             raise ValueError(f"Unsupported task type: {task_type}")
 
@@ -1133,6 +1288,8 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             return ChatRawTask(**full_task_data)
         elif task_type == TaskType.ENVIRONMENTTASK.value:
             return EnvRawTask(**full_task_data)
+        elif task_type in _QUANT_RAW_TASK_CLASSES:
+            return _quant_task_from_row(task_type, full_task_data)
 
     if connection is not None:
         return await _get_task_inner(connection)
@@ -1254,6 +1411,18 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                 LEFT JOIN victorious_repo ON tasks.task_id = victorious_repo.task_id
                 WHERE tasks.{cst.TASK_ID} = $1
             """
+        elif task_type in _QUANT_TASK_CLASSES:
+            specific_query = f"""
+                {victorious_repo_cte}
+                SELECT
+                    tasks.*,
+                    {_QUANT_SELECT},
+                    COALESCE(tasks.training_repo_backup, victorious_repo.repo) as trained_model_repository
+                FROM {cst.TASKS_TABLE} tasks
+                LEFT JOIN {cst.QUANT_TASKS_TABLE} qt ON tasks.{cst.TASK_ID} = qt.{cst.TASK_ID}
+                LEFT JOIN victorious_repo ON tasks.task_id = victorious_repo.task_id
+                WHERE tasks.{cst.TASK_ID} = $1
+            """
         else:
             raise ValueError(f"Unsupported task type: {task_type}")
 
@@ -1276,6 +1445,8 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
             return EnvTask(**full_task_data)
         elif task_type == TaskType.CHATTASK.value:
             return ChatTask(**full_task_data)
+        elif task_type in _QUANT_TASK_CLASSES:
+            return _quant_task_from_row(task_type, full_task_data, _QUANT_TASK_CLASSES)
 
 
 async def get_tasks_by_ids(task_ids: list[UUID], psql_db: PSQLDB, connection: Connection | None = None) -> list[AnyTypeTask]:
@@ -1418,6 +1589,13 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
             LEFT JOIN {cst.ENV_TASKS_TABLE} et ON t.{cst.TASK_ID} = et.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
         """
+    elif task_type in _QUANT_RAW_TASK_CLASSES:
+        return f"""
+            SELECT t.*, {_QUANT_SELECT}
+            FROM {cst.TASKS_TABLE} t
+            LEFT JOIN {cst.QUANT_TASKS_TABLE} qt ON t.{cst.TASK_ID} = qt.{cst.TASK_ID}
+            WHERE t.{cst.TASK_ID} = ANY($1)
+        """
     return None
 
 
@@ -1441,6 +1619,8 @@ async def _create_task_from_data(
         return GrpoRawTask(**full_task_data, reward_functions=reward_functions)
     elif task_type == TaskType.ENVIRONMENTTASK.value:
         return EnvRawTask(**full_task_data)
+    elif task_type in _QUANT_RAW_TASK_CLASSES:
+        return _quant_task_from_row(task_type, full_task_data)
 
     return None
 
@@ -1556,6 +1736,16 @@ async def get_tasks_by_account_id(psql_db: PSQLDB, account_id: UUID, limit: int 
                 if env_row:
                     task_data.update(dict(env_row))
                 tasks.append(EnvTask(**task_data))
+            elif task_type in _QUANT_TASK_CLASSES:
+                quant_query = f"""
+                    SELECT {_QUANT_SELECT}
+                    FROM {cst.QUANT_TASKS_TABLE} qt
+                    WHERE qt.{cst.TASK_ID} = $1
+                """
+                quant_row = await connection.fetchrow(quant_query, task_data[cst.TASK_ID])
+                if quant_row:
+                    task_data.update(dict(quant_row))
+                tasks.append(_quant_task_from_row(task_type, task_data, _QUANT_TASK_CLASSES))
         return tasks
 
 
@@ -1673,7 +1863,7 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB, include_fail
         async with connection.transaction():
             if include_failed_training:
                 training_filter = f"""
-                    tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
+                    tn.{cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})
                     OR EXISTS (
                         SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
                         WHERE ttht.{cst.TASK_ID} = tn.{cst.TASK_ID}
@@ -1683,7 +1873,7 @@ async def add_task_evaluation_pairs(task_id: UUID, psql_db: PSQLDB, include_fail
                 """
             else:
                 training_filter = f"""
-                    tn.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})
+                    tn.{cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})
                     OR EXISTS (
                         SELECT 1 FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} ttht
                         WHERE ttht.{cst.TASK_ID} = tn.{cst.TASK_ID}
@@ -1838,7 +2028,10 @@ async def get_task_ids_with_evaluation_statuses(
 
     tournament_clause = ""
     if tournament_only:
-        tournament_clause = f"AND e.{cst.TASK_ID} IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE})"
+        tournament_clause = (
+            f"AND e.{cst.TASK_ID} IN (SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_TASKS_TABLE} "
+            f"UNION SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_SEED_TASKS_TABLE})"
+        )
 
     async with await psql_db.connection() as connection:
         rows = await connection.fetch(
@@ -1862,6 +2055,8 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
         return
     expected_rows = len(set(hotkeys))
     terminal_cleanup = f", {cst.GPU_COUNT} = NULL" if status in {"success", "failure"} else ""
+    if status == "success":
+        terminal_cleanup += f", {cst.INFRA_ERROR_ATTEMPTS} = 0"
     async with await psql_db.connection() as connection:
         result = await connection.execute(
             f"""
@@ -1884,6 +2079,36 @@ async def update_task_evaluations_status(task_id: UUID, hotkeys: list[str], stat
                 status,
                 hotkeys,
             )
+
+
+async def record_task_evaluation_infra_errors(
+    task_id: UUID, hotkeys: list[str], max_attempts: int, held_status: str, psql_db: PSQLDB
+) -> dict[str, int]:
+    """Count one infrastructure/evaluation error on each row and take it off 'evaluating': back to 'pending' below
+    max_attempts, to held_status at it. Returns each row's new count, for the rows it changed only: a row already
+    settled (success, failure) or held is left alone, since the caller may have written some of its rows before it failed."""
+    if not hotkeys:
+        return {}
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(
+            f"""
+            UPDATE {cst.EVALUATIONS_TABLE}
+            SET {cst.INFRA_ERROR_ATTEMPTS} = {cst.INFRA_ERROR_ATTEMPTS} + 1,
+                {cst.EVALUATION_STATUS} = CASE
+                    WHEN {cst.INFRA_ERROR_ATTEMPTS} + 1 >= $4 THEN $5 ELSE 'pending' END,
+                {cst.GPU_COUNT} = NULL,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2) AND {cst.NETUID} = $3
+              AND {cst.EVALUATION_STATUS} IN ('pending', 'evaluating')
+            RETURNING {cst.HOTKEY}, {cst.INFRA_ERROR_ATTEMPTS}
+            """,
+            task_id,
+            hotkeys,
+            NETUID,
+            max_attempts,
+            held_status,
+        )
+    return {row[cst.HOTKEY]: row[cst.INFRA_ERROR_ATTEMPTS] for row in rows}
 
 
 async def clear_task_evaluation_deployments(task_id: UUID, hotkeys: list[str], psql_db: PSQLDB) -> None:
@@ -2465,7 +2690,7 @@ async def get_successful_matching_tasks(
     tournament_tasks_clause = (
         ""
         if include_tournament_tasks
-        else f"AND t.{cst.TASK_ID} NOT IN (SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE})"
+        else f"AND t.{cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
     )
 
     # Always exclude benchmark tasks
@@ -2565,6 +2790,10 @@ async def copy_task_for_benchmark(
         if copied_task.test_data:
             logger.info("Regenerating presigned URL for test_data")
             copied_task.test_data = await async_minio_client.get_new_presigned_url(copied_task.test_data)
+
+        if copied_task.calibration_data:
+            logger.info("Regenerating presigned URL for calibration_data")
+            copied_task.calibration_data = await async_minio_client.get_new_presigned_url(copied_task.calibration_data)
 
         if copied_task.training_data:
             logger.info("Regenerating presigned URL for training_data")

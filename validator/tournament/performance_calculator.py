@@ -1,9 +1,11 @@
+import math
 import statistics
 
 import numpy as np
 
 import validator.scoring.constants as cts
 from core.logging import get_logger
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.tasks import get_task
@@ -14,18 +16,117 @@ from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.models import MinerResultsText
+from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.models import BossTaskAnalytics
 from validator.tournament.models import PairedLossComparison
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentPerformanceData
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import challenger_takes_paired_task
+from validator.tournament.thresholds import challenger_within_freeform_allowed_loss
+from validator.tournament.thresholds import challenger_within_paired_allowed_loss
 from validator.tournament.thresholds import compare_paired_losses
+from validator.tournament.thresholds import quant_challenger_takes_fixed_boss_task
+from validator.tournament.thresholds import resolve_freeform_boss_task
+from validator.tournament.thresholds import sku_aligned_losses
 
 
 logger = get_logger(__name__)
+
+
+def _freeform_analytics(
+    boss_result: MinerResultsText | None, challenger_result: MinerResultsText | None
+) -> BossTaskAnalytics:
+    """Mirror of the freeform crowning decision: the cap, then effective bytes with QUANT_FREEFORM_BOSS_BYTE_MARGIN."""
+    verdict = resolve_freeform_boss_task(boss_result, challenger_result, t_cst.QUANT_FREEFORM_BOSS_BYTE_MARGIN)
+    challenger_won = verdict.winner_hotkey != EMISSION_BURN_HOTKEY
+    return BossTaskAnalytics(
+        challenger_won=challenger_won,
+        reason=verdict.decided_by,
+        within_allowed_loss=None if challenger_won else challenger_within_freeform_allowed_loss(boss_result, challenger_result),
+    )
+
+
+async def _quant_challenger_won_task(
+    task_id,
+    task_obj,
+    challenger_hotkey: str,
+    boss_score: float,
+    challenger_score: float,
+    threshold: float,
+    psql_db,
+    boss_result: MinerResultsText | None = None,
+    challenger_result: MinerResultsText | None = None,
+) -> BossTaskAnalytics:
+    """Mirror of the crowning decision for a single quant boss-round task.
+
+    Freeform is decided on the cap and effective bytes, as crowning does. Fixed uses the paired per-example
+    comparison on vectors aligned onto the boss's SKU; where either side has no vector the boss keeps the task.
+    within_allowed_loss comes from the aligned vectors the verdict used, through the function crowning uses.
+    """
+    if task_obj.task_type == TaskType.QUANTFREEFORMTASK:
+        return _freeform_analytics(boss_result, challenger_result)
+
+    boss_losses, boss_fingerprint = await get_per_example_losses(task_id, EMISSION_BURN_HOTKEY, psql_db)
+    challenger_losses, challenger_fingerprint = await get_per_example_losses(task_id, challenger_hotkey, psql_db)
+
+    pairable = (
+        boss_losses is not None
+        and challenger_losses is not None
+        and len(boss_losses) == len(challenger_losses)
+        and not (
+            boss_fingerprint is not None and challenger_fingerprint is not None and boss_fingerprint != challenger_fingerprint
+        )
+    )
+    if pairable:
+        try:
+            challenger_losses = await sku_aligned_losses(
+                task_obj.task_type,
+                task_id,
+                EMISSION_BURN_HOTKEY,
+                challenger_hotkey,
+                challenger_losses,
+                psql_db,
+                task_obj.training_start_point,
+            )
+        except QuantReferenceUnavailable as e:
+            logger.error(f"Task {task_id}: {e} - not counted as a win")
+            return BossTaskAnalytics(
+                challenger_won=False,
+                reason="No same-SKU reference to pair the two quant vectors on",
+                within_allowed_loss=False,
+            )
+        comparison = compare_paired_losses(boss_losses, challenger_losses)
+        challenger_won, reason = quant_challenger_takes_fixed_boss_task(comparison, boss_score, challenger_score)
+        within = None
+        if not challenger_won:
+            # A draw is within: the swapped comparison decides nothing either.
+            within, _ = challenger_within_paired_allowed_loss(boss_losses, challenger_losses, boss_score, challenger_score)
+        return BossTaskAnalytics(
+            challenger_won=challenger_won, paired_comparison=comparison, reason=reason, within_allowed_loss=within
+        )
+
+    if boss_losses is not None and challenger_losses is not None:
+        logger.error(f"Task {task_id}: per-example vectors present but not pairable - not counted as a win")
+        return BossTaskAnalytics(
+            challenger_won=False,
+            reason="Per-example vectors could not be paired - the two models were scored on different data",
+            within_allowed_loss=False,
+        )
+
+    if (boss_losses is None or challenger_losses is None) and not math.isfinite(boss_score) and math.isfinite(challenger_score):
+        # A boss entry that is a scored fail has no vector: a challenger with a valid loss takes the task, as in crowning.
+        return BossTaskAnalytics(challenger_won=True, reason="The boss's entry is a scored fail", within_allowed_loss=None)
+
+    # The paired test is part of the rule: without both vectors it cannot be run, so the boss keeps the task.
+    logger.error(f"Task {task_id}: no per-example vectors for performance calc - not counted as a win")
+    return BossTaskAnalytics(
+        challenger_won=False, reason="No per-example losses to pair", within_allowed_loss=False
+    )
 
 
 async def _challenger_won_task(
@@ -116,6 +217,8 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         boss_score = None
         challenger_score = None
         challenger_hotkey = None
+        boss_result = None
+        challenger_result = None
 
         if task_obj.task_type == TaskType.ENVIRONMENTTASK:
             valid_participants = [
@@ -154,9 +257,11 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             for result in ranked_results:
                 if result.hotkey == EMISSION_BURN_HOTKEY:
                     boss_score = result.adjusted_loss
+                    boss_result = result
                 elif challenger_hotkey is None:
                     challenger_hotkey = result.hotkey
                     challenger_score = result.adjusted_loss
+                    challenger_result = result
 
         if boss_score is None and challenger_score is None:
             logger.warning(f"Both boss and challenger missing scores for task {task.task_id}")
@@ -188,12 +293,15 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                     threshold_used=threshold,
                     performance_difference=None,
                     challenger_won=False,
+                    # A failed score is never within the allowed loss.
+                    within_allowed_loss=False if task_obj.task_type in QUANT_TASK_TYPES else None,
                 )
             )
             continue
 
         paired_comparison = None
         decision_reason = None
+        within_allowed_loss = None
         if task_obj.task_type == TaskType.ENVIRONMENTTASK:
             # Local import breaks the weights <-> performance_calculator import cycle.
             from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
@@ -216,15 +324,38 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
             # perf_diff stays a percentage - it scales emissions and is not a gate. challenger_won
             # is the gate, so it has to be decided the same way crowning decided it or analytics
             # and the emission projection contradict the actual result.
-            challenger_won, paired_comparison, decision_reason = await _challenger_won_task(
-                task_id=task.task_id,
-                task_obj=task_obj,
-                challenger_hotkey=challenger_hotkey,
-                boss_score=boss_score,
-                challenger_score=challenger_score,
-                threshold=threshold,
-                psql_db=psql_db,
-            )
+            if task_obj.task_type in QUANT_TASK_TYPES:
+                analytics = await _quant_challenger_won_task(
+                    task_id=task.task_id,
+                    task_obj=task_obj,
+                    challenger_hotkey=challenger_hotkey,
+                    boss_score=boss_score,
+                    challenger_score=challenger_score,
+                    threshold=threshold,
+                    psql_db=psql_db,
+                    boss_result=boss_result,
+                    challenger_result=challenger_result,
+                )
+                challenger_won = analytics.challenger_won
+                paired_comparison = analytics.paired_comparison
+                decision_reason = analytics.reason
+                within_allowed_loss = analytics.within_allowed_loss
+            else:
+                challenger_won, paired_comparison, decision_reason = await _challenger_won_task(
+                    task_id=task.task_id,
+                    task_obj=task_obj,
+                    challenger_hotkey=challenger_hotkey,
+                    boss_score=boss_score,
+                    challenger_score=challenger_score,
+                    threshold=threshold,
+                    psql_db=psql_db,
+                )
+
+        # A failed-but-scored entry carries an infinite loss; the ratio is then inf or nan, and it feeds the emission boost.
+        # Who won is already decided above, so only the number is dropped.
+        recorded_perf_diff = perf_diff if math.isfinite(boss_score) and math.isfinite(challenger_score) else None
+        if recorded_perf_diff is None:
+            logger.warning(f"Task {task.task_id}: non-finite score (boss={boss_score}, challenger={challenger_score}), no diff")
 
         performance_differences.append(
             TaskPerformanceDifference(
@@ -233,17 +364,19 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 boss_score=boss_score,
                 challenger_score=challenger_score,
                 threshold_used=threshold,
-                performance_difference=perf_diff,
+                performance_difference=recorded_perf_diff,
                 challenger_won=challenger_won,
                 paired_comparison=paired_comparison,
                 decision_reason=decision_reason,
+                within_allowed_loss=within_allowed_loss,
             )
         )
 
+        diff_text = "n/a" if recorded_perf_diff is None else f"{recorded_perf_diff * 100:.2f}%"
         logger.info(
             f"Task {task.task_id}: Boss={current_champion} "
             f"({boss_score:.6f}), Challenger={challenger_hotkey} ({challenger_score:.6f}), "
-            f"Diff={perf_diff * 100:.2f}%, Threshold={threshold * 100:.1f}%, Challenger won: {challenger_won}"
+            f"Diff={diff_text}, Threshold={threshold * 100:.1f}%, Challenger won: {challenger_won}"
         )
 
     return performance_differences
@@ -375,9 +508,14 @@ async def calculate_performance_difference(tournament_id: str, psql_db) -> float
         median_performance_diff = 0.0
     else:
         performance_differences = [
-            data.performance_difference for data in performance_data if data.performance_difference is not None
+            data.performance_difference
+            for data in performance_data
+            if data.performance_difference is not None and math.isfinite(data.performance_difference)
         ]
         median_performance_diff = statistics.median(performance_differences) if performance_differences else 0.0
+        if not math.isfinite(median_performance_diff):
+            logger.warning(f"Non-finite median performance difference {median_performance_diff}, using 0.0")
+            median_performance_diff = 0.0
         logger.info(f"Median performance difference: {median_performance_diff} from {len(performance_differences)} task pairs")
 
     await update_tournament_winning_performance(tournament_id, median_performance_diff, psql_db)

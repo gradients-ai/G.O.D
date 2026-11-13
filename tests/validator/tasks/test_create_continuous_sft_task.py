@@ -8,6 +8,7 @@ revert to chatml would corrupt every continuous-SFT eval loss).
 
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 
@@ -21,13 +22,19 @@ from validator.tournament.models import ContinuousSftState
 SEED = "Qwen/Qwen3-8B-Base"
 
 
+async def _assign_task_id(task, psql_db):
+    task.task_id = uuid4()  # add_task assigns the id of the stored task
+    return task
+
+
 def _patch(monkeypatch, *, state, response):
     """Wire the three seams; return the AsyncMocks for call_content_service and add_task."""
     monkeypatch.setattr(scheduler, "get_continuous_sft_state", AsyncMock(return_value=state))
     ccs = AsyncMock(return_value=response)
     monkeypatch.setattr(scheduler, "call_content_service", ccs)
-    add_task = AsyncMock(side_effect=lambda task, psql_db: task)  # echo the task back
+    add_task = AsyncMock(side_effect=_assign_task_id)
     monkeypatch.setattr(scheduler, "add_task", add_task)
+    monkeypatch.setattr(scheduler, "record_continuous_sft_task_chunk", AsyncMock())
     return ccs, add_task
 
 
@@ -49,7 +56,7 @@ async def test_builds_expected_chatrawtask(monkeypatch):
     assert task.training_data == "https://s3/train"
     assert task.test_data == "https://s3/test"
     assert task.ds == "continuous-sft:qwen:chunk-00003"
-    assert task.hours_to_complete == 4.0  # fallback budget; prep resizes via the throughput pipeline
+    assert task.hours_to_complete == 2.5  # fixed budget, unchanged after prep
     assert task.is_organic is False
     assert task.augmentation_config is None
 

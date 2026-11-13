@@ -39,6 +39,7 @@ async def check_hotkey_scoring(hotkey: str):
     # Fetch tournament data for display purposes
     text_tournament = await get_latest_completed_tournament(config.psql_db, TournamentType.TEXT)
     image_tournament = await get_latest_completed_tournament(config.psql_db, TournamentType.IMAGE)
+    quant_tournament = await get_latest_completed_tournament(config.psql_db, TournamentType.QUANT)
 
     if text_tournament:
         print(f"  Text Tournament: {text_tournament.tournament_id}")
@@ -52,9 +53,16 @@ async def check_hotkey_scoring(hotkey: str):
     else:
         print("  Image Tournament: None")
 
+    if quant_tournament:
+        print(f"  Quant Tournament: {quant_tournament.tournament_id}")
+        print(f"    Winner: {quant_tournament.winner_hotkey}")
+    else:
+        print("  Quant Tournament: None")
+
     print("\nWeight Distribution:")
     print(f"  Text tournament weight: {tournament_audit_data.text_tournament_weight:.6f}")
     print(f"  Image tournament weight: {tournament_audit_data.image_tournament_weight:.6f}")
+    print(f"  Quant tournament weight: {tournament_audit_data.quant_tournament_weight:.6f}")
     print(f"  Burn weight: {tournament_audit_data.burn_weight:.6f}")
     print(f"  Active participants: {len(tournament_audit_data.participants)}")
 
@@ -85,13 +93,16 @@ async def check_hotkey_scoring(hotkey: str):
     # Check tournament wins
     text_winner = text_tournament.winner_hotkey == hotkey if text_tournament else False
     image_winner = image_tournament.winner_hotkey == hotkey if image_tournament else False
+    quant_winner = quant_tournament.winner_hotkey == hotkey if quant_tournament else False
 
-    if text_winner or image_winner:
+    if text_winner or image_winner or quant_winner:
         print("\n🎯 Tournament Winner:")
         if text_winner:
             print("   ✅ Text Tournament Winner!")
         if image_winner:
             print("   ✅ Image Tournament Winner!")
+        if quant_winner:
+            print("   ✅ Quant Tournament Winner!")
 
     # Check tournament rankings
     print("\n📊 Tournament Rankings:")
@@ -119,6 +130,18 @@ async def check_hotkey_scoring(hotkey: str):
             print(f"   Image Tournament: Reached {image_position[1]} (Round {image_position[0] + 1})")
         else:
             print("   Image Tournament: Did not participate")
+
+    if tournament_audit_data.quant_tournament_data:
+        quant_position = None
+        for round_idx, round_data in enumerate(tournament_audit_data.quant_tournament_data.rounds):
+            if hotkey in round_data.participants:
+                quant_position = (round_idx, round_data.round_name)
+                break
+
+        if quant_position:
+            print(f"   Quant Tournament: Reached {quant_position[1]} (Round {quant_position[0] + 1})")
+        else:
+            print("   Quant Tournament: Did not participate")
 
     # Get calculated weight
     calculated_weight = all_node_weights[target_node.node_id]
@@ -151,6 +174,8 @@ async def check_hotkey_scoring(hotkey: str):
         weight_sources.append(f"   ✅ Text tournament winner: ~{tournament_audit_data.text_tournament_weight:.4f}")
     if image_winner:
         weight_sources.append(f"   ✅ Image tournament winner: ~{tournament_audit_data.image_tournament_weight:.4f}")
+    if quant_winner:
+        weight_sources.append(f"   ✅ Quant tournament winner: ~{tournament_audit_data.quant_tournament_weight:.4f}")
     if is_participant:
         # Approximate participation weight
         import validator.scoring.constants as cts

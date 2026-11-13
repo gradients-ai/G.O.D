@@ -25,12 +25,13 @@ from validator.db.sql.tournaments import get_recent_completed_entrant_counts
 
 logger = get_logger(__name__)
 
-_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.IMAGE)
+_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.QUANT, TournamentType.IMAGE)
 
 
 def _minimums() -> dict[TournamentType, float]:
     return {
         TournamentType.TEXT: cts.TOURNAMENT_TEXT_WEIGHT,
+        TournamentType.QUANT: cts.TOURNAMENT_QUANT_WEIGHT,
         TournamentType.IMAGE: cts.TOURNAMENT_IMAGE_WEIGHT,
     }
 
@@ -65,6 +66,15 @@ def compute_dynamic_base_weights(
     return {t: minimum[t] + cts.EMISSION_FLEX_POOL * desirability[t] / total_desirability for t in _TYPES}
 
 
+def max_weight_by_type() -> dict[TournamentType, float]:
+    """Cap on each type's final (base + boost) weight."""
+    return {
+        TournamentType.TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
+        TournamentType.QUANT: cts.MAX_QUANT_TOURNAMENT_WEIGHT,
+        TournamentType.IMAGE: cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
+    }
+
+
 async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
     """Fetch rolling entrant counts per type and compute the dynamic base split."""
     counts: dict[TournamentType, float | None] = {}
@@ -79,10 +89,11 @@ async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
 
     weights = compute_dynamic_base_weights(counts)
     logger.info(
-        "Dynamic emission base split (rolling-%d entrants %s): text=%.4f image=%.4f",
+        "Dynamic emission base split (rolling-%d entrants %s): text=%.4f quant=%.4f image=%.4f",
         cts.EMISSION_BALANCE_ROLLING_WINDOW,
         {t.value: counts[t] for t in _TYPES},
         weights[TournamentType.TEXT],
+        weights[TournamentType.QUANT],
         weights[TournamentType.IMAGE],
     )
     return weights

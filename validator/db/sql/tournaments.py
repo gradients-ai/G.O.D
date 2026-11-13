@@ -4,11 +4,13 @@ from datetime import timedelta
 from datetime import timezone
 
 import validator.db.constants as cst
+from core.constants.network import NETUID
 from core.logging import get_logger
 from core.models.pvp_models import PvPEnvironmentResult
 from core.models.pvp_models import PvPIndividualScoreDbRow
 from core.models.pvp_models import PvPPairDbRow
 from core.models.pvp_models import PvPPairResult
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
@@ -20,6 +22,7 @@ from validator.db.sql.submissions_and_scoring import get_task_winners
 from validator.tasks.details import normalise_float
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation
+from validator.tournament.models import PendingDecoderRelease
 from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentGroupData
@@ -187,8 +190,9 @@ async def add_tournament_participants(participants: list[TournamentParticipant],
             query = f"""
                 INSERT INTO {cst.TOURNAMENT_PARTICIPANTS_TABLE}
                 ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
-                 {cst.REQUESTED_DATASETS}, {cst.CREATED_AT})
-                VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                 {cst.REQUESTED_DATASETS}, {cst.DECODER_OBJECT_NAME}, {cst.DECODER_XZ_BYTES}, {cst.DECODER_SHA256},
+                 {cst.DECODER_TAR_SHA256}, {cst.DECODER_TREE_SHA}, {cst.DECODER_XZ_VERSION}, {cst.CREATED_AT})
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, CURRENT_TIMESTAMP)
                 ON CONFLICT ({cst.TOURNAMENT_ID}, {cst.HOTKEY}) DO NOTHING
             """
             for participant in participants:
@@ -199,8 +203,39 @@ async def add_tournament_participants(participants: list[TournamentParticipant],
                     participant.training_repo,
                     participant.training_commit_hash,
                     json.dumps(participant.requested_datasets) if participant.requested_datasets else None,
+                    participant.decoder_object_name,
+                    participant.decoder_xz_bytes,
+                    participant.decoder_sha256,
+                    participant.decoder_tar_sha256,
+                    participant.decoder_tree_sha,
+                    participant.decoder_xz_version,
                 )
             logger.info(f"Added {len(participants)} participants to tournament")
+
+
+async def set_tournament_participant_decoder_snapshot(participant: TournamentParticipant, psql_db: PSQLDB) -> bool:
+    """Persist a decoder snapshot taken after the row was created (add_tournament_participants never updates a row).
+
+    Only fills a row that has no snapshot yet, so a snapshot already stored is never overwritten.
+    """
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+            SET {cst.DECODER_OBJECT_NAME} = $3, {cst.DECODER_XZ_BYTES} = $4, {cst.DECODER_SHA256} = $5,
+                {cst.DECODER_TAR_SHA256} = $6, {cst.DECODER_TREE_SHA} = $7, {cst.DECODER_XZ_VERSION} = $8
+            WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.DECODER_OBJECT_NAME} IS NULL
+            """,
+            participant.tournament_id,
+            participant.hotkey,
+            participant.decoder_object_name,
+            participant.decoder_xz_bytes,
+            participant.decoder_sha256,
+            participant.decoder_tar_sha256,
+            participant.decoder_tree_sha,
+            participant.decoder_xz_version,
+        )
+    return result == "UPDATE 1"
 
 
 class _InsufficientTournamentBalance(Exception):
@@ -273,8 +308,10 @@ async def enroll_tournament_participant_with_fee(
                     INSERT INTO {cst.TOURNAMENT_PARTICIPANTS_TABLE}
                     ({cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.TRAINING_REPO},
                      {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
-                     {cst.REQUESTED_DATASETS}, {cst.CREATED_AT})
-                    VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+                     {cst.REQUESTED_DATASETS}, {cst.DECODER_OBJECT_NAME}, {cst.DECODER_XZ_BYTES},
+                     {cst.DECODER_SHA256}, {cst.DECODER_TAR_SHA256}, {cst.DECODER_TREE_SHA},
+                     {cst.DECODER_XZ_VERSION}, {cst.CREATED_AT})
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, CURRENT_TIMESTAMP)
                     ON CONFLICT ({cst.TOURNAMENT_ID}, {cst.HOTKEY}) DO NOTHING
                     RETURNING {cst.HOTKEY}
                     """,
@@ -284,6 +321,12 @@ async def enroll_tournament_participant_with_fee(
                     participant.training_commit_hash,
                     participant.github_token,
                     json.dumps(participant.requested_datasets) if participant.requested_datasets else None,
+                    participant.decoder_object_name,
+                    participant.decoder_xz_bytes,
+                    participant.decoder_sha256,
+                    participant.decoder_tar_sha256,
+                    participant.decoder_tree_sha,
+                    participant.decoder_xz_version,
                 )
 
                 if inserted is None:
@@ -574,6 +617,24 @@ async def get_tournament_tasks(round_id: str, psql_db: PSQLDB) -> list[Tournamen
         ]
 
 
+async def get_tournament_task_ids_of_type(
+    tournament_id: str, task_type: TaskType, psql_db: PSQLDB, final_round_only: bool = False
+) -> list[str]:
+    """Task ids of one task type in a tournament, oldest first; final_round_only keeps just the boss round's."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT tt.{cst.TASK_ID}
+            FROM {cst.TOURNAMENT_TASKS_TABLE} tt
+            JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
+            JOIN {cst.TOURNAMENT_ROUNDS_TABLE} tr ON tr.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
+            WHERE tt.{cst.TOURNAMENT_ID} = $1 AND t.{cst.TASK_TYPE} = $2
+              AND ($3 = false OR tr.{cst.IS_FINAL_ROUND} = true)
+            ORDER BY tt.{cst.CREATED_AT}, tt.{cst.TASK_ID}
+        """
+        rows = await connection.fetch(query, tournament_id, task_type.value, final_round_only)
+        return [str(row[cst.TASK_ID]) for row in rows]
+
+
 async def get_tournament_pairs(round_id: str, psql_db: PSQLDB) -> list[TournamentPairData]:
     async with await psql_db.connection() as connection:
         query = f"""
@@ -798,6 +859,35 @@ async def get_tournaments_with_status(status: TournamentStatus, psql_db: PSQLDB)
         ]
 
 
+async def get_completed_tournaments_since(
+    tournament_type: TournamentType, since: datetime, psql_db: PSQLDB
+) -> list[TournamentData]:
+    """Tournaments of a type that completed at or after `since` (updated_at of a completed tournament is its completion
+    time), newest created first."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.UPDATED_AT}
+            FROM {cst.TOURNAMENTS_TABLE}
+            WHERE {cst.TOURNAMENT_TYPE} = $1
+              AND {cst.TOURNAMENT_STATUS} = '{TournamentStatus.COMPLETED.value}'
+              AND {cst.UPDATED_AT} >= $2
+            ORDER BY {cst.CREATED_AT} DESC
+        """
+        results = await connection.fetch(query, tournament_type.value, since)
+        return [
+            TournamentData(
+                tournament_id=row[cst.TOURNAMENT_ID],
+                tournament_type=row[cst.TOURNAMENT_TYPE],
+                status=row[cst.TOURNAMENT_STATUS],
+                base_winner_hotkey=row[cst.BASE_WINNER_HOTKEY],
+                winner_hotkey=row[cst.WINNER_HOTKEY],
+                updated_at=row[cst.UPDATED_AT],
+            )
+            for row in results
+        ]
+
+
 async def update_tournament_participant_training_repo(
     tournament_id: str,
     hotkey: str,
@@ -838,12 +928,97 @@ async def update_tournament_participant_backup_repo(tournament_id: str, hotkey: 
         logger.info(f"Updated backup repo for participant {hotkey} in tournament {tournament_id}")
 
 
+async def set_tournament_participant_training_commit(tournament_id: str, hotkey: str, commit_hash: str, psql_db: PSQLDB):
+    """Pin a participant's training commit (the boss row, when the HEAD fetch at creation failed)."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+            SET {cst.TRAINING_COMMIT_HASH} = $1
+            WHERE {cst.TOURNAMENT_ID} = $2 AND {cst.HOTKEY} = $3
+        """
+        await connection.execute(query, commit_hash, tournament_id, hotkey)
+        logger.info(f"Pinned training commit {commit_hash} for participant {hotkey} in tournament {tournament_id}")
+
+
+async def set_decoder_released(tournament_id: str, hotkey: str, url: str, released_at: datetime, psql_db: PSQLDB):
+    """Record the public release of a participant's decoder snapshot (champion handover)."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TOURNAMENT_PARTICIPANTS_TABLE}
+            SET {cst.DECODER_RELEASED_URL} = $1, {cst.DECODER_RELEASED_AT} = $2
+            WHERE {cst.TOURNAMENT_ID} = $3 AND {cst.HOTKEY} = $4
+        """
+        await connection.execute(query, url, released_at, tournament_id, hotkey)
+        logger.info(f"Recorded decoder release for participant {hotkey} in tournament {tournament_id}")
+
+
+async def _winner_decoders_unreleased(burn_hotkey: str, has_backup_repo: bool, psql_db: PSQLDB) -> list[PendingDecoderRelease]:
+    """Text-tournament winners (never the burn hotkey) whose decoder snapshot is not released, split by backup_repo.
+
+    Keyed on winner_hotkey, not on COMPLETED: tournaments stay ACTIVE until a human flips them.
+    """
+    backup_clause = "IS NOT NULL" if has_backup_repo else "IS NULL"
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT tp.{cst.TOURNAMENT_ID}, tp.{cst.HOTKEY}
+            FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE} tp
+            JOIN {cst.TOURNAMENTS_TABLE} t
+                ON tp.{cst.TOURNAMENT_ID} = t.{cst.TOURNAMENT_ID} AND tp.{cst.HOTKEY} = t.{cst.WINNER_HOTKEY}
+            WHERE tp.{cst.HOTKEY} <> $1
+              AND t.{cst.TOURNAMENT_TYPE} = $2
+              AND tp.{cst.DECODER_OBJECT_NAME} IS NOT NULL
+              AND tp.{cst.DECODER_RELEASED_AT} IS NULL
+              AND tp.{cst.BACKUP_REPO} {backup_clause}
+            ORDER BY tp.{cst.TOURNAMENT_ID}, tp.{cst.HOTKEY}
+        """
+        rows = await connection.fetch(query, burn_hotkey, TournamentType.QUANT.value)
+    return [PendingDecoderRelease(tournament_id=row[cst.TOURNAMENT_ID], hotkey=row[cst.HOTKEY]) for row in rows]
+
+
+async def get_pending_decoder_releases(burn_hotkey: str, psql_db: PSQLDB) -> list[PendingDecoderRelease]:
+    """Winners whose decoder is ready to release: snapshot taken, code pushed, not yet released."""
+    return await _winner_decoders_unreleased(burn_hotkey, True, psql_db)
+
+
+async def get_blocked_decoder_releases(burn_hotkey: str, psql_db: PSQLDB) -> list[PendingDecoderRelease]:
+    """Winners with an unreleased decoder snapshot but no backup_repo: the release.json needs the pushed code."""
+    return await _winner_decoders_unreleased(burn_hotkey, False, psql_db)
+
+
+async def get_tournaments_with_pending_decoded_publication(psql_db: PSQLDB) -> list[str]:
+    """Decided quant tournaments with a boss-round freeform decoded model not yet on HF."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT DISTINCT t.{cst.TOURNAMENT_ID}
+            FROM {cst.TOURNAMENTS_TABLE} t
+            JOIN {cst.TOURNAMENT_TASKS_TABLE} tt ON tt.{cst.TOURNAMENT_ID} = t.{cst.TOURNAMENT_ID}
+            JOIN {cst.TOURNAMENT_ROUNDS_TABLE} tr ON tr.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
+            JOIN {cst.TASKS_TABLE} tk ON tk.{cst.TASK_ID} = tt.{cst.TASK_ID}
+            JOIN {cst.TASK_NODES_TABLE} tn ON tn.{cst.TASK_ID} = tt.{cst.TASK_ID}
+            WHERE t.{cst.TOURNAMENT_TYPE} = $1
+              AND t.{cst.WINNER_HOTKEY} IS NOT NULL
+              AND tr.{cst.IS_FINAL_ROUND} = true
+              AND tk.{cst.TASK_TYPE} = $2
+              AND tn.{cst.NETUID} = $3
+              AND tn.{cst.DECODED_FILES} IS NOT NULL
+              AND tn.{cst.DECODED_FILES} <> 'null'::jsonb
+              AND tn.{cst.DECODED_FILES} <> '[]'::jsonb
+              AND tn.{cst.DECODED_HF_REPO} IS NULL
+            ORDER BY t.{cst.TOURNAMENT_ID}
+        """
+        rows = await connection.fetch(query, TournamentType.QUANT.value, TaskType.QUANTFREEFORMTASK.value, NETUID)
+    return [row[cst.TOURNAMENT_ID] for row in rows]
+
+
 async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: PSQLDB) -> TournamentParticipant | None:
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
                    {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
-                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW}
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW},
+                   {cst.DECODER_OBJECT_NAME}, {cst.DECODER_XZ_BYTES}, {cst.DECODER_SHA256},
+                   {cst.DECODER_TAR_SHA256}, {cst.DECODER_TREE_SHA}, {cst.DECODER_XZ_VERSION},
+                   {cst.DECODER_RELEASED_URL}, {cst.DECODER_RELEASED_AT}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1 AND {cst.HOTKEY} = $2
         """
@@ -860,6 +1035,14 @@ async def get_tournament_participant(tournament_id: str, hotkey: str, psql_db: P
                 backup_repo=result[cst.BACKUP_REPO],
                 requested_datasets=_parse_requested_datasets(result[cst.REQUESTED_DATASETS]),
                 code_review=result[cst.CODE_REVIEW],
+                decoder_object_name=result[cst.DECODER_OBJECT_NAME],
+                decoder_xz_bytes=result[cst.DECODER_XZ_BYTES],
+                decoder_sha256=result[cst.DECODER_SHA256],
+                decoder_tar_sha256=result[cst.DECODER_TAR_SHA256],
+                decoder_tree_sha=result[cst.DECODER_TREE_SHA],
+                decoder_xz_version=result[cst.DECODER_XZ_VERSION],
+                decoder_released_url=result[cst.DECODER_RELEASED_URL],
+                decoder_released_at=result[cst.DECODER_RELEASED_AT],
             )
         return None
 
@@ -870,7 +1053,10 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.HOTKEY}, {cst.ELIMINATED_IN_ROUND_ID},
                    {cst.FINAL_POSITION}, {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH},
-                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW}
+                   {cst.GITHUB_TOKEN}, {cst.BACKUP_REPO}, {cst.REQUESTED_DATASETS}, {cst.CODE_REVIEW},
+                   {cst.DECODER_OBJECT_NAME}, {cst.DECODER_XZ_BYTES}, {cst.DECODER_SHA256},
+                   {cst.DECODER_TAR_SHA256}, {cst.DECODER_TREE_SHA}, {cst.DECODER_XZ_VERSION},
+                   {cst.DECODER_RELEASED_URL}, {cst.DECODER_RELEASED_AT}
             FROM {cst.TOURNAMENT_PARTICIPANTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
         """
@@ -887,6 +1073,14 @@ async def get_tournament_participants(tournament_id: str, psql_db: PSQLDB) -> li
                 backup_repo=row[cst.BACKUP_REPO],
                 requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
                 code_review=row[cst.CODE_REVIEW],
+                decoder_object_name=row[cst.DECODER_OBJECT_NAME],
+                decoder_xz_bytes=row[cst.DECODER_XZ_BYTES],
+                decoder_sha256=row[cst.DECODER_SHA256],
+                decoder_tar_sha256=row[cst.DECODER_TAR_SHA256],
+                decoder_tree_sha=row[cst.DECODER_TREE_SHA],
+                decoder_xz_version=row[cst.DECODER_XZ_VERSION],
+                decoder_released_url=row[cst.DECODER_RELEASED_URL],
+                decoder_released_at=row[cst.DECODER_RELEASED_AT],
             )
             for row in results
         ]
@@ -1553,7 +1747,29 @@ async def get_tournament_id_by_task_id(task_id: str, psql_db: PSQLDB) -> str | N
         if benchmark_result:
             return benchmark_result[cst.TOURNAMENT_ID]
 
+        # A seed task (the boss's upfront training) belongs to its tournament before it is attached to any round.
+        seed_result = await connection.fetchrow(
+            f"""
+            SELECT {cst.TOURNAMENT_ID}
+            FROM {cst.TOURNAMENT_SEED_TASKS_TABLE}
+            WHERE {cst.TASK_ID} = $1
+            LIMIT 1
+            """,
+            task_id,
+        )
+        if seed_result:
+            return seed_result[cst.TOURNAMENT_ID]
+
         return None
+
+
+async def get_tournament_type_for_task(task_id: str, psql_db: PSQLDB) -> TournamentType | None:
+    """Return the type of the tournament a task belongs to (round task, benchmark copy or seed task), or None."""
+    tournament_id = await get_tournament_id_by_task_id(task_id, psql_db)
+    if tournament_id is None:
+        return None
+    tournament = await get_tournament(tournament_id, psql_db)
+    return TournamentType(tournament.tournament_type) if tournament else None
 
 
 async def get_tournament_task_by_task_id(task_id: str, psql_db: PSQLDB) -> TournamentTask | None:
@@ -2199,4 +2415,55 @@ async def get_matching_sibling_task_ids(
                 AND t.{cst.MODEL_ID} = $2
                 AND t.{cst.AUGMENTATION_CONFIG} IS NULL
         """, task_id, model_id)
+        return [row["task_id"] for row in rows]
+
+
+_QUANT_TASK_TYPE_VALUES = sorted(task_type.value for task_type in QUANT_TASK_TYPES)
+
+# A task's training_data is a presigned URL whose signature differs between copies of the same dataset: compare the part
+# before the query string. Siblings are quant tasks of the same tournament: tasks outside a tournament have none.
+_QUANT_PREP_SIBLING_FROM = f"""
+    FROM {cst.TOURNAMENT_TASKS_TABLE} tt_self
+    JOIN {cst.TASKS_TABLE} t_self ON t_self.{cst.TASK_ID} = tt_self.{cst.TASK_ID}
+    JOIN {cst.TOURNAMENT_TASKS_TABLE} tt
+        ON tt.{cst.TOURNAMENT_ID} = tt_self.{cst.TOURNAMENT_ID}
+        AND tt.{cst.TASK_ID} != tt_self.{cst.TASK_ID}
+    JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID} = tt.{cst.TASK_ID}
+    WHERE tt_self.{cst.TASK_ID} = $1
+        AND t.{cst.TASK_TYPE}::text = ANY($2::text[])
+        AND t.{cst.MODEL_ID} = t_self.{cst.MODEL_ID}
+        AND split_part(t.{cst.TRAINING_DATA}, '?', 1) = split_part(t_self.{cst.TRAINING_DATA}, '?', 1)
+        AND split_part(t_self.{cst.TRAINING_DATA}, '?', 1) != ''
+        AND t.{cst.AUGMENTATION_CONFIG} IS NULL
+"""
+
+
+async def get_quant_sibling_baseline_stats(task_id: str, psql_db: PSQLDB) -> dict | None:
+    """Newest baseline_stats of another quant task in the same tournament with the same model and training data (query
+    string ignored) and no augmentation.
+
+    A freeform and a fixed task on one model and dataset share one prep. Returns the raw baseline_stats dict, else None.
+    """
+    async with await psql_db.connection() as connection:
+        row = await connection.fetchrow(f"""
+            SELECT t.{cst.BASELINE_STATS}
+            {_QUANT_PREP_SIBLING_FROM}
+                AND t.{cst.BASELINE_STATS} IS NOT NULL
+            ORDER BY t.{cst.CREATED_AT} DESC
+            LIMIT 1
+        """, task_id, _QUANT_TASK_TYPE_VALUES)
+        if row and row[cst.BASELINE_STATS]:
+            stats = row[cst.BASELINE_STATS]
+            return json.loads(stats) if isinstance(stats, str) else stats
+        return None
+
+
+async def get_quant_prep_sibling_task_ids(task_id: str, psql_db: PSQLDB) -> list[str]:
+    """Ids of other quant tasks in the same tournament with the same model and training data (query string ignored) and no
+    augmentation, in any status."""
+    async with await psql_db.connection() as connection:
+        rows = await connection.fetch(f"""
+            SELECT t.{cst.TASK_ID}::text AS task_id
+            {_QUANT_PREP_SIBLING_FROM}
+        """, task_id, _QUANT_TASK_TYPE_VALUES)
         return [row["task_id"] for row in rows]

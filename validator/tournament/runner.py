@@ -4,6 +4,7 @@ from core.logging import get_logger
 from validator.app.config import load_config
 from validator.tasks.details import try_db_connections
 from validator.tournament.tournament_manager import process_active_tournaments
+from validator.tournament.tournament_manager import process_freeform_publications
 from validator.tournament.tournament_manager import process_pending_rounds
 from validator.tournament.tournament_manager import process_pending_tournaments
 from validator.tournament.tournament_manager import process_tournament_scheduling
@@ -26,6 +27,8 @@ async def cycle():
         process_pending_rounds(config),
         # this advances the tournament till completion
         process_active_tournaments(config),
+        # this publishes (and retries) the freeform decoder releases and boss-round decoded models
+        process_freeform_publications(config),
         # this auto-creates tournaments on schedule
         process_tournament_scheduling(config),
     )

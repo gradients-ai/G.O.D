@@ -16,6 +16,7 @@ import validator.tournament.constants as tourn_cst
 from core.logging import get_logger
 from core.models.payload_models import GpuRequirementSummary
 from core.models.payload_models import TournamentGpuRequirementsResponse
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
@@ -71,6 +72,16 @@ def _participants_without_github_tokens(participants: list[TournamentParticipant
     return [p.model_copy(update={"github_token": None}) for p in participants]
 
 
+def _public_participants(participants: list[TournamentParticipant]) -> list[TournamentParticipant]:
+    """Strip what must never leave the validator before HTTP/Redis; internal DB/orchestration keeps the full model.
+
+    The PAT and, for quant tournaments, the decoder snapshot's MinIO object name. The training repo URL stays (it names
+    the repo, which stays private until the champion handover; results are labelled by it), and the snapshot hashes
+    are public.
+    """
+    return [p.model_copy(update={"decoder_object_name": None}) for p in _participants_without_github_tokens(participants)]
+
+
 async def _get_paired_example_wins(
     task_id: str, task_details, participant_scores: list[dict], psql_db
 ) -> PairedExampleWins | None:
@@ -80,7 +91,10 @@ async def _get_paired_example_wins(
     vectors - everything else, including every task run before the vectors existed, reports None
     and leaves its consumer on the losses.
     """
-    if task_details is None or task_details.task_type not in tourn_cst.PAIRED_BOSS_ROUND_TASK_TYPES:
+    if task_details is None or task_details.task_type not in (
+        *tourn_cst.PAIRED_BOSS_ROUND_TASK_TYPES,
+        *tourn_cst.QUANT_PAIRED_TASK_TYPES,
+    ):
         return None
 
     # Must be the same two submissions the winner logic compared, or this reports a split between
@@ -96,6 +110,8 @@ async def _get_paired_example_wins(
         # Byes, failed evaluations and penalised submissions: nothing to pair against.
         return None
 
+    if task_details.task_type in QUANT_TASK_TYPES:
+        return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db, task_type=task_details.task_type)
     return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db)
 
 
@@ -287,11 +303,12 @@ async def get_tournament_details(
             base_winner_hotkey=tournament.base_winner_hotkey,
             winner_hotkey=tournament.winner_hotkey,
             diff_report=tournament.diff_report,
-            participants=_participants_without_github_tokens(participants),
+            participants=_public_participants(participants),
             rounds=detailed_rounds,
             final_scores=tournament_type_result.scores,
             text_tournament_weight=base_weights[TournamentType.TEXT],
             image_tournament_weight=base_weights[TournamentType.IMAGE],
+            quant_tournament_weight=base_weights.get(TournamentType.QUANT, 0.0),
             boss_round_performance=boss_round_performance,
             sync_performance=sync_performance,
         )
@@ -316,9 +333,11 @@ async def get_latest_tournaments_details(
 
         latest_text = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.TEXT)
         latest_image = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.IMAGE)
+        latest_quant = await tournament_sql.get_latest_completed_tournament(config.psql_db, TournamentType.QUANT)
 
         text_details = None
         image_details = None
+        quant_details = None
 
         if latest_text:
             text_details = await get_tournament_details(latest_text.tournament_id, config)
@@ -326,12 +345,16 @@ async def get_latest_tournaments_details(
         if latest_image:
             image_details = await get_tournament_details(latest_image.tournament_id, config)
 
+        if latest_quant:
+            quant_details = await get_tournament_details(latest_quant.tournament_id, config)
+
         burn_data = await get_tournament_burn_details(config.psql_db)
 
         result = LatestTournamentsDetailsResponse(
             text=text_details,
             image=image_details,
-            burn_data=burn_data
+            burn_data=burn_data,
+            quant=quant_details,
         )
 
         cache_data = result.model_dump()
@@ -341,9 +364,11 @@ async def get_latest_tournaments_details(
         logger.info(
             f"Retrieved latest tournament details: text={latest_text.tournament_id if latest_text else None}, "
             f"image={latest_image.tournament_id if latest_image else None}, "
+            f"quant={latest_quant.tournament_id if latest_quant else None}, "
             f"burn_weight={burn_data.burn_weight:.4f}, "
             f"text_weight={burn_data.text_tournament_weight:.4f}, "
-            f"image_weight={burn_data.image_tournament_weight:.4f}"
+            f"image_weight={burn_data.image_tournament_weight:.4f}, "
+            f"quant_weight={burn_data.quant_tournament_weight:.4f}"
         )
         return result
 
@@ -502,6 +527,8 @@ async def get_next_tournament_dates(
         response = NextTournamentDates(
             text=await get_tournament_info_for_type(TournamentType.TEXT),
             image=await get_tournament_info_for_type(TournamentType.IMAGE),
+            # Not advertised while the scheduler will not start one.
+            quant=await get_tournament_info_for_type(TournamentType.QUANT),
         )
 
         logger.info("Retrieved tournament info")
@@ -543,13 +570,15 @@ async def get_active_tournaments(
 
         text_info = await get_active_tournament_info(TournamentType.TEXT)
         image_info = await get_active_tournament_info(TournamentType.IMAGE)
+        quant_info = await get_active_tournament_info(TournamentType.QUANT)
 
         logger.info(
             f"Retrieved active tournaments: text={text_info.tournament_id if text_info else None}, "
-            f"image={image_info.tournament_id if image_info else None}"
+            f"image={image_info.tournament_id if image_info else None}, "
+            f"quant={quant_info.tournament_id if quant_info else None}"
         )
 
-        return ActiveTournamentsResponse(text=text_info, image=image_info)
+        return ActiveTournamentsResponse(text=text_info, image=image_info, quant=quant_info)
 
     except Exception as e:
         logger.error(f"Error retrieving active tournaments: {str(e)}")

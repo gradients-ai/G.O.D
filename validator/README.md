@@ -14,7 +14,7 @@ Validator runtime for task creation, tournament orchestration, evaluation, scori
 - `nodes/`: metagraph/node refresh logic.
 - `scoring/`: task scoring, tournament scoring, and weight setting.
 - `tasks/`: task schemas, dataset prep, model prep, rewards, requests, and synthetic task creation.
-- `tournament/`: tournament state machine, participants, rounds, task creation, and reports.
+- `tournament/`: tournament state machine, participants, rounds, seed tasks (everything the champion trains upfront), task creation, and reports.
 - `transfers/`: balance and transfer schemas.
 - `asgi.py`: FastAPI application factory and service entrypoint.
 - `constants.py`: compatibility aggregate for validator constants; prefer importing from the owning domain file.

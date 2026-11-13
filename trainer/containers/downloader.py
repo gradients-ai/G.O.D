@@ -542,14 +542,7 @@ async def main():
     parser.add_argument("--model")
     parser.add_argument(
         "--task-type",
-        choices=[
-            TaskType.IMAGETASK.value,
-            TaskType.INSTRUCTTEXTTASK.value,
-            TaskType.DPOTASK.value,
-            TaskType.GRPOTASK.value,
-            TaskType.CHATTASK.value,
-            TaskType.ENVIRONMENTTASK.value,
-        ],
+        choices=[t.value for t in TaskType],
     )
     parser.add_argument("--dataset")
     parser.add_argument("--file-format")

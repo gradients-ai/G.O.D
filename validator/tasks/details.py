@@ -21,6 +21,8 @@ from core.models.payload_models import EnvironmentTaskDetails
 from core.models.payload_models import GrpoTaskDetails
 from core.models.payload_models import ImageTaskDetails
 from core.models.payload_models import InstructTextTaskDetails
+from core.models.payload_models import QuantFixedTaskDetails
+from core.models.payload_models import QuantFreeformTaskDetails
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.infrastructure.minio_client import async_minio_client
@@ -205,6 +207,35 @@ def convert_task_to_task_details(task: AnyTypeTask) -> AnyTypeTaskDetails:
             task_type=task.task_type,
             result_model_name=task.result_model_name,
         )
+    elif task.task_type == TaskType.QUANTFIXEDTASK:
+        return QuantFixedTaskDetails(
+            id=task.task_id,
+            account_id=task.account_id,
+            status=task.status,
+            base_model_repository=task.model_id,
+            quant_spec=task.quant_spec,
+            created_at=task.created_at,
+            started_at=task.started_at,
+            finished_at=task.termination_at,
+            hours_to_complete=task.hours_to_complete,
+            trained_model_repository=task.trained_model_repository,
+            task_type=task.task_type,
+            result_model_name=task.result_model_name,
+        )
+    elif task.task_type == TaskType.QUANTFREEFORMTASK:
+        return QuantFreeformTaskDetails(
+            id=task.task_id,
+            account_id=task.account_id,
+            status=task.status,
+            base_model_repository=task.model_id,
+            created_at=task.created_at,
+            started_at=task.started_at,
+            finished_at=task.termination_at,
+            hours_to_complete=task.hours_to_complete,
+            trained_model_repository=task.trained_model_repository,
+            task_type=task.task_type,
+            result_model_name=task.result_model_name,
+        )
 
 
 def is_task_in_flight(task: AnyTypeTask) -> bool:
@@ -216,13 +247,21 @@ def is_task_in_flight(task: AnyTypeTask) -> bool:
     ]
 
 
-def hide_sensitive_data_till_finished(task: AnyTypeTask) -> AnyTypeTask:
-    if is_task_in_flight(task):
+def hide_sensitive_data_till_finished(task: AnyTypeTask, force_hidden: bool = False) -> AnyTypeTask:
+    """Blank a task's eval and training data while it is in flight, or whenever force_hidden.
+
+    force_hidden is a seed task (or a round task on one) whose last round has not completed: it can be SUCCESS and
+    still must not show the data (tournament_seeds.get_hidden_seed_task_ids).
+    """
+    if force_hidden or is_task_in_flight(task):
         if task.task_type == TaskType.IMAGETASK:
             task.image_text_pairs = [ImageTextPair(image_url="hidden", text_url="hidden")]
         if task.task_type == TaskType.ENVIRONMENTTASK:
             task.eval_seed = None
         task.test_data = None
+        task.calibration_data = None
+        task.calibration_fingerprint = None
+        task.calibration_n_examples = None
 
         task.training_data = None
         task.ds = "Hidden"

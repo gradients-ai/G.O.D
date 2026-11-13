@@ -15,6 +15,7 @@ from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
+from core.models.quant_artifact_models import QuantDecodeResult
 from core.models.task_models import TaskStatus
 from trainer import constants as cst
 
@@ -121,6 +122,19 @@ async def update_container_name(task_id: str, hotkey: str, container_name: str):
             task.container_name = container_name
             await save_task_history()
             logger.info(f"Updated container_name for task {task_id}: {container_name}")
+        else:
+            logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
+
+
+async def update_quant_decode_result(task_id: str, hotkey: str, result: QuantDecodeResult):
+    async with _task_lock:
+        load_task_history()
+
+        task = get_task(task_id, hotkey)
+        if task:
+            task.quant_decode = result
+            await save_task_history()
+            logger.info(f"Updated quant_decode for task {task_id}: ok={result.ok}")
         else:
             logger.warning(f"Task not found for task_id={task_id} and hotkey={hotkey}")
 

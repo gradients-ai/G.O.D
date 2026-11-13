@@ -13,6 +13,7 @@ from pydantic import field_validator
 import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName as EnvironmentName
 from core.models.payload_models import TrainingRepoResponse
+from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from core.models.trainer_contract_models import GPUInfo
@@ -24,6 +25,7 @@ from validator.scoring.models import PairwiseOutcome as PairwiseOutcome
 from validator.scoring.models import TournamentScore
 from validator.scoring.models import TournamentTypeResult as TournamentTypeResult
 from validator.tasks.models import AnyTypeRawTask
+from validator.tournament.decoder_snapshot import DecoderSnapshot
 
 
 class TrainingRepoInfo(NamedTuple):
@@ -183,6 +185,52 @@ class TournamentParticipant(BaseModel):
         default=None,
         description="Round-2 cheat review: clean, pending, accepted, rejected, or error.",
     )
+    decoder_object_name: str | None = Field(
+        default=None, description="MinIO object of the decoder/ snapshot taken at the registered commit."
+    )
+    decoder_xz_bytes: int | None = Field(default=None, description="Counted decoder bytes: size of the snapshot .tar.xz.")
+    decoder_sha256: str | None = Field(
+        default=None, description="sha256 of the snapshot .tar.xz; the trainer verifies it before decoding."
+    )
+
+    decoder_tar_sha256: str | None = Field(default=None, description="sha256 of the uncompressed canonical decoder tar.")
+    decoder_tree_sha: str | None = Field(
+        default=None, description="Git tree id of decoder/ at the registered commit; survives the handover squash."
+    )
+    decoder_xz_version: str | None = Field(default=None, description="xz version that compressed the snapshot.")
+    decoder_released_url: str | None = Field(default=None, description="Public URL of the released snapshot (champion handover).")
+    decoder_released_at: datetime | None = Field(default=None, description="When the decoder snapshot was released publicly.")
+
+    @property
+    def has_decoder_snapshot(self) -> bool:
+        return None not in (self.decoder_object_name, self.decoder_xz_bytes, self.decoder_sha256)
+
+
+class PendingDecoderRelease(BaseModel):
+    """A tournament winner whose decoder snapshot is not yet public."""
+
+    tournament_id: str
+    hotkey: str
+
+
+class FreeformReconcileReport(BaseModel):
+    """What the freeform publication reconcile found and, when applied, did."""
+
+    applied: bool = False
+    pending_releases: list[PendingDecoderRelease] = Field(
+        default_factory=list, description="Winners with a decoder snapshot and a pushed backup repo, not yet released."
+    )
+    blocked_releases: list[PendingDecoderRelease] = Field(
+        default_factory=list, description="Winners with a decoder snapshot but no backup_repo; the code push must happen first."
+    )
+    pending_decoded_tournaments: list[str] = Field(
+        default_factory=list, description="Tournaments with a winner and unpublished boss-round decoded models."
+    )
+    released: list[PendingDecoderRelease] = Field(default_factory=list, description="Decoder releases that now stand.")
+    failed_releases: list[PendingDecoderRelease] = Field(
+        default_factory=list, description="Releases refused or failed this pass."
+    )
+    published_models: list[str] = Field(default_factory=list, description="Decoded model repos created this pass.")
 
 
 class TournamentTask(BaseModel):
@@ -247,6 +295,10 @@ class GroupMatchStanding(BaseModel):
     matches_attended: int
     total_matches: int
     summed_loss: float
+    # Sum over matches of the distance from that match's best metric, normalised by it; the tiebreak.
+    summed_gap: float = 0.0
+    # Average rank on the most recent round's task(s) within the cohort; the tiebreak after average rank. 0 when not tracked.
+    recent_round_rank: float = 0.0
 
     @property
     def average_rank(self) -> float:
@@ -255,6 +307,24 @@ class GroupMatchStanding(BaseModel):
     @property
     def has_error(self) -> bool:
         return self.matches_attended < self.total_matches
+
+
+class T1T2Ranks(BaseModel):
+    """A cohort member's rank on the R1 and R2 tasks, ranked within the cohort."""
+
+    t1: int
+    t2: int
+
+
+class T3ViabilityVerdict(BaseModel):
+    """Whether a cohort member can still finish top or joint top over R1+R2+R3."""
+
+    hotkey: str
+    t1_rank: int
+    t2_rank: int
+    viable: bool
+    # Smallest achievable (own rank total - best rival total) over every R3 rank assignment; <= 0 is viable.
+    best_case_margin: int
 
 
 class TournamentRound(BaseModel):
@@ -419,6 +489,9 @@ class BossRoundTaskVerdict(BaseModel):
     # What decided it, for the persisted score_reason. None when the relative margin decided it.
     decided_by: str | None = None
     is_draw: bool = False
+    # Quant only, for analytics (crowning never reads it): whether the challenger lost narrowly. False on every
+    # path that cannot show it (no vectors, unpairable, no same-SKU reference, a failed score).
+    challenger_within_allowed_loss: bool = False
 
 
 class ContinuousSftLineageOutcome(BaseModel):
@@ -474,6 +547,19 @@ class BossRoundDrawResolution(BaseModel):
         return bool(self.drawn_task_ids) and self.can_add_deciders
 
 
+class BossTaskAnalytics(BaseModel):
+    """Analytics' mirror of one quant boss-round task verdict: who won, the paired evidence, and the allowed loss.
+
+    within_allowed_loss is None only when the challenger won or the task is not quant (a drawn task reports the
+    answer); otherwise the same answer crowning used (the reversed paired bar or the freeform byte margin).
+    """
+
+    challenger_won: bool
+    paired_comparison: PairedLossComparison | None = None
+    reason: str | None = None
+    within_allowed_loss: bool | None = None
+
+
 class RoundOutcome(BaseModel):
     """Result of resolving a completed round.
 
@@ -493,6 +579,9 @@ class RoundOutcome(BaseModel):
     # PENDING instead so node assignment picks them up. Populated when a decider was created but the
     # round never made it back to PENDING - a crash, or a failure partway through creating a batch.
     unassigned_task_ids: list[str] = Field(default_factory=list)
+    # Seeded text boss round only: stage 1 is scored and the challenger can still be crowned, so the round needs its big
+    # task before it can be resolved. The caller creates it and returns the round to PENDING.
+    needs_text_big_task: bool = False
 
     @property
     def is_deferred(self) -> bool:
@@ -516,6 +605,9 @@ class TaskPerformanceDifference(BaseModel):
     # paired_comparison.reason: the KL scalar gate can overturn a won paired comparison, so
     # challenger_won may be False while the comparison inside it says the challenger won.
     decision_reason: str | None = None
+    # Quant only: None when the challenger won (or the task is not quant); otherwise whether the challenger's loss
+    # was within the allowed loss, by the same function crowning uses.
+    within_allowed_loss: bool | None = None
 
 
 class TournamentPerformanceData(BaseModel):
@@ -541,6 +633,7 @@ class TournamentDetailsResponse(BaseModel):
     final_scores: list[TournamentScore]
     text_tournament_weight: float
     image_tournament_weight: float
+    quant_tournament_weight: float = 0.0
     boss_round_performance: list[TaskPerformanceDifference] | None = None
     sync_performance: list[TournamentPerformanceData] | None = None
 
@@ -548,12 +641,15 @@ class TournamentDetailsResponse(BaseModel):
 class TournamentAuditData(BaseModel):
     text_tournament_data: TournamentResultsWithWinners | None = None
     image_tournament_data: TournamentResultsWithWinners | None = None
+    quant_tournament_data: TournamentResultsWithWinners | None = None
     participants: list[str] = []
     text_tournament_weight: float = 0.0
     image_tournament_weight: float = 0.0
+    quant_tournament_weight: float = 0.0
     # Dynamic (participation-driven) base weights — what non-winner finalists receive.
     text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
     image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
+    quant_base_weight: float = 0.0
     burn_weight: float = 0.0
     weekly_participation: list["HotkeyTaskParticipation"] = []
 
@@ -587,6 +683,22 @@ class RespondingNode(BaseModel):
 
     node: Any
     training_repo_response: TrainingRepoResponse
+    decoder_snapshot: DecoderSnapshot | None = None
+
+
+class QuantDecodeRow(BaseModel):
+    """A task_nodes row's freeform decode outcome, as persisted from the trainer's decode result."""
+
+    hotkey: str
+    artifact_bytes: int | None
+    decoder_bytes: int | None
+    decoder_sha256: str | None
+    quant_failure: str | None
+
+    @property
+    def settled(self) -> bool:
+        # decoder_sha256 is written only by the decode result (never by evaluation), so it marks a settled decode.
+        return self.quant_failure is not None or self.decoder_sha256 is not None
 
 
 class NextTournamentInfo(BaseModel):
@@ -606,6 +718,7 @@ class NextTournamentInfo(BaseModel):
 class NextTournamentDates(BaseModel):
     text: NextTournamentInfo
     image: NextTournamentInfo
+    quant: NextTournamentInfo | None = None
 
 
 class ActiveTournamentParticipant(BaseModel):
@@ -623,6 +736,7 @@ class ActiveTournamentInfo(BaseModel):
 class ActiveTournamentsResponse(BaseModel):
     text: ActiveTournamentInfo | None
     image: ActiveTournamentInfo | None
+    quant: ActiveTournamentInfo | None = None
 
 
 class TournamentBurnData(BaseModel):
@@ -637,6 +751,10 @@ class TournamentBurnData(BaseModel):
     text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
     image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
     burn_weight: float
+    quant_performance_diff: float | None = None
+    quant_burn_proportion: float = 0.0
+    quant_tournament_weight: float = 0.0
+    quant_base_weight: float = 0.0
 
 
 class LatestTournamentsDetailsResponse(BaseModel):
@@ -645,6 +763,7 @@ class LatestTournamentsDetailsResponse(BaseModel):
     text: TournamentDetailsResponse | None
     image: TournamentDetailsResponse | None
     burn_data: TournamentBurnData
+    quant: TournamentDetailsResponse | None = None
 
 
 class TournamentHistoryEntry(BaseModel):
@@ -751,6 +870,7 @@ class TournamentWeightsResponse(BaseModel):
     burn_data: TournamentBurnData
     text_top_miners: list[MinerEmissionWeight]
     image_top_miners: list[MinerEmissionWeight]
+    quant_top_miners: list[MinerEmissionWeight] = []
 
 
 class WeightProjection(BaseModel):
@@ -776,6 +896,7 @@ class WeightProjectionResponse(BaseModel):
     percentage_improvement: float
     text_projection: TournamentProjection
     image_projection: TournamentProjection
+    quant_projection: TournamentProjection | None = None
 
 
 class MultiWeightProjectionResponse(BaseModel):
@@ -789,6 +910,8 @@ class BossBattleResponse(BaseModel):
     text_performance_differences: list[TaskPerformanceDifference]
     image_tournament_id: str | None
     image_performance_differences: list[TaskPerformanceDifference]
+    quant_tournament_id: str | None = None
+    quant_performance_differences: list[TaskPerformanceDifference] = []
 
 
 class DedupReviewStatus(str, Enum):
@@ -915,17 +1038,35 @@ class DedupResult(BaseModel):
     unresolved_pairs: list[tuple[str, str]] = []
 
 
+class ChunkScheme(str, Enum):
+    """How the content service cuts the continuous-SFT data: the unit a train_index counts in."""
+
+    HUNDRED_K = "100k"
+    FIFTY_K = "50k"  # chunk k of HUNDRED_K is chunks 2k and 2k+1 of this scheme
+
+
 class ContinuousSftState(BaseModel):
     """Per-lineage state for the continuous-SFT boss task (one row per lineage slug).
 
-    train_index: monotonic cursor passed to the stateless content service (advanced by one per task).
+    train_index: monotonic cursor passed to the stateless content service (advanced by one chunk per task),
+        counted in chunk_scheme units. A lineage with no row starts at index 0 in the current scheme.
     last_winner_repo: previous lowest-eval-loss winner, carried forward as the next base; None first run.
     """
 
     lineage: str
     train_index: int = 0
+    chunk_scheme: ChunkScheme = ChunkScheme.FIFTY_K
     last_winner_repo: str | None = None
     updated_at: datetime | None = None
+
+
+class ContinuousSftTaskChunk(BaseModel):
+    """The cursor value and chunk scheme one continuous-SFT task was created with."""
+
+    task_id: UUID
+    lineage: str
+    train_index: int
+    chunk_scheme: ChunkScheme
 
 
 class GpuCostCategoryBreakdown(BaseModel):
@@ -1002,3 +1143,233 @@ class WeeklyTournamentGpuCostsResponse(BaseModel):
     totals: TournamentGpuCostTotals
     tournaments: list[TournamentGpuCostBreakdown]
     tasks: list[TaskGpuCostBreakdown]
+
+
+class SeedRole(str, Enum):
+    """What a tournament seed task is for (validator/tournament/seed_tasks.py).
+
+    The two input seeds are the instruct models R1-R3 compress. BOSS_INSTRUCT is the boss round's input: an instruct seed
+    only the boss trains. BOSS_CHAINED_FREEFORM and BOSS_CHAINED_FIXED are the boss round's two tasks, compressions of
+    that input, attached to the boss round later. The three BOSS_CONTINUOUS_* values are not created by this code; the DB
+    CHECK constraint lists them.
+    """
+
+    INPUT_SMALL = "input_small"
+    INPUT_LARGE = "input_large"
+    BOSS_INSTRUCT = "boss_instruct"
+    BOSS_CHAINED_FREEFORM = "boss_chained_freeform"
+    BOSS_CHAINED_FIXED = "boss_chained_fixed"
+    BOSS_CONTINUOUS_INSTRUCT = "boss_continuous_instruct"
+    BOSS_CONTINUOUS_FREEFORM = "boss_continuous_freeform"
+    BOSS_CONTINUOUS_FIXED = "boss_continuous_fixed"
+    TEXT_R1 = "text_r1"
+    TEXT_R2 = "text_r2"
+    TEXT_R3 = "text_r3"
+    TEXT_CONTINUOUS = "text_continuous"
+    BOSS_R2_FREEFORM = "boss_r2_freeform"
+    BOSS_R2_FIXED = "boss_r2_fixed"
+    BOSS_R3_FREEFORM = "boss_r3_freeform"
+    BOSS_R3_FIXED = "boss_r3_fixed"
+
+    @property
+    def label(self) -> str:
+        """The name used in docs, logs and alerts (the values stay the stable identifiers)."""
+        return {
+            SeedRole.INPUT_SMALL: "M1/2",
+            SeedRole.INPUT_LARGE: "M3",
+            SeedRole.BOSS_INSTRUCT: "MBA",
+            SeedRole.BOSS_CHAINED_FREEFORM: "Free MBA",
+            SeedRole.BOSS_CHAINED_FIXED: "Fixed MBA",
+            SeedRole.BOSS_CONTINUOUS_INSTRUCT: "MBB",
+            SeedRole.BOSS_CONTINUOUS_FREEFORM: "Free continuous",
+            SeedRole.BOSS_CONTINUOUS_FIXED: "Fixed continuous",
+            SeedRole.TEXT_R1: "Text R1",
+            SeedRole.TEXT_R2: "Text R2",
+            SeedRole.TEXT_R3: "Text R3",
+            SeedRole.TEXT_CONTINUOUS: "Text continuous",
+            SeedRole.BOSS_R2_FREEFORM: "Free R2",
+            SeedRole.BOSS_R2_FIXED: "Fixed R2",
+            SeedRole.BOSS_R3_FREEFORM: "Free R3",
+            SeedRole.BOSS_R3_FIXED: "Fixed R3",
+        }[self]
+
+
+INPUT_SEED_ROLES = frozenset({SeedRole.INPUT_SMALL, SeedRole.INPUT_LARGE})
+
+
+class ContinuousRowsPart(str, Enum):
+    """Which disjoint share of a continuous chunk's train rows a task trains on (see select_continuous_rows)."""
+
+    INSTRUCT = "instruct"  # the continuous instruct task: the first rows in the tournament-seeded hash order
+    COMPRESSION = "compression"  # its freeform / fixed compression tasks: the next rows, the same for both tasks
+
+
+class QuantSourceSlot(str, Enum):
+    """The place a quant task takes in a quant tournament, and so which text seed task's boss model it compresses.
+
+    r1, r2 and r3 are the miner rounds (one quant task each); the boss_* slots are the six compressions of the quant boss
+    round: the freeform and the fixed one of the text boss's round-2, round-3 and continuous models.
+    """
+
+    R1 = "r1"
+    R2 = "r2"
+    R3 = "r3"
+    BOSS_R2_FREEFORM = "boss_r2_freeform"
+    BOSS_R2_FIXED = "boss_r2_fixed"
+    BOSS_R3_FREEFORM = "boss_r3_freeform"
+    BOSS_R3_FIXED = "boss_r3_fixed"
+    BOSS_CONTINUOUS_FREEFORM = "boss_continuous_freeform"
+    BOSS_CONTINUOUS_FIXED = "boss_continuous_fixed"
+
+
+class QuantSlotSpec(BaseModel):
+    """What a slot is made of: the text seed role whose boss model it compresses, its quant task type and, for a boss-round
+    slot, the quant seed role that holds its task (a miner round's task is not a seed)."""
+
+    text_role: SeedRole
+    task_type: TaskType
+    quant_seed_role: SeedRole | None = None
+
+
+QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
+    QuantSourceSlot.R1: QuantSlotSpec(text_role=SeedRole.TEXT_R1, task_type=TaskType.QUANTFREEFORMTASK),
+    QuantSourceSlot.R2: QuantSlotSpec(text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK),
+    QuantSourceSlot.R3: QuantSlotSpec(text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK),
+    QuantSourceSlot.BOSS_R2_FREEFORM: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R2_FREEFORM
+    ),
+    QuantSourceSlot.BOSS_R2_FIXED: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.BOSS_R2_FIXED
+    ),
+    QuantSourceSlot.BOSS_R3_FREEFORM: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R3_FREEFORM
+    ),
+    QuantSourceSlot.BOSS_R3_FIXED: QuantSlotSpec(
+        text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.BOSS_R3_FIXED
+    ),
+    QuantSourceSlot.BOSS_CONTINUOUS_FREEFORM: QuantSlotSpec(
+        text_role=SeedRole.TEXT_CONTINUOUS,
+        task_type=TaskType.QUANTFREEFORMTASK,
+        quant_seed_role=SeedRole.BOSS_CONTINUOUS_FREEFORM,
+    ),
+    QuantSourceSlot.BOSS_CONTINUOUS_FIXED: QuantSlotSpec(
+        text_role=SeedRole.TEXT_CONTINUOUS,
+        task_type=TaskType.QUANTFIXEDTASK,
+        quant_seed_role=SeedRole.BOSS_CONTINUOUS_FIXED,
+    ),
+}
+# The slot of each quant boss-round seed role.
+QUANT_BOSS_SLOT_BY_ROLE: dict[SeedRole, QuantSourceSlot] = {
+    spec.quant_seed_role: slot for slot, spec in QUANT_SLOT_SPECS.items() if spec.quant_seed_role is not None
+}
+
+
+class QuantTournamentSource(BaseModel):
+    """The text tournament a quant tournament takes its tasks from (table quant_tournament_sources). One text tournament
+    feeds at most one quant tournament."""
+
+    quant_tournament_id: str
+    source_tournament_id: str
+    created_at: datetime | None = None
+
+
+class QuantTaskSource(BaseModel):
+    """Where one quant task came from (table quant_task_sources): the slot it fills in its quant tournament and the text
+    seed task whose boss model it compresses.
+
+    source_task_id is the text seed task (it follows a replaced text seed); source_model_repo is the exact hub repo handed
+    to the quant task as its model when it was released (None while it is held); source_is_fallback is True when that repo is
+    the text task's base model because the text boss produced no usable model; superseded is True for a quant task that was
+    replaced by another task for the same slot.
+    """
+
+    quant_task_id: UUID
+    quant_tournament_id: str
+    slot: QuantSourceSlot
+    source_tournament_id: str
+    source_role: SeedRole
+    source_task_id: UUID
+    source_model_repo: str | None = None
+    source_is_fallback: bool = False
+    superseded: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class QuantRoundSpec(BaseModel):
+    """One miner round of a quant tournament: the quant task every entrant plays on the text boss's model of a text seed
+    role, and the cut after it."""
+
+    round_number: int
+    slot: QuantSourceSlot
+    task_type: TaskType
+    input_role: SeedRole  # the TEXT seed role of the bound text tournament whose boss model the round compresses
+    advance: int
+    quant_format: QuantFormat | None = None  # a fixed round's pinned format; None draws one from the round id
+
+
+# The quant boss round's tasks: six compressions (freeform and fixed) of the text boss's round-2, round-3 and continuous models.
+BOSS_ROUND_SEED_ROLES = frozenset(
+    {
+        SeedRole.BOSS_R2_FREEFORM,
+        SeedRole.BOSS_R2_FIXED,
+        SeedRole.BOSS_R3_FREEFORM,
+        SeedRole.BOSS_R3_FIXED,
+        SeedRole.BOSS_CONTINUOUS_FREEFORM,
+        SeedRole.BOSS_CONTINUOUS_FIXED,
+    }
+)
+# Boss round roles that are two compressions chained on a BOSS_INSTRUCT seed. Nothing creates these roles; rows of them are
+# read like a boss-round seed.
+LEGACY_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED})
+# Every role a row may carry that is a boss-round seed: where rows are READ (hold, attach, completion, ranks), not where
+# roles are created or counted for a new boss round.
+ANY_BOSS_ROUND_SEED_ROLES = BOSS_ROUND_SEED_ROLES | LEGACY_BOSS_ROUND_SEED_ROLES
+# The instruct seeds only the boss trains: upstreams of the chained compression seeds.
+BOSS_INSTRUCT_SEED_ROLES = frozenset({SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CONTINUOUS_INSTRUCT})
+# The boss's compression entries. A boss-side training failure of one is the boss's failed entry, never redrawn: a redraw
+# cannot change the boss's code.
+BOSS_COMPRESSION_SEED_ROLES = BOSS_ROUND_SEED_ROLES
+ANY_BOSS_COMPRESSION_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES - BOSS_INSTRUCT_SEED_ROLES
+# The text tournament's seeds: the instruct task of each of rounds 1-3 and the continuous-SFT task of the boss round. All are
+# trained by the boss at tournament start and attached to their round later.
+TEXT_ROUND_SEED_ROLES = frozenset({SeedRole.TEXT_R1, SeedRole.TEXT_R2, SeedRole.TEXT_R3})
+TEXT_SEED_ROLES = TEXT_ROUND_SEED_ROLES | {SeedRole.TEXT_CONTINUOUS}
+# Every role whose task is attached to a round after it was trained: its finalisation is held until it is attached.
+ATTACHED_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES
+
+
+class TextRoundSpec(BaseModel):
+    """One miner round of a seeded text tournament: the seed task every entrant plays, its size band and the cut after it."""
+
+    round_number: int
+    seed_role: SeedRole
+    model_size_b: tuple[float, float]
+    advance: int
+
+
+class SeedStatus(str, Enum):
+    TRAINING = "training"  # the seed task exists; the boss's run (or an input seed's evaluation) is not finished
+    TRAINED = "trained"  # boss-round seeds: the boss's run is over (a compression entry may have failed), held for the boss round
+    READY = "ready"  # usable: an input seed scored SUCCESS with a full-model boss output; a boss-round seed SUCCESS
+    REPLACED = "replaced"  # superseded by a later attempt of the same role
+    FAILED = "failed"  # out of replacements: final; halts the tournament only for an input-seed role
+
+
+class TournamentSeedTask(BaseModel):
+    """One attempt at one seed role of a tournament: the task the boss trains upfront and the code it trained with."""
+
+    tournament_id: str
+    role: SeedRole
+    attempt: int = 1
+    task_id: UUID
+    status: SeedStatus = SeedStatus.TRAINING
+    boss_repo: str | None = None
+    boss_commit: str | None = None
+    attached_round_id: str | None = None  # set once the boss round has attached this seed; never cleared (even if detached)
+    # Only meaningful on a replaced row: it was replaced without charging the role's SEED_MAX_REPLACEMENTS, either by its own
+    # prep-stage dataset rejection (dataset-drawn roles) or because its upstream instruct seed was replaced.
+    prep_rejected: bool = False
+    merged_output_repo: str | None = None  # the full model the boss's adapter output was merged into
+    created_at: datetime | None = None
+    updated_at: datetime | None = None

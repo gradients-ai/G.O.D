@@ -1,9 +1,8 @@
 import os
 
+from core.constants.credentials import RAYONLABS_HF_USERNAME  # noqa: F401  re-exported; defined once, env-configurable
 from core.constants.network import NETUID
 
-
-RAYONLABS_HF_USERNAME = "gradients-io-tournaments"  # "besimray"  # "rayonlabs"
 
 SUCCESS = "success"
 ACCOUNT_ID = "account_id"

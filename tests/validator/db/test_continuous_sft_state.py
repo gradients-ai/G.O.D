@@ -49,6 +49,7 @@ class TestStateMockBranches:
     async def test_get_state_maps_row_fields(self):
         row = {
             cst.CONTINUOUS_SFT_TRAIN_INDEX: 7,
+            cst.CONTINUOUS_SFT_CHUNK_SCHEME: "50k",
             cst.CONTINUOUS_SFT_LAST_WINNER_REPO: "org/x",
             cst.CONTINUOUS_SFT_UPDATED_AT: None,
         }
@@ -61,14 +62,14 @@ class TestStateMockBranches:
         psql, conn = _mock_psql(fetchrow=None)
         result = await csft.advance_continuous_sft_state("qwen", "org/x", "round-1", psql)
         assert result is None
-        assert conn.fetchrow.await_args.args[1:] == ("qwen", "org/x", "round-1")
+        assert conn.fetchrow.await_args.args[1:] == ("qwen", "org/x", "round-1", None, None)
 
     async def test_advance_success_passes_params_in_order(self):
         psql, conn = _mock_psql(
             fetchrow={cst.CONTINUOUS_SFT_TRAIN_INDEX: 8, cst.CONTINUOUS_SFT_LAST_WINNER_REPO: "org/x"}
         )
         await csft.advance_continuous_sft_state("qwen", "org/x", "round-9", psql)
-        assert conn.fetchrow.await_args.args[1:] == ("qwen", "org/x", "round-9")
+        assert conn.fetchrow.await_args.args[1:] == ("qwen", "org/x", "round-9", None, None)
 
     async def test_warn_orphaned_warns_only_unknown_lineage(self):
         rows = [
@@ -107,6 +108,14 @@ CREATE TABLE IF NOT EXISTS continuous_sft_state (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS last_source_round_id TEXT;
+ALTER TABLE continuous_sft_state ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT '50k';
+CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks (
+    task_id UUID PRIMARY KEY,
+    lineage TEXT NOT NULL,
+    train_index INT NOT NULL,
+    chunk_scheme TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 
@@ -143,7 +152,7 @@ class TestStateRealDb:
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", "org/b", "r2", cst_db)
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 2
+        assert state.train_index == 3  # no task record: first insert 1, then +2
         assert state.last_winner_repo == "org/b"
 
     async def test_none_winner_preserves_prior_via_coalesce(self, cst_db):
@@ -151,7 +160,7 @@ class TestStateRealDb:
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", None, "r2", cst_db)
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 2
+        assert state.train_index == 3  # no task record: first insert 1, then +2
         assert state.last_winner_repo == "org/a"
 
     async def test_lineages_advance_independently(self, cst_db):

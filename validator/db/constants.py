@@ -24,6 +24,10 @@ LATEST_SCORES_URL_TABLE = "latest_scores_url"
 IMAGE_TEXT_PAIRS_TABLE = "image_text_pairs"
 GRPO_TASKS_TABLE = "grpo_tasks"
 ENV_TASKS_TABLE = "env_tasks"
+QUANT_TASKS_TABLE = "quant_tasks"
+QUANT_SKU_REFERENCES_TABLE = "quant_sku_references"
+QUANT_CALIBRATION_REFERENCES_TABLE = "quant_calibration_references"
+DATASET_CALIBRATION_ROWS_TABLE = "dataset_calibration_rows"
 REWARD_FUNCTIONS_TABLE = "reward_functions"
 GRPO_TASK_FUNCTIONS_TABLE = "grpo_task_functions"
 
@@ -52,6 +56,10 @@ CONTINUOUS_SFT_TRAIN_INDEX = "train_index"
 CONTINUOUS_SFT_LAST_WINNER_REPO = "last_winner_repo"
 CONTINUOUS_SFT_LAST_SOURCE_ROUND_ID = "last_source_round_id"
 CONTINUOUS_SFT_UPDATED_AT = "updated_at"
+CONTINUOUS_SFT_CHUNK_SCHEME = "chunk_scheme"
+
+# One row per continuous-SFT task: the cursor value and chunk scheme the task was created with.
+CONTINUOUS_SFT_TASK_CHUNKS_TABLE = "continuous_sft_task_chunks"
 
 # PvP Pair Results Table Columns
 PVP_HOTKEY_A = "hotkey_a"
@@ -106,6 +114,10 @@ DS = "ds"
 STATUS = "status"
 HOURS_TO_COMPLETE = "hours_to_complete"
 TEST_DATA = "test_data"
+CALIBRATION_DATA = "calibration_data"
+CALIBRATION_FINGERPRINT = "calibration_fingerprint"
+CALIBRATION_N_EXAMPLES = "calibration_n_examples"
+CARVE_CALIBRATION = "carve_calibration"
 TRAINING_DATA = "training_data"
 CREATED_AT = "created_at"
 NEXT_DELAY_AT = "next_delay_at"
@@ -176,6 +188,25 @@ ENVIRONMENT_WEIGHTS = "environment_weights"
 TRAINING_START_POINT = "training_start_point"
 EVAL_SEED = "eval_seed"
 
+# Quant Tasks Table Columns (file_format reuses FILE_FORMAT)
+DATASET_TYPE = "dataset_type"
+QUANT_SPEC = "quant_spec"
+BAR_CAP = "bar_cap"  # freeform: the hard cap as the excess over the reference (the bar before the penalty)
+PENALTY_KNEE = "penalty_knee"  # freeform: unpenalised excess over the reference; NULL = cliff at bar_cap
+PENALTY_CURVATURE = "penalty_curvature"  # freeform: ln P = penalty_curvature x max(0, r - knee)^2; NULL = cliff at bar_cap
+UPSTREAM_TASK_ID = "upstream_task_id"
+SYNTHETIC_DATA = "synthetic_data"
+
+# Quant SKU References Table Columns (task_id, hotkey, per_example_losses, eval_set_fingerprint and eval_gpu
+# reuse the shared names; hotkey '' is the task-common reference)
+SKU = "sku"
+REFERENCE_MODEL = "model"
+LOSS = "loss"
+MEASURED_AT = "measured_at"
+
+# Dataset Calibration Rows Table Columns (ds and task_id reuse the shared names)
+ROW_HASH = "row_hash"
+
 # Submissions Table Columns
 SUBMISSION_ID = "submission_id"
 REPO = "repo"
@@ -189,12 +220,39 @@ STARTING_MODEL_REPO = "starting_model_repo"
 EVALUATION_STATUS = "evaluation_status"
 DEPLOYMENT_ID = "deployment_id"
 GPU_COUNT = "gpu_count"
+INFRA_ERROR_ATTEMPTS = "infra_error_attempts"
 
 TEST_LOSS = "test_loss"
 SYNTH_LOSS = "synth_loss"
 PER_EXAMPLE_LOSSES = "per_example_losses"
 EVAL_SET_FINGERPRINT = "eval_set_fingerprint"
 SCORE_REASON = "score_reason"
+
+# Task Nodes quant columns
+ARTIFACT_BYTES = "artifact_bytes"
+DECODER_BYTES = "decoder_bytes"
+DECODER_SHA256 = "decoder_sha256"  # also the tournament_participants decoder snapshot sha
+PASSED_BAR = "passed_bar"  # freeform: under the cap (the bar before the penalty)
+FREEFORM_PENALTY = "freeform_penalty"  # freeform: ln P as scored; effective bytes = total bytes x exp(it)
+QUANT_FAILURE = "quant_failure"
+EVAL_GPU = "eval_gpu"  # QuantEvalGpu JSON: the GPU (and, for quant, the SKU) the eval ran on
+DECODER_BUILD_WARNING = "decoder_build_warning"
+
+# Tournament Participants decoder snapshot columns (DECODER_SHA256 above is shared)
+DECODER_OBJECT_NAME = "decoder_object_name"
+DECODER_XZ_BYTES = "decoder_xz_bytes"
+DECODER_TAR_SHA256 = "decoder_tar_sha256"  # sha256 of the uncompressed canonical tar
+DECODER_TREE_SHA = "decoder_tree_sha"  # git tree id of decoder/, reproducible from the released repo
+DECODER_XZ_VERSION = "decoder_xz_version"
+DECODER_RELEASED_URL = "decoder_released_url"  # public .tar.xz URL, set at champion handover
+DECODER_RELEASED_AT = "decoder_released_at"
+
+# Task Nodes freeform exposure columns
+ARTIFACT_FILES = "artifact_files"  # JSONB: hub files [{name, bytes, sha256, sha256_kind}] read at scoring
+ARTIFACT_REVISION = "artifact_revision"  # hub commit sha the files were listed at
+DECODE_ARTIFACT_FILES = "decode_artifact_files"  # JSONB: files the trainer's decode downloaded and counted
+DECODED_FILES = "decoded_files"  # JSONB: the decoded bf16 shards [{name, bytes, sha256}]
+DECODED_HF_REPO = "decoded_hf_repo"  # public HF copy of the decoded model (boss-round submissions)
 
 # Offer Responses Table Columns
 OFFER_RESPONSE = "offer_response"
@@ -248,3 +306,30 @@ NVLINK_PEERS = "nvlink_peers"
 
 # Common Column Names (shared between tables)
 QUALITY_SCORE = "quality_score"  # Used in both submissions and task_nodes
+
+
+# Tournament Seed Tasks Table (the boss's upfront tasks; see validator/db/sql/tournament_seeds.py)
+TOURNAMENT_SEED_TASKS_TABLE = "tournament_seed_tasks"
+SEED_ROLE = "role"
+SEED_ATTEMPT = "attempt"
+SEED_STATUS = "status"
+SEED_BOSS_REPO = "boss_repo"
+SEED_BOSS_COMMIT = "boss_commit"
+SEED_ATTACHED_ROUND_ID = "attached_round_id"
+SEED_PREP_REJECTED = "prep_rejected"
+SEED_MERGED_OUTPUT_REPO = "merged_output_repo"
+
+
+# Quant task sources (which text tournament and text seed task a quant tournament's tasks come from; see
+# validator/db/sql/quant_sources.py)
+QUANT_TOURNAMENT_SOURCES_TABLE = "quant_tournament_sources"
+QUANT_TASK_SOURCES_TABLE = "quant_task_sources"
+QUANT_TOURNAMENT_ID = "quant_tournament_id"
+QUANT_TASK_ID = "quant_task_id"
+QUANT_SOURCE_TOURNAMENT_ID = "source_tournament_id"
+QUANT_SOURCE_SLOT = "slot"
+QUANT_SOURCE_ROLE = "source_role"
+QUANT_SOURCE_TASK_ID = "source_task_id"
+QUANT_SOURCE_MODEL_REPO = "source_model_repo"
+QUANT_SOURCE_IS_FALLBACK = "source_is_fallback"
+QUANT_SOURCE_SUPERSEDED = "superseded"

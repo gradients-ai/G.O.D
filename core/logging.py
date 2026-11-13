@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import time
 from contextvars import ContextVar
@@ -27,6 +28,15 @@ HOSTNAME = socket.gethostname()
 VECTOR_URL = os.getenv("VECTOR_URL", "http://localhost:8689")
 
 current_context = ContextVar[dict[str, str | dict]]("current_context", default={})
+
+REDACTED = "***"
+# The query of an http(s) URL: where a presigned URL carries its signature and credential.
+_URL_QUERY = re.compile(r"(https?://[^\s?#'\"]+)\?[^\s#'\"]*")
+
+
+def redact_url_queries(text: str) -> str:
+    """Replace the query string of every http(s) URL in text, so a presigned URL is logged without its signature."""
+    return _URL_QUERY.sub(rf"\1?{REDACTED}", text)
 
 
 def add_context_tag(key: str, value: str | dict) -> None:
