@@ -441,6 +441,19 @@ class TestStandings:
             monkeypatch.setattr(
                 rr, "get_tournament", AsyncMock(return_value=TournamentData(tournament_id=TID, tournament_type=TEXT))
             )
+            round_ids = {1: "r1", 2: "r2", 3: "r3"}
+
+            async def fake_rounds(tournament_id, _db):
+                return [
+                    TournamentRoundData(round_id=rid, tournament_id=TID, round_number=n, round_type=RoundType.GROUP)
+                    for n, rid in round_ids.items()
+                ]
+
+            async def fake_tasks(round_id, _db):
+                return [TournamentTask(tournament_id=TID, round_id=round_id, task_id=uuid4(), group_id="g")]
+
+            monkeypatch.setattr(rr, "get_tournament_rounds", fake_rounds)
+            monkeypatch.setattr(rr, "get_tournament_tasks", fake_tasks)
             return [TournamentTask(tournament_id=TID, round_id="r", task_id=uuid4(), group_id="g")]
 
         return wire
@@ -465,10 +478,10 @@ class TestStandings:
     async def test_the_boss_result_does_not_change_the_miners_ranks(self, world, standings):
         await world.create_seeds()
         tasks = standings(MINERS)
-        best = await rr._text_seeded_ordered_hotkeys(tasks, None)
+        best = await rr._text_seeded_ordered_hotkeys(_completed(1), tasks, None)
         standings(MINERS, boss_loss=50.0)
 
-        assert await rr._text_seeded_ordered_hotkeys(tasks, None) == best == MINERS
+        assert await rr._text_seeded_ordered_hotkeys(_completed(1), tasks, None) == best == MINERS
 
     async def test_the_round_two_backfill_uses_the_same_ordering(self, world, standings, monkeypatch):
         await world.create_seeds()

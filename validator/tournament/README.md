@@ -60,7 +60,7 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 7. **Boss round, stage two.** The big instruct task is created last, under the same early-stop check.
 8. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-Each round's standings come from its one task. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
+Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as compression. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
 
 ## Image tournament flow
 
@@ -164,7 +164,7 @@ The placements are the same whether the boss round was played and lost or skippe
 
 | Tournament | Third place |
 | --- | --- |
-| Text | The next miner after the challenger in round 3's standings. |
+| Text | The next miner after the challenger in the cumulative standings after round 3. |
 | Image | The miner that lost the round-2 knockout. |
 | Compression | The next miner after the challenger in the cumulative standings after round 3. |
 

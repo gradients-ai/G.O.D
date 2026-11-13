@@ -979,14 +979,14 @@ async def seeded_text_round_head_to_heads(
 
 
 async def get_seeded_text_runner_up(tournament_id: str, challenger_hotkey: str, psql_db: PSQLDB) -> str | None:
-    """Third place of a seeded text tournament: the next miner after the challenger in round 3's standings, the order
-    that picked the round's winner. None when round 3 or another ranked miner is missing."""
+    """Third place of a seeded text tournament: the next miner after the challenger in the cumulative standings after round 3,
+    the order that picked the round's winner. None when round 3 or another ranked miner is missing."""
     final_miner_round = t_cst.TEXT_ROUND_PLAN[-1].round_number
     rounds = await get_tournament_rounds(tournament_id, psql_db)
     played = next((round_data for round_data in rounds if round_data.round_number == final_miner_round), None)
     if played is None:
         return None
-    ordered = await _text_seeded_ordered_hotkeys(await get_tournament_tasks(played.round_id, psql_db), psql_db)
+    ordered = await _text_seeded_ordered_hotkeys(played, await get_tournament_tasks(played.round_id, psql_db), psql_db)
     return next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
 
 
@@ -1492,7 +1492,7 @@ async def select_round2_entrants(
     if tournament.tournament_type == TournamentType.TEXT and await is_seeded_text_tournament(
         tournament.tournament_id, psql_db
     ):
-        ordered = await _text_seeded_ordered_hotkeys(round_tasks, psql_db)
+        ordered = await _text_seeded_ordered_hotkeys(completed_round, round_tasks, psql_db)
         selected = take_standings_slots(ordered, exclude, t_cst.TEXT_ROUND_PLAN[0].advance)
         logger.info(
             f"R2 backfill for {tournament.tournament_id}: excluded={sorted(exclude_hotkeys)}, selected={selected}"
@@ -1918,19 +1918,25 @@ async def _group_members_of_round(round_tasks: list[TournamentTask], psql_db: PS
     return members
 
 
-async def _text_seeded_ordered_hotkeys(round_tasks: list[TournamentTask], psql_db: PSQLDB) -> list[str]:
-    """Advancement order of a seeded text round from its task alone: the group's members ranked among themselves, so the
-    boss's result on the seed task never takes a slot (its rank in the round is round_ranks_with_boss)."""
-    cohort = await _group_members_of_round(round_tasks, psql_db)
-    return await _quant_ordered_hotkeys(round_tasks, psql_db, cohort=cohort)
+async def _text_seeded_ordered_hotkeys(
+    completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
+) -> list[str]:
+    """Advancement order of a seeded text round: round 1 by its own task, rounds 2 and 3 by average rank over every round
+    played so far (_quant_cumulative_ordered_hotkeys, as in compression). Ranked among the group's members, so the boss's
+    result on the seed task never takes a slot (its rank in the round is round_ranks_with_boss)."""
+    if completed_round.round_number == 1:
+        cohort = await _group_members_of_round(round_tasks, psql_db)
+        return await _quant_ordered_hotkeys(round_tasks, psql_db, cohort=cohort)
+    return await _quant_cumulative_ordered_hotkeys(completed_round.tournament_id, completed_round, psql_db)
 
 
 async def _get_text_seeded_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], psql_db: PSQLDB
 ) -> list[str]:
-    """Winners of a seeded text tournament's single-group round: the top TEXT_ROUND_PLAN advance of its members."""
+    """Winners of a seeded text tournament's single-group round: the top TEXT_ROUND_PLAN advance of its members by
+    _text_seeded_ordered_hotkeys."""
     advance = next(spec.advance for spec in t_cst.TEXT_ROUND_PLAN if spec.round_number == completed_round.round_number)
-    ordered = await _text_seeded_ordered_hotkeys(round_tasks, psql_db)
+    ordered = await _text_seeded_ordered_hotkeys(completed_round, round_tasks, psql_db)
     winners = [hotkey for hotkey in ordered if hotkey != EMISSION_BURN_HOTKEY][:advance]
     logger.info(f"advancing top {len(winners)} of text round {completed_round.round_number}: {winners}")
     return winners

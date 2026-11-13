@@ -607,8 +607,9 @@ SEED_MAX_PREP_ATTEMPTS = 3
 SEED_CURSOR_KEY_SUFFIX = "_seed"
 
 # Rounds 1-3 of a seeded text tournament are one instruct task each, in one group: the task is trained by the boss at
-# tournament start and by the round's miners when the round is reached. The standings of a round come from that task
-# alone; the boss's entry is ranked in them but never takes an advancement slot.
+# tournament start and by the round's miners when the round is reached. Round 1 advances on its task; rounds 2 and 3 on
+# average rank over every round played so far, among the remaining miners. The boss's entry is ranked in a round's
+# standings but never takes an advancement slot.
 TEXT_ROUND_PLAN = (
     TextRoundSpec(round_number=1, seed_role=SeedRole.TEXT_R1, model_size_b=SEED_INPUT_SMALL_SIZE_B, advance=8),
     TextRoundSpec(round_number=2, seed_role=SeedRole.TEXT_R2, model_size_b=SEED_INPUT_SMALL_SIZE_B, advance=4),
