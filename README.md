@@ -28,7 +28,7 @@
 
 <p align="center">
   <a href="docs/miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-text-dark.svg"><img src="docs/assets/readme/card-text-light.svg" alt="Text tournament. Fine-tune a given language model on an instruct, chat, DPO or GRPO task. Ranked by lowest loss on held-out data; on GRPO, highest reward. Open the text guide." width="270"></picture></a>
-  <a href="docs/miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-image-dark.svg"><img src="docs/assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a small set of captioned images. Ranked by lowest denoising loss on held-out images. Open the image guide." width="270"></picture></a>
+  <a href="docs/miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-image-dark.svg"><img src="docs/assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a text-to-image or edit task. Ranked by lowest loss on held-out images. Open the image guide." width="270"></picture></a>
   <a href="docs/miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-compression-dark.svg"><img src="docs/assets/readme/card-compression-light.svg" alt="Compression tournament. Compress a given language model: a fixed quantised format, or freeform, any format with your own decoder. Ranked by lowest loss in the fixed format; in freeform by fewest bytes, with a penalty on loss. Open the compression guide." width="270"></picture></a>
 </p>
 
