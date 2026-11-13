@@ -1,9 +1,9 @@
-"""Hand a freeform miner its calibration set as a file in the cache volume (QUANT_CALIBRATION_PATH).
+"""Hand a compression miner its calibration set as a file in the cache volume (QUANT_CALIBRATION_PATH).
 
 The host has network, the training container does not, so the trainer fetches the validator's tokenised JSONL, checks
 it is the set the request names, zips it with the bf16 reference's per-example losses into a QuantCalibrationSet and
-writes it next to baseline_stats. Any failure logs the type only (the URL is presigned) and returns None: a missing
-calibration set must never fail a training job.
+writes it next to baseline_stats. Every attempt that fails logs the type only (the URL is presigned); when all of them
+fail the error is raised, so a job never starts its container without the calibration file.
 """
 
 import asyncio
@@ -42,18 +42,17 @@ def build_calibration_set(task_id: str, request: QuantCalibrationRequest, jsonl:
     if quant_eval_set_fingerprint(examples) != request.eval_set_fingerprint:
         raise ValueError("calibration file fingerprint does not match the request")
     reference = request.reference
-    if reference is not None and len(reference.per_example_losses) != len(examples):
+    if len(reference.per_example_losses) != len(examples):
         raise ValueError("calibration reference has a loss count that does not match the examples")
-    losses = reference.per_example_losses if reference is not None else [None] * len(examples)
     return QuantCalibrationSet(
         task_id=task_id,
         eval_set_fingerprint=request.eval_set_fingerprint,
-        reference_model=reference.model if reference else None,
-        reference_loss=reference.loss if reference else None,
-        reference_sku=reference.sku if reference else None,
+        reference_model=reference.model,
+        reference_loss=reference.loss,
+        reference_sku=reference.sku,
         examples=[
             QuantCalibrationExample(input_ids=example.input_ids, labels=example.labels, reference_loss=loss)
-            for example, loss in zip(examples, losses)
+            for example, loss in zip(examples, reference.per_example_losses)
         ],
     )
 
@@ -66,13 +65,24 @@ def _write(volume_dir: str, filename: str, calibration_set: QuantCalibrationSet)
 async def write_quant_calibration_file(
     task_id: str, hotkey: str, request: QuantCalibrationRequest, volume_dir: str
 ) -> dict[str, str]:
-    """{QUANT_CALIBRATION_PATH_ENV: container path} once the file is in volume_dir; {} on any failure."""
-    try:
-        jsonl = await asyncio.to_thread(_fetch, request.examples_url)
-        calibration_set = build_calibration_set(task_id, request, jsonl)
-        filename = calibration_filename(task_id, hotkey)
-        await asyncio.to_thread(_write, volume_dir, filename, calibration_set)
-    except Exception as e:
-        logger.warning(f"Task {task_id}: no calibration set for the miner ({type(e).__name__}); training without it")
-        return {}
+    """{QUANT_CALIBRATION_PATH_ENV: container path} once the file is in volume_dir.
+
+    The fetch, check and write are attempted QUANT_CALIBRATION_FETCH_ATTEMPTS times; a RuntimeError naming the last error's
+    type (never the presigned URL) is raised when all fail.
+    """
+    filename = calibration_filename(task_id, hotkey)
+    for attempt in range(1, cst.QUANT_CALIBRATION_FETCH_ATTEMPTS + 1):
+        try:
+            jsonl = await asyncio.to_thread(_fetch, request.examples_url)
+            calibration_set = build_calibration_set(task_id, request, jsonl)
+            await asyncio.to_thread(_write, volume_dir, filename, calibration_set)
+            break
+        except Exception as e:
+            logger.warning(
+                f"Task {task_id}: calibration set attempt {attempt}/{cst.QUANT_CALIBRATION_FETCH_ATTEMPTS} failed "
+                f"({type(e).__name__})"
+            )
+            if attempt == cst.QUANT_CALIBRATION_FETCH_ATTEMPTS:
+                raise RuntimeError(f"calibration set unavailable after {attempt} attempts ({type(e).__name__})") from None
+            await asyncio.sleep(cst.QUANT_CALIBRATION_RETRY_SLEEP_SECONDS)
     return {core_cst.QUANT_CALIBRATION_PATH_ENV: os.path.join(cst.CACHE_ROOT_PATH, filename)}

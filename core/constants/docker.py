@@ -16,10 +16,10 @@ CONTINUOUS_SFT_TOKENIZER_REPO_ENV = "CONTINUOUS_SFT_TOKENIZER_REPO"
 # Quant evaluator inputs. QUANT_SPEC is the JSON of the task's QuantFixedSpec and is absent for the
 # freeform track; QUANT_FORMAT is the QuantFormat value and selects the expected kernel set.
 QUANT_SPEC_ENV = "QUANT_SPEC"
-# The JSON of the miner's QuantTarget (its bf16 reference loss, and for freeform the bar), in the train request only.
+# The JSON of the miner's QuantTarget (its bf16 reference loss, and for freeform the bar); set on every compression job.
 QUANT_TARGET_ENV = "QUANT_TARGET"
-# Path (in the cache volume mount) of the calibration-set JSON (core.models.quant_models.QuantCalibrationSet) a freeform
-# miner may read; unset when the task publishes none.
+# Path (in the cache volume mount) of the calibration-set JSON (core.models.quant_models.QuantCalibrationSet: the examples
+# with the bf16 reference's per-example losses); set on every compression job.
 QUANT_CALIBRATION_PATH_ENV = "QUANT_CALIBRATION_PATH"
 QUANT_FORMAT_ENV = "QUANT_FORMAT"
 # The bf16 reference every quant loss on the task is normalised by (the miner's own model on an own-model task,

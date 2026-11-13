@@ -19,6 +19,10 @@ from validator.tournament import constants as t_cst
 
 logger = get_logger(__name__)
 
+class CalibrationUnavailableError(ValueError):
+    """A task that must carry a calibration set could not be given one; its data prep fails."""
+
+
 ROW_HASH_COLUMN = "__calibration_row_hash__"
 _ROW_HASH_HEX_CHARS = 32
 

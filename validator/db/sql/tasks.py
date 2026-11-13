@@ -41,6 +41,7 @@ from validator.tasks.models import QuantFixedTask
 from validator.tasks.models import QuantFreeformRawTask
 from validator.tasks.models import QuantFreeformTask
 from validator.tasks.models import QuantRawTask
+from validator.tasks.models import quant_task_missing_calibration
 
 
 if TYPE_CHECKING:
@@ -205,8 +206,17 @@ def _row_count(command_tag: str) -> int:
         return 0
 
 
+def _reject_quant_without_calibration(task: AnyTypeRawTask) -> None:
+    """Raise before any write when the task would be stored as a compression task past prep without its calibration set."""
+    if quant_task_missing_calibration(task):
+        raise ValueError(
+            f"Refusing to store compression task {task.task_id} as {task.status}: it has no published calibration set"
+        )
+
+
 async def add_task(task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeRawTask:
     """Add a new task"""
+    _reject_quant_without_calibration(task)
     async with await psql_db.connection() as connection:
         async with connection.transaction():
             task_record = await _insert_base_task(connection, task)
@@ -829,6 +839,7 @@ async def get_table_fields(table_name: str, connection: Connection) -> set[str]:
 
 
 async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeRawTask:
+    _reject_quant_without_calibration(updated_task)
     existing_task = await get_task(updated_task.task_id, psql_db)
 
     if not existing_task:

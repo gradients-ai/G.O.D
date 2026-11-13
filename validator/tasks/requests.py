@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import random
@@ -24,10 +25,10 @@ from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestQuant
 from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskStatus
-from core.models.task_models import TaskType
 from validator.evaluation.quant_loss import IGNORE_INDEX
 from validator.evaluation.quant_loss import QuantEvalExample
 from validator.evaluation.quant_loss import quant_eval_set_fingerprint
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import shared_split_seed
 from validator.tasks.datasets.preparation import prepare_image_task
 from validator.tasks.datasets.preparation import prepare_text_task
@@ -225,39 +226,63 @@ class QuantCalibrationPublication(BaseModel):
     n_examples: int
 
 
+async def _build_and_upload_quant_calibration_set(
+    raw_calibration_url: str,
+    dataset_type: InstructTextDatasetType | ChatTemplateDatasetType,
+    tokenizer: QuantTokenizer,
+    max_sequence_len: int,
+    eval_examples: list[QuantEvalExample],
+) -> QuantCalibrationPublication:
+    """One download, tokenise and upload of the calibration set; raises CalibrationUnavailableError below the minimum."""
+    build = build_quant_eval_set(await _download_json_rows(raw_calibration_url), dataset_type, tokenizer, max_sequence_len)
+    eval_keys = {(tuple(example.input_ids), tuple(example.labels)) for example in eval_examples}
+    kept = [example for example in build.examples if (tuple(example.input_ids), tuple(example.labels)) not in eval_keys]
+    if len(kept) < prep_cst.QUANT_CALIBRATION_MIN_EXAMPLES:
+        raise CalibrationUnavailableError(
+            f"Quant calibration set: only {len(kept)}/{build.n_rows} rows survive, "
+            f"under {prep_cst.QUANT_CALIBRATION_MIN_EXAMPLES}"
+        )
+    fingerprint = quant_eval_set_fingerprint(kept)
+    n_tokens = sum(sum(label != IGNORE_INDEX for label in example.labels[1:]) for example in kept)
+    logger.info(
+        f"Quant calibration set: {len(kept)}/{build.n_rows} rows kept, {n_tokens} supervised tokens, fingerprint {fingerprint}"
+    )
+    url = await _upload_quant_jsonl(kept, "quant_calibration_set.jsonl", "quant calibration set")
+    return QuantCalibrationPublication(url=url, fingerprint=fingerprint, n_examples=len(kept))
+
+
 async def _publish_quant_calibration_set(
     raw_calibration_url: str,
     dataset_type: InstructTextDatasetType | ChatTemplateDatasetType,
     tokenizer: QuantTokenizer,
     max_sequence_len: int,
     eval_examples: list[QuantEvalExample],
-) -> QuantCalibrationPublication | None:
-    """Tokenise the raw calibration rows with the eval set's own rules and upload them; None publishes nothing.
+) -> QuantCalibrationPublication:
+    """Tokenise the raw calibration rows with the eval set's own rules and upload them.
 
-    An example equal to an eval example (token level) is dropped, so a calibration row is never a scored row. Below
-    QUANT_CALIBRATION_MIN_EXAMPLES survivors, or on any failure, nothing is published: calibration never fails prep.
+    An example equal to an eval example (token level) is dropped, so a calibration row is never a scored row. Fewer than
+    QUANT_CALIBRATION_MIN_EXAMPLES survivors raise CalibrationUnavailableError at once (the outcome is deterministic). Any
+    other failure is retried up to QUANT_CALIBRATION_PUBLISH_ATTEMPTS attempts in all, then raises CalibrationUnavailableError.
+    The urls are presigned, so every message is redacted.
     """
-    try:
-        build = build_quant_eval_set(await _download_json_rows(raw_calibration_url), dataset_type, tokenizer, max_sequence_len)
-        eval_keys = {(tuple(example.input_ids), tuple(example.labels)) for example in eval_examples}
-        kept = [example for example in build.examples if (tuple(example.input_ids), tuple(example.labels)) not in eval_keys]
-        if len(kept) < prep_cst.QUANT_CALIBRATION_MIN_EXAMPLES:
-            logger.warning(
-                f"Quant calibration set: only {len(kept)}/{build.n_rows} rows survive, under "
-                f"{prep_cst.QUANT_CALIBRATION_MIN_EXAMPLES}; publishing no calibration set"
+    last_error = ""
+    for attempt in range(1, prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS + 1):
+        try:
+            return await _build_and_upload_quant_calibration_set(
+                raw_calibration_url, dataset_type, tokenizer, max_sequence_len, eval_examples
             )
-            return None
-        fingerprint = quant_eval_set_fingerprint(kept)
-        n_tokens = sum(sum(label != IGNORE_INDEX for label in example.labels[1:]) for example in kept)
-        logger.info(
-            f"Quant calibration set: {len(kept)}/{build.n_rows} rows kept, {n_tokens} supervised tokens, "
-            f"fingerprint {fingerprint}"
-        )
-        url = await _upload_quant_jsonl(kept, "quant_calibration_set.jsonl", "quant calibration set")
-        return QuantCalibrationPublication(url=url, fingerprint=fingerprint, n_examples=len(kept))
-    except Exception as e:
-        logger.warning(redact_url_queries(f"Quant calibration set: could not build it, publishing none: {type(e).__name__}: {e}"))
-        return None
+        except CalibrationUnavailableError as e:
+            raise CalibrationUnavailableError(redact_url_queries(str(e))) from None
+        except Exception as e:
+            last_error = redact_url_queries(f"{type(e).__name__}: {e}")
+            logger.warning(
+                f"Quant calibration set: attempt {attempt}/{prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS} failed: {last_error}"
+            )
+            if attempt < prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS:
+                await asyncio.sleep(prep_cst.QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS * attempt)
+    raise CalibrationUnavailableError(
+        f"Quant calibration set could not be published after {prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS} attempts: {last_error}"
+    )
 
 
 async def run_quant_task_prep(
@@ -266,13 +291,18 @@ async def run_quant_task_prep(
     psql_db=None,
     tokenizer_loader: Callable[[str], QuantTokenizer] | None = None,
 ) -> AnyQuantRawTask:
-    """Split and upload like a text task, then tokenise the test split into the scorer's JSONL.
+    """Split and upload like a text task, then tokenise the test split into the scorer's JSONL and the calibration rows
+    into the published calibration set.
 
     YaRN never applies (quant tasks have yarn_factor None). The tokenizer is the task's own base
     model's: augmentation never touches it and augmented_model_id is not set until model prep.
     The raw JSON test split is dropped: nothing reads it, and the rows are reproducible from ds + seed.
+    Raises CalibrationUnavailableError when no calibration set can be published; the task is then left unchanged
+    (every field is set only after the last step that can fail).
     """
     split = await prepare_text_task(task, keypair=keypair, psql_db=psql_db)
+    if not split.calibration_url:
+        raise CalibrationUnavailableError(f"Compression task {task.task_id} on {task.ds} has no calibration rows after data prep")
     rows = await _download_json_rows(split.test_url)
     tokenizer = (tokenizer_loader or _default_tokenizer_loader())(task.model_id)
     # The trainer receives task.dataset_type, so it must name the uploaded JSON's columns. It is set only
@@ -286,19 +316,17 @@ async def run_quant_task_prep(
     build = build_quant_eval_set(_capped_eval_rows(rows, _eval_rows_seed(task.ds)), dataset_type, tokenizer, max_sequence_len)
     _check_quant_eval_set(build)
 
-    calibration = None
-    if split.calibration_url:
-        calibration = await _publish_quant_calibration_set(
-            split.calibration_url, dataset_type, tokenizer, max_sequence_len, build.examples
-        )
+    calibration = await _publish_quant_calibration_set(
+        split.calibration_url, dataset_type, tokenizer, max_sequence_len, build.examples
+    )
+    test_data = await _upload_quant_eval_set(build)
 
     task.dataset_type = dataset_type
     task.training_data = split.train_url
-    task.test_data = await _upload_quant_eval_set(build)
-    # None when the task has no calibration set (or its split is too small).
-    task.calibration_data = calibration.url if calibration else None
-    task.calibration_fingerprint = calibration.fingerprint if calibration else None
-    task.calibration_n_examples = calibration.n_examples if calibration else None
+    task.test_data = test_data
+    task.calibration_data = calibration.url
+    task.calibration_fingerprint = calibration.fingerprint
+    task.calibration_n_examples = calibration.n_examples
     task.synthetic_data = None
     task.status = TaskStatus.LOOKING_FOR_NODES
     logger.info("Quant data creation is complete - now time to find some miners")
@@ -306,16 +334,12 @@ async def run_quant_task_prep(
 
 
 def prepare_quant_task_request(task: AnyQuantRawTask) -> TrainRequestQuant:
-    """Organic-path request; mirrors orchestrator._quant_training_data without a decode request."""
-    return TrainRequestQuant(
-        model=task.augmented_model_id or task.model_id,
-        task_id=str(task.task_id),
-        hours_to_complete=task.hours_to_complete,
-        dataset=task.training_data if task.training_data else "dataset error",
-        dataset_type=task.dataset_type,
-        file_format=FileFormat.S3,
-        task_type=task.task_type,
-        quant_spec=task.quant_spec if task.task_type == TaskType.QUANTFIXEDTASK else None,
+    """Not available: compression train requests carry the calibration set and are built by the tournament orchestrator.
+
+    The name stays because TaskConfig.task_request_prepare_function wires it for every quant task type; nothing calls it.
+    """
+    raise NotImplementedError(
+        "compression train requests are built by the tournament orchestrator, which attaches the calibration set"
     )
 
 

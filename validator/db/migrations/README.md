@@ -140,6 +140,7 @@ task dbup
 | `20261113140000_quant_task_sources.sql` | Create `quant_tournament_sources` and `quant_task_sources`. |
 | `20261113150000_quant_round_seed_roles.sql` | Round seed roles for compression on `tournament_seed_tasks`. |
 | `20261113170000_tournament_boss_rank_comparisons.sql` | Create `tournament_boss_rank_comparisons`. |
+| `20261114120000_quant_calibration_required.sql` | `tasks_quant_calibration_required` CHECK (NOT VALID): a compression task past prep has its calibration set. |
 
 ## See also
 

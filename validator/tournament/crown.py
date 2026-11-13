@@ -1,12 +1,13 @@
 """The crown rule of a seeded tournament, the same for text and quant: seven head-to-heads between the challenger and the boss.
 
 Pure functions and models only. The seven tasks are the task of each of rounds 1-3 and the four tasks of the boss round.
-Each head-to-head is a win or a non-win; a non-win is within the tight allowance, within the looser allowance, or beyond
-both. What a win and the two allowances are depends on the task (text_head_to_head, freeform_head_to_head,
-fixed_head_to_head). The challenger is crowned when it has at most CROWN_MAX_NON_WINS non-wins, every non-win is within the
-looser allowance and, with two non-wins, at least one is within the tight allowance (crown_verdict). With all seven decided
-that is: six wins and a seventh within the looser allowance, or five wins, one non-win within the tight allowance and the
-other within the looser one.
+Each head-to-head is a win or a non-win; a non-win is within the smaller allowance (strictly better than the boss), within the
+larger allowance (level with the boss, or worse by at most CROWN_LARGER_ALLOWANCE) or beyond both (worse by more). Only what
+a win is depends on the task (text_head_to_head, freeform_head_to_head, fixed_head_to_head); the non-win bands are the same
+(non_win_outcome). The challenger is crowned when it has at most CROWN_MAX_NON_WINS non-wins, every non-win is within the
+larger allowance and, with two non-wins, at least one is within the smaller allowance (crown_verdict). With all seven decided
+that is: six wins and a seventh within the larger allowance, or five wins, one non-win within the smaller allowance and the
+other within the larger one.
 """
 
 import math
@@ -27,9 +28,9 @@ class HeadToHeadOutcome(str, Enum):
     """How one task went for the challenger against the boss."""
 
     WIN = "win"
-    WITHIN_TIGHT = "within_tight"  # a non-win within the tight allowance (and so within the looser one)
-    WITHIN_LOOSER = "within_looser"  # a non-win within the looser allowance only
-    BEYOND = "beyond"  # a non-win beyond both allowances: it rules the crown out
+    WITHIN_SMALLER = "within_smaller"  # a non-win strictly better than the boss
+    WITHIN_LARGER = "within_larger"  # a non-win level with the boss or worse by at most CROWN_LARGER_ALLOWANCE
+    BEYOND = "beyond"  # a non-win worse by more than CROWN_LARGER_ALLOWANCE: it rules the crown out
 
 
 class HeadToHead(BaseModel):
@@ -37,9 +38,8 @@ class HeadToHead(BaseModel):
 
     ``boss_score`` and ``challenger_score`` are the compared scalars: the adjusted loss (higher is better for GRPO) on a text
     or fixed task, the effective bytes on a freeform task; None for a side with no valid result. ``deficit`` is how far the
-    challenger trails the boss relative to the boss's value (the scalar on a text task, the effective bytes on a freeform
-    task; 0.0 when level or ahead, infinite when it cannot be measured) and None on a fixed task, whose allowances come from
-    the paired test. ``improvement`` is how much better the challenger is, as a fraction of the boss's value (negative when
+    challenger trails the boss relative to the boss's value (0.0 when level, ahead or a win, infinite when it cannot be
+    measured); None only on a result that has no comparison to measure. ``improvement`` is how much better the challenger is, as a fraction of the boss's value (negative when
     behind); None when it cannot be measured.
     """
 
@@ -113,11 +113,14 @@ def _within(value: float, allowance: float) -> bool:
     return value <= allowance * (1 + t_cst.CROWN_BOUNDARY_RELATIVE_TOLERANCE)
 
 
-def _allowance_outcome(deficit: float, tight: float, looser: float) -> HeadToHeadOutcome:
-    if _within(deficit, tight):
-        return HeadToHeadOutcome.WITHIN_TIGHT
-    if _within(deficit, looser):
-        return HeadToHeadOutcome.WITHIN_LOOSER
+def non_win_outcome(deficit: float, strictly_better: bool) -> HeadToHeadOutcome:
+    """The band of a non-win, shared by text, fixed and freeform: within the smaller allowance when the challenger is strictly
+    better than the boss (no tolerance), else within the larger one when its deficit is at most CROWN_LARGER_ALLOWANCE,
+    else beyond both."""
+    if strictly_better:
+        return HeadToHeadOutcome.WITHIN_SMALLER
+    if _within(deficit, t_cst.CROWN_LARGER_ALLOWANCE):
+        return HeadToHeadOutcome.WITHIN_LARGER
     return HeadToHeadOutcome.BEYOND
 
 
@@ -165,9 +168,9 @@ def text_head_to_head(
     (strictly better against a boss score of exactly 0) and, for a type with per-example losses (text_needs_paired_test),
     ``paired`` is a comparison the challenger won. ``paired`` None for such a type, or a comparison with no comparable
     example (is_unpairable), means the per-example vectors were missing or could not be paired: the boss keeps the task. A
-    non-win is within the tight allowance with a deficit of at
-    most TEXT_CROWN_TIGHT_ALLOWANCE, within the looser one at most TEXT_CROWN_LOOSER_ALLOWANCE, beyond both otherwise.
-    GRPO is decided on the scalar alone.
+    non-win is banded on the score alone (non_win_outcome): within the smaller allowance when the score is strictly better than
+    the boss's, within the larger one when level or worse by at most CROWN_LARGER_ALLOWANCE, beyond both otherwise. GRPO is
+    decided on the scalar alone.
     """
     fields = dict(
         task_id=str(task_id), label=label, task_type=task_type, boss_score=boss_score, challenger_score=challenger_score
@@ -205,7 +208,7 @@ def text_head_to_head(
 
     if is_win:
         return HeadToHead(**fields, outcome=HeadToHeadOutcome.WIN, deficit=0.0, improvement=improvement, reason=reason)
-    outcome = _allowance_outcome(deficit, t_cst.TEXT_CROWN_TIGHT_ALLOWANCE, t_cst.TEXT_CROWN_LOOSER_ALLOWANCE)
+    outcome = non_win_outcome(deficit, strictly_better)
     return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason)
 
 
@@ -226,9 +229,10 @@ def freeform_head_to_head(
 
     A challenger with no valid entry (valid_freeform_bytes): beyond both allowances. A boss with no valid entry (over the
     cap, a scored fail, no result, no byte count) while the challenger has one: a win. Otherwise a win when the challenger
-    has at least QUANT_FREEFORM_BOSS_BYTE_MARGIN fewer effective bytes than the boss. A non-win's deficit is how many more
-    bytes the challenger has, relative to the boss's (0 when it has fewer, by less than the win margin): within the tight
-    allowance at most QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE, within the looser one at most QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE.
+    has at least QUANT_FREEFORM_BOSS_BYTE_MARGIN fewer effective bytes than the boss; any other result is banded on the
+    effective bytes alone (non_win_outcome): within the smaller allowance with strictly fewer bytes, within the larger one with
+    equal bytes or at most CROWN_LARGER_ALLOWANCE more, beyond both with more. The deficit is how many more bytes the
+    challenger has, relative to the boss's (0 with fewer or equal).
     """
     boss_bytes, challenger_bytes = valid_freeform_bytes(boss), valid_freeform_bytes(challenger)
     fields = dict(
@@ -253,18 +257,17 @@ def freeform_head_to_head(
             outcome=HeadToHeadOutcome.WIN,
             deficit=0.0,
             improvement=improvement,
-            reason=f"at least {margin * 100:g}% fewer effective bytes",
+            reason=f"{_percent(improvement)} fewer effective bytes, at least the {margin * 100:g}% win margin",
         )
-    deficit = max(0.0, -improvement)
-    outcome = _allowance_outcome(
-        deficit, t_cst.QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE, t_cst.QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE
+    strictly_fewer = challenger_bytes < boss_bytes
+    reason = (
+        f"{_percent(improvement)} fewer effective bytes, under the {margin * 100:g}% win margin"
+        if strictly_fewer
+        else "no fewer effective bytes than the boss"
     )
+    deficit = _relative_deficit(boss_bytes, challenger_bytes, False)
     return HeadToHead(
-        **fields,
-        outcome=outcome,
-        deficit=deficit,
-        improvement=improvement,
-        reason=f"not {margin * 100:g}% fewer effective bytes",
+        **fields, outcome=non_win_outcome(deficit, strictly_fewer), deficit=deficit, improvement=improvement, reason=reason
     )
 
 
@@ -276,15 +279,16 @@ def fixed_head_to_head(
     paired: PairedLossComparison | None,
     boss_takes_paired_test: bool,
 ) -> HeadToHead:
-    """Decide one fixed quant task on the paired per-example test.
+    """Decide one fixed quant task: the paired per-example test and the scalar loss.
 
     A challenger with no valid loss (none, or a scored fail): beyond both allowances. A boss whose entry is a scored fail or
-    absent while the challenger has a valid loss: a win, with or without vectors. With both valid: ``paired`` None (a side has
-    no per-example losses, they cannot be paired, or no same-SKU reference aligns them) or a comparison with no comparable
-    example (is_unpairable) means the boss keeps the task, beyond both allowances. Otherwise a win when the challenger passes
-    the paired test and its scalar loss is at least QUANT_FIXED_BOSS_MIN_IMPROVEMENT better; a task the boss takes on the
-    paired test with the sides swapped (``boss_takes_paired_test``) is beyond both allowances; anything else is a draw on
-    the paired test (this includes a challenger that passes it without the scalar minimum), within both allowances.
+    absent while the challenger has a valid loss: a win, with or without vectors. With both valid, a win when the challenger
+    passes the paired test and its scalar loss is at least QUANT_FIXED_BOSS_MIN_IMPROVEMENT better. Every other result is a
+    non-win banded on the scalar loss alone (non_win_outcome): within the smaller allowance with a strictly lower loss, within
+    the larger one with an equal loss or at most CROWN_LARGER_ALLOWANCE higher, beyond both with a higher one. ``paired`` None
+    (a side has no per-example losses, they cannot be paired, or no same-SKU reference aligns them), a comparison with no
+    comparable example (is_unpairable), a draw, a paired test lost without the boss taking the task, and the boss taking it
+    on the paired test with the sides swapped (``boss_takes_paired_test``) differ only in the reason.
     """
     fields = dict(
         task_id=str(task_id),
@@ -294,57 +298,52 @@ def fixed_head_to_head(
         challenger_score=challenger_loss,
     )
     if not is_valid_score(challenger_loss):
-        return HeadToHead(**fields, outcome=HeadToHeadOutcome.BEYOND, reason="no valid challenger entry")
+        return HeadToHead(
+            **fields, outcome=HeadToHeadOutcome.BEYOND, deficit=math.inf, reason="no valid challenger entry"
+        )
     if not is_valid_score(boss_loss):
         return HeadToHead(
-            **fields, outcome=HeadToHeadOutcome.WIN, reason="the boss's entry is a scored fail, the challenger takes it"
+            **fields,
+            outcome=HeadToHeadOutcome.WIN,
+            deficit=0.0,
+            reason="the boss's entry is a scored fail, the challenger takes it",
         )
     improvement = _improvement(boss_loss, challenger_loss, False)
-    if is_unpairable(paired):
-        return HeadToHead(
-            **fields,
-            outcome=HeadToHeadOutcome.BEYOND,
-            improvement=improvement,
-            reason="no pairable per-example losses, the boss keeps the task",
-        )
     minimum = t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT
-    if paired.challenger_won and not paired.is_draw:
+    if is_unpairable(paired):
+        reason = "no pairable per-example losses, the boss keeps the task"
+    elif paired.challenger_won and not paired.is_draw:
         if challenger_beats_boss(boss_loss, challenger_loss, False, minimum) and (boss_loss != 0 or challenger_loss < 0):
             return HeadToHead(
                 **fields,
                 outcome=HeadToHeadOutcome.WIN,
+                deficit=0.0,
                 improvement=improvement,
                 reason=f"paired test passed and the scalar loss is at least {minimum * 100:g}% better",
             )
-        return HeadToHead(
-            **fields,
-            outcome=HeadToHeadOutcome.WITHIN_TIGHT,
-            improvement=improvement,
-            reason=f"a draw: paired test passed but the scalar loss is not {minimum * 100:g}% better",
-        )
-    if boss_takes_paired_test:
-        return HeadToHead(
-            **fields, outcome=HeadToHeadOutcome.BEYOND, improvement=improvement, reason="the boss takes it on the paired test"
-        )
-    return HeadToHead(
-        **fields,
-        outcome=HeadToHeadOutcome.WITHIN_TIGHT,
-        improvement=improvement,
-        reason=f"a draw on the paired test ({paired.reason})",
-    )
+        reason = f"paired test passed but the scalar loss is not {minimum * 100:g}% better"
+    elif boss_takes_paired_test:
+        reason = "the boss takes it on the paired test"
+    elif paired.is_draw:
+        reason = f"a draw on the paired test ({paired.reason})"
+    else:
+        reason = f"paired test not passed ({paired.reason})"
+    deficit = _relative_deficit(boss_loss, challenger_loss, False)
+    outcome = non_win_outcome(deficit, challenger_loss < boss_loss)
+    return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason)
 
 
 def crown_verdict(results: list[HeadToHead]) -> CrownVerdict:
     """The crown rule on the head-to-heads decided so far (every undecided task counts as a win).
 
-    Crowned iff at most CROWN_MAX_NON_WINS non-wins, none beyond the looser allowance and, with two non-wins, at least one
-    within the tight allowance. More than CROWN_TASKS head-to-heads is a task set the rule is not defined on: never crowned.
+    Crowned iff at most CROWN_MAX_NON_WINS non-wins, none beyond the larger allowance and, with two non-wins, at least one
+    within the smaller allowance. More than CROWN_TASKS head-to-heads is a task set the rule is not defined on: never crowned.
     """
     non_wins = [result for result in results if not result.is_win]
     count = len(non_wins)
     decided = len(results)
     beyond = [result for result in non_wins if result.outcome == HeadToHeadOutcome.BEYOND]
-    tight = [result for result in non_wins if result.outcome == HeadToHeadOutcome.WITHIN_TIGHT]
+    smaller = [result for result in non_wins if result.outcome == HeadToHeadOutcome.WITHIN_SMALLER]
 
     if decided > t_cst.CROWN_TASKS:
         crowned, reason = False, f"{decided} tasks decided, the crown rule is defined on exactly {t_cst.CROWN_TASKS}"
@@ -352,10 +351,10 @@ def crown_verdict(results: list[HeadToHead]) -> CrownVerdict:
         crowned, reason = False, f"{count} non-wins of {decided} decided, at most {t_cst.CROWN_MAX_NON_WINS} allowed"
     elif beyond:
         crowned = False
-        reason = f"{', '.join(result.label for result in beyond)} beyond the looser allowance"
-    elif count == 2 and not tight:
+        reason = f"{', '.join(result.label for result in beyond)} beyond the larger allowance"
+    elif count == 2 and not smaller:
         crowned = False
-        reason = f"two non-wins ({', '.join(result.label for result in non_wins)}) and neither within the tight allowance"
+        reason = f"two non-wins ({', '.join(result.label for result in non_wins)}) and neither within the smaller allowance"
     else:
         crowned = True
         reason = f"{decided - count} wins and {count} non-win(s) of {decided} decided" + (

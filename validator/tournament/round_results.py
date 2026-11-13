@@ -855,10 +855,11 @@ async def quant_task_head_to_head(
 ) -> HeadToHead:
     """The challenger against the boss on one quant task (freeform_head_to_head or fixed_head_to_head), from stored results.
 
-    Fixed: the challenger's vector is aligned onto the boss's SKU before the paired test; vectors that are missing, cannot
-    be paired or cannot be aligned leave ``paired`` None (the boss keeps the task unless its entry is a scored fail). The
-    boss takes the task outright when it would win the paired test with the sides swapped, scalar gate included
-    (challenger_within_paired_allowed_loss).
+    Fixed: the challenger's vector is aligned onto the boss's SKU before the paired test. Vectors that are missing, cannot
+    be paired or cannot be aligned leave ``paired`` None; a boss that would win the paired test with the sides swapped, scalar
+    gate included (challenger_within_paired_allowed_loss), sets ``boss_takes``. Neither is a win for the challenger: under
+    fixed_head_to_head they change only the reason of the non-win, which is banded on the scalar loss. A boss entry that is
+    a scored fail or absent is the exception: the challenger wins it with or without vectors.
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
     boss_result, challenger_result = await _pair_results(task_id, boss_hotkey, challenger_hotkey, psql_db)

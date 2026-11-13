@@ -23,6 +23,8 @@ from core.models.quant_artifact_models import QuantDecodedFile
 from core.models.quant_models import QuantFixedSpec
 from core.models.quant_models import QuantFreeformPenalty
 from core.models.reward_models import RewardFunction
+from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.scoring.constants import QUANT_BAR_CAP
 from validator.scoring.constants import QUANT_PENALTY_CURVATURE
@@ -50,12 +52,15 @@ class RawTask(BaseModel):
     times_delayed: int = 0
     hours_to_complete: float
     test_data: str | None = None
-    # Rows carved from the train side for a freeform quant miner to measure on, never scored: a raw JSON URL on an
-    # instruct task, the tokenised JSONL (calibration_fingerprint / calibration_n_examples) on a freeform quant task.
+    # Rows carved from the train side for a compression (quant) miner to measure on, never scored. On an instruct task
+    # calibration_data is the raw JSON url; on a quant task it is the raw rows carried from the upstream or the given split
+    # until prep, then the tokenised JSONL (with calibration_fingerprint / calibration_n_examples) that miners receive.
     calibration_data: str | None = None
     calibration_fingerprint: str | None = None
     calibration_n_examples: int | None = None
-    carve_calibration: bool = False  # prep carves calibration_data from this task's own split
+    # Instruct tasks: prep carves calibration_data from this task's own split (a tournament round-1 task). Quant tasks are
+    # created flagged and always get a calibration set, carved unless they carry calibration_data from a given split.
+    carve_calibration: bool = False
     training_data: str | None = None
     assigned_miners: list[int] | None = None
     miner_scores: list[float] | None = None
@@ -217,7 +222,7 @@ class QuantPreppedSplit(BaseModel):
 
     training_data: str
     test_data: str
-    calibration_data: str | None = None  # the source task's raw calibration JSON; None when it carved none
+    calibration_data: str | None = None  # the source task's raw calibration JSON; None leaves the carve to the task's own prep
 
 
 class QuantFixedRawTask(QuantRawTask):
@@ -241,6 +246,35 @@ def freeform_penalty_policy(task: QuantFreeformRawTask) -> QuantFreeformPenalty:
     if task.penalty_curvature is None or task.penalty_knee is None:
         return QuantFreeformPenalty.cliff(cap)
     return QuantFreeformPenalty(knee=1 + task.penalty_knee, curvature=task.penalty_curvature, cap=cap)
+
+
+# The statuses of a task that has left data prep and can still be handed to miners. A compression task in one of them always has
+# its published calibration set (the tasks_quant_calibration_required CHECK holds the same list).
+QUANT_CALIBRATION_REQUIRED_STATUSES = frozenset(
+    {
+        TaskStatus.AWAITING_MODEL_PREP,
+        TaskStatus.LOOKING_FOR_NODES,
+        TaskStatus.DELAYED,
+        TaskStatus.READY,
+        TaskStatus.TRAINING,
+    }
+)
+
+
+def has_published_calibration(task: RawTask) -> bool:
+    """Whether the task holds the tokenised calibration set quant prep publishes: its file, fingerprint and example count.
+
+    Before prep a compression task may hold only the raw rows copied from its source task (calibration_data alone)."""
+    return bool(task.calibration_data and task.calibration_fingerprint and (task.calibration_n_examples or 0) > 0)
+
+
+def quant_task_missing_calibration(task: RawTask) -> bool:
+    """True for a compression task past data prep with no published calibration set: a state that must never be stored."""
+    return (
+        task.task_type in QUANT_TASK_TYPES
+        and task.status in QUANT_CALIBRATION_REQUIRED_STATUSES
+        and not has_published_calibration(task)
+    )
 
 
 # NOTE: As time goes on we will expand this class to be more of a 'submitted task'?

@@ -17,6 +17,17 @@ from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskType
 
 
+FREEFORM_TARGET_FIELDS = {
+    "bar_cap": 0.04, "bar": 2.08, "knee": 1.04, "knee_loss": 2.08, "penalty_curvature": 2500.0, "cap": 1.08, "cap_loss": 2.16,
+}  # fmt: skip
+CALIBRATION = {
+    "examples_url": "u",
+    "eval_set_fingerprint": "f",
+    "n_examples": 1,
+    "reference": {"model": "m", "loss": 2.0, "per_example_losses": [1.5], "sku": "s"},
+}
+
+
 def _quant_payload(**overrides) -> dict:
     payload = {
         "model": "org/model",
@@ -26,6 +37,8 @@ def _quant_payload(**overrides) -> dict:
         "dataset_type": InstructTextDatasetType().model_dump(),
         "file_format": FileFormat.S3,
         "task_type": TaskType.QUANTFREEFORMTASK,
+        "quant_target": {"reference_model": "m", "reference_loss": 2.0, "reference_sku": "s", **FREEFORM_TARGET_FIELDS},
+        "calibration": CALIBRATION,
     }
     return {**payload, **overrides}
 
@@ -42,12 +55,12 @@ def test_the_calibration_env_constant_is_the_contract_name():
     "model,kwargs",
     [
         (QuantCalibrationReference, dict(model="m", loss=1.0, per_example_losses=[1.0, None], sku="s", extra=1)),
-        (QuantCalibrationRequest, dict(examples_url="u", eval_set_fingerprint="f", n_examples=1, reference=None, extra=1)),
+        (QuantCalibrationRequest, {**CALIBRATION, "extra": 1}),
         (QuantCalibrationExample, dict(input_ids=[1], labels=[-100], reference_loss=None, extra=1)),
         (
             QuantCalibrationSet,
             dict(
-                task_id="t", eval_set_fingerprint="f", reference_model=None, reference_loss=None, reference_sku=None,
+                task_id="t", eval_set_fingerprint="f", reference_model="m", reference_loss=1.0, reference_sku="s",
                 examples=[], extra=1,
             ),
         ),
@@ -80,24 +93,41 @@ def test_calibration_set_round_trips_through_json_with_none_losses():
     assert QuantCalibrationSet.model_validate_json(calibration_set.model_dump_json()) == calibration_set
 
 
-def test_a_quant_request_without_calibration_defaults_to_none():
-    assert TrainRequestQuant(**_quant_payload()).calibration is None
+def test_a_quant_request_without_calibration_is_rejected():
+    payload = _quant_payload()
+    del payload["calibration"]
+    with pytest.raises(ValidationError):
+        TrainRequestQuant(**payload)
+
+
+def test_a_calibration_request_requires_its_reference():
+    with pytest.raises(ValidationError, match="reference"):
+        QuantCalibrationRequest(examples_url="u", eval_set_fingerprint="f", n_examples=1)
+    with pytest.raises(ValidationError, match="reference"):
+        QuantCalibrationRequest(examples_url="u", eval_set_fingerprint="f", n_examples=1, reference=None)
+
+
+def test_a_calibration_reference_may_carry_none_for_a_row_with_no_scored_token():
+    reference = QuantCalibrationReference(model="m", loss=1.0, per_example_losses=[1.0, None], sku="s")
+
+    assert reference.per_example_losses == [1.0, None]
 
 
 def test_a_fixed_request_may_carry_a_calibration():
-    calibration = {"examples_url": "u", "eval_set_fingerprint": "f", "n_examples": 1, "reference": None}
-
     request = TrainRequestQuant(
-        **_quant_payload(task_type=TaskType.QUANTFIXEDTASK, quant_spec=QuantFormat.W4A16_SYM_G128.spec(), calibration=calibration)
+        **_quant_payload(
+            task_type=TaskType.QUANTFIXEDTASK,
+            quant_spec=QuantFormat.W4A16_SYM_G128.spec(),
+            quant_target={"reference_model": "m", "reference_loss": 2.0, "reference_sku": "s"},
+            calibration=CALIBRATION,
+        )
     )
 
     assert request.calibration.n_examples == 1
 
 
 def test_a_quant_payload_round_trips_as_quant_with_calibration():
-    calibration = {"examples_url": "u", "eval_set_fingerprint": "f", "n_examples": 1, "reference": None}
-
-    request = TrainerProxyRequest.model_validate(_proxy(_quant_payload(calibration=calibration)))
+    request = TrainerProxyRequest.model_validate(_proxy(_quant_payload(calibration=CALIBRATION)))
 
     assert isinstance(request.training_data, TrainRequestQuant)
     assert request.training_data.calibration.n_examples == 1

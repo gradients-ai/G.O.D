@@ -77,6 +77,25 @@ def scheduler_seams(monkeypatch):
     monkeypatch.setattr(scheduler, "_get_columns_for_instruct_dataset", AsyncMock(return_value=FRESH_COLUMNS))
 
 
+@pytest.mark.parametrize("task_type", [TaskType.QUANTFIXEDTASK, TaskType.QUANTFREEFORMTASK])
+async def test_every_quant_creator_flags_the_task_to_carve_calibration(scheduler_seams, task_type):
+    fmt = QuantFormat.W3A16_ASYM_G128 if task_type == TaskType.QUANTFIXEDTASK else None
+    created = [
+        await scheduler.create_synthetic_quant_task(
+            MagicMock(), task_type, None, MagicMock(), quant_format=fmt, model_id_override="org/base"
+        ),
+        await scheduler.create_chained_quant_task(MagicMock(), task_type, _instruct_task(), quant_format=fmt),
+        await scheduler.create_own_upstream_quant_task(MagicMock(), task_type, _instruct_task(), quant_format=fmt),
+    ]
+    created += [
+        await scheduler.recreate_chained_quant_task(MagicMock(), created[1]),
+        await scheduler.recreate_chained_quant_task(MagicMock(), created[2]),
+        await scheduler.recreate_quant_task(MagicMock(), created[0]),
+    ]
+
+    assert [task.carve_calibration for task in created] == [True] * len(created)
+
+
 async def test_recreate_keeps_upstream_data_and_spec(scheduler_seams):
     original = await scheduler.create_chained_quant_task(
         MagicMock(), TaskType.QUANTFIXEDTASK, _instruct_task(), quant_format=QuantFormat.W3A16_ASYM_G128

@@ -324,6 +324,19 @@ async def run_trainer_container_image(
                 raise
 
 
+async def _write_quant_calibration(task_id: str, hotkey: str, calibration: QuantCalibrationRequest) -> dict[str, str]:
+    """The env that points the miner at its calibration file in the cache volume; raises when the file cannot be written
+    within the budget of all its attempts (the training container has no network, so this runs on the host)."""
+    per_attempt = (
+        cst.QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS
+        + cst.QUANT_CALIBRATION_RETRY_SLEEP_SECONDS
+        + cst.QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS
+    )
+    budget = cst.QUANT_CALIBRATION_FETCH_ATTEMPTS * per_attempt
+    volume_dir = docker.from_env().volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"]
+    return await asyncio.wait_for(write_quant_calibration_file(task_id, hotkey, calibration, volume_dir), timeout=budget)
+
+
 async def run_trainer_container_text(
     task_id: str,
     hotkey: str,
@@ -344,7 +357,7 @@ async def run_trainer_container_text(
     kl_coef: float | None = None,
     quant_spec: QuantFixedSpec | None = None,
     quant_target: QuantTarget | None = None,
-    quant_calibration: QuantCalibrationRequest | None = None,
+    extra_environment: dict[str, str] | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
@@ -357,13 +370,8 @@ async def run_trainer_container_text(
         with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
             json.dump(baseline_stats.model_dump(), f)
         environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
-    if quant_calibration is not None:
-        # Host side (the training container has no network). Best effort: no file, no env var, the job still runs.
-        try:
-            volume_dir = client.volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"]
-            environment.update(await write_quant_calibration_file(task_id, hotkey, quant_calibration, volume_dir))
-        except Exception as e:
-            logger.warning(f"Task {task_id}: no calibration set for the miner ({type(e).__name__}); training without it")
+    if extra_environment:
+        environment.update(extra_environment)
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
     if miner_datasets:
@@ -397,8 +405,7 @@ async def run_trainer_container_text(
         command += ["--quant-spec", quant_spec_json]
         environment[core_cst.QUANT_SPEC_ENV] = quant_spec_json
     if quant_target is not None:
-        # Env only, never a flag: an older miner's strict argparse would reject an unknown --quant-target and fail
-        # the job; a miner that knows the target reads QUANT_TARGET, the rest ignore it.
+        # Env only, never a flag: a miner's strict argparse would reject an unknown --quant-target and fail the job.
         environment[core_cst.QUANT_TARGET_ENV] = quant_target.model_dump_json()
 
     container_name = f"text-trainer-{uuid.uuid4().hex}"
@@ -936,6 +943,14 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Downloader container failed: {exc}")
 
+        # The compression job's calibration file is written on the host before the image build, with its own time budget
+        # (the container-start timeout must not cut its retries short): no file, no build, no container.
+        extra_environment = (
+            await _write_quant_calibration(training_data.task_id, task.hotkey, training_data.calibration)
+            if isinstance(training_data, TrainRequestQuant)
+            else None
+        )
+
         if task_type in QUANT_TASK_TYPES:
             review_message = await asyncio.to_thread(flag_large_build_context_files, local_repo_path, log_labels)
             if review_message:
@@ -994,7 +1009,6 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             kl_coef = training_data.kl_coef if isinstance(training_data, TrainRequestText) else None
             quant_spec = training_data.quant_spec if isinstance(training_data, TrainRequestQuant) else None
             quant_target = training_data.quant_target if isinstance(training_data, TrainRequestQuant) else None
-            quant_calibration = training_data.calibration if isinstance(training_data, TrainRequestQuant) else None
             container = await asyncio.wait_for(
                 run_trainer_container_text(
                     task_id=training_data.task_id,
@@ -1016,7 +1030,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     kl_coef=kl_coef,
                     quant_spec=quant_spec,
                     quant_target=quant_target,
-                    quant_calibration=quant_calibration,
+                    extra_environment=extra_environment,
                 ),
                 timeout=60,
             )

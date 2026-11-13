@@ -1,4 +1,4 @@
-"""prepare_text_task on a quant instruct task: the test split is unchanged by a carve or a record, and the carve is disjoint."""
+"""prepare_text_task on a quant instruct task: it always carves; a carve or a record leaves the test split unchanged."""
 
 import json
 import uuid
@@ -15,6 +15,7 @@ from core.models.dataset_models import InstructTextDatasetType
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskStatus
 from validator.tasks.datasets import preparation
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import raw_row_hash
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantFixedRawTask
@@ -93,21 +94,18 @@ def seams(monkeypatch):
 def _file(state, suffix: str) -> list[dict]:
     return state.uploads[suffix]
 
-async def test_uncalibrated_task_matches_the_base_split_and_uploads_no_calibration(seams):
-    train, test = _base_split(seams.rows)
+async def test_a_quant_task_carves_whatever_its_flag_says(seams):
+    _, test = _base_split(seams.rows)
 
-    split = await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db=None)
+    split = await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
 
     assert _file(seams, "test_data.json") == [_standard(r) for r in test]
-    assert _file(seams, "train_data.json") == [_standard(r) for r in train]
-    assert set(seams.uploads) == {"test_data.json", "train_data.json"}
-    assert split.calibration_url is None and split.calibration_row_hashes == []
-    assert seams.record_calls == []
+    assert split.calibration_url is not None and "calibration_data.json" in seams.uploads
 
 async def test_carving_leaves_the_test_split_identical_and_train_is_the_rest(seams):
     train, test = _base_split(seams.rows)
 
-    split = await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db="db")
+    split = await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     assert _file(seams, "test_data.json") == [_standard(r) for r in test]
     calibration = _file(seams, "calibration_data.json")
@@ -126,12 +124,12 @@ async def test_no_calibration_row_is_a_test_row_even_with_a_duplicate_in_train(s
     test_keys = {json.dumps(_standard(r), sort_keys=True) for r in test}
     assert any(json.dumps(_standard(r), sort_keys=True) in test_keys for r in _base_split(seams.rows)[0])  # fixture has one
 
-    await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db="db")
+    await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     assert not any(json.dumps(row, sort_keys=True) in test_keys for row in _file(seams, "calibration_data.json"))
 
 async def test_carve_is_deterministic_per_task_id(seams):
-    task = _task(carve=True)
+    task = _task()
     await preparation.prepare_text_task(task, keypair=None, psql_db=None)
     first = _file(seams, "calibration_data.json")
     await preparation.prepare_text_task(task, keypair=None, psql_db=None)
@@ -139,7 +137,7 @@ async def test_carve_is_deterministic_per_task_id(seams):
     assert _file(seams, "calibration_data.json") == first
 
 async def test_carved_hashes_are_recorded_for_the_dataset_after_upload(seams):
-    task = _task(carve=True)
+    task = _task()
 
     split = await preparation.prepare_text_task(task, keypair=None, psql_db="db")
 
@@ -148,7 +146,7 @@ async def test_carved_hashes_are_recorded_for_the_dataset_after_upload(seams):
     assert set(hashes) <= {raw_row_hash(r) for r in seams.rows}
 
 async def test_without_a_database_nothing_is_recorded_but_the_carve_still_happens(seams):
-    await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db=None)
+    await preparation.prepare_text_task(_task(), keypair=None, psql_db=None)
 
     assert "calibration_data.json" in seams.uploads
 
@@ -159,33 +157,31 @@ async def test_recorded_rows_never_land_in_test_and_are_appended_to_train(seams)
     trained = [raw_row_hash(r) for r in train[:30]]
     seams.recorded[DS] = set(tested) | set(trained)
 
-    await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
+    await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     new_test = _file(seams, "test_data.json")
     new_train = _file(seams, "train_data.json")
+    calibration = _file(seams, "calibration_data.json")
     recorded_standard = {json.dumps(_standard(r), sort_keys=True) for r in seams.rows if raw_row_hash(r) in seams.recorded[DS]}
     assert len(new_test) == len(test)  # the size is still the full dataset's 10 % cap
     assert not any(json.dumps(row, sort_keys=True) in recorded_standard for row in new_test)
-    train_keys = [json.dumps(row, sort_keys=True) for row in new_train]
-    assert all(any(key == k for k in train_keys[-len(seams.recorded[DS]) * 2 :]) for key in recorded_standard)  # at the end
-    assert len(new_train) + len(new_test) == N_ROWS
+    assert len(new_train) + len(calibration) + len(new_test) == N_ROWS
 
-async def test_a_record_that_matches_no_row_is_a_no_op(seams):
-    train, test = _base_split(seams.rows)
+async def test_a_record_that_matches_no_row_leaves_the_test_split_alone(seams):
+    _, test = _base_split(seams.rows)
     seams.recorded[DS] = {"0" * 32}
 
-    await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
+    await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     assert _file(seams, "test_data.json") == [_standard(r) for r in test]
-    assert _file(seams, "train_data.json") == [_standard(r) for r in train]
 
 async def test_carve_after_a_record_still_excludes_recorded_rows_from_test(seams):
-    first = _task(carve=True)
+    first = _task()
     await preparation.prepare_text_task(first, keypair=None, psql_db="db")
     first_calibration = {json.dumps(r, sort_keys=True) for r in _file(seams, "calibration_data.json")}
     seams.uploads.clear()
 
-    await preparation.prepare_text_task(_task(carve=True), keypair=None, psql_db="db")
+    await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
     new_test = {json.dumps(r, sort_keys=True) for r in _file(seams, "test_data.json")}
     assert new_test.isdisjoint(first_calibration)
@@ -242,3 +238,36 @@ async def test_plain_instruct_task_ignores_recorded_calibration_rows(seams, monk
 
     assert split.calibration_url is None and seams.record_calls == []
     assert "calibration_data.json" not in seams.uploads
+
+
+async def test_a_quant_task_whose_train_split_cannot_give_up_calibration_fails_prep(seams, monkeypatch):
+    monkeypatch.setattr(preparation, "carve_calibration", lambda *args: None)  # the train split is under the minimum carve
+
+    with pytest.raises(CalibrationUnavailableError, match="cannot give one up"):
+        await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
+
+
+async def test_a_flagged_instruct_task_too_small_to_carve_fails_prep(seams, monkeypatch):
+    async def accept_dataset(task, train_dataset):
+        return None
+
+    monkeypatch.setattr(preparation, "reject_near_duplicate_dataset", accept_dataset)
+    monkeypatch.setattr(preparation, "carve_calibration", lambda *args: None)
+    task = InstructTextRawTask(
+        task_id=uuid.uuid4(),
+        is_organic=False,
+        status=TaskStatus.PREPARING_DATA,
+        model_id="org/base",
+        ds=DS,
+        account_id=uuid.uuid4(),
+        hours_to_complete=2.0,
+        created_at=datetime(2026, 11, 6),
+        field_instruction="question",
+        field_input="context",
+        field_output="answer",
+        file_format=FileFormat.S3,
+        carve_calibration=True,
+    )
+
+    with pytest.raises(CalibrationUnavailableError):
+        await preparation.prepare_text_task(task, keypair=None, psql_db="db")

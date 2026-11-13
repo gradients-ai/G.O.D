@@ -1,7 +1,8 @@
 """The QUANT crown: seven head-to-heads against the boss, rounds 1-3 and the four-task boss round, on the shared rule.
 
-Freeform wins with 3% fewer effective bytes, fixed with the paired per-example test plus a 1% better scalar loss. At most two
-non-wins, all within the looser allowance, and with two of them one within the tight allowance (crown.py). Driven through
+Freeform wins with 3% fewer effective bytes, fixed with the paired per-example test plus a 1% better scalar loss; any other
+result is banded on the value alone: strictly better is within the smaller allowance, level or at most 1% worse is
+within the larger allowance, more is beyond. At most two non-wins, all within the larger allowance, and with two of them one within the smaller allowance (crown.py). Driven through
 get_round_winners with the database faked: rounds 1-3 hold one seed task each, the boss round four.
 
 Also pins TEXT and IMAGE to the rule they have always had in determine_boss_round_winner.
@@ -38,9 +39,13 @@ SUCCESS, FAILURE = TrainingStatus.SUCCESS, TrainingStatus.FAILURE
 TID = "t"
 
 # How a task went for the challenger.
-WIN, TIGHT, LOOSER, BEYOND, NO_VECTORS, BOSS_FAILED, BOSS_FAILED_NO_VECTORS, NOBODY = (
-    "win", "tight", "looser", "beyond", "no_vectors", "boss_failed", "boss_failed_no_vectors", "nobody",
+(
+    WIN, SMALLER, LARGER, BEYOND, NO_VECTORS, NO_VECTORS_LARGER, NO_VECTORS_BEYOND, BOSS_FAILED, BOSS_FAILED_NO_VECTORS, NOBODY
+) = (
+    "win", "smaller", "larger", "beyond", "no_vectors", "no_vectors_larger", "no_vectors_beyond", "boss_failed",
+    "boss_failed_no_vectors", "nobody",
 )  # fmt: skip
+NO_VECTOR_OUTCOMES = (NO_VECTORS, NO_VECTORS_LARGER, NO_VECTORS_BEYOND, BOSS_FAILED_NO_VECTORS)
 # The seven tasks: rounds 1-3 (freeform, fixed, freeform), then the boss round (R2 model freeform, R3 model fixed,
 # continuous model freeform and fixed).
 KINDS = (FREEFORM, FIXED, FREEFORM, FREEFORM, FIXED, FREEFORM, FIXED)
@@ -104,14 +109,16 @@ class Tournament:
             self.results[task_id] = []
             return
         if kind == FREEFORM:
-            challenger_bytes = {WIN: 96_000, TIGHT: 100_500, LOOSER: 101_500, BEYOND: 103_000}.get(outcome, 96_000)
+            challenger_bytes = {WIN: 96_000, SMALLER: 99_000, LARGER: 100_000, BEYOND: 101_001}.get(outcome, 96_000)
             self.results[task_id] = [_freeform(BOSS, 100_000), _freeform(CHALLENGER, challenger_bytes)]
             return
-        challenger_loss = {WIN: 0.9, TIGHT: 1.0, LOOSER: 1.0, BEYOND: 1.1, NO_VECTORS: 0.5}.get(outcome, 0.9)
+        challenger_loss = {
+            WIN: 0.9, SMALLER: 0.995, LARGER: 1.0, BEYOND: 1.1, NO_VECTORS: 0.5, NO_VECTORS_LARGER: 1.0, NO_VECTORS_BEYOND: 1.1,
+        }.get(outcome, 0.9)  # fmt: skip
         self.results[task_id] = [_fixed(BOSS, 1.0), _fixed(CHALLENGER, challenger_loss)]
         if outcome in (BOSS_FAILED, BOSS_FAILED_NO_VECTORS):
             self.results[task_id] = [_fixed(BOSS, float("inf")), _fixed(CHALLENGER, challenger_loss)]
-        if outcome not in (NO_VECTORS, BOSS_FAILED_NO_VECTORS):
+        if outcome not in NO_VECTOR_OUTCOMES:
             self.vectors[(task_id, BOSS)] = [1.0] * ROWS
             self.vectors[(task_id, CHALLENGER)] = [challenger_loss] * ROWS
 
@@ -187,21 +194,25 @@ class Tournament:
     "outcomes, crowned",
     [
         ([WIN] * 7, True),
-        # Six wins: the seventh within the looser allowance (freeform 2% more bytes, fixed a draw).
-        ([WIN] * 6 + [TIGHT], True),
-        ([WIN] * 5 + [LOOSER, WIN], True),
+        # Six wins: the seventh within the larger allowance (freeform equal bytes, fixed an equal loss).
+        ([WIN] * 6 + [SMALLER], True),
+        ([WIN] * 5 + [LARGER, WIN], True),
         ([WIN] * 6 + [BEYOND], False),
-        ([LOOSER] + [WIN] * 6, True),
+        ([LARGER] + [WIN] * 6, True),
         ([BEYOND] + [WIN] * 6, False),
-        # Five wins: one tight and one looser.
-        ([TIGHT, WIN, LOOSER] + [WIN] * 4, True),
-        ([LOOSER, WIN, LOOSER] + [WIN] * 4, False),
-        ([WIN, TIGHT, WIN, LOOSER] + [WIN] * 3, True),  # the fixed draw is the tight one
-        ([WIN] * 4 + [TIGHT, WIN, TIGHT], True),
-        ([WIN] * 4 + [TIGHT, TIGHT, TIGHT], False),
-        # A fixed task the boss takes on the paired test, and missing vectors, are beyond.
+        # Five wins: one within the smaller allowance and one within the larger.
+        ([SMALLER, WIN, LARGER] + [WIN] * 4, True),
+        ([LARGER, WIN, LARGER] + [WIN] * 4, False),
+        ([WIN, SMALLER, WIN, LARGER] + [WIN] * 3, True),  # the fixed draw is the smaller one
+        ([WIN] * 4 + [SMALLER, WIN, SMALLER], True),
+        ([WIN] * 4 + [SMALLER, SMALLER, SMALLER], False),
+        # A fixed task worse than the boss is beyond, vectors or not; missing vectors are banded on the scalar loss.
         ([WIN] * 4 + [BEYOND, WIN, WIN], False),
-        ([WIN] * 4 + [NO_VECTORS, WIN, WIN], False),
+        ([WIN] * 4 + [NO_VECTORS_BEYOND, WIN, WIN], False),
+        ([WIN] * 4 + [NO_VECTORS, WIN, WIN], True),
+        ([WIN] * 4 + [NO_VECTORS_LARGER, WIN, WIN], True),
+        ([WIN] * 4 + [NO_VECTORS_LARGER, WIN, LARGER], False),
+        ([WIN] * 4 + [NO_VECTORS, WIN, LARGER], True),
         # The boss's fixed entry is a scored fail: the challenger takes it, with or without vectors.
         ([WIN] * 4 + [BOSS_FAILED_NO_VECTORS, WIN, BOSS_FAILED], True),
         # A boss-round task never attached is undecided: no crown.

@@ -14,6 +14,7 @@ from core.models.quant_models import QuantEvalGpu
 from core.models.quant_models import QuantFormat
 from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskStatus
+from validator.scoring.models import QuantCalibrationReferenceRecord
 from validator.scoring.models import QuantSkuReference
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
@@ -43,6 +44,9 @@ def _task(cls=QuantFixedRawTask, **overrides):
         "created_at": datetime(2026, 10, 19),
         "dataset_type": InstructTextDatasetType(field_instruction="instruction", field_output="output"),
         "training_start_point": TrainingStartPoint.OWN_R1_MODEL,
+        "calibration_data": "s3://bucket/cal.jsonl",
+        "calibration_fingerprint": "fp-cal",
+        "calibration_n_examples": 3,
         **overrides,
     }
     if cls is QuantFixedRawTask:
@@ -64,6 +68,20 @@ def _reference(task, hotkey=HOTKEY, sku="h100-sxm", loss=2.0, measured_at=dateti
     )
 
 
+CALIBRATION_RECORDS = {
+    hotkey: QuantCalibrationReferenceRecord(
+        task_id=uuid.uuid4(),
+        hotkey=hotkey,
+        model="miner/own-bf16",
+        loss=2.0,
+        per_example_losses=[2.0],
+        eval_set_fingerprint="fp-cal",
+        eval_gpu=QuantEvalGpu(name="NVIDIA H100", sm_count=132, sku="h100-sxm"),
+    )
+    for hotkey in (HOTKEY, OTHER, "")
+}
+
+
 @pytest.fixture
 def references(monkeypatch):
     """The stored quant_sku_references of whatever task is asked about."""
@@ -73,6 +91,8 @@ def references(monkeypatch):
         return {row.key: row for row in store.get(task_id, [])}
 
     monkeypatch.setattr(orchestrator, "get_quant_sku_references", get_references)
+    # These tests are about the test reference; every hotkey's calibration reference is measured on the task's example set.
+    monkeypatch.setattr(orchestrator, "get_quant_calibration_references", AsyncMock(return_value=CALIBRATION_RECORDS))
     return store
 
 
@@ -95,14 +115,16 @@ class TestQuantTargetFor:
 
         assert target == QuantTarget(reference_model="miner/own-bf16", reference_loss=2.0, reference_sku="h100-sxm")
 
-    async def test_none_without_a_row(self, references):
-        assert await orchestrator._quant_target_for(_task(), HOTKEY, CONFIG) is None
+    async def test_raises_without_a_row(self, references):
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="no target to publish"):
+            await orchestrator._quant_target_for(_task(), HOTKEY, CONFIG)
 
     async def test_other_miners_rows_are_not_used(self, references):
         task = _task()
         references[task.task_id] = [_reference(task, hotkey=OTHER)]
 
-        assert await orchestrator._quant_target_for(task, HOTKEY, CONFIG) is None
+        with pytest.raises(orchestrator.QuantInputsUnavailable):
+            await orchestrator._quant_target_for(task, HOTKEY, CONFIG)
 
     async def test_earliest_measured_sku_wins(self, references):
         task = _task()
@@ -119,7 +141,8 @@ class TestQuantTargetFor:
         task = _task(training_start_point=TrainingStartPoint.DEFAULT)
         references[task.task_id] = [_reference(task, hotkey=OTHER)]
 
-        assert await orchestrator._quant_target_for(task, HOTKEY, CONFIG) is None
+        with pytest.raises(orchestrator.QuantInputsUnavailable):
+            await orchestrator._quant_target_for(task, HOTKEY, CONFIG)
 
     async def test_task_common_row_is_the_target_for_every_miner(self, references):
         task = _task(training_start_point=TrainingStartPoint.DEFAULT)
@@ -224,6 +247,40 @@ class TestEveryOwnModelUnusable:
         assert task.status == TaskStatus.TRAINING
         assignments: list[TaskTrainingAssignment] = sql.add_pairs.await_args.args[0]
         assert [assignment.hotkey for assignment in assignments] == [HOTKEY]
+
+
+class TestOneTaskThatCannotBeMovedToTraining:
+    async def test_the_tasks_after_it_are_still_moved(self, monkeypatch, caplog):
+        tasks = [_task(), _task(), _task()]
+        updated: list[uuid.UUID] = []
+
+        async def update_task(task, psql_db):
+            if task.task_id == tasks[0].task_id:
+                raise ValueError("rejected by the tasks table")
+            updated.append(task.task_id)
+
+        monkeypatch.setattr(
+            orchestrator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[SimpleNamespace(hotkey=OTHER)])
+        )
+        monkeypatch.setattr(
+            orchestrator.submissions_and_scoring_sql,
+            "get_task_node_losses",
+            AsyncMock(return_value=[{db_cst.HOTKEY: OTHER, db_cst.QUANT_FAILURE: None}]),
+        )
+        monkeypatch.setattr(orchestrator.task_sql, "update_task", update_task)
+        monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_id_by_task_id", AsyncMock(return_value="tourn"))
+        monkeypatch.setattr(
+            orchestrator.tournament_sql,
+            "get_tournament_training_repo_and_commit",
+            AsyncMock(return_value=TrainingRepoInfo("https://github.com/x/repo", "c" * 40, None, None)),
+        )
+        monkeypatch.setattr(orchestrator.tournament_sql, "add_tournament_task_hotkey_pairs_for_training", AsyncMock())
+
+        with caplog.at_level("ERROR"):
+            await orchestrator._process_tasks_for_training(tasks, CONFIG, priority=2)
+
+        assert updated == [tasks[1].task_id, tasks[2].task_id]
+        assert f"Task {tasks[0].task_id}: could not be moved to TRAINING" in caplog.text
 
 
 class TestSchedulingWaitsForTheReference:

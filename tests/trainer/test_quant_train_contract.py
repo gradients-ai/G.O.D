@@ -20,6 +20,7 @@ from core.models.payload_models import TrainRequestQuant
 from core.models.payload_models import TrainRequestText
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationReference
 from core.models.quant_models import QuantCalibrationRequest
 from core.models.quant_models import QuantFormat
 from core.models.quant_models import QuantTarget
@@ -55,9 +56,21 @@ FREEFORM_TARGET = QuantTarget(
 )
 
 
+FIXED_TARGET = QuantTarget(reference_model="org/own-bf16", reference_loss=2.0, reference_sku="h100-sxm")
+CALIBRATION = QuantCalibrationRequest(
+    examples_url="https://minio.example/cal.jsonl?sig=secret",
+    eval_set_fingerprint="fp",
+    n_examples=3,
+    reference=QuantCalibrationReference(model="org/own-bf16", loss=2.0, per_example_losses=[1.5, None, 2.5], sku="h100-sxm"),
+)
+CALIBRATION_ENV = {core_cst.QUANT_CALIBRATION_PATH_ENV: "/cache/quant_calibration_task-1_hk.json"}
+
+
 def _quant_request(
-    task_type: TaskType, quant_spec=None, decode=None, hours_to_complete: float = 1.0, quant_target=None, calibration=None
+    task_type: TaskType, quant_spec=None, decode=None, hours_to_complete: float = 1.0, quant_target=None, calibration=CALIBRATION
 ) -> TrainerProxyRequest:
+    if quant_target is None:
+        quant_target = FREEFORM_TARGET if task_type == TaskType.QUANTFREEFORMTASK else FIXED_TARGET
     training_data = TrainRequestQuant(
         model="org/model",
         task_id="task-1",
@@ -159,6 +172,9 @@ class Recorder:
         self.docker_client: FakeDockerClient | None = None
         self.reclaims: list[dict] = []
         self.reclaim_outcome: str | Exception | None = None
+        self.calibration_calls: list[tuple] = []
+        self.calibration_failure: Exception | None = None
+        self.image_builds: list[dict] = []
 
 
 async def _noop(*args, **kwargs) -> None:
@@ -195,12 +211,23 @@ def recorder(monkeypatch, tmp_path: Path) -> Recorder:
             raise rec.reclaim_outcome
         return rec.reclaim_outcome
 
+    async def write_calibration(task_id, hotkey, request, volume_dir):
+        rec.calibration_calls.append((task_id, hotkey, request, volume_dir))
+        if rec.calibration_failure:
+            raise rec.calibration_failure
+        return CALIBRATION_ENV
+
     rec.docker_client = FakeDockerClient(tmp_path)
 
+    monkeypatch.setattr(runtime, "write_quant_calibration_file", write_calibration)
     monkeypatch.setattr(runtime, "create_volumes_if_dont_exist", _noop)
     monkeypatch.setattr(runtime, "get_dockerfile_path", lambda *args: "Dockerfile")
     monkeypatch.setattr(runtime, "run_downloader_container", lambda **kwargs: (0, None))
-    monkeypatch.setattr(runtime, "build_docker_image", lambda **kwargs: ("tag", None))
+    def build_image(**kwargs):
+        rec.image_builds.append(kwargs)
+        return "tag", None
+
+    monkeypatch.setattr(runtime, "build_docker_image", build_image)
     monkeypatch.setattr(runtime, "delete_image_and_cleanup", lambda tag: None)
     monkeypatch.setattr(runtime, "run_trainer_container_text", run_text)
     monkeypatch.setattr(runtime, "update_container_name", _noop)
@@ -294,6 +321,26 @@ async def test_request_quant_target_reaches_the_text_container(recorder: Recorde
     await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK, quant_target=FREEFORM_TARGET), "/repo")
 
     assert recorder.text_container_kwargs["quant_target"] == FREEFORM_TARGET
+
+
+@pytest.mark.parametrize(
+    "task_type,quant_spec,target,output",
+    [
+        (TaskType.QUANTFIXEDTASK, SPEC, FIXED_TARGET, "quant_output"),
+        (TaskType.QUANTFREEFORMTASK, None, FREEFORM_TARGET, "freeform_output"),
+    ],
+)
+async def test_every_quant_job_starts_with_its_target_and_the_calibration_reference(
+    recorder: Recorder, request, task_type, quant_spec, target, output
+):
+    request.getfixturevalue(output)
+
+    await runtime.start_training_task(_quant_request(task_type, quant_spec=quant_spec), "/repo")
+
+    assert recorder.text_container_kwargs["quant_target"] == target
+    assert recorder.text_container_kwargs["extra_environment"] == CALIBRATION_ENV
+    assert [call[2] for call in recorder.calibration_calls] == [CALIBRATION]
+    assert recorder.calibration_calls[0][2].reference is not None
 
 
 async def test_text_container_gets_quant_target_env_and_no_flag(monkeypatch, tmp_path: Path):
@@ -511,24 +558,58 @@ async def test_large_build_context_file_is_logged_to_the_task_before_build(recor
     assert recorder.completed == [True]  # flagged for review, never failed
 
 
-CALIBRATION = QuantCalibrationRequest(
-    examples_url="https://minio.example/cal.jsonl?sig=secret", eval_set_fingerprint="fp", n_examples=3, reference=None
-)
 
-
-async def test_request_calibration_reaches_the_text_container(recorder: Recorder, freeform_output):
-    await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK, calibration=CALIBRATION), "/repo")
-
-    assert recorder.text_container_kwargs["quant_calibration"] == CALIBRATION
-
-
-async def test_request_without_calibration_passes_none(recorder: Recorder, freeform_output):
+async def test_calibration_file_is_written_before_the_container_and_its_env_reaches_it(recorder: Recorder, freeform_output, tmp_path):
     await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK), "/repo")
 
-    assert recorder.text_container_kwargs["quant_calibration"] is None
+    assert recorder.calibration_calls == [("task-1", "hk", CALIBRATION, str(tmp_path))]
+    assert recorder.text_container_kwargs["extra_environment"] == CALIBRATION_ENV
 
 
-def _text_container_kwargs(training_data, calibration) -> dict:
+async def test_fixed_task_also_gets_the_calibration_env(recorder: Recorder, quant_output):
+    await runtime.start_training_task(_quant_request(TaskType.QUANTFIXEDTASK, quant_spec=SPEC), "/repo")
+
+    assert recorder.text_container_kwargs["extra_environment"] == CALIBRATION_ENV
+
+
+async def test_job_fails_before_the_image_build_when_the_calibration_file_cannot_be_produced(
+    recorder: Recorder, freeform_output
+):
+    recorder.calibration_failure = RuntimeError("calibration set unavailable after 3 attempts (OSError)")
+
+    await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK), "/repo")
+
+    assert recorder.image_builds == [] and recorder.text_container_kwargs is None
+    assert recorder.completed and not any(recorder.completed)  # reported failed, never successful
+    assert recorder.uploads == [] and recorder.decode_calls == []
+
+
+async def test_a_non_quant_job_writes_no_calibration_file(recorder: Recorder):
+    await runtime.start_training_task(_instruct_request(), "/repo")
+
+    assert recorder.calibration_calls == []
+    assert recorder.text_container_kwargs["extra_environment"] is None
+
+
+async def test_calibration_fetch_is_not_bounded_by_the_container_start_timeout(recorder: Recorder, freeform_output, monkeypatch):
+    """The fetch runs before the 60 s container-start wait_for, so a slow fetch cannot be killed by it."""
+    timeouts = []
+    real_wait_for = asyncio.wait_for
+
+    async def spy(awaitable, timeout):
+        timeouts.append(timeout)
+        return await real_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(runtime.asyncio, "wait_for", spy)
+
+    await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK), "/repo")
+
+    attempts = trainer_cst.QUANT_CALIBRATION_FETCH_ATTEMPTS
+    assert len(recorder.calibration_calls) == 1
+    assert timeouts[0] >= attempts * trainer_cst.QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS and timeouts[-1] == 60
+
+
+def _text_container_kwargs(training_data, extra_environment) -> dict:
     return dict(
         task_id="task-1",
         hotkey="hk",
@@ -540,51 +621,25 @@ def _text_container_kwargs(training_data, calibration) -> dict:
         file_format=training_data.file_format,
         expected_repo_name="repo-1",
         hours_to_complete=1.0,
-        quant_calibration=calibration,
+        extra_environment=extra_environment,
     )
 
 
-async def test_text_container_gets_the_calibration_env_var_when_the_file_is_written(monkeypatch, tmp_path: Path):
+async def test_text_container_gets_the_extra_environment(monkeypatch, tmp_path: Path):
     client = FakeDockerClient(tmp_path)
     monkeypatch.setattr(runtime.docker, "from_env", lambda: client)
     monkeypatch.setattr(runtime, "ensure_internal_network", lambda: None)
     monkeypatch.setattr(runtime, "stream_container_logs", lambda *args: None)
-
-    async def write(task_id, hotkey, request, volume_dir):
-        assert (task_id, hotkey, request, volume_dir) == ("task-1", "hk", CALIBRATION, str(tmp_path))
-        return {core_cst.QUANT_CALIBRATION_PATH_ENV: "/cache/quant_calibration_task-1_hk.json"}
-
-    monkeypatch.setattr(runtime, "write_quant_calibration_file", write)
     training_data = _quant_request(TaskType.QUANTFREEFORMTASK).training_data
 
-    await runtime.run_trainer_container_text(**_text_container_kwargs(training_data, CALIBRATION))
+    await runtime.run_trainer_container_text(**_text_container_kwargs(training_data, CALIBRATION_ENV))
 
     environment = client.run_kwargs["environment"]
-    assert environment[core_cst.QUANT_CALIBRATION_PATH_ENV] == "/cache/quant_calibration_task-1_hk.json"
+    assert environment[core_cst.QUANT_CALIBRATION_PATH_ENV] == CALIBRATION_ENV[core_cst.QUANT_CALIBRATION_PATH_ENV]
     assert "--quant-calibration" not in client.run_kwargs["command"]
 
 
-@pytest.mark.parametrize("failure", [None, RuntimeError("volume gone")])
-async def test_a_missing_calibration_file_never_fails_the_container_start(monkeypatch, tmp_path: Path, failure):
-    client = FakeDockerClient(tmp_path)
-    monkeypatch.setattr(runtime.docker, "from_env", lambda: client)
-    monkeypatch.setattr(runtime, "ensure_internal_network", lambda: None)
-    monkeypatch.setattr(runtime, "stream_container_logs", lambda *args: None)
-
-    async def write(task_id, hotkey, request, volume_dir):
-        if failure:
-            raise failure
-        return {}
-
-    monkeypatch.setattr(runtime, "write_quant_calibration_file", write)
-    training_data = _quant_request(TaskType.QUANTFREEFORMTASK).training_data
-
-    await runtime.run_trainer_container_text(**_text_container_kwargs(training_data, CALIBRATION))
-
-    assert core_cst.QUANT_CALIBRATION_PATH_ENV not in client.run_kwargs["environment"]
-
-
-async def test_text_container_without_calibration_has_no_calibration_env(monkeypatch, tmp_path: Path):
+async def test_text_container_without_extra_environment_has_no_calibration_env(monkeypatch, tmp_path: Path):
     client = FakeDockerClient(tmp_path)
     monkeypatch.setattr(runtime.docker, "from_env", lambda: client)
     monkeypatch.setattr(runtime, "ensure_internal_network", lambda: None)

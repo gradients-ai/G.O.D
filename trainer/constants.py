@@ -102,6 +102,9 @@ QUANT_DECODER_FETCH_SLACK_BYTES = 1024 * 1024  # snapshot download cap = DECODER
 QUANT_DECODER_FETCH_TIMEOUT_SECONDS = 60
 # Freeform calibration set (trainer/quant_calibration.py): fetched on the host and handed to the miner as a file.
 QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS = 60
+QUANT_CALIBRATION_FETCH_ATTEMPTS = 3  # fetch, check and write attempts before the job fails without a calibration file
+QUANT_CALIBRATION_RETRY_SLEEP_SECONDS = 5
+QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS = 30  # per attempt, on top of the fetch timeout: parse, fingerprint, write
 QUANT_CALIBRATION_MAX_BYTES = 256 * 1024 * 1024  # the file is ~1,000 tokenised rows; anything larger is not ours
 # Decoded bf16 shards go to S3-compatible storage as multipart uploads; memory in flight is part size x parallel =
 # 512 MiB.

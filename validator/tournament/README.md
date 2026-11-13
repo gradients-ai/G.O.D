@@ -88,7 +88,7 @@ Each round is one task attached from its seed, so the miners and the boss compre
 
 ## Crown, early stop and placements
 
-The crown rule below decides the text and the compression tournament. What counts as a win on each task, and the allowance numbers, are in the miner guides: [text](../../docs/miner_text.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament has a boss-round rule in the [image guide](../../docs/miner_image.md#the-crown), and shares [Placements](#placements).
+The crown rule below decides the text and the compression tournament. What counts as a win on each task is in the miner guides: [text](../../docs/miner_text.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament has a boss-round rule in the [image guide](../../docs/miner_image.md#the-crown), and shares [Placements](#placements).
 
 ### The boss in rounds 1-3
 
@@ -101,34 +101,34 @@ The challenger is the one miner left after the round-3 cut. It is compared with 
 | Outcome | Meaning |
 | --- | --- |
 | `win` | The challenger takes the task. |
-| `within_tight` | A non-win within the tight allowance. |
-| `within_looser` | A non-win within the looser allowance only. |
-| `beyond` | A non-win beyond both allowances. |
+| `within_smaller` | A non-win where the challenger is better than the boss, short of a win. |
+| `within_larger` | A non-win where the challenger is level with the boss, or worse by at most `CROWN_LARGER_ALLOWANCE` of the boss's value. |
+| `beyond` | A non-win where the challenger is worse by more than that. |
 
 The challenger is crowned when exactly these 7 are decided and all of the following hold:
 
 - it has at most two non-wins (`CROWN_MAX_NON_WINS`)
-- no non-win is beyond the looser allowance
-- with two non-wins, at least one is within the tight allowance
+- no non-win is beyond the larger allowance
+- with two non-wins, at least one is within the smaller allowance
 
 So a crown is one of three results:
 
 | Wins | Non-wins |
 | --- | --- |
 | 7 | none |
-| 6 | one, within the looser allowance |
-| 5 | two: one within the tight allowance, the other within the looser allowance |
+| 6 | one, within the larger allowance |
+| 5 | two: one within the smaller allowance, the other within the larger allowance |
 
 Any other set of head-to-heads leaves the boss in place.
 
-The constants that hold each tournament's numbers, all in `constants.py`:
+What a win is depends on the task. A non-win is banded the same way on every task, on the compared value alone (score, scalar loss or effective bytes): the paired test and the reason the task was not won do not move it. The constants that hold each tournament's numbers, all in `constants.py`:
 
-| Tournament | Task | Win | Allowances |
+| Tournament | Task | Win | Non-win bands |
 | --- | --- | --- | --- |
-| Text | instruct, continuous (chat), DPO | paired test and `TEXT_CROWN_WIN_MARGIN` on the score | `TEXT_CROWN_TIGHT_ALLOWANCE`, `TEXT_CROWN_LOOSER_ALLOWANCE` on the score deficit |
+| Text | instruct, continuous (chat), DPO | paired test and `TEXT_CROWN_WIN_MARGIN` on the score | `CROWN_LARGER_ALLOWANCE` on the score deficit |
 | Text | GRPO | `TEXT_CROWN_WIN_MARGIN` on the score | as above |
-| Compression | freeform | `QUANT_FREEFORM_BOSS_BYTE_MARGIN` fewer effective bytes | `QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE`, `QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE` on extra effective bytes |
-| Compression | fixed | paired test and `QUANT_FIXED_BOSS_MIN_IMPROVEMENT` on the loss | see the [compression guide](../../docs/miner_compression.md#the-crown) |
+| Compression | freeform | `QUANT_FREEFORM_BOSS_BYTE_MARGIN` fewer effective bytes | `CROWN_LARGER_ALLOWANCE` on extra effective bytes |
+| Compression | fixed | paired test and `QUANT_FIXED_BOSS_MIN_IMPROVEMENT` on the loss | `CROWN_LARGER_ALLOWANCE` on the scalar loss |
 
 ### The paired per-example test
 
@@ -192,9 +192,9 @@ The comparison is computed once at completion and stored in `tournament_boss_ran
 - **No valid boss result.** With a valid challenger result the task is a win. On freeform, a boss entry over the cap, a scored fail or a missing byte count is not valid.
 - **Boss-side seed failure.** The boss side of a compression boss-round task has failed in two cases: the task failed prep after attach with no successful boss run, or the task failed with the boss's run failed. Such a task is a win for the challenger, without a comparison, when the challenger's run there succeeded with no scored fail. If neither side produced a result, the challenger has no valid result and the task is beyond both allowances.
 - **Failed seed role.** A round 1-3 slot or a compression boss-round slot plays a task drawn with no boss entry, so any valid challenger result wins it. For `text_continuous`, the boss and the challenger both train the drawn task and it is judged as usual. Either way the crown is decided over seven.
-- **Unpairable losses, text.** Missing vectors, different eval sets or no comparable example: the task is a non-win judged on its score deficit.
-- **Unpairable losses, fixed.** The same cases, or no same-SKU reference to align on: the task is beyond both allowances, unless the boss has no valid result.
-- **Boundaries.** A value exactly on a win margin, an allowance or the freeform byte bar meets it (`CROWN_BOUNDARY_RELATIVE_TOLERANCE`). The paired test's bounds have no tolerance.
+- **Unpairable losses, text.** Missing vectors, different eval sets or no comparable example: the task is a non-win banded on the score.
+- **Unpairable losses, fixed.** The same cases, or no same-SKU reference to align on: the task is a non-win banded on the scalar loss, unless the boss has no valid result. A task the boss takes on the paired test is banded the same way.
+- **Boundaries.** A value exactly on a win margin or exactly `CROWN_LARGER_ALLOWANCE` worse than the boss meets it (`CROWN_BOUNDARY_RELATIVE_TOLERANCE`), as does the freeform byte bar. Level with the boss is within the larger allowance, never the smaller one: the smaller allowance needs a strictly better value, with no tolerance. The paired test's bounds have no tolerance.
 - **Wrong task set.** More than 7 decided, or a compression boss round that is not rounds 1-3 plus its four tasks, never crowns.
 - **Undecided round, compression.** A round 1-3 that does not hold exactly one task cannot be decided, so the early stop retains the boss.
 - **Missing round task, text.** Treated as a data fault: the check raises and the tournament does not advance.
@@ -300,8 +300,8 @@ The 20th prep-stage rejection marks the role `failed`.
 
 - **Released tasks.** A released task copies the text task's prepped split, calibration data and dataset type, and its training budget is recomputed. The boss and the challenger get the same budget on a boss-round task.
 - **Input repo.** The model is always the validator-assigned repo of the text boss's run, never a miner-supplied id.
-- **Reference failures.** A failed measurement is an infra error, retried every cycle. An alert goes out after 3 consecutive failures. After 6, miners train with no published target and scoring measures the reference in-deployment.
-- **Calibration reference.** A task with a calibration set gets a second measurement on those rows. It is never used to score. After 3 consecutive failures the rows are published without reference losses.
+- **Reference failures.** A failed measurement is an infra error, retried every cycle for as long as it takes; the rows wait. An alert goes out at every third consecutive failure.
+- **Calibration reference.** The prepass measures the reference bf16 model on the calibration rows after its test-set reference (per hotkey on an own-model task, once for the task otherwise, or copied from the previous round when the model and the calibration set are identical). It is never used to score. A tournament row waits for it. A stored reference measured on another calibration set than the task's current one counts as missing and is replaced by the re-measurement. A row is never dispatched without its target, its calibration set and the reference losses on it; one that cannot be given all three is held and alerted.
 - **Counters.** The failure counters are in memory. A validator restart resets them.
 - **Priority.** A challenger's row is never deferred by the seed priority rule, and a running job is never preempted.
 - **Seed-time evaluation.** The boss's entry is evaluated as soon as it has trained, so the round evaluates only the miners. Retry rules are in `validator/lifecycle/boss_seed_eval.py`.

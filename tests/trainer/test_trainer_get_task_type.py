@@ -12,13 +12,28 @@ from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
 from core.models.payload_models import TrainRequestQuant
 from core.models.payload_models import TrainRequestText
+from core.models.quant_models import QuantCalibrationReference
+from core.models.quant_models import QuantCalibrationRequest
 from core.models.quant_models import QuantFormat
+from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskType
 from trainer.runtime import get_task_type
 
 
 BASE = {"model": "org/model", "task_id": "task-1", "hours_to_complete": 2.0}
 DATASET = {"dataset": "s3://bucket/train.json", "file_format": FileFormat.S3}
+
+FIXED_TARGET = QuantTarget(reference_model="m", reference_loss=2.0, reference_sku="s")
+FREEFORM_TARGET = QuantTarget(
+    reference_model="m", reference_loss=2.0, reference_sku="s", bar_cap=0.04, bar=2.08, knee=1.04, knee_loss=2.08,
+    penalty_curvature=2500.0, cap=1.08, cap_loss=2.16,
+)
+CALIBRATION = QuantCalibrationRequest(
+    examples_url="https://minio.example/cal.jsonl",
+    eval_set_fingerprint="fp",
+    n_examples=1,
+    reference=QuantCalibrationReference(model="m", loss=2.0, per_example_losses=[1.0], sku="s"),
+)
 
 
 def _proxy(training_data) -> TrainerProxyRequest:
@@ -31,7 +46,8 @@ def _proxy(training_data) -> TrainerProxyRequest:
 )
 def test_quant_request_returns_its_task_type(task_type, quant_spec):
     training_data = TrainRequestQuant(
-        **BASE, **DATASET, dataset_type=InstructTextDatasetType(), task_type=task_type, quant_spec=quant_spec
+        **BASE, **DATASET, dataset_type=InstructTextDatasetType(), task_type=task_type, quant_spec=quant_spec,
+        quant_target=FREEFORM_TARGET if quant_spec is None else FIXED_TARGET, calibration=CALIBRATION,
     )
     assert get_task_type(_proxy(training_data)) == task_type
 

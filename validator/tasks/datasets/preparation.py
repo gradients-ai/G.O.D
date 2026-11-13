@@ -39,6 +39,7 @@ from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache
 from validator.tasks.datasets.calibration import ROW_HASH_COLUMN
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import carve_calibration
 from validator.tasks.datasets.calibration import shared_split_seed
 from validator.tasks.datasets.calibration import with_row_hashes
@@ -639,16 +640,17 @@ def _standardize_quant_instruct_columns(dataset: Dataset, dataset_type: Instruct
 
 
 def _task_carves_calibration(task: AnyTextTypeRawTask | QuantRawTask) -> bool:
-    """Only an R1 instruct task or a quant task (fixed or freeform) is flagged to carve a calibration set.
+    """Whether prep carves a calibration set from the task's train rows.
 
-    On a quant task with a given train/test split (test_data set) the carve takes the rows from the given train file
-    (the continuous-chunk compression tasks); an instruct task with a given split is never carved.
+    A quant task (fixed or freeform) always carves, whatever its carve_calibration flag, except a task with a given
+    split (test_data set) that carries raw calibration rows (calibration_data): those rows pass through. With a given
+    split the carve takes the rows from the given train file (the continuous-chunk compression tasks). An instruct task
+    carves when flagged (a tournament round-1 task) and splits its own dataset; an instruct task with a given split is
+    never carved.
     """
-    if not task.carve_calibration:
-        return False
-    if task.test_data:
-        return isinstance(task, QuantRawTask) and not task.calibration_data
-    return isinstance(task, (InstructTextRawTask, QuantRawTask))
+    if isinstance(task, QuantRawTask):
+        return not (task.test_data and task.calibration_data)
+    return bool(task.carve_calibration) and not task.test_data and isinstance(task, InstructTextRawTask)
 
 
 async def _split_without_recorded(dataset: Dataset, recorded: set[str]) -> DatasetDict:
@@ -817,10 +819,14 @@ async def prepare_text_task(
             shared_split_seed(task.ds) if task.test_data else str(task.task_id),
             train_hashes, set(test_hashes), _completion_chars(train_ds, columns_to_sample)
         )
-        if carved is not None:
-            calibration_ds = train_ds.select(carved.calibration_indices)
-            calibration_hashes = [train_hashes[i] for i in carved.calibration_indices]
-            train_ds = train_ds.select(carved.train_indices)
+        if carved is None:
+            raise CalibrationUnavailableError(
+                f"Task {task.task_id} on {task.ds} must carry a calibration set but its train split "
+                f"({len(train_ds)} rows) cannot give one up"
+            )
+        calibration_ds = train_ds.select(carved.calibration_indices)
+        calibration_hashes = [train_hashes[i] for i in carved.calibration_indices]
+        train_ds = train_ds.select(carved.train_indices)
 
     prepared = await _process_and_upload_datasets(
         task,
@@ -842,6 +848,8 @@ async def prepare_text_task(
     elif task.test_data:
         # A given split is never re-split or re-carved: its calibration rows (if any) are carried through.
         prepared.calibration_url = task.calibration_data
+    if isinstance(task, QuantRawTask) and not prepared.calibration_url:
+        raise CalibrationUnavailableError(f"Compression task {task.task_id} on {task.ds} has no calibration rows after data prep")
     return prepared
 
 

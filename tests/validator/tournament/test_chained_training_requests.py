@@ -13,7 +13,10 @@ import pytest
 
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.payload_models import TrainRequestQuant
+from core.models.quant_models import QuantEvalGpu
 from core.models.quant_models import QuantFormat
+from validator.scoring.models import QuantCalibrationReferenceRecord
+from validator.scoring.models import QuantSkuReference
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
 from validator.tournament import orchestrator
@@ -37,6 +40,9 @@ def _base_fields() -> dict:
         "hours_to_complete": 2.0,
         "training_data": "s3://bucket/train.json",
         "created_at": datetime(2026, 10, 19),
+        "calibration_data": "s3://bucket/cal.jsonl",
+        "calibration_fingerprint": "fp-cal",
+        "calibration_n_examples": 3,
         "dataset_type": InstructTextDatasetType(field_instruction="instruction", field_output="output"),
         "upstream_task_id": uuid.uuid4(),
     }
@@ -50,13 +56,35 @@ def _freeform_task(**overrides) -> QuantFreeformRawTask:
     return QuantFreeformRawTask(**{**_base_fields(), **overrides})
 
 
+GPU = QuantEvalGpu(name="NVIDIA H100", sm_count=132, sku="h100-sxm")
+
+
+async def _sku_references(task_id, psql_db):
+    """The task-common bf16 reference (hotkey '') both players of a chained task are given."""
+    reference = QuantSkuReference(
+        task_id=task_id, hotkey="", sku="h100-sxm", model=SHARED_INPUT, loss=2.0, per_example_losses=[2.0],
+        eval_set_fingerprint="fp", eval_gpu=GPU,
+    )  # fmt: skip
+    return {reference.key: reference}
+
+
+async def _calibration_references(task_id, psql_db):
+    record = QuantCalibrationReferenceRecord(
+        task_id=task_id, hotkey="", model=SHARED_INPUT, loss=2.0, per_example_losses=[2.0],
+        eval_set_fingerprint="fp-cal", eval_gpu=GPU,
+    )  # fmt: skip
+    return {"": record}
+
+
 @pytest.fixture
 def starting_model(monkeypatch):
     lookup = AsyncMock(return_value="validator-org/some-player-model")
     monkeypatch.setattr(orchestrator.task_sql, "get_expected_repo_name", AsyncMock(return_value="expected-repo"))
     monkeypatch.setattr(orchestrator.task_sql, "get_starting_model_repo", lookup)
     monkeypatch.setattr(orchestrator.task_sql, "get_miner_baseline_stats", AsyncMock(return_value=None))
-    monkeypatch.setattr(orchestrator, "get_quant_sku_references", AsyncMock(return_value={}))
+    monkeypatch.setattr(orchestrator, "get_quant_sku_references", _sku_references)
+    monkeypatch.setattr(orchestrator, "get_quant_calibration_references", _calibration_references)
+    monkeypatch.setattr(orchestrator.async_minio_client, "get_new_presigned_url", AsyncMock(return_value="https://minio/cal"))
     monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=None))
     return lookup
 

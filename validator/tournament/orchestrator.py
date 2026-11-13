@@ -77,6 +77,7 @@ from validator.tasks.models import ChatRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import freeform_penalty_policy
+from validator.tasks.models import has_published_calibration
 from validator.tasks.prep.model import dispatch_augmentation_and_stats
 from validator.tasks.quant_input_repo import delete_merged_repo
 from validator.tasks.quant_input_repo import full_model_rejection
@@ -112,10 +113,7 @@ from validator.tournament.notifications import notify_model_prep_failure_limit
 from validator.tournament.notifications import notify_quant_decode_infra_error
 from validator.tournament.quant_reference import is_own_model_start_point
 from validator.tournament.quant_reference import reference_hotkey_for
-from validator.tournament.quant_reference_prepass import calibration_reference_gave_up
-from validator.tournament.quant_reference_prepass import has_calibration_set
 from validator.tournament.quant_reference_prepass import measure_quant_references_cycle
-from validator.tournament.quant_reference_prepass import reference_gave_up
 from validator.tournament.seed_tasks import FIRST_BOSS_ENTRY_TRAINING_RANK
 from validator.tournament.seed_tasks import INSTRUCT_INPUT_SEED_ROLES
 from validator.tournament.seed_tasks import NON_SEED_TRAINING_RANK
@@ -147,9 +145,13 @@ _QUANT_DECODE_ALERTED: set[tuple[str, str]] = set()
 # HTTP failures for one (task_id, hotkey) the hold is alerted instead of retried silently forever.
 QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT = 3
 _QUANT_DECODE_REPOLL_FAILURES: dict[tuple[str, str], int] = {}
-# Quant tasks already pinged for a training row dispatched without calibration rows. Process-local like the sets above: every
-# row of the task logs the ERROR, the webhook hears about the task once.
-_QUANT_CALIBRATION_MISSING_ALERTED: set[str] = set()
+# A quant row is held, never dispatched, while its task cannot hand the miner all of its inputs: the calibration set, the
+# target and the bf16 reference losses on the calibration rows. Every held row logs the ERROR; the webhook hears about a task
+# on its first held row check and again on every QUANT_INPUTS_MISSING_REALERT_HELD_ROWS-th one after it (the counter counts
+# held row checks per task, not cycles), so a task that stays held stays loud without a ping per check. Process-local like
+# the sets above.
+QUANT_INPUTS_MISSING_REALERT_HELD_ROWS = 60
+_QUANT_INPUTS_MISSING_HELD_ROWS: dict[str, int] = {}
 _BASELINE_STATS_ADAPTER: TypeAdapter = TypeAdapter(BaselineStats)
 
 
@@ -686,11 +688,18 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
     if assignments:
         await tournament_sql.add_tournament_task_hotkey_pairs_for_training(assignments, config.psql_db)
 
+    moved = 0
     for task in tasks_to_update:
         task.status = TaskStatus.TRAINING
-        await task_sql.update_task(task, config.psql_db)
+        try:
+            await task_sql.update_task(task, config.psql_db)
+        except Exception:
+            # One task that cannot be stored must not leave the tasks after it in their old status.
+            logger.error(f"Task {task.task_id}: could not be moved to TRAINING; continuing with the others", exc_info=True)
+            continue
+        moved += 1
 
-    logger.info(f"Moved {len(tasks_to_update)} tasks with priority {priority} to TRAINING status")
+    logger.info(f"Moved {moved} of {len(tasks_to_update)} tasks with priority {priority} to TRAINING status")
 
 
 async def process_pending_tournament_tasks(config: Config):
@@ -735,6 +744,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
 
     tasks_without_gpus = []
     waiting_for_reference = []
+    missing_calibration = []
     failing_quant_rows = []
 
     # Rows are taken from the END of the list. Order them small input seed, large input seed, every other row (miner
@@ -788,6 +798,11 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     task.task_id, oldest_task_training.hotkey, TrainingStatus.FAILURE, config.psql_db
                 )
                 pending_training_tasks.pop()
+                continue
+
+            if task.task_type in QUANT_TASK_TYPES and not has_published_calibration(task):
+                await _alert_quant_inputs_missing(task, oldest_task_training.hotkey, config)
+                missing_calibration.append(pending_training_tasks.pop())
                 continue
 
             try:
@@ -943,44 +958,45 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             f"Skipped {len(tasks_without_gpus)} tasks due to GPU unavailability. They will get picked up in the next cycle."
         )
 
+    if missing_calibration:
+        logger.error(
+            f"Held {len(missing_calibration)} quant (task, hotkey) pair(s) whose task has no published calibration set; none "
+            f"was dispatched. They are checked again in the next cycle."
+        )
+
     if waiting_for_reference:
         logger.info(
-            f"Deferred {len(waiting_for_reference)} own-model quant (task, hotkey) pairs waiting for their bf16 reference "
-            f"(quant_reference_prepass). They will get picked up in the next cycle."
+            f"Deferred {len(waiting_for_reference)} quant (task, hotkey) pairs waiting for their bf16 reference or its loss on "
+            f"the calibration rows (quant_reference_prepass). They will get picked up in the next cycle."
         )
 
     logger.info(f"Completed scheduling cycle, {len(pending_training_tasks)} tasks remaining")
 
 
 async def _reference_ready(task: AnyTypeRawTask, hotkey: str, config: Config) -> bool:
-    """False while a quant miner's bf16 reference is unmeasured: its target cannot be published yet.
+    """False while a quant miner's bf16 reference, or its loss on the calibration rows, is unmeasured: its inputs cannot be
+    published yet, and a row is never dispatched without them.
 
-    An own-model miner waits for its own row; on any other quant task every miner waits for the task-common row
-    (stored under hotkey ''), measured once by the prepass; a non-tournament task never waits, and a task-common reference
-    that failed QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES times in a row is given up on.
+    An own-model miner waits for its own row; on any other quant task every miner waits for the task-common row (stored
+    under hotkey ''), measured once by the prepass. The prepass measures tournament tasks only, so a quant row of a task it
+    never measures waits here for good (training rows are tournament rows).
     """
     if task.task_type not in QUANT_TASK_TYPES:
         return True
     reference_hotkey = reference_hotkey_for(task, hotkey)
-    if reference_hotkey == "":
-        # The prepass measures tournament tasks only, so an organic task has nothing to wait for.
-        if await get_tournament_id_by_task_id(str(task.task_id), config.psql_db) is None:
-            return True
     references = await get_quant_sku_references(task.task_id, config.psql_db)
     if not any(stored_hotkey == reference_hotkey for stored_hotkey, _ in references):
-        # A task-common reference that keeps failing is given up on (miners train with no target); an own-model one never is.
-        return reference_gave_up(task.task_id, reference_hotkey)
+        return False
     return await _calibration_reference_ready(task, hotkey, config)
 
 
 async def _calibration_reference_ready(task: AnyTypeRawTask, hotkey: str, config: Config) -> bool:
-    """A task with calibration rows also waits for the reference's bf16 loss on them, until the prepass gives up on it."""
-    if not has_calibration_set(task):
-        return True
-    reference_hotkey = reference_hotkey_for(task, hotkey)
-    if reference_hotkey in await get_quant_calibration_references(task.task_id, config.psql_db):
-        return True
-    return calibration_reference_gave_up(task.task_id, reference_hotkey)
+    """A quant task also waits for the reference's bf16 loss on its calibration rows, however many times measuring it failed; a
+    task with no published calibration set is not ready (the scheduler holds and alerts it, see _alert_quant_inputs_missing)."""
+    if not has_published_calibration(task):
+        return False
+    record = (await get_quant_calibration_references(task.task_id, config.psql_db)).get(reference_hotkey_for(task, hotkey))
+    return record is not None and record.eval_set_fingerprint == task.calibration_fingerprint
 
 
 async def _check_suitable_gpus(
@@ -1130,8 +1146,8 @@ def _quant_training_data(
     decode: QuantDecodeRequest | None = None,
     *,
     model: str,
-    quant_target: QuantTarget | None,
-    calibration: QuantCalibrationRequest | None = None,
+    quant_target: QuantTarget,
+    calibration: QuantCalibrationRequest,
 ) -> TrainRequestQuant:
     """Build the trainer request for a quant task: the entrant compresses model, its own starting model when set."""
     return TrainRequestQuant(
@@ -1204,77 +1220,83 @@ async def _decode_request_for(task: AnyQuantRawTask, hotkey: str, config: Config
     )
 
 
-async def _quant_target_for(task: AnyQuantRawTask, hotkey: str, config: Config) -> QuantTarget | None:
-    """The bar published to a miner from its stored bf16 reference; None when the reference is not measured.
+class QuantInputsUnavailable(RuntimeError):
+    """A quant row cannot be handed one of its inputs: the calibration set (none published, or its file or example count
+    cannot be served), its target, or the bf16 reference's losses on the calibration rows."""
+
+
+async def _quant_target_for(task: AnyQuantRawTask, hotkey: str, config: Config) -> QuantTarget:
+    """The bar published to a miner from its stored bf16 reference.
 
     An own-model miner reads its own rows; any other quant task reads the task-common reference (hotkey ''), which
     the prepass measures before training starts (training waits on it: _reference_ready).
     With several SKUs measured the earliest is the target: the scorer re-normalises per SKU anyway.
+    Raises QuantInputsUnavailable when the reference is not measured.
     """
     references = await get_quant_sku_references(task.task_id, config.psql_db)
     own = [reference for reference in references.values() if reference.hotkey == reference_hotkey_for(task, hotkey)]
     if not own:
-        return None
+        raise QuantInputsUnavailable("its bf16 reference is not measured, so there is no target to publish")
     first = min(own, key=lambda reference: (reference.measured_at is None, reference.measured_at))
     return quant_target_from_reference(task, first)
 
 
-async def _quant_calibration_for(task: AnyQuantRawTask, hotkey: str, config: Config) -> QuantCalibrationRequest | None:
-    """The calibration rows a quant miner is handed (fixed or freeform), with the reference's bf16 loss on them when measured.
+async def _quant_calibration_for(task: AnyQuantRawTask, hotkey: str, config: Config) -> QuantCalibrationRequest:
+    """The calibration rows a quant miner is handed (fixed or freeform), with the reference's bf16 loss on them.
 
-    None for a task with no calibration set. A missing or inconsistent reference (the prepass gave up, or measured
-    other examples) publishes the rows with reference None; a presigned-URL failure publishes nothing. Training never
-    fails on calibration. The URL is presigned and never logged.
+    Raises QuantInputsUnavailable when the task has no published calibration set, when its presigned URL or example count
+    is unavailable, or when the reference's losses are not measured on the task's current calibration rows (no record, or
+    a record on another example set). The URL is presigned and never logged.
     """
-    if not has_calibration_set(task) or not task.calibration_fingerprint:
-        return None
+    if not has_published_calibration(task):
+        raise QuantInputsUnavailable("the task has no published calibration set")
     records = await get_quant_calibration_references(task.task_id, config.psql_db)
     record = records.get(reference_hotkey_for(task, hotkey))
-    reference = None
-    if record is not None and record.eval_set_fingerprint == task.calibration_fingerprint:
-        reference = QuantCalibrationReference(
-            model=record.model,
-            loss=record.loss,
-            per_example_losses=[None if math.isnan(loss) else loss for loss in record.per_example_losses],
-            sku=record.sku,
-        )
-    elif record is not None:
-        logger.error(f"Task {task.task_id} hotkey {hotkey}: calibration reference is on another example set; publishing none")
-    else:
-        logger.warning(f"Task {task.task_id} hotkey {hotkey}: no calibration reference; training without calibration losses")
-    n_examples = len(reference.per_example_losses) if reference else task.calibration_n_examples
-    url = await async_minio_client.get_new_presigned_url(task.calibration_data)
-    if n_examples is None or not url:
-        logger.warning(f"Task {task.task_id}: calibration set unavailable for {hotkey}; training without it")
-        return None
+    if record is None:
+        raise QuantInputsUnavailable("its bf16 reference is not measured on the calibration rows")
+    if record.eval_set_fingerprint != task.calibration_fingerprint:
+        raise QuantInputsUnavailable("its bf16 reference on the calibration rows was measured on another example set")
+    reference = QuantCalibrationReference(
+        model=record.model,
+        loss=record.loss,
+        per_example_losses=[None if math.isnan(loss) else loss for loss in record.per_example_losses],
+        sku=record.sku,
+    )
+    try:
+        url = await async_minio_client.get_new_presigned_url(task.calibration_data)
+    except Exception as e:
+        # The exception text can carry the object URL; only its type is reported.
+        raise QuantInputsUnavailable(f"its calibration set could not be presigned ({type(e).__name__})") from None
+    if not url:
+        raise QuantInputsUnavailable("its calibration set could not be published (presigned URL unavailable)")
     return QuantCalibrationRequest(
         examples_url=url,
         eval_set_fingerprint=task.calibration_fingerprint,
-        n_examples=n_examples,
+        n_examples=len(reference.per_example_losses),
         reference=reference,
     )
 
 
-async def _alert_missing_calibration(task: AnyQuantRawTask, hotkey: str, config: Config) -> None:
-    """Fail loud, never fail the row: a quant miner dispatched without calibration rows compresses blind.
+async def _alert_quant_inputs_missing(task: AnyQuantRawTask, hotkey: str, config: Config, reason: str | None = None) -> None:
+    """A quant row whose task cannot hand the miner every input (calibration set, target, reference losses on the calibration
+    rows) is HELD, never dispatched: logs an ERROR every time and alerts the webhook on the task's first held row and every
+    QUANT_INPUTS_MISSING_REALERT_HELD_ROWS-th held row after.
 
-    Every tournament quant task is meant to carry a calibration set (carved by its upstream seed or from its own chunk),
-    so its absence is a validator bug or an infra fault. Logged as an ERROR on every row, alerted once per task.
+    Training waits for the measured references before it gets here (_reference_ready), and quant prep publishes the set before
+    a task can reach training, so this only fires on a race with the prepass, a validator bug or a storage fault.
     """
-    if has_calibration_set(task) and task.calibration_fingerprint:
-        reason = "its calibration set could not be published (presigned URL or example count unavailable)"
-    else:
-        reason = "the task has no calibration set (its upstream or its own prep carved none)"
-    logger.error(f"Task {task.task_id}: {hotkey} is dispatched WITHOUT calibration rows: {reason}")
-    if str(task.task_id) in _QUANT_CALIBRATION_MISSING_ALERTED:
+    reason = reason or "the task has no published calibration set"
+    logger.error(f"Task {task.task_id}: the row of {hotkey} is HELD and NOT dispatched: {reason}")
+    held_rows = _QUANT_INPUTS_MISSING_HELD_ROWS.get(str(task.task_id), 0) + 1
+    _QUANT_INPUTS_MISSING_HELD_ROWS[str(task.task_id)] = held_rows
+    if held_rows != 1 and held_rows % QUANT_INPUTS_MISSING_REALERT_HELD_ROWS != 0:
         return
-    _QUANT_CALIBRATION_MISSING_ALERTED.add(str(task.task_id))
     await notify_evaluation_exception(
         config,
         task_id=str(task.task_id),
         task_type=task.task_type,
-        context="Quant training dispatched without a calibration set",
-        error=f"{reason}; the miner trains without calibration rows or their bf16 reference losses",
+        context="Quant training row held: inputs missing",
+        error=f"The row of {hotkey} is HELD and was NOT dispatched ({held_rows} held row checks so far): {reason}",
         hotkeys=[hotkey],
     )
 
@@ -1332,6 +1354,13 @@ async def _create_training_request(
     baseline_stats = miner_stats or task.baseline_stats
 
     if task.task_type in QUANT_TASK_TYPES:
+        try:
+            quant_target = await _quant_target_for(task, hotkey, config)
+            calibration = await _quant_calibration_for(task, hotkey, config)
+        except QuantInputsUnavailable as e:
+            await _alert_quant_inputs_missing(task, hotkey, config, reason=str(e))
+            raise
+        _QUANT_INPUTS_MISSING_HELD_ROWS.pop(str(task.task_id), None)
         decode = await _decode_request_for(task, hotkey, config) if task.task_type == TaskType.QUANTFREEFORMTASK else None
         training_data = _quant_training_data(
             task,
@@ -1339,11 +1368,9 @@ async def _create_training_request(
             baseline_stats,
             decode=decode,
             model=training_model,
-            quant_target=await _quant_target_for(task, hotkey, config),
-            calibration=await _quant_calibration_for(task, hotkey, config),
+            quant_target=quant_target,
+            calibration=calibration,
         )
-        if training_data.calibration is None:
-            await _alert_missing_calibration(task, hotkey, config)
     elif task.task_type == TaskType.IMAGETASK:
         training_data = TrainRequestImage(
             model=training_model,
@@ -2562,7 +2589,8 @@ def _copy_upstream_data(task: AnyQuantRawTask, upstream: InstructTextRawTask, bo
 
     test_data is the raw test split the instruct task was scored on (quant prep tokenises it), and the
     dataset type carries the standard column names the upstream's prep wrote. calibration_data is the upstream's raw
-    calibration JSON (None when it carved none), which quant prep tokenises and publishes. The budget is recomputed
+    calibration JSON, which quant prep tokenises and publishes; an upstream with none leaves the task's own prep to carve
+    its calibration rows (see _set_calibration_source). The budget is recomputed
     here from the upstream's model and its prep stats (flat when it has none): the boss budget for the type with boss,
     else the non-boss one (the miner rounds R1-R3 on an input seed).
     """
@@ -2582,6 +2610,24 @@ def _copy_upstream_data(task: AnyQuantRawTask, upstream: InstructTextRawTask, bo
         task.task_type, upstream.model_params_count, boss=boss, baseline_stats=upstream.baseline_stats
     )
     task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
+
+
+async def _set_calibration_source(task: AnyQuantRawTask, config: Config, copied_from: InstructTextRawTask | None = None) -> None:
+    """Leave a task released to PENDING with a calibration source: the upstream's raw rows (copied_from, see
+    _copy_upstream_data) or its own prep's carve. carve_calibration is always set, so a task created with the flag off still
+    carves when it holds no raw rows. An upstream that published no calibration rows should not exist (a flagged text task
+    fails prep when it carves nothing); the task then carves from the train file it copied, which the compressed model was
+    trained on, and the alert says so.
+    """
+    task.carve_calibration = True
+    if copied_from is None or copied_from.calibration_data:
+        return
+    await alert_seed_issue(
+        f"{task.task_id}:quant-upstream-no-calibration",
+        f"Quant task {task.task_id}: upstream task {copied_from.task_id} published no calibration rows, so the compression "
+        f"task carves its own from the upstream's train rows, which the compressed model was trained on",
+        config,
+    )
 
 
 class _TextBossModel(BaseModel):
@@ -2760,9 +2806,9 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
         _copy_upstream_data(task, upstream, boss=not await _is_non_boss_tournament_task(task, config))
     elif draws_fresh_data:
         task.ds, task.dataset_type, task.file_format = ds, dataset_type, FileFormat.HF
-        task.carve_calibration = True
         task.training_data = task.test_data = task.calibration_data = None
         task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
+    await _set_calibration_source(task, config, copied_from=upstream if copies_data else None)
     await quant_sources_sql.set_quant_task_source_model(task.task_id, model.repo, model.is_fallback, config.psql_db)
     task.status = TaskStatus.PENDING
     await task_sql.update_task(task, config.psql_db)
@@ -2822,8 +2868,10 @@ async def _release_chained_task(task: AnyQuantRawTask, config: Config) -> None:
         return
 
     task.model_id = shared_input
-    if task.training_data is None and task.ds == upstream.ds:
+    copies_data = task.training_data is None and task.ds == upstream.ds
+    if copies_data:
         _copy_upstream_data(task, upstream, boss=not await _is_non_boss_tournament_task(task, config))
+    await _set_calibration_source(task, config, copied_from=upstream if copies_data else None)
     task.status = TaskStatus.PENDING
     await task_sql.update_task(task, config.psql_db)
     logger.info(f"Released chained task {task.task_id} on {shared_input} from upstream {upstream.task_id} to PENDING")
@@ -2875,6 +2923,7 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
         logger.warning(f"Own-upstream task {task.task_id}: the boss's output on {upstream.task_id}: {rejection}; holding")
         return
     repo = await chaining.chained_input_repo(upstream.task_id, EMISSION_BURN_HOTKEY, config.psql_db)
+    copies_data = False
     if cst.is_continuous_quant_task(task):
         try:
             chunk = await _fetch_continuous_quant_chunk(config, cst.continuous_quant_train_index(task.ds))
@@ -2884,6 +2933,8 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
         task.training_data, task.test_data = chunk.train_url, chunk.test_url
     elif task.training_data is None:
         _copy_upstream_data(task, upstream, boss=True)
+        copies_data = True
+    await _set_calibration_source(task, config, copied_from=upstream if copies_data else None)
     await task_sql.set_starting_model_repo(str(task.task_id), EMISSION_BURN_HOTKEY, repo, config.psql_db)
     task.status = TaskStatus.PENDING
     await task_sql.update_task(task, config.psql_db)

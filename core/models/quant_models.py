@@ -182,10 +182,10 @@ class QuantCalibrationRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    examples_url: str  # presigned GET of the tokenised JSONL; never logged
+    examples_url: str = Field(..., min_length=1)  # presigned GET of the tokenised JSONL; never logged
     eval_set_fingerprint: str  # quant_eval_set_fingerprint of those examples
-    n_examples: int
-    reference: QuantCalibrationReference | None  # None: not measured (prepass give-up, or a task-common task)
+    n_examples: int = Field(..., gt=0)
+    reference: QuantCalibrationReference
 
 
 class QuantCalibrationExample(BaseModel):
@@ -195,7 +195,7 @@ class QuantCalibrationExample(BaseModel):
 
     input_ids: list[int]
     labels: list[int]  # -100 masks; quant_loss convention (position 0 never scored)
-    reference_loss: float | None  # the bf16 reference's loss on this example; None if not measured
+    reference_loss: float | None  # the bf16 reference's loss on this example; None where it has no supervised token
 
 
 class QuantCalibrationSet(BaseModel):
@@ -205,9 +205,9 @@ class QuantCalibrationSet(BaseModel):
 
     task_id: str
     eval_set_fingerprint: str
-    reference_model: str | None
-    reference_loss: float | None
-    reference_sku: str | None
+    reference_model: str
+    reference_loss: float
+    reference_sku: str
     examples: list[QuantCalibrationExample]
 
 

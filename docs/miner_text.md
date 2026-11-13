@@ -172,17 +172,17 @@ Source: [`validator/evaluation/evaluators/`](../validator/evaluation/evaluators/
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a text task.
+The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the smaller allowance, within the larger allowance, or beyond both. This table says what each is on a text task.
 
-| Task | Win | Tight allowance | Looser allowance |
+| Task | Win | Smaller allowance | Larger allowance |
 | --- | --- | --- | --- |
-| Instruct, continuous, DPO | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss, with a score at least 1% better | at most 0.1% behind the boss | at most 0.25% behind |
-| GRPO | a score at least 1% better | at most 0.1% behind the boss | at most 0.25% behind |
+| Instruct, continuous, DPO | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss, with a score at least 1% better | a better score than the boss, short of a win | a score level with the boss, or at most 1% worse |
+| GRPO | a score at least 1% better | a better score than the boss, short of a win | a score level with the boss, or at most 1% worse |
 
 - Percentages are relative to the boss's score.
-- A non-win that is level with the boss or ahead of it is within the tight allowance.
+- A non-win is banded on the score alone, whatever the paired test said. A task whose per-example losses cannot be paired is a non-win too.
 
-Source: [`TEXT_CROWN_WIN_MARGIN`, `TEXT_CROWN_TIGHT_ALLOWANCE`, `TEXT_CROWN_LOOSER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).
+Source: [`TEXT_CROWN_WIN_MARGIN`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).
 
 Payout notes for text:
 

@@ -34,17 +34,25 @@ def _record_from_row(row) -> QuantCalibrationReferenceRecord:
 async def add_quant_calibration_reference(
     reference: QuantCalibrationReferenceRecord, psql_db: PSQLDB
 ) -> QuantCalibrationReferenceRecord:
-    """Insert the reference unless its (task, hotkey) is already stored; returns the stored row (first writer wins)."""
+    """Insert the reference, or replace the stored (task, hotkey) row when it was measured on another example set; a stored row
+    on the same example set is kept (first writer wins). Returns the stored row."""
     async with await psql_db.connection() as connection:
         connection: Connection
         # per_example_losses and eval_gpu bind directly: jsonb codec; an unscored example goes in as null.
         await connection.execute(
             f"""
-            INSERT INTO {cst.QUANT_CALIBRATION_REFERENCES_TABLE}
+            INSERT INTO {cst.QUANT_CALIBRATION_REFERENCES_TABLE} AS stored
             ({cst.TASK_ID}, {cst.HOTKEY}, {cst.REFERENCE_MODEL}, {cst.LOSS}, {cst.PER_EXAMPLE_LOSSES},
              {cst.EVAL_SET_FINGERPRINT}, {cst.EVAL_GPU})
             VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb)
-            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO NOTHING
+            ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO UPDATE SET
+                {cst.REFERENCE_MODEL} = EXCLUDED.{cst.REFERENCE_MODEL},
+                {cst.LOSS} = EXCLUDED.{cst.LOSS},
+                {cst.PER_EXAMPLE_LOSSES} = EXCLUDED.{cst.PER_EXAMPLE_LOSSES},
+                {cst.EVAL_SET_FINGERPRINT} = EXCLUDED.{cst.EVAL_SET_FINGERPRINT},
+                {cst.EVAL_GPU} = EXCLUDED.{cst.EVAL_GPU},
+                {cst.MEASURED_AT} = NOW()
+            WHERE stored.{cst.EVAL_SET_FINGERPRINT} IS DISTINCT FROM EXCLUDED.{cst.EVAL_SET_FINGERPRINT}
             """,
             reference.task_id,
             reference.hotkey,

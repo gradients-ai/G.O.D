@@ -289,12 +289,51 @@ class TestReleaseChainedTask:
 
         assert task.calibration_data == "s3://bucket/upstream-calibration.json"
 
-    async def test_upstream_without_calibration_rows_leaves_none(self, release):
-        task = _chained_freeform(release.upstream)
+    @pytest.mark.parametrize("make_task", [_chained_fixed, _chained_freeform])
+    async def test_a_released_task_always_carves_when_it_has_no_raw_rows(self, release, make_task, monkeypatch):
+        alert = AsyncMock()
+        monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+        task = make_task(release.upstream)
+        assert task.carve_calibration is False
 
         await orchestrator._release_chained_task(task, CONFIG)
 
-        assert task.calibration_data is None
+        assert task.carve_calibration is True and task.status == TaskStatus.PENDING
+
+    async def test_a_copy_of_the_upstream_calibration_rows_does_not_alert(self, release, monkeypatch):
+        alert = AsyncMock()
+        monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+        release.upstream.calibration_data = "s3://bucket/upstream-calibration.json"
+        task = _chained_fixed(release.upstream)
+
+        await orchestrator._release_chained_task(task, CONFIG)
+
+        assert task.carve_calibration is True
+        alert.assert_not_awaited()
+
+    async def test_an_upstream_without_calibration_rows_alerts_and_the_task_carves_its_own(self, release, monkeypatch, caplog):
+        alert = AsyncMock()
+        monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+        task = _chained_freeform(release.upstream)
+
+        with caplog.at_level("ERROR"):
+            await orchestrator._release_chained_task(task, CONFIG)
+
+        assert task.calibration_data is None and task.carve_calibration is True
+        alert.assert_awaited_once()
+        key, message, _ = alert.await_args.args
+        assert key == f"{task.task_id}:quant-upstream-no-calibration"
+        assert "published no calibration rows" in message and "carves its own" in message
+
+    async def test_a_task_on_its_own_data_carves_and_does_not_alert(self, release, monkeypatch):
+        alert = AsyncMock()
+        monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+        task = _chained_freeform(release.upstream, ds="org/fresh-dataset")
+
+        await orchestrator._release_chained_task(task, CONFIG)
+
+        assert task.carve_calibration is True
+        alert.assert_not_awaited()
 
     async def test_a_non_boss_round_task_gets_the_non_boss_hours_from_the_upstream_stats(self, release):
         release.non_boss.return_value = True

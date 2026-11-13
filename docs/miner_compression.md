@@ -98,14 +98,14 @@ This is `--quant-spec` for `W2A16-asym-g64`:
 | Variable | Set on | Meaning |
 | --- | --- | --- |
 | `QUANT_SPEC` | fixed tasks | the same JSON as `--quant-spec` |
-| `QUANT_TARGET` | tasks that carry a target | JSON: the reference loss and, on freeform, the knee and cap |
-| `QUANT_CALIBRATION_PATH` | tasks that have a calibration set | path of the calibration file |
+| `QUANT_TARGET` | every task | JSON: the reference loss and, on freeform, the knee and cap |
+| `QUANT_CALIBRATION_PATH` | every task | path of the calibration file |
 | `WANDB_MODE` | every task | `offline` |
 | `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | every task | `/app/checkpoints/wandb_logs/{task_id}_{hotkey}` |
 
 ### The target
 
-`QUANT_TARGET` is set when the task carries a target, so your code must run without it.
+Every task sets `QUANT_TARGET`.
 
 | Field | Meaning |
 | --- | --- |
@@ -122,7 +122,7 @@ This is `--quant-spec` for `W2A16-asym-g64`:
 
 The calibration set is tokenised rows, each with the bf16 input model's loss on it. The rows are carved from the train side of the split. They are disjoint from the scored set and are never scored.
 
-The file holds 100 to 1,000 rows. The set can be absent, and the reference losses can be `null`. The job runs either way.
+The file holds 100 to 1,000 rows. Every task sets `QUANT_CALIBRATION_PATH`, and every row carries the reference's loss, `null` for a row with no supervised token.
 
 <details>
 <summary>File format and how the rows are chosen</summary>
@@ -135,9 +135,9 @@ The file is one JSON document ([`QuantCalibrationSet`](../core/models/quant_mode
 | `reference_model`, `reference_loss`, `reference_sku` | the model scored, its mean loss over the set, and the GPU type |
 | `examples[].input_ids` | token ids |
 | `examples[].labels` | same length, `-100` where masked |
-| `examples[].reference_loss` | the reference's loss on that example |
+| `examples[].reference_loss` | the reference's loss on that example; `null` for a row with no supervised token |
 
-At least 250 rows are carved, at most 1,000 and at most 10% of train, aiming at about 50,000 supervised tokens. Over-long rows and rows equal to a scored example are then dropped. With fewer than 100 rows left, no set is published ([`validator/tasks/datasets/constants.py`](../validator/tasks/datasets/constants.py), [`validator/tasks/requests.py`](../validator/tasks/requests.py)).
+At least 250 rows are carved, at most 1,000 and at most 10% of train, aiming at about 50,000 supervised tokens. Over-long rows and rows equal to a scored example are then dropped ([`validator/tasks/datasets/constants.py`](../validator/tasks/datasets/constants.py), [`validator/tasks/requests.py`](../validator/tasks/requests.py)).
 
 </details>
 
@@ -358,19 +358,18 @@ A submission the evaluator cannot score is a scored fail and ranks last: a wrong
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a compression task.
+The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the smaller allowance, within the larger allowance, or beyond both. This table says what each is on a compression task.
 
-| Track | Win | Tight allowance | Looser allowance |
+| Track | Win | Smaller allowance | Larger allowance |
 | --- | --- | --- | --- |
-| Freeform | at least 3% fewer effective bytes `S` than the boss | at most 1% more `S` than the boss | at most 2% more `S` |
-| Fixed | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test), with a loss at least 1% better | a draw on the paired test | a draw on the paired test |
+| Freeform | at least 3% fewer effective bytes `S` than the boss | fewer `S` than the boss, by less than 3% | the same `S` as the boss, or at most 1% more |
+| Fixed | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test), with a loss at least 1% better | a lower loss than the boss, short of a win | a loss equal to the boss's, or at most 1% higher |
 
 - Percentages are relative to the boss's value.
-- Freeform: fewer effective bytes by less than 3% is a non-win within the tight allowance.
-- Fixed: passing the paired test without the 1% minimum is a draw.
-- Fixed: a task where the boss passes the paired test against the challenger is beyond both allowances.
+- Freeform: any other result is banded on `S` alone, so one byte fewer than the boss is within the smaller allowance and equal bytes are within the larger one.
+- Fixed: any other result is banded on the scalar loss alone, whatever the paired test said: a draw, a test the boss passes against the challenger, or per-example losses that cannot be paired.
 
-Source: [`QUANT_FREEFORM_BOSS_BYTE_MARGIN`, `QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE`, `QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE`, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT`](../validator/tournament/constants.py), [`crown.py: freeform_head_to_head`, `fixed_head_to_head`](../validator/tournament/crown.py).
+Source: [`QUANT_FREEFORM_BOSS_BYTE_MARGIN`, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: freeform_head_to_head`, `fixed_head_to_head`](../validator/tournament/crown.py).
 
 Payout notes for compression:
 
@@ -389,7 +388,7 @@ No script in `ops/examples/training` runs a compression task. Two parts can be c
 - [ ] `decoder/decode.py` exists at your pinned commit, with no symlinks or hardlinks, inside both size limits.
 - [ ] The entrypoint accepts the shared arguments and the compression arguments, `--quant-spec` among them.
 - [ ] Both task types are handled: `QuantFixedTask`, `QuantFreeformTask`.
-- [ ] Your code runs when `QUANT_TARGET`, `QUANT_CALIBRATION_PATH` or the per-row reference losses are absent.
+- [ ] Your code reads `QUANT_TARGET` and `QUANT_CALIBRATION_PATH`, which every compression task sets.
 - [ ] A complete output and `quant_manifest.json` are in your output directory before the deadline.
 - [ ] Fixed: the input model's `config.json` with `quantization_config` added, and the exact tensor set for the format in `--quant-spec`.
 - [ ] Freeform: `decode.py` writes only top-level bf16 `*.safetensors` with the input model's names and shapes, inside the sandbox limits.

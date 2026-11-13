@@ -57,6 +57,10 @@ QUANT_EVAL_MAX_SEQUENCE_LEN = 4096  # also capped at the model context - 1 (quan
 # Fewer surviving examples fail prep (PREP_TASK_FAILURE -> the tournament replaces the task): on a tiny
 # test set the freeform bar and the dead-zone margins are noise.
 QUANT_EVAL_MIN_EXAMPLES = 100
-# Quant prep drops calibration examples equal to an eval example; fewer than this survive and none are published
-# (calibration never fails prep).
+# Quant prep drops calibration examples equal to an eval example; fewer than this survive and prep fails
+# (CalibrationUnavailableError: a compression task is never handed to miners without a calibration set).
 QUANT_CALIBRATION_MIN_EXAMPLES = 100
+# Downloading, tokenising and uploading the calibration set is attempted this many times before prep fails; the
+# wait between attempts is QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS times the attempt number.
+QUANT_CALIBRATION_PUBLISH_ATTEMPTS = 3
+QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS = 5.0

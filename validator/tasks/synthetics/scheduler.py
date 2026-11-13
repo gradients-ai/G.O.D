@@ -930,7 +930,6 @@ async def create_synthetic_quant_task(
     rng: random.Random | None = None,
     boss: bool = False,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
-    carve_calibration: bool = False,
 ) -> RawTask:
     """Create a fixed- or freeform-track quant task on instruct data.
 
@@ -942,7 +941,6 @@ async def create_synthetic_quant_task(
     boss selects the boss-round budget (no multiplier: QUANT_BOSS_HOURS_MULTIPLIER is 1.0 for both types).
     training_start_point OWN_R1_MODEL marks a task whose miners each start from their own round-1 model; R1-R3 do
     not use it (they are chained on a seed, see create_chained_quant_task).
-    carve_calibration (freeform without a prepped_split only) has prep carve a calibration set from the task's own split.
     """
     if task_type == TaskType.QUANTFIXEDTASK:
         quant_format = quant_format or draw_quant_format(rng or random.Random())
@@ -957,7 +955,6 @@ async def create_synthetic_quant_task(
         prepped_split=prepped_split,
         boss=boss,
         training_start_point=training_start_point,
-        carve_calibration=carve_calibration,
     )
 
 
@@ -974,7 +971,6 @@ async def _create_synthetic_quant_task_pinned(
     prepped_split: QuantPreppedSplit | None = None,
     boss: bool = False,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
-    carve_calibration: bool = False,
 ) -> RawTask:
     """create_synthetic_quant_task's body with the fixed format already drawn (None for freeform).
 
@@ -1003,7 +999,6 @@ async def _create_synthetic_quant_task_pinned(
         hours_to_complete=number_of_hours,
         quant_spec=quant_spec,
         training_start_point=training_start_point,
-        carve_calibration=carve_calibration,
         **_prepped_split_fields(prepped_split),
     )
     logger.info(
@@ -1111,7 +1106,6 @@ async def create_own_upstream_quant_task(
             file_format=FileFormat.S3,
             training_data=chunk.train_url,
             test_data=chunk.test_url,
-            carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
         )
     task = _new_quant_task(
         task_type,
@@ -1163,7 +1157,6 @@ async def create_chained_continuous_quant_task(
         file_format=FileFormat.S3,
         training_data=chunk.train_url,
         test_data=chunk.test_url,
-        carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
         upstream_task_id=upstream.task_id,
         status=TaskStatus.AWAITING_UPSTREAM,
         model_params_count=upstream.model_params_count,
@@ -1247,7 +1240,6 @@ async def recreate_chained_quant_task(config: Config, task: QuantFixedRawTask | 
             file_format=FileFormat.S3,
             training_data=chunk.train_url,
             test_data=chunk.test_url,
-            carve_calibration=data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION,
         )
     fresh = _new_quant_task(
         task.task_type,
@@ -1347,7 +1339,6 @@ async def recreate_quant_task(
     *,
     dataset_type: InstructTextDatasetType | None = None,
     prepped_split: QuantPreppedSplit | None = None,
-    carve_calibration: bool = False,
 ) -> RawTask:
     """A fresh copy of a quant task: same model, data, columns, spec or bar cap and hours.
 
@@ -1367,7 +1358,6 @@ async def recreate_quant_task(
         penalty_curvature=getattr(task, "penalty_curvature", None),
         model_params_count=task.model_params_count,
         training_start_point=task.training_start_point,
-        carve_calibration=carve_calibration,
         **_prepped_split_fields(prepped_split),
     )
     recreating = f"QUANT_TASK: recreating {task.task_type.value} {task.task_id} on {task.model_id} with dataset {task.ds}"
@@ -1402,7 +1392,6 @@ def _new_quant_task(
     training_data: str | None = None,
     test_data: str | None = None,
     calibration_data: str | None = None,
-    carve_calibration: bool = False,
     upstream_task_id: UUID | None = None,
     status: TaskStatus = TaskStatus.PENDING,
     model_params_count: int = 0,
@@ -1412,9 +1401,9 @@ def _new_quant_task(
     fixed track and ignored otherwise.
 
     Never augmented: quant tasks are text-tournament tasks outside round 1, which play their base unmodified.
-    Both tracks take calibration_data (carried from the source split) and carve_calibration (prep carves a calibration set:
-    from the task's own split, or, when test_data is given, from the given train file; see
-    QUANT_CONTINUOUS_CARVE_CALIBRATION for the continuous compression tasks).
+    Both tracks take calibration_data (the raw rows carried from the source split) and are always flagged to carve:
+    prep carves a calibration set from the task's own split, or from the given train file when test_data is given,
+    unless the task already carries calibration_data. A task leaves prep only with its published calibration set.
     """
     current_time = datetime.utcnow()
     fields = dict(
@@ -1436,7 +1425,7 @@ def _new_quant_task(
         yarn_factor=None,
         augmentation_config=None,
     )
-    calibration = dict(calibration_data=calibration_data, carve_calibration=carve_calibration)
+    calibration = dict(calibration_data=calibration_data, carve_calibration=True)
     if task_type == TaskType.QUANTFIXEDTASK:
         return QuantFixedRawTask(**fields, quant_spec=quant_spec, **calibration)
     if task_type == TaskType.QUANTFREEFORMTASK:

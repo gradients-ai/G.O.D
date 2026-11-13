@@ -39,10 +39,8 @@ async def test_create_synthetic_instruct_task_records_the_carve_flag(monkeypatch
     assert task.carve_calibration is carve and task.calibration_data is None
 
 
-def test_new_quant_task_applies_calibration_to_both_tracks():
-    kwargs = dict(
-        model_id="m", ds="ds", dataset_type=DATASET_TYPE, hours_to_complete=2.0, calibration_data=CAL_URL, carve_calibration=True
-    )
+def test_new_quant_task_always_carves_and_carries_the_given_calibration_rows():
+    kwargs = dict(model_id="m", ds="ds", dataset_type=DATASET_TYPE, hours_to_complete=2.0, calibration_data=CAL_URL)
 
     freeform = scheduler._new_quant_task(TaskType.QUANTFREEFORMTASK, **kwargs)
     fixed = scheduler._new_quant_task(TaskType.QUANTFIXEDTASK, quant_spec=QuantFormat.W4A16_SYM_G128.spec(), **kwargs)
@@ -51,23 +49,23 @@ def test_new_quant_task_applies_calibration_to_both_tracks():
         assert task.calibration_data == CAL_URL and task.carve_calibration is True
 
 
-def test_new_quant_task_carves_a_given_split_only_when_asked():
+def test_new_quant_task_has_no_carve_parameter_and_carves_a_given_split():
     kwargs = dict(model_id="m", ds="ds", dataset_type=DATASET_TYPE, hours_to_complete=2.0, test_data="https://minio/t.json")
     spec = QuantFormat.W4A16_SYM_G128.spec()
 
     for task_type in (TaskType.QUANTFREEFORMTASK, TaskType.QUANTFIXEDTASK):
-        asked = scheduler._new_quant_task(task_type, quant_spec=spec, carve_calibration=True, **kwargs)
-        default = scheduler._new_quant_task(task_type, quant_spec=spec, **kwargs)
-        assert asked.carve_calibration is True and default.carve_calibration is False
+        assert scheduler._new_quant_task(task_type, quant_spec=spec, **kwargs).carve_calibration is True
+        with pytest.raises(TypeError):
+            scheduler._new_quant_task(task_type, quant_spec=spec, carve_calibration=False, **kwargs)
 
 
-def test_a_default_quant_task_has_no_calibration():
+def test_a_default_quant_task_has_no_calibration_yet_and_carves():
     task = scheduler._new_quant_task(
         TaskType.QUANTFREEFORMTASK, model_id="m", ds="ds", dataset_type=DATASET_TYPE, hours_to_complete=2.0
     )
 
     assert (task.calibration_data, task.calibration_fingerprint, task.calibration_n_examples, task.carve_calibration) == (
-        None, None, None, False,
+        None, None, None, True,
     )  # fmt: skip
 
 
@@ -81,8 +79,8 @@ async def test_recreate_quant_task_re_resolves_the_calibration_rows_with_the_spl
     fresh = await scheduler.recreate_quant_task(MagicMock(), source, prepped_split=split)
     plain = await scheduler.recreate_quant_task(MagicMock(), source)
 
-    assert fresh.calibration_data == CAL_URL and fresh.carve_calibration is False
-    assert plain.calibration_data is None
+    assert fresh.calibration_data == CAL_URL and fresh.carve_calibration is True
+    assert plain.calibration_data is None and plain.carve_calibration is True
 
 
 def _instruct_task(status: TaskStatus = TaskStatus.TRAINING) -> InstructTextRawTask:

@@ -1571,6 +1571,36 @@ class TestRelease:
         assert qw.env.assigned[str(task.task_id)] == [EMISSION_BURN_HOTKEY]
 
 
+class TestReleaseLeavesACalibrationSource:
+    async def test_a_released_task_copies_the_text_tasks_calibration_rows_and_still_carves_when_it_has_none(self, qw):
+        task = await qw.create_round_task(1)
+        text_task = qw.text_task(SeedRole.TEXT_R1)
+        qw.land(SeedRole.TEXT_R1, "full")
+        task.carve_calibration = False  # a task created with the flag off
+
+        await orchestrator._release_chained_task(task, qw.config)
+
+        assert task.status == TaskStatus.PENDING
+        assert task.calibration_data == text_task.calibration_data == "s3://bucket/seed_calibration.json"
+        assert task.carve_calibration is True
+        assert qw.alerts.await_count == 0
+
+    async def test_a_text_task_that_published_no_calibration_rows_is_alerted_and_the_task_carves_its_own(self, qw, caplog):
+        task = await qw.create_round_task(1)
+        text_task = qw.text_task(SeedRole.TEXT_R1)
+        text_task.calibration_data = None
+        qw.land(SeedRole.TEXT_R1, "full")
+
+        with caplog.at_level("ERROR"):
+            await orchestrator._release_chained_task(task, qw.config)
+
+        assert task.status == TaskStatus.PENDING and task.calibration_data is None and task.carve_calibration is True
+        assert qw.alerts.await_count == 1
+        message = qw.alerts.await_args.kwargs["message"]
+        assert str(text_task.task_id) in message and "published no calibration rows" in message
+        assert "published no calibration rows" in caplog.text
+
+
 class TestReleaseOfTheContinuousCompressions:
     async def test_the_continuous_task_keeps_its_chunk_data_gets_fresh_urls_and_is_released_on_the_models_repo(self, qw):
         await qw.create_seeds()
@@ -1585,6 +1615,8 @@ class TestReleaseOfTheContinuousCompressions:
         assert qw.chunk_fetches == [CHUNK_INDEX] and task.training_data.startswith("https://minio/train-fresh")
         assert task.training_start_point == TrainingStartPoint.DEFAULT  # a shared input: both players compress the one model
         assert task.calibration_data is None  # nothing was copied from the text task, which has no such split
+        assert task.carve_calibration is True  # its own prep carves from the chunk
+        assert qw.alerts.await_count == 0
 
     async def test_a_failed_chunk_refresh_holds_the_task(self, qw):
         await qw.create_seeds()
@@ -1669,7 +1701,7 @@ class TestCreateChainedContinuousQuantTask:
         )
         assert task.training_start_point == TrainingStartPoint.DEFAULT and task.file_format == FileFormat.S3
         assert (task.training_data, task.test_data) == ("https://minio/train?sig=1", "https://minio/test?sig=2")
-        assert task.carve_calibration is data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION
+        assert task.carve_calibration is True
         assert task.dataset_type == scheduler._continuous_quant_dataset_type()
         assert task.hours_to_complete == scheduler.quant_flat_hours(task_type, 0, boss=True) > 0
         assert (getattr(task, "quant_spec", None) == fmt.spec()) if fmt else not hasattr(task, "quant_spec")

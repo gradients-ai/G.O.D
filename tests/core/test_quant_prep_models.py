@@ -119,6 +119,24 @@ def _quant_train_payload(baseline_stats: dict) -> dict:
         "file_format": FileFormat.S3,
         "task_type": TaskType.QUANTFREEFORMTASK,
         "baseline_stats": baseline_stats,
+        "quant_target": {
+            "reference_model": "m",
+            "reference_loss": 2.0,
+            "reference_sku": "s",
+            "bar_cap": 0.04,
+            "bar": 2.08,
+            "knee": 1.04,
+            "knee_loss": 2.08,
+            "penalty_curvature": 2500.0,
+            "cap": 1.08,
+            "cap_loss": 2.16,
+        },
+        "calibration": {
+            "examples_url": "u",
+            "eval_set_fingerprint": "f",
+            "n_examples": 1,
+            "reference": {"model": "m", "loss": 2.0, "per_example_losses": [1.0], "sku": "s"},
+        },
     }
     return {"training_data": training_data, "github_repo": "https://github.com/o/r", "gpu_ids": [0], "hotkey": "hk"}
 

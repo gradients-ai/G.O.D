@@ -19,7 +19,10 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
 from core.models.quant_artifact_models import QuantDecodedFile
 from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationReference
+from core.models.quant_models import QuantCalibrationRequest
 from core.models.quant_models import QuantFormat
+from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskStatus
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantFixedRawTask
@@ -87,6 +90,15 @@ def _training(task, hotkey: str = HOTKEY, trainer_ip: str | None = TRAINER_IP) -
     )
 
 
+def _target(task) -> QuantTarget:
+    if getattr(task, "quant_spec", None) is not None:
+        return QuantTarget(reference_model="m", reference_loss=2.0, reference_sku="s")
+    return QuantTarget(
+        reference_model="m", reference_loss=2.0, reference_sku="s", bar_cap=0.04, bar=2.08, knee=1.04, knee_loss=2.08,
+        penalty_curvature=2500.0, cap=1.08, cap_loss=2.16,
+    )  # fmt: skip
+
+
 def _task_log(task, hotkey: str = HOTKEY, decode: QuantDecodeResult | None = None) -> TrainerTaskLog:
     return TrainerTaskLog(
         gpu_ids=[0],
@@ -100,6 +112,11 @@ def _task_log(task, hotkey: str = HOTKEY, decode: QuantDecodeResult | None = Non
             file_format="s3",
             task_type=task.task_type,
             quant_spec=getattr(task, "quant_spec", None),
+            quant_target=_target(task),
+            calibration=QuantCalibrationRequest(
+                examples_url="https://minio.example/cal.jsonl", eval_set_fingerprint="fp", n_examples=1,
+                reference=QuantCalibrationReference(model="m", loss=2.0, per_example_losses=[1.0], sku="s"),
+            ),
         ),
         github_repo="https://github.com/miner/repo",
         hotkey=hotkey,

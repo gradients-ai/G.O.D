@@ -31,7 +31,6 @@ from validator.scoring.models import QuantSkuReference
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
-from validator.tournament import constants as t_cst
 from validator.tournament import orchestrator
 from validator.tournament import quant_reference_prepass as prepass
 from validator.tournament.models import TournamentParticipant
@@ -48,6 +47,19 @@ BUCKET = "test-bucket"
 SNAPSHOT_FIELDS = {"decoder_object_name": "quant-decoders/abc/sha.tar.xz", "decoder_xz_bytes": 4096, "decoder_sha256": "sha"}
 
 
+CAL_URL = "https://minio.example/bucket/abc_quant_calibration_set.jsonl?X-Amz-Signature=old"
+CAL_FRESH_URL = "https://minio.example/bucket/abc_quant_calibration_set.jsonl?X-Amz-Signature=fresh"
+CAL_FINGERPRINT = "fp-cal"
+CALIBRATION = QuantCalibrationRequest(
+    examples_url=CAL_FRESH_URL,
+    eval_set_fingerprint=CAL_FINGERPRINT,
+    n_examples=3,
+    reference=QuantCalibrationReference(model="org/own-bf16", loss=2.0, per_example_losses=[1.0, None, 3.0], sku="h100-sxm"),
+)
+FIXED_TARGET = QuantTarget(reference_model="org/own-bf16", reference_loss=2.0, reference_sku="h100-sxm")
+UNCALIBRATED = dict(calibration_data=None, calibration_fingerprint=None, calibration_n_examples=None)
+
+
 def _base_fields() -> dict:
     return {
         "is_organic": False,
@@ -59,6 +71,9 @@ def _base_fields() -> dict:
         "hours_to_complete": 2.0,
         "training_data": "s3://bucket/train.json",
         "created_at": datetime(2026, 10, 19),
+        "calibration_data": CAL_URL,
+        "calibration_fingerprint": CAL_FINGERPRINT,
+        "calibration_n_examples": 3,
     }
 
 
@@ -74,6 +89,24 @@ def _freeform_task(**overrides) -> QuantFreeformRawTask:
     return QuantFreeformRawTask(**{**_base_fields(), "dataset_type": _dataset_type(), **overrides})
 
 
+def _target_of(task) -> QuantTarget:
+    reference = _sku_reference(task, "")
+    return orchestrator.quant_target_from_reference(task, reference)
+
+
+def _sku_reference(task, hotkey: str, sku="h100-sxm", loss=2.0) -> QuantSkuReference:
+    return QuantSkuReference(
+        task_id=task.task_id,
+        hotkey=hotkey,
+        sku=sku,
+        model="org/own-bf16",
+        loss=loss,
+        per_example_losses=[loss],
+        eval_set_fingerprint="fp",
+        eval_gpu=QuantEvalGpu(name="NVIDIA H100", sm_count=132, sku=sku),
+    )
+
+
 def _instruct_task() -> InstructTextRawTask:
     return InstructTextRawTask(**_base_fields(), field_instruction="instruction", field_output="output")
 
@@ -81,7 +114,9 @@ def _instruct_task() -> InstructTextRawTask:
 class TestQuantTrainingData:
     def test_fixed_task_carries_spec_and_dataset(self):
         task = _fixed_task()
-        request = orchestrator._quant_training_data(task, EXPECTED_REPO, None, model=task.model_id, quant_target=None)
+        request = orchestrator._quant_training_data(
+            task, EXPECTED_REPO, None, model=task.model_id, quant_target=_target_of(task), calibration=CALIBRATION
+        )
 
         assert isinstance(request, TrainRequestQuant)
         assert request.task_type == TaskType.QUANTFIXEDTASK
@@ -94,14 +129,16 @@ class TestQuantTrainingData:
 
     def test_freeform_task_has_no_spec(self):
         task = _freeform_task()
-        request = orchestrator._quant_training_data(task, EXPECTED_REPO, None, model=task.model_id, quant_target=None)
+        request = orchestrator._quant_training_data(
+            task, EXPECTED_REPO, None, model=task.model_id, quant_target=_target_of(task), calibration=CALIBRATION
+        )
 
         assert request.task_type == TaskType.QUANTFREEFORMTASK
         assert request.quant_spec is None
 
     def test_model_is_the_given_starting_model(self):
         request = orchestrator._quant_training_data(
-            _fixed_task(), EXPECTED_REPO, None, model=AUGMENTED_MODEL, quant_target=None
+            _fixed_task(), EXPECTED_REPO, None, model=AUGMENTED_MODEL, quant_target=FIXED_TARGET, calibration=CALIBRATION
         )
 
         assert request.model == AUGMENTED_MODEL
@@ -111,8 +148,25 @@ def _participant(**overrides) -> TournamentParticipant:
     return TournamentParticipant(tournament_id=TOURNAMENT_ID, hotkey=HOTKEY, **overrides)
 
 
-@pytest.fixture
-def db_lookups(monkeypatch):
+MEASURED_HOTKEYS = (HOTKEY, "", orchestrator.EMISSION_BURN_HOTKEY, "5Challenger")
+
+
+@pytest.fixture(autouse=True)
+def sku_store(monkeypatch):
+    """The stored bf16 references by task; a task nobody stored anything for is measured for MEASURED_HOTKEYS."""
+    records: dict[uuid.UUID, list[QuantSkuReference]] = {}
+
+    async def get_references(task_id, psql_db):
+        task = SimpleNamespace(task_id=task_id)
+        rows = records[task_id] if task_id in records else [_sku_reference(task, hotkey) for hotkey in MEASURED_HOTKEYS]
+        return {row.key: row for row in rows}
+
+    monkeypatch.setattr(orchestrator, "get_quant_sku_references", get_references)
+    return records
+
+
+@pytest.fixture(autouse=True)
+def db_lookups(monkeypatch, calibration_store):
     lookups = SimpleNamespace(
         starting_model=AsyncMock(return_value=CONTINUATION_REPO),
         participant=AsyncMock(return_value=_participant(**SNAPSHOT_FIELDS)),
@@ -121,7 +175,6 @@ def db_lookups(monkeypatch):
     monkeypatch.setattr(orchestrator.task_sql, "get_expected_repo_name", AsyncMock(return_value=EXPECTED_REPO))
     monkeypatch.setattr(orchestrator.task_sql, "get_starting_model_repo", lookups.starting_model)
     monkeypatch.setattr(orchestrator.task_sql, "get_miner_baseline_stats", AsyncMock(return_value=None))
-    monkeypatch.setattr(orchestrator, "get_quant_sku_references", AsyncMock(return_value={}))
     monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=TOURNAMENT_ID))
     monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_participant", lookups.participant)
     monkeypatch.setattr(orchestrator.async_minio_client, "get_presigned_url", lookups.presigned_url)
@@ -161,24 +214,19 @@ class TestCreateTrainingRequest:
         assert (await _request(_freeform_task())).training_data.model == "org/model"
 
     @pytest.mark.parametrize("make_task", [_fixed_task, _freeform_task])
-    async def test_quant_target_is_none_without_a_stored_reference(self, db_lookups, make_task):
-        assert (await _request(make_task())).training_data.quant_target is None
+    async def test_without_a_stored_reference_there_is_no_request(self, db_lookups, sku_store, make_task, quant_inputs_alert):
+        task = make_task()
+        sku_store[task.task_id] = []
 
-    async def test_quant_target_is_published_from_the_stored_reference(self, db_lookups, monkeypatch):
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="no target to publish"):
+            await _request(task)
+
+        quant_inputs_alert.assert_awaited_once()
+
+    async def test_quant_target_is_published_from_the_stored_reference(self, db_lookups, sku_store):
         task = _freeform_task(training_start_point=TrainingStartPoint.OWN_R1_MODEL, bar_cap=0.05)
-        reference = QuantSkuReference(
-            task_id=task.task_id,
-            hotkey=HOTKEY,
-            sku="h100-sxm",
-            model="org/own-bf16",
-            loss=2.0,
-            per_example_losses=[2.0],
-            eval_set_fingerprint="fp",
-            eval_gpu=QuantEvalGpu(name="NVIDIA H100", sm_count=132, sku="h100-sxm"),
-        )
-        monkeypatch.setattr(
-            orchestrator, "get_quant_sku_references", AsyncMock(return_value={reference.key: reference})
-        )
+        reference = _sku_reference(task, HOTKEY)
+        sku_store[task.task_id] = [reference]
 
         target = (await _request(task)).training_data.quant_target
 
@@ -241,7 +289,9 @@ class TestQuantTargetFromReference:
         task = make_task()
         target = orchestrator.quant_target_from_reference(task, self._reference())
 
-        request = orchestrator._quant_training_data(task, EXPECTED_REPO, None, model="org/own-bf16", quant_target=target)
+        request = orchestrator._quant_training_data(
+            task, EXPECTED_REPO, None, model="org/own-bf16", quant_target=target, calibration=CALIBRATION
+        )
 
         assert request.quant_target == target
 
@@ -280,9 +330,6 @@ class TestFreeformDecodeRequest:
         db_lookups.participant.assert_not_awaited()
 
 
-CAL_URL = "https://minio.example/bucket/abc_quant_calibration_set.jsonl?X-Amz-Signature=old"
-CAL_FRESH_URL = "https://minio.example/bucket/abc_quant_calibration_set.jsonl?X-Amz-Signature=fresh"
-CAL_FINGERPRINT = "fp-cal"
 
 
 def _calibration_task(cls=_freeform_task, **overrides):
@@ -308,11 +355,14 @@ def _calibration_record(task, hotkey=HOTKEY, fingerprint=CAL_FINGERPRINT, losses
 
 
 @pytest.fixture
-def calibration_store(monkeypatch, db_lookups):
+def calibration_store(monkeypatch):
+    """The stored calibration references by task; a task nobody stored anything for is measured for MEASURED_HOTKEYS."""
     store: dict[uuid.UUID, dict[str, QuantCalibrationReferenceRecord]] = {}
 
     async def get_records(task_id, psql_db):
-        return dict(store.get(task_id, {}))
+        if task_id in store:
+            return dict(store[task_id])
+        return {h: _calibration_record(SimpleNamespace(task_id=task_id), hotkey=h) for h in MEASURED_HOTKEYS}
 
     new_url = AsyncMock(return_value=CAL_FRESH_URL)
     monkeypatch.setattr(orchestrator, "get_quant_calibration_references", get_records)
@@ -338,35 +388,48 @@ class TestCalibrationRequest:
         )
         calibration_store.new_url.assert_awaited_once_with(CAL_URL)
 
-    async def test_without_a_measured_reference_the_rows_are_published_with_reference_none(self, calibration_store):
+    async def test_without_a_measured_reference_there_is_no_calibration_request(self, calibration_store):
         task = _calibration_task()
+        calibration_store.records[task.task_id] = {}
 
-        calibration = (await _request(task)).training_data.calibration
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="not measured on the calibration rows"):
+            await orchestrator._quant_calibration_for(task, HOTKEY, SimpleNamespace(psql_db=None))
+        calibration_store.new_url.assert_not_called()
 
-        assert calibration.reference is None and calibration.n_examples == 3
-
-    async def test_another_hotkeys_or_another_sets_reference_is_not_published(self, calibration_store):
+    async def test_another_hotkeys_reference_is_not_published(self, calibration_store):
         task = _calibration_task()
         calibration_store.records[task.task_id] = {"5Other": _calibration_record(task, hotkey="5Other")}
-        assert (await _request(task)).training_data.calibration.reference is None
 
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="not measured on the calibration rows"):
+            await orchestrator._quant_calibration_for(task, HOTKEY, SimpleNamespace(psql_db=None))
+
+    async def test_a_reference_on_another_example_set_is_not_published(self, calibration_store):
+        task = _calibration_task()
         calibration_store.records[task.task_id] = {HOTKEY: _calibration_record(task, fingerprint="fp-other")}
-        assert (await _request(task)).training_data.calibration.reference is None
 
-    async def test_a_presign_failure_publishes_no_calibration_and_the_request_still_builds(self, calibration_store):
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="another example set"):
+            await orchestrator._quant_calibration_for(task, HOTKEY, SimpleNamespace(psql_db=None))
+        calibration_store.new_url.assert_not_called()
+
+    async def test_a_presign_failure_raises_and_builds_no_request(self, calibration_store):
         calibration_store.new_url.return_value = None
+        task = _calibration_task()
 
-        request = await _request(_calibration_task())
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="presigned URL"):
+            await orchestrator._quant_calibration_for(task, HOTKEY, SimpleNamespace(psql_db=None))
 
-        assert request.training_data.calibration is None
-
-    async def test_uncalibrated_freeform_request_carries_none(self, calibration_store):
-        assert (await _request(_freeform_task())).training_data.calibration is None
+    @pytest.mark.parametrize("make_task", [_fixed_task, _freeform_task])
+    async def test_a_task_without_a_published_set_raises_without_presigning(self, calibration_store, make_task):
+        with pytest.raises(orchestrator.QuantInputsUnavailable, match="no published calibration set"):
+            await orchestrator._quant_calibration_for(make_task(**UNCALIBRATED), HOTKEY, SimpleNamespace(psql_db=None))
         calibration_store.new_url.assert_not_called()
 
-    async def test_uncalibrated_fixed_request_carries_none(self, calibration_store):
-        assert (await _request(_fixed_task())).training_data.calibration is None
-        calibration_store.new_url.assert_not_called()
+    async def test_a_set_without_a_fingerprint_or_count_is_unpublished(self, calibration_store):
+        for missing in ("calibration_fingerprint", "calibration_n_examples"):
+            with pytest.raises(orchestrator.QuantInputsUnavailable):
+                await orchestrator._quant_calibration_for(
+                    _calibration_task(**{missing: None}), HOTKEY, SimpleNamespace(psql_db=None)
+                )
 
     async def test_fixed_request_carries_the_rows_and_the_hotkeys_reference(self, calibration_store):
         task = _calibration_task(_fixed_task)
@@ -412,7 +475,7 @@ class TestCalibrationRequest:
         assert (boss_side.reference.model, challenger_side.reference.model) == ("org/own-bf16", "org/challenger-bf16")
 
     def test_a_fixed_request_may_carry_a_calibration(self):
-        calibration = QuantCalibrationRequest(examples_url=CAL_URL, eval_set_fingerprint="fp", n_examples=1, reference=None)
+        calibration = CALIBRATION
 
         request = TrainRequestQuant(
             model="m",
@@ -423,16 +486,17 @@ class TestCalibrationRequest:
             file_format=FileFormat.S3,
             task_type=TaskType.QUANTFIXEDTASK,
             quant_spec=SPEC,
+            quant_target=FIXED_TARGET,
             calibration=calibration,
         )
 
         assert request.calibration == calibration
 
-    async def test_an_uncalibrated_request_json_only_adds_a_null_calibration_key(self, db_lookups):
+    async def test_the_request_json_carries_the_calibration(self, db_lookups):
         request = await _request(_freeform_task())
         dumped = request.training_data.model_dump(mode="json")
 
-        assert dumped.pop("calibration") is None
+        assert dumped.pop("calibration")["examples_url"] == CAL_FRESH_URL
         assert set(dumped) == {
             "model", "task_id", "hours_to_complete", "expected_repo_name", "baseline_stats", "dataset", "dataset_type",
             "file_format", "task_type", "quant_spec", "decode", "quant_target",
@@ -449,36 +513,54 @@ class TestCalibrationReadiness:
 
     async def test_waits_for_the_calibration_row(self, calibration_store, sku_rows):
         task = _calibration_task()
+        calibration_store.records[task.task_id] = {}
 
         assert not await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
 
         calibration_store.records[task.task_id] = {HOTKEY: _calibration_record(task)}
         assert await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
 
-    async def test_stops_waiting_once_the_prepass_gave_up(self, calibration_store, sku_rows, monkeypatch):
+    async def test_never_ready_without_the_calibration_row_however_many_measurements_failed(self, calibration_store, sku_rows):
         task = _calibration_task()
-        monkeypatch.setattr(orchestrator, "calibration_reference_gave_up", lambda task_id, hotkey: True)
+        calibration_store.records[task.task_id] = {}
+        prepass._CONSECUTIVE_FAILURES.clear()
+        for key in ((str(task.task_id), HOTKEY, "calibration"), (str(task.task_id), HOTKEY), (str(task.task_id), "")):
+            prepass._CONSECUTIVE_FAILURES[key] = 1000
 
+        assert not await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
+        prepass._CONSECUTIVE_FAILURES.clear()
+
+    async def test_a_calibration_row_on_another_example_set_is_not_ready(self, calibration_store, sku_rows):
+        task = _calibration_task()
+        calibration_store.records[task.task_id] = {HOTKEY: _calibration_record(task, fingerprint="fp-stale")}
+
+        assert not await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
+
+        calibration_store.records[task.task_id] = {HOTKEY: _calibration_record(task)}
         assert await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
 
-    async def test_still_needs_the_test_reference_first(self, calibration_store, monkeypatch):
-        monkeypatch.setattr(orchestrator, "get_quant_sku_references", AsyncMock(return_value={}))
-        monkeypatch.setattr(orchestrator, "calibration_reference_gave_up", lambda task_id, hotkey: True)
+    async def test_still_needs_the_test_reference_first(self, calibration_store, sku_store):
+        task = _calibration_task()
+        sku_store[task.task_id] = []
 
-        assert not await orchestrator._reference_ready(_calibration_task(), HOTKEY, SimpleNamespace(psql_db=None))
+        assert not await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
 
-    async def test_uncalibrated_freeform_never_reads_calibration_rows(self, sku_rows, monkeypatch):
+    @pytest.mark.parametrize("make_task", [_fixed_task, _freeform_task])
+    async def test_a_task_without_a_published_set_is_never_ready_and_reads_no_calibration_rows(
+        self, sku_rows, monkeypatch, make_task
+    ):
         read = AsyncMock()
         monkeypatch.setattr(orchestrator, "get_quant_calibration_references", read)
-        task = _freeform_task(training_start_point=TrainingStartPoint.OWN_R1_MODEL)
+        task = make_task(training_start_point=TrainingStartPoint.OWN_R1_MODEL, **UNCALIBRATED)
 
-        assert await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
+        assert not await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
         read.assert_not_called()
 
     async def test_task_common_task_waits_for_the_empty_hotkey_rows(self, calibration_store, monkeypatch):
         task = _calibration_task(training_start_point=TrainingStartPoint.DEFAULT)
         config = SimpleNamespace(psql_db=None)
         rows = {}
+        calibration_store.records[task.task_id] = {}
 
         async def get_references(task_id, psql_db):
             return rows
@@ -495,92 +577,150 @@ class TestCalibrationReadiness:
         calibration_store.records[task.task_id] = {"": _calibration_record(task, hotkey="")}
         assert await orchestrator._reference_ready(task, HOTKEY, config)
 
-    async def test_task_common_calibration_give_up_is_keyed_by_the_empty_hotkey(self, calibration_store, monkeypatch):
-        task = _calibration_task(training_start_point=TrainingStartPoint.DEFAULT)
-        monkeypatch.setattr(orchestrator, "get_quant_sku_references", AsyncMock(return_value={("", "h100-sxm"): object()}))
-        monkeypatch.setattr(orchestrator, "calibration_reference_gave_up", lambda task_id, hotkey: hotkey == "")
 
-        assert await orchestrator._reference_ready(task, HOTKEY, SimpleNamespace(psql_db=None))
-
-
-class TestTaskCommonReferenceGiveUp:
+class TestAReferenceIsNeverGivenUp:
     CONFIG = SimpleNamespace(psql_db=None)
+    LIMIT = 1000
 
     @pytest.fixture(autouse=True)
-    def no_rows(self, monkeypatch):
+    def no_failures(self):
         prepass._CONSECUTIVE_FAILURES.clear()
-        monkeypatch.setattr(orchestrator, "get_quant_sku_references", AsyncMock(return_value={}))
-        monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=TOURNAMENT_ID))
+        yield
+        prepass._CONSECUTIVE_FAILURES.clear()
 
-    async def test_organic_task_never_waits(self, monkeypatch):
+    @pytest.mark.parametrize("training_start_point", [TrainingStartPoint.DEFAULT, TrainingStartPoint.OWN_R1_MODEL])
+    @pytest.mark.parametrize("failures", [0, 5, 6, LIMIT])
+    async def test_a_row_without_its_reference_waits_however_many_measurements_failed(
+        self, sku_store, training_start_point, failures
+    ):
+        task = _fixed_task(training_start_point=training_start_point)
+        sku_store[task.task_id] = []
+        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), "")] = failures
+        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), HOTKEY)] = failures
+
+        assert not await orchestrator._reference_ready(task, HOTKEY, self.CONFIG)
+
+    async def test_a_non_tournament_task_waits_too(self, sku_store, monkeypatch):
         monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=None))
         task = _fixed_task(training_start_point=TrainingStartPoint.DEFAULT)
-
-        assert await orchestrator._reference_ready(task, HOTKEY, self.CONFIG)
-
-    async def test_task_common_waits_below_the_failure_limit(self):
-        task = _fixed_task(training_start_point=TrainingStartPoint.DEFAULT)
-        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), "")] = t_cst.QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES - 1
+        sku_store[task.task_id] = []
 
         assert not await orchestrator._reference_ready(task, HOTKEY, self.CONFIG)
 
-    async def test_task_common_gives_up_at_the_limit_and_trains_with_no_target(self):
+    async def test_the_row_is_ready_once_its_references_are_measured(self):
         task = _fixed_task(training_start_point=TrainingStartPoint.DEFAULT)
-        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), "")] = t_cst.QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES
 
         assert await orchestrator._reference_ready(task, HOTKEY, self.CONFIG)
-        assert await orchestrator._quant_target_for(task, HOTKEY, self.CONFIG) is None
-
-    async def test_own_model_never_gives_up(self):
-        task = _fixed_task(training_start_point=TrainingStartPoint.OWN_R1_MODEL)
-        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), HOTKEY)] = 1000
-        prepass._CONSECUTIVE_FAILURES[(str(task.task_id), "")] = 1000
-
-        assert not await orchestrator._reference_ready(task, HOTKEY, self.CONFIG)
 
 
 @pytest.fixture
-def missing_calibration_alert(monkeypatch, calibration_store):
+def quant_inputs_alert(monkeypatch):
     notify = AsyncMock()
     monkeypatch.setattr(orchestrator, "notify_evaluation_exception", notify)
-    monkeypatch.setattr(orchestrator, "_QUANT_CALIBRATION_MISSING_ALERTED", set())
+    monkeypatch.setattr(orchestrator, "_QUANT_INPUTS_MISSING_HELD_ROWS", {})
     return notify
 
 
-class TestMissingCalibrationAlert:
-    """A quant row dispatched without calibration rows is never silent: an ERROR per row, one alert per task."""
+class TestMissingQuantInputsBackstop:
+    """A quant row whose task cannot hand over its calibration rows, target or reference losses is never dispatched: it raises,
+    loudly."""
 
+    @pytest.mark.parametrize("hotkey", [HOTKEY, orchestrator.EMISSION_BURN_HOTKEY])
     @pytest.mark.parametrize("make_task", [_fixed_task, _freeform_task])
-    async def test_a_task_without_a_calibration_set_alerts_once_and_still_builds(
-        self, missing_calibration_alert, make_task, caplog
+    async def test_a_task_without_a_calibration_set_raises_and_alerts(
+        self, quant_inputs_alert, make_task, hotkey, caplog
     ):
-        task = make_task()
+        task = make_task(**UNCALIBRATED)
 
-        with caplog.at_level(logging.ERROR):
-            first = await _request(task, HOTKEY)
-            second = await _request(task, "5Challenger")
+        with caplog.at_level(logging.ERROR), pytest.raises(orchestrator.QuantInputsUnavailable):
+            await _request(task, hotkey)
 
-        assert first.training_data.calibration is None and second.training_data.calibration is None
-        assert caplog.text.count("WITHOUT calibration rows") == 2
-        missing_calibration_alert.assert_awaited_once()
-        kwargs = missing_calibration_alert.await_args.kwargs
-        assert kwargs["task_id"] == str(task.task_id) and kwargs["hotkeys"] == [HOTKEY]
-        assert "no calibration set" in kwargs["error"]
+        assert "HELD and NOT dispatched" in caplog.text
+        quant_inputs_alert.assert_awaited_once()
+        kwargs = quant_inputs_alert.await_args.kwargs
+        assert kwargs["task_id"] == str(task.task_id) and kwargs["hotkeys"] == [hotkey]
+        error = kwargs["error"]
+        assert "HELD" in error and "NOT dispatched" in error and "no published calibration set" in error
 
-    async def test_an_unpublishable_calibration_set_alerts(self, missing_calibration_alert, calibration_store):
+    @pytest.mark.parametrize("hotkey", [HOTKEY, orchestrator.EMISSION_BURN_HOTKEY])
+    @pytest.mark.parametrize("make_task", [_fixed_task, _freeform_task])
+    async def test_a_row_without_a_target_raises_and_alerts_with_that_reason(
+        self, quant_inputs_alert, sku_store, make_task, hotkey
+    ):
+        task = _calibration_task(make_task)
+        sku_store[task.task_id] = []
+
+        with pytest.raises(orchestrator.QuantInputsUnavailable):
+            await _request(task, hotkey)
+
+        quant_inputs_alert.assert_awaited_once()
+        assert "no target to publish" in quant_inputs_alert.await_args.kwargs["error"]
+        assert quant_inputs_alert.await_args.kwargs["hotkeys"] == [hotkey]
+
+    @pytest.mark.parametrize("stale", [False, True])
+    async def test_a_row_without_calibration_reference_losses_raises_and_alerts(
+        self, quant_inputs_alert, calibration_store, stale
+    ):
+        task = _calibration_task()
+        records = {HOTKEY: _calibration_record(task, fingerprint="fp-stale")} if stale else {}
+        calibration_store.records[task.task_id] = records
+
+        with pytest.raises(orchestrator.QuantInputsUnavailable):
+            await _request(task)
+
+        quant_inputs_alert.assert_awaited_once()
+        reason = "another example set" if stale else "not measured on the calibration rows"
+        assert reason in quant_inputs_alert.await_args.kwargs["error"]
+
+    async def test_an_unpublishable_calibration_set_raises_and_alerts(self, quant_inputs_alert, calibration_store):
         calibration_store.new_url.return_value = None
 
-        await _request(_calibration_task())
+        with pytest.raises(orchestrator.QuantInputsUnavailable):
+            await _request(_calibration_task())
 
-        missing_calibration_alert.assert_awaited_once()
-        assert "could not be published" in missing_calibration_alert.await_args.kwargs["error"]
+        quant_inputs_alert.assert_awaited_once()
+        assert "could not be published" in quant_inputs_alert.await_args.kwargs["error"]
 
-    async def test_a_published_calibration_set_does_not_alert(self, missing_calibration_alert):
+    async def test_a_presign_that_raises_is_unavailable_and_leaks_neither_url_nor_error_text(
+        self, quant_inputs_alert, calibration_store
+    ):
+        calibration_store.new_url.side_effect = ConnectionError(f"cannot reach {CAL_URL}")
+
+        with pytest.raises(orchestrator.QuantInputsUnavailable) as raised:
+            await _request(_calibration_task())
+
+        message = str(raised.value)
+        assert "ConnectionError" in message and "minio.example" not in message and "cannot reach" not in message
+        quant_inputs_alert.assert_awaited_once()
+        error = quant_inputs_alert.await_args.kwargs["error"]
+        assert "ConnectionError" in error and "minio.example" not in error and "cannot reach" not in error
+
+    async def test_a_built_calibration_clears_the_tasks_held_row_count(self, quant_inputs_alert):
+        task = _calibration_task()
+        orchestrator._QUANT_INPUTS_MISSING_HELD_ROWS[str(task.task_id)] = 5
+        orchestrator._QUANT_INPUTS_MISSING_HELD_ROWS["other"] = 2
+
+        await _request(task)
+
+        assert orchestrator._QUANT_INPUTS_MISSING_HELD_ROWS == {"other": 2}
+
+    async def test_a_published_calibration_set_does_not_alert(self, quant_inputs_alert):
         assert (await _request(_calibration_task())).training_data.calibration is not None
 
-        missing_calibration_alert.assert_not_awaited()
+        quant_inputs_alert.assert_not_awaited()
 
-    async def test_a_text_task_never_alerts(self, missing_calibration_alert):
+    async def test_a_text_task_never_alerts(self, quant_inputs_alert):
         await _request(_instruct_task())
 
-        missing_calibration_alert.assert_not_awaited()
+        quant_inputs_alert.assert_not_awaited()
+
+    async def test_the_webhook_hears_the_first_held_row_and_every_nth_after_it(self, quant_inputs_alert, caplog):
+        task = _freeform_task(**UNCALIBRATED)
+        every = orchestrator.QUANT_INPUTS_MISSING_REALERT_HELD_ROWS
+
+        with caplog.at_level(logging.ERROR):
+            for _ in range(2 * every):
+                await orchestrator._alert_quant_inputs_missing(task, HOTKEY, SimpleNamespace(psql_db=None))
+
+        assert caplog.text.count("HELD and NOT dispatched") == 2 * every  # the ERROR is logged every time
+        assert quant_inputs_alert.await_count == 3  # held row 1, row `every`, row `2 * every`

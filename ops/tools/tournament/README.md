@@ -12,7 +12,7 @@ Manual tournament control and inspection. Each tool states its usage in its modu
 | `complete_tournament.py` | Marks a finished tournament `completed`. |
 | `dedup_check.py` | Runs the duplicate-submission check on two repositories locally. Writes nothing. |
 | `dedup_dryrun.py` | Runs the duplicate-submission check over a tournament's participants. Read-only. |
-| `manage_tournament_task.py` | Replaces, retries or allows a tournament task. |
+| `manage_tournament_task.py` | Replaces, retries or allows a tournament task. A compression task with no published calibration set cannot be moved back to training: the tasks table rejects it. |
 | `re_evaluate_tournament_group_task.py` | Resets hotkeys on a completed group task for retraining and full re-evaluation. |
 | `restamp_adapter_base.py` | Rewrites `base_model_name_or_path` in a LoRA adapter's `adapter_config.json`. |
 | `reverse_tournament_round.py` | Deletes a round and reactivates the one before it. |

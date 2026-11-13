@@ -36,6 +36,7 @@ from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.tasks import evaluate_and_score_hotkeys
 from validator.scoring.tasks import finalize_task_scores_from_raw_losses
 from validator.tasks.config import get_task_config
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.requests import get_model_num_params
@@ -159,6 +160,17 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task.status = TaskStatus.PREP_TASK_FAILURE
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
+            if isinstance(e, CalibrationUnavailableError):
+                await notify_evaluation_exception(
+                    config,
+                    task_id=str(task.task_id),
+                    task_type=task.task_type,
+                    context=(
+                        "Data prep failed: no calibration set could be produced for this task. It is replaced like any "
+                        "prep failure and was not released to miners."
+                    ),
+                    error=e,
+                )
 
 
 async def _processing_pending_tasks(config: Config):

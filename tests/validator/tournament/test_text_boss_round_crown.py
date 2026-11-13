@@ -58,13 +58,11 @@ BOSS_SCORE = 1000.0
 # Challenger scores against a boss score of 1000 on a lower-is-better task.
 WIN = 980.0  # 2% better
 WIN_EXACT = 990.0  # exactly 1.00% better: a win
-NEAR_WIN = 990.1  # 0.99% better: not a win, deficit 0
-AHEAD = 995.0  # 0.5% better: not a win, deficit 0
-BEHIND_005 = 1000.5
-BEHIND_010 = 1001.0
-BEHIND_011 = 1001.1
-BEHIND_025 = 1002.5
-BEHIND_026 = 1002.6
+NEAR_WIN = 990.1  # 0.99% better: not a win, within the smaller allowance
+AHEAD = 995.0  # 0.5% better: not a win, within the smaller allowance
+BEHIND_SLIGHT = 1001.1  # 0.11% worse: within the larger allowance
+BEHIND_LIMIT = 1010.0  # exactly 1% worse: the edge of the larger allowance
+BEHIND_OVER = 1010.1  # 1.01% worse: beyond both
 
 
 def _paired(challenger_won: bool = True, is_draw: bool = False) -> PairedLossComparison:
@@ -126,27 +124,28 @@ class TestExactDecimalBoundaries:
         assert not text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.0, 0.0).is_win
         assert not text_head_to_head("t", "g", TaskType.GRPOTASK, 0.0, 0.0).is_win
 
-    @pytest.mark.parametrize("boss, challenger", [(0.4, 0.401), (1.15, 1.152875), (2.3, 2.30575)])
-    def test_a_deficit_of_exactly_a_quarter_percent_is_within_the_limit(self, boss, challenger):
-        result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, challenger)
+    @pytest.mark.parametrize("boss", [0.4, 1.15, 2.3, 0.7])
+    def test_a_deficit_of_exactly_one_percent_is_within_the_limit(self, boss):
+        result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, boss * 1.01)
 
-        assert not result.is_win
+        assert result.outcome == HeadToHeadOutcome.WITHIN_LARGER
         assert crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
 
-    @pytest.mark.parametrize("boss, challenger", [(0.4, 0.401), (1.15, 1.152875)])
-    def test_a_deficit_just_above_a_quarter_percent_is_still_refused(self, boss, challenger):
-        over = boss + (challenger - boss) * (1 + 1e-6)
-        result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, over)
+    @pytest.mark.parametrize("boss", [0.4, 1.15])
+    def test_a_deficit_just_above_one_percent_is_still_refused(self, boss):
+        result = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, boss, boss * 1.01 * (1 + 1e-6))
 
+        assert result.outcome == HeadToHeadOutcome.BEYOND
         assert not crown_verdict([WIN_RESULT] * 6 + [result]).crowned_if_complete
 
-    def test_the_second_non_win_limit_of_a_tenth_percent_is_inclusive(self):
-        quarter = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.4, 0.401)
-        tenth = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7007)
-        over = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7 * (1 + 0.001 * (1 + 1e-6)))
+    def test_a_smaller_and_a_larger_allowance_non_win_are_crowned_two_larger_are_not(self):
+        smaller = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.4, 0.399)
+        level = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7)
+        limit = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.7, 0.7 * 1.01)
 
-        assert crown_verdict([WIN_RESULT] * 5 + [tenth, quarter]).crowned_if_complete
-        assert not crown_verdict([WIN_RESULT] * 5 + [over, quarter]).crowned_if_complete
+        assert (smaller.outcome, level.outcome) == (HeadToHeadOutcome.WITHIN_SMALLER, HeadToHeadOutcome.WITHIN_LARGER)
+        assert crown_verdict([WIN_RESULT] * 5 + [smaller, limit]).crowned_if_complete
+        assert not crown_verdict([WIN_RESULT] * 5 + [level, limit]).crowned_if_complete
 
     def test_an_infinite_deficit_stays_refused(self):
         unbounded = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, 0.0, 0.001)
@@ -178,14 +177,15 @@ class TestTheCrownRule:
         "name, scores, crowned",
         [
             ("seven wins", [WIN] * 7, True),
-            ("six wins and a 0.25% loss", [WIN] * 6 + [BEHIND_025], True),
-            ("six wins and a 0.26% loss", [WIN] * 6 + [BEHIND_026], False),
-            ("five wins, losses of 0.1% and 0.25%", [WIN] * 5 + [BEHIND_010, BEHIND_025], True),
-            ("five wins, losses of 0.11% and 0.25%", [WIN] * 5 + [BEHIND_011, BEHIND_025], False),
-            ("five wins, losses of 0.05% and 0.26%", [WIN] * 5 + [BEHIND_005, BEHIND_026], False),
+            ("six wins and a loss of exactly 1%", [WIN] * 6 + [BEHIND_LIMIT], True),
+            ("six wins and a loss of 1.01%", [WIN] * 6 + [BEHIND_OVER], False),
+            ("five wins, one ahead by 0.5% and one loss of exactly 1%", [WIN] * 5 + [AHEAD, BEHIND_LIMIT], True),
+            ("five wins, losses of 0.11% and 1%: neither is smaller", [WIN] * 5 + [BEHIND_SLIGHT, BEHIND_LIMIT], False),
+            ("five wins, one ahead by 0.5% and one loss of 1.01%", [WIN] * 5 + [AHEAD, BEHIND_OVER], False),
             ("four wins and three level tasks", [WIN] * 4 + [BOSS_SCORE] * 3, False),
             ("five wins and two tasks ahead by 0.5%", [WIN] * 5 + [AHEAD, AHEAD], True),
-            ("five wins, one ahead by 0.5% and one 0.25% behind", [WIN] * 5 + [AHEAD, BEHIND_025], True),
+            ("five wins, a level task and a task ahead by 0.5%", [WIN] * 5 + [BOSS_SCORE, AHEAD], True),
+            ("five wins and two level tasks: neither is smaller", [WIN] * 5 + [BOSS_SCORE, BOSS_SCORE], False),
             ("six wins and one level task", [WIN] * 6 + [BOSS_SCORE], True),
             ("exactly 1.00% counts as a win", [WIN_EXACT] * 7, True),
             ("0.99% is not a win: two of them are crowned, three are not", [WIN] * 5 + [NEAR_WIN, NEAR_WIN], True),
@@ -202,10 +202,10 @@ class TestTheCrownRule:
         assert exact.is_win and exact.deficit == 0.0
         assert not below.is_win and below.deficit == 0.0
 
-    def test_a_non_win_where_the_challenger_is_ahead_has_no_deficit(self):
+    def test_a_non_win_where_the_challenger_is_ahead_is_within_the_smaller_allowance_with_no_deficit(self):
         ahead = text_head_to_head("t", "x", TaskType.INSTRUCTTEXTTASK, BOSS_SCORE, AHEAD)
 
-        assert (ahead.is_win, ahead.deficit) == (False, 0.0)
+        assert (ahead.outcome, ahead.deficit) == (HeadToHeadOutcome.WITHIN_SMALLER, 0.0)
         assert ahead.improvement == pytest.approx(0.005)
 
     def test_the_deficit_is_relative_to_the_boss_score(self):
@@ -287,12 +287,12 @@ class TestTheCrownRule:
         [
             ("three wins", [WIN] * 3, True),
             ("three non-wins", [BOSS_SCORE] * 3, False),
-            ("two non-wins at 0.05% and 0.25%", [WIN, BEHIND_005, BEHIND_025], True),
-            ("two non-wins at 0.11% and 0.25%", [WIN, BEHIND_011, BEHIND_025], False),
-            ("two non-wins at 0.05% and 0.26%", [WIN, BEHIND_005, BEHIND_026], False),
-            ("one non-win at 0.25%", [WIN, WIN, BEHIND_025], True),
-            ("one non-win at 0.26%", [WIN, WIN, BEHIND_026], False),
-            ("two level non-wins", [WIN, BOSS_SCORE, AHEAD], True),
+            ("a non-win within the smaller allowance and one within the larger", [WIN, AHEAD, BEHIND_LIMIT], True),
+            ("two non-wins within the larger allowance", [WIN, BEHIND_SLIGHT, BEHIND_LIMIT], False),
+            ("a non-win within the smaller allowance and one beyond", [WIN, AHEAD, BEHIND_OVER], False),
+            ("one non-win at exactly 1% worse", [WIN, WIN, BEHIND_LIMIT], True),
+            ("one non-win at 1.01% worse", [WIN, WIN, BEHIND_OVER], False),
+            ("a level and an ahead non-win", [WIN, BOSS_SCORE, AHEAD], True),
             ("no result for one", [WIN, WIN, None], False),
         ],
     )
@@ -303,11 +303,11 @@ class TestTheCrownRule:
         "name, scores, possible",
         [
             ("six wins", [WIN] * 6, True),
-            ("two non-wins at 0.05% and 0.25%", [WIN] * 4 + [BEHIND_005, BEHIND_025], True),
-            ("two non-wins at 0.11% and 0.25%", [WIN] * 4 + [BEHIND_011, BEHIND_025], False),
+            ("a non-win within the smaller allowance and one within the larger", [WIN] * 4 + [AHEAD, BEHIND_LIMIT], True),
+            ("two non-wins within the larger allowance", [WIN] * 4 + [BEHIND_SLIGHT, BEHIND_LIMIT], False),
             ("three level non-wins", [WIN] * 3 + [BOSS_SCORE] * 3, False),
-            ("one non-win at 0.26%", [WIN] * 5 + [BEHIND_026], False),
-            ("one non-win at 0.25%", [WIN] * 5 + [BEHIND_025], True),
+            ("one non-win at 1.01% worse", [WIN] * 5 + [BEHIND_OVER], False),
+            ("one non-win at exactly 1% worse", [WIN] * 5 + [BEHIND_LIMIT], True),
             ("two ahead-by-0.5% non-wins", [WIN] * 4 + [AHEAD, AHEAD], True),
         ],
     )
@@ -319,14 +319,13 @@ class TestTheCrownRule:
 
     def test_the_reason_says_what_failed(self):
         assert "3 non-wins" in _verdict([BOSS_SCORE] * 3 + [WIN] * 4).reason
-        assert "task 6 beyond the looser allowance" in _verdict([WIN] * 6 + [BEHIND_026]).reason
-        assert "neither within the tight allowance" in _verdict([WIN] * 5 + [BEHIND_011, BEHIND_025]).reason
+        assert "task 6 beyond the larger allowance" in _verdict([WIN] * 6 + [BEHIND_OVER]).reason
+        assert "neither within the smaller allowance" in _verdict([WIN] * 5 + [BEHIND_SLIGHT, BEHIND_LIMIT]).reason
         assert "task 6 beyond" in _verdict([WIN] * 6 + [None]).reason
 
     def test_the_constants(self):
         assert (t_cst.CROWN_TASKS, t_cst.TEXT_CROWN_WIN_MARGIN) == (7, 0.01)
-        assert (t_cst.CROWN_MAX_NON_WINS, t_cst.TEXT_CROWN_LOOSER_ALLOWANCE) == (2, 0.0025)
-        assert t_cst.TEXT_CROWN_TIGHT_ALLOWANCE == 0.001
+        assert (t_cst.CROWN_MAX_NON_WINS, t_cst.CROWN_LARGER_ALLOWANCE) == (2, 0.01)
         assert t_cst.TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES == (TaskType.GRPOTASK, TaskType.DPOTASK)
         # The unseeded text boss round keeps its own mix and its own expected size.
         assert t_cst.expected_boss_round_task_count(TournamentType.TEXT) == t_cst.FINAL_ROUND_TEXT_TASKS
@@ -807,7 +806,7 @@ class TestEndingAfterRoundThree:
         assert cup.placements == [] and cup.carried == [] and cup.winners_set == []
 
     async def test_one_deficit_over_the_limit_is_enough_to_stop(self, cup, after_round_three):
-        round_three = after_round_three([(BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_026)])
+        round_three = after_round_three([(BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_OVER)])
 
         await cup.advance(completed=round_three)
 
@@ -859,7 +858,7 @@ class TestStageOneComplete:
 
     async def test_a_possible_crown_defers_for_the_big_task_creates_it_once_and_returns_the_round_to_pending(self, at_stage_one):
         cup = at_stage_one
-        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_025))
+        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_LIMIT))
         outcome = await rr.get_round_winners(cup.final_round, None, cup.config)
         assert outcome.is_deferred and outcome.needs_text_big_task and outcome.winners == []
         assert outcome.draw_resolution is None and cup.persisted == []
@@ -893,8 +892,8 @@ class TestStageOneComplete:
 
     async def test_an_impossible_crown_retains_the_boss_and_never_creates_the_big_task(self, at_stage_one):
         cup = at_stage_one
-        # two non-wins (0.11% and 0.25%) on top of the three round wins: out of reach
-        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_011), (BOSS_SCORE, BEHIND_025))
+        # two non-wins, neither strictly better than the boss (0.11% and 1% worse), on top of the three round wins: out of reach
+        cup.score_stage_one((BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_SLIGHT), (BOSS_SCORE, BEHIND_LIMIT))
 
         await cup.advance()
 
@@ -911,12 +910,13 @@ class TestStageOneComplete:
 
     async def test_the_boss_round_winners_are_persisted_with_the_margin_and_never_for_the_earlier_rounds(self, at_stage_one):
         cup = at_stage_one
-        cup.score_stage_one((BOSS_SCORE, BEHIND_011), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_025))
+        cup.score_stage_one((BOSS_SCORE, BEHIND_SLIGHT), (BOSS_SCORE, WIN), (BOSS_SCORE, BEHIND_LIMIT))
         cup.persisted.clear()
 
         outcome = await rr.get_round_winners(cup.final_round, None, cup.config)
 
-        # 0.11% and 0.25%: not within reach, so the round resolves now and persists its three tasks
+        # 0.11% and 1% worse, neither within the smaller allowance: not within reach, so the round resolves now and
+        # persists its three tasks
         assert outcome.winners == [BOSS]
         persisted = {str(call["task_id"]): call for call in cup.persisted}
         stage_one = {str(row.task_id) for row in cup.round_tasks(cup.final_round.round_id)}
@@ -1015,7 +1015,7 @@ class TestBigTaskComplete:
 
     async def test_crowned(self, at_stage_two):
         cup = at_stage_two
-        self._score(cup, WIN, WIN, WIN, BEHIND_025)  # seven tasks: six wins and a 0.25% loss
+        self._score(cup, WIN, WIN, WIN, BEHIND_LIMIT)  # seven tasks: six wins and a loss of exactly 1%
 
         outcome = await rr.get_round_winners(cup.final_round, None, cup.config)
 
@@ -1024,7 +1024,7 @@ class TestBigTaskComplete:
 
     async def test_not_crowned(self, at_stage_two):
         cup = at_stage_two
-        self._score(cup, WIN, WIN, WIN, BEHIND_026)
+        self._score(cup, WIN, WIN, WIN, BEHIND_OVER)
 
         outcome = await rr.get_round_winners(cup.final_round, None, cup.config)
 
@@ -1088,7 +1088,7 @@ class TestBigTaskComplete:
 
     async def test_a_boss_that_holds_completes_through_the_normal_path(self, at_stage_two):
         cup = at_stage_two
-        self._score(cup, WIN, WIN, WIN, BEHIND_026)
+        self._score(cup, WIN, WIN, WIN, BEHIND_OVER)
 
         await cup.advance()
 

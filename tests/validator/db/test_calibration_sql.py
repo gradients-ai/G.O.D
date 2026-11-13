@@ -88,14 +88,17 @@ def _row(record: QuantCalibrationReferenceRecord) -> dict:
     }
 
 
-async def test_reference_add_is_first_writer_wins_and_unscored_examples_go_in_as_null():
+async def test_reference_add_keeps_a_row_on_the_same_example_set_replaces_another_and_unscored_examples_go_in_as_null():
     stored = _record(1.5)
     psql, conn = _mock_psql(fetchrow=_row(stored))
 
     returned = await references_sql.add_quant_calibration_reference(_record(1.6), psql)
 
     query, *args = conn.execute.await_args.args
-    assert f"ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO NOTHING" in query
+    # a stored row on the same example set stays (first writer wins); one on another example set is replaced
+    assert f"ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}) DO UPDATE SET" in query
+    assert f"WHERE stored.{cst.EVAL_SET_FINGERPRINT} IS DISTINCT FROM EXCLUDED.{cst.EVAL_SET_FINGERPRINT}" in query
+    assert "DO NOTHING" not in query
     assert args == [TASK_ID, "miner", "org/own", 1.6, [1.5, None], "fp", GPU.model_dump()]
     assert returned.loss == 1.5 and math.isnan(returned.per_example_losses[1])
 

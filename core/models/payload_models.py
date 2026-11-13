@@ -26,6 +26,7 @@ from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationReference
 from core.models.quant_models import QuantCalibrationRequest
 from core.models.quant_models import QuantEvalGpu
 from core.models.quant_models import QuantFixedSpec
@@ -80,11 +81,11 @@ class TrainRequestQuant(TrainRequest):
     decode: QuantDecodeRequest | None = Field(
         None, description="Freeform only: decode the uploaded artifact on the trainer; None skips the decode"
     )
-    quant_target: QuantTarget | None = Field(
-        None, description="The miner's published reference bar (bar fields freeform only); None until its reference is measured"
+    quant_target: QuantTarget = Field(
+        ..., description="The miner's published reference bar (bar fields freeform only); every compression task has one"
     )
-    calibration: QuantCalibrationRequest | None = Field(
-        None, description="The calibration rows the trainer hands the miner (either track); None when the task publishes none"
+    calibration: QuantCalibrationRequest = Field(
+        ..., description="The calibration rows the trainer hands the miner; every compression task has them"
     )
 
     @field_validator("task_type")
@@ -105,7 +106,7 @@ class TrainRequestQuant(TrainRequest):
     @model_validator(mode="after")
     def validate_quant_target(self) -> "TrainRequestQuant":
         target = self.quant_target
-        if target is None:
+        if target is None:  # only a StoredTrainRequestQuant
             return self
         freeform_values = [getattr(target, name) for name in FREEFORM_TARGET_FIELDS]
         if self.task_type == TaskType.QUANTFIXEDTASK and any(value is not None for value in freeform_values):
@@ -144,6 +145,31 @@ class TrainRequestImage(TrainRequest):
     )
     model_type: ImageModelType = ImageModelType.FLUX
     trigger_word: str | None = None
+
+
+class StoredQuantCalibrationRequest(QuantCalibrationRequest):
+    """A calibration request as read back from the trainer's task history: an old job's may have no reference."""
+
+    reference: QuantCalibrationReference | None = Field(None, description="None on a job stored without reference losses")
+
+
+class StoredTrainRequestQuant(TrainRequestQuant):
+    """A quant request as read back from the trainer's task history: older jobs may have no calibration, no calibration
+    reference or no target. Such a job is only read (its status, its decode result), never started again; live requests use
+    TrainRequestQuant."""
+
+    quant_target: QuantTarget | None = Field(None, description="None on a job stored without a target")
+    calibration: StoredQuantCalibrationRequest | None = Field(None, description="None on a job stored without calibration")
+
+
+def _stored_quant_request_is_complete(training_data: dict) -> bool:
+    """Whether a stored quant job carries the target, the calibration and the calibration reference, so it validates strict."""
+    calibration = training_data.get("calibration")
+    return (
+        training_data.get("quant_target") is not None
+        and isinstance(calibration, dict)
+        and calibration.get("reference") is not None
+    )
 
 
 def _is_quant_task_type(value) -> bool:
@@ -198,6 +224,18 @@ class TrainerTaskLog(TrainerJob):
     requested_datasets: list[str] | None = None
     wandb_url: str | None = None
     quant_decode: QuantDecodeResult | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_quant_training_data_with_stored_tolerance(cls, data):
+        """A quant job stored without a target, a calibration or a calibration reference (null or missing) still loads, as a
+        StoredTrainRequestQuant; a stored job that has all three validates as the strict TrainRequestQuant."""
+        if isinstance(data, dict):
+            training_data = data.get("training_data")
+            if isinstance(training_data, dict) and _is_quant_task_type(training_data.get("task_type")):
+                request_cls = TrainRequestQuant if _stored_quant_request_is_complete(training_data) else StoredTrainRequestQuant
+                return {**data, "training_data": request_cls.model_validate(training_data)}
+        return data
 
 
 class ModelPrepJob(TrainerJob):

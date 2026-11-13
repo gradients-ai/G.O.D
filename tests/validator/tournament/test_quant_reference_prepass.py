@@ -221,7 +221,7 @@ class TestCandidateSelection:
 
         assert await prepass.references_to_measure(CONFIG) == []
 
-    async def test_task_common_calibration_follows_the_common_test_row_and_gives_up(self, db):
+    async def test_task_common_calibration_follows_the_common_test_row(self, db):
         task = _cal_task(training_start_point=TrainingStartPoint.DEFAULT)
         db.put(task)
         assert not (await prepass.references_to_measure(CONFIG))[0].calibration
@@ -230,9 +230,8 @@ class TestCandidateSelection:
         [missing] = await prepass.references_to_measure(CONFIG)
         assert missing.calibration and missing.key == (str(task.task_id), "", "calibration")
 
-        prepass._CONSECUTIVE_FAILURES[missing.key] = t_cst.QUANT_CALIBRATION_REFERENCE_MAX_FAILURES
-        assert prepass.calibration_reference_gave_up(task.task_id, "")
-        assert await prepass.references_to_measure(CONFIG) == []
+        prepass._CONSECUTIVE_FAILURES[missing.key] = 1000
+        assert [item.key for item in await prepass.references_to_measure(CONFIG)] == [missing.key]
 
     async def test_task_common_task_copies_the_sibling_slot_row_on_the_same_model_and_eval_set(self, db, evaluator):
         sibling = _task(QuantFixedRawTask, training_start_point=TrainingStartPoint.DEFAULT)
@@ -504,15 +503,19 @@ class TestFailures:
 
         assert "ReadTimeout (no message)" in alert.await_args.kwargs["error"]
 
-    async def test_alert_fires_once_at_the_threshold(self, db, evaluator, alert):
+    async def test_alert_fires_at_the_threshold_and_at_every_multiple_of_it(self, db, evaluator, alert):
         db.put(_task())
         evaluator.return_value = SimpleNamespace(results={REPO: Exception("pod died")})
+        every = t_cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT
 
-        for _ in range(t_cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT + 2):
+        for _ in range(every + 2):
             await prepass.measure_missing_quant_references(CONFIG)
-
         alert.assert_awaited_once()
         assert alert.await_args.kwargs["hotkeys"] == [HOTKEY]
+
+        for _ in range(3 * every - (every + 2)):
+            await prepass.measure_missing_quant_references(CONFIG)
+        assert alert.await_count == 3
 
     async def test_success_resets_the_failure_count(self, db, evaluator, alert):
         task = _task()
@@ -628,19 +631,40 @@ class TestCalibrationReference:
         assert db.calibration_added == []
         assert prepass._CONSECUTIVE_FAILURES[(str(task.task_id), HOTKEY, "calibration")] == 1
 
-    async def test_gives_up_after_the_max_failures_and_stops_measuring(self, db, evaluator, monkeypatch):
-        monkeypatch.setattr(prepass, "notify_evaluation_exception", AsyncMock())
+    async def test_keeps_measuring_and_alerting_however_many_times_it_failed(self, db, evaluator, monkeypatch, caplog):
+        alert = AsyncMock()
+        monkeypatch.setattr(prepass, "notify_evaluation_exception", alert)
         task = _cal_task()
         db.put(task)
         db.references[task.task_id] = {(HOTKEY, SKU): _reference(task.task_id)}
         evaluator.return_value = SimpleNamespace(results={REPO: Exception("pod died")})
+        every = t_cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT
+        runs = 4 * every
 
-        assert not prepass.calibration_reference_gave_up(task.task_id, HOTKEY)
-        for _ in range(t_cst.QUANT_CALIBRATION_REFERENCE_MAX_FAILURES + 2):
-            await prepass.measure_missing_quant_references(CONFIG)
+        with caplog.at_level("ERROR"):
+            for _ in range(runs):
+                await prepass.measure_missing_quant_references(CONFIG)
 
-        assert prepass.calibration_reference_gave_up(task.task_id, HOTKEY)
-        assert evaluator.call_count == t_cst.QUANT_CALIBRATION_REFERENCE_MAX_FAILURES
+        assert evaluator.call_count == runs
+        assert [item.key for item in await prepass.references_to_measure(CONFIG)] == [(str(task.task_id), HOTKEY, "calibration")]
+        assert alert.await_count == 4
+        assert "calibration reference pre-pass keeps failing" in alert.await_args.kwargs["context"]
+        assert "proceeds without" not in caplog.text and "training waits for it" in caplog.text
+
+    async def test_a_stored_row_on_another_example_set_counts_as_missing_and_is_remeasured(self, db, evaluator):
+        task = _cal_task()
+        db.put(task)
+        db.references[task.task_id] = {(HOTKEY, SKU): _reference(task.task_id)}
+        db.calibration[task.task_id] = {HOTKEY: _cal_record(task.task_id, fingerprint="fp-stale")}
+        evaluator.return_value = SimpleNamespace(results={REPO: _cal_result()})
+
+        [missing] = await prepass.references_to_measure(CONFIG)
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert missing.calibration
+        [record] = db.calibration_added
+        assert record.eval_set_fingerprint == CAL_FINGERPRINT
+        assert db.calibration[task.task_id][HOTKEY].eval_set_fingerprint == CAL_FINGERPRINT
         assert await prepass.references_to_measure(CONFIG) == []
 
     async def test_calibration_failures_do_not_count_against_the_test_reference(self, db, evaluator, monkeypatch):

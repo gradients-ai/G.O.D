@@ -54,8 +54,8 @@ def _head_to_head(round_number: int, outcome: HeadToHeadOutcome) -> HeadToHead:
 
 WIN = HeadToHeadOutcome.WIN
 BEYOND = HeadToHeadOutcome.BEYOND
-TIGHT = HeadToHeadOutcome.WITHIN_TIGHT
-LOOSER = HeadToHeadOutcome.WITHIN_LOOSER
+SMALLER = HeadToHeadOutcome.WITHIN_SMALLER
+LARGER = HeadToHeadOutcome.WITHIN_LARGER
 
 
 def _round(number: int) -> TournamentRoundData:
@@ -136,12 +136,12 @@ def cup(monkeypatch) -> QuantCup:
     return QuantCup(monkeypatch)
 
 
-IMPOSSIBLE = [WIN, BEYOND, WIN]  # a non-win beyond the looser allowance rules the crown out
-TWO_LOOSER = [LOOSER, LOOSER, WIN]  # two non-wins and neither within the tight allowance
+IMPOSSIBLE = [WIN, BEYOND, WIN]  # a non-win beyond the larger allowance rules the crown out
+TWO_LARGER = [LARGER, LARGER, WIN]  # two non-wins and neither within the smaller allowance
 
 
 class TestAfterRoundThree:
-    @pytest.mark.parametrize("outcomes", [IMPOSSIBLE, TWO_LOOSER, [BEYOND, BEYOND, BEYOND]])
+    @pytest.mark.parametrize("outcomes", [IMPOSSIBLE, TWO_LARGER, [BEYOND, BEYOND, BEYOND]])
     async def test_an_impossible_crown_skips_the_boss_round_and_retains_the_boss(self, cup, outcomes):
         cup.head_to_heads = [_head_to_head(n, outcome) for n, outcome in zip((1, 2, 3), outcomes)]
 
@@ -188,7 +188,7 @@ class TestAfterRoundThree:
         tm.upload_participant_repository.assert_awaited_once()
         assert tm.upload_participant_repository.await_args.args[2] == BOSS
 
-    @pytest.mark.parametrize("outcomes", [[WIN, WIN, WIN], [TIGHT, LOOSER, WIN], [WIN, WIN, LOOSER]])
+    @pytest.mark.parametrize("outcomes", [[WIN, WIN, WIN], [SMALLER, LARGER, WIN], [WIN, WIN, LARGER]])
     async def test_a_possible_crown_creates_the_boss_round(self, cup, outcomes):
         cup.head_to_heads = [_head_to_head(n, outcome) for n, outcome in zip((1, 2, 3), outcomes)]
 

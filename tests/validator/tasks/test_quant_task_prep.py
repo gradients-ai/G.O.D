@@ -14,9 +14,7 @@ import pytest
 import validator.tasks.datasets.constants as data_cst
 import validator.tasks.prep.constants as prep_cst
 from core.models.dataset_models import ChatTemplateDatasetType
-from core.models.dataset_models import FileFormat
 from core.models.dataset_models import InstructTextDatasetType
-from core.models.payload_models import TrainRequestQuant
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
@@ -34,6 +32,7 @@ from validator.tasks.quant_eval_set import build_quant_eval_set
 
 TRAIN_URL = "https://minio/train.json"
 TEST_URL = "https://minio/test.json"
+CAL_URL = "https://minio/cal.json"
 EVAL_SET_URL = "https://minio/quant_eval_set.jsonl"
 SPEC = QuantFormat.W4A16_SYM_G128.spec()
 RAW_INSTRUCT = InstructTextDatasetType(
@@ -93,16 +92,30 @@ def _chat_rows(n: int) -> list[dict]:
     return [{"conversations": [{"from": "user", "value": f"u{i}"}, {"from": "assistant", "value": f"a{i}"}]} for i in range(n)]
 
 
+TEXT_KEYS = {"instruct", "input", "output", "value", "conversations"}
+
+
+def _distinct(value):
+    """The same row shape with every string changed, so no calibration row equals an eval row."""
+    if isinstance(value, str):
+        return value + "~"
+    if isinstance(value, list):
+        return [_distinct(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _distinct(item) if key in TEXT_KEYS else item for key, item in value.items()}
+    return value
+
+
 @pytest.fixture
 def prep(monkeypatch, tmp_path):
-    """Patched split, download and upload; the uploaded JSONL is copied to tmp_path/uploaded.jsonl."""
+    """Patched split, download and upload; the last uploaded JSONL (the eval set) is copied to tmp_path/uploaded.jsonl."""
     seams = SimpleNamespace(rows=_instruct_rows(150), uploaded=tmp_path / "uploaded.jsonl", object_names=[])
 
     async def download(url, save_path=None):
-        assert url == TEST_URL
+        assert url in (TEST_URL, CAL_URL)
         path = os.path.join(save_path, "test.json")
         with open(path, "w") as f:
-            json.dump(seams.rows, f)
+            json.dump(seams.rows if url == TEST_URL else _distinct(seams.rows), f)
         return path
 
     async def upload(path, bucket, object_name):
@@ -110,7 +123,9 @@ def prep(monkeypatch, tmp_path):
         seams.object_names.append(object_name)
         return EVAL_SET_URL
 
-    seams.prepare_text_task = AsyncMock(return_value=PreparedTextSplit(test_url=TEST_URL, train_url=TRAIN_URL))
+    seams.prepare_text_task = AsyncMock(
+        return_value=PreparedTextSplit(test_url=TEST_URL, train_url=TRAIN_URL, calibration_url=CAL_URL)
+    )
     monkeypatch.setattr(requests, "prepare_text_task", seams.prepare_text_task)
     monkeypatch.setattr(requests, "download_s3_file", download)
     monkeypatch.setattr(requests, "upload_file_to_minio", upload)
@@ -157,7 +172,7 @@ async def test_prep_sets_urls_and_status(prep):
     assert task.synthetic_data is None
     assert task.status == TaskStatus.LOOKING_FOR_NODES
     assert loaded == ["org/base"]  # the base tokenizer, never the augmented id
-    assert prep.object_names[0].endswith("_quant_eval_set.jsonl")
+    assert prep.object_names[-1].endswith("_quant_eval_set.jsonl")
 
 
 async def test_prep_rewrites_instruct_dataset_type_to_standard_columns(prep):
@@ -203,17 +218,6 @@ async def test_uploaded_jsonl_round_trips_with_identical_fingerprint(prep):
 
 
 @pytest.mark.parametrize("make_task", [_fixed, _freeform])
-def test_prepare_quant_task_request(make_task):
-    task = make_task()
-    task.training_data = TRAIN_URL
-    task.augmented_model_id = "org/augmented"
-
-    request = requests.prepare_quant_task_request(task)
-
-    assert isinstance(request, TrainRequestQuant)
-    assert request.model == "org/augmented"
-    assert request.dataset == TRAIN_URL
-    assert request.file_format == FileFormat.S3
-    assert request.task_type == task.task_type
-    assert request.decode is None
-    assert request.quant_spec == (SPEC if task.task_type == TaskType.QUANTFIXEDTASK else None)
+def test_prepare_quant_task_request_is_the_orchestrators_job(make_task):
+    with pytest.raises(NotImplementedError, match="tournament orchestrator"):
+        requests.prepare_quant_task_request(make_task())

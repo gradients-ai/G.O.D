@@ -7,7 +7,7 @@ would be circular from there.
 A task-common quant task (the miner rounds R1-R3, whose shared input is the boss's output on an input seed; anything
 that is not an own-model task) has one reference for all its miners, stored under
 hotkey '' (quant_reference.reference_hotkey_for). It is measured once per task, the same way, and the orchestrator
-defers every miner's training until it is there.
+defers every miner's training until it is there, however long that takes.
 
 On an own-model task (OWN_UPSTREAM_MODEL or OWN_R1_MODEL: each player compresses its own upstream model) every player is
 scored as a multiple of ITS OWN bf16 model, and the training request publishes that loss (and the freeform bar) to the
@@ -16,8 +16,12 @@ starting model and no stored row, and the orchestrator defers the miner's traini
 (orchestrator._reference_ready).
 
 A quant task with a calibration set (either track) gets a second measurement per hotkey: the same bf16 repo on the calibration
-rows, published to the miner with them (never used to score). It is keyed separately, and after
-QUANT_CALIBRATION_REFERENCE_MAX_FAILURES failures in a row training stops waiting for it.
+rows, published to the miner with them (never used to score). It is keyed separately, and training waits for it too. A stored
+calibration reference measured on another example set than the task's current calibration set counts as missing and is
+replaced by the re-measurement.
+
+Every measurement is retried every cycle for as long as it is missing; a measurement that keeps failing pings a human at every
+QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT-th consecutive failure. A miner is never trained without them.
 """
 
 import asyncio
@@ -105,26 +109,6 @@ def has_calibration_set(task: AnyQuantRawTask) -> bool:
     return isinstance(task, QuantRawTask) and bool(task.calibration_data)
 
 
-def reference_gave_up(task_id: UUID | str, hotkey: str) -> bool:
-    """True once the task-common test reference (hotkey '') failed QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES times in a row.
-
-    Process-local like the failure counts. Only the task-common reference ever gives up: an own-model miner's bar needs its
-    target, so those keep waiting. The prepass keeps retrying after this; a row stored later is simply used.
-    """
-    if hotkey != "":
-        return False
-    return _CONSECUTIVE_FAILURES.get((str(task_id), hotkey), 0) >= cst.QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES
-
-
-def calibration_reference_gave_up(task_id: UUID | str, hotkey: str) -> bool:
-    """True once the calibration measurement failed QUANT_CALIBRATION_REFERENCE_MAX_FAILURES times in a row.
-
-    Process-local like the failure counts: training then stops waiting for it and publishes the rows without losses.
-    """
-    key = (str(task_id), hotkey, _CALIBRATION)
-    return _CONSECUTIVE_FAILURES.get(key, 0) >= cst.QUANT_CALIBRATION_REFERENCE_MAX_FAILURES
-
-
 async def _candidate_tasks(config: Config) -> list[AnyQuantRawTask]:
     """Tournament quant tasks, own-model or task-common, that are prepped (their eval set exists) and not yet past training."""
     tasks = []
@@ -152,17 +136,20 @@ async def _missing_for_task(task: AnyQuantRawTask, config: Config) -> list[Refer
         failed = await _failed_hotkeys(task, config)
         reference_hotkeys = [node.hotkey for node in nodes if node.hotkey not in failed]
     measured = {hotkey for hotkey, _ in await get_quant_sku_references(task.task_id, config.psql_db)}
-    calibrated = set(await get_quant_calibration_references(task.task_id, config.psql_db)) if has_calibration_set(task) else set()
+    calibrated = (
+        {
+            hotkey
+            for hotkey, record in (await get_quant_calibration_references(task.task_id, config.psql_db)).items()
+            if record.eval_set_fingerprint == task.calibration_fingerprint
+        }
+        if has_calibration_set(task)
+        else set()
+    )
     missing = []
     for hotkey in reference_hotkeys:
         needs_test = hotkey not in measured
-        # The calibration pass follows a scored test reference; a hotkey that gave up on it is not retried.
-        needs_calibration = (
-            has_calibration_set(task)
-            and not needs_test
-            and hotkey not in calibrated
-            and not calibration_reference_gave_up(task.task_id, hotkey)
-        )
+        # The calibration pass follows a scored test reference; a record on another example set is not a measurement.
+        needs_calibration = has_calibration_set(task) and not needs_test and hotkey not in calibrated
         if not (needs_test or needs_calibration):
             continue
         repo = await quant_reference_model(task, hotkey, config.psql_db)
@@ -342,17 +329,15 @@ def _calibration_mismatch(item: ReferenceToMeasure, result: EvaluationResultText
 
 
 async def _record_failure(item: ReferenceToMeasure, detail: str, config: Config) -> None:
-    """Infra trouble, never the miner's fault: retried next cycle, and a human is pinged once at the threshold."""
+    """Infra trouble, never the miner's fault: retried next cycle for as long as it takes (the miner's training waits for it), and
+    a human is pinged at every QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT-th consecutive failure."""
     count = _CONSECUTIVE_FAILURES.get(item.key, 0) + 1
     _CONSECUTIVE_FAILURES[item.key] = count
-    outcome = (
-        f"training proceeds without it after {cst.QUANT_CALIBRATION_REFERENCE_MAX_FAILURES}" if item.calibration else "will retry"
-    )
     logger.error(
         f"Task {item.task.task_id} hotkey {item.hotkey}: {item.label} measurement failed ({count} in a row, infra, "
-        f"{outcome}): {detail}"
+        f"will retry; training waits for it): {detail}"
     )
-    if count == cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT:
+    if count % cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT == 0:
         await notify_evaluation_exception(
             config,
             task_id=str(item.task.task_id),
@@ -410,7 +395,7 @@ async def _measure(item: ReferenceToMeasure, config: Config) -> None:
     try:
         result = await _evaluate_reference(item, num_gpus)
     except (EvaluationCapacityUnavailable, DeploymentNotReadyError) as e:
-        # Waiting for a GPU is the queue, not a failure: it must not count towards giving the reference up.
+        # Waiting for a GPU is the queue, not a failure: it does not count towards the failure alert.
         logger.info(f"Task {item.task.task_id} hotkey {item.hotkey}: {item.label} waits for capacity: {describe_error(e)}")
         await _finish_cost_run(run_key, False, config)
         return

@@ -14,6 +14,9 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationReference
+from core.models.quant_models import QuantCalibrationRequest
+from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from trainer import endpoints
@@ -42,6 +45,16 @@ def _job(decode: QuantDecodeRequest | None) -> TrainerTaskLog:
         dataset_type=InstructTextDatasetType(),
         task_type=TaskType.QUANTFREEFORMTASK,
         decode=decode,
+        quant_target=QuantTarget(
+        reference_model="m", reference_loss=2.0, reference_sku="s", bar_cap=0.04, bar=2.08, knee=1.04, knee_loss=2.08,
+        penalty_curvature=2500.0, cap=1.08, cap_loss=2.16,
+    ),
+        calibration=QuantCalibrationRequest(
+            examples_url="https://minio.example/cal.jsonl",
+            eval_set_fingerprint="fp",
+            n_examples=1,
+            reference=QuantCalibrationReference(model="m", loss=2.0, per_example_losses=[1.0], sku="s"),
+        ),
     )
     return TrainerTaskLog(
         training_data=training_data,

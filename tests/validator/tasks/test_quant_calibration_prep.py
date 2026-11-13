@@ -1,4 +1,4 @@
-"""run_quant_task_prep and the calibration set: tokenised like the eval set, eval-equal rows dropped, never fails prep."""
+"""run_quant_task_prep and the calibration set: tokenised like the eval set, eval-equal rows dropped, fails closed."""
 
 import json
 import os
@@ -18,6 +18,7 @@ from core.models.task_models import TaskStatus
 from validator.evaluation.quant_loss import load_examples
 from validator.evaluation.quant_loss import quant_eval_set_fingerprint
 from validator.tasks import requests
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.preparation import PreparedTextSplit
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
@@ -77,12 +78,16 @@ def prep(monkeypatch, tmp_path):
         uploads={},
         warnings=[],
         download_error=None,
+        failures_left=0,
     )
 
     async def download(url, save_path=None):
         seams.downloads.append(url)
         if url == CAL_URL and seams.download_error:
             raise seams.download_error
+        if url == CAL_URL and seams.failures_left:
+            seams.failures_left -= 1
+            raise RuntimeError("transient")
         rows = seams.test_rows if url == TEST_URL else seams.calibration_rows
         path = os.path.join(save_path, f"{len(seams.downloads)}.json")
         with open(path, "w") as f:
@@ -104,6 +109,7 @@ def prep(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "download_s3_file", download)
     monkeypatch.setattr(requests, "upload_file_to_minio", upload)
     monkeypatch.setattr(requests.logger, "warning", lambda message: seams.warnings.append(message))
+    monkeypatch.setattr(requests.asyncio, "sleep", AsyncMock())
     return seams
 
 
@@ -138,24 +144,38 @@ async def test_calibration_examples_equal_to_an_eval_example_are_dropped(prep):
     assert not any(tuple(e.input_ids) in eval_keys for e in published)
 
 
-async def test_fewer_than_the_minimum_publishes_nothing_and_warns(prep):
+async def test_fewer_than_the_minimum_fails_prep_at_once_and_leaves_the_task_unchanged(prep):
     prep.calibration_rows = _rows(150, prep_cst.QUANT_CALIBRATION_MIN_EXAMPLES - 1)
+    task = _freeform()
 
-    task = await _run(_freeform())
+    with pytest.raises(CalibrationUnavailableError, match="only 99"):
+        await _run(task)
 
     assert "quant_calibration_set.jsonl" not in prep.uploads
+    assert prep.downloads.count(CAL_URL) == 1  # deterministic: not retried
+    assert task.status == TaskStatus.PREPARING_DATA
     assert (task.calibration_data, task.calibration_fingerprint, task.calibration_n_examples) == (None, None, None)
-    assert task.status == TaskStatus.LOOKING_FOR_NODES
-    assert any("publishing no calibration set" in message for message in prep.warnings)
 
 
-async def test_a_calibration_failure_never_fails_prep(prep):
+async def test_a_persistent_calibration_failure_fails_prep_after_the_attempts(prep):
     prep.download_error = RuntimeError("minio down")
+    task = _freeform()
+
+    with pytest.raises(CalibrationUnavailableError, match="after 3 attempts"):
+        await _run(task)
+
+    assert prep.downloads.count(CAL_URL) == prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS == 3
+    assert task.status == TaskStatus.PREPARING_DATA and task.test_data is None
+
+
+async def test_a_calibration_publish_that_succeeds_on_a_retry_completes_prep(prep):
+    prep.failures_left = prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS - 1
 
     task = await _run(_freeform())
 
-    assert task.calibration_data is None and task.status == TaskStatus.LOOKING_FOR_NODES
-    assert task.test_data == "https://minio/quant_eval_set.jsonl"
+    assert prep.downloads.count(CAL_URL) == prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS
+    assert task.status == TaskStatus.LOOKING_FOR_NODES
+    assert task.calibration_n_examples == 250
 
 
 async def test_fixed_task_publishes_the_calibration_set_like_a_freeform_one(prep):
@@ -169,16 +189,17 @@ async def test_fixed_task_publishes_the_calibration_set_like_a_freeform_one(prep
     assert load_examples(Path(prep.uploads["quant_eval_set.jsonl"])) == _eval_examples(prep.test_rows)
 
 
-async def test_fixed_task_without_a_calibration_url_publishes_nothing(prep):
+@pytest.mark.parametrize("make_task", [_freeform, _fixed])
+async def test_a_task_without_a_calibration_url_fails_prep(prep, make_task):
     prep.calibration_url = None
-    task = _fixed()
+    task = make_task()
     task.calibration_data = "https://minio/stale.json"  # never published as is: only prep's own tokenised set counts
 
-    task = await _run(task)
+    with pytest.raises(CalibrationUnavailableError, match="no calibration rows"):
+        await _run(task)
 
-    assert (task.calibration_data, task.calibration_fingerprint, task.calibration_n_examples) == (None, None, None)
-    assert prep.downloads == [TEST_URL]
-    assert "quant_calibration_set.jsonl" not in prep.uploads
+    assert prep.downloads == []
+    assert task.status == TaskStatus.PREPARING_DATA and task.calibration_data == "https://minio/stale.json"
 
 
 async def test_fixed_calibration_examples_equal_to_an_eval_example_are_dropped(prep):
@@ -192,21 +213,20 @@ async def test_fixed_calibration_examples_equal_to_an_eval_example_are_dropped(p
     assert not any(tuple(e.input_ids) in eval_keys for e in published)
 
 
-async def test_fixed_calibration_failure_never_fails_prep_and_redacts_the_url(prep):
+@pytest.mark.parametrize("make_task", [_freeform, _fixed])
+async def test_calibration_failure_messages_redact_the_url(prep, make_task):
     prep.download_error = RuntimeError(f"cannot fetch {CAL_URL}?X-Amz-Signature=secret")
 
-    task = await _run(_fixed())
+    with pytest.raises(CalibrationUnavailableError) as raised:
+        await _run(make_task())
 
-    assert task.calibration_data is None and task.status == TaskStatus.LOOKING_FOR_NODES
-    assert not any("secret" in message for message in prep.warnings)
+    assert "secret" not in str(raised.value)
+    assert prep.warnings and not any("secret" in message for message in prep.warnings)
 
 
-async def test_uncalibrated_task_prep_is_unchanged_and_has_no_calibration(prep):
-    prep.calibration_url = None
+@pytest.mark.parametrize("make_task", [_freeform, _fixed])
+async def test_a_successful_prep_always_has_all_three_calibration_fields(prep, make_task):
+    task = await _run(make_task())
 
-    task = await _run(_freeform())
-
-    assert prep.downloads == [TEST_URL]
-    assert list(prep.uploads) == ["quant_eval_set.jsonl"]
-    assert load_examples(Path(prep.uploads["quant_eval_set.jsonl"])) == _eval_examples(prep.test_rows)
-    assert (task.calibration_data, task.calibration_fingerprint, task.calibration_n_examples) == (None, None, None)
+    assert task.calibration_data and task.calibration_fingerprint and task.calibration_n_examples > 0
+    assert task.status == TaskStatus.LOOKING_FOR_NODES

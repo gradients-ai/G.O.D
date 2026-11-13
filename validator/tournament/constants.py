@@ -421,17 +421,13 @@ NO_USABLE_R1_MODEL_REASON = "no usable round-1 model"
 # effective bytes than the boss: total bytes (artifact + decoder) x the loss penalty exp(curvature x max(0, r - knee)^2).
 # Byte counts and the penalty are deterministic, so no bootstrap.
 QUANT_FREEFORM_BOSS_BYTE_MARGIN = 0.03
-# A freeform non-win is within the tight allowance when the challenger has at most this fraction more effective bytes than
-# the boss (fewer bytes by less than QUANT_FREEFORM_BOSS_BYTE_MARGIN included), within the looser allowance at most this one.
-QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE = 0.01
-QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE = 0.02
 
 # Fixed quant is judged by the same paired per-example test as text; freeform is decided on effective bytes, not loss.
 QUANT_PAIRED_TASK_TYPES = (TaskType.QUANTFIXEDTASK,)
 
 # A fixed head-to-head against the boss is a win when the challenger passes the paired per-example test and, on top of it,
-# has a scalar loss at least this fraction better than the boss's. A draw on the paired test is within both allowances; a
-# task the boss takes on the paired test is beyond them.
+# has a scalar loss at least this fraction better than the boss's. Any other task is a non-win banded by
+# CROWN_LARGER_ALLOWANCE on the scalar loss.
 QUANT_FIXED_BOSS_MIN_IMPROVEMENT = 0.01
 
 # A quant task held on a text seed is released on the text task's own base model (the fallback) when the text boss's run
@@ -458,15 +454,9 @@ QUANT_REFERENCE_EVAL_RETRIES = 1
 # --- Own-model quant reference pre-pass (validator/tournament/quant_reference_prepass.py) ----------------------
 # Concurrent bf16 reference measurements (one Basilica deployment each) across all (task, hotkey) pairs.
 QUANT_REFERENCE_PREPASS_CONCURRENCY = 4
-# Consecutive infra failures of one (task, hotkey) measurement before a human is pinged (it keeps retrying).
+# A human is pinged at every this-many-th consecutive infra failure of one (task, hotkey) measurement; it retries every
+# cycle until it succeeds, and the miner's training waits for it.
 QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT = 3
-# Consecutive failures of one (task, hotkey) bf16 measurement on the calibration rows before training stops waiting for
-# it and publishes the calibration examples without reference losses.
-QUANT_CALIBRATION_REFERENCE_MAX_FAILURES = 3
-# After this many consecutive prepass failures of a task-common task's '' bf16 reference the orchestrator stops waiting and
-# the miners train with no published target (scoring measures the SKU in-deployment). The alert already fires at
-# QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT. Own-model tasks keep waiting.
-QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES = 6
 
 # --- Quant registration build lint (validator/tournament/registration_lint.py) -------------------------------
 # Immutable-dependency rule: hash-pinned pip, SHA-pinned git, no fetch of miner-controlled URLs.
@@ -638,15 +628,15 @@ CROWN_BOUNDARY_RELATIVE_TOLERANCE = 1e-9
 
 # Head-to-heads of the crown rule, the same for text and quant: the tasks of rounds 1-3 plus the four boss-round tasks.
 CROWN_TASKS = 7
-# The challenger is crowned with at most this many non-wins, every non-win within the looser allowance and, with two
-# non-wins, at least one of them within the tight allowance (crown.crown_verdict).
+# The challenger is crowned with at most this many non-wins, every non-win within the larger allowance and, with two
+# non-wins, at least one of them within the smaller allowance (crown.crown_verdict).
 CROWN_MAX_NON_WINS = 2
+# The bands of a non-win, the same for text, fixed and freeform tasks (crown.non_win_outcome): within the smaller allowance
+# when the challenger is strictly better than the boss, within the larger allowance when it is level or worse by at most
+# this fraction of the boss's value, beyond both when it is worse by more.
+CROWN_LARGER_ALLOWANCE = 0.01
 
 # A text task is a win when the challenger beats the boss by at least this fraction of the boss's score magnitude (see
 # challenger_beats_boss) and, on a task with per-example losses (PAIRED_BOSS_ROUND_TASK_TYPES), also passes the paired
-# per-example test. Any other task is a non-win whose deficit is how far the challenger trails the boss, as a fraction of
-# the same magnitude (0 when it is level or ahead).
+# per-example test. Any other task is a non-win banded by CROWN_LARGER_ALLOWANCE on the score.
 TEXT_CROWN_WIN_MARGIN = 0.01
-# A text non-win is within the tight allowance with a deficit of at most this, within the looser one at most this.
-TEXT_CROWN_TIGHT_ALLOWANCE = 0.001
-TEXT_CROWN_LOOSER_ALLOWANCE = 0.0025

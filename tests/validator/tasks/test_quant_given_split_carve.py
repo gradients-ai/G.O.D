@@ -1,4 +1,5 @@
-"""prepare_text_task on a quant task with a given split: the freeform / fixed compression tasks carve a calibration set."""
+"""prepare_text_task on a quant task with a given split: the freeform / fixed compression tasks carve a calibration set
+unless they carry calibration rows."""
 
 import json
 import uuid
@@ -14,6 +15,7 @@ from core.models.dataset_models import FileFormat
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskStatus
 from validator.tasks.datasets import preparation
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import shared_split_seed
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
@@ -129,12 +131,11 @@ async def test_a_different_chunk_carves_different_rows(seams):
     assert shared_split_seed(other.ds) != shared_split_seed(_task().ds)
 
 
-async def test_the_flag_off_carves_nothing_and_carries_the_given_url(seams):
+async def test_the_flag_does_not_matter_a_given_split_is_carved(seams):
     split = await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
 
-    assert "calibration_data.json" not in seams.uploads
-    assert len(seams.uploads["train_data.json"]) == N_TRAIN
-    assert split.calibration_url is None
+    assert "calibration_data.json" in seams.uploads and split.calibration_url is not None
+    assert len(seams.uploads["train_data.json"]) < N_TRAIN
 
 
 async def test_a_task_that_already_carries_calibration_rows_is_not_carved_again(seams):
@@ -144,14 +145,12 @@ async def test_a_task_that_already_carries_calibration_rows_is_not_carved_again(
     assert split.calibration_url == "https://minio/cal.json"
 
 
-async def test_a_chunk_too_small_to_give_the_minimum_carves_nothing(seams):
+async def test_a_chunk_too_small_to_give_the_minimum_fails_prep(seams):
     # Every train row duplicates a test row, so none is eligible and the minimum cannot be met.
     seams.train = [dict(seams.test[i % N_TEST]) for i in range(8_000)]
 
-    split = await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
-
-    assert "calibration_data.json" not in seams.uploads and split.calibration_url is None
-    assert len(seams.uploads["train_data.json"]) == 8_000
+    with pytest.raises(CalibrationUnavailableError):
+        await preparation.prepare_text_task(_task(), keypair=None, psql_db="db")
 
 
 async def test_a_given_split_carve_is_not_recorded_per_dataset(seams):

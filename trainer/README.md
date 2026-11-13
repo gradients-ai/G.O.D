@@ -46,7 +46,7 @@ A compression job runs a `QuantFixedTask` or a `QuantFreeformTask`. Its uploaded
 
 | Step | What happens |
 | --- | --- |
-| Inputs | Fixed tasks get `--quant-spec` and `QUANT_SPEC`. `QUANT_TARGET` and `QUANT_CALIBRATION_PATH` are set when the request carries them. |
+| Inputs | Fixed tasks get `--quant-spec` and `QUANT_SPEC`. `QUANT_TARGET` and `QUANT_CALIBRATION_PATH` are set on every compression job; the calibration file carries the reference losses. |
 | Reclaim | `reclaim_output_dir` chowns the output directory to the trainer user. |
 | Check | `check_quant_output` validates the manifest, sizes and file types, and deletes unlisted files. |
 | Upload | The uploader runs with `UPLOAD_VERBATIM=1` and uploads the output root unmodified. |

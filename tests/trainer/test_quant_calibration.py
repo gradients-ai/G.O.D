@@ -1,4 +1,4 @@
-"""The trainer hands a freeform miner its calibration set as a file; any failure drops it without failing the job."""
+"""The trainer hands a compression miner its calibration set as a file; when it cannot be produced the call raises."""
 
 import io
 import json
@@ -30,6 +30,11 @@ REFERENCE = QuantCalibrationReference(model="org/own-bf16", loss=2.0, per_exampl
 
 def _request(reference=REFERENCE, fingerprint=FINGERPRINT, n=3) -> QuantCalibrationRequest:
     return QuantCalibrationRequest(examples_url=URL, eval_set_fingerprint=fingerprint, n_examples=n, reference=reference)
+
+
+@pytest.fixture(autouse=True)
+def no_retry_sleep(monkeypatch):
+    monkeypatch.setattr(cst, "QUANT_CALIBRATION_RETRY_SLEEP_SECONDS", 0)
 
 
 @pytest.fixture
@@ -69,15 +74,6 @@ async def test_file_is_written_with_zipped_losses_and_the_env_var_points_at_it(s
     assert [(e.input_ids, e.labels) for e in written.examples] == [(x.input_ids, x.labels) for x in EXAMPLES]
 
 
-async def test_without_a_reference_the_examples_carry_none_losses(served, tmp_path):
-    env = await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(reference=None), str(tmp_path))
-
-    assert core_cst.QUANT_CALIBRATION_PATH_ENV in env
-    written = QuantCalibrationSet.model_validate(json.loads((tmp_path / "quant_calibration_task-123_5HotkeyL.json").read_text()))
-    assert written.reference_model is None and written.reference_loss is None and written.reference_sku is None
-    assert [e.reference_loss for e in written.examples] == [None, None, None]
-
-
 @pytest.mark.parametrize(
     "request_kwargs",
     [
@@ -86,35 +82,60 @@ async def test_without_a_reference_the_examples_carry_none_losses(served, tmp_pa
         {"reference": QuantCalibrationReference(model="m", loss=1.0, per_example_losses=[1.0], sku="s")},
     ],
 )
-async def test_a_mismatch_with_the_request_writes_nothing_and_sets_no_env(served, tmp_path, request_kwargs):
-    env = await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(**request_kwargs), str(tmp_path))
+async def test_a_mismatch_with_the_request_raises_and_writes_nothing(served, tmp_path, request_kwargs):
+    with pytest.raises(RuntimeError, match="calibration set unavailable"):
+        await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(**request_kwargs), str(tmp_path))
 
-    assert env == {} and list(tmp_path.iterdir()) == []
-
-
-@pytest.mark.parametrize("failure", [OSError("connection reset"), TimeoutError()])
-async def test_a_download_failure_writes_nothing_and_does_not_raise(served, tmp_path, failure):
-    served["error"] = failure
-
-    assert await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path)) == {}
     assert list(tmp_path.iterdir()) == []
 
 
-async def test_a_malformed_file_writes_nothing(served, tmp_path):
+@pytest.mark.parametrize("failure", [OSError("connection reset"), TimeoutError()])
+async def test_a_download_failure_raises_after_every_attempt(served, tmp_path, failure):
+    served["error"] = failure
+
+    with pytest.raises(RuntimeError, match="calibration set unavailable"):
+        await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path))
+    assert len(served["asked"]) == cst.QUANT_CALIBRATION_FETCH_ATTEMPTS
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_a_later_attempt_can_succeed(served, tmp_path, monkeypatch):
+    real_urlopen = quant_calibration.urllib.request.urlopen
+    calls = []
+
+    def flaky(url, timeout):
+        calls.append(url)
+        if len(calls) < cst.QUANT_CALIBRATION_FETCH_ATTEMPTS:
+            raise OSError("connection reset")
+        return real_urlopen(url, timeout)
+
+    monkeypatch.setattr(quant_calibration.urllib.request, "urlopen", flaky)
+
+    env = await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path))
+
+    assert core_cst.QUANT_CALIBRATION_PATH_ENV in env
+    assert len(calls) == cst.QUANT_CALIBRATION_FETCH_ATTEMPTS
+
+
+async def test_a_malformed_file_raises(served, tmp_path):
     served["body"] = "not json\n"
 
-    assert await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path)) == {}
+    with pytest.raises(RuntimeError):
+        await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path))
 
 
-async def test_an_unwritable_volume_does_not_raise(served, tmp_path):
-    assert await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path / "missing")) == {}
+async def test_an_unwritable_volume_raises(served, tmp_path):
+    with pytest.raises(RuntimeError):
+        await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path / "missing"))
 
 
-async def test_the_url_is_never_logged(served, tmp_path, monkeypatch):
+async def test_the_url_is_never_logged_or_raised(served, tmp_path, monkeypatch):
     lines = []
     monkeypatch.setattr(quant_calibration.logger, "warning", lines.append)
     served["error"] = OSError(f"failed to reach {URL}")
 
-    await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path))
+    with pytest.raises(RuntimeError) as raised:
+        await quant_calibration.write_quant_calibration_file(TASK_ID, HOTKEY, _request(), str(tmp_path))
 
     assert lines and not any("X-Amz-Signature" in line or "minio.example" in line for line in lines)
+    assert "X-Amz-Signature" not in str(raised.value) and raised.value.__cause__ is None and raised.value.__suppress_context__

@@ -16,7 +16,7 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |
 | `test_output_reclaim.py` | Output reclaim container spec and runner against a fake Docker client. |
 | `test_output_reclaim_docker.py` | Output reclaim against real containers. Skipped without Docker or the images. |
-| `test_quant_calibration.py` | The calibration file is written for the miner, and any failure drops it without failing the job. |
+| `test_quant_calibration.py` | The calibration file is written for the miner, and a job that cannot write it fails without starting a container. |
 | `test_quant_decode_job.py` | Freeform decode job against fake snapshot, Hugging Face, Docker and storage backends. |
 | `test_quant_decode_output_check.py` | Decoded-output check on hand-built safetensors files. |
 | `test_quant_decode_rerun.py` | Decode re-run CLI: stored outcome and exit codes. |

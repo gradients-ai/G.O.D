@@ -5,22 +5,12 @@ from core.models.task_models import TaskType
 TRAIN_TEST_SPLIT_PERCENTAGE = 0.1
 MAX_TEST_DATA_POINTS = 1000
 
-# Calibration set carved from the train side of a freeform quant task's split (see calibration.py).
+# Calibration set carved from the train side of a compression (fixed or freeform) task's split (see calibration.py).
 QUANT_CALIBRATION_MIN_ROWS = 250
 QUANT_CALIBRATION_TARGET_TOKENS = 50_000  # supervised (completion) tokens
 QUANT_CALIBRATION_MAX_ROWS = 1_000
 QUANT_CALIBRATION_MAX_TRAIN_FRACTION = 0.10  # under MIN_ROWS of this share of train: carve nothing
 QUANT_CALIBRATION_CHARS_PER_TOKEN = 4  # sizes the carve only; the tokenised count is logged at quant prep
-
-QUANT_CONTINUOUS_CARVE_CALIBRATION: bool = True
-"""Whether the two continuous-chunk compression tasks (freeform and fixed) carve a calibration set from the given chunk.
-
-When on, both tasks (fixed and freeform, same chunk) carve the usual QUANT_CALIBRATION_* rows
-(at least QUANT_CALIBRATION_MIN_ROWS and ~QUANT_CALIBRATION_TARGET_TOKENS supervised tokens, capped at
-QUANT_CALIBRATION_MAX_ROWS and QUANT_CALIBRATION_MAX_TRAIN_FRACTION of the chunk's train rows) from the given train
-file, seeded by the chunk index so the two sibling tasks carve identical rows, and re-upload the train file without
-them. About 1,000 of the chunk's ~95,000 train rows leave the train side: negligible for the fine-tune.
-"""
 
 IMAGE_TRAIN_SPLIT_ZIP_NAME = "train_data.zip"
 IMAGE_TEST_SPLIT_ZIP_NAME = "test_data.zip"

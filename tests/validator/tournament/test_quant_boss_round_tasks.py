@@ -145,7 +145,7 @@ async def test_the_continuous_compressions_are_own_upstream_on_the_same_chunk_wi
         assert t_cst.continuous_quant_tournament(task.ds) == t_cst.continuous_chat_parts(c.ds)[1] == TID
         assert task.training_data and task.test_data and task.training_data != c.training_data  # their own fetch of the chunk
         assert task.file_format == FileFormat.S3 and isinstance(task.dataset_type, ChatTemplateDatasetType)
-        assert task.carve_calibration is data_cst.QUANT_CONTINUOUS_CARVE_CALIBRATION
+        assert task.carve_calibration is True
         assert t_cst.continuous_sft_lineage_from_ds(task.ds) is None
 
 
@@ -203,6 +203,23 @@ async def test_the_own_upstream_release_refetches_the_compression_task_s_chunk_w
     orchestrator.task_sql.set_starting_model_repo.assert_awaited_once()
 
 
+async def test_the_own_upstream_release_of_a_continuous_compression_carves_its_own_calibration_without_an_alert(
+    world, monkeypatch
+):
+    c = await world.c_task()
+    task = await world.compression(c)
+    c.training_data, c.test_data = "prepped-c-train", "prepped-c-test"
+    _wire_release(monkeypatch, c)
+    alert = AsyncMock()
+    monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+    task.carve_calibration = False
+
+    await orchestrator._release_own_upstream_task(task, world.config)
+
+    assert task.status == TaskStatus.PENDING and task.carve_calibration is True
+    alert.assert_not_awaited()
+
+
 async def test_a_failed_chunk_refetch_holds_the_compression_task(world, monkeypatch):
     c = await world.c_task()
     task = await world.compression(c)
@@ -234,6 +251,46 @@ async def test_the_own_upstream_release_still_copies_an_instruct_upstream_s_data
 
     assert (task.training_data, task.test_data) == ("b-train", "b-test")
     assert world.content_calls == []  # the upstream instruct task's data path never touches the content service
+
+
+async def test_the_own_upstream_release_copies_the_upstream_calibration_rows_and_carves_when_it_has_none(world, monkeypatch):
+    upstream = InstructTextRawTask(
+        task_id=uuid4(), model_id=BASE, ds="org/ds", field_instruction="i", field_output="o",
+        status=TaskStatus.SUCCESS.value, is_organic=False, account_id=uuid4(), hours_to_complete=3.0,
+        created_at=datetime(2026, 1, 1), model_params_count=3_000_000_000,
+        training_data="b-train", test_data="b-test", calibration_data="b-calibration",
+    )
+    task = await scheduler.create_own_upstream_quant_task(world.config, TaskType.QUANTFREEFORMTASK, upstream, quant_format=None)
+    _wire_release(monkeypatch, upstream)
+    alert = AsyncMock()
+    monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+    task.carve_calibration = False
+
+    await orchestrator._release_own_upstream_task(task, world.config)
+
+    assert task.calibration_data == "b-calibration" and task.carve_calibration is True
+    alert.assert_not_awaited()
+
+
+async def test_the_own_upstream_release_alerts_when_the_upstream_published_no_calibration_rows(world, monkeypatch):
+    upstream = InstructTextRawTask(
+        task_id=uuid4(), model_id=BASE, ds="org/ds", field_instruction="i", field_output="o",
+        status=TaskStatus.SUCCESS.value, is_organic=False, account_id=uuid4(), hours_to_complete=3.0,
+        created_at=datetime(2026, 1, 1), model_params_count=3_000_000_000,
+        training_data="b-train", test_data="b-test",
+    )
+    task = await scheduler.create_own_upstream_quant_task(world.config, TaskType.QUANTFREEFORMTASK, upstream, quant_format=None)
+    _wire_release(monkeypatch, upstream)
+    alert = AsyncMock()
+    monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+    task.carve_calibration = False
+
+    await orchestrator._release_own_upstream_task(task, world.config)
+
+    assert task.calibration_data is None and task.carve_calibration is True
+    alert.assert_awaited_once()
+    assert alert.await_args.args[0] == f"{task.task_id}:quant-upstream-no-calibration"
+    assert "published no calibration rows" in alert.await_args.args[1]
 
 
 # --- GPU tier and hours of the continuous instruct task ------------------------------------------------------------

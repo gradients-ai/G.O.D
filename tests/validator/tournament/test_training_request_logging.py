@@ -8,6 +8,9 @@ from core.models.dataset_models import InstructTextDatasetType
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestQuant
 from core.models.quant_artifact_models import QuantDecodeRequest
+from core.models.quant_models import QuantCalibrationReference
+from core.models.quant_models import QuantCalibrationRequest
+from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskType
 from validator.tournament import orchestrator
 
@@ -16,6 +19,7 @@ GITHUB_TOKEN = "ghp_secretsecretsecret"
 SIGNATURE = "X-Amz-Signature=deadbeef"
 DECODER_URL = f"https://bucket.s3.amazonaws.com/quant-decoders/c/s.tar.xz?{SIGNATURE}"
 DATASET_URL = "https://bucket.s3.amazonaws.com/train.json?X-Amz-Signature=cafe"
+CALIBRATION_URL = "https://bucket.s3.amazonaws.com/cal.jsonl?X-Amz-Signature=beef"
 
 
 def _request() -> TrainerProxyRequest:
@@ -28,6 +32,16 @@ def _request() -> TrainerProxyRequest:
         file_format=FileFormat.S3,
         dataset_type=InstructTextDatasetType(),
         task_type=TaskType.QUANTFREEFORMTASK,
+        quant_target=QuantTarget(
+            reference_model="m", reference_loss=2.0, reference_sku="s", bar_cap=0.04, bar=2.08, knee=1.04, knee_loss=2.08,
+            penalty_curvature=2500.0, cap=1.08, cap_loss=2.16,
+        ),
+        calibration=QuantCalibrationRequest(
+            examples_url=CALIBRATION_URL,
+            eval_set_fingerprint="fp",
+            n_examples=1,
+            reference=QuantCalibrationReference(model="m", loss=2.0, per_example_losses=[1.0], sku="s"),
+        ),
         decode=QuantDecodeRequest(
             decoder_snapshot_url=DECODER_URL, decoder_sha256="a" * 64, bucket="b", object_prefix="quant-decoded/t/h"
         ),
@@ -44,7 +58,7 @@ def _request() -> TrainerProxyRequest:
 
 def _assert_clean(text: str) -> None:
     assert GITHUB_TOKEN not in text
-    assert "deadbeef" not in text and "cafe" not in text
+    assert "deadbeef" not in text and "cafe" not in text and "beef" not in text
     assert "quant-decoders" not in text
 
 

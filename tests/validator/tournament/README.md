@@ -67,7 +67,7 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 
 | Path | Covers |
 | --- | --- |
-| `test_crown.py` | The crown rule and each task kind's win and allowances, as pure functions. |
+| `test_crown.py` | The crown rule and each task kind's win and non-win bands, as pure functions. |
 | `test_text_boss_round_crown.py` | The text boss round: its tasks, the crown, the early stop and the flow around them. |
 | `test_quant_boss_crown_rule.py` | The compression crown over seven head-to-heads. |
 | `test_quant_early_stop.py` | The compression early stop, and retirement of unattached seeds. |
@@ -89,7 +89,7 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | Path | Covers |
 | --- | --- |
 | `test_quant_task_creation.py` | Compression task fields, budgets and replacement copies, and resolution of a miner's round-1 repo. |
-| `test_calibration_task_creation.py` | Where the calibration set is carved, inherited or left out. |
+| `test_calibration_task_creation.py` | Where the calibration set is carved or inherited. |
 | `test_text_augmentation_r1_only.py` | Compression tasks other than the input seeds never roll model augmentation. |
 | `test_chained_boss_tasks.py` | Held chained tasks, replacements that keep the chain, and the choice of the shared input. |
 | `test_chained_release.py` | Release of a held chained task: the shared input and its fallbacks, the copied data and budget, model prep after release, the near-duplicate exemption. |
