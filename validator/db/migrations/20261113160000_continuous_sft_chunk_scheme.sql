@@ -1,0 +1,31 @@
+-- migrate:up
+-- This migration IS the continuous-SFT chunk scheme switch on the G.O.D side. It must be applied in the
+-- same window in which the content service switches scheme, between two tournaments. Applied earlier,
+-- the doubled indices would read chunks of the previous scheme; applied later, one week would re-read
+-- part of an earlier chunk.
+--
+-- Chunk k of the previous scheme is chunks 2k and 2k+1 of the new one, so every lineage cursor doubles
+-- once. The WHERE makes a second application a no-op.
+ALTER TABLE continuous_sft_state
+    ADD COLUMN IF NOT EXISTS chunk_scheme TEXT NOT NULL DEFAULT '100k' CHECK (chunk_scheme IN ('100k', '50k'));
+
+UPDATE continuous_sft_state SET train_index = train_index * 2, chunk_scheme = '50k' WHERE chunk_scheme = '100k';
+
+ALTER TABLE continuous_sft_state ALTER COLUMN chunk_scheme SET DEFAULT '50k';
+
+-- One row per continuous-SFT task: the cursor value and chunk scheme the task was created with.
+-- A continuous-SFT task with no row was created before this migration, on the previous scheme.
+CREATE TABLE IF NOT EXISTS continuous_sft_task_chunks (
+    task_id UUID PRIMARY KEY REFERENCES tasks(task_id) ON DELETE CASCADE,
+    lineage TEXT NOT NULL,
+    train_index INT NOT NULL,
+    chunk_scheme TEXT NOT NULL CHECK (chunk_scheme IN ('100k', '50k')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- migrate:down
+DROP TABLE IF EXISTS continuous_sft_task_chunks;
+-- Round up: an odd cursor means the first half of a previous-scheme chunk is already trained, so rounding up
+-- moves to the next whole chunk rather than re-reading trained rows.
+UPDATE continuous_sft_state SET train_index = (train_index + 1) / 2 WHERE chunk_scheme = '50k';
+ALTER TABLE continuous_sft_state DROP COLUMN IF EXISTS chunk_scheme;

@@ -29,7 +29,9 @@ from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
 from validator.db.sql.continuous_sft import get_continuous_sft_state
+from validator.db.sql.continuous_sft import record_continuous_sft_task_chunk
 from validator.db.sql.tasks import add_task
+from validator.db.sql.tasks import delete_task
 from validator.db.sql.tasks import get_dataset_near_duplicate_rates
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
@@ -46,6 +48,7 @@ from validator.tasks.requests import get_model_num_params
 from validator.tasks.rewards.templates import sample_template_groups
 from validator.tournament import constants as t_cst
 from validator.tournament.gpu_requirements import get_tournament_gpu_requirement
+from validator.tournament.models import ContinuousSftTaskChunk
 
 
 logger = get_logger(__name__)
@@ -301,15 +304,15 @@ def compute_hours_from_baseline_stats(
 ) -> float:
     """Post-prep hours from real token counts plus measured fwd/bwd throughput.
 
-    Continuous-SFT flows through like any SFT task (its 4xH100 is handled via
-    training_start_point), but params are sized from the lineage SEED (resolved from ds here, so
-    no caller can get it wrong) — the task's own model_id is the carried winner, whose params are
-    unfetchable (LoRA adapter / custom arch).
+    A continuous-SFT task (CONTINUOUS_SFT start point, or a ds that resolves to a lineage) gets exactly
+    CONTINUOUS_SFT_TRAINING_HOURS whatever the stats, current_hours or max_hours are. Other SFT tasks
+    are sized from the measured tokens and throughput.
     """
+    if training_start_point == TrainingStartPoint.CONTINUOUS_SFT or t_cst.continuous_sft_lineage_from_ds(ds):
+        return t_cst.CONTINUOUS_SFT_TRAINING_HOURS
     if isinstance(baseline_stats, EnvBaselineStats) or baseline_stats is None:
         return current_hours if max_hours is None else min(current_hours, max_hours)
 
-    model_id = t_cst.continuous_sft_seed_repo_for_ds(ds) or model_id
     num_params = model_params_count or (get_model_num_params(model_id) if model_id else None)
     if not num_params:
         num_params = data_cst.DEFAULT_MODEL_PARAMS_FOR_HOURS
@@ -752,8 +755,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
     The content service is stateless: we pass the monotonic train_index and it re-materializes
     train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
     across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
-    Fixed 4xH100; hours start at the fallback budget and are resized post-prep by the general
-    throughput pipeline. No augmentation, so the carried base is never perturbed.
+    Fixed 4xH100 and fixed hours (CONTINUOUS_SFT_TRAINING_HOURS). No augmentation, so the carried base is never perturbed.
     """
     state = await get_continuous_sft_state(lineage, config.psql_db)
     base_model = state.last_winner_repo or seed_model
@@ -801,6 +803,21 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         f"base_model={base_model} hours={number_of_hours} ds={ds_label}"
     )
     task = await add_task(task, config.psql_db)
+    try:
+        await record_continuous_sft_task_chunk(
+            ContinuousSftTaskChunk(
+                task_id=task.task_id,
+                lineage=lineage,
+                train_index=state.train_index,
+                chunk_scheme=t_cst.CONTINUOUS_SFT_CHUNK_SCHEME,
+            ),
+            config.psql_db,
+        )
+    except Exception:
+        # No continuous-SFT task may exist without its chunk record: carry-forward would misread its cursor.
+        logger.error(f"CONTINUOUS_SFT_TASK: recording chunk for task {task.task_id} failed; deleting the task")
+        await delete_task(task.task_id, config.psql_db)
+        raise
     logger.info(f"CONTINUOUS_SFT_TASK: saved task {task.task_id}")
 
     return task

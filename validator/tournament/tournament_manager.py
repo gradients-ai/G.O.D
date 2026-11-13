@@ -230,10 +230,15 @@ async def _create_tournament_tasks(
 
 
 async def _carry_forward_continuous_sft(
-    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB
+    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB, *, only_hotkey: str | None = None
 ) -> None:
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
     and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
+
+    With only_hotkey the carried model is that hotkey's own evaluated repo instead of the lowest-loss one (None when it
+    has none): used when the challenger is disqualified, so only the boss's model can be carried while the cursor still
+    moves past the chunk both trained. A failed advance propagates to advance_tournament, which holds completion
+    (the winner stays unset), so the next cycle reprocesses the round and retries.
     """
     # Exactly one task per lineage, which is why this can carry forward the first it finds. A drawn
     # continuous-SFT task is stood in for by a plain instruct task rather than a second chunk of the
@@ -257,17 +262,15 @@ async def _carry_forward_continuous_sft(
 
         # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
         # had no scored winner, in which case advance preserves the prior repo.
-        winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        if only_hotkey is None:
+            winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        else:
+            winner_repo = await task_sql.get_evaluated_repo_for_hotkey(round_task.task_id, only_hotkey, psql_db)
         logger.info(
             f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
             f"carried_winner={winner_repo}"
         )
-        try:
-            await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
-        except Exception as e:
-            logger.error(
-                f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
-            )
+        await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db, task_id=round_task.task_id)
 
     if not found:
         logger.info("No continuous-SFT task in completed text boss round; nothing to carry forward")
@@ -652,10 +655,25 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            # BEFORE setting winner_hotkey (the re-entry guard): set-first-then-crash would freeze the
-            # lineages; carry-forward is idempotent so a crash before winner-set just reprocesses.
-            if tournament.tournament_type == TournamentType.TEXT and not integrity.disqualified:
-                await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
+            # BEFORE setting winner_hotkey (the re-entry guard): a failed advance raises out of the carry-forward and is
+            # caught here, which holds completion; the winner stays unset, so the next cycle reprocesses the round and
+            # retries (the advance is idempotent on the round id).
+            # A disqualified challenger's model is never carried: only the boss's own evaluated repo can be.
+            if tournament.tournament_type == TournamentType.TEXT:
+                try:
+                    await _carry_forward_continuous_sft(
+                        round_tasks,
+                        completed_round.round_id,
+                        psql_db,
+                        only_hotkey=EMISSION_BURN_HOTKEY if integrity.disqualified else None,
+                    )
+                except Exception:
+                    logger.error(
+                        f"Continuous-SFT carry-forward failed for tournament {tournament.tournament_id}; "
+                        "holding completion so the next cycle retries",
+                        exc_info=True,
+                    )
+                    return
 
             third_place: str | None = None
             if tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):

@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskType
 from validator.tournament import constants as t_cst
+from validator.tournament.models import ChunkScheme
 
 
 class TestFinalRoundComposition:
@@ -40,9 +41,12 @@ class TestLineages:
         # Slug must stay off the retired `qwen` row, which still holds that chain's winner.
         assert t_cst.CONTINUOUS_SFT_LINEAGES == {"qwen3-8b": "Qwen/Qwen3-8B-Base"}
 
-    def test_training_hours_fallback_is_four(self):
-        # Initial/fallback only — post-prep the throughput pipeline resizes the budget.
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 4.0
+    def test_training_hours_is_two_and_a_half(self):
+        # Fixed budget, pinned after prep too.
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
+
+    def test_chunk_scheme_is_fifty_k(self):
+        assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.FIFTY_K
 
 
 class TestDsRoundTrip:
