@@ -1,4 +1,4 @@
-"""The crown of a planned image tournament: the boss round (three round tasks plus four boss-round tasks, one per family), the
+"""The crown of a planned image tournament: the boss round (three round tasks plus four boss-round tasks), the
 early stop after round 3, the evaluation-fault hold and third place.
 
 The score of a task is its weighted loss (lower is better). The tests drive the real round_results / tournament_manager code over
@@ -14,6 +14,7 @@ import pytest
 import validator.tournament.round_results as rr
 import validator.tournament.tournament_manager as tm
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsImage
@@ -45,9 +46,18 @@ LIMIT = 1.01  # exactly 1% higher: the edge of the larger allowance
 BEYOND = 1.02  # beyond both
 NO_RESULT = None
 
-ROUND_FAMILIES = [ImageModelType.FLUX, ImageModelType.IDEOGRAM4, ImageModelType.KREA2]
-BOSS_ROUND_FAMILIES = [ImageModelType.KREA2, ImageModelType.IDEOGRAM4, ImageModelType.QWEN_IMAGE, ImageModelType.Z_IMAGE]
-BOSS_ROUND_TASKS = len(BOSS_ROUND_FAMILIES)
+ROUND_SLOTS = [
+    (ImageModelType.FLUX2_KLEIN_4B, ImageTrainingMode.TEXT_TO_IMAGE),
+    (ImageModelType.QWEN_IMAGE_EDIT_2511, ImageTrainingMode.EDIT),
+    (ImageModelType.HIDREAM_O1, ImageTrainingMode.EDIT),
+]
+BOSS_ROUND_SLOTS = [
+    (ImageModelType.FLUX2_KLEIN_4B, ImageTrainingMode.EDIT),
+    (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.EDIT),
+    (ImageModelType.KREA2, ImageTrainingMode.TEXT_TO_IMAGE),
+    (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.TEXT_TO_IMAGE),
+]
+BOSS_ROUND_TASKS = len(BOSS_ROUND_SLOTS)
 ROUND_TASKS = 3
 ADD_BOSS_ROUND_DECIDERS = tm._add_boss_round_deciders  # the real function: the fixture replaces it on the module
 
@@ -87,9 +97,14 @@ class Cup:
 
     # ----- building the tournament -------------------------------------------------------------------------------------
 
-    def _add_task(self, family: ImageModelType, contender: float | None, boss: float | None = BOSS_LOSS) -> str:
+    def _add_task(
+        self, slot: tuple[ImageModelType, ImageTrainingMode], contender: float | None, boss: float | None = BOSS_LOSS
+    ) -> str:
         task_id = str(UUID(int=len(self.tasks) + 1))
-        self.tasks[task_id] = SimpleNamespace(task_id=task_id, task_type=TaskType.IMAGETASK, model_type=family)
+        model_type, training_mode = slot
+        self.tasks[task_id] = SimpleNamespace(
+            task_id=task_id, task_type=TaskType.IMAGETASK, model_type=model_type, training_mode=training_mode
+        )
         self.losses[task_id] = {BOSS: boss, CONTENDER: contender}
         return task_id
 
@@ -108,9 +123,9 @@ class Cup:
     def play_rounds(self, contender_scores: list[float | None]) -> list[str]:
         """Rounds 1-3, one group and one task each, with the contender's loss on it."""
         task_ids = []
-        for number, (family, score) in enumerate(zip(ROUND_FAMILIES, contender_scores, strict=True), start=1):
+        for number, (slot, score) in enumerate(zip(ROUND_SLOTS, contender_scores, strict=True), start=1):
             round_data = self._add_round(number, RoundType.GROUP)
-            task_id = self._add_task(family, score)
+            task_id = self._add_task(slot, score)
             group_id = f"{round_data.round_id}_g"
             self.registry.append(
                 TournamentTask(tournament_id=TID, round_id=round_data.round_id, task_id=task_id, group_id=group_id)
@@ -119,11 +134,11 @@ class Cup:
         return task_ids
 
     def play_boss_round(self, contender_scores: list[float | None]) -> list[str]:
-        """The boss round: one task per family (fewer when fewer scores are given), the contender against the boss."""
+        """The boss round: one task per slot (fewer when fewer scores are given), the contender against the boss."""
         round_data = self._add_round(4, RoundType.KNOCKOUT, final=True)
         task_ids = []
-        for family, score in zip(BOSS_ROUND_FAMILIES, contender_scores, strict=False):
-            task_id = self._add_task(family, score)
+        for slot, score in zip(BOSS_ROUND_SLOTS, contender_scores, strict=False):
+            task_id = self._add_task(slot, score)
             pair_id = f"{round_data.round_id}_p"
             self.registry.append(
                 TournamentTask(tournament_id=TID, round_id=round_data.round_id, task_id=task_id, pair_id=pair_id)
@@ -335,9 +350,8 @@ class TestBossRoundVerdict:
         assert len(boss_ids) == 3 and outcome.winners == [BOSS]
         assert len(cup.persisted) == 3
 
-    def test_the_boss_round_holds_the_four_families(self):
-        assert set(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION) == set(BOSS_ROUND_FAMILIES)
-        assert sum(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION.values()) == BOSS_ROUND_TASKS
+    def test_the_boss_round_holds_four_tasks(self):
+        assert t_cst.IMAGE_BOSS_ROUND_TASKS == BOSS_ROUND_TASKS
 
 
 class TestPersistence:

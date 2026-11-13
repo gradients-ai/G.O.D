@@ -9,6 +9,7 @@ import pytest
 
 import validator.tournament.round_results as rr
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from validator.db.sql import tournaments as tournament_sql
 from validator.tournament import constants as t_cst
 from validator.tournament.models import ImageRoundSpec
@@ -24,28 +25,35 @@ ROUND_ID = "round-1"
 
 
 class TestThePlan:
-    def test_families_and_advances(self):
+    def test_slots_caps_and_advances(self):
         assert t_cst.IMAGE_ROUND_PLAN == (
-            ImageRoundSpec(round_number=1, model_type=ImageModelType.FLUX, advance=8),
-            ImageRoundSpec(round_number=2, model_type=ImageModelType.IDEOGRAM4, advance=4),
-            ImageRoundSpec(round_number=3, model_type=ImageModelType.KREA2, advance=1),
+            ImageRoundSpec(
+                round_number=1,
+                task_specs=(
+                    (ImageModelType.Z_IMAGE, ImageTrainingMode.TEXT_TO_IMAGE),
+                    (ImageModelType.FLUX2_KLEIN_4B, ImageTrainingMode.TEXT_TO_IMAGE),
+                    (ImageModelType.MOSS_IMAGE_BASE, ImageTrainingMode.TEXT_TO_IMAGE),
+                ),
+                max_num_prompts=t_cst.ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS,
+                advance=8,
+            ),
+            ImageRoundSpec(round_number=2, task_specs=t_cst.ROUND_TWO_IMAGE_TASK_SPECS, advance=4),
+            ImageRoundSpec(round_number=3, task_specs=t_cst.FINAL_ROUND_IMAGE_TASK_SPECS, advance=1),
         )
 
     def test_the_advances_match_text(self):
         assert [spec.advance for spec in t_cst.IMAGE_ROUND_PLAN] == [spec.advance for spec in t_cst.TEXT_ROUND_PLAN]
 
-    def test_the_boss_round_is_one_task_of_each_of_four_families(self):
-        assert t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION == {
-            ImageModelType.KREA2: 1,
-            ImageModelType.IDEOGRAM4: 1,
-            ImageModelType.QWEN_IMAGE: 1,
-            ImageModelType.Z_IMAGE: 1,
-        }
+    def test_the_boss_round_is_two_edit_and_two_text_to_image_tasks(self):
+        assert t_cst.IMAGE_BOSS_ROUND_TASKS_PER_MODE == {ImageTrainingMode.EDIT: 2, ImageTrainingMode.TEXT_TO_IMAGE: 2}
+        assert t_cst.IMAGE_BOSS_ROUND_TASKS == 4
+
+    def test_the_final_slots_leave_room_for_round_three_and_the_boss_round(self):
+        for mode, count in t_cst.IMAGE_BOSS_ROUND_TASKS_PER_MODE.items():
+            assert sum(1 for _, slot_mode in t_cst.FINAL_ROUND_IMAGE_TASK_SPECS if slot_mode == mode) == count + 1
 
     def test_the_rounds_and_the_boss_round_are_the_crown_tasks(self):
-        boss_round_tasks = sum(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION.values())
-
-        assert len(t_cst.IMAGE_ROUND_PLAN) + boss_round_tasks == t_cst.CROWN_TASKS
+        assert len(t_cst.IMAGE_ROUND_PLAN) + t_cst.IMAGE_BOSS_ROUND_TASKS == t_cst.CROWN_TASKS
 
     @pytest.mark.parametrize(
         "tournament_type, plan",

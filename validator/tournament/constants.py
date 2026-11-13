@@ -632,21 +632,28 @@ TEXT_ROUND_PLAN = (
 
 # Rounds 1-3 of an image tournament are one task each, in one group: the boss trains the task alongside the miners and is
 # ranked in the round but never takes an advancement slot. Round 1 advances on its task; rounds 2 and 3 on average rank
-# over every round played so far, among the remaining miners.
+# over every round played so far, among the remaining miners. Each round's task is one random draw from its slots: round 1
+# from the round-one families (text-to-image, at most ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS pairs), round 2 from
+# ROUND_TWO_IMAGE_TASK_SPECS, round 3 from FINAL_ROUND_IMAGE_TASK_SPECS.
 IMAGE_ROUND_PLAN = (
-    ImageRoundSpec(round_number=1, model_type=ImageModelType.FLUX, advance=8),
-    ImageRoundSpec(round_number=2, model_type=ImageModelType.IDEOGRAM4, advance=4),
-    ImageRoundSpec(round_number=3, model_type=ImageModelType.KREA2, advance=1),
+    ImageRoundSpec(
+        round_number=1,
+        task_specs=tuple((model_type, ROUND_ONE_IMAGE_TRAINING_MODE) for model_type in ROUND_ONE_IMAGE_MODEL_TYPES),
+        max_num_prompts=ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS,
+        advance=8,
+    ),
+    ImageRoundSpec(round_number=2, task_specs=ROUND_TWO_IMAGE_TASK_SPECS, advance=4),
+    ImageRoundSpec(round_number=3, task_specs=FINAL_ROUND_IMAGE_TASK_SPECS, advance=1),
 )
 
-# The four boss-round tasks of an image tournament, all created together; with the three round tasks they are the CROWN_TASKS
+# The boss round of an image tournament: this many tasks of each training mode, all created together, drawn from the
+# FINAL_ROUND_IMAGE_TASK_SPECS slots other than round 3's. With the three round tasks they are the CROWN_TASKS
 # head-to-heads of the crown rule.
-IMAGE_BOSS_ROUND_TASK_DISTRIBUTION = {
-    ImageModelType.KREA2: 1,
-    ImageModelType.IDEOGRAM4: 1,
-    ImageModelType.QWEN_IMAGE: 1,
-    ImageModelType.Z_IMAGE: 1,
+IMAGE_BOSS_ROUND_TASKS_PER_MODE = {
+    ImageTrainingMode.EDIT: 2,
+    ImageTrainingMode.TEXT_TO_IMAGE: 2,
 }
+IMAGE_BOSS_ROUND_TASKS = sum(IMAGE_BOSS_ROUND_TASKS_PER_MODE.values())
 
 
 def round_plan(

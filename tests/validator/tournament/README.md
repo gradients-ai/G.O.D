@@ -57,7 +57,7 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | `test_group_standings_tiebreak.py` | Standings tie-breaks: average rank, summed gap, seeded shuffle. |
 | `test_image_round_plan.py` | The image round plan, the boss-round mix, `round_plan`, and telling a planned image tournament from one with a three-task round 1. |
 | `test_image_rounds.py` | Image rounds 1-3: the boss assigned to each round's task, standings without the boss, advancement 8 / 4 / 1 on average rank, the boss's rank, third place and the empty-score check. |
-| `test_image_task_creation.py` | Image task creation: one task per planned round, the four boss-round tasks, the three-task round 1 structure, replacements, and the exact pair count of a synthetic image task. |
+| `test_image_task_creation.py` | Image task creation: one task per planned round drawn from its slots, the four boss-round tasks drawn around round 3's slot, the three-task round 1 structure, replacements keeping slot and pair cap. |
 | `test_text_r1_single_group.py` | Round 1 is one group for text and image, and how many tasks it holds. |
 | `test_empty_score_group_guard.py` | A group with no valid challenger score halts advancement. |
 | `test_majority_failure_gate.py` | A task where most trainings failed is held for manual review. |

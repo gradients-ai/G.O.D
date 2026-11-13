@@ -12,6 +12,7 @@ from pydantic import field_validator
 
 from core.constants.environments import EnvironmentName as EnvironmentName
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.payload_models import TrainingRepoResponse
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskType
@@ -1406,11 +1407,16 @@ class TextRoundSpec(BaseModel):
     advance: int
 
 
+ImageTaskSpec = tuple[ImageModelType, ImageTrainingMode]
+
+
 class ImageRoundSpec(BaseModel):
-    """One miner round of an image tournament: the family of the task every entrant plays and the cut after it."""
+    """One miner round of an image tournament: the (model type, training mode) slots its one task is drawn from, the cap on
+    the task's image pairs (None: the synthetic default range) and the cut after it."""
 
     round_number: int
-    model_type: ImageModelType
+    task_specs: tuple[ImageTaskSpec, ...]
+    max_num_prompts: int | None = None
     advance: int
 
 

@@ -1187,7 +1187,7 @@ async def _get_seeded_text_boss_round_outcome(
 
 
 def _image_boss_round_label(task_object) -> str:
-    return f"boss round {task_object.model_type.value}"
+    return f"boss round {task_object.model_type.value} {task_object.training_mode.value}"
 
 
 async def _get_image_boss_round_outcome(
@@ -1199,7 +1199,7 @@ async def _get_image_boss_round_outcome(
     """Resolve the boss round of a planned image tournament on the crown rule (see crown.py).
 
     The head-to-heads are rounds 1-3 plus the boss-round tasks, all created together. A round that does not hold exactly the
-    IMAGE_BOSS_ROUND_TASK_DISTRIBUTION tasks leaves the verdict incomplete, so the boss retains. An evaluation fault (a task
+    IMAGE_BOSS_ROUND_TASKS tasks leaves the verdict incomplete, so the boss retains. An evaluation fault (a task
     where both sides trained and neither has a result) defers the round with the faulted task ids and persists nothing. The
     persisted per-task winners cover the boss-round tasks only.
     """
@@ -1218,7 +1218,7 @@ async def _get_image_boss_round_outcome(
         logger.error(f"Image crown, boss round {completed_round.round_id}: {reason}; the round is held")
         return RoundOutcome(deferred_reason=reason, evaluation_fault_task_ids=fault.task_ids)
 
-    expected = sum(t_cst.IMAGE_BOSS_ROUND_TASK_DISTRIBUTION.values())
+    expected = t_cst.IMAGE_BOSS_ROUND_TASKS
     if len(boss_round) != expected:
         logger.error(
             f"Image crown, boss round {completed_round.round_id}: holds {len(boss_round)} decided task(s), expected "
