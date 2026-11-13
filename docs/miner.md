@@ -290,7 +290,7 @@ The crown is decided over seven head-to-heads between the challenger and the bos
 
 | Outcome | Meaning |
 | --- | --- |
-| Win | Better than the boss by the task's win margin, or a valid result where the boss has none. |
+| Win | Better than the boss by the task's win margin ([What a win is](#what-a-win-is)), or a valid result where the boss has none. |
 | Within the smaller allowance | Better than the boss, but short of a win. |
 | Within the larger allowance | Level with the boss, or at most 1% worse. |
 | Beyond both | Worse than the boss by more than 1%, or no valid result from the challenger. |
@@ -313,7 +313,15 @@ Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../valid
 
 ### What a win is
 
-What a win is on each task, and the value the comparison is made on, are in the guides: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). The mechanics behind the rule and its edge cases are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
+| Tournament | Task | Compared on | Win |
+| --- | --- | --- | --- |
+| Text | Instruct, continuous, DPO | task score | at least 1% better, and a pass on the paired per-example test |
+| Text | GRPO | task score | at least 1% better |
+| Image | every task | loss on held-out images | at least 1% lower |
+| Compression | Fixed | normalised loss `r` | at least 1% lower, and a pass on the paired per-example test |
+| Compression | Freeform | effective size `S`: bytes, penalised above the loss bar | at least 3% lower |
+
+The allowances are the same everywhere: for freeform, "at most 1% worse" means an `S` at most 1% larger. How each value is scored is in the guides: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). The mechanics behind the rule and its edge cases are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
 
 ### The champion's next week
 
