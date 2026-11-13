@@ -3,6 +3,7 @@ import asyncio
 from core.logging import get_logger
 from validator.app.config import load_config
 from validator.tasks.details import try_db_connections
+from validator.tournament.image_builds.worker import image_build_worker_cycle
 from validator.tournament.tournament_manager import process_active_tournaments
 from validator.tournament.tournament_manager import process_pending_rounds
 from validator.tournament.tournament_manager import process_pending_tournaments
@@ -28,6 +29,7 @@ async def cycle():
         process_active_tournaments(config),
         # this auto-creates tournaments on schedule
         process_tournament_scheduling(config),
+        image_build_worker_cycle(config),
     )
 
 

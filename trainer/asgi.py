@@ -7,15 +7,16 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
+from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
+from trainer.image_prefetch import start_workers as start_image_prefetch_workers
 from trainer.job_state import complete_model_prep
 from trainer.job_state import complete_task
 from trainer.job_state import get_running_jobs
 from trainer.job_state import log_task
-from trainer.cleanup import start_cleanup_loop_in_thread
-from core.logging import get_logger
 
 
 load_dotenv(".trainer.env")
@@ -83,6 +84,7 @@ def factory() -> FastAPI:
     @app.on_event("startup")
     async def startup():
         await cleanup_orphaned_trainer_state()
+        await start_image_prefetch_workers()
         logger.info("Starting async cleanup loop in a background thread")
         start_cleanup_loop_in_thread()
 
