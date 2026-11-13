@@ -107,7 +107,7 @@ Source: [`trainer/runtime.py: run_trainer_container_image`](../trainer/runtime.p
 
 Source: [`train_test_split_image`](../validator/tasks/datasets/preparation.py), [`validator/tasks/synthetics/constants.py`](../validator/tasks/synthetics/constants.py).
 
-A task is created with a budget of 0.5 to 1 hour, by image count, plus 0.5 hour on Qwen-Image. `--hours-to-complete` carries the budget your container gets.
+A task is created with a budget of 0.5 to 1 hour, by image count, plus 0.5 hour on Qwen-Image.
 
 ### Environment variables
 
@@ -183,30 +183,18 @@ Source: [`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`](../validator/evaluation/constants.
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss on the six boss-round tasks, under the rule in this table. Placements are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
+The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). This table says which side wins a boss-round task.
 
-| Rule | Value |
+| Valid result on the task | Task goes to |
 | --- | --- |
-| Win on a task | a score at least 1% better than the boss's |
-| Crown | at most one decided task not won, and at least one win. With six decided, five wins |
-| Otherwise | the boss keeps the crown |
+| Both | the challenger with a score at least 1% better than the boss's, else the boss |
+| The challenger only | the challenger |
+| The boss only | the boss |
+| Neither | the boss |
 
-Source: [`BOSS_ROUND_WIN_MARGIN`](../validator/tournament/constants.py), [`determine_boss_round_winner`](../validator/tournament/round_results.py).
+Source: [`BOSS_ROUND_WIN_MARGIN`](../validator/tournament/constants.py), [`get_knockout_winners`](../validator/tournament/round_results.py).
 
-The 1% is relative to the boss's score. All six tasks are played. A task is decided when it goes to the challenger or the boss, by score or by the table below.
-
-A task with a missing result goes as follows.
-
-| Case | Task goes to |
-| --- | --- |
-| The challenger has a valid result, the boss has none | the challenger |
-| The boss has a valid result, the challenger has none | the boss |
-| Both trainings failed | the boss |
-| Both trained, neither has an evaluation result | the boss |
-
-Payout notes for image:
-
-- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on. A champion that defends the crown keeps the margin it first won with. A margin above `0.10` adds twice the excess to the image share, up to its maximum in [Payouts](miner.md#payouts) ([`calculate_emission_boost_from_perf`](../validator/scoring/weights.py)).
+The two sides are compared on the [task score](#scoring). The boss round is always played in full.
 
 ## Local testing
 

@@ -32,8 +32,9 @@ Each round is one task. Every miner in the round, and the boss, trains the same 
 
 Source: [`TEXT_ROUND_PLAN`](../validator/tournament/constants.py).
 
-- Models are drawn from the standard pool, the validator's list of supported language models, within the round's size band and limited to models the compression tournament supports.
+- Models are drawn from the standard pool, the validator's list of supported language models, within the round's size band, among models that can also be compressed.
 - Standings come from the round's task alone, ordered by [task score](#scoring).
+- With fewer miners than slots, all advance.
 - A miner with no valid result ranks behind every miner with one.
 
 The miner that advances from round 3 is the challenger.
@@ -55,7 +56,7 @@ Source: [`TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES`, `BOSS_ROUND_LARGE_INSTRUCT_MIN_
 
 - The boss trains its round 1-3 tasks and the continuous task when the tournament starts.
 - The GRPO and DPO tasks are created with the boss round.
-- The big instruct task runs last. It is created once the other three are scored, if the crown is in reach ([early stop](../validator/tournament/README.md#crown-early-stop-and-placements)).
+- The big instruct task runs last. It is created once the other three are scored, and only if the challenger can then take the [crown](miner.md#the-boss-and-the-crown) by winning it.
 
 <details>
 <summary>When another model is carried</summary>
@@ -80,7 +81,8 @@ Every task runs one Docker image, built from `ops/docker/standalone-text-trainer
 
 Source: [`trainer/runtime.py: run_trainer_container_text`](../trainer/runtime.py), [`trainer/training_paths.py`](../trainer/training_paths.py).
 
-The train split is one JSON file of rows.
+- The train split is one JSON file of rows.
+- Budgets are between 0.25 and 5 hours and vary by task. A task of rounds 1-3 gets at most 2.5 hours.
 
 ### Dataset type
 
@@ -172,22 +174,16 @@ Source: [`validator/evaluation/evaluators/`](../validator/evaluation/evaluators/
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the smaller allowance, within the larger allowance, or beyond both. This table says what each is on a text task.
+The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). This table says what a win is on a text task and which value the two sides are compared on.
 
-| Task | Win | Smaller allowance | Larger allowance |
-| --- | --- | --- | --- |
-| Instruct, continuous, DPO | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss, with a score at least 1% better | a better score than the boss, short of a win | a score level with the boss, or at most 1% worse |
-| GRPO | a score at least 1% better | a better score than the boss, short of a win | a score level with the boss, or at most 1% worse |
+| Task | Compared on | Win |
+| --- | --- | --- |
+| Instruct, continuous, DPO | the [task score](#scoring) | a score at least 1% better, and a pass on the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss |
+| GRPO | the [task score](#scoring) | a score at least 1% better |
 
-- Percentages are relative to the boss's score.
-- A non-win is banded on the score alone, whatever the paired test said. A task whose per-example losses cannot be paired is a non-win too.
+- The paired test only decides whether a result is a win. A result that is not a win is placed on the score alone, whether the test was failed or the per-example losses could not be paired.
 
-Source: [`TEXT_CROWN_WIN_MARGIN`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).
-
-Payout notes for text:
-
-- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on. A champion that defends the crown keeps the margin it first won with. A margin above `0.10` adds twice the excess to the text share, up to its maximum in [Payouts](miner.md#payouts) ([`calculate_emission_boost_from_perf`](../validator/scoring/weights.py)).
-- When the boss keeps the crown, the [per-contender rule](../validator/tournament/README.md#per-contender-rule) decides whether 2nd and 3rd are paid.
+Source: [`TEXT_CROWN_WIN_MARGIN`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).
 
 ## Local testing
 

@@ -88,7 +88,7 @@ Each round is one task attached from its seed, so the miners and the boss compre
 
 ## Crown, early stop and placements
 
-The crown rule below decides the text and the compression tournament. What counts as a win on each task is in the miner guides: [text](../../docs/miner_text.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament has a boss-round rule in the [image guide](../../docs/miner_image.md#the-crown), and shares [Placements](#placements).
+The crown rule below decides the text and the compression tournament. Miners read the rule in plain words, the image tournament's included, in [The boss and the crown](../../docs/miner.md#the-boss-and-the-crown). What counts as a win on each task is in the miner guides: [text](../../docs/miner_text.md#the-crown), [image](../../docs/miner_image.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament shares [Placements](#placements).
 
 ### The boss in rounds 1-3
 
@@ -116,8 +116,8 @@ So a crown is one of three results:
 | Wins | Non-wins |
 | --- | --- |
 | 7 | none |
-| 6 | one, within the larger allowance |
-| 5 | two: one within the smaller allowance, the other within the larger allowance |
+| 6 | one, within either allowance |
+| 5 | two, each within an allowance, at least one of them within the smaller |
 
 Any other set of head-to-heads leaves the boss in place.
 

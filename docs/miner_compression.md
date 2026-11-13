@@ -14,14 +14,16 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | --- | --- |
 | You compete on | compressing a given bfloat16 (bf16) model, within the task's time budget |
 | You submit | a training repository. Its container writes one compressed model per task. The repository must also contain a `decoder/` directory, which is required to enter and is used on freeform tasks only |
-| Enrolment | the shared checks, read at your pinned commit, plus a [decoder check](#enrolment-checks) |
+| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository. It is the same file name the text tournament uses |
+| Enrolment | the shared checks, made at your pinned commit, plus a [decoder check](#enrolment-checks) |
 | Tracks | fixed: a checkpoint in a prescribed format, loaded as it is. Freeform: any bytes, which your `decoder/` expands to bf16 |
-| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository |
 | Rounds | three, one task each: freeform, fixed, freeform |
 | Boss round | four tasks: two freeform, two fixed |
 | Task score | fixed: loss, lower is better. Freeform: total bytes with a penalty on loss, lower is better |
 
 ## Rounds
+
+The models you compress come from a text tournament. They are the models its defending champion, the text boss, trains: one in each of its three rounds and one on its [continuous task](miner_text.md#the-boss-round).
 
 Each round is one task. Every miner in the round, and the boss, compresses the same input model.
 
@@ -35,9 +37,10 @@ Source: [`QUANT_ROUND_PLAN`](../validator/tournament/constants.py), [`round_resu
 
 The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>`. `A16` means bf16 activations.
 
-- The input models are the ones the text boss trains in a text tournament, at the sizes in the [text guide](miner_text.md#rounds). A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
+- The input models have the sizes in the [text guide](miner_text.md#rounds). A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
 - Advancement uses average rank over every round played so far, ranked among the surviving miners.
-- Viability cut: after round 2, a miner is dropped if no round-3 result, its own or the others', lets it finish top or joint top overall.
+- With fewer miners than slots, all advance.
+- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. Round 3 can therefore have fewer miners than advanced from round 2.
 - The miner that advances from round 3 is the challenger.
 
 <details>
@@ -83,7 +86,7 @@ Every task runs one Docker image, built from `ops/docker/standalone-text-trainer
 Source: [`trainer/runtime.py: run_trainer_container_text`](../trainer/runtime.py), [`core/models/quant_models.py`](../core/models/quant_models.py).
 
 - `--model` is the input model to compress.
-- Budgets are between 0.5 and 5 hours and vary by task. `--hours-to-complete` carries the budget.
+- Budgets are between 0.5 and 5 hours and vary by task.
 - The train split is one JSON file of rows. `--dataset-type` carries the `InstructTextTask` or `ChatTask` fields listed in [Dataset type](miner_text.md#dataset-type).
 
 This is `--quant-spec` for `W2A16-asym-g64`:
@@ -115,8 +118,7 @@ Every task sets `QUANT_TARGET`.
 | `knee`, `cap` | freeform only, as ratios of the reference loss: bytes are unpenalised up to the knee, and an entry above the cap ranks behind every entry at or under it |
 | `knee_loss`, `cap_loss` | freeform only: the same two as absolute losses |
 | `penalty_curvature` | freeform only: curvature of the penalty |
-| `bar_cap` | freeform only: `knee - 1`, the relative loss increase that carries no penalty |
-| `bar` | freeform only: equal to `knee_loss` |
+| `bar_cap`, `bar` | freeform only: other names for the knee. `bar_cap` is `knee - 1` and `bar` is `knee_loss` |
 
 ### The calibration set
 
@@ -234,6 +236,7 @@ You are scored on the model the evaluator serves from your upload. Only `config.
 | `weight_shape` | `I64` | `[2]` |
 | `weight_zero_point` (asymmetric only) | `I32` | `[ceil(out x bits / 32), in / group_size]` |
 
+- `weight_packed` is packed along the input dimension and `weight_zero_point` along the output dimension, so their shapes differ.
 - Every other tensor is `BF16` at its input name and shape.
 - Packing is dense: values form a contiguous bitstream across 32-bit words, with no padding bits.
 - An extra tensor, a missing tensor or a different shape is a scored fail.
@@ -277,7 +280,8 @@ Two policy rules apply to the decoder, on top of the shared ones in [Fair play a
 <details>
 <summary>What is published</summary>
 
-- Your decoder is held by the validator. The champion's decoder is published with its code after the tournament. Decoders of other miners are not published.
+- The validator holds your decoder snapshot. The champion's is published with its code after the tournament. No other snapshot is published.
+- A repository confirmed as a duplicate submission is published whole ([Publication](miner.md#publication)), its `decoder/` directory included.
 - The decoded bf16 models of boss-round freeform entries are published as public model repos.
 
 </details>
@@ -341,7 +345,9 @@ The knee (1.04), cap (1.08) and curvature (2500) are in [`validator/scoring/cons
 
 </details>
 
-`total_bytes` is every file you upload plus the size of your decoder after xz. The decoder is measured as the `git archive` of `decoder/` at your pinned commit. To reproduce that number:
+`total_bytes` is the size of every file in the Hugging Face repo your output is uploaded to, plus the size of your decoder after xz. The repo holds `quant_manifest.json`, the files it lists and any file Hugging Face adds, such as `.gitattributes`. All of them count ([`artifact_bytes_from_hub`](../validator/evaluation/quant_artifacts.py)).
+
+The decoder is measured as the `git archive` of `decoder/` at your pinned commit. To reproduce that number:
 
 ```bash
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -358,29 +364,55 @@ A submission the evaluator cannot score is a scored fail and ranks last: a wrong
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the smaller allowance, within the larger allowance, or beyond both. This table says what each is on a compression task.
+The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). This table says what a win is on a compression task and which value the two sides are compared on.
 
-| Track | Win | Smaller allowance | Larger allowance |
-| --- | --- | --- | --- |
-| Freeform | at least 3% fewer effective bytes `S` than the boss | fewer `S` than the boss, by less than 3% | the same `S` as the boss, or at most 1% more |
-| Fixed | passes the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test), with a loss at least 1% better | a lower loss than the boss, short of a win | a loss equal to the boss's, or at most 1% higher |
+| Track | Compared on | Win |
+| --- | --- | --- |
+| Freeform | the effective size `S` in [Freeform](#freeform), lower is better | an `S` at least 3% lower |
+| Fixed | the normalised loss `r` in [Scoring](#scoring), lower is better | an `r` at least 1% lower, and a pass on the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss |
 
-- Percentages are relative to the boss's value.
-- Freeform: any other result is banded on `S` alone, so one byte fewer than the boss is within the smaller allowance and equal bytes are within the larger one.
-- Fixed: any other result is banded on the scalar loss alone, whatever the paired test said: a draw, a test the boss passes against the challenger, or per-example losses that cannot be paired.
+- A scored fail, a failed training job, or a freeform entry over the cap is no valid result.
+- Freeform: one byte fewer than the boss is better than the boss, and equal bytes are level with it.
+- Fixed: the paired test only decides whether a result is a win. A result that is not a win is placed on `r` alone, whether the test was failed or the per-example losses could not be paired.
 
-Source: [`QUANT_FREEFORM_BOSS_BYTE_MARGIN`, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: freeform_head_to_head`, `fixed_head_to_head`](../validator/tournament/crown.py).
-
-Payout notes for compression:
-
-- When the boss keeps the crown, the [per-contender rule](../validator/tournament/README.md#per-contender-rule) decides whether 2nd and 3rd are paid.
+Source: [`QUANT_FREEFORM_BOSS_BYTE_MARGIN`, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT`](../validator/tournament/constants.py), [`crown.py: freeform_head_to_head`, `fixed_head_to_head`](../validator/tournament/crown.py).
 
 ## Local testing
 
-No script in `ops/examples/training` runs a compression task. Two parts can be checked by hand:
+No script in `ops/examples/training` runs a compression task. The decoder can be run in the sandbox the trainer uses, built from this repository. Run these from its root:
 
-- The decoder's counted size is reproduced by the `git archive | xz` command in [Freeform](#freeform).
-- The decoder is run as `python decoder/decode.py <artifact dir> <output dir>`, under the limits in [Freeform track: artifact and decoder](#freeform-track-artifact-and-decoder).
+```bash
+docker build -f ops/docker/quant-decoder-run.dockerfile -t gradientsio/quant-decoder-run:pinned .
+docker build -f ops/docker/quant-decoder-build.dockerfile -t gradientsio/quant-decoder-build:pinned .
+
+SANDBOX="--rm --network none --read-only --tmpfs /tmp:size=1g -e HOME=/tmp \
+  --user $(id -u):$(id -g) --cap-drop ALL --security-opt no-new-privileges \
+  --cpus 16 --pids-limit 256"
+
+# Build phase. Skip it when decoder/ has no build.sh.
+timeout 900 docker run $SANDBOX --memory 8g \
+  -v "$DECODER:/decoder:ro" -v "$BUILD:/build" \
+  gradientsio/quant-decoder-build:pinned /bin/sh /decoder/build.sh
+
+# Run phase.
+timeout 900 docker run $SANDBOX --memory "$MEMORY" \
+  -v "$ARTIFACT:/artifact:ro" -v "$DECODER:/decoder:ro" -v "$BUILD:/build:ro" -v "$OUTPUT:/output" \
+  gradientsio/quant-decoder-run:pinned python /decoder/decode.py /artifact /output
+```
+
+| Variable | Value |
+| --- | --- |
+| `DECODER` | absolute path of your repository's `decoder/` directory |
+| `ARTIFACT` | absolute path of a directory holding the files your job uploads |
+| `BUILD`, `OUTPUT` | absolute paths of two empty directories your user can write. `BUILD` is mounted in the run phase with or without a `build.sh` |
+| `MEMORY` | 2.5 x the input model's bf16 bytes, as a number of bytes, and at least `8g` |
+
+Source: [`build_phase_spec`, `run_phase_spec`](../trainer/quant_decode/sandbox.py).
+
+Then check two things by hand:
+
+- `$OUTPUT` meets the output rule in [Freeform track: artifact and decoder](#freeform-track-artifact-and-decoder).
+- The decoder's counted size, with the `git archive | xz` command in [Freeform](#freeform).
 
 ## Checklist
 

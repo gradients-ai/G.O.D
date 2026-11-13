@@ -10,21 +10,28 @@ On this page: [What miners do](#what-miners-do) Â· [Tournaments](#tournaments) Â
 
 Miners submit code. You publish a GitHub repository, pin a commit, and run a small miner service that tells the validator which repository to use. The validator's trainers, its GPU machines, build and run it, and the output is ranked against the other miners'.
 
+What you need:
+
+- A Bittensor wallet: a coldkey that holds TAO, and a hotkey registered on the subnet.
+- TAO for subnet registration and for the entry fee.
+- A small always-on machine with a public IP address, for the miner service.
+- No GPU. Training runs on the validator's machines.
+
 > [!IMPORTANT]
 > Repositories are published in the cases listed in [Fair play and review](#fair-play-and-review). Submit only code you are prepared to open-source.
 
 Path to your first entry:
 
 1. Pick a tournament in [Tournaments](#tournaments) and read its guide.
-2. Build a repository that meets the [shared rules](#training-repository) and the guide's contract.
+2. Build a repository that meets the [shared rules](#training-repository) and the guide's contract. The winning repositories published at [github.com/gradients-opensource](https://github.com/gradients-opensource) are working references.
 3. Test it locally, as the guide's Local testing section describes.
 4. Complete subnet registration and post your IP (see [Entering a tournament](#entering-a-tournament)).
-5. Set your repository and full commit SHA in the endpoint for that tournament and start the miner service.
-6. Fund your coldkey balance with at least the entry fee.
+5. In [the endpoint](#the-endpoint-response), return your repository and full commit SHA for that tournament and decline the other tournaments. Start the miner service.
+6. Top up your [tournament balance](#balance-and-fee) with at least the entry fee, before the tournament's start hour.
 
 ## Tournaments
 
-Three tournaments run every week. Times are UTC.
+Three tournaments run every week. Times are UTC. `quant` is the API value of the compression tournament.
 
 | Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
 | --- | --- | --- | --- | --- |
@@ -32,7 +39,7 @@ Three tournaments run every week. Times are UTC.
 | Image | `GET /training_repo/image` | Monday 11:00 | `0.4 TAO` | [Image guide](miner_image.md) |
 | Compression | `GET /training_repo/quant` | Monday 13:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
 
-Each tournament is entered on its endpoint and charges one fee per entry. `quant` is the API value of the compression tournament. Entering two tournaments is two entries and two fees.
+Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
 
 ## Training repository
 
@@ -93,7 +100,7 @@ Every container receives these. The guides list the rest.
 | `--task-id` | The task's identifier. |
 | `--model` | The model to work on, by name. Its files are at the model path below. |
 | `--expected-repo-name` | The name of your output directory. |
-| `--hours-to-complete` | The deadline in hours, counted from container start. |
+| `--hours-to-complete` | The task's time budget in hours. It is the deadline, counted from container start. |
 | `BASELINE_STATS_PATH` | Path to a JSON file of model and dataset statistics. Set when the task has them. |
 
 ### Paths
@@ -115,7 +122,7 @@ The uploader reads only that output path. Task data paths are in the guides.
 
 ## Entering a tournament
 
-Two steps have similar names. Subnet registration puts your hotkey on the subnet, once. Enrolment adds you to one tournament, every week.
+Subnet registration puts your hotkey on the subnet, once. Enrolment adds you to one tournament, every week.
 
 ### Subnet registration and the miner service
 
@@ -159,17 +166,34 @@ Do this well before the weekly start. The validator asks only miners it already 
 
 ### The endpoint response
 
-At enrolment the validator calls `GET /training_repo/{task_type}` on your miner. You control the answer in `miner/endpoints/training_repo.py`:
+The validator calls `GET /training_repo/{task_type}` on your miner on each enrolment pass of each tournament. `task_type` is `text`, `image` or `quant`.
+
+> [!IMPORTANT]
+> Answering a tournament's endpoint with a repository enters you in that tournament and charges its fee.
+
+You control the answer in `miner/endpoints/training_repo.py`. The file as shipped answers every tournament with one repository, so change it. Return a repository for each tournament you enter and decline the others:
 
 ```python
+from fastapi import HTTPException
+
+REPOS = {
+    TournamentType.TEXT: ("https://github.com/YOUR_USERNAME/YOUR_TEXT_REPO", "0123456789abcdef0123456789abcdef01234567"),
+}
+
+
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
+    if task_type not in REPOS:
+        raise HTTPException(status_code=404, detail="not entering this tournament")
+    github_repo, commit_hash = REPOS[task_type]
     return TrainingRepoResponse(
-        github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
-        commit_hash="0123456789abcdef0123456789abcdef01234567",
+        github_repo=github_repo,
+        commit_hash=commit_hash,
         github_token=None,
         requested_datasets=None,
     )
 ```
+
+To enter another tournament, add its `TournamentType` (`TEXT`, `IMAGE` or `QUANT`) to `REPOS`. Each entry can name a different repository or commit.
 
 | Field | Rule |
 | --- | --- |
@@ -178,7 +202,11 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 | `github_token` | Optional. Needed only for a private repository. |
 | `requested_datasets` | Leave as `None`. |
 
-You may return a different repository or commit for each tournament. A miner that does not answer for a tournament is not enrolled in it.
+The validator reads each of these as declining a tournament, and neither enrols nor charges you:
+
+- a status other than 200, such as the 404 above
+- no answer within 10 seconds, or a connection error
+- a body that is not the response above, or an empty `github_repo` or `commit_hash`
 
 <details>
 <summary>Private repositories</summary>
@@ -207,6 +235,7 @@ Duplicate entries are dropped before the enrolment checks run. The kept entry mu
 - The fee is charged at enrolment, after your repository passes the checks.
 - With too little balance you are not enrolled and nothing is charged.
 - A coldkey is charged at most once per tournament.
+- The fee is not refunded. It stays charged when you are eliminated in a round, when your entry is eliminated as a [duplicate submission](#duplicate-submission-check) before round 1, and when your tasks fail because a Dockerfile is missing or does not build.
 
 Top up by transferring TAO from your coldkey to the collection address:
 
@@ -218,9 +247,17 @@ Check the fees and your balance with the endpoints in [Results](#results).
 
 ### Scheduling
 
+A week from the miner's seat:
+
+1. Before the tournament's start hour, your miner service is answering and your balance holds the fee.
+2. The tournament is created during its start hour. The first enrolment pass follows on the validator's next cycle, normally within a minute or two. The pass asks every miner on the subnet for its repository, runs the checks and enrols the entries that pass.
+3. A pass that leaves at least four miners enrolled starts the tournament and closes enrolment. A miner that was not answering by then waits for the following week.
+4. A pass that leaves fewer than four is repeated every 30 minutes. Miners enrolled by an earlier pass stay enrolled and charged.
+5. Rounds run through the week. The target for completion is Friday 14:00 UTC.
+
 | Rule | Value |
 | --- | --- |
-| Minimum field | 4 enrolled miners. A pending tournament retries enrolment every 30 minutes until it has them. |
+| Minimum field | 4 enrolled miners, not counting the boss. |
 | One at a time | A tournament is created only when none of its kind is pending or active. |
 | Start window | Creation happens during the tournament's start hour. If the hour is missed, the next chance is the following week. |
 | First tournament | Created at once when none of its kind has ever run. |
@@ -228,13 +265,67 @@ Check the fees and your balance with the endpoints in [Results](#results).
 
 ## The boss and the crown
 
-The boss is a tournament's defending champion, and the challenger is the one miner left after the rounds. The challenger is compared with the boss task by task and must beat it to take the crown.
+The boss is a tournament's defending champion. The challenger is the one miner left after the rounds. The challenger takes the crown by beating the boss under the rule below. Otherwise the boss keeps it.
 
-The crown rule and what counts as a win on each tournament's tasks are in its guide: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). Who takes 1st, 2nd and 3rd is in [Placements](../validator/tournament/README.md#placements).
+### Text and compression
+
+The crown is decided over seven head-to-heads between the challenger and the boss: the task of each of rounds 1-3, which the boss also runs, and the four boss-round tasks. Each head-to-head compares the two on the value the task is judged by, which your guide names, and has one of four outcomes for the challenger.
+
+| Outcome | Meaning |
+| --- | --- |
+| Win | Better than the boss by the task's win margin, or a valid result where the boss has none. |
+| Within the smaller allowance | Better than the boss, but short of a win. |
+| Within the larger allowance | Level with the boss, or at most 1% worse. |
+| Beyond both | Worse than the boss by more than 1%, or no valid result from the challenger. |
+
+Percentages are relative to the boss's value, in every tournament.
+
+The challenger takes the crown with one of these results over the seven:
+
+| Wins | The other head-to-heads |
+| --- | --- |
+| 7 | none |
+| 6 | one, within either allowance |
+| 5 | two, each within an allowance, and at least one of them within the smaller |
+
+Any other result leaves the crown with the boss: three or more head-to-heads not won, one beyond both allowances, or two that are both level with the boss or worse.
+
+Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown.
+
+Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: crown_verdict`](../validator/tournament/crown.py).
+
+### Image
+
+The crown is decided on the six boss-round tasks alone, which the challenger and the boss both train. The challenger takes the crown by winning at least five of the six.
+
+Source: [`determine_boss_round_winner`](../validator/tournament/round_results.py).
+
+### What a win is
+
+What a win is on each task, and the value the comparison is made on, are in the guides: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). The mechanics behind the rule and its edge cases are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
+
+### The champion's next week
+
+A champion defends without doing anything. The boss is entered from the published copy of the winning repository, at that copy's latest commit, and pays no fee. A champion whose miner also answers the endpoint is enrolled and charged as an ordinary entrant.
 
 ## Payouts
 
-Each tournament pays the top places of its latest completed run until the next run of its kind completes.
+The top three of a tournament are paid. The validator sets a weight on the hotkey that entered, and that weight is the hotkey's share of the subnet's miner emission. It is paid from the moment the tournament completes until the next tournament of its kind completes.
+
+Keep that hotkey registered on the subnet. A share whose hotkey is not registered is burned.
+
+### Who holds each place
+
+| Result | 1st | 2nd | 3rd |
+| --- | --- | --- | --- |
+| The challenger takes the crown | challenger | boss | third-place miner |
+| The boss keeps the crown | boss | challenger | third-place miner |
+
+- A place held by the boss is paid to the defending champion's hotkey.
+- Which miner is third in each tournament is in [Placements](../validator/tournament/README.md#placements).
+- Text and compression only: when the boss keeps the crown, the miners in 2nd and 3rd are each compared with the boss on average rank over rounds 1-3. If the boss's average rank is strictly better than a miner's, that miner's share goes to the defending champion. On a tie the miner is paid.
+
+Source: [`boss_rank_shares.py`](../validator/tournament/boss_rank_shares.py), [`get_boss_round_pair_weights`](../validator/scoring/tournaments.py), [`_paid_node_id`](../validator/scoring/weights.py).
 
 ### Share per tournament
 
@@ -255,16 +346,26 @@ The minimums sum to 0.75. The other 0.25 floats between the tournaments by parti
 | Three | 76.2% | 19.0% | 4.8% |
 | Two | 80% | 20% | |
 
-Up to three places are paid, each a quarter of the one above. Who holds each place is in [Placements](../validator/tournament/README.md#placements).
+Each paid place gets a quarter of the one above. Two places are paid when the tournament has no third-place miner.
 
 ### Other rules
 
 | Rule | Value |
 | --- | --- |
+| Outside the top three | Nothing from the tournament's share. |
 | Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The tournament shares scale down by the total paid this way. |
 | No winner | A tournament with no completed run has no payee. Its share is not paid out. |
 
-Where a guide describes a champion boost, it raises that tournament's share. All three shares are then rescaled to sum to 1, so any share can fall under its base minimum.
+### Champion boost
+
+Text and image only. Compression has none.
+
+- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on.
+- A champion that defends the crown keeps the margin it first won with.
+- A margin above `0.10` adds twice the excess to the tournament's share, up to its maximum. Every paid place of that tournament is paid from the raised share.
+- All three shares are then rescaled to sum to 1, so any share can fall under its base minimum.
+
+Source: [`calculate_emission_boost_from_perf`, `get_tournament_burn_details`](../validator/scoring/weights.py).
 
 ## Results
 
@@ -321,11 +422,12 @@ These lines are tournament policy. The automated checks are a floor, not the ful
 
 | Symptom | Likely cause |
 | --- | --- |
-| Not enrolled | A branch name returned as `commit_hash`, a failed licence or obfuscation check, too little balance, or a duplicate entry by IP, GitHub account or coldkey. |
+| Not enrolled | The service was not answering at the enrolment pass, a branch name was returned as `commit_hash`, a licence or obfuscation check failed, the balance was too low, or the entry was a duplicate by IP, GitHub account or coldkey. |
+| Enrolled in a tournament you did not mean to enter | Your endpoint answered it with a repository. See [The endpoint response](#the-endpoint-response). |
 | Clone fails | The private repository's token expired or cannot read the repository. |
 | Job fails before training | A Dockerfile your guide names is missing from your repository, or the build passed its time limit. |
 | Download fails inside the container | The container has no internet. Read the task's files from `/cache`. |
 | Write fails | The path is under `/cache`, which is read-only. Write under `/app/checkpoints`. |
 | Nothing to evaluate | The output is not at the [output path](#paths), or nothing was there at the deadline. |
 | Eliminated as a duplicate submission | The code matched another entry. See [Duplicate-submission check](#duplicate-submission-check). |
-| Need the training logs | Grafana: <http://185.141.218.122:3001/> |
+| Need the training logs | Grafana: <http://185.141.218.122:3001/>. Filter by the `task_id` and your `hotkey`. |
