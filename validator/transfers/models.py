@@ -66,19 +66,15 @@ class TransferConfig(BaseModel):
 
 
 # TaoStats API Models
-class AddressInfo(BaseModel):
-    """Address information model from TaoStats API"""
-
-    ss58: str = Field(..., description="SS58 formatted address")
-    hex: str = Field(..., description="Hex formatted address")
-
-
 class TaoStatsTransferData(BaseModel):
-    """Individual transfer data model from TaoStats API"""
+    """One transfer from GET /v1/transfers.
+
+    from and to are plain SS58 strings. The old /api/transfer/v1 objects with ss58 and hex are gone.
+    """
 
     id: str = Field(..., description="Transfer ID")
-    to: AddressInfo = Field(..., description="Recipient address information")
-    from_: AddressInfo = Field(..., alias="from", description="Sender address information")
+    to: str = Field(..., description="Recipient SS58 address")
+    from_: str = Field(..., alias="from", description="Sender SS58 address")
     network: str = Field(..., description="Network name")
     block_number: int = Field(..., description="Block number")
     timestamp: str = Field(..., description="ISO timestamp")

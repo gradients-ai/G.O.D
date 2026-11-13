@@ -78,6 +78,8 @@ def materialize_model(api, repo, filename, directory):
 
 
 def prepare_base(api, task, root):
+    from core.models.image_models import select_standalone_flux_checkpoint
+
     model_type = task["model_type"]
     logger.info("preparing base model family=%s repo=%s", model_type, task.get("model_id"))
     if model_type == "ideogram4":
@@ -87,12 +89,12 @@ def prepare_base(api, task, root):
         repo = task["model_id"]
         info = api.model_info(repo, files_metadata=True)
         candidates = [
-            f for f in info.siblings
+            (f.rfilename, f.size)
+            for f in info.siblings
             if f.rfilename.endswith(".safetensors") and "/" not in f.rfilename and (f.size or 0) > 5 * 1024**3
         ]
-        if len(candidates) != 1:
-            raise ValueError("Base model requires one unambiguous root-level ComfyUI checkpoint")
-        filename = candidates[0].rfilename
-        logger.info("selected base checkpoint repo=%s file=%s size=%s", repo, filename, _fmt_bytes(candidates[0].size))
+        filename = select_standalone_flux_checkpoint(candidates)
+        selected_size = next(size for name, size in candidates if name == filename)
+        logger.info("selected base checkpoint repo=%s file=%s size=%s", repo, filename, _fmt_bytes(selected_size))
     folder = "unet" if model_type == "flux" else "diffusion_models"
     return materialize_model(api, repo, filename, root / "models" / folder)

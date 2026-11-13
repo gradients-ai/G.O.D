@@ -32,28 +32,29 @@ from core.models.model_prep_models import SeqLengthDistribution
 from core.models.model_prep_models import ThroughputStats
 from core.models.model_prep_models import WeightStats
 from core.models.task_models import TaskType
+from core.near_duplicate import FORWARD_SAMPLE_SIZE
+from core.near_duplicate import LENGTH_SAMPLE_SEED
+from core.near_duplicate import LENGTH_SAMPLE_SIZE
+from core.near_duplicate import compute_near_duplicate_rate as _compute_near_duplicate_rate
 
 
 BPB_REFERENCE_MODEL = "gpt2"
 
 # Token-length stats are computed on a random sample and scaled to the full
 # record count; model forward passes use a smaller subset of the SAME sample.
-LENGTH_SAMPLE_SIZE = 2_000
+# LENGTH_SAMPLE_SIZE lives in core.near_duplicate, shared with validator data prep.
 # Model forward passes (init loss, entropy, masked loss) and the content stats
-# (unique tokens, near-duplicate rate, BPB) run on this many samples. The
+# (unique tokens, near-duplicate rate, BPB) run on FORWARD_SAMPLE_SIZE samples. The
 # forward-pass loops are batch_size=1, so this is the dominant cost of model
 # prep; a few hundred to ~1k samples give a stable mean. Decoupled from
 # LENGTH_SAMPLE_SIZE so the token-length distribution stays accurate.
-FORWARD_SAMPLE_SIZE = 1_000
 # Bits-per-byte runs a GPT-2 forward pass per text; 64 is plenty for a stable
 # byte-normalised cross-entropy estimate and keeps the probe cheap.
 BPB_SAMPLE_SIZE = 64
-LENGTH_SAMPLE_SEED = 42
 # Cap per-text length for the CPU-bound content stats so a handful of
 # pathologically long records (e.g. long-document datasets) can't blow up
 # model-prep time. Forward passes are separately capped at max_length=512.
 CONTENT_MAX_TOKENS = 2_048
-NEAR_DUP_MAX_WORDS = 512
 
 # Throughput probe settings.
 THROUGHPUT_TARGET_BATCH_TOKENS = 8_192
@@ -277,28 +278,6 @@ def classify_layer(name: str) -> str:
 
 
 # --- Shared computations ---
-
-def _compute_near_duplicate_rate(texts: list[str], num_perm: int = 128, threshold: float = 0.5) -> float:
-    try:
-        from datasketch import MinHash
-        from datasketch import MinHashLSH
-        lsh = MinHashLSH(threshold=threshold, num_perm=num_perm)
-        minhashes = []
-        for i, text in enumerate(texts):
-            m = MinHash(num_perm=num_perm)
-            for word in text.lower().split()[:NEAR_DUP_MAX_WORDS]:
-                m.update(word.encode("utf-8"))
-            minhashes.append(m)
-            try:
-                lsh.insert(str(i), m)
-            except ValueError:
-                pass
-        dup_count = sum(1 for i, m in enumerate(minhashes) if len(lsh.query(m)) > 1)
-        return dup_count / max(len(texts), 1)
-    except ImportError:
-        print("Warning: datasketch not installed, skipping near-duplicate detection", flush=True)
-        return float("nan")
-
 
 def _compute_bits_per_byte(texts: list[str], device: str = "cpu") -> float:
     """Compute bits-per-byte using GPT-2 reference model.

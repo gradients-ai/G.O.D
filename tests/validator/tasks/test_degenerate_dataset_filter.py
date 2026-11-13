@@ -133,7 +133,10 @@ async def test_near_dup_db_error_is_allowed(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_near_dup_gate_skips_instruct(stub_near_dup_rates):
-    stub_near_dup_rates([0.9])
-    assert await _has_high_near_dup(TaskType.INSTRUCTTEXTTASK) is False
+async def test_near_dup_gate_applies_to_instruct(stub_near_dup_rates):
+    stub_near_dup_rates([t_cst.MAX_NEAR_DUPLICATE_RATE])
+    assert await _has_high_near_dup(TaskType.INSTRUCTTEXTTASK) is True
     assert await _has_high_near_dup(TaskType.DPOTASK) is True
+
+    stub_near_dup_rates([t_cst.MAX_NEAR_DUPLICATE_RATE - 0.001])
+    assert await _has_high_near_dup(TaskType.INSTRUCTTEXTTASK) is False

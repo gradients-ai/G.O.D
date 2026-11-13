@@ -156,7 +156,7 @@ task db-restore
 
 ## Running A Trainer On A New Machine
 
-Trainer nodes execute miner code. They need Docker, NVIDIA drivers, NVIDIA Container Toolkit, the repo, and the Python package installed.
+Trainer nodes execute miner code. They need Docker, NVIDIA drivers, NVIDIA Container Toolkit, the repo, and the Python package installed. Training containers should target CUDA **12.8 or lower**.
 
 1. Clone and install:
 
@@ -223,6 +223,10 @@ The endpoint implementation is `miner/endpoints/training_repo.py`. Tournament mi
 ## Observability
 
 The validator can host Grafana/Loki/Prometheus for trainer logs.
+
+Live miner training logs (Grafana on the current observability host):
+
+http://185.141.218.122:3001/
 
 On the validator:
 

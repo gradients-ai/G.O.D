@@ -329,3 +329,9 @@ PERCENTAGE_OF_TASKS_SHOULD_BE_SUCCESS = 0.5
 # Tournament participation fees (in RAO)
 TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO = 700_000_000  # 0.7 TAO = 700,000,000 RAO
 TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO = 400_000_000  # 0.4 TAO = 400,000,000 RAO
+
+# Multi-GPU (>1 GPU) tasks must land on high-interconnect trainers (SXM or NVLink):
+# split across PCIe GPUs the cross-device traffic bottlenecks and the run stalls/OOMs.
+# When True, the scheduler skips PCIe/unknown trainers for >1-GPU requirements and waits
+# for a suitable box rather than placing a multi-GPU job somewhere it will struggle.
+MULTI_GPU_REQUIRES_HIGH_INTERCONNECT = True

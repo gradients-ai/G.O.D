@@ -22,6 +22,7 @@ from core.models.image_models import FLUX_TEXT_ENCODER_ARTIFACTS
 from core.models.image_models import FLUX_VAE_ARTIFACT
 from core.models.image_models import ImageModelType
 from core.models.image_models import ImageTrainingMode
+from core.models.image_models import select_standalone_flux_checkpoint
 from core.models.task_models import TaskType
 from core.tokenizer_utils import ensure_chat_template
 from core.tokenizer_utils import read_chat_template
@@ -149,7 +150,7 @@ def _standalone_flux_checkpoint(
         for repo_file, path in zip(repo_files, paths)
         if len(path.parts) == 1 and path.suffix == ".safetensors"
     ]
-    if len(root_checkpoints) != 1:
+    if not root_checkpoints:
         return None
     if any(path == PurePosixPath("model_index.json") for path in paths):
         return None
@@ -157,9 +158,15 @@ def _standalone_flux_checkpoint(
         return None
     if any(repo_file.path.endswith(WEIGHT_INDEX_SUFFIXES) for repo_file in repo_files):
         return None
-    if SHARDED_CHECKPOINT_PATTERN.search(root_checkpoints[0].path):
+    if any(SHARDED_CHECKPOINT_PATTERN.search(repo_file.path) for repo_file in root_checkpoints):
         return None
-    return root_checkpoints[0]
+    try:
+        selected_name = select_standalone_flux_checkpoint(
+            [(repo_file.path, repo_file.size) for repo_file in root_checkpoints]
+        )
+    except ValueError:
+        return None
+    return next(repo_file for repo_file in root_checkpoints if repo_file.path == selected_name)
 
 
 def _local_repo_path(root: Path, repo_path: str) -> Path:

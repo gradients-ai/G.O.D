@@ -23,6 +23,24 @@ from validator.transfers.models import TransferData
 logger = get_logger(__name__)
 
 RAO_TO_TAO_DIVISOR = 1_000_000_000  # 1 TAO = 1,000,000,000 RAO
+TAOSTATS_TRANSFERS_URL = "https://api.taostats.io/v1/transfers"
+_SS58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def ss58_to_account_hex(address: str) -> str:
+    """Account id as 0x-prefixed hex. /v1/transfers returns SS58 only; the transfers table still stores hex."""
+    value = 0
+    for char in address:
+        value = value * 58 + _SS58_ALPHABET.index(char)
+    pad = len(address) - len(address.lstrip("1"))
+    raw = b"\x00" * pad + (value.to_bytes((value.bit_length() + 7) // 8, "big") if value else b"")
+    if len(raw) == 35:
+        pubkey = raw[1:33]
+    elif len(raw) == 36:
+        pubkey = raw[2:34]
+    else:
+        raise ValueError(f"SS58 address {address} decoded to {len(raw)} bytes")
+    return "0x" + pubkey.hex()
 
 
 def rao_to_tao(rao_amount: int) -> float:
@@ -62,11 +80,10 @@ async def fetch_taostats_transfers(
         page: Page number (default: 1)
 
     Returns:
-        TaoStatsTransferResponse: Parsed response data
+        TaoStatsTransferResponse: Every page of the query. data holds the combined rows.
     """
-    base_url = "https://api.taostats.io/api/transfer/v1"
     headers = {"Authorization": api_key, "accept": "application/json"}
-    params = {"network": network, "limit": limit, "page": page}
+    params: dict = {"network": network, "limit": limit, "page": page}
 
     if to_address:
         params["to"] = to_address
@@ -77,12 +94,23 @@ async def fetch_taostats_transfers(
     if timestamp_end:
         params["timestamp_end"] = timestamp_end
 
+    def _get_page(page_number: int) -> TaoStatsTransferResponse:
+        response = requests.get(TAOSTATS_TRANSFERS_URL, headers=headers, params={**params, "page": page_number})
+        response.raise_for_status()
+        return TaoStatsTransferResponse.model_validate(response.json())
+
     try:
         loop = asyncio.get_event_loop()
-        response = await loop.run_in_executor(None, lambda: requests.get(base_url, headers=headers, params=params))
-        response.raise_for_status()
-
-        return TaoStatsTransferResponse.model_validate(response.json())
+        first = await loop.run_in_executor(None, lambda: _get_page(page))
+        rows = list(first.data)
+        next_page = first.pagination.next_page
+        while next_page:
+            page_response = await loop.run_in_executor(None, lambda page_number=next_page: _get_page(page_number))
+            rows.extend(page_response.data)
+            next_page = page_response.pagination.next_page
+        if len(rows) == len(first.data):
+            return first
+        return first.model_copy(update={"data": rows})
 
     except requests.exceptions.RequestException as e:
         raise Exception(f"API request failed: {e}")
@@ -102,10 +130,10 @@ def convert_taostats_to_internal(taostats_transfer: TaoStatsTransferData) -> Tra
     """
     return TransferData(
         id=taostats_transfer.id,
-        to_ss58=taostats_transfer.to.ss58,
-        to_hex=taostats_transfer.to.hex,
-        from_ss58=taostats_transfer.from_.ss58,
-        from_hex=taostats_transfer.from_.hex,
+        to_ss58=taostats_transfer.to,
+        to_hex=ss58_to_account_hex(taostats_transfer.to),
+        from_ss58=taostats_transfer.from_,
+        from_hex=ss58_to_account_hex(taostats_transfer.from_),
         network=taostats_transfer.network,
         block_number=taostats_transfer.block_number,
         timestamp=datetime.fromisoformat(taostats_transfer.timestamp.replace("Z", "+00:00")),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import hashlib
 import hmac
@@ -43,6 +44,13 @@ from validator.infrastructure.dstack_client import parse_dstack_submitted_at
 logger = get_logger(__name__)
 RUNPOD_DEPLOYMENT_ID_PREFIX = "runpod:"
 RUNPOD_RUN_NAME_PREFIX = "god-eval-"
+# Task types whose repos are evaluated as one batch (GRPO rewards are rank-normalised across the
+# batch) and so must run one pod at a time; see run_runpod_eval_repos.
+SEQUENTIAL_EVAL_TASK_TYPES = frozenset({"grpo"})
+# Results of repos that finished inside a sequential batch whose later repo hit a retryable error,
+# keyed by (task_id, repo). The batch retry reuses them so only the repos that failed are re-run;
+# entries are dropped once the batch completes. In-process only: a validator restart re-runs them.
+_COMPLETED_SEQUENTIAL_RESULTS: dict[tuple[str, str], dict] = {}
 _EVAL_DB_WRITE_SEMAPHORE = asyncio.Semaphore(vcst.EVAL_DB_MAX_CONCURRENT_WRITES)
 
 
@@ -845,36 +853,62 @@ async def run_runpod_eval_repos(
     effective_persister = deployment_id_persister
     if effective_persister is None and persist_deployment_ids:
         effective_persister = default_persister
-    results = await asyncio.gather(
-        *[
-            _run_single_runpod_eval_repo(
-                repo=repo,
-                model_name=model_name,
-                task_type=task_type,
-                image=image,
-                source=source,
-                env=build_env_for_repo(repo),
-                gpu_count=gpu_count,
-                task_id=task_id,
-                psql_db=psql_db,
-                repo_to_hotkey=repo_to_hotkey,
-                hotkey=repo_to_hotkey.get(repo),
-                existing_deployment_name=deployment_ids_by_repo.get(repo),
-                local_logging=local_logging,
-                deployment_id_persister=effective_persister,
-                reserve_deployment_id=reserve_deployment_id,
-            )
-            for repo in repos
-        ],
-        return_exceptions=True,
-    )
+
+    def eval_repo(repo: str) -> Awaitable[dict | str]:
+        return _run_single_runpod_eval_repo(
+            repo=repo,
+            model_name=model_name,
+            task_type=task_type,
+            image=image,
+            source=source,
+            env=build_env_for_repo(repo),
+            gpu_count=gpu_count,
+            task_id=task_id,
+            psql_db=psql_db,
+            repo_to_hotkey=repo_to_hotkey,
+            hotkey=repo_to_hotkey.get(repo),
+            existing_deployment_name=deployment_ids_by_repo.get(repo),
+            local_logging=local_logging,
+            deployment_id_persister=effective_persister,
+            reserve_deployment_id=reserve_deployment_id,
+        )
+
+    results: list[dict | str | BaseException]
+    if task_type in SEQUENTIAL_EVAL_TASK_TYPES:
+        # The batch is scored together, so a retryable failure on any repo resets all of them.
+        # Run in parallel, the pods race for the same GPU type: when capacity fits one pod, the
+        # loser's "no offers" reset throws away the winner's eval and the race repeats every cycle.
+        # One pod at a time needs capacity for only one, and a retryable failure stops the batch early.
+        # Repos that already finished keep their result for the retry, so it re-runs only what failed.
+        results = []
+        for repo in repos:
+            cache_key = (str(task_id), repo)
+            cached = _COMPLETED_SEQUENTIAL_RESULTS.get(cache_key) if task_id is not None else None
+            if cached is not None:
+                logger.info(f"Reusing completed Runpod eval result for {repo} (task {task_id})")
+                results.append(copy.deepcopy(cached))
+                continue
+            try:
+                result = await eval_repo(repo)
+            except Exception as exc:
+                result = exc
+            if isinstance(result, EvaluationRetryableError) and propagate_retryable:
+                raise result
+            if task_id is not None and isinstance(result, dict):
+                _COMPLETED_SEQUENTIAL_RESULTS[cache_key] = copy.deepcopy(result)
+            results.append(result)
+        for repo in repos:
+            _COMPLETED_SEQUENTIAL_RESULTS.pop((str(task_id), repo), None)
+    else:
+        results = await asyncio.gather(*[eval_repo(repo) for repo in repos], return_exceptions=True)
+
     output: dict[str, dict | str | EvaluationRetryableError] = {}
     for repo, result in zip(repos, results):
         if isinstance(result, EvaluationRetryableError):
             if propagate_retryable:
                 raise result
             output[repo] = result
-        elif isinstance(result, Exception):
+        elif isinstance(result, BaseException):
             output[repo] = f"Evaluation failed: {result}"
         else:
             output[repo] = result
