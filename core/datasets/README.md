@@ -1,9 +1,15 @@
-# Core Datasets
+# Core datasets
 
-Dataset fixtures and whitelist data shared across runtime contracts.
+The dataset whitelist and a small example dataset, shared across runtimes.
 
 ## Contents
 
-- `examples/`: small example dataset fixtures.
-- `whitelist.py`: whitelist loading and `requested_datasets` validation.
-- `whitelisted_sft_datasets.json`: approved Hugging Face datasets miners may request for supplemental SFT.
+| Path | Purpose |
+| --- | --- |
+| `examples/` | Example dataset. |
+| `whitelist.py` | Loads the whitelist and filters a miner's `requested_datasets` to whitelisted entries, capped at `MAX_REQUESTED_DATASETS`. |
+| `whitelisted_sft_datasets.json` | Hugging Face datasets a miner may request. |
+
+## See also
+
+- [How your code runs](../../docs/miner.md#how-your-code-runs): how requested datasets reach a container.

@@ -1,10 +1,14 @@
-# Trainer Ops
+# Trainer ops
 
-Trainer host setup and service scripts.
+Files that run the trainer as a system service on a trainer host.
 
 ## Contents
 
-- `install_trainer_service.sh`: install trainer service on a host.
-- `run_image_trainer.sh`: run image trainer manually.
-- `run_text_trainer.sh`: run text trainer manually.
-- `trainer.service`: systemd service file for trainer host operation.
+| Path | Purpose |
+| --- | --- |
+| `install_trainer_service.sh` | Installs, enables and starts `trainer.service`. Run as root. |
+| `trainer.service` | systemd unit for the trainer. |
+
+## See also
+
+- [Running a trainer](../../docs/developer.md#running-a-trainer): trainer setup and configuration.

@@ -1,4 +1,4 @@
-"""The quant boss round on the upfront seeds (validator/tournament/README.md, "Quant tournament flow").
+"""The quant boss round on the upfront seeds (validator/tournament/README.md, "Compression tournament flow").
 
 The boss round attaches the four compression seeds (the text boss's round-2 model freeform, its round-3 model fixed and its
 continuous model freeform and fixed) and adds training rows for the challenger only; the challenger trains from the same

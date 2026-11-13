@@ -1,61 +1,135 @@
-# Validator Tournament Tests
+# Validator tournament tests
 
-Tests for tournament lifecycle, boss rounds, tournament weight distribution, and analytics.
+Tests for `validator/tournament`: scheduling, enrolment, seeds, rounds, the crown rule, orchestration and analytics. The rules they cover are in the [tournament README](../../../validator/tournament/README.md).
+
+Run them from the repository root:
+
+```bash
+pytest tests/validator/tournament
+```
+
+Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `test_decoder_runnable.py` need `git`, `tar` and `xz`, and the database tests in `test_compression_rounds.py` and `test_text_seed_rounds.py` need `initdb` and `pg_ctl`. `test_github_validation.py` runs `git` and fails without it.
 
 ## Contents
 
-- `test_chained_boss_tasks.py`: chained quant tasks held on a text seed task: identical held replacements, re-pointing dependents of a replaced upstream, and the shared-input candidate order (usable runs only, best loss first, exact tie to the boss).
-- `test_quant_boss_round_tasks.py`: the quant boss round's creation seams: four compression tasks (freeform on the text boss's round-2 model, fixed on its round-3 model, freeform and fixed on its continuous model; no instruct, chat or DPO task), the boss's entries trained upfront, the continuous chunk rows of the compressions, the near-duplicate exemption and no presigned URL in logs.
-- `test_quant_boss_round_constants.py`: quant boss-round composition (`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `expected_boss_round_task_count`) as pure functions.
-- `test_quant_boss_crown_rule.py`: the quant crown through `get_round_winners`: seven head-to-heads (rounds 1-3 and the four boss-round tasks) on the shared rule of `crown.py`, only the boss-round tasks persisted, a boss-side seed failure going to the challenger, the task played for a failed boss-round seed won by a valid challenger entry, no crown on any other task shape; image keeps its own rule.
-- `test_quant_boss_round_task_resolution.py`: quant boss-task resolution helpers: fixed on the paired gate plus the 1% scalar minimum, freeform on the cap and effective bytes, scored fails and missing vectors.
-- `test_quant_tournament_type.py`: quant as a tournament type of its own: every scheduling pass covers text, quant and image (no flag), the Monday 09:00 UTC slot, the first tournament of a type starting at once, the boss lookup that seeds a quant tournament with no history from the latest completed text tournament, and the per-type enrolment fee.
-- `test_quant_dispatch_bucket.py`: tournament tasks reach training through three buckets (image, quant incl. its seed tasks, everything else); a full bucket never blocks another.
-- `test_seed_adapter_merge.py`: a boss seed training that uploads a LoRA adapter is merged into its base and the merged model becomes the seed's output; the seed is never replaced, charged or halted for it.
-- `test_seed_tasks.py`: seed tasks: creation of the four text roles and the seven quant roles (`quant_r1`-`quant_r3` and the four boss-round compressions; size bands, flags, tournament- and role-seeded 2-bit or 3-bit formats, idempotent on retry, reused by a replacement), the boss node assignment and commit pin, task-list filters, hours routing, trainer priority (miner rows, the boss's compression rows), the boss-round hold before PREEVALUATION, and the replacement ladder with its halt (a replaced text seed re-points its quant dependents).
-- `test_compression_rounds.py`: the miner rounds on the text boss's models: `QUANT_ROUND_PLAN` (R1 freeform on `text_r1`, R2 fixed on `text_r2`, R3 freeform on `text_r3`, cuts 8/4/1), the held task a round plays when its quant seed role is `failed`, release onto the text boss's model with the seed's split and calibration, replacement as an identical held copy, cuts by average rank with the most-recent-round tiebreak, the boss ranked in each round without an advancement slot, exact ties with the boss sharing a rank, third place after a lone round-3 survivor and its comparison with the boss over rounds 1 and 2, and seed hiding on the endpoints.
-- `test_boss_round_seeds.py`: the quant boss round on the upfront seeds: it attaches the four compression seeds and draws nothing, adds challenger rows only (never the boss's), and both players compress the same text boss model; a failed role plays a task of its own drawn like its seed, without the boss, and waits while its text seed is being replaced.
-- `test_boss_allowed_loss.py`: what counts as a narrow loss on each compression task for the boss-battle analytics (the freeform 1% byte margin, the reversed paired gate: swap determinism, same constants, SKU-aligned vectors, fail closed), and analytics agreeing with crowning.
-- `test_boss_round_draws.py`: a draw is zero decided examples (within both crown allowances on a fixed task, no replacement tasks), freeform never draws, the built size of the quant boss round, and a round with a task that has no assigned nodes is deferred.
-- `test_chained_fixed_judging.py`: chained fixed judging: both players compress the shared input, so the raw-loss paired gate decides, like any fixed boss task (one SKU; two SKUs are in `test_quant_sku_paired_gates.py`).
-- `test_chained_release.py`: release of a held chained task, shared-input path (boss tasks chained on an instruct seed and the miner rounds on a seed, where the boss's output is the one candidate; held until the upstream is SUCCESS and nodes exist; the best usable upstream output becomes the shared `model_id`, a non-full-model, stale-shard-index or missing repo falls back to the other player, a hub error holds the task, no usable output fails both players with `UPSTREAM_FAILURE_REASON`; a held copy of a released task re-applies the rule; upstream split and hours copied unless a fresh-data decider; one task's error does not stop the pass), `_is_full_model_repo`, task-level prep of a released task, and the R3 near-duplicate exemption.
-- `test_chained_training_requests.py`: once released, a shared-input chained task's quant training requests compress the task's shared (augmented) input; quant tasks never read a per-miner starting model on a task-common start point.
-- `test_decoder_registration_gate.py`: quant registration excludes entrants without a snapshot-able decoder, with a symlinked decoder or failing the enforced build lint (logged with its reason), enrols a lint-failing entrant and logs its violations while the lint is warn-only, stores the snapshot on the participant, runs snapshots in parallel under the cap, never snapshots text/image/environment, and snapshots the boss (tolerating a missing decoder).
-- `test_decoder_runnable.py`: registration rejects a decoder with no `decoder/decode.py` or one extracting past the trainer's 64 MiB cap (before upload; one at the cap passes), excludes such an entrant with a warning, and leaves an unrunnable boss with empty snapshot fields. Needs `git`, `tar` and `xz` on PATH.
-- `test_decoder_snapshot.py`: quant decoder snapshot determinism (clone path, mtimes, file order), missing/oversized/symlinked decoder errors, the MinIO upload of the counted bytes, and the `repo_check` hook with the real build lint (enforced and warn-only). Needs `git`, `tar` and `xz` on PATH.
-- `test_github_validation.py`: the licence check reads the pinned commit, not the default branch (on a local two-commit repo; needs `git`), and the obfuscation tool's output is logged without the GitHub token.
-- `test_registration_lint.py`: build lint rule by rule (hash-pinned pip, SHA-pinned git, remote fetches, base images, Dockerfile selection, heredocs, build scripts vs the runtime entrypoint), the 1 MB review listing, and enforce vs warn-only. `fixtures/registration_lint/` holds a passing repo, one violating every rule, and a build with a tagged base image and unhashed requirements.
-- `test_pre_boss_third_place.py`: 3rd-place identification tests (image and unseeded text: pre-boss knockout loser; quant: pre-boss group runner-up). Placement persistence of that 3rd place is covered in `tests/validator/db/test_tournament_placements.py`.
-- `test_quant_decode_plumbing.py`: freeform decode-result persistence (ok, snapshot mismatch, quant_failure, infra error alerted once, no snapshot, organic task not scored), and the PREEVALUATION hold with trainer re-poll (alerted after repeated re-poll failures, summary counting actual moves).
-- `test_quant_sku_paired_gates.py`: SKU alignment of paired quant vectors (boss round fixed/chained, emission projection, knockout): a uniform per-SKU drift leaves every verdict unchanged; a missing reference keeps the boss.
-- `test_quant_reference.py`: `reference_hotkey_for` and `quant_reference_model`: the common input, or the player's own starting model on an own-model task (`OWN_UPSTREAM_MODEL`, `OWN_R1_MODEL`).
-- `test_quant_round_shape.py`: quant tournament shape: R1 one group of every entrant, R2 a group of 8, R3 a group of the survivors, a lone challenger still plays rounds 2 and 3, the round-3 winner meets the burn hotkey in the boss round, scored fails last, top-8 advance by rank.
-- `test_quant_training_request.py`: quant trainer requests: the task's input model, spec and dataset, the freeform decode request.
-- `test_separated_burn_dynamics.py`: per-type tournament weight calculation and node-weight application tests.
-- `test_quant_task_creation.py`: quant task creation: boss-flagged budgets (no instruct term), the `own_r1_model_repo` resolution, and `create_synthetic_quant_task` fields. The miner rounds R1-R3 on the seeds are in `test_compression_rounds.py`.
-- `test_training_request_logging.py`: the trainer request is logged without the GitHub token, the presigned decoder URL or any URL query, on both the success and the schema-failure path.
-- `test_text_r1_single_group.py`: text and image round 1 use one group; a seeded text round plays one task (see `test_text_seed_rounds.py`) and image round 1 three tasks; quant round 1 is one task (see `test_compression_rounds.py`).
-- `test_text_seed_rounds.py`: the text tournament's seeds and rounds 1-3: the boss trains four seed tasks (`text_r1`, `text_r2`, `text_r3`, `text_continuous`) at tournament start, each of rounds 1-3 attaches its seed (the boss's run is the seed, the round's miners train the same task, round 1 in parallel with the boss), the boss takes no advancement slot, and a seed's finalisation is held until it is attached and every player is done.
-- `test_text_boss_round_crown.py`: the seeded text boss round: continuous, GRPO, DPO, then the big task only while a crown is still possible; the early stop after the round-3 cut; and the flow through `advance_tournament` and `get_round_winners` over an in-memory tournament.
-- `test_empty_score_group_guard.py`: `find_groups_with_no_valid_scores` flags a group with no valid challenger score (the guard that halts advancement); the boss's score alone does not count.
-- `test_crown.py`: the shared crown rule (`crown.py`) as pure functions: text (paired test plus 1% on instruct, chat and DPO; GRPO on the score; 0.1% / 0.25% allowances), freeform (3% fewer effective bytes; 1% / 2% more), fixed (paired test plus 1%; a draw within both allowances, a task the boss takes beyond them, no comparable example unpairable), and `crown_verdict` (never crowned on more than seven).
-- `test_quant_early_stop.py`: the quant early stop after the round-3 cut (crown out of reach: boss retained, no boss round, placements), rounds 1 and 2 always run, the retirement of unattached quant seeds the boss has not started once the tournament is decided (also by the seed pass), their finalisation released, no seed replaced or re-created then, and no round seed created for a round that exists.
-- `test_quant_text_linkage.py`: a quant tournament's tasks are created from the text tournament's boss tasks as new tasks with a persisted link (`quant_tournament_sources`, `quant_task_sources`): own rows per slot, release only once the text boss's model has landed, idempotent creation, a missing source neither halts nor duplicates, and the text side never depends on a quant task; also checks the SQL text and the migration.
-- `quant_source_fakes.py`: the in-memory stand-in for `validator.db.sql.quant_sources` the linkage tests share, with the table constraints (one text tournament feeds at most one quant tournament; one live task per quant tournament and slot).
-- `test_continuous_sft_chunk_scheme.py`: the continuous-SFT chunk layout switch: the doubled cursor, the per-task chunk record, the cursor advancing by `max(current, next)` (a task created on the previous layout consumes two chunks of the current one), no chunk repeating, and the SQL the advance issues; run against an in-memory fake of the state and chunk tables.
-- `test_tournament_analytics.py`: tournament analytics tests, including the details endpoint scoring with the stored boss rank comparisons.
-- `test_boss_seed_hold.py`: the boss-round seed hold on every finalising path: the boss's row is evaluated at seed time while the seed stays held until the boss round attaches it and a non-boss player is assigned.
-- `test_boss_seed_time_eval.py`: seed-time evaluation of the boss's boss-round entries (evaluated and stored when trained; the round evaluates only the challenger and ranks from both stored rows), driven through the real lifecycle over an in-memory store.
-- `test_calibration_task_creation.py`: where calibration is carved, inherited or left out: the task flag, quant task construction, recreation, hiding, copying.
-- `test_freeform_release.py`: freeform exposure: handover release of the decoder snapshot and the boss-round decoded model publication (fake HF and MinIO clients).
-- `test_group_standings_tiebreak.py`: multi-match group standings: average rank, then summed normalised gap, then a per-round seeded shuffle.
-- `test_no_public_decoder_path.py`: no public response model serialises the decoder object name, a presigned decoder URL, the PAT or the private repo.
-- `test_own_model_assignment.py`: node assignment for an own-model quant task (`OWN_R1_MODEL`): each player starts from its own full-model R1 repo, else a scored fail; idempotent.
-- `test_quant_gpu_hours.py`: quant compute sizing: GPUs exactly like instruct, hours from prep throughput (flat fallback without stats).
-- `test_quant_prep_reuse.py`: one quant prep per (model, dataset): a quant task copies a sibling's `baseline_stats` and sizes its own hours.
-- `test_quant_reference_gating.py`: quant training gating: scored fails get no slot, a miner waits for its bf16 reference, and gets its target.
-- `test_quant_reference_prepass.py`: the quant reference pre-pass: candidate selection, previous-round copy, measurement and failure handling.
-- `test_round3_viability.py`: after the R2 cut, drop miners that cannot finish top or joint top after R3; a lone survivor still plays R3, and third place then comes from the R1+R2 standings among the miners that advanced from round 2.
-- `test_text_augmentation_r1_only.py`: quant tournaments augment the input seeds only; every other quant task plays its base unmodified.
-- `test_text_cumulative_advancement.py`: quant rounds 2-3 advance by mean rank over rounds 1..N within the surviving cohort.
-- `__init__.py`: package marker.
+**Scheduling and enrolment**
+
+| Path | Covers |
+| --- | --- |
+| `test_quant_tournament_type.py` | The compression tournament: scheduling, the first boss lookup, the entry fee, and the licence and decoder steps that apply to compression miners only. |
+| `test_next_tournament_dates_flag.py` | The next start date is advertised for every tournament. |
+| `test_pending_tournaments_nonblocking.py` | A pending tournament short of miners, or one that raises, does not block the others. |
+| `test_base_contestant_datasets.py` | The boss participant of an environment-type tournament carries the last winner's requested datasets. |
+| `test_github_validation.py` | The licence check at a pinned commit, and token-free logging of the obfuscation check. |
+| `test_registration_lint.py` | The build lint, rule by rule, and the large-file review listing. |
+| `test_decoder_registration_gate.py` | Compression enrolment: miners excluded or enrolled by decoder snapshot and build lint. |
+| `test_decoder_runnable.py` | A decoder with no entrypoint or over the extraction cap is rejected. |
+| `test_decoder_snapshot.py` | Snapshot determinism, decoder errors, the MinIO upload and the lint hook. |
+| `test_boss_decoder_snapshot_retry.py` | The boss's decoder snapshot: retries, repair while pending, the boss row always present. |
+| `test_r2_dedup_includes_boss.py` | The round-2 duplicate gate compares the advancing field against the boss's code. |
+| `test_repo_dedup_reporting.py` | Duplicate report rendering and verdict parsing. |
+
+**Seeds and sources**
+
+| Path | Covers |
+| --- | --- |
+| `test_seed_tasks.py` | Seed creation, the boss pin, task filters, hours routing, trainer priority, the hold and the replacement ladder. |
+| `test_text_seed_rounds.py` | Text seeds and rounds 1-3: attach, standings without the boss, the finalisation hold, seed replacement, adapter merge and seed hiding. |
+| `test_text_seed_failed_role.py` | A failed text seed role never halts or blocks the text tournament. |
+| `test_boss_round_seeds.py` | The compression boss round attaches its four seeds and adds challenger rows only. |
+| `test_boss_seed_hold.py` | The seed hold on every finalising path. |
+| `test_boss_seed_time_eval.py` | The boss's entries are evaluated when trained. The round evaluates the challenger. |
+| `test_boss_seed_prep_failure_completion.py` | A prep-failed boss-round seed is not replaced, and who takes the slot. |
+| `test_prep_failed_seed_slots.py` | A slot nobody produced a result on never credits the challenger. |
+| `test_seed_adapter_merge.py` | A boss adapter output is merged, and the seed is never replaced for it. |
+| `test_quant_text_linkage.py` | Compression tasks are created from the text boss's tasks with a persisted link. |
+| `test_quant_source_failed_role.py` | A failed text seed role never stalls a compression tournament. The slot takes the fallback. |
+| `quant_source_fakes.py` | In-memory stand-in for the source tables, with their constraints. |
+
+**Rounds and standings**
+
+| Path | Covers |
+| --- | --- |
+| `test_compression_rounds.py` | Compression rounds 1-3 on the text boss's models: tasks, release, cuts, the boss's rank, third place. |
+| `test_quant_round_shape.py` | Group sizes through rounds 1-3 and into the boss round. |
+| `test_round3_viability.py` | The viability cut after round 2, and third place when one miner survives. |
+| `test_text_cumulative_advancement.py` | Advancement by mean rank over the rounds played, within the surviving miners. |
+| `test_group_standings_tiebreak.py` | Standings tie-breaks: average rank, summed gap, seeded shuffle. |
+| `test_text_r1_single_group.py` | Round 1 is one group for text and image, and how many tasks it holds. |
+| `test_empty_score_group_guard.py` | A group with no valid challenger score halts advancement. |
+| `test_majority_failure_gate.py` | A task where most trainings failed is held for manual review. |
+| `test_metric_direction.py` | Sort directions: rewards descend, losses ascend. |
+| `test_pre_boss_third_place.py` | Third place from the round before the boss round. |
+| `test_knockout_paired.py` | Per-example win rate between two knockout miners (`paired_head_to_head_winner`). |
+| `test_knockout_resolution.py` | Knockout task resolution end to end with stubbed reads. |
+
+**Crown and boss round**
+
+| Path | Covers |
+| --- | --- |
+| `test_crown.py` | The crown rule and each task kind's win and allowances, as pure functions. |
+| `test_text_boss_round_crown.py` | The text boss round: its tasks, the crown, the early stop and the flow around them. |
+| `test_quant_boss_crown_rule.py` | The compression crown over seven head-to-heads. |
+| `test_quant_early_stop.py` | The compression early stop, and retirement of unattached seeds. |
+| `test_paired_boss_round.py` | The paired per-example test. |
+| `test_paired_example_reporting.py` | The per-example split reported to analytics. |
+| `test_boss_round_task_resolution.py` | Paired test versus relative margin on a boss-round task. |
+| `test_quant_boss_round_task_resolution.py` | Fixed on the paired test, freeform on the cap and effective bytes. |
+| `test_quant_sku_paired_gates.py` | Paired comparisons across GPU SKUs. |
+| `test_chained_fixed_judging.py` | A fixed boss task on a shared input, on one SKU. |
+| `test_boss_allowed_loss.py` | What the boss-battle analytics count as a narrow loss. |
+| `test_boss_round_draws.py` | A draw on a fixed task, freeform never drawing, the built size of the compression boss round, and a round deferred for a task with no nodes. |
+| `test_boss_round_draw_deciders.py` | Draws and decider tasks in a boss round with draws. |
+| `test_boss_round_large_instruct_model.py` | The large-model instruct task of a text boss round. |
+| `test_quant_boss_round_constants.py` | Boss-round composition and the continuous dataset-id encoding. |
+| `test_quant_boss_round_tasks.py` | The four compression boss-round tasks, and creation and log redaction of the tasks on the continuous model. |
+
+**Task creation and release**
+
+| Path | Covers |
+| --- | --- |
+| `test_quant_task_creation.py` | Compression task fields, budgets and replacement copies, and resolution of a miner's round-1 repo. |
+| `test_calibration_task_creation.py` | Where the calibration set is carved, inherited or left out. |
+| `test_text_augmentation_r1_only.py` | Compression tasks other than the input seeds never roll model augmentation. |
+| `test_chained_boss_tasks.py` | Held chained tasks, replacements that keep the chain, and the choice of the shared input. |
+| `test_chained_release.py` | Release of a held chained task: the shared input and its fallbacks, the copied data and budget, model prep after release, the near-duplicate exemption. |
+| `test_chained_training_requests.py` | A released chained task's training requests carry the shared input. |
+| `test_own_model_assignment.py` | Node assignment for a task with a per-miner start model. |
+| `test_replacement_invariants.py` | A replacement task keeps the original's pool, lineage and model type, and the original is detached, not deleted. |
+| `test_carry_forward_continuous_sft.py` | Carrying each continuous lineage's winner to its state row. |
+| `test_continuous_sft_chunk_scheme.py` | Continuous-task position bookkeeping. |
+| `test_continuous_sft_constants.py` | Continuous-SFT constants, the text boss-round task mix, and the dataset-id and lineage helpers. |
+
+**Orchestration and compute**
+
+| Path | Covers |
+| --- | --- |
+| `test_quant_dispatch_bucket.py` | The three queue buckets. A full bucket never blocks another. |
+| `test_quant_scheduling_isolation.py` | A compression row that raises does not hold text and image rows. |
+| `test_quant_reference.py` | Which bf16 model and reference key a compression row is normalised by. |
+| `test_quant_reference_prepass.py` | The reference pre-pass: candidates, copies, measurement, failures. |
+| `test_quant_reference_gating.py` | Training waits for its bf16 reference and gets its target. |
+| `test_quant_training_request.py` | The compression training request and the freeform decode request. |
+| `test_quant_decode_plumbing.py` | Decode-result persistence and the hold for unsettled decodes. |
+| `test_training_request_logging.py` | Trainer requests are logged without secrets. |
+| `test_quant_gpu_hours.py` | Compression GPU and hours sizing. |
+| `test_quant_prep_reuse.py` | One prep per model and dataset, shared between sibling tasks. |
+| `test_continuous_sft_gpu_hours.py` | Continuous task compute sizing. |
+| `test_multigpu_interconnect.py` | Multi-GPU tasks are placed on high-interconnect trainers. |
+
+**Publication, analytics and weights**
+
+| Path | Covers |
+| --- | --- |
+| `test_freeform_release.py` | The decoder release and the boss-round decoded model publication. |
+| `test_no_public_decoder_path.py` | No public response model serialises the decoder object name, a presigned decoder URL or the GitHub token. |
+| `test_tournament_analytics.py` | The tournament details endpoint, including the stored boss rank comparisons. |
+| `test_projection_alpha.py` | Weight projections are constant over the projection horizon. |
+| `test_separated_burn_dynamics.py` | Per-tournament weights and their application to node weights. |
+
+**Support**
+
+| Path | Covers |
+| --- | --- |
+| `fixtures/registration_lint/` | Fixture repositories for the build lint. |
+| `__init__.py` | Package marker. |

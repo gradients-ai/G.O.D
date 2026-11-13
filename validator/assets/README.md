@@ -1,10 +1,11 @@
-# Validator Assets
+# Validator assets
 
-Runtime assets consumed by validator flows.
+Static files the validator reads at runtime.
 
 ## Contents
 
-- `chat_templates/`: chat templates bundled for text evals that name one instead of using the tokenizer's (`chatml.jinja`, byte-identical to the template the axolotl-based eval bundled).
-- `prompts.yml`: prompt templates used by content generation and task workflows.
-- `test_axolotl.yml`: small Axolotl config fixture used for validation/testing.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `chat_templates/` | Chat templates a text task can select by name. |
+| `prompts.yml` | Prompt templates for input reformulation, input and output reformulation, and reward function generation. |
+| `test_axolotl.yml` | Base Axolotl config the instruct, DPO and GRPO evaluators load. |

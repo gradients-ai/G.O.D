@@ -1,8 +1,10 @@
-# Observability Vector
+# Vector log shipping
 
 Vector log shipping configuration.
 
 ## Contents
 
-- `vector.toml`: general validator/service log shipping config.
-- `vector-validator.toml`: validator-specific Vector config.
+| Path | Purpose |
+| --- | --- |
+| `vector.toml` | Ships trainer container logs from a trainer host. |
+| `vector-validator.toml` | Ships validator logs. |

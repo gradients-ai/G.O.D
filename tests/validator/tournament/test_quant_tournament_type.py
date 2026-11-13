@@ -20,7 +20,7 @@ from validator.tournament.models import TournamentType
 
 
 COMMIT = "c" * 40
-IN_SLOT = datetime(2026, 11, 9, 9, 30, tzinfo=timezone.utc)  # Monday 09:30 UTC, inside quant's (0, 9) slot
+IN_SLOT = datetime(2026, 11, 9, 13, 30, tzinfo=timezone.utc)  # Monday 13:30 UTC, inside quant's (0, 13) slot
 OUT_OF_SLOT = datetime(2026, 11, 11, 15, 0, tzinfo=timezone.utc)  # Wednesday afternoon
 IMAGE_SLOT = (t_cst.TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_IMAGE_HOUR)
 CHAMPION = "5TextChampion"
@@ -70,7 +70,7 @@ class TestSchedulerLoop:
 
 class TestFirstTournamentTiming:
     def test_quant_schedule_is_monday_nine(self):
-        assert tm._get_tournament_schedule(TournamentType.QUANT) == (0, 9)
+        assert tm._get_tournament_schedule(TournamentType.QUANT) == (0, 13)
         assert tm._get_tournament_schedule(TournamentType.QUANT) == (
             t_cst.TOURNAMENT_SCHEDULE_QUANT_DAY_OF_WEEK,
             t_cst.TOURNAMENT_SCHEDULE_QUANT_HOUR,

@@ -1,9 +1,10 @@
-# Ops Auditing
+# Auditing
 
-Auditor scripts for running audit workflows outside the main validator service.
+Auditor scripts that check a validator's weights from outside the validator service.
 
 ## Contents
 
-- `audit.py`: main auditor runner.
-- `audit_no_hotkey.py`: auditor runner variant without hotkey assumptions.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `audit.py` | Auditor runner: recomputes weights from published task results and compares them with the validator's. |
+| `audit_no_hotkey.py` | The same audit, run from a minimal config without a registered hotkey. |

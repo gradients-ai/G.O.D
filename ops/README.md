@@ -1,18 +1,24 @@
 # Ops
 
-Operational files for building images, running local services, deploying validators/trainers, examples, config generation, and maintenance tools.
+Operational files for validator and trainer operators: image builds, Compose stacks, host scripts, observability config and command-line tools.
 
 ## Contents
 
-- `auditing/`: auditor scripts.
-- `compose/`: Docker Compose stacks for validator, dev, observability, and trainer log shipping.
-- `devcontainer/`: development container configuration.
-- `docker/`: Dockerfiles, Docker requirements, patches, and environment function files.
-- `editor/`: editor configuration moved out of the repo root.
-- `examples/`: local examples and HTTP request snippets.
-- `maintenance/`: host-level maintenance scripts.
-- `observability/`: Grafana, Loki, Prometheus, Tempo, Vector, and nginx configuration.
-- `runbooks/`: operational debugging guides and notes.
-- `tools/`: Python/CLI tools grouped by domain.
-- `trainer_ops/`: trainer host install/run scripts and service file.
-- `validator_ops/`: validator startup, auto-update, evaluation, and Grafana scripts.
+| Path | Purpose |
+| --- | --- |
+| `auditing/` | Auditor scripts. |
+| `compose/` | Docker Compose stacks for the validator, local development, observability and trainer log shipping. |
+| `devcontainer/` | Development container configuration. |
+| `docker/` | Dockerfiles, Docker-only requirements, patches and build scripts. |
+| `editor/` | Editor configuration. |
+| `examples/` | Example HTTP requests and local training runs. |
+| `maintenance/` | Host-level maintenance scripts. |
+| `observability/` | Grafana, Loki, Prometheus, Tempo, Vector and nginx configuration. |
+| `runbooks/` | Debugging guides for operators. |
+| `tools/` | Python and shell tools grouped by domain. |
+| `trainer_ops/` | Trainer host service installation. |
+| `validator_ops/` | Validator startup, auto-update, manual evaluation and Grafana setup. |
+
+## See also
+
+- [Developer guide](../docs/developer.md): setup, configuration and running the services.

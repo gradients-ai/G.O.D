@@ -1,13 +1,20 @@
-# Validator Tests
+# Validator tests
 
-Tests for validator evaluation, scoring, and tournament behavior.
+Tests for the validator package, one directory per tested validator subpackage.
 
 ## Contents
 
-- `db/`: SQL helper tests (continuous SFT state, placement persistence, quant tasks and the per-SKU reference cache).
-- `lifecycle/`: finalize gating (quant same-SKU references, the reference swap) and Basilica cleanup.
-- `evaluation/`: local evaluation and PvP tests.
-- `infrastructure/`: S3 client (`S3_SECURE`, path- and virtual-host-style URL parsing).
-- `scoring/`: task/tournament scoring pipeline tests.
-- `tournament/`: tournament rounds, boss rounds, weight distribution, and analytics tests.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `db/` | SQL helpers: continuous task state, placements, compression tasks, the per-SKU reference cache, calibration rows. |
+| `evaluation/` | Evaluators, the compression scorer, remote backends and deployment reconciliation. |
+| `infrastructure/` | The S3-compatible storage client. |
+| `lifecycle/` | Evaluation error handling, compression reference checks at finalisation and deployment cleanup. |
+| `nodes/` | Node refresh. |
+| `scoring/` | Task and tournament scoring. |
+| `tasks/` | Task preparation: dataset splits, the calibration carve, compression eval sets and training hours. |
+| `tournament/` | Tournament rounds, boss rounds, the crown and weights. |
+
+## See also
+
+- [Testing and linting](../../docs/developer.md#testing-and-linting): test and lint commands.

@@ -21,14 +21,14 @@ TOURNAMENT_INTERVAL_HOURS = 120
 # results replace the standings: one interval plus roughly the run itself.
 RUNNER_UP_EMISSION_DAYS = 7
 
-# Tournament scheduling settings
+# Tournament scheduling settings: Monday UTC, text 09:00, image 11:00, quant 13:00.
+# Quant starts after text because it compresses the text boss's models.
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 0
-TOURNAMENT_SCHEDULE_TEXT_HOUR = 11
+TOURNAMENT_SCHEDULE_TEXT_HOUR = 9
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0
-TOURNAMENT_SCHEDULE_IMAGE_HOUR = 13
-# Monday 09:00 UTC (text is 11:00, image 13:00).
+TOURNAMENT_SCHEDULE_IMAGE_HOUR = 11
 TOURNAMENT_SCHEDULE_QUANT_DAY_OF_WEEK = 0
-TOURNAMENT_SCHEDULE_QUANT_HOUR = 9
+TOURNAMENT_SCHEDULE_QUANT_HOUR = 13
 
 # Every tournament (any type) is expected to be completed by this day/hour, independent of
 # training time, GPU availability, and round reverts during the week. Completion is a manual

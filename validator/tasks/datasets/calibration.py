@@ -1,4 +1,4 @@
-"""Carve a calibration set from the train side of a text task's split (see docs/miner_quant.md, "The calibration set").
+"""Carve a calibration set from the train side of a text task's split (see docs/miner_compression.md, "The calibration set").
 
 Pure functions over row hashes and character counts, so the split code and the tests share one definition. The
 test split is drawn first and never changes; the carve only takes rows out of what is left for training.

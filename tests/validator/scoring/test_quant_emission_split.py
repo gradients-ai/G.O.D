@@ -34,11 +34,11 @@ BURN = "burn_hotkey"
 def test_minimums_and_flex_constants():
     assert cts.TOURNAMENT_TEXT_WEIGHT == 0.15
     assert cts.TOURNAMENT_QUANT_WEIGHT == 0.35
-    assert cts.TOURNAMENT_IMAGE_WEIGHT == 0.225
-    assert cts.EMISSION_FLEX_POOL == pytest.approx(0.275)
-    assert cts.MAX_TEXT_TOURNAMENT_WEIGHT == pytest.approx(0.15 + 0.275)
-    assert cts.MAX_QUANT_TOURNAMENT_WEIGHT == pytest.approx(0.35 + 0.275)
-    assert cts.MAX_IMAGE_TOURNAMENT_WEIGHT == pytest.approx(0.225 + 0.275)
+    assert cts.TOURNAMENT_IMAGE_WEIGHT == 0.25
+    assert cts.EMISSION_FLEX_POOL == pytest.approx(0.25)
+    assert cts.MAX_TEXT_TOURNAMENT_WEIGHT == pytest.approx(0.15 + 0.25)
+    assert cts.MAX_QUANT_TOURNAMENT_WEIGHT == pytest.approx(0.35 + 0.25)
+    assert cts.MAX_IMAGE_TOURNAMENT_WEIGHT == pytest.approx(0.25 + 0.25)
 
 
 @pytest.mark.parametrize("text,quant,image", list(product(ENTRANTS, repeat=3)))
@@ -52,10 +52,10 @@ def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
 
 
 def test_balanced_entrants_split_flex_at_the_minimums_ratio():
-    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 90})
+    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100})
 
-    total_minimum = 0.15 + 0.35 + 0.225
-    for tournament_type, minimum in ((TEXT, 0.15), (QUANT, 0.35), (IMAGE, 0.225)):
+    total_minimum = 0.15 + 0.35 + 0.25
+    for tournament_type, minimum in ((TEXT, 0.15), (QUANT, 0.35), (IMAGE, 0.25)):
         assert weights[tournament_type] == pytest.approx(minimum + cts.EMISSION_FLEX_POOL * minimum / total_minimum)
 
 

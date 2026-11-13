@@ -1,45 +1,49 @@
-# Ops Tools
+# Ops tools
 
-Python and shell tools grouped by operational domain.
+Python and shell tools for operators, grouped by domain. Run Python tools from the repository root as modules, for example `python -m ops.tools.god_monitor`.
 
 ## Contents
 
-- `config/`: interactive env-file generation.
-- `db/`: database inspection snippets and helpers.
-- `datasets/`: dataset generation/formatting tools.
-- `evaluation/`: manual evaluation and reward-function tools.
-- `god_monitor/`: read-only tournament monitoring CLI (`python -m ops.tools.god_monitor`).
-- `observability/`: observability smoke tools.
-- `quant/`: `reconcile_freeform_publications.py`, the validator-side CLI for the freeform decoder releases and boss-round decoded models (read-only by default; see below), and `verify_freeform_release.py`, the third-party verifier of a released freeform quant result (decoder snapshot sha256, tree sha vs the released repo, artifact hashes, byte arithmetic, optional decoder re-run); library + CLI, public inputs only.
-- `scoring/`: scoring and weight calculation probes.
-- `simulations/`: scoring and threshold simulations.
-- `tasks/`: task creation and preparation probes.
-- `trainer/`: trainer-specific smoke tests and probes.
-- `tournament/`: tournament control and inspection tools.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `config/` | Interactive env-file generation. |
+| `datasets/` | Dataset generation tools. |
+| `db/` | SQL snippets for inspecting task state. |
+| `evaluation/` | Manual evaluation and reward function tools. |
+| `god_monitor/` | Read-only tournament monitoring CLI with an interactive menu. |
+| `observability/` | Log shipping smoke test. |
+| `quant/` | Freeform publication tools: `reconcile_freeform_publications.py` and `verify_freeform_release.py`. |
+| `scoring/` | Scoring and weight calculation inspection. |
+| `simulations/` | Scoring and training-hours simulations. |
+| `tasks/` | Task preparation probe. |
+| `tournament/` | Tournament control and inspection tools. |
+| `trainer/` | Trainer smoke test. |
 
-## quant/reconcile_freeform_publications.py
+## Freeform publication tools
 
-Purpose: inspect and re-run the two public freeform publications (the champion's decoder `.tar.xz` + `release.json` in
-`<org>/freeform-releases`, and the boss-round `-decoded` HF model repos). These run in the background from the tournament
-hooks and hourly from the validator; this is the by-hand entry point and the way to see what a pass would do.
+`quant/reconcile_freeform_publications.py` inspects and re-runs the two public freeform publications: the champion's decoder release and the boss-round decoded model repos. The validator runs the same reconcile in the background. It needs the validator's `.vali.env`.
 
-Environment: the validator's `.vali.env` (database, HF token with write on the tournament org, MinIO credentials,
-`DISCORD_URL`), run from the repo root with the validator venv.
-
-```
-python -m ops.tools.quant.reconcile_freeform_publications                  # report only, changes nothing
-python -m ops.tools.quant.reconcile_freeform_publications --apply          # reconcile for real, wait for completion
+```bash
+python -m ops.tools.quant.reconcile_freeform_publications                  # report only
+python -m ops.tools.quant.reconcile_freeform_publications --apply          # reconcile and wait
 python -m ops.tools.quant.reconcile_freeform_publications --release --tournament-id T --hotkey H [--allow-boss]
 python -m ops.tools.quant.reconcile_freeform_publications --publish-decoded --tournament-id T
 ```
 
-Add `--json` for machine-readable output. The report lists decoder releases pending, champions blocked for lack of a
-`backup_repo` (the code push comes first and is not retried here) and tournaments with unpublished decoded models.
+| Flag | Effect |
+| --- | --- |
+| none | Prints what a reconcile would publish. Writes nothing. |
+| `--apply` | Runs the reconcile. |
+| `--release` | Releases one decoder snapshot. `--allow-boss` admits the burn hotkey. |
+| `--publish-decoded` | Publishes one tournament's boss-round decoded models. |
+| `--json` | Machine-readable output. |
 
-Side effects: only `--apply`, `--release` and `--publish-decoded` write, and they are outward-facing: they create or
-update public HF repos/datasets, download GBs from MinIO, write `decoder_released_*` and `task_nodes.decoded_hf_repo`, and
-may alert Discord. `--release` goes through the same winner guard as the hooks: a hotkey that is not the tournament's
-winner, or that has no `backup_repo`, is refused (exit 1); `--allow-boss` is only for the burn hotkey (the reigning
-champion's one-off release). The CLI takes no cross-process lock, so do not run `--apply` while the validator is mid-publication
-for the same item; a repeat is harmless (idempotent) but wastes the upload.
+> [!IMPORTANT]
+> `--apply`, `--release` and `--publish-decoded` write to public Hugging Face repositories. The tool takes no cross-process lock, so avoid running it while the validator is publishing the same item.
+
+`quant/verify_freeform_release.py` verifies a released freeform result from public inputs only: the scorecard, the released decoder snapshot, the released repository and the artifact.
+
+## See also
+
+- [Freeform publications](../../validator/tournament/README.md#freeform-publications): what is published and when.
+- [Evaluations and manual tools](../../docs/developer.md#evaluations-and-manual-tools): manual evaluation commands.

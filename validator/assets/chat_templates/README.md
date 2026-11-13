@@ -1,9 +1,12 @@
-# Bundled Chat Templates
+# Bundled chat templates
 
-Chat templates a text task can select by name instead of the tokenizer's own (`ChatTemplateDatasetType.chat_template`),
-resolved by `validator/evaluation/chat_templates.py`.
+Chat templates a text task can select by name in place of the tokenizer's template (`ChatTemplateDatasetType.chat_template`). `validator/evaluation/chat_templates.py` resolves the name.
 
 ## Contents
 
-- `chatml.jinja`: the `chatml` template (default for API-created chat tasks). Byte-identical to the one the axolotl-based
-  eval bundled (axolotl 0bda5a13); `tests/validator/evaluation/test_chat_templates.py` pins its sha256. Do not edit.
+| Path | Purpose |
+| --- | --- |
+| `chatml.jinja` | The `chatml` template. |
+
+> [!IMPORTANT]
+> Do not edit `chatml.jinja`. `tests/validator/evaluation/test_chat_templates.py` pins its sha256, because evaluation labels depend on its exact bytes.

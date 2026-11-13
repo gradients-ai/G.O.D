@@ -1,8 +1,10 @@
-# Ops Examples
+# Examples
 
-Runnable examples for local API requests and training task flows.
+Runnable examples of API requests and local training runs.
 
 ## Contents
 
-- `api_requests.http`: HTTP request examples for validator, miner, and external APIs.
-- `training/`: local Docker-based training task examples.
+| Path | Purpose |
+| --- | --- |
+| `api_requests.http` | Example HTTP requests for the validator API, the Gradients API and an inference API. |
+| `training/` | Shell examples that build a trainer image and run a training task in Docker. |

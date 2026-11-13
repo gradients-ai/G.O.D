@@ -1,7 +1,9 @@
-# Trainer Tools
+# Trainer tools
 
-Trainer-specific smoke tests and probes.
+Trainer smoke tests.
 
 ## Contents
 
-- `dataset_whitelist_smoke.sh`: direct trainer request for whitelisted dataset download testing.
+| Path | Purpose |
+| --- | --- |
+| `dataset_whitelist_smoke.sh` | Posts a training request with `requested_datasets` straight to a trainer and checks the datasets reach the container. |

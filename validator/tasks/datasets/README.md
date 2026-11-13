@@ -1,14 +1,28 @@
-# Task Datasets
+# Task datasets
 
-Dataset validation, mapping, and preparation for validator tasks.
+Dataset validation, column mapping, splitting and upload for validator tasks.
 
 ## Contents
 
-- `calibration.py`: the calibration carve (pure functions over raw-row hashes and character counts, shared by the split code and the tests). The miner-facing contract is "The calibration set" in `docs/miner_quant.md`. Validator-side invariants: the test split is drawn exactly as without a carve (`train_test_split`, seed 42, `min(10 %, 1,000)` rows), so scored rows, `reference_loss` and rankings never depend on it; calibration rows come only from the train side after the split, skip any row whose raw hash equals a test row's, and never reach the input task's trainer; no evaluator request ever names `calibration_data`. Carved row hashes are recorded per dataset (`dataset_calibration_rows`, `validator/db/sql/calibration.py`), and every later raw split of that dataset moves recorded rows out of the test pool into train, so a calibration row is never tested later. A task with `calibration_data` NULL has no carve.
-- `columns.py`: dataset column inspection and readability checks.
-- `constants.py`: dataset preparation constants.
-- `hub_safety.py`: rejects Hugging Face datasets with Python loading scripts and pins the checked commit; every Hub load goes through it with `trust_remote_code=False`.
-- `mapping.py`: maps source dataset columns into standard task columns.
-- `models.py`: dataset payload models.
-- `preparation.py`: dataset download, splitting, standardization, and upload.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `calibration.py` | The calibration carve: pure functions over row hashes and character counts, shared by the split code and the tests. |
+| `columns.py` | Column inspection of a dataset per task type. |
+| `constants.py` | Dataset preparation and training-hours constants. |
+| `hub_safety.py` | Admits only Hugging Face datasets without loading scripts, pinned to the checked commit. |
+| `mapping.py` | Maps source columns to the standard task columns and merges datasets. |
+| `models.py` | Dataset payload models. |
+| `preparation.py` | Download, train/test split, duplicate and near-duplicate checks, and upload. |
+
+## Calibration invariants
+
+| Invariant | Where |
+| --- | --- |
+| The test split is drawn first and does not depend on the carve. | `preparation.py` |
+| Calibration rows come only from the train side and never equal a test row. | `calibration.py` |
+| For a task that splits its dataset, carved row hashes are recorded per dataset, and later splits keep those rows out of the test pool. | `validator/db/sql/calibration.py` |
+| A task with `calibration_data` NULL publishes no calibration set. | task row |
+
+## See also
+
+- [The calibration set](../../../docs/miner_compression.md#the-calibration-set): the miner-facing contract.

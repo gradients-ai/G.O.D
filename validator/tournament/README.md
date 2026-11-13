@@ -1,164 +1,385 @@
-# Validator Tournament
+# Validator tournament
 
-Tournament state machine, participant management, task creation, scoring support, and reporting.
+The tournament state machine: scheduling, enrolment, rounds, the boss's seed tasks, trainer orchestration, the crown rule and placements. For developers and operators.
+
+The compression tournament is `quant` in code (files, constants, task types). Miner-facing rules are in the miner guides: [text](../../docs/miner_text.md), [image](../../docs/miner_image.md), [compression](../../docs/miner_compression.md).
 
 ## Contents
 
-- `benchmark_utils.py`: benchmark task copy and benchmark helper logic.
-- `brackets.py`: bracket creation and advancement helpers.
-- `chaining.py`: read-only helpers for chained quant tasks (`upstream_task_id` = a text seed task of the bound text tournament): rounds R1-R3 and the boss round's four tasks, each compressing the model the text boss trained on one text seed. The shared input is the text boss's output on the seed, so the only candidate is `EMISSION_BURN_HOTKEY` (`shared_input_candidates`, `order_by_upstream_loss`). `chained_input_repo` is the repo our trainer uploaded for a player on the upstream task (the validator-assigned expected repo, never a miner-supplied id), or the merged full model recorded on the seed when the boss uploaded a LoRA adapter (`TournamentSeedTask.merged_output_repo`).
-- `constants.py`: tournament schedule, structure, fee, and retry constants, including the crown constants (`CROWN_TASKS` 7, `CROWN_MAX_NON_WINS` 2, `CROWN_BOUNDARY_RELATIVE_TOLERANCE`, `TEXT_CROWN_WIN_MARGIN` 1%, `TEXT_CROWN_TIGHT_ALLOWANCE` 0.1%, `TEXT_CROWN_LOOSER_ALLOWANCE` 0.25%, `QUANT_FREEFORM_BOSS_BYTE_MARGIN` 3%, `QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE` 1%, `QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE` 2%, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT` 1%).
-- `crown.py`: the crown rule of both tracks, pure functions and models only. `text_head_to_head`, `freeform_head_to_head` and `fixed_head_to_head` decide one task as a `HeadToHead` with a `HeadToHeadOutcome` (`win`, `within_tight`, `within_looser`, `beyond`); `crown_verdict` applies the rule to the head-to-heads decided so far. `CrownVerdict.crowned_if_complete` counts every undecided task as a win, which is the early-stop test; `crowned` also needs exactly `CROWN_TASKS` decided (more never crowns). `is_unpairable` treats a paired comparison with no comparable example like a missing one. The rules are in "Crown, early stop and placements" below.
-- `decoder_snapshot.py`: canonical quant `decoder/` snapshot at a pinned commit (`git archive` tar, single-threaded `xz -9` byte count, 1 MiB cap, MinIO upload under `quant-decoders/<commit>/`). Taken once at quant registration, at most `DECODER_SNAPSHOT_CONCURRENCY` at a time; that MinIO tar is the only decoder a freeform decode ever runs, so a training job cannot ship a decoder tailored to its own artifact. An optional `repo_check` runs on the clone before archiving, so registration's build lint shares the clone. The tar is then checked in order: a symlink or hardlink raises `DecoderUnsafeMembers`, since the trainer's extraction rejects one on every freeform task; the xz byte count over the cap raises `DecoderTooLarge`; and `check_decoder_runnable` raises `DecoderNotRunnable` for a tar the trainer's decode would scored-fail on every freeform task: no regular `decoder/decode.py` (`DECODER_ENTRYPOINT`), or members totalling more than `DECODER_MAX_EXTRACTED_BYTES` (64 MiB) extracted. xz rather than raw size, so readable code is not penalised against minified code; single-threaded, because multi-threaded xz changes the block layout and the byte count. `DecoderSnapshot.tree_sha` is `git rev-parse <commit>:decoder`: content only, so it survives the handover push, which squashes history. The tar and xz hashes embed the commit id and time, so they can only be checked against the released `.tar.xz`.
-- `registration_lint.py`: quant registration build lint for immutable dependencies. On the registration clone it reads the text Dockerfile the trainer builds (`TEXT_DOCKERFILE_PATHS`) and the `.sh` build scripts its RUNs execute, and reports `unhashed_pip` (an inline `pip install` spec, or a requirements file with an entry lacking `--hash=` or not resolvable into the build context; `#sha256=` URLs, local paths and `uv sync --locked/--frozen` pass), `unpinned_git` (a `git+` ref that is not 40-hex, or a `git clone` without a SHA checkout in the same RUN), `remote_fetch` (curl/wget/`ADD <url>` with no `ADD --checksum`, no `sha256sum -c` in the same RUN and not under `QUANT_TRUSTED_FETCH_URL_PREFIXES`) and `unpinned_base_image` (a FROM/`COPY --from` image neither digest-pinned nor under `QUANT_TRUSTED_BASE_IMAGE_PREFIXES`). `QUANT_REGISTRATION_LINT_ENFORCE` is False: warn-only, a failing entrant is enrolled and its violations logged; when True a failing entrant is excluded. Files over `QUANT_LARGE_FILE_REVIEW_BYTES` are logged for manual review, never rejected. A static heuristic: Python run at build time and runtime fetches stay with manual review.
-- `dstack_orchestrator.py`: dstack-backed training orchestration.
-- `freeform_release.py`: the public side of freeform decoders. `release_freeform_decoder(tournament_id, hotkey, config, psql_db, allow_boss=False)` publishes the participant's snapshot `.tar.xz` from MinIO to the public HF dataset `<TOURNAMENT_HF_USERNAME>/freeform-releases` under `<tournament_id>/<hotkey>/` together with a `release.json` (`FreeformRelease`), and records `decoder_released_url` and `decoder_released_at`. It is idempotent. A decoder is public only for the tournament's champion: it returns `None` unless `tournament.winner_hotkey == hotkey`, and when the participant has no `backup_repo` (the code push comes first); the burn hotkey is skipped unless `allow_boss` (the one-off release of the reigning champion). A sha256 or byte mismatch against registration refuses the release (alert, nothing published). A failure logs, alerts Discord and is swallowed: it never undoes the code push. `publish_boss_round_decoded_models(tournament_id, config, psql_db)` builds each boss-round freeform submission's bf16 model with `materialise_decoded_model` (sha256-verified shards plus the base config and tokenizer), creates public `<TOURNAMENT_HF_USERNAME>/<expected_repo_name>-decoded`, uploads, and records `task_nodes.decoded_hf_repo`; idempotent, never blocks completion. Validator side only, never on a trainer. See "Freeform publications: background and reconcile" below for how they are run.
-- `github_validation.py`: repository/license/commit validation. The licence check reads LICENSE/NOTICE at the entrant's pinned commit (a commit missing from the clone fails it), not the default branch. The obfuscation tool's output is token-sanitised before it is logged.
-- `gpu_requirements.py`: tournament GPU requirement calculation. Quant tasks are sized exactly like instruct.
-- `models.py`: tournament schemas, training status enums, trainer aggregate views, and response models, including `SeedRole`, `SeedStatus`, `TournamentSeedTask`, `QuantSourceSlot` and `QuantSlotSpec` (the places a quant task can fill: R1-R3 and the four boss-round compressions, each with its text seed role, task type and quant seed role; the `boss_r2_fixed` and `boss_r3_freeform` slots are not created and stay so existing rows load), `QuantTaskSource` / `QuantTournamentSource` (the persisted links), `TextRoundSpec` (one entry of `TEXT_ROUND_PLAN`: round number, seed role, model size band, advance count) and `QuantRoundSpec` (one entry of `QUANT_ROUND_PLAN` in `constants.py`: round number, slot, quant task type, text seed role, advance count, optional pinned quant format), `BOSS_ROUND_SEED_ROLES` and `QUANT_ROUND_SEED_ROLES` (the role sets the boss round and quant rounds 1-3 attach), and `RoundRanks` / `TournamentRoundRanks` / `BossRankComparison` (rounds 1-3 ranks with the boss, and the stored per-contender comparison). The response models carry an additive `quant` / `quant_*` field next to `text` and `image` (next dates, active, details, weights, projections, boss battle).
-- `notifications.py`: tournament notification helpers.
-- `obfuscation_detection/`: anti-obfuscation binary and wrapper package.
-- `orchestrator.py`: trainer assignment and tournament task execution orchestration. `_fetch_tournament_tasks_ready_to_train` feeds three buckets (image, quant, everything else), each while it has fewer than `PENDING_QUEUE_THRESHOLD_PER_TYPE` pending assignments, so neither text nor quant can starve the other. `schedule_tasks_for_training` defers a (task, hotkey) whose bf16 reference row does not exist yet (`_reference_ready`, not a failed attempt): every hotkey waits for the one task-common row stored under hotkey `''`, except that a non-tournament task never waits and, after `QUANT_TASK_COMMON_REFERENCE_MAX_FAILURES` (6) consecutive prepass failures of that row, `reference_gave_up` lets the miners train with no target. `_create_training_request` publishes the stored reference as the miner's `QuantTarget` (`_quant_target_for`; `quant_target_from_reference` turns a stored `QuantSkuReference` into the published reference loss and, for freeform, the knee, cap and penalty curvature) and builds `TrainRequestQuant.calibration` at request time (`_quant_calibration_for`: a fresh presigned URL of the task's `calibration_data`, its `calibration_fingerprint` and `calibration_n_examples`, and the reference hotkey's `quant_calibration_references` row; `None` when absent, which logs an ERROR, alerts once per task via `_alert_missing_calibration`, and still trains). Every tournament quant task carries a set: R1-R3 and the boss-round tasks inherit the calibration set of the text seed task they compress. `_hours_after_prep` is the single post-prep resize: quant tasks are resized from their own prep stats (`quant_hours_after_prep`; unusable stats keep the current hours), and the text seeds are capped at `NON_BOSS_INSTRUCT_MAX_TRAINING_HOURS`. `process_awaiting_upstream_tasks` releases a chained quant task held in `AWAITING_UPSTREAM` once the text boss's model on its text seed has landed and its nodes are assigned: `_shared_chained_input` takes the text boss's output on the seed if it is a full model (a hub error other than a missing repo holds the task for a retry; a seed without a usable boss output holds it for the seed's replacement), and that repo becomes the task's `model_id`; `_copy_upstream_data` copies the upstream's prepped split, raw `calibration_data` and dataset type and recomputes the budget (the boss budget for the boss-round tasks, so both players get the same hours); the release records the exact repo in `quant_task_sources.source_model_repo`, falling back to the text task's own base model (`source_is_fallback`) when the text boss produced no usable model: at once for a `failed` text seed (a landed full-model output is still used), once the text tournament is over, and, while it runs, for a succeeded run with an unusable output only after the seed loop has marked the row `trained` or `ready` and the row has been unchanged for `QUANT_SOURCE_FALLBACK_GRACE_SECONDS`. A task held on a `replaced` seed follows the role's successor (live or `failed` row); with none to follow, or a refused re-point, it holds while the text tournament runs and is released like any other once it is over. A task whose `failed` (or abandoned replaced) text task was never prepped has no data to copy and is released on a fresh instruct dataset of its own, which its own prep splits and carves the calibration set from. With no usable shared output every player gets a persisted `quant_failure` and the task is marked FAILURE. Freeform requests carry a `QuantDecodeRequest` for the entrant's registration decoder snapshot. On training success `_record_quant_decode` persists the trainer's decode result to `task_nodes` (scored fail for no snapshot or a `quant_failure`; a `build_warning` is logged and stored in `decoder_build_warning`, never scored); infra errors, a missing result or a snapshot sha/byte mismatch are never scored: the task is held before PREEVALUATION, re-polled each cycle and alerted once per (task, hotkey), as is a re-poll that fails `QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT` times in a row. An organic freeform task is never scored for its decode. The trainer request is only ever logged through `loggable_training_request`: the GitHub token and the presigned decoder URL become `***` and every other URL loses its query. Seed priority and hold: `schedule_tasks_for_training` orders its pending rows by `seed_tasks.training_rank` (the rank is the task's, so the challenger's row ties with the boss's row on the same task): the text seeds and every miner-round and other non-seed row rank ahead of the quant boss's boss-round entries, which rank last. In a cycle where a row ahead of them was left without GPUs, the quant boss's own entries (burn-hotkey rows, `is_boss_entry_row`) are not tried (`miner_row_starved`); a challenger row is never deferred by that skip, a running job is never preempted. A boss-round seed is held in TRAINING until it is attached to the boss round, a non-boss player is assigned and every assigned player's training row is terminal or has a persisted `quant_failure`, or until its tournament is decided without a round attaching it (`seeds_sql.boss_round_seed_ready_to_finalise`). The hold is on finalisation only: the seed-time evaluation pass seeds each row's evaluation as soon as it trained, so the boss's entries are evaluated and stored at seed time and the boss round evaluates only the challenger (`validator/lifecycle/boss_seed_eval.py` for the seed-time retry, park and alert rules). `process_boss_round_seed_rows` is one more orchestrator cycle: for every attached boss-round seed of an active quant tournament and every attached continuous-SFT seed of an active text tournament it adds training rows for the non-boss players that lack one (never the boss's) and logs `boss entry <task_id> still training` at WARNING while the boss's own row is not terminal; the boss round never waits on it. `process_seed_adapter_merges` is another: when the boss's output on a text seed is a LoRA adapter, a trainer model-prep job (the existing merge) flattens it into a full model whose repo is stored as the seed's `merged_output_repo` and used as the output (`SEED_ADAPTER_MERGE_FAILURES_BEFORE_ALERT` consecutive failures alert; the seed waits, is never redrawn or charged; a failed merge backs off 10 min doubling to 60 min, and after `SEED_ADAPTER_MERGE_MAX_FAILURES` it is parked with one alert until the orchestrator process restarts; a merged repo that exists but is not a full model is deleted on the hub so the next attempt re-uploads it; no merge is dispatched while a trainer cannot be asked about the job, for up to `SEED_ADAPTER_MERGE_UNKNOWN_CYCLES_BEFORE_DISPATCH` cycles; a seed whose output is known to be a full model is not polled again). In `schedule_tasks_for_training` a quant-tournament row that raises is dropped from the scheduling session (it returns with the next fetch) so it cannot hold text and image rows behind it. Own-model start points (`OWN_UPSTREAM_MODEL`, `OWN_R1_MODEL`) are understood by the release, reference and prepass code, but no quant tournament creates such a task.
-- `quant_reference.py`: which bf16 model a quant row is normalised by. `quant_reference_model(task, hotkey, db)`: the task's common input (R1-R3 and the boss round: the text boss's output on the text seed the task compresses), or, for a task with an own-model start point, the player's own `starting_model_repo`; `reference_hotkey_for(task, hotkey)` is the key the reference is stored under (`''` task-common).
-- `quant_reference_prepass.py`: the quant reference pre-pass (`measure_quant_references_cycle`, run with the orchestrator cycles). Once per task for the hotkey `''` (model `quant_reference_model`, the task's own, augmented when it was; no node or starting model needed; every quant tournament task is task-common) it either copies the previous round's `quant_sku_references` rows (same model and a byte-identical eval set: the fingerprint of this task's downloaded `test_data` is compared locally; the other tasks of its own round also qualify, e.g. the sibling fixed or freeform slot on the same base and data) or measures the bf16 repo in one `run_evaluation_basilica_quant` deployment with `psql_db=None` (so no task_nodes scores, deployment ids or GPU reservations are touched) and stores the row keyed by hotkey and SKU. Bounded by `QUANT_REFERENCE_PREPASS_CONCURRENCY`; a failed measurement is an infra error, retried every cycle and alerted once after `QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT` consecutive failures. A separate module from `quant_reference.py` because that one is imported by `scoring.tasks` and this one imports evaluation code. A quant task (either track) with `calibration_data` gets a second measurement per reference hotkey, once its scored test reference is stored: the same bf16 repo on the calibration rows (`calibration=True`, run and failure-counted under `(task, hotkey, "calibration")`), stored in `quant_calibration_references` (one row per task and hotkey, not per SKU, never used to score). It is copied from the previous round when the model and `calibration_fingerprint` match. A measurement on other rows than the published set is a failure. `_calibration_reference_ready` (orchestrator) makes a miner's training wait for that row; after `QUANT_CALIBRATION_REFERENCE_MAX_FAILURES` (3) failures in a row the prepass stops waiting, and the miner trains on the rows with `reference` `None`. The failure counter is in memory, so a validator restart starts it again.
-- `participants.py`: participant collection and filtering.
-- `performance_calculator.py`: tournament performance comparison logic. A boss-round row whose boss or challenger score is non-finite (a scored fail) records no performance difference, and the stored median is always finite.
-- `performance_utils.py`: shared performance helpers.
-- `repo_diff_report.py`: repository diff report generation.
-- `repo_diff_report_config.json`: repo diff report config.
-- `repo_uploader.py`: winning repository upload/publishing helpers.
-- `reports.py`: tournament report generation.
-- `round_results.py`: round winner and elimination logic. Seeded text rounds follow `TEXT_ROUND_PLAN`: each of rounds 1-3 is one instruct seed task played by one group, standings taken from that task (`_text_seeded_ordered_hotkeys`), top 8, 4 and 1 advance; third place is the next miner after the challenger in round 3's standings (`get_seeded_text_runner_up`). In both text and quant rounds the boss's entry is ranked in the standings with the same ordering used between challengers but never takes an advancement slot, and a boss entry with no valid result ranks behind every valid entry (see "Crown, early stop and placements" below). `round_ranks_with_boss` recomputes those ranks (the boss included) for rounds 1-3 from the stored results, for the per-contender placement rule. The head-to-heads are decided from stored results by `text_task_head_to_head` and `quant_task_head_to_head` (rules in `crown.py`); `seeded_text_round_head_to_heads` and `quant_round_head_to_heads` give a challenger's rounds 1-3. The seeded text boss round is resolved on the crown rule: while the big task is not yet in the round the outcome is deferred and the caller adds the big task only if the challenger can still be crowned, otherwise the boss is retained and the big task is never created. Quant rounds follow `QUANT_ROUND_PLAN`: R1 (freeform on the text boss's round-1 model) keeps the top 8, R2 (fixed on its round-2 model) the top 4 and R3 (freeform on its round-3 model) the top 1, each by average rank over every round played so far (`quant_cumulative_winners`); the viability cull (`round3_viability_verdicts`, `round3_viable_winners`) runs after R2, and a lone survivor after R2 still plays R3, which is one of its head-to-heads with the boss. Ranks are taken within the surviving cohort (results of eliminated miners are dropped before ranking; a miner absent from a round or scored-failed ranks last on it), with ties broken by the better rank in the most recent round played (`recent_round_rank`), then summed normalised gap, then a per-round seeded shuffle. Third place for quant is the next miner in the cumulative standings after R3 (`get_quant_round_runner_up`, also used when the boss round is not played); when the viability cull left a lone R3 survivor it comes from the R1+R2 standings re-ranked within the round-2 advance set (`_round_two_advance_set_ordered_hotkeys`). The quant boss round is resolved on the same crown rule, with the compression wins and allowances, and crowns only on exactly rounds 1-3 plus its four tasks; a boss-round task whose boss-side seed died (`boss_side_seed_failure`) is the challenger's ("Crown, early stop and placements" below). A quant boss round holding tasks nobody was assigned to goes back to PENDING for node assignment. `find_groups_with_no_valid_scores` is the empty-score guard: a group whose challengers all lack a valid score (the boss's score does not count) halts the round with an alert instead of advancing. Image boss rounds keep their own rule (all but one of 6).
-- `runner.py`: tournament loop runner.
-- `seed_tasks.py`: seed tasks, everything the boss trains upfront when a tournament's first round is created, with its pinned repo and commit (`TournamentSeedTask`, table `tournament_seed_tasks`, SQL in `validator/db/sql/tournament_seeds.py`). A text tournament has four seeds (`TEXT_SEED_CREATION_ORDER`, trained by the text boss at tournament start): `text_r1` (instruct, 1-4B), `text_r2` (instruct, 1-4B), `text_r3` (instruct, 4-8B) and `text_continuous` (the continuous-SFT chunk task of the boss round). Rounds 1-3 attach their seed as the round's task; the continuous seed is attached by the boss round. A quant tournament's seeds (`SEED_CREATION_ORDER`) are the quant boss's entries on its compression tasks: `quant_r1`, `quant_r2`, `quant_r3` (freeform on the text boss's round-1 model, fixed `W2A16-asym-g64` on its round-2 model, freeform on its round-3 model; trained with the miner-round training budget, and attached by rounds 1-3 as the round's task) and the four boss-round tasks `boss_r2_freeform`, `boss_r3_fixed`, `boss_continuous_freeform`, `boss_continuous_fixed` (freeform on the round-2 model, fixed 2-3 bit on the round-3 model, freeform and fixed 2-3 bit on the continuous model). Each is a new quant task of its own on a seed of the bound text tournament (`quant_sources.py`), held until the text boss's model has landed; the fixed format of a boss-round task is drawn from `QUANT_BOSS_ROUND_FIXED_FORMATS` (2-bit or 3-bit), seeded by tournament and role so a restart or replacement redraws the same one (`_boss_fixed_format`). The roles `input_small`, `input_large`, `boss_instruct`, `boss_chained_freeform`, `boss_chained_fixed`, `boss_continuous_instruct`, `boss_r2_fixed` and `boss_r3_freeform` are not created; they stay in the enum and the DB check so existing rows load. `create_seed_tasks` (idempotent per role) draws each task, records the seed row before anything else, and assigns the boss node (`EMISSION_BURN_HOTKEY`) with the expected repo `tournament-<tid>-<task_id>-<hotkey8>`; the boss participant row's 40-hex commit (fetched at tournament creation, else pinned from the repo HEAD) is the code every seed trains. `process_tournament_seed_tasks` moves a seed `training` -> `trained` (attached seeds, held for their round) -> `ready`, and replaces a failed one (`replace_seed`: prep failure, the boss's run failed, the upload is not a full model, or a text seed scored no fine-tune) with a fresh draw as attempt+1, re-pointing dependents (held quant tasks via `repoint_task_onto_seed`), up to `SEED_MAX_REPLACEMENTS` real failures; then the row is `failed` and Discord is alerted once per tournament and role (`_alert_role_out_of_replacements`). A `failed` text or quant role never halts or blocks the tournament: only an input-seed role (`input_small`, `input_large`, `boss_instruct`, ...) halts it (`seed_halt_reason`). A failed text round role (`text_r1`-`text_r3`) leaves its round to draw one ordinary instruct task of its own (`task_creator.draw_text_round_task`, no seed row and no boss assignment, so the boss has no result on it and the challenger takes it with a valid score, `crown.text_head_to_head`); a post-attach prep failure of such a seed falls through to `replace_tournament_task`, which redraws with the same helper and does not copy the boss's node. A failed `text_continuous` makes the boss round draw its own continuous task on the single lineage (`create_continuous_sft_task`) and register it under the pair; both players train it. While a role's latest row is `replaced` (a replacement pending) the round still waits (`MissingBossRoundSeeds`). Quant tasks on a failed text role fall back to the text task's base model. A boss upload that is a LoRA adapter is not a failure: the seed waits for its merge into a full model (`boss_output_awaits_merge`, `process_seed_adapter_merges` in `orchestrator.py`) and is not redrawn. A prep-stage dataset rejection of a dataset-drawn role (the text instruct seeds ending `PREP_TASK_FAILURE`; `is_prep_rejection`) is not a real failure: it is stored `prep_rejected` and redrawn without consuming `SEED_MAX_REPLACEMENTS`, skipping every dataset already prep-rejected in the tournament (`_excluded_datasets`, `_without_datasets`); the `SEED_MAX_PREP_REJECTIONS`-th rejection of one role fails the row and alerts once (`alert_seed_issue`; a text role does not halt). A prep rejection of a compression (same upstream data, so a redraw cannot help) counts against `SEED_MAX_REPLACEMENTS`. `seeds_sql.boss_round_seed_ready_to_finalise` (in `validator/db/sql/tournament_seeds.py`, so lifecycle can use it without importing the tournament package) is the hold applied on every finalising path: a seed is finalised (ranked and closed) only once its round has attached it and every assigned player has finished, or once its tournament is decided without a round attaching it; the boss's own entry is evaluated as soon as it has trained, so its scores are stored up front. `training_rank` / `row_training_rank` / `training_ranks` give the trainer priority, by the task's rank for both players; the quant boss's own entries yield in a cycle where an earlier row is short of GPUs. A seed is never replaced once it was attached (`attached_round_id`, written when a round attaches it) except for a prep failure (`_replacement_blocked`; `MissingBossRoundSeeds` from the attach alerts once via `_alert_missing_boss_round_seeds`): a post-attach prep failure (`seeds_sql.boss_side_seed_failure`) completes the slot without `replace_tournament_task` and the challenger gets the slot (a boss-side failure); a role with no live row (a failed re-draw) is re-created by `process_tournament_seed_tasks` until a round attached one of its seeds (capped by `SEED_MAX_REPLACEMENTS`); draw failures and refused replacements alert once per tournament and role (`alert_seed_issue`). Once a quant tournament is decided, `process_tournament_seed_tasks` (and `_complete_without_boss_round`) call `retire_unattached_quant_seeds`: a seed no round attached that the boss has not started (task held, pending or looking for nodes, or in TRAINING with the boss's row still pending) has the boss's row and its task failed and is marked `failed`; one in prep or already training or done finishes and closes with the boss's stored result; none is replaced (`_replacement_blocked`). A round seed role (rounds 1-3) is never re-created once its round exists.
-- `quant_sources.py`: the link between a quant tournament and the text tournament its tasks come from. `bind_quant_source_tournament` binds a quant tournament to the most recent text tournament that has its four text roles and feeds no quant tournament yet (stored in `quant_tournament_sources`): active text tournaments first (each role live or `failed`; a role whose latest row is `replaced` makes it wait for the replacement), then text tournaments completed within `QUANT_SOURCE_COMPLETED_WINDOW_SECONDS` (7 days; their seed state is final, so a row of any status per role is enough). A text tournament with no seed rows is never bound. Until there is one the quant tournament waits, nothing is created and nothing is halted; the wait is logged once per process and one Discord alert goes out after `QUANT_SOURCE_WAIT_ALERT_SECONDS` (2 h, measured from when this process first saw it waiting, since the tournaments table keeps no activation time). `slot_text_seed` resolves the text seed row of a `QuantSourceSlot` (`final_text_seed`): the role's live row, else its latest row when that is final (`failed`, or the text tournament is over), None only while a replacement is pending in a running text tournament, so a failed role never stops a quant task from being created (it is chained on the failed seed's task and takes the fallback); `record_new_quant_task` stores a new quant task's source row in `quant_task_sources` (quant tournament and slot, text tournament, text seed role and task, model repo, fallback and superseded flags) so a slot never has two live tasks and a quant task never exists without its link. SQL in `validator/db/sql/quant_sources.py`.
-- `task_creator.py`: tournament task creation. Seeded text rounds 1-3 attach the round's seed task (`_attach_text_round_seed`: no task is drawn, the seed gets a `tournament_tasks` row under the round's group and is marked attached, which releases its finalisation; round 1 attaches at once, so miners train it in parallel with the boss). The seeded text boss round (`_create_seeded_text_boss_round_tasks`) attaches the continuous seed and creates one GRPO and one DPO task (`TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES`); the big task (`create_seeded_text_big_task`, an instruct task on a 30-72B model from the `BOSS_ROUND_LARGE_INSTRUCT_*` pool) is created only after stage one is scored and only if the challenger can still be crowned. Quant miner rounds are `QUANT_ROUND_PLAN` (`quant_round_spec`): `_create_seed_input_round_task` attaches the round's quant seed (`quant_r1` for R1 freeform on the `text_r1` model, `quant_r2` for R2 fixed on the `text_r2` model, `quant_r3` for R3 freeform on the `text_r3` model) as the round's one task, so the round's miners train the task the boss trained and the boss's entry is ranked with theirs; it raises `MissingBossRoundSeeds` while the role has no live seed and is not `failed`. A `failed` role plays a held quant task of its own with no boss entry (`_create_round_task_without_boss`), chained on the round's text seed; a fixed round plays the format pinned in its `QuantRoundSpec` (R2: `W2A16-asym-g64`), else one drawn from a round-seeded rng; creation is idempotent. No quant round has an instruct task and no miner trains an instruct model; the seed tasks' own creation is in `seed_tasks.py`. The quant boss round is exactly `FINAL_ROUND_QUANT_TASK_DISTRIBUTION` (4 tasks: two freeform, two fixed). `_create_quant_boss_round_tasks` attaches the boss-round seeds (`_attach_boss_round_seeds`: inserts their `tournament_tasks` rows under the round's pair, idempotent, raises `MissingBossRoundSeeds` while a role has no live seed so the round stays PENDING) and draws no task for a live seed. A role whose latest row is `failed` plays a task of its own for that slot with no boss entry (`_create_boss_round_task_without_boss`, drawn like the seed with `seed_tasks.draw_compression_task`; the boss is not assigned to it); while that task cannot be created yet the round stays PENDING, alerted once. `create_quant_tournament_tasks` is the quant dispatcher (a group round creates the round's quant task, the final round attaches the boss-round seeds); `create_text_tournament_tasks` and image creation dispatch the seeded and unseeded paths. Replacing a text seed task re-points its chained quant dependents.
-- `task_results.py`: task result loading for rankings.
-- `boss_rank_shares.py`: the per-contender placement rule of a tournament the boss kept. `compare_with_boss` compares a contender's average rank with the boss's over the rounds of 1-3 that rank both (`round_results.round_ranks_with_boss`); `boss_rank_comparisons` does it for 2nd and 3rd place. The result is stored in `tournament_boss_rank_comparisons` at completion and read by the weight setter (`scoring.tournaments._positions_paid_to_boss`).
-- `thresholds.py`: boss/champion threshold helpers, including `sku_aligned_losses`: a quant per-example vector from another SKU expressed on the anchor's SKU (`x_i * ref_i(anchor) / ref_i(own)`) before any paired comparison.
-- `tournament_manager.py`: high-level tournament lifecycle manager. `process_tournament_scheduling` checks text, quant and image every cycle (no feature flag); `check_and_start_tournament` creates a type's next tournament in its slot (quant Monday 09:00, text 11:00, image 13:00 UTC; `_get_tournament_schedule`) once the previous one of that type completed, and the first tournament of a type starts at once. A quant tournament that has no bound text tournament yet waits (see `quant_sources.py`). Types are independent: a tournament blocks only its own type. Participation fees are per type (`TOURNAMENT_TEXT/QUANT/IMAGE_PARTICIPATION_FEE_RAO`). A new tournament's boss is the latest completed tournament of its own type, or, for quant with no completed quant tournament, of the type in `BOSS_SEED_TOURNAMENT_TYPE` (text); `participants.get_latest_tournament_winner_participant`. `create_first_round_for_active_tournament` first calls `create_seed_tasks` for a text tournament (its four seeds) and for a quant tournament once it is bound to a text tournament (its seeds); all must exist (a role whose latest row is `failed` counts as present), else it logs and retries; the active-tournament loop runs `process_tournament_seed_tasks` each pass and does not advance a tournament while `seed_halt_reason` is set (only an input-seed role sets it; a failed text or quant role never does). Text and quant rounds 1-3 are each a single group; the boss's entries are ranked in them but it never takes an advancement slot, and the lone survivor is paired with the burn hotkey for the boss round. Text third place is the next miner after the challenger in round 3's standings; quant third place comes from the cumulative standings after R3, falling back to the knockout loser; image third place is the knockout loser. Quant registration excludes an entrant whose pinned commit has no snapshot-able `decoder/` (missing, over the cap, symlinks/hardlinks inside, not runnable by the trainer, or clone/xz timeout) and stores the snapshot on its participant row; the build lint (`registration_lint.py`) runs on the same clone and, while it is warn-only, only logs a failing entrant's violations; once enforced it excludes the entrant too. Text and image entrants need no decoder. The boss is snapshotted too (never linted), and without a decoder it keeps empty fields and scored-fails every freeform task. The pending and active loops handle each tournament in its own `try`, so one raising tournament cannot stop the others. `populate_tournament_participants` is a single pass: a tournament below `MIN_MINERS_FOR_TOURN` returns 0, stays pending, is alerted once and re-pings miners every `TOURNAMENT_PARTICIPANT_RETRY_INTERVAL_SECONDS` (30 min), without blocking the other pending tournaments. The quant boss's decoder snapshot never raises out of `create_basic_tournament`; while the tournament is pending `_repair_quant_boss_participant` recreates a missing boss row and retries a transiently failed snapshot (`BOSS_DECODER_REPAIR_COOLDOWN_SECONDS`), a boss with no usable decoder is alerted and not retried. A boss-round seed that failed prep is never replaced: the challenger takes the slot only if it has a usable run there, otherwise the boss keeps it. The manager applies the early stop of "Crown, early stop and placements" below: after the round-3 cut (`_last_miner_round_number`) it checks the last contender's R1-R3 head-to-heads (`_round_crown_verdict`) and, when the crown is out of reach, ends the tournament without a boss round (`_complete_without_boss_round`: carries the continuous lineage forward for text, retires the quant seeds no round attached for quant, writes the placements). Whenever the boss keeps the crown of a text or quant tournament, `_record_boss_rank_comparisons` stores the per-contender comparisons before the placements; a failure there is logged and both contenders are paid.
-- `transfer_monitoring.py`: tournament fee transfer monitoring.
-- `utils.py`: remaining tournament utility helpers; prefer narrower modules for new code.
+| Path | Purpose |
+| --- | --- |
+| `benchmark_utils.py` | Benchmark task copies for a tournament winner. |
+| `boss_rank_shares.py` | Per-contender rule: each paid contender's average rank against the boss's. |
+| `brackets.py` | Bracket creation and advancement helpers. |
+| `chaining.py` | Read-only helpers for chained compression tasks (`upstream_task_id`). |
+| `challenger_code_review.py` | Automated code review of every miner entering round 2. |
+| `constants.py` | Schedule, round plans, fees, crown and paired-test constants, retry limits. |
+| `cost_calculator.py` | Weekly training, prep and evaluation cost roll-up. |
+| `cost_constants.py` | GPU hourly prices and fee conversions for the cost roll-up. |
+| `crown.py` | The crown rule as pure functions: one head-to-head, and the verdict over them. |
+| `decoder_snapshot.py` | Canonical snapshot of a miner's `decoder/` at its pinned commit. |
+| `dedup_gate.py` | Duplicate-submission gates before round 1 training and before round 2. |
+| `dstack_orchestrator.py` | dstack-backed training orchestration. |
+| `freeform_release.py` | Public release of the champion's decoder and the boss-round decoded models. |
+| `github_validation.py` | Repository, licence, commit and obfuscation checks at enrolment. |
+| `gpu_requirements.py` | GPU requirement calculation for tournament tasks. |
+| `models.py` | Tournament schemas: rounds, seeds, source links, rank comparisons, responses. |
+| `notifications.py` | Discord notifications. |
+| `obfuscation_detection/` | Bundled detector binary used by repository validation. |
+| `orchestrator.py` | Trainer assignment, scheduling, monitoring, chained release, adapter merges. |
+| `participants.py` | Participant lookups: the boss, the challenger, the pre-boss knockout loser. |
+| `performance_calculator.py` | Boss-versus-challenger performance differences for analytics and projections. |
+| `performance_utils.py` | Shared performance helpers. |
+| `quant_reference.py` | Which bf16 model a compression result is normalised by. |
+| `quant_reference_prepass.py` | Measures each task's bf16 reference before miners train. |
+| `quant_sources.py` | The link between a compression tournament and its text tournament. |
+| `registration_lint.py` | Build lint for immutable dependencies at compression enrolment. |
+| `repo_diff_report.py` | Repository diff report for a completed tournament. |
+| `repo_diff_report_config.json` | Diff report configuration. |
+| `repo_uploader.py` | Publishes the winning repository. |
+| `reports.py` | Tournament report generation. |
+| `round_results.py` | Round standings, advancement, head-to-heads against the boss, third place. |
+| `runner.py` | Tournament loop runner. |
+| `seed_tasks.py` | Seed tasks: creation, status, replacement, trainer priority. |
+| `task_creator.py` | Task creation per round and task replacement. |
+| `task_results.py` | Loads task results for ranking. |
+| `thresholds.py` | The paired per-example test, SKU alignment, win-margin helpers. |
+| `tournament_manager.py` | Lifecycle: scheduling, enrolment, round creation, advancement, completion. |
+| `transfer_monitoring.py` | Fee transfer monitoring. |
+| `utils.py` | Remaining shared helpers. |
+| `__init__.py` | Package marker. |
 
 ## Text tournament flow
 
-1. Activation: `create_seed_tasks` creates the four text seeds (`text_r1`, `text_r2`, `text_r3`, `text_continuous`); the boss trains them at tournament start with its pinned code. Round 1 attaches `text_r1` at once, so miners train it in parallel with the boss.
-2. Rounds 1-3 (`TEXT_ROUND_PLAN`): instruct 1-4B, instruct 1-4B, instruct 4-8B, models from the standard pool. Each attaches its seed task, one group; the boss's entry is ranked in the standings but takes no advancement slot; top 8, 4 and 1 advance. Every round runs in full; rounds 2 and 3 are played even with one miner left.
-3. Early stop: after the round-3 cut, if the last contender is already ruled out of the crown by its R1-R3 head-to-heads, the boss round is not run and the boss is retained.
-4. Boss round, stage one: the continuous seed is attached and one GRPO and one DPO task are created; the challenger trains the continuous task, both players train GRPO and DPO. Stage two: the big task (instruct, 30-72B), last, and only while the challenger can still be crowned.
-5. Crown and placements: "Crown, early stop and placements" below.
+1. **Seeds.** When the first round is created, the four text seeds are created and the boss trains them with its pinned code ([Seeds](#seeds)).
+2. **Round 1.** The round attaches `text_r1`, so miners train it in parallel with the boss.
+3. **Entry gates.** Before round 2 is built, the advancing miners pass the duplicate-submission gate and a code review. A disqualified miner is replaced by the next miner in the round-1 standings, who is checked too. A duplicate flag, or a review that needs an operator, holds the tournament until it is resolved.
+4. **Rounds 2 and 3.** Each attaches its seed task and is played by one group.
+5. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
+6. **Boss round, stage one.** The continuous seed is attached and one GRPO and one DPO task are drawn. Who trains each task is in the [text guide](../../docs/miner_text.md#the-boss-round).
+7. **Boss round, stage two.** The big instruct task is created last, under the same early-stop check.
+8. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-## Quant tournament flow
+Each round's standings come from its one task. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
 
-1. Binding: the quant tournament is bound to one text tournament that has its four text seeds (live or `failed`) and feeds no other quant tournament: an active one, else one completed within the last 7 days (`quant_tournament_sources`). Until then it waits, with an alert after 2 hours. A `failed` text role never stalls the quant tournament: its slots take the text task's base model as the fallback.
-2. Activation: `create_seed_tasks` creates the quant boss's seeds, each a held quant task on a text seed; the quant boss trains each as soon as the text boss's model has landed.
-3. R1 (freeform on the text boss's round-1 model, 1-4B, all entrants to 8), R2 (fixed `W2A16-asym-g64` on its round-2 model, 1-4B, to 4, then the viability cull), R3 (freeform on its round-3 model, 4-8B, to 1): `QUANT_ROUND_PLAN`. Each is one quant task chained on a text seed, released when the text boss's model has landed. The boss's entries are ranked in each round's standings and take no advancement slot. Cuts use average rank over every round played within the surviving cohort, ties by the most recent round. Every round runs in full; a lone survivor after R2 still plays R3.
-4. Early stop: after the R3 cut, if the last contender is already ruled out of the crown by its R1-R3 head-to-heads, the boss round is not run and the boss is retained.
-5. Boss round, four tasks: freeform on the text boss's round-2 model, fixed 2-3 bit on its round-3 model, freeform and fixed 2-3 bit on its continuous model. Only the challenger gets new training rows (`process_boss_round_seed_rows`), compressing the same models the boss did. Crown and placements: "Crown, early stop and placements" below.
-6. Seeds' data is hidden on public and auditing endpoints until the last round that uses them completes (`get_hidden_seed_task_ids`). Text seeds follow their quant tournament instead: a text seed is hidden while a live quant task source of a running quant tournament names it, and a quant task chained on it until its own quant tournament is completed or cancelled.
+## Image tournament flow
+
+1. **Round 1.** One group plays three tasks, one per model family in `ROUND_ONE_IMAGE_MODEL_TYPES`. The best miners in the group standings advance (`SMALL_TOURNAMENT_ADVANCE`).
+2. **Entry gates.** As in the text flow, before round 2 is built.
+3. **Round 2.** A knockout: the advancing miners play one task on a model family from `ROUND_TWO_IMAGE_MODEL_TYPES`. The winner is the challenger.
+4. **Boss round.** The tasks are drawn by `FINAL_ROUND_IMAGE_TASK_DISTRIBUTION`. The boss and the challenger both train them.
+5. **Crown and placements.** The boss-round rule is in the [image guide](../../docs/miner_image.md#the-crown). Placements are in [Placements](#placements).
+
+The image tournament has no seed tasks, and the boss plays the boss round only. Task details are in the [image guide](../../docs/miner_image.md#rounds).
+
+## Compression tournament flow
+
+1. **Binding.** The compression tournament binds to one text tournament ([Sources](#sources)). Until one qualifies it waits.
+2. **Seeds.** When the first round is created, the seven compression seeds are created. Each is held until the text boss's model for it has landed, then trained by the compression boss ([Seeds](#seeds)).
+3. **Round 1.** A freeform task on the text boss's round-1 model. All enrolled miners play.
+4. **Entry gates.** As in the text flow, before round 2 is built.
+5. **Round 2.** A fixed task on the round-2 model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
+6. **Round 3.** A freeform task on the round-3 model.
+7. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
+8. **Boss round.** The four boss-round seeds are attached ([Seeds](#seeds)). The tasks and who trains them are in the [compression guide](../../docs/miner_compression.md#the-boss-round).
+9. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
+
+Each round is one task attached from its seed, so the miners and the boss compress the same model. Formats, advancement and tie-breaks are in the [compression guide](../../docs/miner_compression.md#rounds) (`QUANT_ROUND_PLAN`).
 
 ## Crown, early stop and placements
 
-This is the one home of these rules for both the text and the quant tournament; the miner guides link here.
+The crown rule below decides the text and the compression tournament. What counts as a win on each task, and the allowance numbers, are in the miner guides: [text](../../docs/miner_text.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament has a boss-round rule in the [image guide](../../docs/miner_image.md#the-crown), and shares [Placements](#placements).
 
-**The boss in the rounds.** The boss (the type's defending champion) has an entry on each R1-R3 task: in text the seed task it trained at tournament start, in quant the round's seed (`quant_r1`-`quant_r3`), trained with the miner-round training budget as soon as its source model lands. Those entries are ranked in each round's standings with the same ordering used between challengers, so the boss has an average rank over R1-R3. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Rounds 2 and 3 are always played, even with one miner left, and the boss's R1-R3 entries are also its head-to-head results for the crown.
+### The boss in rounds 1-3
 
-**Seven head-to-heads.** The last contender (the challenger) is compared with the boss on 7 tasks (`CROWN_TASKS`): its R1, R2 and R3 results against the boss's, plus the 4 boss-round tasks. Each head-to-head ends in one of four outcomes: a win; or a non-win within the tight allowance, within the looser allowance only, or beyond both (`crown.HeadToHeadOutcome`). The challenger is crowned when exactly these 7 are decided and:
+The boss is the tournament's defending champion. It has an entry on the task of each of rounds 1-3: the seed task it trained. That entry is ranked in the round's standings with the ordering used between miners. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Its three entries are also its side of the first three head-to-heads.
 
-- it has at most two non-wins;
-- every non-win is within the looser allowance;
-- with two non-wins, at least one is within the tight allowance.
+### Seven head-to-heads
 
-That is: 6 wins and a 7th within the looser allowance, or 5 wins with one non-win within the tight allowance and the other within the looser allowance. Values exactly on an "at least" or "at most" boundary meet it (`CROWN_BOUNDARY_RELATIVE_TOLERANCE`). Any other set of head-to-heads (more than 7, or a quant boss round that is not exactly rounds 1-3 plus its four tasks) never crowns: the boss retains.
+The challenger is the one miner left after the round-3 cut. It is compared with the boss on 7 tasks (`CROWN_TASKS`): the tasks of rounds 1-3 and the 4 boss-round tasks. Each head-to-head has one of four outcomes (`crown.HeadToHeadOutcome`).
 
-| Track | Task | Win | Tight allowance | Looser allowance |
-| --- | --- | --- | --- | --- |
-| Text | instruct, continuous (chat), DPO | passes the paired per-example test against the boss and scores at least 1% better | at most 0.1% behind | at most 0.25% behind |
-| Text | GRPO | scores at least 1% better | at most 0.1% behind | at most 0.25% behind |
-| Quant | freeform | at most 97% of the boss's effective bytes (at least 3% fewer) | at most 1% more effective bytes, or fewer by less than 3% | at most 2% more effective bytes |
-| Quant | fixed | passes the paired per-example test against the boss and has a loss at least 1% better | a draw on the paired test | a draw on the paired test |
+| Outcome | Meaning |
+| --- | --- |
+| `win` | The challenger takes the task. |
+| `within_tight` | A non-win within the tight allowance. |
+| `within_looser` | A non-win within the looser allowance only. |
+| `beyond` | A non-win beyond both allowances. |
 
-- Text: a non-win's deficit is how far the challenger trails, relative to the boss's score (adjusted loss, lower is better; GRPO reward, higher is better), and 0 when it is level or ahead. Missing or unpairable per-example losses (including a comparison with no comparable example) on an instruct, continuous or DPO task: the boss keeps the task, a non-win judged on its score deficit.
-- Quant freeform: an entry is valid when it is under the cap with no scored fail and a byte count. The deficit is how many more effective bytes the challenger has, relative to the boss's.
-- Quant fixed: a draw on the paired test includes passing it without the 1% minimum; it is within both allowances. A task the boss takes outright (it would pass the paired test against the challenger with the sides swapped, `challenger_within_paired_allowed_loss`) is beyond both allowances. Missing or unpairable per-example losses (or no same-SKU reference to align them, or no comparable example): the boss keeps the task, beyond both allowances, unless the boss's entry is a scored fail or absent.
-- Both tracks: a task on which the challenger has no valid result is beyond both allowances, so it rules out the crown. A task on which the boss has no valid result while the challenger has one is a win, as is a quant boss-round task whose boss-side seed died (`boss_side_seed_failure`). A quant boss-round seed role out of replacements does not shorten the boss round: the round plays a task of its own for that slot with no boss entry, which any valid challenger entry wins, so the crown is still decided over seven.
-- The paired per-example test (`thresholds.compare_paired_losses`) compares both entries on the identical held-out rows. It is used only against the boss, never between challengers: round standings and advancement use each round's own ordering.
+The challenger is crowned when exactly these 7 are decided and all of the following hold:
 
-**Early stop.** Every round R1-R3 runs in full, because the rounds decide 2nd and 3rd. The crown is checked only once the round-3 cut leaves the last contender: the rule is applied to its R1-R3 head-to-heads with the four boss-round tasks counted as wins. If the crown is already out of reach, no boss round is created and the tournament ends with the boss retained (`_complete_without_boss_round`). In quant, a round 1-3 with no decidable task rules the crown out, since the seven can never all be decided. Once a quant tournament is decided, its seeds no round attached are retired if the boss has not started them; the others finish and close with the boss's stored result; none is replaced. In the text boss round the big task is created last, and only while a crown is still possible after the other three boss-round tasks.
+- it has at most two non-wins (`CROWN_MAX_NON_WINS`)
+- no non-win is beyond the looser allowance
+- with two non-wins, at least one is within the tight allowance
 
-**Placements.** With a crown, the challenger is 1st and the boss 2nd. Without one, the boss keeps 1st and the contenders take 2nd and 3rd by standing: the challenger 2nd; 3rd is the next miner after the challenger in round 3's standings (text) or in the cumulative standings after R3 (quant). When the R2 viability cull leaves the challenger alone in R3, quant 3rd is the best of the round-2 advance set on the R1+R2 standings re-ranked within that set, and its comparison below then uses rounds 1 and 2. This is the same whether the boss round was played and lost or not played. Up to three places are paid (`TOURNAMENT_PAID_RANKS`, decay base `TOURNAMENT_SIMPLE_DECAY_BASE`).
+So a crown is one of three results:
 
-**Per-contender rule (no crown).** For each contender in a paid place (2nd, 3rd), the boss's average rank is compared with that contender's over the rounds of 1-3 in which both are ranked (`boss_rank_shares.py`). In these boss-inclusive ranks an exact score tie, and every entry with no valid result, share one rank, so a tie with the boss pays the contender. If the boss's average rank is strictly better, that place's share is paid like the boss's own share; a tie or a better contender is paid, and so is a contender whose ranks cannot be computed. It is decided per contender: if the boss outranks the 3rd-place contender but not the 2nd, 2nd is paid and 3rd's share goes to the boss. The comparison is fixed when the tournament completes, stored in `tournament_boss_rank_comparisons`, published in the tournament audit data, and applied by the tournament details endpoint exactly as by the weight setter (`scoring.weights.stored_boss_rank_comparisons`). The boss's own share (1st) and every share paid like it go to the defending champion's hotkey (`base_winner_hotkey`, `scoring.tournaments._resolve_burn_placeholder`); such a share is burned only when no defending champion hotkey is known or that hotkey is not registered, in which case the weight setter leaves it undistributed and it reaches the burn address (`scoring.weights._paid_node_id`).
+| Wins | Non-wins |
+| --- | --- |
+| 7 | none |
+| 6 | one, within the looser allowance |
+| 5 | two: one within the tight allowance, the other within the looser allowance |
 
-Migrations: `validator/db/migrations/20261109120000_tournament_seed_tasks.sql`, `20261112120000_tournament_seed_merged_output_repo.sql` (`merged_output_repo`), `20261113120000_continuous_sft_chunk_scheme.sql` (continuous-SFT chunk scheme), `20261113130000_text_seed_roles.sql` (text seed roles and the quant boss-round roles), `20261113140000_quant_task_sources.sql` (`quant_tournament_sources`, `quant_task_sources`), `20261113150000_quant_round_seed_roles.sql` (`quant_r1`-`quant_r3`) and `20261113170000_tournament_boss_rank_comparisons.sql` (`tournament_boss_rank_comparisons`).
+Any other set of head-to-heads leaves the boss in place.
+
+The constants that hold each tournament's numbers, all in `constants.py`:
+
+| Tournament | Task | Win | Allowances |
+| --- | --- | --- | --- |
+| Text | instruct, continuous (chat), DPO | paired test and `TEXT_CROWN_WIN_MARGIN` on the score | `TEXT_CROWN_TIGHT_ALLOWANCE`, `TEXT_CROWN_LOOSER_ALLOWANCE` on the score deficit |
+| Text | GRPO | `TEXT_CROWN_WIN_MARGIN` on the score | as above |
+| Compression | freeform | `QUANT_FREEFORM_BOSS_BYTE_MARGIN` fewer effective bytes | `QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE`, `QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE` on extra effective bytes |
+| Compression | fixed | paired test and `QUANT_FIXED_BOSS_MIN_IMPROVEMENT` on the loss | see the [compression guide](../../docs/miner_compression.md#the-crown) |
+
+### The paired per-example test
+
+`thresholds.compare_paired_losses` compares the two entries example by example on the identical held-out rows. The gap on an example is the boss's loss minus the challenger's.
+
+| Quantity | Rule | Constant |
+| --- | --- | --- |
+| Decided example | the gap exceeds 0.01 nats either way | `BOSS_ROUND_TIE_DEADZONE_NATS` |
+| Win rate | the challenger wins at least 55% of decided examples | `BOSS_ROUND_MIN_WIN_RATE` |
+| Mean gap | at least 0.01 nats, or 1% of the boss's mean loss if larger, over all comparable examples | `BOSS_ROUND_MIN_MEAN_GAP_NATS`, `BOSS_ROUND_WIN_MARGIN` |
+| Confidence | both statistics must hold at the one-sided 99% bootstrap lower bound | `BOSS_ROUND_BOOTSTRAP_CONFIDENCE` |
+
+The bootstrap resamples examples 10,000 times with a fixed seed, so every validator reaches the same verdict. Examples without a finite loss on both sides are dropped. A draw is a comparison in which no example is decided.
+
+The paired test is applied against the boss only. Miners are ranked against each other on each round's standings.
+
+For a fixed compression task scored on two GPU SKUs, the challenger's per-example losses are first expressed on the boss's SKU ([Compression SKU normalisation](../scoring/README.md#compression-sku-normalisation)).
+
+### Early stop
+
+Every one of rounds 1-3 runs in full. The rounds decide second and third place, and each round's task is one of the crown's head-to-heads, so a round is played even with one miner left. The crown is checked once the round-3 cut leaves the challenger. The rule is applied to its three head-to-heads, with the four boss-round tasks counted as wins. If the crown is out of reach, no boss round is created and the tournament ends with the boss retained.
+
+In the text boss round the big task runs last. It is created only if the crown is in reach after the continuous, GRPO and DPO tasks.
+
+### Placements
+
+| Result | 1st | 2nd | 3rd |
+| --- | --- | --- | --- |
+| Crown | challenger | boss | third-place miner |
+| No crown | boss | challenger | third-place miner |
+
+The placements are the same whether the boss round was played and lost or skipped by the early stop.
+
+| Tournament | Third place |
+| --- | --- |
+| Text | The next miner after the challenger in round 3's standings. |
+| Image | The miner that lost the round-2 knockout. |
+| Compression | The next miner after the challenger in the cumulative standings after round 3. |
+
+When the compression viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
+
+How the paid places split a tournament's emission is in [Payouts](../../docs/miner.md#payouts).
+
+### Per-contender rule
+
+A contender is a miner in a paid place (2nd or 3rd). When the boss keeps the crown of a text or compression tournament, each contender is compared with the boss on average rank over the rounds of 1-3 that rank both.
+
+- If the boss's average rank is strictly better, that place's share goes to the defending champion's hotkey.
+- On a tie, or if the contender ranks better, the contender is paid.
+
+It is decided per contender. If the boss outranks the 3rd-place contender and not the 2nd, 2nd is paid and 3rd's share goes to the defending champion.
+
+The boss's 1st-place share goes to the same hotkey (`base_winner_hotkey`). A share reaches the burn address only when no defending champion hotkey is known or that hotkey is not registered.
+
+The comparison is computed once at completion and stored in `tournament_boss_rank_comparisons`. The weight setter and the tournament details endpoint both read the stored rows.
+
+<details>
+<summary>Edge cases</summary>
+
+- **No valid challenger result.** The task is beyond both allowances, so it rules out the crown.
+- **No valid boss result.** With a valid challenger result the task is a win. On freeform, a boss entry over the cap, a scored fail or a missing byte count is not valid.
+- **Boss-side seed failure.** The boss side of a compression boss-round task has failed in two cases: the task failed prep after attach with no successful boss run, or the task failed with the boss's run failed. Such a task is a win for the challenger, without a comparison, when the challenger's run there succeeded with no scored fail. If neither side produced a result, the challenger has no valid result and the task is beyond both allowances.
+- **Failed seed role.** A round 1-3 slot or a compression boss-round slot plays a task drawn with no boss entry, so any valid challenger result wins it. For `text_continuous`, the boss and the challenger both train the drawn task and it is judged as usual. Either way the crown is decided over seven.
+- **Unpairable losses, text.** Missing vectors, different eval sets or no comparable example: the task is a non-win judged on its score deficit.
+- **Unpairable losses, fixed.** The same cases, or no same-SKU reference to align on: the task is beyond both allowances, unless the boss has no valid result.
+- **Boundaries.** A value exactly on a win margin, an allowance or the freeform byte bar meets it (`CROWN_BOUNDARY_RELATIVE_TOLERANCE`). The paired test's bounds have no tolerance.
+- **Wrong task set.** More than 7 decided, or a compression boss round that is not rounds 1-3 plus its four tasks, never crowns.
+- **Undecided round, compression.** A round 1-3 that does not hold exactly one task cannot be decided, so the early stop retains the boss.
+- **Missing round task, text.** Treated as a data fault: the check raises and the tournament does not advance.
+- **Ranks with the boss.** An exact score tie shares one rank, and so do all entries with no valid result. A tie with the boss therefore pays the contender.
+- **Comparison unavailable.** If no round ranks both, or the comparison cannot be computed or stored, the contender is paid.
+- **Third place.** If no other miner is ranked, or the computed miner already holds 1st or 2nd, third place is empty.
+- **No miner left after the entry gates.** The boss retains.
+
+</details>
+
+## Seeds
+
+A seed is a task the boss trains with its pinned repo and commit, created when the tournament's first round is created (`seed_tasks.py`, table `tournament_seed_tasks`). A round attaches its seed as the round's task, which adds the miners.
+
+| Role | Tournament | Task | Attached by |
+| --- | --- | --- | --- |
+| `text_r1`, `text_r2`, `text_r3` | text | instruct | rounds 1, 2 and 3 |
+| `text_continuous` | text | continuous task | boss round |
+| `quant_r1` | compression | compression of the `text_r1` model | round 1 |
+| `quant_r2` | compression | compression of the `text_r2` model | round 2 |
+| `quant_r3` | compression | compression of the `text_r3` model | round 3 |
+| `boss_r2_freeform` | compression | compression of the `text_r2` model | boss round |
+| `boss_r3_fixed` | compression | compression of the `text_r3` model | boss round |
+| `boss_continuous_freeform`, `boss_continuous_fixed` | compression | compression of the `text_continuous` model | boss round |
+
+**Lifecycle.** `training` (the boss's run is not finished), `trained` (the boss's run is over and the seed is held for its round), `ready` (the task has completed). A superseded attempt is `replaced`. A role out of replacements is `failed`.
+
+**Limits.**
+
+| Limit | Constant | Value |
+| --- | --- | --- |
+| Charged replacements per role | `SEED_MAX_REPLACEMENTS` | 2 |
+| Uncharged prep-stage dataset rejections of a text round seed | `SEED_MAX_PREP_REJECTIONS` | 20 |
+| Task-level model-prep failures before a seed is redrawn | `SEED_MAX_PREP_ATTEMPTS` | 3 |
+
+The 20th prep-stage rejection marks the role `failed`.
+
+**Visibility.** Seed data is hidden on public and auditing endpoints.
+
+- A text seed is hidden until a round attaches it or its text tournament ends, and while a running compression tournament has a live task on it.
+- Compression seeds, and compression tasks chained on a text seed, stay hidden until their compression tournament is completed or cancelled.
+
+<details>
+<summary>Replacement and failure handling</summary>
+
+- A seed whose task dies before its round attaches it is redrawn as the next attempt, and held tasks chained on it are re-pointed to the replacement.
+- A prep-stage dataset rejection of a text round seed (`text_r1` to `text_r3`) is not charged. The redraw skips every dataset already rejected in the tournament.
+- A failed boss training run on a compression seed is not redrawn. It is the boss's failed entry and ranks behind every valid entry.
+- A failed boss run on a text seed is redrawn while the seed is unattached and replacements are left. Otherwise it is the boss's failed entry.
+- Once attached, a round seed is replaced only for a prep failure, and the replacement takes its place in the round.
+- Once attached, a boss-round compression seed is never replaced. See "Boss-side seed failure" above.
+- A boss upload that is a LoRA adapter is not a failure. The seed waits for its merge into a full model.
+- A `failed` role never halts the tournament. Its round draws a task for that slot with no boss entry. For `text_continuous`, the boss round draws a continuous task that the boss and the challenger both train.
+- While a role's latest row is `replaced`, its round waits in `PENDING`.
+- Once a compression tournament is decided, its unattached seeds that the boss has not started are retired. The others finish and close with the boss's stored result. None is replaced.
+- A role out of replacements raises one Discord alert per tournament and role, per validator process.
+- The fixed format of a compression boss-round seed is drawn from `QUANT_BOSS_ROUND_FIXED_FORMATS`, seeded by tournament and role, so a redraw gets the same format.
+
+</details>
+
+## Sources
+
+`quant_sources.py` links a compression tournament to the text tournament whose models it compresses (tables `quant_tournament_sources`, `quant_task_sources`).
+
+| Rule | Detail |
+| --- | --- |
+| Binding | The most recent text tournament that has its four seed roles and feeds no other compression tournament. |
+| Order | An active text tournament first, else one completed within 7 days (`QUANT_SOURCE_COMPLETED_WINDOW_SECONDS`). |
+| Waiting | Nothing is created until a binding exists. One Discord alert after 2 hours (`QUANT_SOURCE_WAIT_ALERT_SECONDS`), measured from when the validator process first saw it waiting. |
+| Task link | Each compression task records its slot, text seed task and, once released, the exact model repo. |
+| Fallback | When the text boss produced no usable model, the task compresses the text task's base model (`source_is_fallback`). |
+
+<details>
+<summary>When the fallback is taken</summary>
+
+- At once for a `failed` text seed role. A full model the boss did land is used first.
+- At once when the text tournament is over.
+- A failed text boss run takes the fallback once its seed row will not be replaced. Before that the task holds and follows the replacement.
+- While the text tournament runs and the boss's run succeeded with a missing or non-full-model output: only after the seed row is `trained` or `ready` and unchanged for 30 minutes (`QUANT_SOURCE_FALLBACK_GRACE_SECONDS`).
+- An adapter awaiting its merge, and a run that has not finished, hold the task.
+- For the continuous task the fallback is its base model if that is a full model, else the lineage's seed model.
+- If no fallback candidate is a full model, the task holds and one alert goes out.
+- A text seed role whose replacement is pending makes binding and task creation wait.
+- A task on a failed seed whose text task was never prepped is released on a freshly drawn instruct dataset.
+
+</details>
+
+## Orchestration
+
+`orchestrator.py` runs these cycles side by side.
+
+| Mechanism | Rule |
+| --- | --- |
+| Queue buckets | Tournament tasks reach training through three buckets: image, compression, and everything else. Each is fed while it has fewer than 8 pending assignments (`PENDING_QUEUE_THRESHOLD_PER_TYPE`). |
+| Reference pre-pass | Each compression task's bf16 reference is measured once before miners train, or copied from a task with the same model and a byte-identical eval set. Training waits for it. |
+| Chained release | A compression task is held in `AWAITING_UPSTREAM` until the text boss's model has landed and its nodes are assigned. That repo becomes its `model_id`. |
+| Seed priority | The compression boss's boss-round entries rank last. In a cycle where an earlier row found no GPUs, they are not tried. |
+| Seed hold | A seed is not finalised until its round has attached it and every assigned miner has finished. |
+| Adapter merge | A boss output that is a LoRA adapter is merged into a full model by a trainer model-prep job, and the merged repo becomes the seed's output. |
+
+<details>
+<summary>Details and failure handling</summary>
+
+- **Released tasks.** A released task copies the text task's prepped split, calibration data and dataset type, and its training budget is recomputed. The boss and the challenger get the same budget on a boss-round task.
+- **Input repo.** The model is always the validator-assigned repo of the text boss's run, never a miner-supplied id.
+- **Reference failures.** A failed measurement is an infra error, retried every cycle. An alert goes out after 3 consecutive failures. After 6, miners train with no published target and scoring measures the reference in-deployment.
+- **Calibration reference.** A task with a calibration set gets a second measurement on those rows. It is never used to score. After 3 consecutive failures the rows are published without reference losses.
+- **Counters.** The failure counters are in memory. A validator restart resets them.
+- **Priority.** A challenger's row is never deferred by the seed priority rule, and a running job is never preempted.
+- **Seed-time evaluation.** The boss's entry is evaluated as soon as it has trained, so the round evaluates only the miners. Retry rules are in `validator/lifecycle/boss_seed_eval.py`.
+- **Challenger rows.** A cycle adds training rows for the miners assigned to each attached seed. A boss entry that has not finished is logged at WARNING. The round does not wait for it.
+- **Merge failures.** The seed waits and is never redrawn or charged. Retries back off from 10 to 60 minutes. Three consecutive failures raise an alert. After six the merge is parked until the orchestrator restarts.
+- **Decode results.** A freeform training's decode result is stored on `task_nodes`. Only a miner fault is scored: no decoder snapshot, or the trainer's `quant_failure`. An infra error, a missing result or a snapshot mismatch holds the task and alerts once.
+- **Isolation.** A compression row that raises during scheduling is dropped for that cycle, so it does not hold text and image rows.
+- **Logging.** Trainer requests are logged with the GitHub token and the presigned decoder URL masked, and URL queries stripped.
+
+</details>
+
+## Enrolment checks
+
+Checks shared by every tournament are in [Entering a tournament](../../docs/miner.md#entering-a-tournament). Compression adds two steps on one clone of the pinned commit. The miner-facing rules are in [Enrolment checks](../../docs/miner_compression.md#enrolment-checks).
+
+| Step | Module | Rule |
+| --- | --- | --- |
+| Build lint | `registration_lint.py` | Checks the build for hash-pinned pip, SHA-pinned git, checksummed fetches and pinned base images. `QUANT_REGISTRATION_LINT_ENFORCE` is `False`: violations are logged and the miner is enrolled. |
+| Decoder snapshot | `decoder_snapshot.py` | Archives `decoder/` with `git archive`, compresses it with single-threaded `xz`, and uploads it to MinIO. A miner without a usable snapshot is excluded. |
+
+<details>
+<summary>Decoder snapshot rules</summary>
+
+- The snapshot is taken once, at enrolment. A freeform decode only ever runs that tar, never a fresh clone.
+- A miner is excluded for: no `decoder/`, a symlink or hardlink inside it, a compressed size over `DECODER_MAX_XZ_BYTES`, no `decoder/decode.py`, extracted members over `DECODER_MAX_EXTRACTED_BYTES`, or a clone or `xz` timeout.
+- At most `DECODER_SNAPSHOT_CONCURRENCY` (4) snapshots run at a time.
+- The boss is snapshotted and never linted. A boss without a usable decoder keeps empty snapshot fields and scored-fails every freeform task.
+- A transient boss snapshot failure is retried while the tournament is pending, no more often than every 10 minutes. A boss with no usable decoder raises one alert and is not retried.
+- `decoder_tree_sha` is the git tree id of `decoder/`. It depends on content only, so it matches the published repository after the winner's code is pushed.
+- Files over `QUANT_LARGE_FILE_REVIEW_BYTES` are listed for manual review and never fail the lint.
+
+</details>
 
 ## Design notes
 
-- **Boss-trained inputs are fair.** The models the quant tournament compresses
-  are trained by the text boss on the validator's draw of base model and dataset. The text boss's code is public from
-  its handover, so every miner can read what trained the input. The boss-round models are the text boss's round-2,
-  round-3 and continuous models; the quant challenger trains no instruct model, and compresses the same models the quant
-  boss did. The quant boss's compression entries are public on HF before the challenger trains them; training containers
-  have no network and pinned code, so this only allows offline study.
-- **Hold rule.** A seed is a TRAINING task whose only row is the boss's until its round attaches it and adds the
-  other players. It is ranked and closed once, when `seeds_sql.boss_round_seed_ready_to_finalise` holds (attached,
-  a non-boss player assigned, every assigned row terminal or with a persisted `quant_failure`), or once its tournament is decided, if no round attached it or it is a round seed (text or quant): it then closes with the stored results. Until then
-  `lifecycle.tasks._finalize_task_status_from_evaluations` returns early and `_move_completed_tasks_to_preevaluation`
-  skips it. The dstack path (which sets PREEVALUATION itself) handles only priority-1 organic rows, so no seed takes it.
-  Chained release does not wait on this hold: it keys on the text boss's model on the text seed having landed as a usable
-  full model, so the quant boss's compressions run on spare GPUs as soon as each source model is trained. R1-R3 wait
-  for their text seed's model the same way.
-- **Seed-time boss evaluation.** The boss's row is evaluated the moment it is SUCCESS (`orchestrator.seed_tournament_evaluations_from_training`,
-  the ordinary per-(task, hotkey) path), and the round evaluates only the challenger. Everything ranking reads is stored
-  by the evaluation (`task_nodes`: test loss, per-example losses, eval-set fingerprint, `eval_gpu`, bytes,
-  `quant_failure`; `quant_sku_references`), and penalty, cap verdict and `adjusted_loss` are derived at ranking from
-  those and the task's pinned policy, so the verdicts do not depend on when the boss was scored. Error handling is in
-  `validator/lifecycle/boss_seed_eval.py`; a validator restart forgets retry counts (at worst a fresh retry budget,
-  never a second score).
+- **Boss-trained inputs are fair.** The models the compression tournament compresses are trained by the text boss on the validator's draw of base model and dataset. The text boss's code is public, so every miner can read what trained the input. The compression boss and the miners compress the same model.
+- **Boss entries are visible, not usable.** The compression boss's entries are public on the hub before the challenger trains. Training containers have no network and run pinned code, so this allows offline study only.
+- **Hold rule.** A seed is a `TRAINING` task whose only row is the boss's until its round attaches it. It is ranked and closed once, when every assigned hotkey has a terminal training row or a persisted `quant_failure`. A seed of a decided tournament that no round attached closes with the boss's stored result.
+- **Chained release does not wait on the hold.** It keys on the text boss's model having landed as a full model. The compression boss trains each entry as soon as its source exists.
+- **Seed-time evaluation is order-independent.** Ranking reads only what the evaluation stored: loss, per-example losses, eval-set fingerprint, eval GPU, bytes and `quant_failure`. Penalty, cap verdict and adjusted loss are derived at ranking from those and the task's pinned policy. The verdict does not depend on when the boss was scored.
 
-## Decoder columns and public participants
+## Decoder columns
 
-`TournamentParticipant` (`validator/tournament/models.py`) carries the registered decoder snapshot. Set at registration by
-`_with_decoder_snapshot` (entrants and boss), persisted with the participant row; migration
-`validator/db/migrations/20261108120000_quant_freeform_exposure.sql`:
+`TournamentParticipant` (`models.py`) carries the decoder snapshot taken at enrolment.
 
 | Field | Meaning | Public |
 | --- | --- | --- |
 | `decoder_object_name` | MinIO key of the snapshot `.tar.xz` | never |
-| `decoder_xz_bytes`, `decoder_sha256` | counted size and sha256 of the `.tar.xz` | yes, via the scorecard |
-| `decoder_tar_sha256` | sha256 of the uncompressed canonical tar | yes, via the scorecard |
-| `decoder_tree_sha` | git tree id of `decoder/` | yes, via the scorecard and `release.json` |
-| `decoder_xz_version` | `xz --version` line that compressed the snapshot | yes, via the scorecard |
-| `decoder_released_url`, `decoder_released_at` | the public release, set by `release_freeform_decoder` | yes, via the scorecard after handover |
+| `decoder_xz_bytes`, `decoder_sha256` | counted size and sha256 of the `.tar.xz` | yes, in the scorecard |
+| `decoder_tar_sha256` | sha256 of the uncompressed canonical tar | yes, in the scorecard |
+| `decoder_tree_sha` | git tree id of `decoder/` | yes, in the scorecard and `release.json` |
+| `decoder_xz_version` | `xz --version` line that compressed the snapshot | yes, in the scorecard |
+| `decoder_released_url`, `decoder_released_at` | the public release | yes, in the scorecard after release |
 
-`_public_participants` (`validator/endpoints/tournament_analytics.py`) is applied to the participant list before any
-HTTP or Redis response. It sets `github_token` and `decoder_object_name` to null and nothing else. The training repo URL
-stays, because results are labelled by it; the snapshot hashes are public. Internal DB and orchestration code keeps the
-full model.
+Public participant lists have `github_token` and `decoder_object_name` set to null (`_public_participants` in `validator/endpoints/tournament_analytics.py`). The training repo URL stays, because results are labelled by it. The object name can be derived from the commit and sha256 in the same response. The control is that the bucket is private and every MinIO link is presigned.
 
-## Freeform publications: background and reconcile
+## Freeform publications
 
-Neither publication runs inline. `upload_participant_repository` (quant only, after a successful push) calls
-`schedule_freeform_release` and the two completion paths call `schedule_boss_round_publication`; each is an
-`asyncio.create_task` kept in a module-level set until done, so the code push and the serial active-tournament loop never
-wait on GBs of HF uploads. All publication work (background tasks and reconcile) runs under one lock per event loop, taken
-per item, so a reconcile pass cannot publish what a background task is part-way through. `wait_for_background_publications`
-joins them (tests, CLI).
+Two publications follow a compression tournament's completion (`freeform_release.py`).
 
-A scheduled task is lost with the process, and `advance_tournament` returns early once `winner_hotkey` is set, so nothing
-else retries it. `reconcile_freeform_publications(config, psql_db, apply=True)` re-derives the unpublished work from the
-database (quant tournaments with a `winner_hotkey`, not COMPLETED, since tournaments stay ACTIVE until flipped by hand):
-winners' decoders with a snapshot, a `backup_repo` and no `decoder_released_at`; winners blocked for lack of a
-`backup_repo` (reported and warned about, the GitHub push is not retried); and tournaments with a final-round freeform
-`task_nodes` row that has `decoded_files` and no `decoded_hf_repo`. It returns a `FreeformReconcileReport`; `apply=False`
-only reads. `process_freeform_publications` runs it at validator start and then every
-`FREEFORM_PUBLICATION_RECONCILE_INTERVAL` (3600 s, slow because each failing item re-downloads GBs and re-alerts).
-The first pass publishes any historical winner that has a snapshot row and no release.
+| Publication | What | When |
+| --- | --- | --- |
+| Decoder release | The champion's snapshot `.tar.xz` and a `release.json`, to a public HF dataset | After the champion's code is pushed |
+| Decoded models | The bf16 model of every boss-round freeform submission, as public HF model repos | At completion |
 
-By hand, `python -m ops.tools.quant.reconcile_freeform_publications` (read-only by default; `--apply`, `--release`,
-`--publish-decoded`, `--json`; see `ops/tools/README.md`).
+- Both run as background tasks under one lock, so the tournament loop and the code push never wait on uploads.
+- Both are idempotent. A failure is logged and alerted, and never undoes completion or the code push.
+- A decoder is public only for the tournament's champion. A size or sha256 mismatch against the enrolment snapshot refuses the release.
+- `reconcile_freeform_publications` re-derives unpublished work from the database. It runs at validator start and then hourly (`FREEFORM_PUBLICATION_RECONCILE_INTERVAL`).
 
-`_public_participants` stripping `decoder_object_name` is cosmetic, not a security property: the object name is
-`quant-decoders/<training_commit_hash>/<decoder_sha256>.tar.xz` and both components stay in the same response
-(`training_commit_hash`, `decoder_sha256`). The real control is that the bucket is private and every MinIO link is
-presigned.
+Run the reconcile by hand. It is read-only unless `--apply` is passed. Flags are in [`ops/tools/README.md`](../../ops/tools/README.md).
+
+```bash
+python -m ops.tools.quant.reconcile_freeform_publications
+```
+
+## See also
+
+- [Validator scoring](../scoring/README.md): emission split, compression scoring, SKU normalisation.
+- [Validator evaluation](../evaluation/README.md): evaluation internals and failure attribution.
+- [Migrations](../db/migrations/README.md): schema changes and deploy order.

@@ -1,26 +1,24 @@
-# Trainer Model Prep
+# Trainer model prep
 
-Model preparation and baseline-stat routines used before selected training jobs.
+Code that runs in the model-prep container before selected training jobs: adapter merge, augmentation, baseline statistics and upload.
 
 ## Contents
 
-- `augmentation.py`: model/data augmentation helpers for prep.
-- `entrypoint.py`: model-prep container entrypoint.
-- `env_stats.py`: environment-task baseline and sidecar stats collection.
-- `stats.py`: general model and dataset statistics collection. Quant tasks carry instruct or
-  chat data, so `text_extractor_for` picks the chat extractor when the first record has a
-  `conversations` column and the instruct extractor otherwise.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `augmentation.py` | Deterministic layer selection and weight modification. |
+| `device_probes.py` | Small fixed workloads that time the prep device for compression tasks. A failed probe never fails prep. |
+| `entrypoint.py` | Container entrypoint. Prints its JSON result on the last line of stdout. |
+| `stats.py` | Dataset, weight-structure and training-dynamics statistics per task type. |
 
-Environment baselines run until `MODEL_PREP_ENV_TIME_BUDGET_SECONDS` expires, defaulting
-to 420 seconds per environment. PvP game baselines run in-harness; individual environments
-run through their sidecar.
+## Compression tasks
 
-## LoRA continuation bases
+Compression tasks carry instruct or chat data. `text_extractor_for` in `stats.py` picks the chat extractor when the first record has a `conversations` column, and the instruct extractor otherwise.
 
-When the task base is a LoRA adapter (e.g. a task whose model is a published adapter repo),
-model-prep republishes a flat full-weight copy at a deterministic `merged-<hash>` repo
-and returns it as `augmented_model_id`. The hash is keyed on the original source HF repo
-id (`--source-model-id`), not the anonymized local cache path, so retries reuse one
-publish target. Training and eval then prefer that flat base, so the lineage head is never
-a raw adapter after prep and chain depth stays one hop.
+## Adapter bases
+
+When a task's base model is a LoRA adapter repo, model prep publishes a flat full-weight copy and returns it as `augmented_model_id`.
+
+- The copy goes to a deterministic `merged-<hash>` repo.
+- The hash is keyed on the source Hugging Face repo id (`--source-model-id`), not on the local cache path, so retries reuse one target.
+- Training and evaluation use that flat base.

@@ -1,7 +1,9 @@
-# Dataset Examples
+# Dataset examples
 
-Small dataset fixtures used for examples and local testing.
+Example data in the instruct text format.
 
 ## Contents
 
-- `text_sft.json`: minimal text SFT-style example dataset.
+| Path | Purpose |
+| --- | --- |
+| `text_sft.json` | Minimal instruct-style text dataset. |
