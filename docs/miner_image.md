@@ -2,7 +2,7 @@
   <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/header-image-dark.svg"><img src="assets/readme/header-image-light.svg" alt="Image tournament: miner guide" width="100%"></picture>
 </p>
 
-The image tournament ranks miners on how well their training code fits an image model to a small captioned image set in a fixed time. This guide is the contract for miners who enter it.
+The image tournament ranks miners on how well their training code fits an image model to a small set of captioned images, or of image edits, in a fixed time. This guide is the contract for miners who enter it.
 
 <p align="center">
   <a href="miner.md"><b>Miner hub</b></a> &nbsp;·&nbsp;
@@ -19,26 +19,27 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 
 | | |
 | --- | --- |
-| You compete on | training a LoRA for a given image model on a given set of captioned images, within the task's time budget |
+| You compete on | training a LoRA for a given image model on a given set of captioned images (text-to-image) or source/target image pairs with an instruction (edit), within the task's time budget |
 | You submit | a training repository. Its container writes one LoRA per task |
-| Dockerfiles | the trainer builds one of two from your repository: `ops/docker/standalone-image-trainer.dockerfile` for Flux tasks, `ops/docker/standalone-image-toolkit-trainer.dockerfile` for every other family |
+| Dockerfile | `ops/docker/standalone-image-toolkit-trainer.dockerfile`, built from your repository |
 | Enrolment | the shared checks. `LICENSE` and `NOTICE` are read on your repository's default branch |
-| Model families | Flux, Z-Image, Qwen-Image, Ideogram 4, Krea 2 |
+| Model families | Z-Image, Qwen-Image, Krea 2, FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base |
+| Training modes | text-to-image, edit |
 | Rounds | three, one task each |
 | Boss round | four tasks |
-| Task score | denoising loss on held-out images, lower is better |
+| Task score | denoising or training-objective loss on held-out images, lower is better |
 
 ## Rounds
 
-Each round is one task. Every miner in the round, and the boss, trains the same model on the same images.
+Each round is one task. Every miner in the round, and the boss, trains the same model on the same data. Each round's task is one random draw from the round's slots, a slot being a model family and a training mode.
 
-| Round | Task model family | Advance |
-| --- | --- | --- |
-| R1 | Flux | top 8 |
-| R2 | Ideogram 4 | top 4 |
-| R3 | Krea 2 | top 1 |
+| Round | Slots | Pairs | Advance |
+| --- | --- | --- | --- |
+| R1 | text-to-image: Z-Image, FLUX.2 Klein 4B, MOSS-Image-Base | at most 30 | top 8 |
+| R2 | text-to-image: Qwen-Image, Krea 2, HiDream-O1. Edit: Qwen-Image-Edit-2511, HiDream-O1 | at most 50 | top 4 |
+| R3 | the six [final slots](#the-boss-round) | at most 50 | top 1 |
 
-Source: [`IMAGE_ROUND_PLAN`](../validator/tournament/constants.py).
+Source: [`IMAGE_ROUND_PLAN`, `ROUND_ONE_IMAGE_MODEL_TYPES`, `ROUND_TWO_IMAGE_TASK_SPECS`, `FINAL_ROUND_IMAGE_TASK_SPECS`](../validator/tournament/constants.py).
 
 - Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
 - With fewer miners than slots, all advance.
@@ -50,45 +51,31 @@ The miner that advances from round 3 is the challenger.
 
 ## The boss round
 
-The challenger and the boss both train four tasks.
+The challenger and the boss both train four tasks: two edit and two text-to-image, drawn from the six final slots other than the one round 3 played. No slot is played twice in a tournament.
 
-| Model family | Tasks |
+| Training mode | Final slots |
 | --- | --- |
-| Krea 2 | 1 |
-| Ideogram 4 | 1 |
-| Qwen-Image | 1 |
-| Z-Image | 1 |
+| Edit | FLUX.2 Klein 4B, HiDream-O1, MOSS-Image-Base |
+| Text-to-image | Krea 2, HiDream-O1, MOSS-Image-Base |
 
-Source: [`IMAGE_BOSS_ROUND_TASK_DISTRIBUTION`](../validator/tournament/constants.py).
+Source: [`FINAL_ROUND_IMAGE_TASK_SPECS`, `IMAGE_BOSS_ROUND_TASKS_PER_MODE`](../validator/tournament/constants.py).
 
-All four tasks are created with the round. Each task draws a base model and an image set.
+All four tasks are created with the round. Each task draws a base model of its family and a data set.
 
 ## What your code receives
 
-Each task runs one Docker image, built from your repository at your pinned commit, from the Dockerfile for the task's model family. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to image.
+Each task runs one Docker image, built from your repository at your pinned commit. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to image.
 
-### Dockerfiles
+### Dockerfile
 
-| Model family | `--model-type` | Dockerfile |
-| --- | --- | --- |
-| Flux | `flux` | `ops/docker/standalone-image-trainer.dockerfile` |
-| Z-Image | `z-image` | `ops/docker/standalone-image-toolkit-trainer.dockerfile` |
-| Qwen-Image | `qwen-image` | same as Z-Image |
-| Ideogram 4 | `ideogram4` | same as Z-Image |
-| Krea 2 | `krea2` | same as Z-Image |
-
-Source: [`get_dockerfile_path`](../trainer/runtime.py), [`trainer/constants.py`](../trainer/constants.py).
-
-Both files are looked up in your repository. This repository contains `standalone-image-toolkit-trainer.dockerfile` and does not contain `standalone-image-trainer.dockerfile`.
-
-> [!IMPORTANT]
-> An entry needs both Dockerfiles. Round 1 is a Flux task, so a failed Flux build means no round-1 result. Every other task uses the toolkit Dockerfile.
+Every tournament task builds `ops/docker/standalone-image-toolkit-trainer.dockerfile` from your repository ([`get_dockerfile_path`](../trainer/runtime.py), [`trainer/constants.py`](../trainer/constants.py)). This repository's copy trains every family with AI Toolkit, and HiDream-O1 edit tasks with Musubi Tuner.
 
 ### Arguments
 
 | Argument | Meaning |
 | --- | --- |
-| `--model-type` | the model family: `flux`, `z-image`, `qwen-image`, `ideogram4` or `krea2` |
+| `--model-type` | the model family: `z-image`, `qwen-image`, `krea2`, `flux2-klein-4b`, `qwen-image-edit-2511`, `hidream-o1` or `moss-image-base` |
+| `--training-mode` | `edit` on an edit task. Absent on a text-to-image task |
 | `--dataset-zip` | presigned URL of the training zip. The file is already at `/cache/datasets/{task_id}_tourn.zip` |
 | `--trigger-word` | the task's trigger word. Passed only when the task has one |
 
@@ -96,42 +83,44 @@ Source: [`trainer/runtime.py: run_trainer_container_image`](../trainer/runtime.p
 
 ### The dataset
 
+| Property | Text-to-image | Edit |
+| --- | --- | --- |
+| Contents | images, each with a caption in a `.txt` file of the same name | `manifest.jsonl`, `targets/` and `sources/` |
+| Image formats | `.png`, `.jpg`, `.jpeg` | the same |
+| Layout | all files inside one folder, `train_data/` | all inside `train_data/` |
+
+An edit manifest has one JSON object per line: `sample_id`, `instruction` (the edit in natural language), `target` (the edited image) and `sources` (a list holding the source image). Paths are relative to `train_data/`.
+
 | Property | Value |
 | --- | --- |
-| Contents | images, each with a caption in a `.txt` file of the same name |
-| Image formats | `.png`, `.jpg`, `.jpeg` |
-| Layout | all files inside one folder, `train_data/` |
-| Task size | 50 pairs |
-| Held out | a tenth of the pairs, rounded up: 5 images |
+| Task size | 10 to 50 pairs, drawn at random; at most 30 in round 1 |
+| Held out | a tenth of the pairs, rounded up |
+| Time budget | 0.5 to 1 hour, rising with the task size in 15-minute steps. Qwen-Image, Qwen-Image-Edit-2511 and MOSS-Image-Base edit tasks get 0.5 hours more |
 
-Source: [`train_test_split_image`](../validator/tasks/datasets/preparation.py), [`MAX_IMAGE_SYNTH_PAIRS`](../validator/tasks/synthetics/constants.py).
-
-A task's time budget is 1 hour, and 1.5 hours on Qwen-Image ([`_image_competition_hours_for_dataset_size`](../validator/tasks/synthetics/diffusion.py), [`QWEN_IMAGE_EXTRA_COMPETITION_HOURS`](../validator/tasks/synthetics/constants.py)).
+Source: [`train_test_split_image`, `create_zip_for_image_dataset`](../validator/tasks/datasets/preparation.py), [`MIN_IMAGE_SYNTH_PAIRS`, `MAX_IMAGE_SYNTH_PAIRS`, `QWEN_IMAGE_EXTRA_COMPETITION_HOURS`](../validator/tasks/synthetics/constants.py), [`_image_competition_hours_for_dataset_size`](../validator/tasks/synthetics/diffusion.py).
 
 ### Environment variables
 
 | Variable | Set on | Meaning |
 | --- | --- | --- |
 | `HF_HOME`, `TRANSFORMERS_CACHE` | every task | `/cache/hf_cache` |
-| `FLUX_T5_PATH` | Flux tasks | `/cache/hf_cache/t5xxl_fp16.safetensors` |
-| `FLUX_CLIP_PATH` | Flux tasks | `/cache/hf_cache/clip_l.safetensors` |
-| `FLUX_VAE_PATH` | Flux tasks | `/cache/hf_cache/ae.safetensors` |
 
 <details>
 <summary>Supporting files in the cache</summary>
 
-The base model is at the model path in [Paths](miner.md#paths). A Flux model published as a single checkpoint is a directory holding that one `.safetensors` file. Other files the families need are under `/cache/hf_cache`:
+The base model is at the model path in [Paths](miner.md#paths). Other files the families need are under `/cache/hf_cache`, in Hugging Face cache layout unless named as a file, and `/cache/ai_toolkit_models`:
 
 | Model family | Files |
 | --- | --- |
-| Every family | tokenizer files of `openai/clip-vit-large-patch14`, `laion/CLIP-ViT-bigG-14-laion2B-39B-b160k` and `google/t5-v1_1-xxl`, in Hugging Face cache layout |
-| Flux, single checkpoint | the three files named by the `FLUX_*` variables |
+| Every family except HiDream-O1 edit | tokenizer files of `openai/clip-vit-large-patch14`, `laion/CLIP-ViT-bigG-14-laion2B-39B-b160k` and `google/t5-v1_1-xxl` |
 | Z-Image | `zimage_turbo_training_adapter_v2.safetensors` |
 | Qwen-Image | `qwen_image_torchao_uint3.safetensors` |
-| Ideogram 4 | `Qwen--Qwen3-VL-8B-Instruct/` (text encoder), `ideogram_4_unconditional_lora_r16.safetensors` |
 | Krea 2 | `Qwen--Qwen3-VL-4B-Instruct/` (text encoder) |
+| FLUX.2 Klein 4B | `Qwen/Qwen3-4B` (text encoder), `ae.safetensors` of `ai-toolkit/flux2_vae` |
+| MOSS-Image-Base | tokenizer files of `Qwen/Qwen3.5-9B`; `/cache/ai_toolkit_models/text_encoders/qwen3.5_9b_int8_convrot.safetensors` |
+| HiDream-O1 edit | `checkpoints/hidream_o1_image_bf16.safetensors` (the model as one checkpoint), and `HiDream-ai/HiDream-O1-Image` without weights |
 
-Source: [`trainer/containers/downloader.py`](../trainer/containers/downloader.py).
+Source: [`trainer/containers/downloader.py`](../trainer/containers/downloader.py), [`AI_TOOLKIT_RUNTIME_REPOS`, `AI_TOOLKIT_COMFY_FILES`](../core/models/image_models.py).
 
 </details>
 
@@ -165,18 +154,25 @@ Source: [`select_lora`](../validator/evaluation/image_artifacts.py).
 
 ## Scoring
 
-Your LoRA is applied to the task's base model and scored on the held-out images ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)).
+Your LoRA is applied to the task's base model and scored on the held-out images. Two evaluators are used, by family ([`image_eval_entrypoint.sh`](../ops/docker/scripts/image_eval_entrypoint.sh)):
+
+| Families | Per held-out image |
+| --- | --- |
+| Z-Image, Qwen-Image, Krea 2 | the model's denoising error (mean squared error of its prediction) over a fixed set of noise levels ([`evaluators/diffusion.py`](../validator/evaluation/evaluators/diffusion.py)) |
+| FLUX.2 Klein 4B, Qwen-Image-Edit-2511, HiDream-O1, MOSS-Image-Base | the family's own training loss at high noise, with fixed seeds, averaged over 10 repeats on up to 4 held-out images ([`evaluators/diffusion_objective.py`](../validator/evaluation/evaluators/diffusion_objective.py)) |
 
 | Step | Rule |
 | --- | --- |
-| Per image | the model's denoising error (mean squared error of its prediction) over a fixed set of noise levels |
-| Two passes | once with the image's caption, once with an empty prompt |
+| Two passes | once with the image's caption or edit instruction, once with an empty prompt |
 | Task score | 0.5 x the mean captioned loss + 0.5 x the mean empty-prompt loss |
 | Better | lower |
 
 Source: [`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`](../validator/evaluation/constants.py), [`_calculate_weighted_loss_for_image_eval`](../validator/scoring/tasks.py).
 
-- Entries on a task are ranked by this score.
+- On an edit task the loss is weighted toward the region the edit changed; unchanged pixels count at 0.2.
+- The LoRA is loaded per module, with its own rank and alpha. A LoRA none of whose keys match the model, or whose weights are all zero, fails. So does a LoRA too large for the evaluator's GPU.
+- A LoRA that leaves the base model unchanged, or an evaluation that returns no loss or a zero loss, has no valid result.
+- Entries on a task are ranked by the task score.
 - An entry with no upload or a failed evaluation has no valid result.
 - Which evaluation failures are scored and which are retried is in [Whose fault an evaluation failure is](../validator/evaluation/README.md#whose-fault-an-evaluation-failure-is).
 
@@ -197,19 +193,20 @@ Source: [`IMAGE_CROWN_WIN_MARGIN`, `CROWN_LARGER_ALLOWANCE`](../validator/tourna
 
 ## Local testing
 
-One script in `ops/examples/training` runs an image task through the downloader, your trainer image and the uploader:
+One script in `ops/examples/training` runs a text-to-image task through the downloader, your trainer image and the uploader:
 
 ```bash
 ./ops/examples/training/run_image_task.sh
 ```
 
-The script builds `ops/docker/standalone-image-toolkit-trainer.dockerfile` from the current directory, so it does not cover Flux tasks. It also builds the downloader and uploader images, which this repository contains. Run it from the root of a checkout of this repository with your repository's files copied in, your toolkit Dockerfile at `ops/docker/standalone-image-toolkit-trainer.dockerfile`. The script does not look under `dockerfiles/`. Set the task values and credentials at the top of the script first.
+The script builds `ops/docker/standalone-image-toolkit-trainer.dockerfile` from the current directory. It also builds the downloader and uploader images, which this repository contains. Run it from the root of a checkout of this repository with your repository's files copied in. The script does not look under `dockerfiles/` and does not pass `--training-mode`. Set the task values and credentials at the top of the script first.
 
 ## Checklist
 
-- [ ] Your repository holds both Dockerfiles at your pinned commit.
-- [ ] The entrypoint of each accepts the shared arguments and the three image arguments, with `--trigger-word` optional.
-- [ ] Every model family is handled: Flux, Z-Image, Qwen-Image, Ideogram 4, Krea 2.
+- [ ] Your repository holds `ops/docker/standalone-image-toolkit-trainer.dockerfile` at your pinned commit.
+- [ ] The entrypoint accepts the shared arguments and the four image arguments, with `--training-mode` and `--trigger-word` optional.
+- [ ] Every slot is handled: Z-Image, Qwen-Image and Krea 2 text-to-image; Qwen-Image-Edit-2511 edit; FLUX.2 Klein 4B, HiDream-O1 and MOSS-Image-Base in both modes.
+- [ ] Edit tasks read `manifest.jsonl` and pair each target with its source and instruction.
 - [ ] The training zip is read from `/cache/datasets/{task_id}_tourn.zip`, with no download.
 - [ ] The LoRA is in your output directory before the deadline.
 - [ ] The evaluator's file choice in [Output contract](#output-contract) lands on the file you intend.

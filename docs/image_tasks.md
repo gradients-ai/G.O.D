@@ -10,8 +10,8 @@ types for tournament tasks:
 - `HiDream-ai/HiDream-O1-Image` (`text-to-image`, `edit`)
 - `OpenMOSS-Team/MOSS-Image-Base` (`text-to-image`, `edit`)
 
-Legacy families `z-image`, `qwen-image`, and `krea2` remain in the tournament
-pool for Round 1 / Round 2 / Final slots that still reference them.
+`z-image`, `qwen-image`, and `krea2` (`text-to-image`) also appear in tournament
+slots.
 
 FLUX.2, Qwen, and MOSS train through the pinned AI Toolkit runtime. HiDream
 text-to-image also uses AI Toolkit; HiDream edit uses pinned Musubi because
@@ -19,19 +19,23 @@ AI Toolkit does not expose O1 reference-image conditioning.
 
 ## Tournament structure
 
-- **Round 1**: one group with three text-to-image tasks — Z-Image, FLUX.2,
-  and MOSS — each capped at 30 source pairs (at most 0.75h).
-- **Round 2**: one knockout task. The validator draws uniformly from the
-  `(model, capability)` slots of Qwen-Image (t2i), Krea2 (t2i),
-  Qwen-Image-Edit (edit), and HiDream (t2i and edit).
-- **Final**: six fixed slots — FLUX.2 / HiDream / MOSS edit, plus Krea2 /
-  HiDream / MOSS text-to-image.
+Each round task is one random draw of a `(model, mode)` slot. The full rules
+are in the [image miner guide](miner_image.md#rounds).
 
-Template step budgets are sized for the existing 0.5–1.5h competition window
-(about 1000 steps for fast families, 500 for Qwen/MOSS edit and HiDream edit).
+- **Round 1**: one text-to-image task — Z-Image, FLUX.2, or MOSS — capped at
+  30 source pairs.
+- **Round 2**: one task from the slots of Qwen-Image (t2i), Krea2 (t2i),
+  Qwen-Image-Edit (edit), and HiDream (t2i and edit).
+- **Round 3**: one of six final slots — FLUX.2 / HiDream / MOSS edit, plus
+  Krea2 / HiDream / MOSS text-to-image.
+- **Boss round**: four tasks, two edit and two text-to-image, from the final
+  slots other than round 3's.
+
+Template step budgets are sized for the 0.5–1.5h competition window (about
+1000 steps for fast families, 500 for Qwen/MOSS edit and HiDream edit).
 Qwen-Image, Qwen-Image-Edit, and MOSS edit each get an extra +0.5h on top of
-the size-scaled window. Outside tournament overrides, dual-capability models
-still use the organic 40% edit probability.
+the size-scaled window. Outside tournament slots, dual-capability models use
+the organic 40% edit probability.
 
 ## Image-edit dataset contract
 
@@ -59,8 +63,8 @@ regenerated.
 
 ## Evaluation
 
-Existing image families keep the ComfyUI denoising-MSE evaluator. The four
-new families use their pinned training backend to evaluate the native held-out
+Z-Image, Qwen-Image, and Krea2 use the ComfyUI denoising-MSE evaluator.
+FLUX.2, Qwen-Image-Edit, HiDream, and MOSS use their pinned training backend to evaluate the native held-out
 training objective: AI Toolkit for supported text-to-image/edit paths and
 Musubi for HiDream O1 editing. Conditional and empty-text passes reuse the
 same deterministic seeds and preserve GOD's existing `DiffusionLosses` result

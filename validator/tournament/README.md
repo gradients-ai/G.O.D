@@ -64,11 +64,11 @@ Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every 
 
 ## Image tournament flow
 
-1. **Round 1.** One group plays one Flux task, with the boss assigned to it alongside the miners. The best 8 miners advance (`IMAGE_ROUND_PLAN`).
+1. **Round 1.** One group plays one text-to-image task, with the boss assigned to it alongside the miners. Its model type is drawn from `ROUND_ONE_IMAGE_MODEL_TYPES` and its size is capped at `ROUND_ONE_IMAGE_MAX_SYNTH_PAIRS` pairs. The best 8 miners advance (`IMAGE_ROUND_PLAN`).
 2. **Entry gates.** As in the text flow, before round 2 is built.
-3. **Rounds 2 and 3.** Each is one group on one task, with the boss assigned to it: Ideogram 4 (top 4) in round 2, Krea 2 (top 1) in round 3.
+3. **Rounds 2 and 3.** Each is one group on one task, with the boss assigned to it: a slot drawn from `ROUND_TWO_IMAGE_TASK_SPECS` (top 4) in round 2, a slot drawn from `FINAL_ROUND_IMAGE_TASK_SPECS` (top 1) in round 3. A slot is a (model type, training mode) pair.
 4. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
-5. **Boss round.** The four tasks of `IMAGE_BOSS_ROUND_TASK_DISTRIBUTION` are created together. The boss and the challenger both train them.
+5. **Boss round.** Four tasks are created together: `IMAGE_BOSS_ROUND_TASKS_PER_MODE` of each training mode, two edit and two text-to-image, drawn from the `FINAL_ROUND_IMAGE_TASK_SPECS` slots other than round 3's. The round-3 slot is read from round 3's task when the boss round is created; a rerun keeps the slots the round already holds and draws only for missing tasks. The boss and the challenger both train them.
 6. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
 Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as text.
