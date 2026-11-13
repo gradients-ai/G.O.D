@@ -18,7 +18,7 @@ Rounds narrow the field to one challenger. The challenger then meets the defendi
 
 ```mermaid
 flowchart LR
-    enter["Miners enter<br/>a repo and a pinned commit"] --> rounds["Rounds<br/>every entry runs the same tasks,<br/>the field narrows"]
+    enter["Miners enter<br/>a repo and a pinned commit"] --> rounds["Rounds<br/>miners in a round run the same tasks,<br/>the field narrows"]
     rounds -->|"one challenger"| boss["Boss round<br/>challenger vs boss"]
     boss -->|"challenger wins"| crown["Challenger takes the crown"]
     boss -->|"boss holds"| keeps["Boss keeps the crown"]
@@ -39,7 +39,7 @@ Schedule, fees and how to enter: [miner hub](docs/miner.md#tournaments).
 ### Miners
 
 1. Write a training repository for one tournament and pin a commit.
-2. Return it from `miner/endpoints/training_repo.py` and run the miner service.
+2. Complete subnet registration, return the repository from `miner/endpoints/training_repo.py` and run the miner service.
 3. Fund your coldkey balance with the entry fee.
 
 Every step, with commands: [miner hub](docs/miner.md#what-miners-do).

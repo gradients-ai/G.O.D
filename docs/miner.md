@@ -1,14 +1,14 @@
 # Miner hub
 
-Everything a miner needs that is the same in every tournament: schedule, fees, repository rules, how your code runs, entry, payouts, results and fair play.
+Everything a miner needs that is the same in every tournament: schedule, fees, repository rules, how your code runs, entry, payouts, results and fair play. Rules cite the code that enforces them. Where a page and the code differ, the code is right.
 
 Guides: [Text](miner_text.md) · [Image](miner_image.md) · [Compression](miner_compression.md) · [Developer guide](developer.md)
 
-On this page: [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Local testing](#local-testing) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting)
+On this page: [What miners do](#what-miners-do) · [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting)
 
 ## What miners do
 
-Miners submit code. You publish a GitHub repository, pin a commit, and run a small miner service that tells the validator which repository to use. Trainers build and run it on validator-managed GPUs, and the output is evaluated against the other miners.
+Miners submit code. You publish a GitHub repository, pin a commit, and run a small miner service that tells the validator which repository to use. The validator's trainers, its GPU machines, build and run it, and the output is ranked against the other miners'.
 
 > [!IMPORTANT]
 > Repositories are published in the cases listed in [Fair play and review](#fair-play-and-review). Submit only code you are prepared to open-source.
@@ -17,22 +17,22 @@ Path to your first entry:
 
 1. Pick a tournament in [Tournaments](#tournaments) and read its guide.
 2. Build a repository that meets the [shared rules](#training-repository) and the guide's contract.
-3. Test it locally (see [Local testing](#local-testing)).
-4. Complete subnet registration, post your IP and start the miner service (see [Entering a tournament](#entering-a-tournament)).
-5. Return your repository and full commit SHA from the endpoint for that tournament.
+3. Test it locally, as the guide's Local testing section describes.
+4. Complete subnet registration and post your IP (see [Entering a tournament](#entering-a-tournament)).
+5. Set your repository and full commit SHA in the endpoint for that tournament and start the miner service.
 6. Fund your coldkey balance with at least the entry fee.
 
 ## Tournaments
 
 Three tournaments run every week. Times are UTC.
 
-| Tournament | API value | Endpoint on your miner | Weekly start | Entry fee | Guide |
-| --- | --- | --- | --- | --- | --- |
-| Text | `text` | `GET /training_repo/text` | Monday 09:00 | `0.7 TAO` | [Text guide](miner_text.md) |
-| Image | `image` | `GET /training_repo/image` | Monday 11:00 | `0.4 TAO` | [Image guide](miner_image.md) |
-| Compression | `quant` | `GET /training_repo/quant` | Monday 13:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
+| Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
+| --- | --- | --- | --- | --- |
+| Text | `GET /training_repo/text` | Monday 09:00 | `0.7 TAO` | [Text guide](miner_text.md) |
+| Image | `GET /training_repo/image` | Monday 11:00 | `0.4 TAO` | [Image guide](miner_image.md) |
+| Compression | `GET /training_repo/quant` | Monday 13:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
 
-Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
+Each tournament is entered on its endpoint and charges one fee per entry. `quant` is the API value of the compression tournament. Entering two tournaments is two entries and two fees.
 
 ## Training repository
 
@@ -40,13 +40,11 @@ Every repository needs the following, whatever the tournament.
 
 | Requirement | Rule |
 | --- | --- |
-| Licence | A `LICENSE` and a `NOTICE` file at the repository root, identical to this repository's. |
-| Readable source | No obfuscated or compiled-only code. The scan runs at the pinned commit. |
-| Dockerfile | Under `ops/docker/`. The same file name under `dockerfiles/` is also accepted. File names are in the guides. |
+| Licence | A `LICENSE` and a `NOTICE` file at the repository root, identical to this repository's. Your guide's At a glance says where enrolment reads them. |
+| Readable source | No obfuscated or compiled-only code, checked by a scan at the pinned commit. |
+| Dockerfile | The trainer builds a Dockerfile from your repository. It looks under `ops/docker/`, then for the same file name under `dockerfiles/`. Your guide names the file. |
 | CUDA | Trainer hosts support CUDA 12.8 or lower. Keep your base image and wheels within it. |
-| Contents | What an image and repository may contain is policy: see [Fair play and review](#fair-play-and-review). |
-
-The licence check reads the default branch for text and image, and the pinned commit for compression. Keep both files on the default branch and on the commit you pin.
+| Contents | What your repository and image may contain: see [Policy](#policy). |
 
 <details>
 <summary>Licence check details</summary>
@@ -64,11 +62,11 @@ Each file is compared line by line with this repository's `LICENSE.md` and `NOTI
 For each task the trainer does this:
 
 1. Clones your repository at the pinned commit.
-2. Downloads the task's model and data into the cache volume.
-3. Builds the tournament's Dockerfile with the repository root as build context.
+2. Downloads the task's model and data into `/cache`.
+3. Builds your Dockerfile with the repository root as build context.
 4. Starts your container with the task's CLI arguments and environment.
 5. Waits until the container exits or the deadline passes.
-6. Uploads your output to Hugging Face for evaluation.
+6. Uploads your output to a public Hugging Face repo for evaluation. What is uploaded is in your guide's output contract.
 
 The held-out split used for scoring is never given to your container.
 
@@ -77,7 +75,7 @@ The held-out split used for scoring is never given to your container.
 | Limit | Value |
 | --- | --- |
 | Image build | No layer cache, 30 minute limit. |
-| GPUs | Only the GPUs assigned to the task. Counts are in the guides. |
+| GPUs | H100s, and only those assigned to the task. Counts are in the guides. |
 | Memory | 110 GB per GPU. |
 | CPU | 24 cores per GPU, capped at the host's cores. |
 | Shared memory | 8 GB, or 16 GB with four or more GPUs. |
@@ -88,22 +86,15 @@ The held-out split used for scoring is never given to your container.
 
 ### Arguments and environment
 
-Containers receive these arguments. The guides list the rest.
+Every container receives these. The guides list the rest.
 
-| Argument | Tournaments | Meaning |
-| --- | --- | --- |
-| `--task-id` | All | The task's identifier. |
-| `--model` | All | The model to work on, as a name under `/cache/models`. |
-| `--expected-repo-name` | All | The name of your output directory. |
-| `--hours-to-complete` | All | The deadline in hours, counted from container start. |
-| `--dataset` | Text, compression | Presigned URL of the train split. The file is already at `/cache/datasets/{task_id}_train_data.json`. |
-| `--file-format` | Text, compression | `s3`. |
-
-| Variable | Tournaments | Meaning |
-| --- | --- | --- |
-| `BASELINE_STATS_PATH` | All | Path to a JSON file of model and dataset statistics. Set when the task has them. |
-| `MINER_DATASETS_DIR` | Text, compression | Parent directory of your requested datasets. Set when you have any. |
-| `MINER_DATASETS` | Text, compression | Comma-separated directory names under `MINER_DATASETS_DIR`. |
+| Argument or variable | Meaning |
+| --- | --- |
+| `--task-id` | The task's identifier. |
+| `--model` | The model to work on, by name. Its files are at the model path below. |
+| `--expected-repo-name` | The name of your output directory. |
+| `--hours-to-complete` | The deadline in hours, counted from container start. |
+| `BASELINE_STATS_PATH` | Path to a JSON file of model and dataset statistics. Set when the task has them. |
 
 ### Paths
 
@@ -111,45 +102,16 @@ Containers receive these arguments. The guides list the rest.
 | --- | --- |
 | Your output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
 | The model | `/cache/models/{--model with "/" replaced by "--"}` |
-| Requested datasets | `/cache/miner_datasets/{dataset id with "/" replaced by "--"}` |
 
-The uploader reads the output path exactly. Task data paths are in the guides. `trainer/training_paths.py` has helpers for all of them.
+The uploader reads only that output path. Task data paths are in the guides.
 
 ### Deadline
 
 | Outcome | Result |
 | --- | --- |
-| Container exits with code 0 | The output directory is uploaded. |
+| Container exits with code 0 | Your output is uploaded, under your guide's output contract. |
 | Container exits with any other code | The task fails for you. Nothing is uploaded. |
-| Deadline passes | The container is killed and the output directory is uploaded as it stands. |
-
-### Upload
-
-| Tournament | What is uploaded |
-| --- | --- |
-| Text, image | The output directory. If a direct subfolder holds a `.safetensors` file, that subfolder is uploaded in place of the directory. |
-| Compression | `quant_manifest.json` and the files it lists, unmodified, once the output passes the check in its [output contract](miner_compression.md#output-contract). |
-
-For text and image these files are not uploaded: `trainer_state.json`, `training_args.bin`, `optimizer.pt`, `optimizer.bin`, `scheduler.pt`, `scaler.pt`, `rng_state*.pth`.
-
-Which evaluation failures count against you: [Whose fault an evaluation failure is](../validator/evaluation/README.md#whose-fault-an-evaluation-failure-is).
-
-### Requested datasets
-
-Text and compression entries can ask for extra data. Return up to two Hugging Face dataset ids in `requested_datasets`:
-
-```python
-requested_datasets=["OWNER/DATASET_A", "OWNER/DATASET_B"]
-```
-
-- Only ids listed in `core/datasets/whitelisted_sft_datasets.json` are accepted. Others are dropped.
-- The first two accepted ids are kept.
-
-## Local testing
-
-Example scripts are in `ops/examples/training`. Each guide says what exists for its tournament and where to run it: [text](miner_text.md#local-testing), [image](miner_image.md#local-testing), [compression](miner_compression.md#local-testing).
-
-To re-evaluate a finished task on your machine, see [Evaluations and manual tools](developer.md#evaluations-and-manual-tools).
+| Deadline passes | The container is killed. What your output directory holds at that moment is uploaded, under the same contract. |
 
 ## Entering a tournament
 
@@ -214,9 +176,9 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
 | `github_repo` | Repository URL. Must stay reachable until the tournament completes. |
 | `commit_hash` | Full 40-character hex SHA (`git rev-parse HEAD`). A branch name is rejected. |
 | `github_token` | Optional. Needed only for a private repository. |
-| `requested_datasets` | Optional. See [Requested datasets](#requested-datasets). |
+| `requested_datasets` | Leave as `None`. |
 
-You may return a different repository or commit for each `task_type`. A miner that does not answer for a tournament is not enrolled in it.
+You may return a different repository or commit for each tournament. A miner that does not answer for a tournament is not enrolled in it.
 
 <details>
 <summary>Private repositories</summary>
@@ -229,9 +191,9 @@ The validator tests the token against the GitHub repository API. A token that do
 
 ### Enrolment checks
 
-Enrolment checks the commit SHA, the obfuscation scan and the licence files ([Training repository](#training-repository)). Compression adds checks on the decoder: see its [enrolment checks](miner_compression.md#enrolment-checks).
+Every entry needs a full commit SHA, a pass on the obfuscation scan and the licence files ([Training repository](#training-repository)). A guide lists any check its tournament adds.
 
-Enrolment does not require a Dockerfile. A missing one fails when the trainer builds your image.
+Enrolment does not require a Dockerfile. A missing one fails the job when the trainer starts it.
 
 ### One entry per miner
 
@@ -242,7 +204,7 @@ Duplicate entries are dropped before the enrolment checks run. The kept entry mu
 ### Balance and fee
 
 - Fees are paid from a balance held per coldkey. All hotkeys under a coldkey share it.
-- The fee is charged when you are enrolled, after your repository passes the checks. Enrolment and the charge happen together.
+- The fee is charged at enrolment, after your repository passes the checks.
 - With too little balance you are not enrolled and nothing is charged.
 - A coldkey is charged at most once per tournament.
 
@@ -268,7 +230,7 @@ Check the fees and your balance with the endpoints in [Results](#results).
 
 The boss is a tournament's defending champion, and the challenger is the one miner left after the rounds. The challenger is compared with the boss task by task and must beat it to take the crown.
 
-The rule is in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). What counts as a win on each tournament's tasks is in its guide: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown).
+The crown rule and what counts as a win on each tournament's tasks are in its guide: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). Who takes 1st, 2nd and 3rd is in [Placements](../validator/tournament/README.md#placements).
 
 ## Payouts
 
@@ -276,13 +238,15 @@ Each tournament pays the top places of its latest completed run until the next r
 
 ### Share per tournament
 
+Shares are fractions of the subnet's miner emission.
+
 | Tournament | Base minimum | Maximum |
 | --- | --- | --- |
 | Text | 0.15 | 0.40 |
 | Image | 0.25 | 0.50 |
 | Compression | 0.35 | 0.60 |
 
-The minimums sum to 0.75. The other 0.25 floats between the tournaments by participation. A maximum is the minimum plus the whole 0.25, and it caps the share with or without a boost. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
+The minimums sum to 0.75. The other 0.25 floats between the tournaments by participation. A maximum is the minimum plus the whole 0.25. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
 ### Split over the paid places
 
@@ -291,17 +255,16 @@ The minimums sum to 0.75. The other 0.25 floats between the tournaments by parti
 | Three | 76.2% | 19.0% | 4.8% |
 | Two | 80% | 20% | |
 
-Up to three places are paid, each a quarter of the one above. Who holds each place is in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). When the boss keeps the crown of a text or compression tournament, the [per-contender rule](../validator/tournament/README.md#per-contender-rule) decides whether 2nd and 3rd are paid.
+Up to three places are paid, each a quarter of the one above. Who holds each place is in [Placements](../validator/tournament/README.md#placements).
 
 ### Other rules
 
 | Rule | Value |
 | --- | --- |
-| Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The shares scale down by the total. |
-| Champion boost | Text and image only. A champion's winning margin above `0.10` adds twice the excess to its tournament's share, up to the maximum. All three shares are then rescaled to sum to 1. |
+| Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The tournament shares scale down by the total paid this way. |
 | No winner | A tournament with no completed run has no payee. Its share is not paid out. |
 
-While a boost is active, another tournament can fall under its base minimum.
+Where a guide describes a champion boost, it raises that tournament's share. All three shares are then rescaled to sum to 1, so any share can fall under its base minimum.
 
 ## Results
 
@@ -317,7 +280,7 @@ The API base is `https://api.gradients.io`. None of these needs a key.
 
 ## Fair play and review
 
-These rules apply to every tournament. Compression adds rules for the decoder in its [guide](miner_compression.md#freeform-track-artifact-and-decoder).
+These rules apply to every tournament.
 
 ### Duplicate-submission check
 
@@ -327,7 +290,7 @@ A duplicate submission is code that matches another entry's.
 | --- | --- | --- |
 | The identical commit to another miner's. | Before round 1 trains. | Every entry in the matching group is eliminated automatically. |
 | Source identical to another miner's after normalisation. | Before round 1 trains. | Every entry in the matching group is eliminated automatically. |
-| A pairwise review by a language model of what differs, among the miners entering round 2 and against the boss's code. | When round 1 completes. | A flag holds the tournament until an operator decides. |
+| Code a language model judges a copy when it reviews what differs, among the miners entering round 2 and against the boss's code. | When round 1 completes. | A flag holds the tournament until an operator decides. |
 
 The boss is never eliminated by this check.
 
@@ -350,7 +313,7 @@ A miner eliminated at the round-2 duplicate review or by the code review is repl
 
 These lines are tournament policy. The automated checks are a floor, not the full definition of what is allowed.
 
-- Given data only. Use the task's model and data, and for text and compression your [requested datasets](#requested-datasets). No outside copies of a task's dataset or its test rows.
+- Given data only. Use the task's model and data. No outside copies of a task's dataset or its test rows.
 - Produced inside the job. No datasets, pretrained models, pre-computed weights or private artifacts in your repository or image.
 - Readable code. Nothing meant to hide how the method works.
 
@@ -360,7 +323,7 @@ These lines are tournament policy. The automated checks are a floor, not the ful
 | --- | --- |
 | Not enrolled | A branch name returned as `commit_hash`, a failed licence or obfuscation check, too little balance, or a duplicate entry by IP, GitHub account or coldkey. |
 | Clone fails | The private repository's token expired or cannot read the repository. |
-| Build fails | A Dockerfile the tournament needs is missing, or the build passed its time limit. Image needs two: see [Dockerfiles](miner_image.md#dockerfiles). |
+| Job fails before training | A Dockerfile your guide names is missing from your repository, or the build passed its time limit. |
 | Download fails inside the container | The container has no internet. Read the task's files from `/cache`. |
 | Write fails | The path is under `/cache`, which is read-only. Write under `/app/checkpoints`. |
 | Nothing to evaluate | The output is not at the [output path](#paths), or nothing was there at the deadline. |

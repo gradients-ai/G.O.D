@@ -1,21 +1,22 @@
 # Compression tournament: miner guide
 
-The compression tournament ranks miners on how small they can make a given model while keeping its loss. This guide is the contract for miners who enter it.
+The compression tournament ranks miners on compressing a given model: lowest loss in a prescribed format, or smallest size at a bounded loss. This guide is the contract for miners who enter it.
 
 [Miner hub](miner.md) · [Text guide](miner_text.md) · [Image guide](miner_image.md)
 
 [At a glance](#at-a-glance) · [Rounds](#rounds) · [The boss round](#the-boss-round) · [What your code receives](#what-your-code-receives) · [Output contract](#output-contract) · [Scoring](#scoring) · [The crown](#the-crown) · [Local testing](#local-testing) · [Checklist](#checklist)
 
-Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament). Rules below cite the code that enforces them. Where this guide and the code differ, the code is right.
+Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament).
 
 ## At a glance
 
 | | |
 | --- | --- |
 | You compete on | compressing a given bfloat16 (bf16) model, within the task's time budget |
-| You submit | a training repository with a `decoder/` directory. Its container writes one compressed model per task |
-| Tracks | fixed: a checkpoint in a prescribed format. Freeform: any bytes that your decoder expands to bf16 |
-| Dockerfile | the text Dockerfile, `ops/docker/standalone-text-trainer.dockerfile` |
+| You submit | a training repository. Its container writes one compressed model per task. The repository must also contain a `decoder/` directory, which is required to enter and is used on freeform tasks only |
+| Enrolment | the shared checks, read at your pinned commit, plus a [decoder check](#enrolment-checks) |
+| Tracks | fixed: a checkpoint in a prescribed format, loaded as it is. Freeform: any bytes, which your `decoder/` expands to bf16 |
+| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository |
 | Rounds | three, one task each: freeform, fixed, freeform |
 | Boss round | four tasks: two freeform, two fixed |
 | Task score | fixed: loss, lower is better. Freeform: total bytes with a penalty on loss, lower is better |
@@ -32,9 +33,11 @@ Each round is one task. Every miner in the round, and the boss, compresses the s
 
 Source: [`QUANT_ROUND_PLAN`](../validator/tournament/constants.py), [`round_results.py`](../validator/tournament/round_results.py).
 
+The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>`. `A16` means bf16 activations.
+
 - The input models are the ones the text boss trains in a text tournament, at the sizes in the [text guide](miner_text.md#rounds). A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
 - Advancement uses average rank over every round played so far, ranked among the surviving miners.
-- Viability cut: after round 2, a miner that cannot finish top or joint top overall, whatever its round-3 rank, is dropped.
+- Viability cut: after round 2, a miner is dropped if no round-3 result, its own or the others', lets it finish top or joint top overall.
 - The miner that advances from round 3 is the challenger.
 
 <details>
@@ -60,25 +63,28 @@ The challenger and the boss meet on four tasks. Both compress the same input mod
 
 Source: [`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py), [`seed_tasks.py`](../validator/tournament/seed_tasks.py).
 
-- The boss's entries are trained as each input model becomes available. The challenger trains its entries in the boss round.
+- The boss's entries are run as each input model becomes available. The challenger's entries are run in the boss round.
 - Each fixed task draws one of the two formats. Both players get the same format on a task. The two fixed tasks may differ.
 
 ## What your code receives
 
-Every task runs one image, built from the text Dockerfile at your pinned commit. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to compression.
+Every task runs one Docker image, built from `ops/docker/standalone-text-trainer.dockerfile` in your repository at your pinned commit ([`TEXT_DOCKERFILE_PATHS`](../core/constants/docker.py)). The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to compression.
 
-| Argument or variable | Meaning |
+### Arguments
+
+| Argument | Meaning |
 | --- | --- |
 | `--task-type` | `QuantFixedTask` or `QuantFreeformTask` |
+| `--dataset` | presigned URL of the train split. The file is already at `/cache/datasets/{task_id}_train_data.json` |
+| `--file-format` | `s3` |
 | `--dataset-type` | JSON that names the dataset's columns |
-| `--quant-spec`, `QUANT_SPEC` | fixed tasks only: the format to produce, as JSON |
-| `QUANT_TARGET` | JSON: the reference loss and, on freeform, the knee and cap |
-| `QUANT_CALIBRATION_PATH` | path of the calibration file, when the task has one |
+| `--quant-spec` | fixed tasks only: the format to produce, as JSON |
 
 Source: [`trainer/runtime.py: run_trainer_container_text`](../trainer/runtime.py), [`core/models/quant_models.py`](../core/models/quant_models.py).
 
 - `--model` is the input model to compress.
 - Budgets are between 0.5 and 5 hours and vary by task. `--hours-to-complete` carries the budget.
+- The train split is one JSON file of rows. `--dataset-type` carries the `InstructTextTask` or `ChatTask` fields listed in [Dataset type](miner_text.md#dataset-type).
 
 This is `--quant-spec` for `W2A16-asym-g64`:
 
@@ -87,7 +93,17 @@ This is `--quant-spec` for `W2A16-asym-g64`:
  "scale_dtype": "bfloat16", "kv_cache_dtype": "bfloat16", "act_order": false}
 ```
 
-### QuantTarget
+### Environment variables
+
+| Variable | Set on | Meaning |
+| --- | --- | --- |
+| `QUANT_SPEC` | fixed tasks | the same JSON as `--quant-spec` |
+| `QUANT_TARGET` | tasks that carry a target | JSON: the reference loss and, on freeform, the knee and cap |
+| `QUANT_CALIBRATION_PATH` | tasks that have a calibration set | path of the calibration file |
+| `WANDB_MODE` | every task | `offline` |
+| `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | every task | `/app/checkpoints/wandb_logs/{task_id}_{hotkey}` |
+
+### The target
 
 `QUANT_TARGET` is set when the task carries a target, so your code must run without it.
 
@@ -96,7 +112,7 @@ This is `--quant-spec` for `W2A16-asym-g64`:
 | `reference_model` | the bf16 model you were given |
 | `reference_loss` | its loss on the task's eval set |
 | `reference_sku` | the GPU type that loss was measured on |
-| `knee`, `cap` | freeform only, as ratios of the reference loss: bytes are unpenalised up to the knee, and above the cap the entry is out |
+| `knee`, `cap` | freeform only, as ratios of the reference loss: bytes are unpenalised up to the knee, and an entry above the cap ranks behind every entry at or under it |
 | `knee_loss`, `cap_loss` | freeform only: the same two as absolute losses |
 | `penalty_curvature` | freeform only: curvature of the penalty |
 | `bar_cap` | freeform only: `knee - 1`, the relative loss increase that carries no penalty |
@@ -127,7 +143,7 @@ At least 250 rows are carved, at most 1,000 and at most 10% of train, aiming at 
 
 ### GPUs
 
-Every task trains on H100s. The count follows the input model's parameter count.
+The GPU count follows the input model's parameter count.
 
 | Model size | GPUs |
 | --- | --- |
@@ -138,7 +154,7 @@ Source: [`get_tournament_gpu_requirement`](../validator/tournament/gpu_requireme
 
 ## Output contract
 
-Write your output to your output directory ([Paths](miner.md#paths)). The trainer uploads exactly the files your manifest declares, unmodified, to a public Hugging Face repo.
+Write your output to your output directory ([Paths](miner.md#paths)). Once your output passes the check below, the trainer uploads `quant_manifest.json` and exactly the files it lists, unmodified.
 
 ### Manifest
 
@@ -179,9 +195,7 @@ Source: [`check_quant_output`](../trainer/quant_upload_check.py), [`QUANT_ARTIFA
 
 ### Fixed track: the checkpoint
 
-You are scored on the model the evaluator serves from your repo. Only `config.json` and the safetensors weights are read. The tokenizer is the input model's.
-
-The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>`. `A16` means bf16 activations.
+You are scored on the model the evaluator serves from your upload. Only `config.json` and the safetensors weights are read. The tokenizer is the input model's.
 
 **Config.** `config.json` is the input model's, with a `quantization_config` added that matches the spec. Configs are compared as the evaluator resolves them. Five keys may differ from the input model's: `quantization_config`, `transformers_version`, `_name_or_path`, `dtype` and `torch_dtype`. Any other changed, missing or added field is a scored fail ([`quant_config_check.py`](../validator/evaluation/quant_config_check.py)).
 
@@ -228,7 +242,7 @@ The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>
 
 ### Freeform track: artifact and decoder
 
-A freeform submission is the artifact your training job uploads, plus the `decoder/` directory of your repo at the pinned commit. The decoder turns the artifact into the input model's tensors in bf16. The artifact's file names and format are yours.
+A freeform submission is the artifact your training job uploads, plus the `decoder/` directory of your repo at the pinned commit. The decoder runs on freeform tasks only, and turns the artifact into the input model's tensors in bf16. The artifact's file names and format are yours.
 
 The decoder is snapshotted at enrolment and that snapshot is what runs. It runs on the trainer after your upload, in two phases:
 
@@ -263,7 +277,6 @@ Two policy rules apply to the decoder, on top of the shared ones in [Fair play a
 <details>
 <summary>What is published</summary>
 
-- Your artifact repo is public from upload.
 - Your decoder is held by the validator. The champion's decoder is published with its code after the tournament. Decoders of other miners are not published.
 - The decoded bf16 models of boss-round freeform entries are published as public model repos.
 
@@ -273,7 +286,7 @@ Sandbox internals: [`trainer/quant_decode/README.md`](../trainer/quant_decode/RE
 
 ### Enrolment checks
 
-Enrolment adds a decoder check to the shared checks in [Entering a tournament](miner.md#entering-a-tournament). It is made at your pinned commit ([`decoder_snapshot.py`](../validator/tournament/decoder_snapshot.py)). Failing it excludes you from the tournament.
+Enrolment adds a decoder check to the shared checks in [Entering a tournament](miner.md#entering-a-tournament). It is made at your pinned commit for every entry, whatever tasks the tournament draws ([`decoder_snapshot.py`](../validator/tournament/decoder_snapshot.py)). Failing it excludes you from the tournament.
 
 - `decoder/decode.py` exists as a regular file.
 - `decoder/` holds no symlinks or hardlinks.
@@ -283,7 +296,7 @@ Enrolment adds a decoder check to the shared checks in [Entering a tournament](m
 <summary>Checks that log and do not exclude</summary>
 
 - Immutable dependencies ([`registration_lint.py`](../validator/tournament/registration_lint.py)): hash-pinned pip installs and git pinned to a full SHA. Downloads from untrusted URLs carry a checksum. Base images are pinned by digest unless they come from a trusted publisher namespace. `QUANT_REGISTRATION_LINT_ENFORCE` is `False`, so a violation is logged and the miner is enrolled.
-- Files over 1,000,000 bytes in the repo are listed for manual review, at enrolment and at every image build.
+- Files over 1,000,000 bytes in your repository are listed for manual review, at enrolment and at every image build.
 
 </details>
 
@@ -324,11 +337,11 @@ The knee (1.04), cap (1.08) and curvature (2500) are in [`validator/scoring/cons
 | 1.060 | x2.72 |
 | 1.070 | x9.5 |
 | 1.080 | x54.6 |
-| above 1.080 | out |
+| above 1.080 | behind every entry at or under the cap |
 
 </details>
 
-`total_bytes` is every file in your uploaded repo plus the size of your decoder after xz. The decoder is measured as the `git archive` of `decoder/` at your pinned commit. To reproduce that number:
+`total_bytes` is every file you upload plus the size of your decoder after xz. The decoder is measured as the `git archive` of `decoder/` at your pinned commit. To reproduce that number:
 
 ```bash
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
@@ -341,11 +354,11 @@ Entries rank by `r`, lowest first. Scored fails rank last. There is no knee, cap
 
 ### Scored fail or infrastructure error
 
-A submission the evaluator cannot score is a scored fail and ranks last: a wrong layout or config, a model that fails to load or decode, a non-finite loss. A failed training job is a training failure, which sorts below a scored fail at the cut. Which failures are retried and never scored is in [Whose fault an evaluation failure is](../validator/evaluation/README.md#whose-fault-an-evaluation-failure-is).
+A submission the evaluator cannot score is a scored fail and ranks last: a wrong layout or config, a model that fails to load or decode, a non-finite loss. A failed training job is a training failure, which ranks below a scored fail. Which failures are retried and never scored is in [Whose fault an evaluation failure is](../validator/evaluation/README.md#whose-fault-an-evaluation-failure-is).
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each head-to-head is a win or a non-win, and a non-win is within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a compression task.
+The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a compression task.
 
 | Track | Win | Tight allowance | Looser allowance |
 | --- | --- | --- | --- |
@@ -355,9 +368,13 @@ The crown goes to the challenger when it beats the boss under the rule in [Crown
 - Percentages are relative to the boss's value.
 - Freeform: fewer effective bytes by less than 3% is a non-win within the tight allowance.
 - Fixed: passing the paired test without the 1% minimum is a draw.
-- Fixed: a task the boss takes on the paired test, with the sides swapped, is beyond both allowances.
+- Fixed: a task where the boss passes the paired test against the challenger is beyond both allowances.
 
 Source: [`QUANT_FREEFORM_BOSS_BYTE_MARGIN`, `QUANT_CROWN_FREEFORM_TIGHT_ALLOWANCE`, `QUANT_CROWN_FREEFORM_LOOSER_ALLOWANCE`, `QUANT_FIXED_BOSS_MIN_IMPROVEMENT`](../validator/tournament/constants.py), [`crown.py: freeform_head_to_head`, `fixed_head_to_head`](../validator/tournament/crown.py).
+
+Payout notes for compression:
+
+- When the boss keeps the crown, the [per-contender rule](../validator/tournament/README.md#per-contender-rule) decides whether 2nd and 3rd are paid.
 
 ## Local testing
 
@@ -368,9 +385,9 @@ No script in `ops/examples/training` runs a compression task. Two parts can be c
 
 ## Checklist
 
-- [ ] `ops/docker/standalone-text-trainer.dockerfile` exists at your pinned commit.
+- [ ] Your repository holds `ops/docker/standalone-text-trainer.dockerfile` at your pinned commit.
 - [ ] `decoder/decode.py` exists at your pinned commit, with no symlinks or hardlinks, inside both size limits.
-- [ ] The entrypoint accepts the shared arguments, the compression arguments and `--quant-spec`.
+- [ ] The entrypoint accepts the shared arguments and the compression arguments, `--quant-spec` among them.
 - [ ] Both task types are handled: `QuantFixedTask`, `QuantFreeformTask`.
 - [ ] Your code runs when `QUANT_TARGET`, `QUANT_CALIBRATION_PATH` or the per-row reference losses are absent.
 - [ ] A complete output and `quant_manifest.json` are in your output directory before the deadline.

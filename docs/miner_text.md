@@ -6,7 +6,7 @@ The text tournament ranks miners on how well their training code fine-tunes a gi
 
 [At a glance](#at-a-glance) · [Rounds](#rounds) · [The boss round](#the-boss-round) · [What your code receives](#what-your-code-receives) · [Output contract](#output-contract) · [Scoring](#scoring) · [The crown](#the-crown) · [Local testing](#local-testing) · [Checklist](#checklist)
 
-Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament). Rules below cite the code that enforces them. Where this guide and the code differ, the code is right.
+Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament).
 
 ## At a glance
 
@@ -14,7 +14,8 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | --- | --- |
 | You compete on | fine-tuning a given model on a given dataset, within the task's time budget |
 | You submit | a training repository. Its container writes one model per task |
-| Dockerfile | `ops/docker/standalone-text-trainer.dockerfile` |
+| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository |
+| Enrolment | the shared checks. `LICENSE` and `NOTICE` are read on your repository's default branch |
 | Rounds | three, one instruct task each |
 | Boss round | four tasks: continuous, GRPO, DPO, big instruct |
 | Task score | loss on held-out data, lower is better. On GRPO, reward, higher is better |
@@ -41,6 +42,8 @@ The miner that advances from round 3 is the challenger.
 
 The challenger and the boss meet on four tasks.
 
+The continuous task belongs to a lineage that carries across tournaments. There is one lineage, `qwen3-8b`, which starts from `Qwen/Qwen3-8B-Base`. Each tournament trains the lineage's current model on the lineage's next data. The lowest-loss model on the task becomes the lineage's model for the following tournament ([`CONTINUOUS_SFT_LINEAGES`](../validator/tournament/constants.py)).
+
 | Task | Task type | Model | Trained in the boss round by |
 | --- | --- | --- | --- |
 | Continuous | `ChatTask` | the lineage's current model | the challenger |
@@ -54,8 +57,6 @@ Source: [`TEXT_BOSS_ROUND_STAGE_ONE_TASK_TYPES`, `BOSS_ROUND_LARGE_INSTRUCT_MIN_
 - The GRPO and DPO tasks are created with the boss round.
 - The big instruct task runs last. It is created once the other three are scored, if the crown is in reach ([early stop](../validator/tournament/README.md#crown-early-stop-and-placements)).
 
-The continuous task belongs to a lineage that carries across tournaments. There is one lineage, `qwen3-8b`, which starts from `Qwen/Qwen3-8B-Base`. Each tournament trains the lineage's current model on the lineage's next data. The lowest-loss model on the task becomes the lineage's model for the following tournament ([`CONTINUOUS_SFT_LINEAGES`](../validator/tournament/constants.py)).
-
 <details>
 <summary>When another model is carried</summary>
 
@@ -66,16 +67,20 @@ The continuous task belongs to a lineage that carries across tournaments. There 
 
 ## What your code receives
 
-Every task runs one image, built from your text Dockerfile at your pinned commit. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to text.
+Every task runs one Docker image, built from `ops/docker/standalone-text-trainer.dockerfile` in your repository at your pinned commit ([`TEXT_DOCKERFILE_PATHS`](../core/constants/docker.py)). The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to text.
+
+### Arguments
 
 | Argument | Meaning |
 | --- | --- |
 | `--task-type` | `InstructTextTask`, `ChatTask`, `DpoTask` or `GrpoTask` |
+| `--dataset` | presigned URL of the train split. The file is already at `/cache/datasets/{task_id}_train_data.json` |
+| `--file-format` | `s3` |
 | `--dataset-type` | JSON that names the dataset's columns, per task type below |
 
 Source: [`trainer/runtime.py: run_trainer_container_text`](../trainer/runtime.py), [`trainer/training_paths.py`](../trainer/training_paths.py).
 
-The train split named by `--dataset` is one JSON file of rows.
+The train split is one JSON file of rows.
 
 ### Dataset type
 
@@ -101,11 +106,11 @@ Source: [`core/models/dataset_models.py`](../core/models/dataset_models.py), [`c
 | `WANDB_MODE` | every task | `offline` |
 | `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | every task | `/app/checkpoints/wandb_logs/{task_id}_{hotkey}` |
 
-The tasks of rounds 1-3 carry no KL term. The big instruct task may carry one. The variables shared by all tournaments are in [How your code runs](miner.md#how-your-code-runs).
+The tasks of rounds 1-3 carry no KL term. The big instruct task may carry one.
 
 ### GPUs
 
-Every task trains on H100s. The count follows the task's effective size: the model's parameter count, times 3 on DPO, times 2 on GRPO, and times 2 again on a KL-regularised task.
+The GPU count follows the task's effective size: the model's parameter count, times 3 on DPO, times 2 on GRPO, and times 2 again on a KL-regularised task.
 
 | Effective size | GPUs |
 | --- | --- |
@@ -119,7 +124,14 @@ Source: [`get_tournament_gpu_requirement`](../validator/tournament/gpu_requireme
 
 ## Output contract
 
-Write the model to your output directory ([Paths](miner.md#paths)). The trainer uploads it to a public Hugging Face repo, where it is evaluated.
+Write the model to your output directory ([Paths](miner.md#paths)). The trainer uploads it as follows.
+
+| Upload rule | Detail |
+| --- | --- |
+| What is uploaded | the output directory. If a direct subfolder holds a `.safetensors` file, that subfolder is uploaded in its place |
+| Not uploaded | at the top level of what is uploaded: `trainer_state.json`, `training_args.bin`, `optimizer.pt`, `optimizer.bin`, `scheduler.pt`, `scaler.pt`, `rng_state*.pth` |
+
+Source: [`trainer/containers/uploader.py`](../trainer/containers/uploader.py).
 
 | Rule | Detail |
 | --- | --- |
@@ -149,7 +161,7 @@ Each model is scored on the task's held-out split. Evaluation uses the task mode
 | `InstructTextTask` with `USE_KL` | that loss plus `KL_COEF` x the KL divergence of your model from the task model, averaged over the same tokens | lower |
 | `ChatTask` | cross-entropy loss on the assistant turns | lower |
 | `DpoTask` | DPO loss over the held-out pairs | lower |
-| `GrpoTask` | the sum over the reward functions of each function's mean reward times its weight, on generated completions, less the evaluation loss | higher |
+| `GrpoTask` | the weighted sum of the reward functions' mean rewards on generated completions, minus the evaluation loss | higher |
 
 Source: [`validator/evaluation/evaluators/`](../validator/evaluation/evaluators/), [`calculate_miner_ranking_and_scores`](../validator/scoring/tasks.py).
 
@@ -160,7 +172,7 @@ Source: [`validator/evaluation/evaluators/`](../validator/evaluation/evaluators/
 
 ## The crown
 
-The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each head-to-head is a win or a non-win, and a non-win is within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a text task.
+The crown goes to the challenger when it beats the boss under the rule in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements). Each task is a head-to-head with four outcomes: a win, or a non-win within the tight allowance, within the looser allowance, or beyond both. This table says what each is on a text task.
 
 | Task | Win | Tight allowance | Looser allowance |
 | --- | --- | --- | --- |
@@ -172,6 +184,11 @@ The crown goes to the challenger when it beats the boss under the rule in [Crown
 
 Source: [`TEXT_CROWN_WIN_MARGIN`, `TEXT_CROWN_TIGHT_ALLOWANCE`, `TEXT_CROWN_LOOSER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).
 
+Payout notes for text:
+
+- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on. A champion that defends the crown keeps the margin it first won with. A margin above `0.10` adds twice the excess to the text share, up to its maximum in [Payouts](miner.md#payouts) ([`calculate_emission_boost_from_perf`](../validator/scoring/weights.py)).
+- When the boss keeps the crown, the [per-contender rule](../validator/tournament/README.md#per-contender-rule) decides whether 2nd and 3rd are paid.
+
 ## Local testing
 
 Three scripts in `ops/examples/training` run one task each through the downloader, your trainer image and the uploader:
@@ -182,12 +199,12 @@ Three scripts in `ops/examples/training` run one task each through the downloade
 ./ops/examples/training/run_grpo_task.sh
 ```
 
-Each script builds `ops/docker/standalone-text-trainer.dockerfile` from the current directory. It also builds the downloader and uploader images from `ops/docker/` in the same tree. Run it from the root of a checkout of this repository with your repository's files copied in, so that `ops/docker/` holds your Dockerfile. Set the task values and credentials at the top of the script first.
+Each script builds `ops/docker/standalone-text-trainer.dockerfile` from the current directory. This repository does not contain that file: it comes from your repository. The script also builds the downloader and uploader images, which this repository does contain. Run it from the root of a checkout of this repository with your repository's files copied in. The script does not look under `dockerfiles/`. Set the task values and credentials at the top of the script first.
 
 ## Checklist
 
-- [ ] `ops/docker/standalone-text-trainer.dockerfile` exists at your pinned commit.
-- [ ] The entrypoint accepts the shared arguments and the two text arguments.
+- [ ] Your repository holds `ops/docker/standalone-text-trainer.dockerfile` at your pinned commit.
+- [ ] The entrypoint accepts the shared arguments and the four text arguments.
 - [ ] All four task types are handled: `InstructTextTask`, `ChatTask`, `DpoTask`, `GrpoTask`.
 - [ ] The train split is read from `/cache/datasets/{task_id}_train_data.json`, with no download.
 - [ ] The model is in your output directory before the deadline.

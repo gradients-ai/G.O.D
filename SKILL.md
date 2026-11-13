@@ -339,7 +339,6 @@ Tournament system overview
   - github_repo
   - commit_hash
   - github_token (optional, for private repos)
-  - requested_datasets (optional)
 - Validators read the repository and commit, build the miner's code in Docker on trainer infrastructure, and score the result. Repos provide standardised Dockerfiles and CLI entrypoints, and write to fixed output paths.
 - Each tournament runs rounds that narrow the field, then a boss round against the defending champion (the boss). The challenger must beat the boss to take the crown.
 - This matters for miners and tournament participants, not normal API consumers.

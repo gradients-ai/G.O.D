@@ -33,4 +33,4 @@ The tool refuses and changes nothing while a live `quant_task_sources` row names
 ## See also
 
 - [Validator tournament](../../../validator/tournament/README.md): crown rule, seeds, orchestration.
-- [Local testing](../../../docs/miner.md#local-testing): local testing for miners.
+- [Miner hub](../../../docs/miner.md#what-miners-do): each guide it links has a local testing section.

@@ -6,7 +6,7 @@ The image tournament ranks miners on how well their training code fits an image 
 
 [At a glance](#at-a-glance) · [Rounds](#rounds) · [The boss round](#the-boss-round) · [What your code receives](#what-your-code-receives) · [Output contract](#output-contract) · [Scoring](#scoring) · [The crown](#the-crown) · [Local testing](#local-testing) · [Checklist](#checklist)
 
-Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament). Rules below cite the code that enforces them. Where this guide and the code differ, the code is right.
+Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rules are in [Entering a tournament](miner.md#entering-a-tournament).
 
 ## At a glance
 
@@ -14,7 +14,8 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | --- | --- |
 | You compete on | training a LoRA for a given image model on a given set of captioned images, within the task's time budget |
 | You submit | a training repository. Its container writes one LoRA per task |
-| Dockerfiles | two: `ops/docker/standalone-image-trainer.dockerfile` for Flux tasks, `ops/docker/standalone-image-toolkit-trainer.dockerfile` for every other family |
+| Dockerfiles | the trainer builds one of two from your repository: `ops/docker/standalone-image-trainer.dockerfile` for Flux tasks, `ops/docker/standalone-image-toolkit-trainer.dockerfile` for every other family |
+| Enrolment | the shared checks. `LICENSE` and `NOTICE` are read on your repository's default branch |
 | Model families | Flux, Z-Image, Qwen-Image, Ideogram 4, Krea 2 |
 | Rounds | two: a three-task group round, then a one-task knockout |
 | Boss round | six tasks |
@@ -35,7 +36,7 @@ Round 1 standings use average rank over the three tasks ([`round_results.py`](..
 
 - On each task, miners are ranked by [task score](#scoring).
 - A miner with no valid result on a task ranks one place below that task's last ranked miner.
-- A miner missing a result on any counted task sorts below every miner with a result on each of them.
+- In the standings, a miner missing any counted result sits below every miner with all of them.
 - A tie on average rank goes to the lower summed score, then to the hotkey that sorts first.
 
 In round 2 the lower score wins. The winner is the challenger.
@@ -65,7 +66,7 @@ All six tasks are created with the round. Each task draws a base model and an im
 
 ## What your code receives
 
-Each task runs one image, built at your pinned commit from the Dockerfile for the task's model family. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to image.
+Each task runs one Docker image, built from your repository at your pinned commit, from the Dockerfile for the task's model family. The shared container contract (limits, no network, the shared arguments and variables, paths, the deadline) is in [How your code runs](miner.md#how-your-code-runs). This section covers what is specific to image.
 
 ### Dockerfiles
 
@@ -79,8 +80,10 @@ Each task runs one image, built at your pinned commit from the Dockerfile for th
 
 Source: [`get_dockerfile_path`](../trainer/runtime.py), [`trainer/constants.py`](../trainer/constants.py).
 
+Both files are looked up in your repository. This repository contains `standalone-image-toolkit-trainer.dockerfile` and does not contain `standalone-image-trainer.dockerfile`.
+
 > [!IMPORTANT]
-> An entry needs both Dockerfiles. Round 1 has a Flux task, and every later task uses the toolkit Dockerfile.
+> An entry needs both Dockerfiles. Round 1 has a Flux task, and every other task uses the toolkit Dockerfile.
 
 ### Arguments
 
@@ -100,7 +103,7 @@ Source: [`trainer/runtime.py: run_trainer_container_image`](../trainer/runtime.p
 | Image formats | `.png`, `.jpg`, `.jpeg` |
 | Layout | all files inside one folder, `train_data/` |
 | Task size | 10 to 50 pairs. 10 to 30 in round 1 |
-| Held out | a tenth of the pairs, rounded up. They are not in the zip |
+| Held out | a tenth of the pairs, rounded up |
 
 Source: [`train_test_split_image`](../validator/tasks/datasets/preparation.py), [`validator/tasks/synthetics/constants.py`](../validator/tasks/synthetics/constants.py).
 
@@ -114,8 +117,6 @@ A task is created with a budget of 0.5 to 1 hour, by image count, plus 0.5 hour 
 | `FLUX_T5_PATH` | Flux tasks | `/cache/hf_cache/t5xxl_fp16.safetensors` |
 | `FLUX_CLIP_PATH` | Flux tasks | `/cache/hf_cache/clip_l.safetensors` |
 | `FLUX_VAE_PATH` | Flux tasks | `/cache/hf_cache/ae.safetensors` |
-
-The variables shared by all tournaments are in [How your code runs](miner.md#how-your-code-runs).
 
 <details>
 <summary>Supporting files in the cache</summary>
@@ -137,11 +138,18 @@ Source: [`trainer/containers/downloader.py`](../trainer/containers/downloader.py
 
 ### GPUs
 
-Every image task trains on one H100 ([`get_tournament_gpu_requirement`](../validator/tournament/gpu_requirements.py)).
+Every image task gets one GPU ([`get_tournament_gpu_requirement`](../validator/tournament/gpu_requirements.py)).
 
 ## Output contract
 
-Write the LoRA to your output directory ([Paths](miner.md#paths)). The trainer uploads your output to a public Hugging Face repo, under `checkpoints/`, by the rule in [Upload](miner.md#upload).
+Write the LoRA to your output directory ([Paths](miner.md#paths)). The trainer uploads it under `checkpoints/` in the Hugging Face repo.
+
+| Upload rule | Detail |
+| --- | --- |
+| What is uploaded | the output directory. If a direct subfolder holds a `.safetensors` file, that subfolder is uploaded in its place |
+| Not uploaded | at the top level of what is uploaded: `trainer_state.json`, `training_args.bin`, `optimizer.pt`, `optimizer.bin`, `scheduler.pt`, `scaler.pt`, `rng_state*.pth` |
+
+Source: [`trainer/containers/uploader.py`](../trainer/containers/uploader.py).
 
 The evaluator loads one `.safetensors` file from `checkpoints/`, chosen in this order:
 
@@ -185,16 +193,20 @@ The crown goes to the challenger when it beats the boss on the six boss-round ta
 
 Source: [`BOSS_ROUND_WIN_MARGIN`](../validator/tournament/constants.py), [`determine_boss_round_winner`](../validator/tournament/round_results.py).
 
-The 1% is relative to the boss's score. All six tasks are played.
+The 1% is relative to the boss's score. All six tasks are played. A task is decided when it goes to the challenger or the boss, by score or by the table below.
 
 A task with a missing result goes as follows.
 
 | Case | Task goes to |
 | --- | --- |
-| You have a valid result, the boss has none | you |
-| The boss has a valid result, you have none | the boss |
+| The challenger has a valid result, the boss has none | the challenger |
+| The boss has a valid result, the challenger has none | the boss |
 | Both trainings failed | the boss |
 | Both trained, neither has an evaluation result | the boss |
+
+Payout notes for image:
+
+- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on. A champion that defends the crown keeps the margin it first won with. A margin above `0.10` adds twice the excess to the image share, up to its maximum in [Payouts](miner.md#payouts) ([`calculate_emission_boost_from_perf`](../validator/scoring/weights.py)).
 
 ## Local testing
 
@@ -204,11 +216,11 @@ One script in `ops/examples/training` runs an image task through the downloader,
 ./ops/examples/training/run_image_task.sh
 ```
 
-The script builds `ops/docker/standalone-image-toolkit-trainer.dockerfile` from the current directory. It also builds the downloader and uploader images from `ops/docker/` in the same tree. Run it from the root of a checkout of this repository with your repository's files copied in, so that `ops/docker/` holds your Dockerfiles. Set the task values and credentials at the top of the script first.
+The script builds `ops/docker/standalone-image-toolkit-trainer.dockerfile` from the current directory, so it does not cover Flux tasks. It also builds the downloader and uploader images, which this repository contains. Run it from the root of a checkout of this repository with your repository's files copied in, your toolkit Dockerfile at `ops/docker/standalone-image-toolkit-trainer.dockerfile`. The script does not look under `dockerfiles/`. Set the task values and credentials at the top of the script first.
 
 ## Checklist
 
-- [ ] Both Dockerfiles exist at your pinned commit.
+- [ ] Your repository holds both Dockerfiles at your pinned commit.
 - [ ] The entrypoint of each accepts the shared arguments and the three image arguments, with `--trigger-word` optional.
 - [ ] Every model family is handled: Flux, Z-Image, Qwen-Image, Ideogram 4, Krea 2.
 - [ ] The training zip is read from `/cache/datasets/{task_id}_tourn.zip`, with no download.
