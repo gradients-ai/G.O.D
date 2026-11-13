@@ -283,11 +283,8 @@ A week from the miner's seat:
 The boss is a tournament's defending champion. The challenger is the one miner left after the rounds. The challenger takes the crown by beating the boss under the rule below. Otherwise the boss keeps it.
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-1-dark.svg"><img src="assets/readme/crown-1-light.svg" alt="Text and compression: seven head-to-heads against the boss, the tasks of rounds 1-3 and the four boss-round tasks. The crown takes 7, 6 or 5 wins, under the rule below." width="470"></picture>
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-2-dark.svg"><img src="assets/readme/crown-2-light.svg" alt="Image: six head-to-heads against the boss, the six boss-round tasks. The crown takes at least 5 wins of the 6." width="470"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-1-dark.svg"><img src="assets/readme/crown-1-light.svg" alt="Seven head-to-heads against the boss, the tasks of rounds 1-3 and the four boss-round tasks. The crown takes 7, 6 or 5 wins, under the rule below." width="470"></picture>
 </p>
-
-### Text and compression
 
 The crown is decided over seven head-to-heads between the challenger and the boss: the task of each of rounds 1-3, which the boss also runs, and the four boss-round tasks. Each head-to-head compares the two on the value the task is judged by, which your guide names, and has one of four outcomes for the challenger.
 
@@ -313,12 +310,6 @@ Any other result leaves the crown with the boss: three or more head-to-heads not
 Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown.
 
 Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: crown_verdict`](../validator/tournament/crown.py).
-
-### Image
-
-The crown is decided on the six boss-round tasks alone, which the challenger and the boss both train. The challenger takes the crown by winning at least five of the six.
-
-Source: [`determine_boss_round_winner`](../validator/tournament/round_results.py).
 
 ### What a win is
 
@@ -347,7 +338,7 @@ Keep that hotkey registered on the subnet. A share whose hotkey is not registere
 
 - A place held by the boss is paid to the defending champion's hotkey.
 - Which miner is third in each tournament is in [Placements](../validator/tournament/README.md#placements).
-- Text and compression only: when the boss keeps the crown, the miners in 2nd and 3rd are each compared with the boss on average rank over rounds 1-3. If the boss's average rank is strictly better than a miner's, that miner's share goes to the defending champion. On a tie the miner is paid.
+- When the boss keeps the crown, the miners in 2nd and 3rd are each compared with the boss on average rank over rounds 1-3. If the boss's average rank is strictly better than a miner's, that miner's share goes to the defending champion. On a tie the miner is paid.
 
 Source: [`boss_rank_shares.py`](../validator/tournament/boss_rank_shares.py), [`get_boss_round_pair_weights`](../validator/scoring/tournaments.py), [`_paid_node_id`](../validator/scoring/weights.py).
 
@@ -379,17 +370,6 @@ Each paid place gets a quarter of the one above. Two places are paid when the to
 | Outside the top three | Nothing from the tournament's share. |
 | Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The tournament shares scale down by the total paid this way. |
 | No winner | A tournament with no completed run has no payee. Its share is not paid out. |
-
-### Champion boost
-
-Text and image only. Compression has none.
-
-- A champion's winning margin is the median of its relative lead over the boss, over the boss-round tasks both have a score on.
-- A champion that defends the crown keeps the margin it first won with.
-- A margin above `0.10` adds twice the excess to the tournament's share, up to its maximum. Every paid place of that tournament is paid from the raised share.
-- All three shares are then rescaled to sum to 1, so any share can fall under its base minimum.
-
-Source: [`calculate_emission_boost_from_perf`, `get_tournament_burn_details`](../validator/scoring/weights.py).
 
 ## Results
 

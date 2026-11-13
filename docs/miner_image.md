@@ -24,52 +24,44 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | Dockerfiles | the trainer builds one of two from your repository: `ops/docker/standalone-image-trainer.dockerfile` for Flux tasks, `ops/docker/standalone-image-toolkit-trainer.dockerfile` for every other family |
 | Enrolment | the shared checks. `LICENSE` and `NOTICE` are read on your repository's default branch |
 | Model families | Flux, Z-Image, Qwen-Image, Ideogram 4, Krea 2 |
-| Rounds | two: a three-task group round, then a one-task knockout |
-| Boss round | six tasks |
+| Rounds | three, one task each |
+| Boss round | four tasks |
 | Task score | denoising loss on held-out images, lower is better |
 
 ## Rounds
 
-Round 1 is three tasks for every miner. Round 2 is one task between the two miners that advance.
+Each round is one task. Every miner in the round, and the boss, trains the same model on the same images.
 
-| Round | Format | Tasks | Model family | Advance |
-| --- | --- | --- | --- | --- |
-| R1 | one group, every miner | 3 | one Flux, one Ideogram 4, one Z-Image | top 2 |
-| R2 | knockout, one pair | 1 | Qwen-Image or Krea 2, drawn at random | the winner |
+| Round | Task model family | Advance |
+| --- | --- | --- |
+| R1 | Flux | top 8 |
+| R2 | Ideogram 4 | top 4 |
+| R3 | Krea 2 | top 1 |
 
-Source: [`ROUND_ONE_IMAGE_MODEL_TYPES`, `ROUND_TWO_IMAGE_MODEL_TYPES`, `SMALL_TOURNAMENT_ADVANCE`](../validator/tournament/constants.py), [`task_creator.py`](../validator/tournament/task_creator.py).
+Source: [`IMAGE_ROUND_PLAN`](../validator/tournament/constants.py).
 
-Round 1 standings use average rank over the three tasks ([`round_results.py`](../validator/tournament/round_results.py)):
+- Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
+- With fewer miners than slots, all advance.
+- A miner with no valid result on a task ranks behind every miner with one on it. A miner missing a result in any round sorts below every miner with a result in all rounds.
+- Ties on average rank go to the better rank in the most recent round, then to the smaller summed gap to each task's best entry, then to a seeded draw.
+- The boss is ranked in each round but never takes an advancement slot.
 
-- On each task, miners are ranked by [task score](#scoring).
-- A miner with no valid result on a task ranks one place below that task's last ranked miner.
-- In the standings, a miner missing any counted result sits below every miner with all of them.
-- A tie on average rank goes to the lower summed score, then to the hotkey that sorts first.
-
-In round 2 the lower score wins. The winner is the challenger.
-
-<details>
-<summary>Edge cases</summary>
-
-- If only one miner comes out of round 1, it is the challenger and round 2 is not played.
-- A round-1 task on which nobody has a valid result is left out of the average.
-
-</details>
+The miner that advances from round 3 is the challenger.
 
 ## The boss round
 
-The challenger and the boss both train six tasks.
+The challenger and the boss both train four tasks.
 
 | Model family | Tasks |
 | --- | --- |
-| Krea 2 | 2 |
-| Ideogram 4 | 2 |
+| Krea 2 | 1 |
+| Ideogram 4 | 1 |
 | Qwen-Image | 1 |
 | Z-Image | 1 |
 
-Source: [`FINAL_ROUND_IMAGE_TASK_DISTRIBUTION`](../validator/tournament/constants.py).
+Source: [`IMAGE_BOSS_ROUND_TASK_DISTRIBUTION`](../validator/tournament/constants.py).
 
-All six tasks are created with the round. Each task draws a base model and an image set.
+All four tasks are created with the round. Each task draws a base model and an image set.
 
 ## What your code receives
 
@@ -90,7 +82,7 @@ Source: [`get_dockerfile_path`](../trainer/runtime.py), [`trainer/constants.py`]
 Both files are looked up in your repository. This repository contains `standalone-image-toolkit-trainer.dockerfile` and does not contain `standalone-image-trainer.dockerfile`.
 
 > [!IMPORTANT]
-> An entry needs both Dockerfiles. Round 1 has a Flux task, and every other task uses the toolkit Dockerfile.
+> An entry needs both Dockerfiles. Round 1 is a Flux task, so a failed Flux build means no round-1 result. Every other task uses the toolkit Dockerfile.
 
 ### Arguments
 
@@ -109,12 +101,12 @@ Source: [`trainer/runtime.py: run_trainer_container_image`](../trainer/runtime.p
 | Contents | images, each with a caption in a `.txt` file of the same name |
 | Image formats | `.png`, `.jpg`, `.jpeg` |
 | Layout | all files inside one folder, `train_data/` |
-| Task size | 10 to 50 pairs. 10 to 30 in round 1 |
-| Held out | a tenth of the pairs, rounded up |
+| Task size | 50 pairs |
+| Held out | a tenth of the pairs, rounded up: 5 images |
 
-Source: [`train_test_split_image`](../validator/tasks/datasets/preparation.py), [`validator/tasks/synthetics/constants.py`](../validator/tasks/synthetics/constants.py).
+Source: [`train_test_split_image`](../validator/tasks/datasets/preparation.py), [`MAX_IMAGE_SYNTH_PAIRS`](../validator/tasks/synthetics/constants.py).
 
-A task is created with a budget of 0.5 to 1 hour, by image count, plus 0.5 hour on Qwen-Image.
+A task's time budget is 1 hour, and 1.5 hours on Qwen-Image ([`_image_competition_hours_for_dataset_size`](../validator/tasks/synthetics/diffusion.py), [`QWEN_IMAGE_EXTRA_COMPETITION_HOURS`](../validator/tasks/synthetics/constants.py)).
 
 ### Environment variables
 
@@ -190,18 +182,18 @@ Source: [`DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT`](../validator/evaluation/constants.
 
 ## The crown
 
-The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). This table says which side wins a boss-round task.
+The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). This table says what a win is on an image task and where the other results fall. Percentages are relative to the boss's [task score](#scoring), and lower is better.
 
-| Valid result on the task | Task goes to |
+| Outcome | Task score |
 | --- | --- |
-| Both | the challenger with a score at least 1% better than the boss's, else the boss |
-| The challenger only | the challenger |
-| The boss only | the boss |
-| Neither | the boss |
+| Win | at least 1% lower than the boss's, or a valid result where the boss has none |
+| Within the smaller allowance | lower than the boss's, by less than 1% |
+| Within the larger allowance | equal to the boss's, or at most 1% higher |
+| Beyond both | more than 1% higher than the boss's, or no valid result from the challenger |
 
-Source: [`BOSS_ROUND_WIN_MARGIN`](../validator/tournament/constants.py), [`get_knockout_winners`](../validator/tournament/round_results.py).
+The head-to-heads are the three round tasks and the four boss-round tasks. Each is decided on the task score alone, with no per-example test.
 
-The two sides are compared on the [task score](#scoring). The boss round is always played in full.
+Source: [`IMAGE_CROWN_WIN_MARGIN`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: image_head_to_head`](../validator/tournament/crown.py).
 
 ## Local testing
 

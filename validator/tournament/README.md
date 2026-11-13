@@ -64,13 +64,16 @@ Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every 
 
 ## Image tournament flow
 
-1. **Round 1.** One group plays three tasks, one per model family in `ROUND_ONE_IMAGE_MODEL_TYPES`. The best miners in the group standings advance (`SMALL_TOURNAMENT_ADVANCE`).
+1. **Round 1.** One group plays one Flux task, with the boss assigned to it alongside the miners. The best 8 miners advance (`IMAGE_ROUND_PLAN`).
 2. **Entry gates.** As in the text flow, before round 2 is built.
-3. **Round 2.** A knockout: the advancing miners play one task on a model family from `ROUND_TWO_IMAGE_MODEL_TYPES`. The winner is the challenger.
-4. **Boss round.** The tasks are drawn by `FINAL_ROUND_IMAGE_TASK_DISTRIBUTION`. The boss and the challenger both train them.
-5. **Crown and placements.** The boss-round rule is in the [image guide](../../docs/miner_image.md#the-crown). Placements are in [Placements](#placements).
+3. **Rounds 2 and 3.** Each is one group on one task, with the boss assigned to it: Ideogram 4 (top 4) in round 2, Krea 2 (top 1) in round 3.
+4. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
+5. **Boss round.** The four tasks of `IMAGE_BOSS_ROUND_TASK_DISTRIBUTION` are created together. The boss and the challenger both train them.
+6. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-The image tournament has no seed tasks, and the boss plays the boss round only. Task details are in the [image guide](../../docs/miner_image.md#rounds).
+Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as text.
+
+The image tournament has no seed tasks: the boss trains each round's task in the same window as the miners. Task details are in the [image guide](../../docs/miner_image.md#rounds).
 
 ## Compression tournament flow
 
@@ -88,11 +91,11 @@ Each round is one task attached from its seed, so the miners and the boss compre
 
 ## Crown, early stop and placements
 
-The crown rule below decides the text and the compression tournament. Miners read the rule in plain words, the image tournament's included, in [The boss and the crown](../../docs/miner.md#the-boss-and-the-crown). What counts as a win on each task is in the miner guides: [text](../../docs/miner_text.md#the-crown), [image](../../docs/miner_image.md#the-crown), [compression](../../docs/miner_compression.md#the-crown). The image tournament shares [Placements](#placements).
+The crown rule below decides every tournament. Miners read the rule in plain words in [The boss and the crown](../../docs/miner.md#the-boss-and-the-crown). What counts as a win on each task is in the miner guides: [text](../../docs/miner_text.md#the-crown), [image](../../docs/miner_image.md#the-crown), [compression](../../docs/miner_compression.md#the-crown).
 
 ### The boss in rounds 1-3
 
-The boss is the tournament's defending champion. It has an entry on the task of each of rounds 1-3: the seed task it trained. That entry is ranked in the round's standings with the ordering used between miners. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Its three entries are also its side of the first three head-to-heads.
+The boss is the tournament's defending champion. It has an entry on the task of each of rounds 1-3: the seed task it trained in text and compression, the round's own task in image, which it trains with the miners. That entry is ranked in the round's standings with the ordering used between miners. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Its three entries are also its side of the first three head-to-heads.
 
 ### Seven head-to-heads
 
@@ -127,8 +130,11 @@ What a win is depends on the task. A non-win is banded the same way on every tas
 | --- | --- | --- | --- |
 | Text | instruct, continuous (chat), DPO | paired test and `TEXT_CROWN_WIN_MARGIN` on the score | `CROWN_LARGER_ALLOWANCE` on the score deficit |
 | Text | GRPO | `TEXT_CROWN_WIN_MARGIN` on the score | as above |
+| Image | image | `IMAGE_CROWN_WIN_MARGIN` on the weighted loss | `CROWN_LARGER_ALLOWANCE` on the loss |
 | Compression | freeform | `QUANT_FREEFORM_BOSS_BYTE_MARGIN` fewer effective bytes | `CROWN_LARGER_ALLOWANCE` on extra effective bytes |
 | Compression | fixed | paired test and `QUANT_FIXED_BOSS_MIN_IMPROVEMENT` on the loss | `CROWN_LARGER_ALLOWANCE` on the scalar loss |
+
+An image crown task on which both entries trained and neither has a valid result is not decided: the evaluation data is missing (`round_results.CrownEvaluationFault`). The round is held and an alert is sent once, at the round-3 early-stop check and in the boss round, and it resolves on its own once the results exist.
 
 ### The paired per-example test
 
@@ -165,7 +171,7 @@ The placements are the same whether the boss round was played and lost or skippe
 | Tournament | Third place |
 | --- | --- |
 | Text | The next miner after the challenger in the cumulative standings after round 3. |
-| Image | The miner that lost the round-2 knockout. |
+| Image | The next miner after the challenger in the cumulative standings after round 3. |
 | Compression | The next miner after the challenger in the cumulative standings after round 3. |
 
 When the compression viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
@@ -174,7 +180,7 @@ How the paid places split a tournament's emission is in [Payouts](../../docs/min
 
 ### Per-contender rule
 
-A contender is a miner in a paid place (2nd or 3rd). When the boss keeps the crown of a text or compression tournament, each contender is compared with the boss on average rank over the rounds of 1-3 that rank both.
+A contender is a miner in a paid place (2nd or 3rd). When the boss keeps the crown, each contender is compared with the boss on average rank over the rounds of 1-3 that rank both.
 
 - If the boss's average rank is strictly better, that place's share goes to the defending champion's hotkey.
 - On a tie, or if the contender ranks better, the contender is paid.

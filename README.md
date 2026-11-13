@@ -41,7 +41,7 @@ Miners compete with training code. Each miner enters a tournament with a GitHub 
   <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/steps-3-4-dark.svg"><img src="docs/assets/readme/steps-3-4-light.svg" alt="03 Boss round: the challenger is compared with the boss, task by task. 04 Crown: beat the boss to take it; the winning code is published." width="405"></picture>
 </p>
 
-The crown is decided head-to-head against the boss, the defending champion. In text and compression that is seven tasks: the three round tasks, which the boss also runs, and the four boss-round tasks. In image it is the six boss-round tasks. The challenger needs at least five wins, under the [crown rule](docs/miner.md#the-boss-and-the-crown); otherwise the boss keeps the crown.
+The crown is decided head-to-head against the boss, the defending champion. That is seven tasks in every tournament: the three round tasks, which the boss also runs, and the four boss-round tasks. The challenger needs at least five wins, under the [crown rule](docs/miner.md#the-boss-and-the-crown); otherwise the boss keeps the crown.
 
 ## Start here
 
