@@ -285,10 +285,6 @@ class MinerEmissionWeight(PublicModel):
 
 
 class TournamentBurnData(PublicModel):
-    text_performance_diff: float | None = None
-    image_performance_diff: float | None = None
-    environment_performance_diff: float | None = None
-    quant_performance_diff: float | None = None
     text_burn_proportion: float
     image_burn_proportion: float
     environment_burn_proportion: float | None = None
@@ -297,9 +293,6 @@ class TournamentBurnData(PublicModel):
     image_tournament_weight: float
     environment_tournament_weight: float | None = None
     quant_tournament_weight: float | None = None
-    text_base_weight: float | None = None
-    image_base_weight: float | None = None
-    quant_base_weight: float | None = None
     burn_weight: float
 
 
@@ -324,7 +317,6 @@ class TournamentProjection(PublicModel):
     projections: list[WeightProjection]
     placement: str = "champion"
     dethrone_threshold: float = 0.0
-    emission_boost: float = 0.0
 
 
 class WeightProjectionResponse(PublicModel):

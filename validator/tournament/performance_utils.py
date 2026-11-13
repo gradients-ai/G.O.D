@@ -4,8 +4,6 @@ from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.tournaments import exponential_decline_mapping
-from validator.scoring.weights import calculate_emission_boost_from_perf
-from validator.scoring.weights import calculate_tournament_weight
 from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
@@ -17,14 +15,13 @@ from validator.tournament.round_results import get_real_tournament_winner
 
 def calculate_scaled_weights(
     tournament_audit_data: TournamentAuditData,
-) -> tuple[float, float, float, float, float, str | None, str | None]:
+) -> tuple[float, float, float, str | None, str | None]:
     """
-    Calculate scaled weights and winner hotkeys from tournament audit data.
-    Uses the same logic as get_node_weights_from_tournament_audit_data in weight_setting.py.
+    Calculate scaled pools and winner hotkeys from tournament audit data.
+    Uses the same logic as get_node_weights_from_tournament_audit_data in weights.py.
 
     Returns:
-        Tuple of (scaled_text_tournament_weight, scaled_text_base_weight,
-                 scaled_image_tournament_weight, scaled_image_base_weight,
+        Tuple of (scaled_text_tournament_weight, scaled_image_tournament_weight,
                  scaled_burn_weight, text_winner_hotkey, image_winner_hotkey)
     """
     participants: list[str] = tournament_audit_data.participants
@@ -35,17 +32,12 @@ def calculate_scaled_weights(
     scaled_image_tournament_weight: float = tournament_audit_data.image_tournament_weight * scale_factor
     scaled_burn_weight: float = tournament_audit_data.burn_weight * scale_factor
 
-    scaled_text_base_weight: float = tournament_audit_data.text_base_weight * scale_factor
-    scaled_image_base_weight: float = tournament_audit_data.image_base_weight * scale_factor
-
     text_winner_hotkey = get_real_tournament_winner(tournament_audit_data.text_tournament_data)
     image_winner_hotkey = get_real_tournament_winner(tournament_audit_data.image_tournament_data)
 
     return (
         scaled_text_tournament_weight,
-        scaled_text_base_weight,
         scaled_image_tournament_weight,
-        scaled_image_base_weight,
         scaled_burn_weight,
         text_winner_hotkey,
         image_winner_hotkey,
@@ -57,7 +49,6 @@ def get_top_ranked_miners(
     base_winner_hotkey: str | None = None,
     limit: int = 5,
     scaled_tournament_weight: float | None = None,
-    scaled_base_weight: float | None = None,
     winner_hotkey: str | None = None,
 ) -> list[MinerEmissionWeight]:
     real_hotkey_weights = {}
@@ -67,11 +58,8 @@ def get_top_ranked_miners(
         else:
             real_hotkey = hotkey
 
-        if scaled_tournament_weight is not None and scaled_base_weight is not None:
-            if real_hotkey == winner_hotkey:
-                final_weight = base_weight * scaled_tournament_weight
-            else:
-                final_weight = base_weight * scaled_base_weight
+        if scaled_tournament_weight is not None:
+            final_weight = base_weight * scaled_tournament_weight
         else:
             final_weight = base_weight
 
@@ -97,7 +85,6 @@ async def calculate_tournament_projection(
     tournament_type: TournamentType,
     percentage_improvement: float,
     base_weight: float,
-    max_weight: float,
 ) -> TournamentProjection:
     """
     Project a challenger's emission for a tournament type.
@@ -106,9 +93,9 @@ async def calculate_tournament_projection(
 
     A challenger only becomes champion if they exceed the dethrone threshold;
     below it the boss defends and the challenger projects as the 2nd-place
-    runner-up (base-pool share, no champion boost, earning only until the next
-    tournament's results replace the standings). No time decay: a champion's
-    weight is constant over time, not a curve.
+    runner-up (a base-pool share, earning only until the next tournament's results
+    replace the standings). No time decay: a champion's weight is constant over
+    time, not a curve.
     """
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
 
@@ -132,17 +119,9 @@ async def calculate_tournament_projection(
     projection_days = [7, 30, 90, 180]
 
     if dethrones:
-        emission_boost = calculate_emission_boost_from_perf(performance_diff)
-
-        raw_initial_weight = calculate_tournament_weight(
-            tournament_type=tournament_type,
-            base_weight=base_weight,
-            emission_boost=emission_boost,
-            max_weight=max_weight,
-        )
-        # Winner's actual emission weight = winner_share * tournament_weight * scale_factor.
+        # Winner's actual emission weight = winner_share * base pool * scale_factor.
         # No decay: this weight is constant, so alpha accrues linearly over time.
-        initial_weight = winner_share * raw_initial_weight * scale_factor
+        initial_weight = winner_share * base_weight * scale_factor
 
         projections = [
             WeightProjection(
@@ -156,9 +135,8 @@ async def calculate_tournament_projection(
         placement = "champion"
     else:
         # Below the dethrone threshold the boss defends; the challenger places 2nd
-        # and earns the runner-up share of the base pool (no champion boost) only
+        # and earns the runner-up share of the base pool only
         # until the next tournament's results replace the standings.
-        emission_boost = 0.0
         runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
         runner_up_weight = runner_up_share * base_weight * scale_factor
         initial_weight = runner_up_weight
@@ -181,5 +159,4 @@ async def calculate_tournament_projection(
         projections=projections,
         placement=placement,
         dethrone_threshold=dethrone_threshold,
-        emission_boost=emission_boost,
     )

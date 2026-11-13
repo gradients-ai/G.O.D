@@ -8,7 +8,6 @@ from validator.app.config import Config
 from validator.app.dependencies import get_config
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.scoring.emission_balance import get_dynamic_base_weights
-from validator.scoring.emission_balance import max_weight_by_type
 from validator.scoring.tournaments import get_quant_tournament_weights_from_data
 from validator.scoring.tournaments import get_tournament_weights_from_data
 from validator.scoring.weights import build_tournament_audit_data
@@ -17,7 +16,6 @@ from validator.tournament.models import BossBattleResponse
 from validator.tournament.models import MultiWeightProjectionResponse
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentBurnData
-from validator.tournament.models import TournamentProjection
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TournamentWeightsResponse
 from validator.tournament.models import WeightProjectionResponse
@@ -29,12 +27,6 @@ from validator.tournament.round_results import get_real_tournament_winner
 
 
 router = APIRouter(tags=["Performance Data"])
-
-
-def _without_quant_boost(projection: TournamentProjection) -> TournamentProjection:
-    # The quant champion gets no boost (the weight itself is forced to base in calculate_tournament_weight);
-    # keep the reported boost in line with it.
-    return projection.model_copy(update={"emission_boost": 0.0})
 
 
 def _json_safe_differences(differences: list[TaskPerformanceDifference]) -> list[TaskPerformanceDifference]:
@@ -83,9 +75,7 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
 
     (
         scaled_text_tournament_weight,
-        scaled_text_base_weight,
         scaled_image_tournament_weight,
-        scaled_image_base_weight,
         scaled_burn_weight,
         text_winner_hotkey,
         image_winner_hotkey,
@@ -94,29 +84,11 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
     participation_total = len(tournament_audit_data.participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
     scale_factor = 1.0 - participation_total if participation_total > 0 else 1.0
     scaled_quant_tournament_weight = tournament_audit_data.quant_tournament_weight * scale_factor
-    scaled_quant_base_weight = tournament_audit_data.quant_base_weight * scale_factor
     quant_winner_hotkey = get_real_tournament_winner(tournament_audit_data.quant_tournament_data)
 
-    text_distributed = 0.0
-    for hotkey, weight in text_tournament_weights.items():
-        if hotkey == text_winner_hotkey:
-            text_distributed += weight * scaled_text_tournament_weight
-        else:
-            text_distributed += weight * scaled_text_base_weight
-
-    image_distributed = 0.0
-    for hotkey, weight in image_tournament_weights.items():
-        if hotkey == image_winner_hotkey:
-            image_distributed += weight * scaled_image_tournament_weight
-        else:
-            image_distributed += weight * scaled_image_base_weight
-
-    quant_distributed = 0.0
-    for hotkey, weight in quant_tournament_weights.items():
-        if hotkey == quant_winner_hotkey:
-            quant_distributed += weight * scaled_quant_tournament_weight
-        else:
-            quant_distributed += weight * scaled_quant_base_weight
+    text_distributed = sum(weight * scaled_text_tournament_weight for weight in text_tournament_weights.values())
+    image_distributed = sum(weight * scaled_image_tournament_weight for weight in image_tournament_weights.values())
+    quant_distributed = sum(weight * scaled_quant_tournament_weight for weight in quant_tournament_weights.values())
 
     text_undistributed = scaled_text_tournament_weight - text_distributed
     image_undistributed = scaled_image_tournament_weight - image_distributed
@@ -126,14 +98,11 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
     total_burn_weight = scaled_burn_weight + total_undistributed
 
     adjusted_burn_data = TournamentBurnData(
-        text_performance_diff=burn_data.text_performance_diff,
-        image_performance_diff=burn_data.image_performance_diff,
         text_burn_proportion=burn_data.text_burn_proportion,
         image_burn_proportion=burn_data.image_burn_proportion,
         text_tournament_weight=burn_data.text_tournament_weight,
         image_tournament_weight=burn_data.image_tournament_weight,
         burn_weight=total_burn_weight,
-        quant_performance_diff=burn_data.quant_performance_diff,
         quant_burn_proportion=burn_data.quant_burn_proportion,
         quant_tournament_weight=burn_data.quant_tournament_weight,
     )
@@ -143,7 +112,6 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
         text_base_winner_hotkey,
         limit=5,
         scaled_tournament_weight=scaled_text_tournament_weight,
-        scaled_base_weight=scaled_text_base_weight,
         winner_hotkey=text_winner_hotkey,
     )
     image_top_miners = get_top_ranked_miners(
@@ -151,7 +119,6 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
         image_base_winner_hotkey,
         limit=5,
         scaled_tournament_weight=scaled_image_tournament_weight,
-        scaled_base_weight=scaled_image_base_weight,
         winner_hotkey=image_winner_hotkey,
     )
     quant_top_miners = get_top_ranked_miners(
@@ -159,7 +126,6 @@ async def get_latest_tournament_weights(config: Config = Depends(get_config)) ->
         quant_base_winner_hotkey,
         limit=5,
         scaled_tournament_weight=scaled_quant_tournament_weight,
-        scaled_base_weight=scaled_quant_base_weight,
         winner_hotkey=quant_winner_hotkey,
     )
 
@@ -179,14 +145,12 @@ async def get_weight_projection(
     # Project against the live participation-driven split rather than the static anchors, so a
     # miner choosing a track sees the base they would actually compete for.
     base_weights = await get_dynamic_base_weights(config.psql_db)
-    max_weights = max_weight_by_type()
 
     text_projection = await calculate_tournament_projection(
         config.psql_db,
         TournamentType.TEXT,
         percentage_improvement,
         base_weights[TournamentType.TEXT],
-        max_weights[TournamentType.TEXT],
     )
 
     quant_projection = await calculate_tournament_projection(
@@ -194,7 +158,6 @@ async def get_weight_projection(
         TournamentType.QUANT,
         percentage_improvement,
         base_weights[TournamentType.QUANT],
-        max_weights[TournamentType.QUANT],
     )
 
     image_projection = await calculate_tournament_projection(
@@ -202,14 +165,13 @@ async def get_weight_projection(
         TournamentType.IMAGE,
         percentage_improvement,
         base_weights[TournamentType.IMAGE],
-        max_weights[TournamentType.IMAGE],
     )
 
     return WeightProjectionResponse(
         percentage_improvement=percentage_improvement,
         text_projection=text_projection,
         image_projection=image_projection,
-        quant_projection=_without_quant_boost(quant_projection),
+        quant_projection=quant_projection,
     )
 
 
@@ -221,7 +183,6 @@ async def get_weight_projection_static(
 
     # Resolved once: the split is the same for every projected improvement level.
     base_weights = await get_dynamic_base_weights(config.psql_db)
-    max_weights = max_weight_by_type()
 
     projections = []
     for percentage_improvement in percentage_improvements:
@@ -230,7 +191,6 @@ async def get_weight_projection_static(
             TournamentType.TEXT,
             percentage_improvement,
             base_weights[TournamentType.TEXT],
-            max_weights[TournamentType.TEXT],
         )
 
         quant_projection = await calculate_tournament_projection(
@@ -238,7 +198,6 @@ async def get_weight_projection_static(
             TournamentType.QUANT,
             percentage_improvement,
             base_weights[TournamentType.QUANT],
-            max_weights[TournamentType.QUANT],
         )
 
         image_projection = await calculate_tournament_projection(
@@ -246,7 +205,6 @@ async def get_weight_projection_static(
             TournamentType.IMAGE,
             percentage_improvement,
             base_weights[TournamentType.IMAGE],
-            max_weights[TournamentType.IMAGE],
         )
 
         projections.append(
@@ -254,7 +212,7 @@ async def get_weight_projection_static(
                 percentage_improvement=percentage_improvement,
                 text_projection=text_projection,
                 image_projection=image_projection,
-                quant_projection=_without_quant_boost(quant_projection),
+                quant_projection=quant_projection,
             )
         )
 

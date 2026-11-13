@@ -999,14 +999,13 @@ class TestBossRoundEmissionsProductionPath:
         assert champion_key == get_real_tournament_winner(data) == CHALLENGER
         assert weights[champion_key] == pytest.approx(0.8)
 
-    def test_apply_tournament_weights_routes_champion_to_boost_runner_up_to_base(self):
+    def test_apply_tournament_weights_pays_every_place_from_the_one_pool(self):
         data = _boss_round_tournament([cts.EMISSION_BURN_HOTKEY, CHALLENGER], cts.EMISSION_BURN_HOTKEY, BOSS)
         text_w, image_w = get_tournament_weights_from_data(data, None)
 
         hotkey_to_node_id = {BOSS: 0, CHALLENGER: 1, DAVE: 2}
         all_node_weights = [0.0, 0.0, 0.0]
         scaled_text_tournament_weight = 0.5
-        scaled_text_base_weight = 0.1
 
         undistributed = apply_tournament_weights(
             text_w,
@@ -1015,14 +1014,9 @@ class TestBossRoundEmissionsProductionPath:
             all_node_weights,
             scaled_text_tournament_weight,
             0.0,
-            scaled_text_base_weight,
-            0.0,
-            get_real_tournament_winner(data),
-            None,
         )
 
         assert all_node_weights[0] == pytest.approx(0.8 * scaled_text_tournament_weight)
-        assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_base_weight)
+        assert all_node_weights[1] == pytest.approx(0.2 * scaled_text_tournament_weight)
         assert all_node_weights[2] == 0.0
-        distributed = 0.8 * scaled_text_tournament_weight + 0.2 * scaled_text_base_weight
-        assert undistributed == pytest.approx(scaled_text_tournament_weight - distributed)
+        assert undistributed == pytest.approx(0.0)

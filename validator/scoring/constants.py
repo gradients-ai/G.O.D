@@ -32,7 +32,7 @@ PVP_ENV_WIN_POINTS = 3
 PVP_ENV_DRAW_POINTS = 1
 PVP_ENV_LOSS_POINTS = 0
 PVP_WIN_PCT_THRESHOLD = 0.60
-# Env win-rate -> performance-difference mapping, stored for analytics (not used for weights).
+# Env win-rate -> reported performance-difference mapping (analytics only).
 PVP_PERF_DIFF_SLOPE = 0.125
 PVP_PERF_DIFF_AT_THRESHOLD = 0.10
 
@@ -48,8 +48,8 @@ TOURNAMENT_QUANT_WEIGHT = 0.35
 TOURNAMENT_IMAGE_WEIGHT = 0.25
 EMISSION_FLEX_POOL = 1.0 - (TOURNAMENT_TEXT_WEIGHT + TOURNAMENT_QUANT_WEIGHT + TOURNAMENT_IMAGE_WEIGHT)  # 0.25
 
-# Hard cap on any single tournament type's final (base + boost) weight: its minimum plus the
-# whole flex pool, i.e. the most participation alone can ever hand it.
+# Upper bound of any single tournament type's pool: its minimum plus the whole flex pool, i.e. the
+# most participation alone can ever hand it. The dynamic base always lies within [minimum, this].
 MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.40
 MAX_QUANT_TOURNAMENT_WEIGHT = TOURNAMENT_QUANT_WEIGHT + EMISSION_FLEX_POOL  # 0.60
 MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.50
@@ -68,8 +68,6 @@ EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below t
 # Burn and emission weight dynamics
 BURN_REDUCTION_RATE = 5.0
 MAX_BURN_REDUCTION = 0.8
-EMISSION_MULTIPLIER_THRESHOLD = 0.10
-EMISSION_MULTIPLIER_RATE = 2.0
 SECONDS_PER_DAY = 86400.0
 
 ALPHA_PER_SECOND = 1.0 / 12.0

@@ -1,5 +1,4 @@
 import math
-import statistics
 
 import numpy as np
 
@@ -11,7 +10,6 @@ from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.tasks import get_task
 from validator.db.sql.tournament_performance import get_boss_round_winner_task_pairs
 from validator.db.sql.tournament_performance import get_task_scores_batch
-from validator.db.sql.tournament_performance import update_tournament_winning_performance
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
@@ -178,6 +176,19 @@ async def _challenger_won_task(
     return challenger_beats_boss(boss_score, challenger_score, False, threshold), None, None
 
 
+def calculate_env_perf_diff_from_win_pct(win_pct: float) -> float:
+    """
+    Map an environment-tournament win percentage (0.0-1.0) to a reported performance difference.
+
+    Below the win-rate threshold the difference is 0; above it the difference grows linearly from
+    PVP_PERF_DIFF_AT_THRESHOLD, so a 100% win rate reports the maximum.
+    """
+    win_pct = max(0.0, win_pct)
+    if win_pct < cts.PVP_WIN_PCT_THRESHOLD:
+        return 0.0
+    return cts.PVP_PERF_DIFF_AT_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
+
+
 async def calculate_boss_round_performance_differences(tournament_id: str, psql_db) -> list[TaskPerformanceDifference]:
     """Calculate performance differences for all tasks in a boss round."""
 
@@ -303,9 +314,6 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         decision_reason = None
         within_allowed_loss = None
         if task_obj.task_type == TaskType.ENVIRONMENTTASK:
-            # Local import breaks the weights <-> performance_calculator import cycle.
-            from validator.scoring.weights import calculate_env_perf_diff_from_win_pct
-
             num_envs = len(task_obj.environment_names) if task_obj.environment_names else 1
             win_pct = (2 * challenger_score + boss_score - 3 * num_envs) / (3 * num_envs)
             perf_diff = calculate_env_perf_diff_from_win_pct(win_pct)
@@ -321,9 +329,8 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                 perf_diff = (boss_score - challenger_score) / abs(challenger_score)
             else:
                 perf_diff = 0.0
-            # perf_diff stays a percentage - it scales emissions and is not a gate. challenger_won
-            # is the gate, so it has to be decided the same way crowning decided it or analytics
-            # and the emission projection contradict the actual result.
+            # perf_diff is a reported percentage, not a gate. challenger_won is the gate, so it has to be
+            # decided the same way crowning decided it or analytics contradict the actual result.
             if task_obj.task_type in QUANT_TASK_TYPES:
                 analytics = await _quant_challenger_won_task(
                     task_id=task.task_id,
@@ -351,7 +358,7 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
                     psql_db=psql_db,
                 )
 
-        # A failed-but-scored entry carries an infinite loss; the ratio is then inf or nan, and it feeds the emission boost.
+        # A failed-but-scored entry carries an infinite loss; the ratio is then inf or nan and is not a valid number to report.
         # Who won is already decided above, so only the number is dropped.
         recorded_perf_diff = perf_diff if math.isfinite(boss_score) and math.isfinite(challenger_score) else None
         if recorded_perf_diff is None:
@@ -493,32 +500,3 @@ async def get_tournament_performance_data(tournament_id: str, psql_db) -> list[T
                     logger.warning(f"Could not find any scores in synthetic task for pair {i + 1}")
 
     return performance_data
-
-
-async def calculate_performance_difference(tournament_id: str, psql_db) -> float:
-    """
-    Calculates median performance difference between tournament winner and runner up.
-    """
-    logger.info(f"=== CALCULATING PERFORMANCE DIFFERENCE FOR TOURNAMENT {tournament_id} ===")
-
-    performance_data: list[TaskPerformanceDifference] = await calculate_boss_round_performance_differences(tournament_id, psql_db)
-
-    if not performance_data:
-        logger.info("No task pairs found, returning 0.0 performance difference")
-        median_performance_diff = 0.0
-    else:
-        performance_differences = [
-            data.performance_difference
-            for data in performance_data
-            if data.performance_difference is not None and math.isfinite(data.performance_difference)
-        ]
-        median_performance_diff = statistics.median(performance_differences) if performance_differences else 0.0
-        if not math.isfinite(median_performance_diff):
-            logger.warning(f"Non-finite median performance difference {median_performance_diff}, using 0.0")
-            median_performance_diff = 0.0
-        logger.info(f"Median performance difference: {median_performance_diff} from {len(performance_differences)} task pairs")
-
-    await update_tournament_winning_performance(tournament_id, median_performance_diff, psql_db)
-    logger.info(f"Stored performance difference {median_performance_diff:.4f} in database for tournament {tournament_id}")
-
-    return median_performance_diff

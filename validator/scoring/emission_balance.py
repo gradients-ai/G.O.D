@@ -67,7 +67,7 @@ def compute_dynamic_base_weights(
 
 
 def max_weight_by_type() -> dict[TournamentType, float]:
-    """Cap on each type's final (base + boost) weight."""
+    """Upper bound of each type's pool (its minimum plus the whole flex pool)."""
     return {
         TournamentType.TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         TournamentType.QUANT: cts.MAX_QUANT_TOURNAMENT_WEIGHT,

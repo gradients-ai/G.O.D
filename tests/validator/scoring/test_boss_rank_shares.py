@@ -193,9 +193,6 @@ class TestTheWeightsSetOnChain:
             text_tournament_weight=0.5,
             quant_tournament_weight=0.25,
             image_tournament_weight=0.25,
-            text_base_weight=0.5,
-            quant_base_weight=0.25,
-            image_base_weight=0.25,
         )
         metagraph = [MagicMock(hotkey=hotkey, node_id=index) for index, hotkey in enumerate(nodes)]
         with patch("validator.scoring.weights.fetch_nodes") as fetch:
@@ -232,7 +229,7 @@ class TestTheWeightsSetOnChain:
         node_weights = [0.0, 0.0]
 
         undistributed = apply_tournament_weights(
-            {BOSS: 0.8, SECOND: 0.2}, {}, {BOSS: 0, SECOND: 1}, node_weights, 0.5, 0.0, 0.5, 0.0, BOSS, None
+            {BOSS: 0.8, SECOND: 0.2}, {}, {BOSS: 0, SECOND: 1}, node_weights, 0.5, 0.0
         )
 
         assert node_weights == [0.0, pytest.approx(0.1)]

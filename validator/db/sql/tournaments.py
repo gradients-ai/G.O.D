@@ -20,10 +20,12 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_for_task
 from validator.db.sql.submissions_and_scoring import get_task_winners
 from validator.tasks.details import normalise_float
+from validator.tournament import constants as t_cst
 from validator.tournament.models import BossRankComparison
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation
 from validator.tournament.models import PendingDecoderRelease
+from validator.tournament.models import RoundType
 from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentGroupData
@@ -400,7 +402,6 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
                    {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.CODE_REVIEW},
-                   {cst.WINNING_PERFORMANCE_DIFFERENCE},
                    {cst.DIFF_REPORT}, {cst.WINNER_MODEL_REPO}, {cst.WINNER_MODEL_BASE}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_ID} = $1
@@ -414,7 +415,6 @@ async def get_tournament(tournament_id: str, psql_db: PSQLDB) -> TournamentData 
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
                 code_review=result[cst.CODE_REVIEW],
-                winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 winner_model_repo=result[cst.WINNER_MODEL_REPO],
                 winner_model_base=result[cst.WINNER_MODEL_BASE],
@@ -433,7 +433,7 @@ async def get_tournament_where_champion_first_won(
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
                    {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY},
-                   {cst.WINNING_PERFORMANCE_DIFFERENCE}, {cst.DIFF_REPORT}, {cst.UPDATED_AT}
+                   {cst.DIFF_REPORT}, {cst.UPDATED_AT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1
               AND {cst.TOURNAMENT_STATUS} = 'completed'
@@ -449,7 +449,6 @@ async def get_tournament_where_champion_first_won(
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
-                winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
             )
@@ -476,7 +475,7 @@ async def get_last_tournament_before_current_champion(
     async with await psql_db.connection() as connection:
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY},
                    {cst.DIFF_REPORT}, {cst.UPDATED_AT}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1
@@ -494,7 +493,6 @@ async def get_last_tournament_before_current_champion(
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
-                winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
             )
@@ -509,7 +507,7 @@ async def get_latest_completed_tournament(
         exclude_clause = f"AND {cst.TOURNAMENT_ID} != $2" if exclude_tournament_id else ""
         query = f"""
             SELECT {cst.TOURNAMENT_ID}, {cst.TOURNAMENT_TYPE}, {cst.TOURNAMENT_STATUS},
-                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY}, {cst.WINNING_PERFORMANCE_DIFFERENCE},
+                   {cst.BASE_WINNER_HOTKEY}, {cst.WINNER_HOTKEY},
                    {cst.DIFF_REPORT}, {cst.UPDATED_AT}, {cst.WINNER_MODEL_REPO}, {cst.WINNER_MODEL_BASE}
             FROM {cst.TOURNAMENTS_TABLE}
             WHERE {cst.TOURNAMENT_TYPE} = $1 AND {cst.TOURNAMENT_STATUS} = 'completed'
@@ -529,7 +527,6 @@ async def get_latest_completed_tournament(
                 status=result[cst.TOURNAMENT_STATUS],
                 base_winner_hotkey=result[cst.BASE_WINNER_HOTKEY],
                 winner_hotkey=result[cst.WINNER_HOTKEY],
-                winning_performance_difference=result[cst.WINNING_PERFORMANCE_DIFFERENCE],
                 diff_report=result[cst.DIFF_REPORT],
                 updated_at=result[cst.UPDATED_AT],
                 winner_model_repo=result[cst.WINNER_MODEL_REPO],
@@ -616,6 +613,22 @@ async def get_tournament_tasks(round_id: str, psql_db: PSQLDB) -> list[Tournamen
             )
             for row in results
         ]
+
+
+async def is_planned_image_tournament(tournament_id: str, psql_db: PSQLDB) -> bool:
+    """Whether a tournament is an image tournament of the round plan (one task per round, in one group): its round 1 does
+    not exist yet, or is a group round holding fewer than SMALL_TOURNAMENT_GROUP_TASKS tasks (one, or two while a failed
+    task and its replacement are both registered). An image tournament whose round 1 is a knockout round or holds the
+    three tasks of the multi-match round 1 is not planned."""
+    tournament = await get_tournament(tournament_id, psql_db)
+    if tournament is None or tournament.tournament_type != TournamentType.IMAGE:
+        return False
+    first_round = next((r for r in await get_tournament_rounds(tournament_id, psql_db) if r.round_number == 1), None)
+    if first_round is None:
+        return True
+    if first_round.round_type != RoundType.GROUP:
+        return False
+    return len(await get_tournament_tasks(first_round.round_id, psql_db)) < t_cst.SMALL_TOURNAMENT_GROUP_TASKS
 
 
 async def get_tournament_task_ids_of_type(

@@ -10,8 +10,8 @@ from pydantic import ConfigDict
 from pydantic import Field
 from pydantic import field_validator
 
-import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName as EnvironmentName
+from core.models.image_models import ImageModelType
 from core.models.payload_models import TrainingRepoResponse
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskType
@@ -126,12 +126,6 @@ class TournamentData(BaseModel):
     code_review: str | None = Field(
         default=None,
         description="Stored boss-round review. The live cheat check is per participant and runs before round 2.",
-    )
-    winning_performance_difference: float | None = Field(
-        default=None,
-        description="Performance difference metric (0.0 to 1.0) between champion and challenger in boss round. "
-        "Calculated as: (defending_champion_score - new_winner_score) / defending_champion_score. "
-        "score = loss, so lower is better. Higher diff = better perf = less burn.",
     )
     diff_report: str | None = Field(
         default=None, description="Optional S3 URL for the winner-vs-previous-boss diff report."
@@ -467,7 +461,7 @@ class TournamentResultsWithWinners(BaseModel):
     base_winner_hotkey: str | None = None
     winner_hotkey: str | None = None
     final_positions: dict[str, int] = Field(default_factory=dict)
-    # Stored when the tournament completed with the boss kept (seeded text and quant only); empty otherwise.
+    # Stored when the tournament completed with the boss kept (a tournament that plays the round plan); empty otherwise.
     boss_rank_comparisons: list[BossRankComparison] = Field(default_factory=list)
 
 
@@ -592,9 +586,10 @@ class RoundOutcome(BaseModel):
     """Result of resolving a completed round.
 
     ``deferred_reason`` is set when the round cannot be resolved yet, either because tasks are about
-    to be added to it (a boss-round draw decider) or because tasks are already on it that never got
-    nodes. The caller must not advance on a deferred outcome: ``winners`` is empty then, and an empty
-    winner list otherwise means the boss retained by default.
+    to be added to it (a boss-round draw decider), because tasks are already on it that never got
+    nodes, or because crown tasks have an evaluation fault. The caller must not advance on a deferred
+    outcome: ``winners`` is empty then, and an empty winner list otherwise means the boss retained by
+    default.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -610,6 +605,9 @@ class RoundOutcome(BaseModel):
     # Seeded text boss round only: stage 1 is scored and the challenger can still be crowned, so the round needs its big
     # task before it can be resolved. The caller creates it and returns the round to PENDING.
     needs_text_big_task: bool = False
+    # Planned image boss round only: crown tasks on which both sides trained and neither has a valid result. The round is held
+    # and an alert is sent; it resolves on its own once the evaluation results exist.
+    evaluation_fault_task_ids: list[str] = Field(default_factory=list)
 
     @property
     def is_deferred(self) -> bool:
@@ -674,10 +672,6 @@ class TournamentAuditData(BaseModel):
     text_tournament_weight: float = 0.0
     image_tournament_weight: float = 0.0
     quant_tournament_weight: float = 0.0
-    # Dynamic (participation-driven) base weights — what non-winner finalists receive.
-    text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
-    image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
-    quant_base_weight: float = 0.0
     burn_weight: float = 0.0
     weekly_participation: list["HotkeyTaskParticipation"] = []
 
@@ -770,19 +764,13 @@ class ActiveTournamentsResponse(BaseModel):
 class TournamentBurnData(BaseModel):
     """Separated burn data by tournament type"""
 
-    text_performance_diff: float | None
-    image_performance_diff: float | None
     text_burn_proportion: float
     image_burn_proportion: float
     text_tournament_weight: float
     image_tournament_weight: float
-    text_base_weight: float = cts.TOURNAMENT_TEXT_WEIGHT
-    image_base_weight: float = cts.TOURNAMENT_IMAGE_WEIGHT
     burn_weight: float
-    quant_performance_diff: float | None = None
     quant_burn_proportion: float = 0.0
     quant_tournament_weight: float = 0.0
-    quant_base_weight: float = 0.0
 
 
 class LatestTournamentsDetailsResponse(BaseModel):
@@ -916,8 +904,6 @@ class TournamentProjection(BaseModel):
     placement: str = "champion"
     # Performance margin (env: win rate) the challenger must exceed to take the crown
     dethrone_threshold: float = 0.0
-    # Emission boost applied on top of base weight (0 when runner_up or below boost threshold)
-    emission_boost: float = 0.0
 
 
 class WeightProjectionResponse(BaseModel):
@@ -1417,6 +1403,14 @@ class TextRoundSpec(BaseModel):
     round_number: int
     seed_role: SeedRole
     model_size_b: tuple[float, float]
+    advance: int
+
+
+class ImageRoundSpec(BaseModel):
+    """One miner round of an image tournament: the family of the task every entrant plays and the cut after it."""
+
+    round_number: int
+    model_type: ImageModelType
     advance: int
 
 

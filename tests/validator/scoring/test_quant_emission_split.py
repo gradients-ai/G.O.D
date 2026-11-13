@@ -110,7 +110,6 @@ async def test_audit_data_without_a_quant_tournament_keeps_quants_pool():
 
     assert audit.quant_tournament_data is None
     assert audit.quant_tournament_weight >= cts.TOURNAMENT_QUANT_WEIGHT
-    assert audit.quant_base_weight >= cts.TOURNAMENT_QUANT_WEIGHT
     assert audit.text_tournament_weight + audit.quant_tournament_weight + audit.image_tournament_weight == pytest.approx(1.0)
 
 
@@ -119,7 +118,6 @@ def test_old_audit_payloads_without_quant_fields_still_validate():
 
     assert audit.quant_tournament_data is None
     assert audit.quant_tournament_weight == 0.0
-    assert audit.quant_base_weight == 0.0
 
 
 @pytest.mark.asyncio
@@ -146,14 +144,12 @@ def test_quant_pool_pays_the_top_three_final_positions_once_completed():
         hotkey_to_node_id=node_ids,
         all_node_weights=node_weights,
         scaled_quant_tournament_weight=0.35,
-        scaled_quant_base_weight=0.30,
-        quant_winner_hotkey="a",
     )
 
     assert node_weights[3] == 0.0
     assert node_weights[0] == pytest.approx(0.76190476 * 0.35)
-    assert node_weights[1] == pytest.approx(0.19047619 * 0.30)
-    assert node_weights[2] == pytest.approx(0.04761905 * 0.30)
+    assert node_weights[1] == pytest.approx(0.19047619 * 0.35)
+    assert node_weights[2] == pytest.approx(0.04761905 * 0.35)
     assert undistributed == pytest.approx(0.35 - sum(node_weights), abs=1e-6)
 
 
@@ -171,9 +167,6 @@ async def test_node_weights_pay_the_completed_quant_tournament_ranks():
         text_tournament_weight=0.25,
         quant_tournament_weight=0.50,
         image_tournament_weight=0.25,
-        text_base_weight=0.25,
-        quant_base_weight=0.50,
-        image_base_weight=0.25,
     )
     nodes = [MagicMock(hotkey=hotkey, node_id=idx) for idx, hotkey in enumerate(["q1", "q2", "q3", "q4", BURN])]
 

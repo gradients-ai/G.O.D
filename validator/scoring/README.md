@@ -21,7 +21,7 @@ The compression tournament is `quant` in code. Miner-facing scoring rules are in
 
 ## Tournament emission split
 
-Each tournament's base share is a minimum plus a part of the share that floats by participation. The numbers, the champion boost and the split over paid places are in [Payouts](../../docs/miner.md#payouts). Who holds the paid places is in [Crown, early stop and placements](../tournament/README.md#crown-early-stop-and-placements).
+Each tournament's pool is its base share: a minimum plus a part of the share that floats by participation. The numbers and the split over paid places are in [Payouts](../../docs/miner.md#payouts). Who holds the paid places is in [Crown, early stop and placements](../tournament/README.md#crown-early-stop-and-placements).
 
 **How the floating share is computed** (`emission_balance.py`):
 
@@ -32,7 +32,7 @@ Each tournament's base share is a minimum plus a part of the share that floats b
 
 A tournament with more participants than its minimum share implies cedes floating share to one with fewer. Each base lies between its minimum and its minimum plus the whole floating share, and the three bases sum to 1.0.
 
-These bounds apply to the base share. How the champion boost composes with them is in [Payouts](../../docs/miner.md#payouts).
+The pool of a tournament is exactly its base share. The three pools sum to 1.0, so the pools fill the whole emission pie and nothing is renormalised. Every place of a tournament, the champion's included, is paid from its one pool.
 
 | Constant | Value | Meaning |
 | --- | --- | --- |

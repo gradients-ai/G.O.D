@@ -73,16 +73,6 @@ async def get_boss_round_winner_task_pairs(tournament_id: str, psql_db: PSQLDB) 
         ]
 
 
-async def update_tournament_winning_performance(tournament_id: str, winning_performance_difference: float, psql_db: PSQLDB):
-    async with await psql_db.connection() as connection:
-        query = f"""
-            UPDATE {cst.TOURNAMENTS_TABLE}
-            SET {cst.WINNING_PERFORMANCE_DIFFERENCE} = $2
-            WHERE {cst.TOURNAMENT_ID} = $1
-        """
-        await connection.execute(query, tournament_id, winning_performance_difference)
-
-
 async def get_task_scores_batch(task_ids: list[str], psql_db: PSQLDB) -> dict[str, list[TaskScore]]:
     """Fetch task scores for multiple tasks in a single query to avoid N+1 problem."""
     if not task_ids:
