@@ -7,6 +7,7 @@ from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.requests import get_model_num_params
+from validator.tournament import constants as t_cst
 from validator.tournament.models import GpuRequirement
 
 
@@ -18,6 +19,7 @@ TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100 = 40.0
 TOURNAMENT_DPO_GPU_MULTIPLIER = 3
 TOURNAMENT_GRPO_GPU_MULTIPLIER = 2
 TOURNAMENT_KL_GPU_MULTIPLIER = 2
+_H100_TIERS = (GpuRequirement.H100_1X, GpuRequirement.H100_2X, GpuRequirement.H100_4X, GpuRequirement.H100_8X)
 
 
 def get_tournament_gpu_requirement(
@@ -28,12 +30,17 @@ def get_tournament_gpu_requirement(
     use_kl: bool = False,
     training_start_point: TrainingStartPoint | None = None,
     environment_count: int | None = None,
+    gpu_count_multiplier: int = 1,
 ) -> GpuRequirement:
     """Compute GPU requirement based on model size, task type, and optional multiplier.
 
     When ``use_kl`` is set (instruct KL tasks), the effective model size is scaled by
     TOURNAMENT_KL_GPU_MULTIPLIER to account for the frozen reference model held resident
     alongside the trainable model.
+
+    ``gpu_count_multiplier`` multiplies the GPU count the size tier gives (the boss round's continuous-chunk
+    instruct task trains on 2x its tier: 1x -> 2x, 2x -> 4x, capped at 8x); it does not scale the
+    parameter count the way ``gpu_multiplier`` does.
 
     Continuous-SFT gets a FIXED 4xH100, checked first so we never hit the (gated/custom-arch)
     HuggingFace param fetch below.
@@ -72,13 +79,17 @@ def get_tournament_gpu_requirement(
         params_b *= TOURNAMENT_KL_GPU_MULTIPLIER
 
     if params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_2X_H100:
-        return GpuRequirement.H100_1X
+        tier = GpuRequirement.H100_1X
     elif params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_4X_H100:
-        return GpuRequirement.H100_2X
+        tier = GpuRequirement.H100_2X
     elif params_b <= TOURNAMENT_GPU_THRESHOLD_FOR_8X_H100:
-        return GpuRequirement.H100_4X
+        tier = GpuRequirement.H100_4X
     else:
-        return GpuRequirement.H100_8X
+        tier = GpuRequirement.H100_8X
+    if gpu_count_multiplier == 1:
+        return tier
+    scaled_count = min(tier.gpu_count * gpu_count_multiplier, GpuRequirement.H100_8X.gpu_count)
+    return next(req for req in _H100_TIERS if req.gpu_count >= scaled_count)
 
 
 def get_task_gpu_requirement(task: AnyTypeRawTask) -> GpuRequirement:
@@ -90,4 +101,5 @@ def get_task_gpu_requirement(task: AnyTypeRawTask) -> GpuRequirement:
         use_kl=task.use_kl if isinstance(task, InstructTextRawTask) else False,
         training_start_point=task.training_start_point,
         environment_count=len(task.environment_names) if isinstance(task, EnvRawTask) else None,
+        gpu_count_multiplier=t_cst.gpu_count_multiplier(task.task_type, getattr(task, "ds", None)),
     )

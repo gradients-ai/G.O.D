@@ -1,6 +1,6 @@
 """create_synthetic_instruct_text_task honours model_id_override / allow_augmentation / allow_yarn.
 
-Forced-model slots (oversampled later models, the large boss-round instruct slot) rely on these:
+Forced-model and no-augmentation slots (e.g. the large boss-round instruct slot) rely on these:
 the model must come from the override (no pool is even provided), and augmentation/YaRN must stay
 off when asked so competitors train the exact published model. Everything else — dataset pull,
 computed hours — stays the standard path.

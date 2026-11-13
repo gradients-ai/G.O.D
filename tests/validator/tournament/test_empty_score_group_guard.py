@@ -11,6 +11,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentRoundData
@@ -115,6 +116,18 @@ class TestFindGroupsWithNoValidScores:
         flagged = await find_groups_with_no_valid_scores(_round(), AsyncMock())
 
         assert [group.group_id for group in flagged] == ["group_002", "group_003"]
+
+    async def test_the_boss_score_alone_does_not_count(self, patched):
+        """A seeded round scores the boss's entry with the round's task: with every challenger's row missing the group is
+        still flagged."""
+        tasks, _members, results, ranked = patched
+        tasks.return_value = [_task("group_001", "task-1")]
+        results.return_value = [object()]
+        ranked.return_value = [_result(EMISSION_BURN_HOTKEY, 0.4), _result("5A", np.nan)]
+
+        flagged = await find_groups_with_no_valid_scores(_round(), AsyncMock())
+
+        assert [group.group_id for group in flagged] == ["group_001"]
 
     async def test_knockout_rounds_are_not_covered(self, patched):
         tasks, _members, results, ranked = patched

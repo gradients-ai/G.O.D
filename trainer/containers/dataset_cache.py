@@ -73,6 +73,6 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
     finally:
         if container:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove dataset download container {container_name}: {cleanup_err}")

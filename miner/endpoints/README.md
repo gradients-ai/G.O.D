@@ -1,10 +1,13 @@
-# Miner Endpoints
+# Miner endpoints
 
-Miner API routes.
+Routes of the miner service.
 
 ## Contents
 
-- `training_repo.py`: implements `GET /training_repo/{task_type}` and returns `TrainingRepoResponse`.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `training_repo.py` | `GET /training_repo/{task_type}`, returning `TrainingRepoResponse` from `core/models/payload_models.py`. |
 
-This is the miner's main public contract with validators. Keep response fields compatible with `core.models.payload_models.TrainingRepoResponse`.
+## See also
+
+- [Entering a tournament](../../docs/miner.md#entering-a-tournament): what a miner serves and how an entry is charged.

@@ -18,7 +18,7 @@ tournament whose 3rd place cannot be cleanly resolved.
 Usage
 -----
     # Dry run (default): show what would change for the latest completed
-    # text/image tournaments, write nothing.
+    # text/image/quant tournaments, write nothing.
     python ops/tools/tournament/backfill_third_place.py
 
     # Dry run for specific tournament ids.
@@ -46,6 +46,7 @@ from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentType
 from validator.tournament.participants import get_pre_boss_knockout_loser
+from validator.tournament.round_results import get_quant_pre_boss_runner_up
 
 
 logger = get_logger(__name__)
@@ -70,6 +71,11 @@ async def _resolve_third_place(
     challenger_hotkey: str,
     psql_db: PSQLDB,
 ) -> str | None:
+    if tournament.tournament_type == TournamentType.QUANT:
+        third_place = await get_quant_pre_boss_runner_up(tournament.tournament_id, final_round, challenger_hotkey, psql_db)
+        if third_place is not None:
+            return third_place
+        return await get_pre_boss_knockout_loser(tournament, final_round, challenger_hotkey, psql_db)
     if tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
         return await get_pre_boss_knockout_loser(tournament, final_round, challenger_hotkey, psql_db)
     return None
@@ -162,7 +168,7 @@ async def main() -> None:
         tournament_ids = args.tournament_ids
         if not tournament_ids:
             tournament_ids = []
-            for tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
+            for tournament_type in (TournamentType.TEXT, TournamentType.IMAGE, TournamentType.QUANT):
                 latest = await get_latest_completed_tournament(psql_db, tournament_type)
                 if latest:
                     tournament_ids.append(latest.tournament_id)

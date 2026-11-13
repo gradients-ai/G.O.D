@@ -1,90 +1,162 @@
-# Miner Guide
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/header-hub-dark.svg"><img src="assets/readme/header-hub-light.svg" alt="Miner hub: what the three G.O.D tournaments share" width="100%"></picture>
+</p>
 
-This guide is the single source of truth for miners who want to compete in G.O.D tournaments. It explains how tournament entry works, how to expose your repository, what your training repository must contain, how validators run your code, and what to expect from text and image tournaments.
+Everything a miner needs that is the same in every tournament: schedule, fees, repository rules, how your code runs, entry, payouts, results and fair play. Rules cite the code that enforces them. Where a page and the code differ, the code is right.
 
-Environment tournaments have been retired: they are no longer scheduled, no longer accept entries, and no longer contribute to emissions. Historical environment tournaments remain queryable through the analytics endpoints.
+<p align="center">
+  <a href="miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-text-dark.svg"><img src="assets/readme/icon-text-light.svg" alt="" width="20" align="top"></picture> <b>Text</b></a> &nbsp;·&nbsp;
+  <a href="miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-image-dark.svg"><img src="assets/readme/icon-image-light.svg" alt="" width="20" align="top"></picture> <b>Image</b></a> &nbsp;·&nbsp;
+  <a href="miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/icon-compression-dark.svg"><img src="assets/readme/icon-compression-light.svg" alt="" width="20" align="top"></picture> <b>Compression</b></a> &nbsp;·&nbsp;
+  <a href="developer.md"><b>Developer guide</b></a>
+</p>
 
-## Table Of Contents
+On this page: [What miners do](#what-miners-do) · [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting)
 
-- [Quick Checklist](#quick-checklist)
-- [What Miners Do](#what-miners-do)
-- [Tournament Schedule](#tournament-schedule)
-- [Registration Requirements](#registration-requirements)
-- [Miner Setup](#miner-setup)
-- [Submitting Your Training Repository](#submitting-your-training-repository)
-- [Training Repository Requirements](#training-repository-requirements)
-- [How Validators Run Your Code](#how-validators-run-your-code)
-- [Runtime Arguments](#runtime-arguments)
-- [Runtime Environment Variables](#runtime-environment-variables)
-- [Cache And Output Paths](#cache-and-output-paths)
-- [Requested Datasets](#requested-datasets)
-- [Tournament Formats](#tournament-formats)
-- [Scoring And Weights](#scoring-and-weights)
-- [Image Tournament Tips](#image-tournament-tips)
-- [Local Testing](#local-testing)
-- [Common Failure Modes](#common-failure-modes)
-- [Training Logs](#training-logs)
-- [Useful References](#useful-references)
+## What miners do
 
-## Quick Checklist
+Miners submit code. You publish a GitHub repository, pin a commit, and run a small miner service that tells the validator which repository to use. The validator's trainers, its GPU machines, build and run it, and the output is ranked against the other miners'.
 
-Before a tournament starts, make sure:
+What you need:
 
-- Your hotkey is registered on the subnet and your miner IP is posted to the metagraph.
-- You have registered with Fiber at least 1 hour before the tournament you want to enter.
-- `task miner` is running and reachable on port `7999`.
-- `GET /training_repo/{task_type}` returns your GitHub repository, a full 40-character commit SHA, and an optional read-only GitHub token if the repo is private.
-- Your submitted commit contains the required Dockerfiles, exact LICENSE/NOTICE files, readable source code, and no hidden datasets or pretrained models.
-- Your training image uses CUDA **12.8 or lower**.
-- Your training script writes the final model to `/app/checkpoints/{task_id}/{expected_repo_name}`.
-- Your coldkey has enough tournament balance for the tournament type.
-- Only one hotkey per coldkey will be enrolled in a given tournament.
-- You have tested the exact Dockerfile and entrypoint locally with the example scripts.
+- A Bittensor wallet: a coldkey that holds TAO, and a hotkey registered on the subnet.
+- TAO for subnet registration and for the entry fee.
+- A small always-on machine with a public IP address, for the miner service.
+- No GPU. Training runs on the validator's machines.
 
-## What Miners Do
+> [!IMPORTANT]
+> Repositories are published in the cases listed in [Fair play and review](#fair-play-and-review). Submit only code you are prepared to open-source.
 
-Tournament miners submit training code. Validators clone your submitted repository at the commit you provide, build your Docker image, run your training script on validator-managed GPUs, upload your model output to Hugging Face, then evaluate it against other miners.
+Path to your first entry:
 
-You do not need to provide tournament compute. You do need a running miner endpoint so validators can ask which repository and commit you want to enter for each tournament type.
+1. Pick a tournament in [Tournaments](#tournaments) and read its guide.
+2. Build a repository that meets the [shared rules](#training-repository) and the guide's contract. The winning repositories published at [github.com/gradients-opensource](https://github.com/gradients-opensource) are working references.
+3. Test it locally, as the guide's Local testing section describes.
+4. Complete subnet registration and post your IP (see [Entering a tournament](#entering-a-tournament)).
+5. In [the endpoint](#the-endpoint-response), return your repository and full commit SHA for that tournament and decline the other tournaments. Start the miner service.
+6. Top up your [tournament balance](#balance-and-fee) with at least the entry fee, before the tournament's start hour.
 
-Winning tournament repositories are re-uploaded to the public winners organization at [github.com/gradients-opensource](https://github.com/gradients-opensource), so only submit code you are prepared to open-source if it wins.
+## Tournaments
 
-## Tournament Schedule
+Three tournaments run every week. Times are UTC. `quant` is the API value of the compression tournament.
 
-Tournament scheduling is weekly and independent for each tournament type. Times are in UTC.
+<p align="center">
+  <a href="miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-text-dark.svg"><img src="assets/readme/card-text-light.svg" alt="Text tournament. Fine-tune a given language model on an instruct, chat, DPO or GRPO task. Ranked by lowest loss on held-out data; on GRPO, highest reward. Open the text guide." width="270"></picture></a>
+  <a href="miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-image-dark.svg"><img src="assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a text-to-image or edit task. Ranked by lowest loss on held-out images. Open the image guide." width="270"></picture></a>
+  <a href="miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/card-compression-dark.svg"><img src="assets/readme/card-compression-light.svg" alt="Compression tournament. Compress a given language model: a fixed quantised format, or freeform, any format with your own decoder. Ranked by lowest loss in the fixed format; in freeform by fewest bytes, with a penalty on loss. Open the compression guide." width="270"></picture></a>
+</p>
 
-| Tournament type | Scheduled start |
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/week-dark.svg"><img src="assets/readme/week-light.svg" alt="The tournament week, times in UTC: text, image and compression start on Monday; the completion target is Friday." width="100%"></picture>
+</p>
+
+| Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
+| --- | --- | --- | --- | --- |
+| Text | `GET /training_repo/text` | Monday 09:00 | `0.7 TAO` | [Text guide](miner_text.md) |
+| Image | `GET /training_repo/image` | Monday 11:00 | `0.4 TAO` | [Image guide](miner_image.md) |
+| Compression | `GET /training_repo/quant` | Monday 13:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
+
+Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
+
+### Advancing
+
+Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in.
+
+A tie on average rank goes to the smaller summed gap. On each task, a miner's gap is how far its value is behind the task's best entry, relative to that best; the gaps are added over the rounds played. A tie left after that is settled by a seeded draw.
+
+## Training repository
+
+Every repository needs the following, whatever the tournament.
+
+| Requirement | Rule |
 | --- | --- |
-| Text | Monday at 11:00 UTC |
-| Image | Monday at 13:00 UTC |
+| Licence | A `LICENSE` and a `NOTICE` file at the repository root, identical to this repository's. Your guide's At a glance says where enrolment reads them. |
+| Readable source | No obfuscated or compiled-only code, checked by a scan at the pinned commit. |
+| Dockerfile | The trainer builds a Dockerfile from your repository. It looks under `ops/docker/`, then for the same file name under `dockerfiles/`. Your guide names the file. |
+| CUDA | Trainer hosts support CUDA 12.8 or lower. Keep your base image and wheels within it. |
+| Contents | What your repository and image may contain: see [Policy](#policy). |
 
-Environment tournaments are retired and are no longer scheduled.
+<details>
+<summary>Licence check details</summary>
 
-The scheduler only starts a new tournament when there is no active or pending tournament of the same type. It starts during the scheduled hour only. If the system misses that hour, it waits until the next scheduled weekly window instead of starting late.
+Accepted licence file names: `LICENSE.md`, `LICENSE`, `license.md`, `license`, `License.md`, `License`.
 
-The first tournament of a type can be created immediately when no previous tournament exists. After that, the previous tournament must be completed and the next scheduled window must arrive.
+Accepted notice file names: `NOTICE`, `NOTICE.txt`, `notice.txt`, `Notice.txt`, `notice`, `Notice`.
 
-### Weekly Completion Deadline
+Each file is compared line by line with this repository's `LICENSE.md` and `NOTICE`, ignoring trailing whitespace. Any other difference fails.
 
-Every tournament, regardless of type, is expected to be completed by **Friday at 14:00 UTC** of the week it started. This deadline is independent of training time and GPU availability during the week, and a round being reverted does not push the deadline out — it only shrinks the time left to finish, as long as the tournament still fits before Friday.
+</details>
 
-Completion itself is a manual step: once a winner is decided, the team reviews the winning submission's code to check for exploits and confirm it reflects a genuine training improvement before marking the tournament completed. To make sure that review doesn't slip past the deadline, the validator posts a Discord reminder 30 minutes before the Friday 14:00 UTC cutoff for any tournament that is still active at that point.
+## How your code runs
 
-## Registration Requirements
+For each task the trainer does this:
 
-### Subnet Registration
+1. Clones your repository at the pinned commit.
+2. Downloads the task's model and data into `/cache`.
+3. Builds your Dockerfile with the repository root as build context.
+4. Starts your container with the task's CLI arguments and environment.
+5. Waits until the container exits or the deadline passes.
+6. Uploads your output to a public Hugging Face repo for evaluation. What is uploaded is in your guide's output contract.
 
-Register your hotkey on the G.O.D subnet:
+The held-out split used for scoring is never given to your container.
+
+### Container limits
+
+| Limit | Value |
+| --- | --- |
+| Image build | No layer cache, 30 minute limit. |
+| GPUs | H100s, and only those assigned to the task. Counts are in the guides. |
+| Memory | 110 GB per GPU. |
+| CPU | 24 cores per GPU, capped at the host's cores. |
+| Shared memory | 8 GB, or 16 GB with four or more GPUs. |
+| Network | An internal Docker bridge with no internet access. |
+| Privileges | `no-new-privileges`, all Linux capabilities dropped. |
+| `/cache` | Read-only. |
+| `/app/checkpoints` | Read-write. |
+
+### Arguments and environment
+
+Every container receives these. The guides list the rest.
+
+| Argument or variable | Meaning |
+| --- | --- |
+| `--task-id` | The task's identifier. |
+| `--model` | The model to work on, by name. Its files are at the model path below. |
+| `--expected-repo-name` | The name of your output directory. |
+| `--hours-to-complete` | The task's time budget in hours. It is the deadline, counted from container start. |
+| `BASELINE_STATS_PATH` | Path to a JSON file of model and dataset statistics. Set when the task has them. |
+
+### Paths
+
+| Purpose | Path |
+| --- | --- |
+| Your output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
+| The model | `/cache/models/{--model with "/" replaced by "--"}` |
+
+The uploader reads only that output path. Task data paths are in the guides.
+
+### Deadline
+
+| Outcome | Result |
+| --- | --- |
+| Container exits with code 0 | Your output is uploaded, under your guide's output contract. |
+| Container exits with any other code | The task fails for you. Nothing is uploaded. |
+| Deadline passes | The container is killed. What your output directory holds at that moment is uploaded, under the same contract. |
+
+## Entering a tournament
+
+Subnet registration puts your hotkey on the subnet, once. Enrolment adds you to one tournament, every week.
+
+### Subnet registration and the miner service
+
+Register your hotkey on the subnet:
 
 ```bash
-# Mainnet
-btcli s register --netuid 56
-
-# Testnet
-btcli s register --network test --netuid 241
+btcli s register --netuid 56                   # mainnet
+btcli s register --network test --netuid 241   # testnet
 ```
 
-Post your miner IP to the metagraph. The default miner server port is `7999`:
+Post your miner IP to the metagraph. The miner service listens on port `7999`:
 
 ```bash
 fiber-post-ip \
@@ -96,92 +168,44 @@ fiber-post-ip \
   --external_ip YOUR_PUBLIC_IP
 ```
 
-Use `--network test` and netuid `241` equivalents for testnet.
-
-Register with Fiber and post your miner IP at least 1 hour before the scheduled start of the tournament you want to enter.
-
-### Participation Balance
-
-Tournament fees are deducted from your coldkey balance after your repository passes validation. Current code constants are:
-
-| Tournament type | Fee |
-| --- | --- |
-| Text | 0.7 TAO |
-| Image | 0.4 TAO |
-
-Balances are tracked per coldkey, so hotkeys under the same coldkey share the same tournament balance. Only **one tournament entry is allowed per coldkey**: if multiple hotkeys under the same coldkey respond during registration, one is kept and the rest are rejected (no second fee is charged). Transfer TAO from your coldkey to the collection address:
-
-```text
-5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo
-```
-
-Useful API endpoints:
+Install the service from this repository:
 
 ```bash
-curl https://api.gradients.io/tournament/fees
-curl https://api.gradients.io/tournament/balance/{coldkey}
-```
-
-Collected fees are burned through the tournament balance system.
-
-### Minimum Field Size
-
-A pending tournament activates only after enough validated miners are available:
-
-| Tournament type | Minimum validated miners |
-| --- | --- |
-| Text | 4 |
-| Image | 4 |
-
-If too few miners validate, the pending tournament waits and retries participant collection.
-
-## Miner Setup
-
-From this repository:
-
-```bash
-git clone https://github.com/rayonlabs/G.O.D.git
+git clone https://github.com/gradients-ai/G.O.D.git
 cd G.O.D
-task bootstrap
+sudo -E ./bootstrap.sh   # installs system dependencies and go-task
+. ~/.bashrc
 task install
-task miner-config
+task miner-config   # writes .1.env
+```
+
+Set your answer in `miner/endpoints/training_repo.py` and `.1.env` (next section), then start the service:
+
+```bash
 task miner
 ```
 
-`task miner-config` writes `.1.env`. It prompts for:
+Do this well before the weekly start. The validator asks only miners it already knows from the metagraph.
 
-- Wallet name.
-- Hotkey name.
-- Subtensor network or websocket address.
-- Netuid, inferred as `56` for mainnet and `241` for testnet.
-- Minimum validator stake threshold for requests to your miner.
+### The endpoint response
 
-`task miner` starts:
+The validator calls `GET /training_repo/{task_type}` on your miner on each enrolment pass of each tournament. `task_type` is `text`, `image` or `quant`.
+
+> [!IMPORTANT]
+> Answering a tournament's endpoint with a repository enters you in that tournament and charges its fee.
+
+You control the answer in `miner/endpoints/training_repo.py`. The file answers only the tournaments listed in the `MINER_TOURNAMENT_TYPES` setting, a comma-separated list of `text`, `image` and `quant`, and declines the rest with a 404. The setting is empty by default, so a miner enters nothing until you set it. Add it to `.1.env` and restart the miner:
 
 ```bash
-ENV=DEV uvicorn miner.asgi:app --reload --host 0.0.0.0 --port 7999 --env-file .1.env --log-level debug
+echo "MINER_TOURNAMENT_TYPES=text" >> .1.env
 ```
 
-The miner exposes:
-
-```text
-GET /training_repo/{task_type}
-```
-
-where `task_type` is one of `text` or `image`. (`environment` is retired; requests for it are no longer made.)
-
-Requests are verified by Fiber dependencies in `miner/endpoints/training_repo.py`, including low-stake validator blacklisting.
-
-## Submitting Your Training Repository
-
-Validators submit you automatically by querying your miner endpoint during participant registration. You control the response in `miner/endpoints/training_repo.py`:
+The file then returns the repository set in `get_training_repo`, so change `github_repo` and `commit_hash` there to your own:
 
 ```python
-from core.models.payload_models import TrainingRepoResponse
-from core.models.tournament_models import TournamentType
-
-
 async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
+    if task_type.value not in entered_tournaments():
+        raise HTTPException(status_code=404, detail="not entering this tournament")
     return TrainingRepoResponse(
         github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
         commit_hash="0123456789abcdef0123456789abcdef01234567",
@@ -190,399 +214,238 @@ async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
     )
 ```
 
-Important details:
+To use a different repository or commit per tournament, branch on `task_type` before the return.
 
-- `commit_hash` must be a full 40-character hex commit SHA. Branch names such as `main` are rejected.
-- Use `git rev-parse HEAD` to get the commit you want validators to run.
-- The repository and commit must remain accessible until the tournament completes.
-- You may return different repositories or commits for `text` and `image`.
-- One miner is kept per coldkey, per IP address, and per GitHub account. Multiple hotkeys under the same coldkey cannot all enter the same tournament: only one entry is kept, and the others are rejected. If duplicates exist, entries with a valid GitHub token are preferred; otherwise the first kept candidate in the registration pass wins.
-
-### Private Repositories
-
-Private repositories are supported if you return a GitHub fine-grained personal access token:
-
-```python
-async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
-    return TrainingRepoResponse(
-        github_repo="https://github.com/YOUR_USERNAME/YOUR_PRIVATE_REPO.git",
-        commit_hash="0123456789abcdef0123456789abcdef01234567",
-        github_token="github_pat_xxx",
-        requested_datasets=None,
-    )
-```
-
-Use a fine-grained token with access only to the submitted repository and `Contents: Read-only`. The validator checks the token against the GitHub repository API. If the token is invalid, it is ignored, which will make a private repository fail to clone.
-
-## Training Repository Requirements
-
-Your submitted commit is validated before entry and built before every assigned task.
-
-### Required Files
-
-At minimum, include:
-
-```text
-your-training-repo/
-|-- LICENSE.md
-|-- NOTICE
-`-- <supported Dockerfile layout>
-```
-
-Preferred Dockerfile layout:
-
-```text
-ops/docker/standalone-text-trainer.dockerfile
-ops/docker/standalone-image-toolkit-trainer.dockerfile
-```
-
-Legacy Dockerfile layout is also supported:
-
-```text
-dockerfiles/standalone-text-trainer.dockerfile
-dockerfiles/standalone-image-toolkit-trainer.dockerfile
-```
-
-Required Dockerfiles by tournament type:
-
-| Tournament type | Required Dockerfile |
+| Field | Rule |
 | --- | --- |
-| Text | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
-| Environment | `ops/docker/standalone-text-trainer.dockerfile` or legacy text path |
-| Image | `ops/docker/standalone-image-toolkit-trainer.dockerfile` or legacy toolkit path |
+| `github_repo` | Repository URL. Must stay reachable until the tournament completes. |
+| `commit_hash` | Full 40-character hex SHA (`git rev-parse HEAD`). A branch name is rejected. |
+| `github_token` | Optional. Needed only for a private repository. |
+| `requested_datasets` | Leave as `None`. |
 
-If you compete in image tournaments, include the image toolkit Dockerfile. Image tasks can use `flux`, `z-image`, `qwen-image`, `ideogram4`, or `krea2`.
+The validator reads each of these as declining a tournament, and neither enrols nor charges you:
 
-### CUDA Compatibility
+- a status other than 200, such as the 404 above
+- no answer within 10 seconds, or a connection error
+- a body that is not the response above, or an empty `github_repo` or `commit_hash`
 
-Keep your Dockerfile base image and PyTorch/CUDA wheels at CUDA **12.8 or lower** (`cu128`, `cu126`, `cu124`, and similar). Newer CUDA runtimes (12.9+ / 13.x) are outside the supported range for trainer hosts.
+<details>
+<summary>Private repositories</summary>
 
-### License And Notice
+Return a GitHub token that can read the repository. A fine-grained personal access token limited to that repository with `Contents: Read-only` is enough.
 
-Your repo must include a LICENSE file and NOTICE file matching this repository's files. Accepted LICENSE names are:
+The validator tests the token against the GitHub repository API. A token that does not grant access is ignored, so the private repository then fails to clone.
+
+</details>
+
+### Enrolment checks
+
+Every entry needs a full commit SHA, a pass on the obfuscation scan and the licence files ([Training repository](#training-repository)). A guide lists any check its tournament adds.
+
+Enrolment does not require a Dockerfile. A missing one fails the job when the trainer starts it.
+
+### One entry per miner
+
+One entry is kept per IP address, per GitHub account and per coldkey, checked in that order. Among duplicate entries, one with a working GitHub token is preferred, then the first one seen.
+
+Duplicate entries are dropped before the enrolment checks run. The kept entry must then pass them.
+
+### Balance and fee
+
+- Fees are paid from a balance held per coldkey. All hotkeys under a coldkey share it.
+- The fee is charged at enrolment, after your repository passes the checks.
+- With too little balance you are not enrolled and nothing is charged.
+- A coldkey is charged at most once per tournament.
+- The fee is not refunded. It stays charged when you are eliminated in a round, when your entry is eliminated as a [duplicate submission](#duplicate-submission-check) before round 1, and when your tasks fail because a Dockerfile is missing or does not build.
+
+Top up by transferring TAO from your coldkey to the collection address:
 
 ```text
-LICENSE.md, LICENSE, license.md, license, License.md, License
+5Ef5JgNv14LY4UEQFHbRQkf8TnegDV3AfAbcsJe5T2w6VQdo
 ```
 
-Accepted NOTICE names are:
+Check the fees and your balance with the endpoints in [Results](#results).
 
-```text
-NOTICE, NOTICE.txt, notice.txt, Notice.txt, notice, Notice
-```
+### Scheduling
 
-The validation compares normalized line content against this repository's LICENSE and NOTICE. Do not rewrite, summarize, or remove them.
+A week from the miner's seat:
 
-### Readable Source
+1. Before the tournament's start hour, your miner service is answering and your balance holds the fee.
+2. The tournament is created during its start hour. The first enrolment pass follows on the validator's next cycle, normally within a minute or two. The pass asks every miner on the subnet for its repository, runs the checks and enrols the entries that pass.
+3. A pass that leaves at least four miners enrolled starts the tournament and closes enrolment. A miner that was not answering by then waits for the following week.
+4. A pass that leaves fewer than four is repeated every 30 minutes. Miners enrolled by an earlier pass stay enrolled and charged.
+5. Rounds run through the week. The target for completion is Friday 14:00 UTC.
 
-Repositories are scanned for obfuscation at the submitted commit. Obfuscated or compiled-only submissions are rejected. Avoid files such as `.pyc`, `.bin`, `.dll`, packed source, minified logic, or anything meant to hide how the method works.
-
-Do not hide datasets, pretrained models, or private artifacts inside your Docker image. Environment tournaments explicitly allow supplementary SFT only through the requested dataset whitelist.
-
-## How Validators Run Your Code
-
-For each assigned task, the trainer:
-
-1. Clones your submitted GitHub repository at `commit_hash`.
-2. Downloads the base model and task dataset into a shared Docker cache volume.
-3. Builds the task-specific Dockerfile from your repository root.
-4. Starts your training container with assigned GPU IDs, CLI arguments, mounted volumes, and environment variables.
-5. Waits up to `hours_to_complete`.
-6. Uploads `/app/checkpoints/{task_id}/{expected_repo_name}` to the validator Hugging Face account.
-7. Sends the uploaded model into evaluation and scoring.
-
-Training containers run with:
-
-- Assigned NVIDIA GPUs only.
-- Supported CUDA runtime up to **12.8**.
-- Docker security option `no-new-privileges`.
-- All Linux capabilities dropped.
-- `/cache` mounted read-only.
-- `/app/checkpoints/` mounted read-write.
-- An internal Docker bridge network. Treat this as no public internet.
-- Dynamic resource limits of 110 GB RAM and 24 CPU cores per GPU.
-
-## Runtime Arguments
-
-Your Dockerfile entrypoint receives standardized CLI arguments.
-
-### Text Trainer
-
-Used for `InstructTextTask`, `DpoTask`, `GrpoTask`, and `ChatTask`:
-
-```bash
---task-id             # Unique task UUID/string
---model               # Base or starting model identifier
---dataset             # Original task dataset URL
---dataset-type        # JSON string describing columns or rewards
---task-type           # InstructTextTask, DpoTask, GrpoTask, or ChatTask
---file-format         # Always s3 for tournament tasks
---expected-repo-name  # Hugging Face repo name the uploader expects
---hours-to-complete   # Task timeout in hours
-```
-
-`--dataset-type` is one of the Pydantic schemas in `core/models/dataset_models.py`:
-
-| Task type | Dataset type payload |
+| Rule | Value |
 | --- | --- |
-| `InstructTextTask` | Instruction/input/output column names and optional formatting fields. |
-| `ChatTask` | Chat template, conversation column, role field, content field, user reference, and assistant reference. |
-| `DpoTask` | Prompt/chosen/rejected fields plus optional formats. |
-| `GrpoTask` | Prompt field, generated reward functions, reward weights, and optional extra column. |
+| Minimum field | 4 enrolled miners, not counting the boss. |
+| One at a time | A tournament is created only when none of its kind is pending or active. |
+| Start window | Creation happens during the tournament's start hour. If the hour is missed, the next chance is the following week. |
+| First tournament | Created at once when none of its kind has ever run. |
+| Completion target | Friday 14:00 UTC of the week it started. Operators complete a tournament by hand. |
 
-For GRPO tasks, reward function code is passed inside `--dataset-type`. The base implementation writes those functions into the training environment before Axolotl starts.
+## The boss and the crown
 
-### Image Trainer
+The boss is a tournament's defending champion. The challenger is the one miner left after the rounds. The challenger takes the crown by beating the boss under the rule below. Otherwise the boss keeps it.
 
-Used for `ImageTask`:
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/crown-1-dark.svg"><img src="assets/readme/crown-1-light.svg" alt="Seven head-to-heads against the boss, the tasks of rounds 1-3 and the four boss-round tasks. The crown takes 7, 6 or 5 wins, under the rule below." width="470"></picture>
+</p>
 
-```bash
---task-id             # Unique task UUID/string
---model               # Base model identifier or local cached model path
---dataset-zip         # Original task dataset zip URL
---model-type          # Existing types plus flux2-klein-4b, qwen-image-edit-2511,
-                      # hidream-o1, and moss-image-base
---training-mode       # text-to-image (default) or edit
---expected-repo-name  # Hugging Face repo name the uploader expects
---hours-to-complete   # Task timeout in hours
---trigger-word        # Optional, only when provided by task data
-```
+The crown is decided over seven head-to-heads between the challenger and the boss: the task of each of rounds 1-3, which the boss also runs, and the four boss-round tasks. Each head-to-head compares the two on the value the task is judged by, which your guide names, and has one of four outcomes for the challenger.
 
-The in-repo AI Toolkit trainer supports FLUX.2 Klein and MOSS Base in both
-modes, Qwen Image Edit 2511 in edit mode, and HiDream O1 in text-to-image
-mode. HiDream O1 editing runs the pinned Musubi trainer directly from the
-Python entrypoint until AI Toolkit supports O1 reference conditioning.
+| Outcome | Meaning |
+| --- | --- |
+| Win | Better than the boss by the task's win margin ([What a win is](#what-a-win-is)), or a valid result where the boss has none. |
+| Within the smaller allowance | Better than the boss, but short of a win. |
+| Within the larger allowance | Level with the boss, or at most 1% worse. |
+| Beyond both | Worse than the boss by more than 1%, or no valid result from the challenger. |
 
-Qwen Image Edit 2511 uses AI Toolkit's `qwen_image_edit_plus` trainer with
-the 2511 checkpoint override. Keep it behind a rollout flag until a one-step
-training/reload probe confirms parity with 2511's reference `zero_cond_t`
-training behavior.
+Percentages are relative to the boss's value, in every tournament.
 
-Edit datasets contain one `manifest.jsonl`. Each non-empty line has
-`sample_id`, a relative `target` image path, an `instruction`, and one to
-three relative paths in `sources`. Every sample in one task must have the
-same source count. The trainer converts this manifest into AI Toolkit's
-same-filename target/control folder layout and rejects missing or escaping
-paths.
+The challenger takes the crown with one of these results over the seven:
 
-## Runtime Environment Variables
+| Wins | The other head-to-heads |
+| --- | --- |
+| 7 | none |
+| 6 | one, within either allowance |
+| 5 | two, each within an allowance, and at least one of them within the smaller |
 
-Your container may receive:
+Any other result leaves the crown with the boss: three or more head-to-heads not won, one beyond both allowances, or two that are both level with the boss or worse.
 
-| Variable | Tasks | Meaning |
+Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown.
+
+Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: crown_verdict`](../validator/tournament/crown.py).
+
+### What a win is
+
+| Tournament | Task | Compared on | Win |
+| --- | --- | --- | --- |
+| Text | Instruct, continuous, DPO | task score | at least 1% better, and a pass on the paired per-example test |
+| Text | GRPO | task score | at least 1% better |
+| Image | every task | loss on held-out images | at least 1% lower |
+| Compression | Fixed | normalised loss `r` | at least 1% lower, and a pass on the paired per-example test |
+| Compression | Freeform | effective size `S`: bytes, penalised above the loss bar | at least 3% lower |
+
+The allowances are the same everywhere: for freeform, "at most 1% worse" means an `S` at most 1% larger. How each value is scored is in the guides: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). The mechanics behind the rule and its edge cases are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
+
+### The champion's next week
+
+A champion defends without doing anything. The boss is entered from the published copy of the winning repository, at that copy's latest commit, and pays no fee. A champion whose miner also answers the endpoint is enrolled and charged as an ordinary entrant.
+
+## Payouts
+
+The top three of a tournament are paid. The validator sets a weight on the hotkey that entered, and that weight is the hotkey's share of the subnet's miner emission. It is paid from the moment the tournament completes until the next tournament of its kind completes.
+
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/payouts-dark.svg"><img src="assets/readme/payouts-light.svg" alt="Each tournament's share of the miner emission between its base minimum and its maximum, and the split over three paid places. The numbers are in the tables below." width="100%"></picture>
+</p>
+
+Keep that hotkey registered on the subnet. A share whose hotkey is not registered is burned.
+
+### Who holds each place
+
+| Result | 1st | 2nd | 3rd |
+| --- | --- | --- | --- |
+| The challenger takes the crown | challenger | boss | third-place miner |
+| The boss keeps the crown | boss | challenger | third-place miner |
+
+- A place held by the boss is paid to the defending champion's hotkey.
+- Which miner is third in each tournament is in [Placements](../validator/tournament/README.md#placements).
+- When the boss keeps the crown, the miners in 2nd and 3rd are each compared with the boss on average rank over rounds 1-3. If the boss's average rank is strictly better than a miner's, that miner's share goes to the defending champion. On a tie the miner is paid.
+
+Source: [`boss_rank_shares.py`](../validator/tournament/boss_rank_shares.py), [`get_boss_round_pair_weights`](../validator/scoring/tournaments.py), [`_paid_node_id`](../validator/scoring/weights.py).
+
+### Share per tournament
+
+Shares are fractions of the subnet's miner emission.
+
+| Tournament | Base minimum | Maximum |
 | --- | --- | --- |
-| `BASELINE_STATS_PATH` | Text, image | Optional path to model/dataset baseline stats JSON. Safe to ignore. |
-| `WANDB_MODE` | Text | Set to `offline`. |
-| `WANDB_DIR`, `WANDB_CACHE_DIR`, `WANDB_ARTIFACT_DIR`, `WANDB_DATA_DIR`, `WANDB_CONFIG_DIR` | Text | Point to the local WandB logs directory for later sync. |
-| `TRANSFORMERS_CACHE` | Image | Points to the Hugging Face cache path. |
-| `MINER_DATASETS_DIR` | Text | Parent directory for approved requested datasets. |
-| `MINER_DATASETS` | Text | Comma-separated downloaded dataset directory names. |
-| `USE_KL` | Text (instruct) | Set to `1` when the task is KL-regularised. Scoring adds `KL_COEF · KL(your_model ‖ base_model)`, averaged over the completion (label) tokens of the eval set, to your eval loss — so drifting from the base model is penalised. Train with a KL term against the base model to stay competitive. Absent/unset means no KL penalty. |
-| `KL_COEF` | Text (instruct) | The coefficient applied to the KL term in scoring (e.g. `0.1`). Match it in your training objective. Only set when `USE_KL=1`. |
+| Text | 0.15 | 0.40 |
+| Image | 0.25 | 0.50 |
+| Compression | 0.35 | 0.60 |
 
-## Cache And Output Paths
+The minimums sum to 0.75. The other 0.25 floats between the tournaments by participation. A maximum is the minimum plus the whole 0.25. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
-Use these paths or the helpers in `trainer/training_paths.py`. The uploader depends on the output path exactly.
+### Split over the paid places
 
-| Purpose | Path |
+| Paid places | 1st | 2nd | 3rd |
+| --- | --- | --- | --- |
+| Three | 76.2% | 19.0% | 4.8% |
+| Two | 80% | 20% | |
+
+Each paid place gets a quarter of the one above. Two places are paid when the tournament has no third-place miner.
+
+### Other rules
+
+| Rule | Value |
 | --- | --- |
-| Final model output | `/app/checkpoints/{task_id}/{expected_repo_name}` |
-| Text dataset | `/cache/datasets/{task_id}_train_data.json` |
-| Image dataset zip | `/cache/datasets/{task_id}_tourn.zip` |
-| Cached models | `/cache/models/{model_id with "/" replaced by "--"}` |
-| Requested datasets | `/cache/miner_datasets/{dataset_id with "/" replaced by "--"}` |
-| WandB logs | `/app/checkpoints/wandb_logs` |
+| Outside the top three | Nothing from the tournament's share. |
+| Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The tournament shares scale down by the total paid this way. |
+| No winner | A tournament with no completed run has no payee. Its share is not paid out. |
 
-The cache volume is mounted read-only in your training container. Write checkpoints, adapters, configs that must be uploaded, and WandB logs under `/app/checkpoints`.
+## Results
 
-## Requested Datasets
+| Endpoint | Returns |
+| --- | --- |
+| `GET /tournament/fees` | Entry fee per tournament. |
+| `GET /tournament/balance/{coldkey}` | Your coldkey balance. |
+| `GET /tournament/latest/details` | Rounds, tasks and scores of the latest tournaments. |
+| `GET /tournament/{tournament_id}/details` | The same for one tournament. |
+| `GET /v1/performance/latest-tournament-weights` | The weights from the latest tournaments. |
 
-Miners can ask validators to pre-download up to two approved Hugging Face datasets:
+The API base is `https://api.gradients.io`. None of these needs a key.
 
-```python
-async def get_training_repo(task_type: TournamentType) -> TrainingRepoResponse:
-    return TrainingRepoResponse(
-        github_repo="https://github.com/YOUR_USERNAME/YOUR_REPO",
-        commit_hash="0123456789abcdef0123456789abcdef01234567",
-        requested_datasets=[
-            "SoelMgd/Poker_Dataset",
-            "RZ412/PokerBench",
-        ],
-    )
-```
+## Fair play and review
 
-Only datasets in `core/datasets/whitelisted_sft_datasets.json` are accepted. Non-whitelisted entries are filtered out, and at most two are kept by `core/datasets/whitelist.py`.
+These rules apply to every tournament.
 
-If downloads succeed, your text/environment container receives:
+### Duplicate-submission check
 
-```python
-import os
+A duplicate submission is code that matches another entry's.
 
-root = os.environ.get("MINER_DATASETS_DIR")
-names = [name for name in os.environ.get("MINER_DATASETS", "").split(",") if name]
-
-for name in names:
-    dataset_path = os.path.join(root, name)
-```
-
-Requested datasets are mounted read-only.
-
-## Tournament Formats
-
-### Text Tournaments
-
-Text tournaments use `InstructTextTask`, `DpoTask`, and `GrpoTask`.
-
-- Round 1 is always a single group with every participant. The group plays `SMALL_TOURNAMENT_GROUP_TASKS` (3) instruct tasks, and only the top `SMALL_TOURNAMENT_ADVANCE` (2) miners advance into the pre-boss knockout.
-- Later rounds with 8 or fewer miners use pairwise knockout. Later rounds with more than 8 use a group round with groups sized around `EXPECTED_GROUP_SIZE` (32, min `MIN_GROUP_SIZE` 20), each playing one instruct task per group. Up to `TOP_WINNERS_TO_ADVANCE` (8) advance **per group**.
-- Knockout pairs receive one task, selected probabilistically from instruct, DPO, and GRPO.
-- **Knockout instruct, DPO and chat tasks are decided per held-out sample, not on mean loss.** Both submissions are scored on the identical held-out set, and the winner is whichever won more individual samples. A sample counts for neither side when the two losses are within `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) of each other. If the sample wins are equal, or every sample falls inside that dead zone, the lower mean loss decides. The sample winner must also not be worse on the ranking loss — winning a majority of samples by a hair while losing the rest badly does not advance, and on KL-weighted tasks (every knockout instruct task from round 2) the per-sample comparison uses raw cross-entropy while the ranking loss carries the KL penalty. GRPO knockout tasks still rank on the mean score.
-- The knockout round before the boss round (the last pair, whose winner becomes the boss challenger) plays a single task selected the same way as any other knockout pair — no forced model.
-- The final boss round creates 6 tasks: 3 instruct (one of which always trains a large model, between `BOSS_ROUND_LARGE_INSTRUCT_MIN_SIZE_B` (30B) and `BOSS_ROUND_LARGE_INSTRUCT_MAX_SIZE_B` (72B)), 1 DPO, 1 GRPO, and one continuous-SFT chat task per lineage (currently 1: `qwen3-8b`, seeded from `Qwen/Qwen3-8B-Base`). Each continuous-SFT lineage carries across tournaments — every round trains the next chunk starting from that lineage's previous winner (or a fixed seed model on the first run).
-- **Boss-round instruct, DPO and continuous-SFT (chat) tasks are decided per held-out sample.** Both models are scored on the identical held-out set and compared sample by sample. To take a task the challenger must clear **both** of:
-  - win at least `BOSS_ROUND_MIN_WIN_RATE` (55%) of *decided* samples — those where the two losses differ by more than the `BOSS_ROUND_TIE_DEADZONE_NATS` (0.01 nats) dead zone; and
-  - be ahead on the mean by at least `max(BOSS_ROUND_MIN_MEAN_GAP_NATS, BOSS_ROUND_WIN_MARGIN x boss mean loss)` — a floor of 0.01 nats, the same value as the tie dead zone, that scales to 1% of the loss above a boss loss of 1.0 so it is never a weaker requirement than the old margin.
-
-  Both are tested at the lower bound of a one-sided 99% bootstrap over 10,000 resamples of the held-out set, not on the point estimate, so a win has to survive a different draw of the data. The bootstrap seed is fixed, so every validator reaches the same verdict.
-
-  There is no minimum number of decided samples. The mean gap is taken over the *whole* held-out set, so it is a requirement on total improvement rather than on a count: improving 20 of 800 samples by 0.25 nats averages 0.007 and fails, while improving the same 20 by 1.0 nats averages 0.026 and passes. A saturated task — where the models differ on few samples and by little — fails on that gap regardless.
-
-  On KL-weighted instruct tasks the per-sample comparison uses raw cross-entropy, and the challenger must additionally not be worse once the KL penalty is applied.
-
-  If *every* sample falls inside the dead zone the two models are indistinguishable on that task and it is recorded as a **draw**, not as a win for the defending champion. The defender still holds the task for the purposes of the win count, but no one outperformed anyone.
-- **GRPO boss-round tasks** keep the previous rule: beat the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (a fixed 1%, applied additively on the magnitude of the boss's score so it stays correct for zero/negative rewards).
-- The challenger must win at least 5 of the 6 boss-round tasks, **and** win every continuous-SFT task, to dethrone the defending champion. Losing (or failing to complete) a continuous-SFT task blocks the dethrone regardless of the overall task count.
-
-For instruct, DPO, and continuous-SFT (chat) tasks, lower adjusted loss is better. For GRPO tasks, higher reward score is better.
-
-Your submission's `config.json` must not declare a smaller `max_position_embeddings` than the base model the task specifies. A smaller value shortens the evaluation sequence length, which drops the longer held-out rows and would score you on a different, shorter subset than everyone else — so it is treated as not a fine-tune of the task model and scores zero. A larger value is fine.
-
-### Image Tournaments
-
-Image tournaments use `ImageTask`.
-
-- Round 1 always uses one group and three smaller **text-to-image** tasks:
-  Z-Image, FLUX.2 Klein 4B, and MOSS-Image-Base. These tasks use at most 30
-  source pairs (at most 45 minutes of competition time and three held-out
-  evaluation images). Average rank across the three tasks determines the top
-  two miners.
-- Round 2 is one pairwise knockout task. The validator picks uniformly from
-  the `(model, capability)` slots of Qwen-Image (t2i), Krea2 (t2i),
-  Qwen-Image-Edit-2511 (edit), and HiDream-O1 (t2i or edit). Its winner
-  advances to the boss round.
-- The final boss round has **6** image tasks: FLUX.2 / HiDream / MOSS edit,
-  plus Krea2 / HiDream / MOSS text-to-image.
-- Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
-- The challenger must win all but at most one of the 6 boss-round tasks to dethrone the defending champion (no separate continuous-SFT gate for image).
-
-Image tasks currently use `1xH100` in the tournament GPU requirement code.
-
-## Scoring And Weights
-
-The subnet is tournament-based. Emissions are split between tournament champions/runners-up and active tournament participants — nothing is burned.
-
-Weights are set in `validator/scoring/constants.py`. Each type has a guaranteed minimum share that never moves; the remaining flex pool (`EMISSION_FLEX_POOL`, 0.20) is split between the types by a participation-driven balancer (an oversubscribed type cedes flex toward a starved one — see `validator/scoring/emission_balance.py`). A type's base therefore always lies between its minimum and its minimum plus the whole flex pool, and text + image always sum to exactly 1.0:
-
-| Tournament type | Guaranteed minimum | Max weight (minimum + flex) |
+| Catches | When | Result |
 | --- | --- | --- |
-| Text | 0.50 | 0.70 |
-| Image | 0.30 | 0.50 |
+| The identical commit to another miner's. | Before round 1 trains. | Every entry in the matching group is eliminated automatically. |
+| Source identical to another miner's after normalisation. | Before round 1 trains. | Every entry in the matching group is eliminated automatically. |
+| Code a language model judges a copy when it reviews what differs, among the miners entering round 2 and against the boss's code. | When round 1 completes. | A flag holds the tournament until an operator decides. |
 
-Active tournament participants receive `0.0001` weight each.
+The boss is never eliminated by this check.
 
-Within a tournament, up to the top three ranks are paid (`TOURNAMENT_PAID_RANKS`), distributed by exponential decay using `TOURNAMENT_SIMPLE_DECAY_BASE = 0.25` — roughly a 76/19/5 split across three paid ranks, or 80/20 if a clean 3rd place can't be identified (see "3rd Place" below).
+### Code review before round 2
 
-Champions can earn boosted tournament allocation when boss-round performance exceeds the `0.10` performance threshold (`EMISSION_MULTIPLIER_THRESHOLD`). The excess is multiplied by `2.0` (`EMISSION_MULTIPLIER_RATE`) and capped by tournament type. A champion's weight does not decay over time — a long-reigning champion earns the same as a freshly-crowned one.
+Every miner entering round 2 is checked once by an automated code review when round 1 completes. The boss is not reviewed.
 
-### 3rd Place
+A flag, or a review that fails to run, holds the tournament until an operator decides. The operator either eliminates the miner or lets it play.
 
-A tournament pays a 3rd place only when it can be identified unambiguously:
+A miner eliminated at the round-2 duplicate review or by the code review is replaced by the next miner in the round 1 standings. The replacement goes through both checks.
 
-- **Text/Image**: the loser of the last single-pair knockout round before the boss round.
+### Publication
 
-If no valid 3rd place exists (missing pre-boss round, a tie at the cutoff, or another degenerate case), the tournament pays only the top two ranks, renormalized.
+| Repository | Published at [github.com/gradients-opensource](https://github.com/gradients-opensource) |
+| --- | --- |
+| The winner's | When the tournament completes. |
+| One confirmed as a duplicate submission at the round-2 review | When the operator approves the flag. |
 
-## Image Tournament Tips
+### Policy
 
-Image tournaments use the ai-toolkit trainer for Flux, Z-Image, Qwen-Image, Ideogram 4, and Krea 2. The common tuning split is:
+These lines are tournament policy. The automated checks are a floor, not the full definition of what is allowed.
 
-- Style LoRA tasks often prefer lower learning rates, more repeats, and less aggressive fitting.
-- Person, object, or concept tasks often overfit faster and may need fewer repeats, fewer epochs, and a higher learning rate.
-- Tune per model type rather than assuming one recipe works across all toolkit architectures.
+- Given data only. Use the task's model and data. No outside copies of a task's dataset or its test rows.
+- Produced inside the job. No datasets, pretrained models, pre-computed weights or private artifacts in your repository or image.
+- Readable code. Nothing meant to hide how the method works.
 
-These are starting points, not rules. Your tournament edge usually comes from detecting the task shape and adapting the training recipe.
+## Troubleshooting
 
-## Local Testing
-
-Example local runners are in `ops/examples/training`:
-
-```bash
-./ops/examples/training/run_instruct_task.sh
-./ops/examples/training/run_dpo_task.sh
-./ops/examples/training/run_grpo_task.sh
-./ops/examples/training/run_image_task.sh
-```
-
-You can also re-evaluate recent tasks locally after building the validator images:
-
-```bash
-docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
-docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
-
-python -m ops.validator_ops.run_evaluation --help
-python -m ops.validator_ops.run_evaluation --task_id TASK_ID
-python -m ops.validator_ops.run_evaluation --task_id TASK_ID --models MODEL_REPO
-```
-
-### Checking For Duplicate Submissions
-
-Tournament submissions are de-duplicated to stop one entry being submitted many times under different identities. The check runs in three tiers: identical commit (T0), identical source after stripping whitespace/comments/ordering (T1), and a Claude pairwise review of the code deltas (T2). Cosmetic or evasive disguises — renaming, reordering, reformatting, dead code, noise hyperparameters, single-scalar tweaks, or "differences" that only trigger on inputs that are not provided at training time (an unset env var, an absent baseline-stats field, a config key the pinned library ignores) — are all treated as duplicates. Confirmed duplicates are eliminated.
-
-You can run the exact same pairwise check locally on two repos before you submit, to confirm your work reads as genuinely distinct. It writes nothing and uploads nothing. The Claude step needs `ANTHROPIC_API_KEY`, and you should run it from a checkout of this repo (the reviewer is given this source to verify whether your claimed differentiators are real training-time inputs):
-
-```bash
-export ANTHROPIC_API_KEY=...
-python -m ops.tools.tournament.dedup_check <repo_a_url> <repo_b_url> \
-    --hash-a <commit_a> --hash-b <commit_b> \
-    [--token-a <gh_token>] [--token-b <gh_token>] [--out report.md]
-```
-
-It prints `DUPLICATE`, `DISTINCT`, or `DROP_EVASION` with a confidence and the reasoning. If you come back `DUPLICATE` against an existing submission, change the actual training behaviour — not just the surface.
-
-## Common Failure Modes
-
-- Returning a branch name instead of a full commit SHA.
-- Letting a private repo token expire or omitting `Contents: Read-only`.
-- Missing one of the required Dockerfiles for the tournament type.
-- Building on a CUDA runtime newer than 12.8.
-- Changing the final output path away from `/app/checkpoints/{task_id}/{expected_repo_name}`.
-- Writing outputs into `/cache`, which is read-only during training.
-- Depending on public internet access from the training container.
-- Bundling hidden datasets, weights, compiled code, or obfuscated code.
-- Submitting a lightly-disguised copy of another entry — duplicates are detected and eliminated (see [Checking For Duplicate Submissions](#checking-for-duplicate-submissions)).
-- Ignoring `hours_to_complete` and getting killed before a usable checkpoint exists.
-- Not handling every model type in the tournament you enter.
-- Assuming `--dataset` or `--dataset-zip` can be downloaded directly by your script instead of using the pre-downloaded cache path.
-
-## Training Logs
-
-Live training-container logs for tournament jobs are on Grafana:
-
-http://185.141.218.122:3001/
-
-Use this when a job fails mid-training and you need the container output the trainer shipped to Loki.
-
-## Useful References
-
-- `miner/endpoints/training_repo.py`: miner repository response endpoint.
-- `core/models/payload_models.py`: `TrainingRepoResponse`, trainer request models, and runtime payloads.
-- `core/models/dataset_models.py`: dataset type schemas.
-- `core/models/task_models.py`: task type enum.
-- `trainer/runtime.py`: Docker build/run logic and runtime arguments.
-- `trainer/constants.py`: Dockerfile paths, cache paths, and resource constants.
-- `trainer/training_paths.py`: path helpers used by base scripts.
-- `validator/tournament/tournament_manager.py`: registration, validation, rounds, and scheduling.
-- `validator/tournament/task_creator.py`: task creation by tournament type.
-- `validator/tournament/gpu_requirements.py`: GPU requirement logic.
-- `validator/tournament/constants.py`: tournament structure, fees, and environment round constants.
-- `validator/scoring/constants.py`: scoring weights and emissions constants.
+| Symptom | Likely cause |
+| --- | --- |
+| Not enrolled | The service was not answering at the enrolment pass, a branch name was returned as `commit_hash`, a licence or obfuscation check failed, the balance was too low, or the entry was a duplicate by IP, GitHub account or coldkey. |
+| Enrolled in a tournament you did not mean to enter | Your endpoint answered it with a repository. See [The endpoint response](#the-endpoint-response). |
+| Clone fails | The private repository's token expired or cannot read the repository. |
+| Job fails before training | A Dockerfile your guide names is missing from your repository, or the build passed its time limit. |
+| Download fails inside the container | The container has no internet. Read the task's files from `/cache`. |
+| Write fails | The path is under `/cache`, which is read-only. Write under `/app/checkpoints`. |
+| Nothing to evaluate | The output is not at the [output path](#paths), or nothing was there at the deadline. |
+| Eliminated as a duplicate submission | The code matched another entry. See [Duplicate-submission check](#duplicate-submission-check). |
+| Need the training logs | Grafana: <http://185.141.218.122:3001/>. Filter by the `task_id` and your `hotkey`. |

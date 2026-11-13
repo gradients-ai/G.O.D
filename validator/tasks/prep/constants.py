@@ -14,6 +14,8 @@ MODEL_PREP_ENABLED_BY_TASK_TYPE: dict[TaskType, bool] = {
     TaskType.CHATTASK: MODEL_PREP_ENABLED_TEXT,
     TaskType.IMAGETASK: MODEL_PREP_ENABLED_IMAGE,
     TaskType.ENVIRONMENTTASK: MODEL_PREP_ENABLED_ENV,
+    TaskType.QUANTFIXEDTASK: MODEL_PREP_ENABLED_TEXT,
+    TaskType.QUANTFREEFORMTASK: MODEL_PREP_ENABLED_TEXT,
 }
 
 YARN_EXTENSION_PROBABILITY = 0.0
@@ -48,3 +50,17 @@ AUGMENTATION_INTENSITY_RANGES: dict[AugmentationType, tuple[float, float]] = {
     AugmentationType.MAGNITUDE_PRUNING: (0.25, 0.50),
     AugmentationType.LAYER_REINIT: (0.01, 0.10),
 }
+
+# Quant prep tokenises the held-out split once into the scorer's test set (validator/tasks/quant_eval_set.py).
+# Longer examples are dropped: the scorer's max_model_len is the longest prompt + 1, so this bounds H100 memory.
+QUANT_EVAL_MAX_SEQUENCE_LEN = 4096  # also capped at the model context - 1 (quant_eval_max_sequence_len)
+# Fewer surviving examples fail prep (PREP_TASK_FAILURE -> the tournament replaces the task): on a tiny
+# test set the freeform bar and the dead-zone margins are noise.
+QUANT_EVAL_MIN_EXAMPLES = 100
+# Quant prep drops calibration examples equal to an eval example; fewer than this survive and prep fails
+# (CalibrationUnavailableError: a compression task is never handed to miners without a calibration set).
+QUANT_CALIBRATION_MIN_EXAMPLES = 100
+# Downloading, tokenising and uploading the calibration set is attempted this many times before prep fails; the
+# wait between attempts is QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS times the attempt number.
+QUANT_CALIBRATION_PUBLISH_ATTEMPTS = 3
+QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS = 5.0

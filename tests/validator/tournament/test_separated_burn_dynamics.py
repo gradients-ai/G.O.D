@@ -1,14 +1,11 @@
 """
 Test separated burn dynamics functionality.
 
-This test file validates per-type tournament weight calculation and its application to
-node weights. There is no more time decay and no more burn: each type's pool (base +
-performance boost, capped) is normalized so text + image always sum to
-exactly 1.0 - scaled up when their raw sum is below 1.0, not just scaled down when above.
+This test file validates per-type tournament pool calculation and its application to
+node weights. There is no time decay and no burn: each type's pool is its dynamic base share,
+and the three pools sum to exactly 1.0.
 """
 
-from datetime import datetime
-from datetime import timezone
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -17,7 +14,6 @@ import pytest
 
 import validator.scoring.constants as cts
 from validator.scoring.weights import apply_tournament_weights
-from validator.scoring.weights import calculate_tournament_weight
 from validator.scoring.weights import get_node_weights_from_tournament_audit_data
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament.models import HotkeyTaskParticipation
@@ -25,7 +21,6 @@ from validator.tournament.models import HotkeyTournamentParticipation
 from validator.tournament.models import NodeWeightsResult
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentBurnData
-from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentType
 
 
@@ -77,8 +72,6 @@ class TestSeparatedBurnDynamics:
     def sample_burn_data(self):
         """Sample separated burn data."""
         return TournamentBurnData(
-            text_performance_diff=0.3,
-            image_performance_diff=0.1,
             text_burn_proportion=0.3,
             image_burn_proportion=0.1,
             text_tournament_weight=0.35,
@@ -118,8 +111,6 @@ class TestSeparatedBurnDynamics:
 
     def test_burn_data_separated_structure(self, sample_burn_data):
         """Test that separated burn data has correct structure."""
-        assert sample_burn_data.text_performance_diff == 0.3
-        assert sample_burn_data.image_performance_diff == 0.1
         assert sample_burn_data.text_burn_proportion == 0.3
         assert sample_burn_data.image_burn_proportion == 0.1
         assert sample_burn_data.text_tournament_weight == 0.35
@@ -139,14 +130,10 @@ class TestSeparatedBurnDynamics:
             all_node_weights,
             scaled_text_tournament_weight=0.35,
             scaled_image_tournament_weight=0.36,
-            scaled_text_base_weight=0.15,
-            scaled_image_base_weight=0.125,
-            text_winner_hotkey="text_winner",
-            image_winner_hotkey="image_winner",
         )
 
-        assert all_node_weights == pytest.approx([0.245, 0.045, 0.36])
-        assert undistributed_weight == pytest.approx(0.06)
+        assert all_node_weights == pytest.approx([0.245, 0.105, 0.36])
+        assert undistributed_weight == pytest.approx(0.0)
 
     def test_node_weights_result_model(self):
         """Test NodeWeightsResult model functionality."""
@@ -164,68 +151,17 @@ class TestSeparatedBurnDynamics:
         assert isinstance(tuple_result, tuple)
 
     @pytest.mark.asyncio
-    async def test_separated_burn_calculation_logic(self, mock_psql_db):
-        """Test that separated burn calculation tracks each tournament type independently."""
-        championship_time = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async def test_pools_come_from_the_dynamic_base_split_whatever_the_latest_tournaments_are(self, mock_psql_db):
+        """The pool of each type is its dynamic base share; no tournament lookup feeds it."""
+        base = {TournamentType.TEXT: 0.3, TournamentType.QUANT: 0.4, TournamentType.IMAGE: 0.3}
 
-        with (
-            patch("validator.scoring.weights.get_latest_completed_tournament") as mock_get_tournament,
-            patch("validator.scoring.weights.calculate_performance_difference") as mock_calc_perf,
-            patch("validator.scoring.weights.get_tournament_where_champion_first_won") as mock_first_win,
-        ):
-            mock_text_tournament = TournamentData(
-                tournament_id="text_123",
-                tournament_type=TournamentType.TEXT,
-                status="completed",
-                base_winner_hotkey="winner1",
-                winner_hotkey="winner1",
-                updated_at=championship_time,
-            )
-            mock_image_tournament = TournamentData(
-                tournament_id="image_456",
-                tournament_type=TournamentType.IMAGE,
-                status="completed",
-                base_winner_hotkey="winner2",
-                winner_hotkey="winner2",
-                updated_at=championship_time,
-            )
-
-            def mock_get_tournament_side_effect(psql_db, tournament_type, exclude_tournament_id=None):
-                if exclude_tournament_id is not None:
-                    return None
-                if tournament_type == TournamentType.TEXT:
-                    return mock_text_tournament
-                if tournament_type == TournamentType.IMAGE:
-                    return mock_image_tournament
-                return None
-
-            mock_get_tournament.side_effect = mock_get_tournament_side_effect
-
-            def mock_calc_perf_side_effect(tournament_id, psql_db):
-                if tournament_id == "text_123":
-                    return 0.4
-                if tournament_id == "image_456":
-                    return 0.1
-                return 0.0
-
-            mock_calc_perf.side_effect = mock_calc_perf_side_effect
-            mock_first_win.return_value = TournamentData(
-                tournament_id="first_win",
-                tournament_type=TournamentType.TEXT,
-                status="completed",
-                winner_hotkey="winner1",
-                updated_at=championship_time,
-            )
-
+        with patch("validator.scoring.weights.get_dynamic_base_weights", AsyncMock(return_value=base)):
             result = await get_tournament_burn_details(mock_psql_db)
 
-            assert result.text_performance_diff == 0.4
-            assert result.image_performance_diff == 0.1
-            assert result.text_tournament_weight <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
-            assert result.image_tournament_weight <= cts.MAX_IMAGE_TOURNAMENT_WEIGHT
-            # No burn: text + image are normalized to fill the entire emission pie.
-            assert result.burn_weight == 0.0
-            assert result.text_tournament_weight + result.image_tournament_weight == pytest.approx(1.0)
+        assert result.text_tournament_weight == pytest.approx(0.3)
+        assert result.quant_tournament_weight == pytest.approx(0.4)
+        assert result.image_tournament_weight == pytest.approx(0.3)
+        assert result.burn_weight == 0.0
 
     def test_participation_proportion_calculation(self):
         """Test that participation proportions are calculated correctly."""
@@ -288,33 +224,18 @@ class TestSeparatedBurnDynamics:
             assert len(result.node_ids) == 2
             assert len(result.node_weights) == 2
 
-    def test_calculate_tournament_weight_has_no_decay(self):
-        """The champion's pool is just base + boost, capped - constant regardless of time."""
-        weight = calculate_tournament_weight(TournamentType.TEXT, base_weight=0.2, emission_boost=0.1, max_weight=0.5)
-        assert weight == pytest.approx(0.3)
-        # Capped at max_weight even with a large boost.
-        capped_weight = calculate_tournament_weight(TournamentType.TEXT, base_weight=0.2, emission_boost=0.9, max_weight=0.5)
-        assert capped_weight == pytest.approx(0.5)
-
     @pytest.mark.asyncio
-    async def test_no_champions_scales_anchor_split_up_to_one(self, mock_psql_db):
-        """With no tournament history anywhere, each type falls back to its static anchor
-        (0.35/0.25 = 0.60 raw) - these must scale UP to sum to exactly 1.0, not leave
-        0.40 unspent as burn. Ratios between types are preserved."""
-        with (
-            patch("validator.scoring.weights.get_latest_completed_tournament", return_value=None),
-        ):
+    async def test_no_champions_falls_back_to_the_anchor_split(self, mock_psql_db):
+        """With no tournament history anywhere, the pools still sum to exactly 1.0 and hold the anchor ratios."""
+        with patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])):
             result = await get_tournament_burn_details(mock_psql_db)
 
-            total = result.text_tournament_weight + result.image_tournament_weight
-            assert total == pytest.approx(1.0)
-            assert result.burn_weight == 0.0
-            # Ratios match the anchor split (0.35 : 0.25).
-            expected_ratio = cts.TOURNAMENT_TEXT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
-            assert result.text_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
-            # Champion and runner-up pools are the same merged pool per type.
-            assert result.text_base_weight == pytest.approx(result.text_tournament_weight)
-            assert result.image_base_weight == pytest.approx(result.image_tournament_weight)
+        total = result.text_tournament_weight + result.quant_tournament_weight + result.image_tournament_weight
+        assert total == pytest.approx(1.0)
+        assert result.burn_weight == 0.0
+        # Ratios match the anchor split (text 0.15 : quant 0.35 : image 0.25).
+        expected_ratio = cts.TOURNAMENT_QUANT_WEIGHT / cts.TOURNAMENT_IMAGE_WEIGHT
+        assert result.quant_tournament_weight == pytest.approx(expected_ratio * result.image_tournament_weight, rel=1e-6)
 
 
 if __name__ == "__main__":

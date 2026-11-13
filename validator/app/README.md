@@ -1,9 +1,10 @@
-# Validator App
+# Validator app
 
-Application-level wiring for the validator service.
+Application wiring for the validator service.
 
 ## Contents
 
-- `config.py`: validator config loading, environment parsing, and shared runtime config object.
-- `dependencies.py`: FastAPI dependencies used by validator routes.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `config.py` | Loads the validator config from the environment into the shared `Config` object. |
+| `dependencies.py` | FastAPI dependencies: the config and the API key check. |

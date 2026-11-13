@@ -148,14 +148,42 @@ class ThroughputStats(BaseModel):
     gpu_name: str = ""
 
 
+# --- Device probes (quant prep) ---
+
+class DeviceProbeStats(BaseModel):
+    """Measurements of the prep device from quant model prep.
+
+    The quant hours price token work with train_tokens_per_sec. The CPU reading is recorded for information
+    only. Every field is optional: a probe that fails or is not run leaves its field None. Readers
+    ignore unknown keys.
+    """
+
+    # Fwd+bwd on the loaded model, same batch shape as ThroughputStats: median over timed windows.
+    train_tokens_per_sec: float | None = None
+    train_window_tokens_per_sec: list[float] | None = None  # one rate per timed window, in order
+    train_timed_seconds: float | None = None  # summed window seconds
+    # Host, inside the container (so under its CPU quota). Information only.
+    cpu_single_thread_seconds: float | None = None  # fixed numpy workload on one thread; lower is faster
+    # Identity.
+    gpu_name: str | None = None
+    gpu_sm_count: int | None = None
+    gpu_vram_gb: float | None = None
+    cpu_model: str | None = None
+    cpu_count: int | None = None  # CPUs visible to the container
+    cpu_quota: float | None = None  # cgroup CPU limit in cores; None when unlimited or unreadable
+    ram_gb: float | None = None  # cgroup memory limit, else host RAM
+    probe_seconds: float | None = None  # wall time of all the device probes
+
+
 # --- Per-type baseline stats ---
 
 class InstructBaselineStats(BaseModel):
     task_type: Literal["instruct"] = "instruct"
     dataset: InstructDatasetStats
     weights: WeightStats
-    training: InstructTrainingDynamics
+    training: InstructTrainingDynamics | None = None  # None for quant prep, which skips the training-dynamics passes
     throughput: ThroughputStats | None = None
+    device: DeviceProbeStats | None = None  # quant prep only
 
 
 class DpoBaselineStats(BaseModel):

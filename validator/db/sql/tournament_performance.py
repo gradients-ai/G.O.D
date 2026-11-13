@@ -1,10 +1,11 @@
 from uuid import UUID
 
+from validator.db import constants as cst
+from validator.db.database import PSQLDB
+from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import BossRoundTaskPair
 from validator.tournament.models import RoundType
 from validator.tournament.models import TaskScore
-from validator.db import constants as cst
-from validator.db.database import PSQLDB
 
 
 async def is_final_round_task(task_id: UUID, psql_db: PSQLDB) -> bool:
@@ -22,11 +23,14 @@ async def is_final_round_task(task_id: UUID, psql_db: PSQLDB) -> bool:
 
 
 async def is_paired_comparison_task(task_id: UUID, psql_db: PSQLDB) -> bool:
-    """True when the task is decided head to head, i.e. a boss round or a knockout round.
+    """True when the task is decided head to head against the boss or between two players: a boss-round or knockout task,
+    or a seed task the boss trains for a round (ATTACHED_SEED_ROLES: the text tournament's rounds 1-3 and continuous seeds,
+    the quant tournament's rounds 1-3 seeds and its boss-round compression seeds).
 
-    Gates persistence of per-example loss vectors. Group rounds rank N miners rather than comparing
-    two, so pairwise win rates do not give an ordering there and the vectors would go unread -
-    storing one for every miner on every group task would bloat task_nodes for no gain.
+    Gates the request for, and the persistence of, per-example loss vectors. A seed counts before its round attaches it:
+    the boss's entry is evaluated at seed time, and its stored vector and eval-set fingerprint are what the crown rule
+    compares each challenger's against. Every player on a seed task gets a vector, since any of them may meet the boss.
+    An ordinary group-round task ranks N miners and stores none.
     """
     async with await psql_db.connection() as connection:
         query = f"""
@@ -36,9 +40,14 @@ async def is_paired_comparison_task(task_id: UUID, psql_db: PSQLDB) -> bool:
                 JOIN {cst.TOURNAMENT_ROUNDS_TABLE} tr ON tr.{cst.ROUND_ID} = tt.{cst.ROUND_ID}
                 WHERE tt.{cst.TASK_ID}::text = $1::text
                   AND (tr.{cst.IS_FINAL_ROUND} = true OR tr.{cst.ROUND_TYPE} = $2)
+            ) OR EXISTS (
+                SELECT 1
+                FROM {cst.TOURNAMENT_SEED_TASKS_TABLE} s
+                WHERE s.{cst.TASK_ID}::text = $1::text AND s.{cst.SEED_ROLE} = ANY($3::text[])
             )
         """
-        return bool(await connection.fetchval(query, str(task_id), RoundType.KNOCKOUT.value))
+        seed_roles = sorted(role.value for role in ATTACHED_SEED_ROLES)
+        return bool(await connection.fetchval(query, str(task_id), RoundType.KNOCKOUT.value, seed_roles))
 
 
 async def get_boss_round_winner_task_pairs(tournament_id: str, psql_db: PSQLDB) -> list[BossRoundTaskPair]:
@@ -62,16 +71,6 @@ async def get_boss_round_winner_task_pairs(tournament_id: str, psql_db: PSQLDB) 
             )
             for row in results
         ]
-
-
-async def update_tournament_winning_performance(tournament_id: str, winning_performance_difference: float, psql_db: PSQLDB):
-    async with await psql_db.connection() as connection:
-        query = f"""
-            UPDATE {cst.TOURNAMENTS_TABLE}
-            SET {cst.WINNING_PERFORMANCE_DIFFERENCE} = $2
-            WHERE {cst.TOURNAMENT_ID} = $1
-        """
-        await connection.execute(query, tournament_id, winning_performance_difference)
 
 
 async def get_task_scores_batch(task_ids: list[str], psql_db: PSQLDB) -> dict[str, list[TaskScore]]:

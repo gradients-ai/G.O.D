@@ -172,7 +172,8 @@ def evaluate_grpo_model(
                         avg_weighted = sum(weighted_results) / len(weighted_results) if weighted_results else 0
                         total_count = len(captured_rewards[func_name])
                         logger.info(
-                            f"🏆 {func_name}: batch_avg_raw={avg_raw:.4f}, batch_avg_weighted={avg_weighted:.4f}, total_samples={total_count}"
+                            f"🏆 {func_name}: batch_avg_raw={avg_raw:.4f}, batch_avg_weighted={avg_weighted:.4f}, "
+                            f"total_samples={total_count}"
                         )
 
                     return weighted_results
@@ -190,7 +191,8 @@ def evaluate_grpo_model(
                         avg_weighted = sum(weighted_results) / len(weighted_results) if weighted_results else 0
                         total_count = len(captured_rewards[func_name])
                         logger.info(
-                            f"🏆 {func_name}: batch_avg_raw={avg_raw:.4f}, batch_avg_weighted={avg_weighted:.4f}, total_samples={total_count}"
+                            f"🏆 {func_name}: batch_avg_raw={avg_raw:.4f}, batch_avg_weighted={avg_weighted:.4f}, "
+                            f"total_samples={total_count}"
                         )
 
                     return weighted_results
@@ -241,7 +243,8 @@ def evaluate_grpo_model(
             final_raw_rewards[name] = sum(raw_reward_list) / len(raw_reward_list) if raw_reward_list else 0
 
             logger.info(
-                f"🏆 {name}: avg_raw={final_raw_rewards[name]:.4f}, avg_weighted={final_weighted_rewards[name]:.4f}, samples={len(captured_reward_list)}"
+                f"🏆 {name}: avg_raw={final_raw_rewards[name]:.4f}, avg_weighted={final_weighted_rewards[name]:.4f}, "
+                f"samples={len(captured_reward_list)}"
             )
 
     total_avg_reward = sum(final_weighted_rewards.values())
@@ -345,7 +348,6 @@ def main():
     repos = [m.strip() for m in models_str.split(",") if m.strip()]
 
     timeout_seconds = 18_000
-    timeout_adjusted = False
 
     for repo in repos:
         try:

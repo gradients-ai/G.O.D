@@ -30,9 +30,6 @@ class TestFinalRoundComposition:
         expected = sum(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + t_cst.FINAL_ROUND_CONTINUOUS_SFT_TASKS
         assert t_cst.FINAL_ROUND_TEXT_TASKS == expected == 6
 
-    def test_boss_round_oversampled_task_count_default_is_disabled(self):
-        assert t_cst.FINAL_ROUND_OVERSAMPLED_TASKS == 0
-
 
 class TestLineages:
     def test_lineage_is_qwen3_8b_with_expected_seed(self):
@@ -40,9 +37,9 @@ class TestLineages:
         # Slug must stay off the retired `qwen` row, which still holds that chain's winner.
         assert t_cst.CONTINUOUS_SFT_LINEAGES == {"qwen3-8b": "Qwen/Qwen3-8B-Base"}
 
-    def test_training_hours_fallback_is_four(self):
-        # Initial/fallback only — post-prep the throughput pipeline resizes the budget.
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 4.0
+    def test_training_hours_is_pinned(self):
+        # Fixed budget, pinned after prep too.
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
 
 
 class TestDsRoundTrip:

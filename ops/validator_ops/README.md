@@ -1,13 +1,20 @@
-# Validator Ops
+# Validator ops
 
-Validator startup, auto-update, evaluation, and Grafana scripts.
+Validator startup, auto-update, manual evaluation and Grafana setup.
 
 ## Contents
 
-- `autoupdate_auditor_steps.sh`: auditor auto-update step script; delegates package install to `task install`.
-- `autoupdate_validator_steps.sh`: validator auto-update step script; delegates package install to `task install`.
-- `run_auditor_autoupdate.py`: PM2 auditor auto-update runner.
-- `run_evaluation.py`: manual task/model evaluation CLI (PvP supports `--base_chain HOTKEY=PREV_REPO` for continuation fidelity).
-- `run_validator_auto_update.py`: PM2 validator auto-update runner.
-- `setup_grafana.sh`: Grafana setup helper.
-- `start_validator.sh`: validator process startup script.
+| Path | Purpose |
+| --- | --- |
+| `start_validator.sh` | Starts the validator processes. |
+| `run_validator_auto_update.py` | Polls the repository and runs the validator update steps on a change. |
+| `autoupdate_validator_steps.sh` | Validator update steps. Installs packages through `task install`. |
+| `run_auditor_autoupdate.py` | Polls the repository and runs the auditor update steps on a change. |
+| `autoupdate_auditor_steps.sh` | Auditor update steps. Installs packages through `task install`. |
+| `run_evaluation.py` | Evaluates a task's submitted models by task id on local GPUs. |
+| `setup_grafana.sh` | Grafana setup helper. |
+
+## See also
+
+- [Running a validator](../../docs/developer.md#running-a-validator): how the validator services are started.
+- [Evaluations and manual tools](../../docs/developer.md#evaluations-and-manual-tools): manual evaluation commands.

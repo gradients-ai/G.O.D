@@ -30,6 +30,7 @@ RAO_PER_TAO = Decimal(1_000_000_000)
 TOURNAMENT_PARTICIPATION_FEE_RAO_BY_TYPE = {
     "text": Decimal(tourn_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO),
     "image": Decimal(tourn_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO),
+    "quant": Decimal(tourn_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO),
     "environment": Decimal(600_000_000),
 }
 

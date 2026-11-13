@@ -304,12 +304,12 @@ async def run(q: Queries) -> None:
 
 
 async def _tournaments_menu(q: Queries) -> None:
-    v.print("\n[bold]Tournament type[/bold]  1) text  2) image  3) env  4) all")
+    v.print("\n[bold]Tournament type[/bold]  1) text  2) image  3) env  4) all  5) quant")
     try:
         choice = ask("select:")
     except _Back:
         return
-    type_map = {"1": "text", "2": "image", "3": "env", "4": "all"}
+    type_map = {"1": "text", "2": "image", "3": "env", "4": "all", "5": "quant"}
     type_alias = type_map.get(choice)
     if not type_alias:
         v.print("Unknown option.", style="red")

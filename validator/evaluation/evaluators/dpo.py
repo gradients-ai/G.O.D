@@ -29,8 +29,8 @@ from validator.evaluation.common import ProgressLoggerCallback
 from validator.evaluation.common import _load_and_update_evaluation_config
 from validator.evaluation.common import _log_dataset_and_model_info
 from validator.evaluation.common import check_and_log_base_model_size
-from validator.evaluation.common import eval_set_fingerprint
 from validator.evaluation.common import count_model_parameters
+from validator.evaluation.common import eval_set_fingerprint
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
 from validator.evaluation.common import load_results_dict
@@ -75,7 +75,8 @@ def _adapt_dpo_columns_to_trl(dataset: Dataset, dataset_type: DpoDatasetType) ->
 
         if identical_count > 0:
             logger.warning(
-                f"CRITICAL: Found {identical_count}/{sample_size} samples with identical chosen/rejected, causing random predictions"
+                f"CRITICAL: Found {identical_count}/{sample_size} samples with identical chosen/rejected, "
+                "causing random predictions"
             )
 
             if identical_count > 0:
@@ -342,6 +343,7 @@ def evaluate_dpo_model(
     except Exception as e:
         # Optional add-on: never let it discard the eval_loss the trainer already produced.
         logger.error(f"Per-pair DPO loss extraction failed, continuing without the vector: {e}", exc_info=True)
+        evaluation_results["per_example_losses_failed"] = True
         return evaluation_results
 
     finite = [loss for loss in per_pair_losses if math.isfinite(loss)]

@@ -12,11 +12,14 @@ from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import ImageRawTask
 from validator.tasks.models import InstructTextRawTask
+from validator.tasks.models import QuantRawTask
 from validator.tasks.requests import get_fake_text_dataset_size
 from validator.tasks.requests import get_total_image_dataset_size
 from validator.tasks.requests import prepare_image_task_request
+from validator.tasks.requests import prepare_quant_task_request
 from validator.tasks.requests import prepare_text_task_request
 from validator.tasks.requests import run_image_task_prep
+from validator.tasks.requests import run_quant_task_prep
 from validator.tasks.requests import run_text_task_prep
 
 
@@ -82,6 +85,15 @@ class ChatTaskConfig(TaskConfig):
     start_training_endpoint: str = cst.START_TRAINING_ENDPOINT
 
 
+class QuantTaskConfig(TaskConfig):
+    """Both quant tracks; task_type is set per instance (QuantTaskConfig(task_type=task.task_type))."""
+
+    data_size_function: Callable = get_fake_text_dataset_size
+    task_prep_function: Callable = run_quant_task_prep
+    task_request_prepare_function: Callable = prepare_quant_task_request
+    start_training_endpoint: str = cst.START_TRAINING_ENDPOINT
+
+
 def get_task_config(task: AnyTypeRawTask) -> TaskConfig:
     if isinstance(task, InstructTextRawTask):
         return InstructTextTaskConfig()
@@ -95,5 +107,7 @@ def get_task_config(task: AnyTypeRawTask) -> TaskConfig:
         return ChatTaskConfig()
     elif isinstance(task, EnvRawTask):
         return EnvTaskConfig()
+    elif isinstance(task, QuantRawTask):
+        return QuantTaskConfig(task_type=task.task_type)
     else:
         raise ValueError(f"Unsupported task type: {type(task).__name__}")

@@ -48,6 +48,11 @@ class TrainerConfig:
     wandb_token: str
     huggingface_username: str
     huggingface_token: str
+    s3_compatible_endpoint: str
+    s3_compatible_access_key: str
+    s3_compatible_secret_key: str
+    s3_region: str = "us-east-1"
+    quant_decode_work_root: str | None = None
 
 
 @dataclass

@@ -1,116 +1,118 @@
-# Evaluation Flow and Debugging
+# Evaluation flow and debugging
 
-This is a quick guide for checking validator evaluations.
+A runbook for validator operators: how an evaluation moves through the validator, and what to check when one is stuck or failed.
 
 ## Flow
 
-Tournament training and evaluation are separate. As each tournament task/hotkey finishes training with `training_status = 'success'`, the tournament orchestrator seeds a row in `evaluations`. It checks every 1 minute and does not overwrite existing rows.
+1. Every minute the tournament orchestrator adds an `evaluations` row for each tournament task and hotkey whose `training_status` is `success`. Existing rows are left alone.
+2. Every 30 seconds the validator cycle picks up `pending` and `evaluating` rows. A tournament row is evaluated while its task is in `training`.
+3. Each row runs in a remote deployment. Total evaluation GPUs are capped by `EVAL_MAX_GPUS` (`validator/lifecycle/constants.py`).
+4. A finished row saves its raw output to `task_nodes` (`test_loss`, `synth_loss`).
+5. The task is scored and ranked once every evaluation row and every training row of the task is terminal.
 
-The validator task cycle picks up `pending` and `evaluating` rows from `evaluations`. It can run up to `10` evaluation rows at once across all tasks. Tournament rows can be evaluated while the task is still `TRAINING`.
+Failure classes and retries are defined in [validator/evaluation](../../validator/evaluation/README.md#whose-fault-an-evaluation-failure-is).
 
-Each completed row saves raw evaluation output into `task_nodes`: `test_loss` and `synth_loss`. The full task scoring/ranking happens later, after all evaluation rows for the task are terminal (`success` or `failure`) and tournament training is terminal. Final scoring reads the saved losses from `task_nodes`.
+## Backends
 
-## Main Debugging Commands
+`EVAL_BACKEND` selects the remote backend for all evaluations.
 
-The production remote backend is selected globally:
+| Value | Backend | Deployment id in `evaluations.deployment_id` |
+| --- | --- | --- |
+| `basilica` (default) | Basilica deployments | The deployment name, prefixed `god-eval-` |
+| `runpod` | dstack services scheduled on Runpod | `runpod:<run_name>`, run names prefixed `god-eval-` |
 
-```bash
-# default
-EVAL_BACKEND=basilica
+The Runpod backend reads `DSTACK_URL`, `DSTACK_TOKEN` and `DSTACK_PROJECT`. Optional overrides:
 
-# dstack services scheduled on Runpod
-EVAL_BACKEND=runpod
-```
+| Variable | Meaning | Default |
+| --- | --- | --- |
+| `EVAL_RUNPOD_DISK_SIZE` | Minimum disk size | `150GB` |
+| `EVAL_RUNPOD_REGIONS` | Comma-separated regions | all regions |
+| `EVAL_RUNPOD_GATEWAY` | dstack gateway for the services | none |
 
-Runpod evaluation configuration reuses `DSTACK_URL`, `DSTACK_TOKEN`, and
-`DSTACK_PROJECT`. It requests A100 GPUs, a 150GB minimum disk (no max), and all
-regions by default. Runpod evaluation services have a two-hour dstack
-`max_duration`. Optional overrides are:
+## Timing
 
-- `EVAL_RUNPOD_DISK_SIZE` (minimum disk size, for example `100GB`; default `150GB`)
-- `EVAL_RUNPOD_REGIONS` (comma-separated; unset means all regions)
-- `EVAL_RUNPOD_GATEWAY`
-- `EVAL_RUNPOD_SERVICE_URL_TEMPLATE` (required for SWE Infinite with a
-  gateway; supports `{run_name}`)
+Values are in `validator/evaluation/constants.py`.
 
-List live Basilica deployments:
+| Setting | Value |
+| --- | --- |
+| Result poll interval | 300 s |
+| Maximum time polling one deployment | 28,800 s (8 h) |
+| Deployment ready timeout | 1,800 s |
+| Attempts per evaluation | 3, with 30 s between attempts |
+| Basilica deployment resources | 4 CPU, 64 Gi memory, TTL 28,800 s |
+| Runpod service maximum duration | 7,200 s |
+| Reconcile interval | 120 s |
 
-```bash
-bs deploy ls
-```
+On Basilica a poll timeout is not retried inside the same pass. On Runpod it counts as a failed attempt.
 
-Check deployment phases:
+## Symptoms
 
-```bash
-bs deploy status <deployment_id> --show-phases
-```
+### A row stays `pending`
 
-Follow deployment logs:
-
-```bash
-bs deploy logs -f <deployment_id>
-```
-
-In Grafana, search validator logs by:
-
-- `task_id`
-- hotkey / `miner_hotkey`
-- expected repo name, such as `tournament-{tournament_id}-{task_id}-{hotkey_prefix}`
-
-Turn on Basilica logs in Grafana when you need container output.
-
-Runpod services use dstack run names shaped as `god-eval-<uuid hex>`. Inspect
-them with `dstack ps`, `dstack logs <run_name>`, and `dstack run get
-<run_name> --json`. The validator relays their logs to the same evaluation
-dashboard as `[REMOTE_EVAL_LOG]` entries.
-
-## Database Checks
-
-Start with `evaluations`. This tells you whether the row is waiting, running, done, or failed.
+| Check | Fix |
+| --- | --- |
+| Is the training row `success`? Rows are added only for successful trainings. | Wait for training, or fix the training. |
+| Is the GPU cap reached? Sum `gpu_count` over `evaluations`. | Wait. Stale reservations are released by the reconciler. |
+| Was a compression row re-queued after a counted error? It waits 10 minutes before the next dispatch. A validator restart clears the wait. | Wait. |
 
 ```sql
-select *
+select hotkey, evaluation_status, deployment_id, gpu_count, infra_error_attempts, created_at, updated_at
 from evaluations
 where task_id = '<task_id>'
 order by created_at;
 ```
 
-Useful fields:
+### A row stays `evaluating`
 
-- `evaluation_status`: `pending`, `evaluating`, `success`, or `failure`.
-- `deployment_id`: remote deployment for a live or recently live evaluation.
-  Runpod IDs are stored as `runpod:<run_name>`; legacy/unqualified IDs are
-  Basilica deployments.
-- `created_at` / `updated_at`: tells you how long the row has been waiting.
+1. Read `deployment_id` from the query above.
+2. Inspect the deployment.
 
-Check saved losses in `task_nodes`:
+Basilica, with the Basilica CLI:
+
+```bash
+bs deploy ls
+bs deploy status <deployment_id> --show-phases
+bs deploy logs -f <deployment_id>
+```
+
+Runpod, with the dstack CLI:
+
+```bash
+dstack ps
+dstack logs <run_name>
+```
+
+3. Search the validator logs in Grafana by `task_id`, by hotkey (`miner_hotkey`) or by the expected repo name. Remote container output is relayed to the validator logs as `[BASILICA_LOG]` lines on Basilica and `[REMOTE_EVAL_LOG]` lines on Runpod.
+
+A healthy deployment is polled until it returns a result. A missing or unhealthy one is redeployed, and the row records the redeployed id.
+
+### A row is `infra_held`
+
+A compression task row that hit `MAX_EVAL_INFRA_ATTEMPTS` infrastructure errors is held. It is never dispatched or scored, and the task does not finalise while a row is held. The alert carries the SQL for both fixes and repeats every 4 hours.
+
+| Cause | Fix |
+| --- | --- |
+| Infrastructure fault, fixed | Re-queue: set `evaluation_status='pending'` and `infra_error_attempts=0` on the held rows. |
+| The entry cannot be evaluated | Fail the rows: set `evaluation_status='failure'`. |
+
+### A row is `failure`, or a loss is missing
 
 ```sql
-select hotkey, expected_repo_name, test_loss, synth_loss, score_reason
+select hotkey, expected_repo_name, test_loss, synth_loss, score_reason, quant_failure
 from task_nodes
 where task_id = '<task_id>'
 order by test_loss desc;
 ```
 
-Evaluation rows are only seeded for tournament hotkeys with `training_status = 'success'`.
+`score_reason` and `quant_failure` state why the entry failed. To evaluate a text or image task again by hand, see [Evaluations and manual tools](../../docs/developer.md#evaluations-and-manual-tools).
 
-## Timing
+### Deployments or GPU reservations leak
 
-The evaluation loop checks for work every 30 seconds.
+The reconciler runs at startup and every 120 seconds. It protects deployments recorded on `pending` or `evaluating` rows. It deletes deployments that no row owns once they are past their startup grace. It releases reservations whose deployment is gone.
 
-Each Basilica evaluation polls the result endpoint every `300` seconds. It stops when it gets a result, gets a failure, or reaches `16000` seconds, which is about 4 hours and 26 minutes.
+Normal completion and every failure path delete the deployment. If the cap looks wrong, compare the live deployment list with the `deployment_id` values in `evaluations`.
 
-Deployments are created with `ttl_seconds = 16000`, `timeout = 1800`, `cpu = 4`, and `memory = 64Gi`.
+## See also
 
-Failed evaluation attempts retry up to `3` times, with `900` seconds between retries. Poll timeouts are treated as final failures for that repo.
-
-## Startup Recovery
-
-On startup, the validator protects deployments already stored on `pending` or
-`evaluating` rows and reconciles both Basilica deployments and dstack Runpod
-services. Normal completion and every failure/cancellation path stop and delete
-the Runpod service. The reconciler is the crash-recovery backstop: unowned
-Runpod services are reaped after their startup grace, and missing services
-release their DB GPU reservations.
-
-Rows that remain `evaluating` (usually happens if they were interrupted in event of a validator restart) are picked up by the loop and if the stored deployment is healthy, polling resumes. If it is missing or unhealthy, the validator redeploys and saves the new deployment id.
+- [Evaluation internals](../../validator/evaluation/README.md): evaluation internals and failure classes.
+- [Validator tournament](../../validator/tournament/README.md): crown rule, seeds, orchestration.

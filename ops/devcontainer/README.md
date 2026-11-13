@@ -4,4 +4,6 @@ Development container configuration.
 
 ## Contents
 
-- `devcontainer.json`: VS Code/Codespaces-style container setup.
+| Path | Purpose |
+| --- | --- |
+| `devcontainer.json` | Container setup for VS Code and Codespaces. |

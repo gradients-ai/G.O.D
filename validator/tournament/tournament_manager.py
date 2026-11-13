@@ -2,21 +2,30 @@ import asyncio
 import math
 import random
 import re
+import time
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 
 from fiber.chain.models import Node
+from pydantic import BaseModel
 
+import validator.infrastructure.service_constants as service_cst
+from core.constants.environments import TrainingStartPoint
 from core.datasets.whitelist import validate_requested_datasets
+from core.git import sanitize_git_text
 from core.logging import LogContext
 from core.logging import get_logger
 from core.models.payload_models import TrainingRepoResponse
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
+from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
+from validator.db.sql import submissions_and_scoring as submissions_and_scoring_sql
 from validator.db.sql import task_failure_reviews as task_failure_reviews_sql
 from validator.db.sql import tasks as task_sql
+from validator.db.sql import tournament_seeds as seeds_sql
 from validator.db.sql.continuous_sft import advance_continuous_sft_state
 from validator.db.sql.nodes import get_all_nodes
 from validator.db.sql.nodes import get_node_by_hotkey
@@ -41,7 +50,10 @@ from validator.db.sql.tournaments import get_training_status_for_task
 from validator.db.sql.tournaments import insert_tournament_groups_with_members
 from validator.db.sql.tournaments import insert_tournament_pairs
 from validator.db.sql.tournaments import insert_tournament_round
+from validator.db.sql.tournaments import is_planned_image_tournament
 from validator.db.sql.tournaments import reactivate_tournament_participants
+from validator.db.sql.tournaments import set_tournament_participant_decoder_snapshot
+from validator.db.sql.tournaments import store_boss_rank_comparisons
 from validator.db.sql.tournaments import update_round_status
 from validator.db.sql.tournaments import update_tournament_participant_backup_repo
 from validator.db.sql.tournaments import update_tournament_placements
@@ -52,18 +64,33 @@ from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeTask
 from validator.tournament import constants as t_cst
 from validator.tournament.benchmark_utils import create_benchmark_tasks_for_tournament_winner
+from validator.tournament.boss_rank_shares import boss_rank_comparisons
 from validator.tournament.challenger_code_review import evaluate_round2_code_reviews
-from validator.tournament.challenger_code_review import resolve_legacy_boss_code_review
+from validator.tournament.challenger_code_review import resolve_stored_boss_code_review
+from validator.tournament.crown import CrownVerdict
+from validator.tournament.crown import crown_verdict
+from validator.tournament.decoder_snapshot import DECODER_SNAPSHOT_CONCURRENCY
+from validator.tournament.decoder_snapshot import DecoderMissing
+from validator.tournament.decoder_snapshot import DecoderNotRunnable
+from validator.tournament.decoder_snapshot import DecoderSnapshot
+from validator.tournament.decoder_snapshot import DecoderTooLarge
+from validator.tournament.decoder_snapshot import DecoderUnsafeMembers
+from validator.tournament.decoder_snapshot import snapshot_decoder
 from validator.tournament.dedup_gate import apply_r1_eliminations
 from validator.tournament.dedup_gate import approved_r2_dedup_eliminations
 from validator.tournament.dedup_gate import detect_r1_hash_duplicates
 from validator.tournament.dedup_gate import evaluate_r2_dedup_gate
+from validator.tournament.freeform_release import reconcile_freeform_publications
+from validator.tournament.freeform_release import schedule_boss_round_publication
+from validator.tournament.freeform_release import schedule_freeform_release
 from validator.tournament.github_validation import deduplicate_by_coldkey
 from validator.tournament.github_validation import deduplicate_by_github_account
 from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
+from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import SWAPPED_SEED_ROLES
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
@@ -73,6 +100,8 @@ from validator.tournament.models import Round
 from validator.tournament.models import RoundOutcome
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
+from validator.tournament.models import SeedRole
+from validator.tournament.models import SeedStatus
 from validator.tournament.models import TaskFailureReviewStatus
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
@@ -90,14 +119,35 @@ from validator.tournament.participants import get_base_contestant
 from validator.tournament.participants import get_challenger_participant_for_retained_boss
 from validator.tournament.participants import get_latest_tournament_winner_participant
 from validator.tournament.participants import get_pre_boss_knockout_loser
+from validator.tournament.quant_sources import bind_quant_source_tournament
+from validator.tournament.registration_lint import RegistrationLintFailed
+from validator.tournament.registration_lint import check_registration_lint
 from validator.tournament.repo_uploader import upload_tournament_participant_repository
 from validator.tournament.reports import generate_diff_report_and_notify_tournament_completed
+from validator.tournament.round_results import CrownEvaluationFault
 from validator.tournament.round_results import find_groups_with_no_valid_scores
+from validator.tournament.round_results import get_planned_runner_up
+from validator.tournament.round_results import get_quant_pre_boss_runner_up
+from validator.tournament.round_results import get_quant_round_runner_up
 from validator.tournament.round_results import get_round_winners
+from validator.tournament.round_results import plays_round_plan
+from validator.tournament.round_results import quant_round_head_to_heads
+from validator.tournament.round_results import round_head_to_heads
 from validator.tournament.round_results import select_round2_entrants
+from validator.tournament.seed_tasks import alert_seed_issue
+from validator.tournament.seed_tasks import boss_side_failure_key
+from validator.tournament.seed_tasks import create_seed_tasks
+from validator.tournament.seed_tasks import process_tournament_seed_tasks
+from validator.tournament.seed_tasks import retire_unattached_quant_seeds
+from validator.tournament.seed_tasks import seed_creation_order
+from validator.tournament.seed_tasks import seed_halt_reason
+from validator.tournament.task_creator import MissingBossRoundSeeds
 from validator.tournament.task_creator import create_boss_round_decider_tasks
 from validator.tournament.task_creator import create_image_tournament_tasks
+from validator.tournament.task_creator import create_quant_tournament_tasks
+from validator.tournament.task_creator import create_seeded_text_big_task
 from validator.tournament.task_creator import create_text_tournament_tasks
+from validator.tournament.task_creator import own_r1_model_repo
 from validator.tournament.task_creator import replace_tournament_task
 
 
@@ -106,15 +156,29 @@ logger = get_logger(__name__)
 # Rounds we have already pinged Discord about for having zero-score groups. Process-local on
 # purpose: a restart re-alerts, which is the right behaviour for a condition needing a human.
 _EMPTY_SCORE_ROUNDS_ALERTED: set[str] = set()
+# Rounds already pinged about crown tasks with an evaluation fault. Same reason as the set above.
+_CROWN_EVALUATION_FAULT_ROUNDS_ALERTED: set[str] = set()
 # Rounds already pinged about a failed draw-decider creation. Same reason as the set above: the
 # retry runs on a 60s loop and would otherwise hammer the webhook until someone intervenes.
 _DECIDER_CREATION_FAILED_ROUNDS: set[str] = set()
+# Same, for a seeded text boss round whose big task could not be created.
+_BIG_TASK_CREATION_FAILED_ROUNDS: set[str] = set()
 # Tournaments already pinged about being close to the Friday completion deadline. Process-local
 # for the same reason as the sets above: a restart re-alerts, which is fine for a once-a-week ping.
 _DEADLINE_ALERTED_TOURNAMENTS: set[str] = set()
 # Tasks already pinged for a terminal `failure` status. The completion check re-runs every ~60s
 # and would otherwise re-fire the same Discord warning until a human changes the task.
 _FAILED_TASKS_ALERTED: set[str] = set()
+# Tournaments already pinged about having too few miners, so the 60s pending loop does not repeat it.
+_SHORT_TOURNAMENTS_ALERTED: set[str] = set()
+# Per tournament: monotonic time before which the miner ping/validate/enrol pass is not repeated. Process-local;
+# a restart pings again immediately, which is fine.
+_PARTICIPANT_NEXT_PASS_AT: dict[str, float] = {}
+# Quant boss decoder repair state, process-local: tournaments whose boss has no usable decoder for good (never
+# retried), the monotonic time of each tournament's next repair attempt, and the Discord alerts already sent.
+_BOSS_DECODER_DETERMINISTIC: set[str] = set()
+_BOSS_DECODER_NEXT_REPAIR_AT: dict[str, float] = {}
+_BOSS_DECODER_ALERTED: set[str] = set()
 
 
 def exceeds_failure_threshold(trainings: dict[str, str]) -> bool:
@@ -134,9 +198,18 @@ def organise_tournament_round(
     round_id: str = "",
     round_number: int = 1,
     is_final_round: bool = False,
+    single_group_rounds: bool = False,
 ) -> Round:
     nodes_copy = nodes.copy()
     random.shuffle(nodes_copy)
+
+    # Quant rounds 1-3 are one group each (QUANT_ROUND_PLAN: one chained quant task per round, the boss
+    # excluded); only the boss round is a knockout. A seeded text tournament's and a planned image tournament's rounds 1-3
+    # are the same (single_group_rounds: TEXT_ROUND_PLAN, IMAGE_ROUND_PLAN).
+    is_single_group_tournament = tournament_type == TournamentType.QUANT or single_group_rounds
+    if is_single_group_tournament and (round_number == 1 or (round_number in (2, 3) and not is_final_round)):
+        single_group = Group(member_ids=[node.hotkey for node in nodes_copy], task_ids=[])
+        return GroupRound(groups=[single_group], round_id=round_id, round_number=round_number)
 
     # Text and image round 1 always use one multi-match group. The top two
     # advance into one knockout task, whose winner becomes the boss challenger.
@@ -221,6 +294,8 @@ async def _create_tournament_tasks(
 ) -> list[str]:
     if tournament_type == TournamentType.TEXT:
         tasks = await create_text_tournament_tasks(round_structure, tournament_id, config, is_final)
+    elif tournament_type == TournamentType.QUANT:
+        tasks = await create_quant_tournament_tasks(round_structure, tournament_id, config, is_final)
     elif tournament_type == TournamentType.IMAGE:
         tasks = await create_image_tournament_tasks(round_structure, tournament_id, config, is_final)
     else:
@@ -230,10 +305,15 @@ async def _create_tournament_tasks(
 
 
 async def _carry_forward_continuous_sft(
-    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB
+    round_tasks: list[TournamentTask], source_round_id: str, psql_db: PSQLDB, *, only_hotkey: str | None = None
 ) -> None:
     """After a TEXT boss round, carry each lineage's lowest-eval-loss winner forward as its next base
     and advance continuous_sft_state (idempotent on source_round_id, so reprocessing can't double-advance).
+
+    With only_hotkey the carried model is that hotkey's own evaluated repo instead of the lowest-loss one (None when it
+    has none): used when the challenger is disqualified, so only the boss's model can be carried while the cursor still
+    moves past the chunk both trained. A failed advance propagates, so the caller does not persist the tournament's
+    completion and the next cycle reprocesses the round and retries.
     """
     # Exactly one task per lineage, which is why this can carry forward the first it finds. A drawn
     # continuous-SFT task is stood in for by a plain instruct task rather than a second chunk of the
@@ -257,20 +337,100 @@ async def _carry_forward_continuous_sft(
 
         # Carried as-is (a LoRA winner is flattened by next round's model-prep); None when the week
         # had no scored winner, in which case advance preserves the prior repo.
-        winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        if only_hotkey is None:
+            winner_repo = await task_sql.get_lowest_loss_repo_for_task(round_task.task_id, psql_db)
+        else:
+            winner_repo = await task_sql.get_evaluated_repo_for_hotkey(
+                round_task.task_id, only_hotkey, psql_db, ranked=True
+            )
         logger.info(
             f"Continuous-SFT carry-forward: lineage={lineage} task={round_task.task_id} "
             f"carried_winner={winner_repo}"
         )
-        try:
-            await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db)
-        except Exception as e:
-            logger.error(
-                f"Failed to advance continuous_sft_state[{lineage}] for task {round_task.task_id}: {e}", exc_info=True
-            )
+        await advance_continuous_sft_state(lineage, winner_repo, source_round_id, psql_db, task_id=round_task.task_id)
 
     if not found:
         logger.info("No continuous-SFT task in completed text boss round; nothing to carry forward")
+
+
+async def _carry_forward_seeded_text_continuous(
+    tournament: TournamentData, completed_round: TournamentRoundData, psql_db: PSQLDB
+) -> None:
+    """A seeded text tournament that ends without a boss round never attached its continuous seed: carry the lineage forward
+    from the role's seed task anyway, so the chunk is not trained twice. A no-op for any other tournament.
+
+    The seed is the live row, else the role's latest row whatever its status (a `failed` role does not halt the
+    tournament, and the bound quant tournament's tasks were built on that chunk). The base for the next tournament is the
+    boss's own output on the seed when its stored evaluation is valid (it was evaluated as soon as it trained), else None:
+    the lineage keeps its previous model and the cursor still advances, as in a week without a scored winner. Idempotent on
+    the completed round's id; a failed advance propagates so the caller does not persist the tournament's completion and
+    the next cycle retries.
+    """
+    if tournament.tournament_type != TournamentType.TEXT or not await seeds_sql.is_seeded_text_tournament(
+        tournament.tournament_id, psql_db
+    ):
+        return
+    seed = next(
+        (
+            row
+            for row in await seeds_sql.get_active_seed_tasks(tournament.tournament_id, psql_db)
+            if row.role == SeedRole.TEXT_CONTINUOUS
+        ),
+        None,
+    ) or next(
+        (
+            row
+            for row in await seeds_sql.get_latest_seed_tasks(tournament.tournament_id, psql_db)
+            if row.role == SeedRole.TEXT_CONTINUOUS
+        ),
+        None,
+    )
+    task_obj = await task_sql.get_task(seed.task_id, psql_db) if seed is not None else None
+    lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds) if task_obj is not None else None
+    if not lineage:
+        logger.warning(
+            f"Tournament {tournament.tournament_id} has no continuous seed task with a lineage; nothing to carry forward"
+        )
+        return
+    winner_repo = await task_sql.get_evaluated_repo_for_hotkey(seed.task_id, EMISSION_BURN_HOTKEY, psql_db)
+    logger.info(
+        f"Continuous-SFT carry-forward from the unattached seed: lineage={lineage} task={seed.task_id} "
+        f"carried_winner={winner_repo}"
+    )
+    await advance_continuous_sft_state(lineage, winner_repo, completed_round.round_id, psql_db, task_id=seed.task_id)
+
+
+def select_boss_group_index(groups: list[Group]) -> int:
+    """Return the index of the smallest group for boss injection."""
+    return min(range(len(groups)), key=lambda index: len(groups[index].member_ids))
+
+
+async def _ensure_own_r1_model(task_id: str, tournament_id: str, hotkey: str, psql_db: PSQLDB) -> None:
+    """Give a player of an own-model quant task its starting model: its own full-model R1 repo, else a scored fail.
+
+    Idempotent: a hotkey that already has a starting model or a quant_failure (written on an earlier pass) is
+    left alone, so a crash between assignment and this step is repaired on the next pass.
+    """
+    if await task_sql.get_starting_model_repo(task_id, hotkey, psql_db):
+        return
+    decode_row = (await submissions_and_scoring_sql.get_quant_decode_rows(task_id, psql_db)).get(hotkey)
+    if decode_row and decode_row.quant_failure:
+        return
+    repo = await own_r1_model_repo(tournament_id, hotkey, psql_db)
+    if repo:
+        await task_sql.set_starting_model_repo(task_id, hotkey, repo, psql_db)
+        logger.info(f"Own-model quant task {task_id}: {hotkey[:8]} starts from its R1 model {repo}")
+        return
+    logger.warning(f"Own-model quant task {task_id}: {hotkey[:8]} has no usable R1 model; scored as a fail")
+    await submissions_and_scoring_sql.set_task_node_quant_failure(task_id, hotkey, t_cst.NO_USABLE_R1_MODEL_REASON, psql_db)
+
+async def _boss_plays_boss_round_task(tournament_id: str, task_id: str, psql_db: PSQLDB) -> bool:
+    """Whether the boss is assigned to a boss-round task: always, except a quant boss-round task with no seed row (the task the
+    round plays for a boss-round seed role out of replacements), on which the boss has no entry."""
+    tournament = await get_tournament(tournament_id, psql_db)
+    if tournament is None or tournament.tournament_type != TournamentType.QUANT:
+        return True
+    return await seeds_sql.get_seed_task_by_task_id(task_id, psql_db) is not None
 
 
 async def assign_nodes_to_tournament_tasks(
@@ -290,9 +450,25 @@ async def assign_nodes_to_tournament_tasks(
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(tournament_task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
 
-                for hotkey in participants_to_assign:
+                task_obj = await task_sql.get_task(tournament_task.task_id, psql_db)
+                is_own_model_task = (
+                    bool(task_obj)
+                    and task_obj.task_type in QUANT_TASK_TYPES
+                    and task_obj.training_start_point == TrainingStartPoint.OWN_R1_MODEL
+                )
+                # The boss trains each round's task of a planned image tournament alongside the group, without being a member.
+                boss_enters = (
+                    bool(task_obj)
+                    and task_obj.task_type == TaskType.IMAGETASK
+                    and await is_planned_image_tournament(tournament_id, psql_db)
+                )
+                task_participants = [*participants_to_assign, EMISSION_BURN_HOTKEY] if boss_enters else participants_to_assign
+
+                for hotkey in task_participants:
                     if hotkey in already_assigned_hotkeys:
                         logger.info(f"Node {hotkey} already assigned to task {tournament_task.task_id}")
+                        if is_own_model_task:
+                            await _ensure_own_r1_model(tournament_task.task_id, tournament_id, hotkey, psql_db)
                         continue
 
                     node = await get_node_by_hotkey(hotkey, psql_db)
@@ -301,6 +477,9 @@ async def assign_nodes_to_tournament_tasks(
 
                         expected_repo_name = f"tournament-{tournament_id}-{tournament_task.task_id}-{hotkey[:8]}"
                         await task_sql.set_expected_repo_name(tournament_task.task_id, node, psql_db, expected_repo_name)
+
+                        if is_own_model_task:
+                            await _ensure_own_r1_model(tournament_task.task_id, tournament_id, hotkey, psql_db)
 
                         logger.info(
                             f"Assigned {hotkey} to group task {tournament_task.task_id} "
@@ -326,10 +505,11 @@ async def assign_nodes_to_tournament_tasks(
                 already_assigned_nodes = await task_sql.get_nodes_assigned_to_task(pair_task.task_id, psql_db)
                 already_assigned_hotkeys = {node.hotkey for node in already_assigned_nodes}
 
-                participants_to_assign = list(pair)
+                boss_plays = not is_final_round or await _boss_plays_boss_round_task(tournament_id, pair_task.task_id, psql_db)
+                participants_to_assign = [hotkey for hotkey in pair if boss_plays or hotkey != EMISSION_BURN_HOTKEY]
 
                 # For final rounds, also assign the boss contestant
-                if is_final_round and EMISSION_BURN_HOTKEY not in participants_to_assign:
+                if is_final_round and boss_plays and EMISSION_BURN_HOTKEY not in participants_to_assign:
                     participants_to_assign.append(EMISSION_BURN_HOTKEY)
                     logger.info(
                         f"Final round detected - adding boss contestant {EMISSION_BURN_HOTKEY} to task {pair_task.task_id}"
@@ -354,6 +534,12 @@ async def assign_nodes_to_tournament_tasks(
                         logger.warning(f"Could not find node for hotkey {hotkey} during task assignment")
 
 
+def _round_field_without_boss(winners: list[str]) -> list[str]:
+    """R2/R3 entrants of a tournament that plays the round plan: the boss is not a member of the group, and a lone challenger
+    still plays as a group of one."""
+    return [hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY]
+
+
 async def create_next_round(
     tournament: TournamentData, completed_round: TournamentRoundData, winners: list[str], config, psql_db: PSQLDB
 ):
@@ -364,10 +550,18 @@ async def create_next_round(
     with LogContext(tournament_id=tournament.tournament_id, round_id=next_round_id):
         logger.info(f"Creating next round with {len(winners)} winners: {winners}")
 
+        is_quant_tournament = tournament.tournament_type == TournamentType.QUANT
+        single_group_rounds = await plays_round_plan(tournament, psql_db)
         next_round_is_final = len(winners) == 1
+        # A tournament that plays the round plan always plays rounds 1-3, even with one miner left: each round's result
+        # against the boss's entry is one of the crown's head-to-heads.
+        is_single_group_round = single_group_rounds and next_round_number in (2, 3)
 
         # Text/image knockout tournaments need even pairs
-        if len(winners) == 2:
+        if is_single_group_round:
+            winners = _round_field_without_boss(winners)
+            next_round_is_final = False
+        elif len(winners) == 2:
             if EMISSION_BURN_HOTKEY in winners:
                 next_round_is_final = True
         elif len(winners) % 2 == 1:
@@ -398,10 +592,12 @@ async def create_next_round(
 
         logger.info(f"Successfully found {len(winner_nodes)} nodes out of {len(winners)} winners")
 
+        organiser_type = TournamentType.QUANT if is_quant_tournament else None
         round_structure = organise_tournament_round(
             winner_nodes, config,
-            None,
+            organiser_type,
             round_id=next_round_id, round_number=next_round_number, is_final_round=next_round_is_final,
+            single_group_rounds=single_group_rounds,
         )
 
         round_type = RoundType.KNOCKOUT if isinstance(round_structure, KnockoutRound) else RoundType.GROUP
@@ -449,6 +645,117 @@ async def _complete_with_defending_champion(
         )
     )
     await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
+    await _publish_boss_round_decoded(tournament, config, psql_db)
+
+
+def _last_miner_round_number(tournament: TournamentData, plays_plan: bool) -> int | None:
+    """The round after whose cut the last contender meets the boss: the last round of the round plan of a tournament that
+    plays one; None for any other tournament (it has no crown rule)."""
+    return t_cst.round_plan(tournament.tournament_type)[-1].round_number if plays_plan else None
+
+
+async def _round_crown_verdict(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> CrownVerdict:
+    """The crown rule on the last contender's head-to-heads against the boss in rounds 1-3, the four boss-round tasks still
+    to come counting as wins (crown_verdict).
+
+    Text and image raise ValueError on a missing round task (a data fault, never a loss); image also raises
+    CrownEvaluationFault when a round task has both sides trained and no result on either. Quant leaves out a round that
+    holds no single task; such a round can never be decided, and the boss round's verdict crowns only with all CROWN_TASKS
+    decided, so the crown is out of reach: the verdict says so without playing the boss round.
+    """
+    if tournament.tournament_type == TournamentType.QUANT:
+        head_to_heads = await quant_round_head_to_heads(tournament.tournament_id, challenger_hotkey, psql_db)
+        track = "Quant"
+    else:
+        head_to_heads = await round_head_to_heads(tournament, challenger_hotkey, psql_db)
+        track = "Image" if tournament.tournament_type == TournamentType.IMAGE else "Text"
+    for head_to_head in head_to_heads:
+        logger.info(
+            f"{track} crown {head_to_head.label} task {head_to_head.task_id}: boss={head_to_head.boss_score} "
+            f"challenger={head_to_head.challenger_score} -> {head_to_head.describe()}"
+        )
+    verdict = crown_verdict(head_to_heads)
+    missing_rounds = len(t_cst.QUANT_ROUND_PLAN) - len(head_to_heads)
+    if tournament.tournament_type == TournamentType.QUANT and missing_rounds > 0:
+        return verdict.model_copy(
+            update={
+                "crowned_if_complete": False,
+                "reason": f"{missing_rounds} of rounds 1-3 not decided, so the seven head-to-heads can never all be decided",
+            }
+        )
+    return verdict
+
+
+async def _complete_without_boss_round(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    challenger_hotkey: str,
+    reason: str,
+    config: Config,
+    psql_db: PSQLDB,
+) -> None:
+    """End a quant, seeded text or planned image tournament after round 3 with the boss retained: the last contender can no
+    longer be crowned, so no boss round is created and nothing is attached or dispatched for it.
+
+    Text: the continuous lineage is carried forward first (its seed was never attached). Quant: the quant seeds no round
+    attached and the boss has not started are retired (retire_unattached_quant_seeds). Image has no seeds and no lineage, so
+    nothing is retired or carried. Then the placements are written: the
+    boss first, the last contender second and third whoever a played and lost boss round would have placed third (the
+    runner-up of round 3's standings); this also sets the winner, which is the re-entry guard. Then the same completion
+    steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the boss's
+    repository, so it leaves the placements as they are.
+    """
+    logger.warning(f"Tournament {tournament.tournament_id} ends after round {completed_round.round_number}: {reason}")
+    if tournament.tournament_type == TournamentType.QUANT:
+        retired = await retire_unattached_quant_seeds(tournament.tournament_id, config)
+        logger.info(f"Tournament {tournament.tournament_id}: quant seeds retired: {[role.value for role in retired]}")
+        third_place = await get_quant_round_runner_up(tournament.tournament_id, completed_round, challenger_hotkey, psql_db)
+    else:
+        await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
+        third_place = await get_planned_runner_up(tournament, challenger_hotkey, psql_db)
+    # Like a challenger beaten in a boss round, it is out: it must not keep drawing participation weight.
+    await eliminate_tournament_participants(tournament.tournament_id, completed_round.round_id, [challenger_hotkey], psql_db)
+    await _record_boss_rank_comparisons(tournament.tournament_id, challenger_hotkey, third_place, psql_db)
+    await update_tournament_placements(tournament.tournament_id, EMISSION_BURN_HOTKEY, challenger_hotkey, third_place, psql_db)
+    await _complete_with_defending_champion(
+        tournament,
+        completed_round,
+        config,
+        psql_db,
+        reason=(
+            f"Boss retained for {tournament.tournament_id} without a boss round; "
+            f"second place {challenger_hotkey}, third place {third_place}."
+        ),
+    )
+
+
+async def _record_boss_rank_comparisons(
+    tournament_id: str, second_place: str | None, third_place: str | None, psql_db: PSQLDB
+) -> None:
+    """Store, before the placements, how each contender in 2nd and 3rd place compares with the boss on average rank over
+    rounds 1-3 (boss_rank_shares); the weight setter pays a contender the boss outranks like the boss. Called only when the
+    boss kept the crown of a tournament that plays the round plan. Never raises: a failure is logged and nothing is stored, so
+    both contenders are paid."""
+    try:
+        comparisons = await boss_rank_comparisons(tournament_id, second_place, third_place, psql_db)
+        await store_boss_rank_comparisons(tournament_id, comparisons, psql_db)
+    except Exception as e:
+        logger.error(
+            f"Tournament {tournament_id}: boss rank comparisons not stored ({type(e).__name__}: {e}); places 2 and 3 are paid"
+        )
+
+
+async def _publish_boss_round_decoded(tournament: TournamentData, config: Config, psql_db: PSQLDB) -> None:
+    """Schedule the boss round's decoded freeform publication; a quant-tournament step that can never break completion.
+
+    Runs in the background (it moves GBs); process_freeform_publications re-runs whatever it loses.
+    """
+    if tournament.tournament_type != TournamentType.QUANT:
+        return
+    try:
+        schedule_boss_round_publication(tournament.tournament_id, config, psql_db)
+    except Exception as e:
+        logger.error(f"Boss-round decoded publication could not be scheduled for {tournament.tournament_id}: {type(e).__name__}")
 
 
 async def _r2_gate_eliminations(
@@ -539,13 +846,36 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             await _alert_empty_score_groups(tournament, completed_round, empty_score_groups, config)
             return
 
+        plays_plan = await plays_round_plan(tournament, psql_db)
+        is_seeded_text = plays_plan and tournament.tournament_type == TournamentType.TEXT
+        is_planned_image = plays_plan and tournament.tournament_type == TournamentType.IMAGE
         outcome = await get_round_winners(completed_round, psql_db, config)
 
         # A boss-round task that separated nothing is excluded from the dethrone tally and earns the
         # round one extra task in its place, so the tally still runs over a full set of decided
         # results. Adding those tasks puts the round back to PENDING; it advances on a later pass.
         if outcome.is_deferred:
-            await _add_boss_round_deciders(tournament, completed_round, outcome, config, psql_db)
+            if tournament.tournament_type == TournamentType.QUANT:
+                # A quant boss round holding tasks nobody was assigned to cannot be resolved: it goes back to
+                # PENDING so node assignment picks them up, and advances on a later pass.
+                await _return_boss_round_for_node_assignment(tournament, completed_round, outcome, config, psql_db)
+            elif is_seeded_text:
+                # A seeded text boss round never draws: it is deferred for its big task, or for tasks with no nodes.
+                if outcome.needs_text_big_task:
+                    await _add_seeded_text_big_task(tournament, completed_round, outcome, config, psql_db)
+                else:
+                    await _return_boss_round_for_node_assignment(tournament, completed_round, outcome, config, psql_db)
+            elif is_planned_image:
+                # A planned image boss round never draws: it is deferred for tasks with no nodes, or held for an evaluation
+                # fault.
+                if outcome.evaluation_fault_task_ids:
+                    await _alert_crown_evaluation_fault(
+                        tournament, completed_round, outcome.evaluation_fault_task_ids, config
+                    )
+                else:
+                    await _return_boss_round_for_node_assignment(tournament, completed_round, outcome, config, psql_db)
+            else:
+                await _add_boss_round_deciders(tournament, completed_round, outcome, config, psql_db)
             return
 
         winners = outcome.winners
@@ -574,6 +904,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
         if len(winners) == 0:
             # Boss retained in this round. Environment pays the top non-boss challengers
             # of the retention round as 2nd/3rd so the pool is not 100% champion-only.
+            await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
             await _complete_with_defending_champion(
                 tournament,
                 completed_round,
@@ -610,12 +941,12 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
 
             # New tournaments are reviewed before round 2. This only finishes a review
             # that the old boss-round gate already stored on the tournament row.
-            integrity = await resolve_legacy_boss_code_review(
+            integrity = await resolve_stored_boss_code_review(
                 tournament, completed_round, challenger, psql_db
             )
             if integrity.halt:
                 logger.info(
-                    f"Legacy boss-round code review is holding tournament {tournament.tournament_id}; "
+                    f"Stored boss-round code review is holding tournament {tournament.tournament_id}; "
                     "winner persistence, repository upload, and diff report will not run"
                 )
                 return
@@ -635,7 +966,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     else None
                 )
                 logger.warning(
-                    f"Boss challenger {challenger.hotkey} disqualified by a legacy code review; "
+                    f"Boss challenger {challenger.hotkey} disqualified by the stored code review; "
                     f"boss retains and second place is {second_place}"
                 )
             else:
@@ -652,13 +983,30 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            # BEFORE setting winner_hotkey (the re-entry guard): set-first-then-crash would freeze the
-            # lineages; carry-forward is idempotent so a crash before winner-set just reprocesses.
-            if tournament.tournament_type == TournamentType.TEXT and not integrity.disqualified:
-                await _carry_forward_continuous_sft(round_tasks, completed_round.round_id, psql_db)
+            # BEFORE setting winner_hotkey (the re-entry guard): the round is reprocessed on the next cycle for as long as
+            # the winner is unset, so a failed advance (it raises) is retried; the advance is idempotent on the round id.
+            # A disqualified challenger's model is never carried: only the boss's own evaluated repo can be.
+            if tournament.tournament_type == TournamentType.TEXT:
+                await _carry_forward_continuous_sft(
+                    round_tasks,
+                    completed_round.round_id,
+                    psql_db,
+                    only_hotkey=EMISSION_BURN_HOTKEY if integrity.disqualified else None,
+                )
 
             third_place: str | None = None
-            if tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
+            if tournament.tournament_type == TournamentType.QUANT:
+                third_place = await get_quant_pre_boss_runner_up(
+                    tournament.tournament_id, completed_round, challenger.hotkey, psql_db
+                )
+                if third_place is None:
+                    third_place = await get_pre_boss_knockout_loser(
+                        tournament, completed_round, challenger.hotkey, psql_db
+                    )
+            elif plays_plan:
+                # No pre-boss knockout: third is the runner-up of round 3's standings.
+                third_place = await get_planned_runner_up(tournament, challenger.hotkey, psql_db)
+            elif tournament.tournament_type in (TournamentType.TEXT, TournamentType.IMAGE):
                 third_place = await get_pre_boss_knockout_loser(
                     tournament, completed_round, challenger.hotkey, psql_db
                 )
@@ -669,6 +1017,9 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     f"for tournament {tournament.tournament_id}; omitting 3rd place"
                 )
                 third_place = None
+
+            if winner == EMISSION_BURN_HOTKEY and plays_plan:
+                await _record_boss_rank_comparisons(tournament.tournament_id, second_place, third_place, psql_db)
 
             await update_tournament_placements(
                 tournament.tournament_id,
@@ -694,6 +1045,8 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             position_1_repo = await upload_participant_repository(
                 tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
             )
+
+            await _publish_boss_round_decoded(tournament, config, psql_db)
 
             challenger_repo = position_1_repo
             challenger_commit_hash = None
@@ -738,6 +1091,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 if halt:
                     return
                 if not any(hotkey != EMISSION_BURN_HOTKEY for hotkey in winners):
+                    await _carry_forward_seeded_text_continuous(tournament, completed_round, psql_db)
                     await _complete_with_defending_champion(
                         tournament,
                         completed_round,
@@ -750,6 +1104,27 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                     )
                     return
                 logger.info(f"R2 field after integrity gates: {winners}")
+            if completed_round.round_number == _last_miner_round_number(tournament, plays_plan):
+                # The round-3 cut leaves the last contender, about to meet the boss. Rounds 1-3 are its first three
+                # head-to-heads: if the crown is already out of reach the tournament ends here and no boss round is built.
+                challenger_hotkey = next((hotkey for hotkey in winners if hotkey != EMISSION_BURN_HOTKEY), None)
+                if challenger_hotkey is not None:
+                    try:
+                        verdict = await _round_crown_verdict(tournament, challenger_hotkey, psql_db)
+                    except CrownEvaluationFault as fault:
+                        await _alert_crown_evaluation_fault(tournament, completed_round, fault.task_ids, config)
+                        return
+                    if not verdict.can_still_be_crowned:
+                        await _complete_without_boss_round(
+                            tournament,
+                            completed_round,
+                            challenger_hotkey,
+                            f"{challenger_hotkey} cannot be crowned after round {completed_round.round_number}: {verdict.reason}",
+                            config,
+                            psql_db,
+                        )
+                        return
+                    logger.info(f"Crown after round {completed_round.round_number}: still possible - {verdict.reason}")
             await create_next_round(tournament, completed_round, winners, config, psql_db)
 
 
@@ -783,11 +1158,239 @@ async def create_basic_tournament(tournament_type: TournamentType, psql_db: PSQL
             training_commit_hash=base_contestant.training_commit_hash,
             requested_datasets=base_contestant.requested_datasets,
         )
+        if tournament_type == TournamentType.QUANT:
+            base_participant = await _with_boss_decoder_snapshot(base_participant)
+            if not base_participant.has_decoder_snapshot:
+                await _alert_boss_decoder_missing(tournament_id, config)
         await add_tournament_participants([base_participant], psql_db)
 
     logger.info(f"Created basic tournament {tournament_id} with type {tournament_type.value}")
 
     return tournament_id
+
+
+def _with_decoder_snapshot(participant: TournamentParticipant, snapshot: DecoderSnapshot | None) -> TournamentParticipant:
+    if snapshot is None:
+        return participant
+    return participant.model_copy(
+        update={
+            "decoder_object_name": snapshot.object_name,
+            "decoder_xz_bytes": snapshot.xz_bytes,
+            "decoder_sha256": snapshot.xz_sha256,
+            "decoder_tar_sha256": snapshot.tar_sha256,
+            "decoder_tree_sha": snapshot.tree_sha,
+            "decoder_xz_version": snapshot.xz_version,
+        }
+    )
+
+
+_DETERMINISTIC_DECODER_ERRORS = (DecoderMissing, DecoderNotRunnable, DecoderTooLarge, DecoderUnsafeMembers)
+
+
+class BossDecoderAttempt(BaseModel):
+    """Outcome of snapshotting the boss's decoder: a snapshot, or why there is none and whether a retry could help."""
+
+    snapshot: DecoderSnapshot | None = None
+    deterministic: bool = False
+
+
+async def _attempt_boss_decoder_snapshot(participant: TournamentParticipant, attempts: int) -> BossDecoderAttempt:
+    """Snapshot the boss's decoder/ at its pinned commit, retrying transient failures up to `attempts` times.
+
+    A boss with no pinned repo/commit, or whose decoder/ is missing, unsafe, too large or not runnable, will never
+    have a usable decoder: that is deterministic and is not retried. Anything else (clone timeout, MinIO, OSError)
+    may pass next time. Never raises.
+    """
+    if not participant.training_repo or not participant.training_commit_hash:
+        logger.error("Boss has no pinned repo/commit to snapshot a decoder from; it will scored-fail every freeform task")
+        return BossDecoderAttempt(deterministic=True)
+    for attempt in range(1, attempts + 1):
+        try:
+            snapshot = await snapshot_decoder(
+                participant.training_repo, participant.training_commit_hash, None, service_cst.BUCKET_NAME
+            )
+        except _DETERMINISTIC_DECODER_ERRORS as e:
+            logger.error(
+                f"Boss {participant.training_repo}@{participant.training_commit_hash} has no usable decoder snapshot "
+                f"({e}); it will scored-fail every freeform task"
+            )
+            return BossDecoderAttempt(deterministic=True)
+        except Exception as e:
+            # RuntimeError is already token-sanitised by decoder_snapshot; the boss repo is public anyway.
+            logger.error(
+                f"Boss decoder snapshot attempt {attempt}/{attempts} failed for "
+                f"{participant.training_repo}@{participant.training_commit_hash}: {type(e).__name__}: {e}"
+            )
+            if attempt < attempts:
+                await asyncio.sleep(t_cst.BOSS_DECODER_SNAPSHOT_RETRY_SLEEP_SECONDS)
+            continue
+        return BossDecoderAttempt(snapshot=snapshot)
+    return BossDecoderAttempt()
+
+
+async def _with_boss_decoder_snapshot(participant: TournamentParticipant, attempts: int | None = None) -> TournamentParticipant:
+    """Snapshot the boss's decoder/ at its pinned commit; on failure the snapshot fields stay None.
+
+    Every repo must carry a decoder: a boss without one scored-fails every freeform task, which is
+    how a pre-quant champion loses the freeform slot. Never raises, so the tournament row is never left
+    without its boss participant; a deterministic failure is remembered so the pending loop does not retry it.
+    """
+    outcome = await _attempt_boss_decoder_snapshot(participant, attempts or t_cst.BOSS_DECODER_SNAPSHOT_ATTEMPTS)
+    if outcome.deterministic:
+        _BOSS_DECODER_DETERMINISTIC.add(participant.tournament_id)
+    return _with_decoder_snapshot(participant, outcome.snapshot)
+
+
+async def _alert_boss_decoder_missing(tournament_id: str, config: Config) -> None:
+    """Once per tournament and failure kind per process: a quant boss without a decoder snapshot scored-fails freeform tasks."""
+    deterministic = tournament_id in _BOSS_DECODER_DETERMINISTIC
+    if deterministic:
+        message = (
+            f"Quant tournament {tournament_id}: the boss repo has no usable decoder snapshot (missing, unsafe, too large "
+            f"or not runnable at its pinned commit). It will scored-fail every freeform task. Not retrying."
+        )
+    else:
+        message = (
+            f"Quant tournament {tournament_id}: the boss decoder snapshot failed with a transient error and is still "
+            f"being retried while the tournament is pending. Until it succeeds the boss will scored-fail freeform tasks."
+        )
+    try:
+        await _alert_once(f"{tournament_id}:{deterministic}", _BOSS_DECODER_ALERTED, message, config)
+    except Exception as e:
+        logger.error(f"Could not send boss decoder alert for tournament {tournament_id}: {e}")
+
+
+async def _repair_quant_boss_participant(tournament_id: str, config: Config) -> None:
+    """While a quant tournament is pending, give it its boss row and a decoder snapshot if either is missing.
+
+    A transient snapshot failure (or one lost to a restart: nothing remembers it was transient) is retried no more
+    often than the cooldown; a boss with no usable decoder for good is not retried. Never raises.
+    """
+    try:
+        psql_db = config.psql_db
+        participants = await get_tournament_participants(tournament_id, psql_db)
+        boss = next((p for p in participants if p.hotkey == EMISSION_BURN_HOTKEY), None)
+        if boss is not None and boss.has_decoder_snapshot:
+            _BOSS_DECODER_NEXT_REPAIR_AT.pop(tournament_id, None)
+            return
+        if boss is not None and tournament_id in _BOSS_DECODER_DETERMINISTIC:
+            await _alert_boss_decoder_missing(tournament_id, config)
+            return
+        if time.monotonic() < _BOSS_DECODER_NEXT_REPAIR_AT.get(tournament_id, 0.0):
+            return
+        _BOSS_DECODER_NEXT_REPAIR_AT[tournament_id] = time.monotonic() + t_cst.BOSS_DECODER_REPAIR_COOLDOWN_SECONDS
+
+        if boss is None:
+            base_contestant = await get_base_contestant(psql_db, TournamentType.QUANT, config)
+            if not base_contestant or not base_contestant.hotkey:
+                logger.error(f"Quant tournament {tournament_id} has no boss participant and no base contestant to rebuild it")
+                return
+            logger.warning(f"Quant tournament {tournament_id} has no boss participant; recreating it")
+            boss = TournamentParticipant(
+                tournament_id=tournament_id,
+                hotkey=base_contestant.hotkey,
+                training_repo=base_contestant.training_repo,
+                training_commit_hash=base_contestant.training_commit_hash,
+                requested_datasets=base_contestant.requested_datasets,
+            )
+            current = await _with_boss_decoder_snapshot(boss, attempts=1)
+            await add_tournament_participants([current], psql_db)
+        else:
+            current = await _with_boss_decoder_snapshot(boss, attempts=1)
+            if current.has_decoder_snapshot:
+                await set_tournament_participant_decoder_snapshot(current, psql_db)
+                logger.info(f"Boss decoder snapshot recovered for quant tournament {tournament_id}")
+        if not current.has_decoder_snapshot:
+            await _alert_boss_decoder_missing(tournament_id, config)
+        else:
+            _BOSS_DECODER_NEXT_REPAIR_AT.pop(tournament_id, None)
+    except Exception as e:
+        logger.error(f"Boss participant repair failed for quant tournament {tournament_id}: {e}", exc_info=True)
+
+
+async def _snapshot_participant_decoder(responding_node: RespondingNode) -> bool:
+    """Lint the entrant's build and snapshot its decoder/ at the registered commit; False excludes it.
+
+    One clone serves both: the build lint (registration_lint.check_registration_lint, immutable
+    dependencies) runs on it first, then the snapshot. While QUANT_REGISTRATION_LINT_ENFORCE is False the lint is warn-only: it
+    logs a failing entrant's violations and the entrant is enrolled. When it is True a failure raises RegistrationLintFailed here.
+
+    The snapshot is taken once, here, and uploaded to MinIO: the trainer's decode only ever runs that
+    tar, never a fresh clone, so a miner cannot swap decoders after review. A decoder/ stored in git
+    LFS archives as pointer files and decodes to nothing (their loss). A huge decoder/ times out xz
+    (RuntimeError) and is excluded like an oversized one.
+    """
+    repo = responding_node.training_repo_response
+    hotkey = responding_node.node.hotkey
+    with LogContext(node_hotkey=hotkey):
+        try:
+            responding_node.decoder_snapshot = await snapshot_decoder(
+                repo.github_repo,
+                repo.commit_hash,
+                repo.github_token,
+                service_cst.BUCKET_NAME,
+                repo_check=check_registration_lint,
+            )
+        except RegistrationLintFailed as e:
+            logger.warning(f"Excluding {hotkey}: build lint failed at {repo.commit_hash}: {e}")
+            return False
+        except DecoderUnsafeMembers as e:
+            logger.warning(f"Excluding {hotkey}: {e}")
+            return False
+        except DecoderMissing:
+            logger.warning(f"Excluding {hotkey}: no decoder/ at the pinned commit {repo.commit_hash}")
+            return False
+        except DecoderTooLarge as e:
+            logger.warning(f"Excluding {hotkey}: decoder/ is {e.xz_bytes} bytes after xz, cap is {e.cap}")
+            return False
+        except DecoderNotRunnable as e:
+            logger.warning(f"Excluding {hotkey}: {e} at the pinned commit {repo.commit_hash}")
+            return False
+        except RuntimeError as e:
+            # Already token-sanitised by decoder_snapshot.
+            logger.warning(f"Excluding {hotkey}: decoder snapshot failed: {e}")
+            return False
+        except Exception as e:
+            # Anything else (an OSError on the scratch dir, a MinIO error) excludes this node only; raising
+            # would abort the gather and with it the whole registration pass. The message of an arbitrary
+            # error may carry the clone URL and its token, so it is sanitised like decoder_snapshot's own.
+            error = sanitize_git_text(str(e), repo.github_token)
+            logger.error(f"Excluding {hotkey}: unexpected decoder snapshot error: {type(e).__name__}: {error}")
+            return False
+    return True
+
+
+async def _nodes_with_decoder_snapshots(responding_nodes: list[RespondingNode]) -> list[RespondingNode]:
+    # Each clone can take up to CLONE_TIMEOUT_SECONDS, so run them in parallel under a cap.
+    semaphore = asyncio.Semaphore(DECODER_SNAPSHOT_CONCURRENCY)
+
+    async def bounded(responding_node: RespondingNode) -> bool:
+        async with semaphore:
+            return await _snapshot_participant_decoder(responding_node)
+
+    passed = await asyncio.gather(*[bounded(responding_node) for responding_node in responding_nodes])
+    return [responding_node for responding_node, ok in zip(responding_nodes, passed) if ok]
+
+
+async def _report_short_tournament(tournament: TournamentData, miner_count: int, min_required: int, config: Config) -> None:
+    """A pending tournament below the miner minimum: warn on every pass, ping Discord once per process.
+
+    The caller returns 0 and the pending loop moves on to the next tournament; this tournament is retried once
+    TOURNAMENT_PARTICIPANT_RETRY_INTERVAL_SECONDS has passed.
+    """
+    retry_minutes = t_cst.TOURNAMENT_PARTICIPANT_RETRY_INTERVAL_SECONDS // 60
+    logger.warning(
+        f"Tournament {tournament.tournament_id} only has {miner_count} miners that accept and give repos, "
+        f"need at least {min_required}. Not activating; retrying in {retry_minutes} minutes"
+    )
+    await _alert_once(
+        tournament.tournament_id,
+        _SHORT_TOURNAMENTS_ALERTED,
+        f"{tournament.tournament_type.value} tournament {tournament.tournament_id} is short of miners: {miner_count} "
+        f"enrolled, needs {min_required}. It stays pending and is retried every {retry_minutes} minutes; "
+        f"other pending tournaments are not blocked.",
+        config,
+    )
 
 
 async def populate_tournament_participants(tournament_id: str, config: Config, psql_db: PSQLDB) -> int:
@@ -806,6 +1409,8 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
     if tournament.tournament_type == TournamentType.TEXT:
         participation_fee_rao = t_cst.TOURNAMENT_TEXT_PARTICIPATION_FEE_RAO
+    elif tournament.tournament_type == TournamentType.QUANT:
+        participation_fee_rao = t_cst.TOURNAMENT_QUANT_PARTICIPATION_FEE_RAO
     elif tournament.tournament_type == TournamentType.IMAGE:
         participation_fee_rao = t_cst.TOURNAMENT_IMAGE_PARTICIPATION_FEE_RAO
     else:
@@ -816,199 +1421,216 @@ async def populate_tournament_participants(tournament_id: str, config: Config, p
 
     min_required_miners = t_cst.MIN_MINERS_FOR_TOURN
 
-    while True:
-        persisted_participants = await get_tournament_participants(tournament_id, psql_db)
-        persisted_hotkeys = {
-            participant.hotkey
-            for participant in persisted_participants
-            if participant.hotkey != EMISSION_BURN_HOTKEY
-        }
-        if len(persisted_hotkeys) >= min_required_miners:
-            logger.info(
-                f"Tournament {tournament_id} already has sufficient persisted miners "
-                f"({len(persisted_hotkeys)} >= {min_required_miners})"
-            )
-            return len(persisted_hotkeys)
-
-        all_nodes = await get_all_nodes(psql_db)
-
-        persisted_coldkeys: set[str] = set()
-        for participant in persisted_participants:
-            if participant.hotkey == EMISSION_BURN_HOTKEY:
-                continue
-            enrolled_node = await get_node_by_hotkey(participant.hotkey, psql_db)
-            if enrolled_node and enrolled_node.coldkey:
-                persisted_coldkeys.add(enrolled_node.coldkey)
-
-        # Existing participant rows are durable proof that their fee was already charged.
-        eligible_nodes = []
-        for node in all_nodes:
-            if node.hotkey == EMISSION_BURN_HOTKEY or node.hotkey in persisted_hotkeys:
-                continue
-            if node.coldkey in persisted_coldkeys:
-                logger.warning(
-                    f"Rejecting {node.hotkey} — duplicate coldkey '{node.coldkey[:12]}…' "
-                    f"(coldkey already enrolled in tournament {tournament_id})"
-                )
-                continue
-            eligible_nodes.append(node)
-
-        if not eligible_nodes:
-            logger.warning("No eligible nodes found for tournament")
-            return 0
-
-        logger.info(f"Found {len(eligible_nodes)} eligible nodes in database")
-
-        responding_nodes: list[RespondingNode] = []
-        batch_size = t_cst.TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE
-
-        for i in range(0, len(eligible_nodes), batch_size):
-            batch = eligible_nodes[i : i + batch_size]
-            logger.info(
-                f"Processing batch {i // batch_size + 1}/{(len(eligible_nodes) + batch_size - 1) // batch_size} "
-                f"with {len(batch)} nodes"
-            )
-
-            batch_results = await asyncio.gather(
-                *[_get_miner_training_repo(node, config, tournament.tournament_type) for node in batch],
-                return_exceptions=True,
-            )
-
-            for node, result in zip(batch, batch_results):
-                with LogContext(node_hotkey=node.hotkey):
-                    if isinstance(result, Exception):
-                        logger.warning(f"Exception pinging {node.hotkey}: {result}")
-                    elif result:
-                        responding_node = RespondingNode(node=node, training_repo_response=result)
-                        responding_nodes.append(responding_node)
-                        logger.info(f"Node responded with training repo {result.github_repo}@{result.commit_hash}")
-
-        logger.info(f"Got {len(responding_nodes)} responding nodes")
-
-        await validate_github_tokens(responding_nodes)
-
-        pre_dedup_ip = len(responding_nodes)
-        responding_nodes = deduplicate_by_ip_address(responding_nodes)
-        if len(responding_nodes) < pre_dedup_ip:
-            logger.info(
-                f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
-            )
-
-        pre_dedup = len(responding_nodes)
-        responding_nodes = deduplicate_by_github_account(responding_nodes)
-        if len(responding_nodes) < pre_dedup:
-            logger.info(
-                f"Deduplicated GitHub accounts: {pre_dedup} -> {len(responding_nodes)} nodes"
-            )
-
-        pre_dedup_coldkey = len(responding_nodes)
-        responding_nodes = deduplicate_by_coldkey(responding_nodes)
-        if len(responding_nodes) < pre_dedup_coldkey:
-            logger.info(
-                f"Deduplicated coldkeys: {pre_dedup_coldkey} -> {len(responding_nodes)} nodes"
-            )
-
-        logger.info(f"Processing {len(responding_nodes)} responding nodes")
-
-        logger.info("Validating obfuscation and license for participants...")
-        validated_nodes: list[RespondingNode] = []
-
-        for responding_node in responding_nodes:
-            with LogContext(node_hotkey=responding_node.node.hotkey):
-                repo_url = responding_node.training_repo_response.github_repo
-                commit_hash = responding_node.training_repo_response.commit_hash
-                github_token = responding_node.training_repo_response.github_token
-
-                if not re.fullmatch(r"[0-9a-f]{40}", commit_hash.lower()):
-                    logger.warning(
-                        f"Miner {responding_node.node.hotkey} submitted invalid commit hash '{commit_hash}' "
-                        f"for repo {repo_url}. Must be a 40-char hex SHA. Excluding from tournament."
-                    )
-                    continue
-
-                logger.info(f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}")
-
-                is_not_obfuscated = await validate_repo_obfuscation(repo_url, commit_hash, github_token)
-
-                if not is_not_obfuscated:
-                    logger.warning(
-                        f"Repository {repo_url} failed obfuscation validation for hotkey {responding_node.node.hotkey}. "
-                        f"Excluding from tournament."
-                    )
-                    continue
-
-                logger.info(f"Checking license for {responding_node.node.hotkey}'s repo: {repo_url}")
-
-                has_valid_license = await validate_repo_license(repo_url, github_token)
-
-                if not has_valid_license:
-                    logger.warning(
-                        f"Repository {repo_url} failed license validation for hotkey {responding_node.node.hotkey}. "
-                        f"Excluding from tournament."
-                    )
-                    continue
-
-                validated_nodes.append(responding_node)
-                logger.info(
-                    f"Repository {repo_url} passed obfuscation and license checks for hotkey "
-                    f"{responding_node.node.hotkey}"
-                )
-
+    persisted_participants = await get_tournament_participants(tournament_id, psql_db)
+    persisted_hotkeys = {
+        participant.hotkey
+        for participant in persisted_participants
+        if participant.hotkey != EMISSION_BURN_HOTKEY
+    }
+    if len(persisted_hotkeys) >= min_required_miners:
         logger.info(
-            f"Validation complete: {len(validated_nodes)} participants selected from {len(responding_nodes)} responding nodes"
+            f"Tournament {tournament_id} already has sufficient persisted miners "
+            f"({len(persisted_hotkeys)} >= {min_required_miners})"
         )
+        _PARTICIPANT_NEXT_PASS_AT.pop(tournament_id, None)
+        return len(persisted_hotkeys)
 
-        for responding_node in validated_nodes:
-            with LogContext(node_hotkey=responding_node.node.hotkey):
-                miner_datasets = validate_requested_datasets(
-                    responding_node.training_repo_response.requested_datasets
-                ) or None
-                if miner_datasets:
-                    logger.info(
-                        f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"
-                    )
-
-                participant = TournamentParticipant(
-                    tournament_id=tournament_id,
-                    hotkey=responding_node.node.hotkey,
-                    training_repo=responding_node.training_repo_response.github_repo,
-                    training_commit_hash=responding_node.training_repo_response.commit_hash,
-                    github_token=responding_node.training_repo_response.github_token,
-                    requested_datasets=miner_datasets,
-                )
-                enrolled = await enroll_tournament_participant_with_fee(
-                    participant,
-                    responding_node.node.coldkey,
-                    participation_fee_rao,
-                    psql_db,
-                )
-                if enrolled:
-                    logger.info(f"Added {responding_node.node.hotkey} to tournament {tournament_id}")
-                else:
-                    logger.warning(
-                        f"Could not enroll {responding_node.node.hotkey}; "
-                        "the participant and fee were both left unchanged"
-                    )
-
-        persisted_participants = await get_tournament_participants(tournament_id, psql_db)
-        persisted_miner_count = sum(
-            participant.hotkey != EMISSION_BURN_HOTKEY
-            for participant in persisted_participants
+    # The persisted-count check above is a cheap DB read and runs on every call; only the ping pass is spaced out.
+    if time.monotonic() < _PARTICIPANT_NEXT_PASS_AT.get(tournament_id, 0.0):
+        logger.info(
+            f"Tournament {tournament_id} has {len(persisted_hotkeys)} of {min_required_miners} miners; "
+            f"next enrolment pass is not due yet"
         )
-        logger.info(f"Tournament {tournament_id} now has {persisted_miner_count} persisted miners")
+        return 0
+    _PARTICIPANT_NEXT_PASS_AT[tournament_id] = time.monotonic() + t_cst.TOURNAMENT_PARTICIPANT_RETRY_INTERVAL_SECONDS
 
-        if persisted_miner_count >= min_required_miners:
-            logger.info(
-                f"Tournament {tournament_id} has sufficient miners "
-                f"({persisted_miner_count} >= {min_required_miners})"
+    all_nodes = await get_all_nodes(psql_db)
+
+    persisted_coldkeys: set[str] = set()
+    for participant in persisted_participants:
+        if participant.hotkey == EMISSION_BURN_HOTKEY:
+            continue
+        enrolled_node = await get_node_by_hotkey(participant.hotkey, psql_db)
+        if enrolled_node and enrolled_node.coldkey:
+            persisted_coldkeys.add(enrolled_node.coldkey)
+
+    # Existing participant rows are durable proof that their fee was already charged.
+    eligible_nodes = []
+    for node in all_nodes:
+        if node.hotkey == EMISSION_BURN_HOTKEY or node.hotkey in persisted_hotkeys:
+            continue
+        if node.coldkey in persisted_coldkeys:
+            logger.warning(
+                f"Rejecting {node.hotkey} — duplicate coldkey '{node.coldkey[:12]}…' "
+                f"(coldkey already enrolled in tournament {tournament_id})"
             )
-            return persisted_miner_count
+            continue
+        eligible_nodes.append(node)
 
-        logger.warning(
-            f"Tournament {tournament_id} only has {persisted_miner_count} miners that accept and give repos, "
-            f"need at least {min_required_miners}. Waiting 30 minutes and retrying..."
+    if not eligible_nodes:
+        logger.warning("No eligible nodes found for tournament")
+        # Cheap (no pings), so keep the every-cycle recheck rather than waiting out the retry interval.
+        _PARTICIPANT_NEXT_PASS_AT.pop(tournament_id, None)
+        await _report_short_tournament(tournament, len(persisted_hotkeys), min_required_miners, config)
+        return 0
+
+    logger.info(f"Found {len(eligible_nodes)} eligible nodes in database")
+
+    responding_nodes: list[RespondingNode] = []
+    batch_size = t_cst.TOURNAMENT_PARTICIPANT_PING_BATCH_SIZE
+
+    for i in range(0, len(eligible_nodes), batch_size):
+        batch = eligible_nodes[i : i + batch_size]
+        logger.info(
+            f"Processing batch {i // batch_size + 1}/{(len(eligible_nodes) + batch_size - 1) // batch_size} "
+            f"with {len(batch)} nodes"
         )
-        await asyncio.sleep(30 * 60)
+
+        batch_results = await asyncio.gather(
+            *[_get_miner_training_repo(node, config, tournament.tournament_type) for node in batch],
+            return_exceptions=True,
+        )
+
+        for node, result in zip(batch, batch_results):
+            with LogContext(node_hotkey=node.hotkey):
+                if isinstance(result, Exception):
+                    logger.warning(f"Exception pinging {node.hotkey}: {result}")
+                elif result:
+                    responding_node = RespondingNode(node=node, training_repo_response=result)
+                    responding_nodes.append(responding_node)
+                    logger.info(f"Node responded with training repo {result.github_repo}@{result.commit_hash}")
+
+    logger.info(f"Got {len(responding_nodes)} responding nodes")
+
+    await validate_github_tokens(responding_nodes)
+
+    pre_dedup_ip = len(responding_nodes)
+    responding_nodes = deduplicate_by_ip_address(responding_nodes)
+    if len(responding_nodes) < pre_dedup_ip:
+        logger.info(
+            f"Deduplicated IP addresses: {pre_dedup_ip} -> {len(responding_nodes)} nodes"
+        )
+
+    pre_dedup = len(responding_nodes)
+    responding_nodes = deduplicate_by_github_account(responding_nodes)
+    if len(responding_nodes) < pre_dedup:
+        logger.info(
+            f"Deduplicated GitHub accounts: {pre_dedup} -> {len(responding_nodes)} nodes"
+        )
+
+    pre_dedup_coldkey = len(responding_nodes)
+    responding_nodes = deduplicate_by_coldkey(responding_nodes)
+    if len(responding_nodes) < pre_dedup_coldkey:
+        logger.info(
+            f"Deduplicated coldkeys: {pre_dedup_coldkey} -> {len(responding_nodes)} nodes"
+        )
+
+    logger.info(f"Processing {len(responding_nodes)} responding nodes")
+
+    logger.info("Validating obfuscation and license for participants...")
+    validated_nodes: list[RespondingNode] = []
+
+    for responding_node in responding_nodes:
+        with LogContext(node_hotkey=responding_node.node.hotkey):
+            repo_url = responding_node.training_repo_response.github_repo
+            commit_hash = responding_node.training_repo_response.commit_hash
+            github_token = responding_node.training_repo_response.github_token
+
+            if not re.fullmatch(r"[0-9a-f]{40}", commit_hash.lower()):
+                logger.warning(
+                    f"Miner {responding_node.node.hotkey} submitted invalid commit hash '{commit_hash}' "
+                    f"for repo {repo_url}. Must be a 40-char hex SHA. Excluding from tournament."
+                )
+                continue
+
+            logger.info(f"Checking obfuscation for {responding_node.node.hotkey}'s repo: {repo_url}")
+
+            is_not_obfuscated = await validate_repo_obfuscation(repo_url, commit_hash, github_token)
+
+            if not is_not_obfuscated:
+                logger.warning(
+                    f"Repository {repo_url} failed obfuscation validation for hotkey {responding_node.node.hotkey}. "
+                    f"Excluding from tournament."
+                )
+                continue
+
+            logger.info(f"Checking license for {responding_node.node.hotkey}'s repo: {repo_url}")
+
+            has_valid_license = await validate_repo_license(
+                repo_url, github_token, commit_hash if tournament.tournament_type == TournamentType.QUANT else None
+            )
+
+            if not has_valid_license:
+                logger.warning(
+                    f"Repository {repo_url} failed license validation for hotkey {responding_node.node.hotkey}. "
+                    f"Excluding from tournament."
+                )
+                continue
+
+            validated_nodes.append(responding_node)
+            logger.info(
+                f"Repository {repo_url} passed obfuscation and license checks for hotkey "
+                f"{responding_node.node.hotkey}"
+            )
+
+    if tournament.tournament_type == TournamentType.QUANT:
+        validated_nodes = await _nodes_with_decoder_snapshots(validated_nodes)
+
+    logger.info(
+        f"Validation complete: {len(validated_nodes)} participants selected from {len(responding_nodes)} responding nodes"
+    )
+
+    for responding_node in validated_nodes:
+        with LogContext(node_hotkey=responding_node.node.hotkey):
+            miner_datasets = validate_requested_datasets(
+                responding_node.training_repo_response.requested_datasets
+            ) or None
+            if miner_datasets:
+                logger.info(
+                    f"Miner {responding_node.node.hotkey} requested datasets: {miner_datasets}"
+                )
+
+            participant = TournamentParticipant(
+                tournament_id=tournament_id,
+                hotkey=responding_node.node.hotkey,
+                training_repo=responding_node.training_repo_response.github_repo,
+                training_commit_hash=responding_node.training_repo_response.commit_hash,
+                github_token=responding_node.training_repo_response.github_token,
+                requested_datasets=miner_datasets,
+            )
+            if tournament.tournament_type == TournamentType.QUANT:
+                participant = _with_decoder_snapshot(participant, responding_node.decoder_snapshot)
+            enrolled = await enroll_tournament_participant_with_fee(
+                participant,
+                responding_node.node.coldkey,
+                participation_fee_rao,
+                psql_db,
+            )
+            if enrolled:
+                logger.info(f"Added {responding_node.node.hotkey} to tournament {tournament_id}")
+            else:
+                logger.warning(
+                    f"Could not enroll {responding_node.node.hotkey}; "
+                    "the participant and fee were both left unchanged"
+                )
+
+    persisted_participants = await get_tournament_participants(tournament_id, psql_db)
+    persisted_miner_count = sum(
+        participant.hotkey != EMISSION_BURN_HOTKEY
+        for participant in persisted_participants
+    )
+    logger.info(f"Tournament {tournament_id} now has {persisted_miner_count} persisted miners")
+
+    if persisted_miner_count >= min_required_miners:
+        logger.info(
+            f"Tournament {tournament_id} has sufficient miners "
+            f"({persisted_miner_count} >= {min_required_miners})"
+        )
+        _PARTICIPANT_NEXT_PASS_AT.pop(tournament_id, None)
+        return persisted_miner_count
+
+    await _report_short_tournament(tournament, persisted_miner_count, min_required_miners, config)
+    return 0
 
 
 async def _get_miner_training_repo(node: Node, config: Config, tournament_type: TournamentType) -> TrainingRepoResponse | None:
@@ -1053,6 +1675,11 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
         logger.error(f"Tournament {tournament_id} not found")
         return False
 
+    if tournament.tournament_type == TournamentType.QUANT and await bind_quant_source_tournament(tournament_id, config) is None:
+        # A quant tournament takes every task from a text tournament that has its boss tasks: until one is bound, no seed and
+        # no round is created, and nothing is halted (this is retried every cycle).
+        return False
+
     participants = await get_tournament_participants(tournament_id, psql_db)
     if not participants:
         logger.error(f"No participants found for tournament {tournament_id}")
@@ -1084,6 +1711,22 @@ async def create_first_round_for_active_tournament(tournament_id: str, config: C
             logger.error(f"All participants for {tournament_id} were flagged as duplicates; cannot create first round")
             return False
 
+    if tournament.tournament_type in (TournamentType.QUANT, TournamentType.TEXT):
+        # Everything the boss trains starts now. Idempotent per role, so a retry after a partial failure
+        # only fills the missing roles; the first round waits until all of them exist.
+        order = seed_creation_order(tournament.tournament_type)
+        seeds = await create_seed_tasks(tournament_id, config, tournament.tournament_type)
+        # A role out of replacements (`failed`) counts as present: the tournament goes on without its seed.
+        failed_roles = {
+            row.role
+            for row in await seeds_sql.get_latest_seed_tasks(tournament_id, psql_db)
+            if row.status == SeedStatus.FAILED
+        }
+        present = {seed.role for seed in seeds} | (failed_roles & set(order))
+        if len(present) < len(order):
+            logger.error(f"Tournament {tournament_id}: only {len(present)}/{len(order)} seed tasks exist; retrying")
+            return False
+
     logger.info(f"Creating first round for tournament {tournament_id} with {len(participant_nodes)} participants")
 
     await _create_first_round(tournament_id, tournament.tournament_type, participant_nodes, psql_db, config)
@@ -1111,34 +1754,47 @@ async def process_pending_tournaments(config: Config) -> list[str]:
             activated_tournaments = []
 
             for tournament in pending_tournaments:
-                with LogContext(tournament_id=tournament.tournament_id):
-                    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                        logger.info(
-                            f"Skipping environment tournament {tournament.tournament_id}; "
-                            f"environment tournaments are retired"
-                        )
-                        continue
-
-                    logger.info(f"Processing pending tournament {tournament.tournament_id}")
-
-                    num_participants = await populate_tournament_participants(tournament.tournament_id, config, config.psql_db)
-
-                    if num_participants > 0:
-                        activated = await activate_pending_tournament(tournament.tournament_id, config.psql_db)
-                        if activated:
-                            activated_tournaments.append(tournament.tournament_id)
+                # One tournament raising must not stop the ones after it.
+                try:
+                    with LogContext(tournament_id=tournament.tournament_id):
+                        if tournament.tournament_type == TournamentType.ENVIRONMENT:
                             logger.info(
-                                f"Activated tournament {tournament.tournament_id} "
-                                f"with {num_participants} participants"
+                                f"Skipping environment tournament {tournament.tournament_id}; "
+                                f"environment tournaments are retired"
                             )
-                            await notify_tournament_started(
-                                tournament.tournament_id,
-                                tournament.tournament_type.value,
-                                num_participants,
-                                config.discord_url,
+                            continue
+
+                        logger.info(f"Processing pending tournament {tournament.tournament_id}")
+
+                        if tournament.tournament_type == TournamentType.QUANT:
+                            await _repair_quant_boss_participant(tournament.tournament_id, config)
+
+                        num_participants = await populate_tournament_participants(
+                            tournament.tournament_id, config, config.psql_db
+                        )
+
+                        if num_participants > 0:
+                            activated = await activate_pending_tournament(tournament.tournament_id, config.psql_db)
+                            if activated:
+                                activated_tournaments.append(tournament.tournament_id)
+                                logger.info(
+                                    f"Activated tournament {tournament.tournament_id} "
+                                    f"with {num_participants} participants"
+                                )
+                                await notify_tournament_started(
+                                    tournament.tournament_id,
+                                    tournament.tournament_type.value,
+                                    num_participants,
+                                    config.discord_url,
+                                )
+                        else:
+                            logger.warning(
+                                f"Tournament {tournament.tournament_id} has too few participants, staying pending"
                             )
-                    else:
-                        logger.warning(f"Tournament {tournament.tournament_id} has no participants, skipping activation")
+                except Exception as e:
+                    logger.error(
+                        f"Error processing pending tournament {tournament.tournament_id}: {e}", exc_info=True
+                    )
 
             logger.info(f"Activated tournaments: {activated_tournaments}")
         except Exception as e:
@@ -1180,6 +1836,16 @@ async def check_if_all_tasks_have_nodes_assigned(round_id: str, config: Config) 
 
     logger.info(f"All {len(round_tasks)} tasks in round {round_id} have nodes assigned")
     return True
+
+
+async def _alert_missing_boss_round_seeds(error: MissingBossRoundSeeds, round_id: str, config: Config) -> None:
+    """A round stays PENDING while a role has no live seed (seed_tasks re-draws it each cycle): tell a human, once."""
+    await alert_seed_issue(
+        f"{error.tournament_id}:boss-round-missing-seeds:{','.join(sorted(error.roles))}",
+        f"Tournament {error.tournament_id}: round {round_id} cannot start, no live seed for {error.roles}. "
+        f"The round stays PENDING while the seed is re-drawn each cycle.",
+        config,
+    )
 
 
 async def process_pending_rounds(config: Config):
@@ -1253,6 +1919,8 @@ async def process_pending_rounds(config: Config):
                             )
                             logger.info(f"Round {round_data.round_id} will be processed again in the next cycle")
 
+                    except MissingBossRoundSeeds as e:
+                        await _alert_missing_boss_round_seeds(e, round_data.round_id, config)
                     except Exception as e:
                         logger.error(f"Error processing pending round {round_data.round_id}: {e}")
 
@@ -1298,42 +1966,100 @@ async def process_active_tournaments(config: Config):
         try:
             active_tournaments = await get_tournaments_with_status(TournamentStatus.ACTIVE, config.psql_db)
             for tournament in active_tournaments:
-                with LogContext(tournament_id=tournament.tournament_id):
-                    if tournament.tournament_type == TournamentType.ENVIRONMENT:
-                        logger.info(
-                            f"Skipping environment tournament {tournament.tournament_id}; "
-                            f"environment tournaments are retired"
-                        )
-                        continue
+                # One tournament raising must not stop the ones after it.
+                try:
+                    with LogContext(tournament_id=tournament.tournament_id):
+                        if tournament.tournament_type == TournamentType.ENVIRONMENT:
+                            logger.info(
+                                f"Skipping environment tournament {tournament.tournament_id}; "
+                                f"environment tournaments are retired"
+                            )
+                            continue
 
-                    logger.info(f"Processing active tournament {tournament.tournament_id}")
-                    await _alert_if_near_weekly_deadline(tournament, config)
-                    rounds = await get_tournament_rounds(tournament.tournament_id, config.psql_db)
-                    if not rounds:
-                        logger.info(f"Tournament {tournament.tournament_id} has no rounds, creating first round...")
-                        await create_first_round_for_active_tournament(tournament.tournament_id, config, config.psql_db)
-                    else:
-                        current_round = rounds[-1]
-                        if current_round.status == RoundStatus.ACTIVE:
-                            if await check_if_round_is_completed(current_round, config):
-                                await update_round_status(current_round.round_id, RoundStatus.COMPLETED, config.psql_db)
+                        logger.info(f"Processing active tournament {tournament.tournament_id}")
+                        await _alert_if_near_weekly_deadline(tournament, config)
+                        if tournament.tournament_type in (TournamentType.QUANT, TournamentType.TEXT):
+                            await process_tournament_seed_tasks(tournament.tournament_id, config)
+                            halt_reason = await seed_halt_reason(tournament.tournament_id, config.psql_db)
+                            if halt_reason:
+                                logger.error(f"Tournament {tournament.tournament_id} is halted, not advancing: {halt_reason}")
+                                continue
+                        rounds = await get_tournament_rounds(tournament.tournament_id, config.psql_db)
+                        if not rounds:
+                            logger.info(f"Tournament {tournament.tournament_id} has no rounds, creating first round...")
+                            await create_first_round_for_active_tournament(tournament.tournament_id, config, config.psql_db)
+                        else:
+                            current_round = rounds[-1]
+                            if current_round.status == RoundStatus.ACTIVE:
+                                if await check_if_round_is_completed(current_round, config):
+                                    await update_round_status(current_round.round_id, RoundStatus.COMPLETED, config.psql_db)
+                                    logger.info(
+                                        f"Tournament {tournament.tournament_id} round {current_round.round_id} is completed, "
+                                        f"advancing..."
+                                    )
+                                    await advance_tournament(tournament, current_round, config, config.psql_db)
+                            elif current_round.status == RoundStatus.COMPLETED:
+                                # If the round is already completed but tournament is still active,
+                                # we need to advance the tournament
                                 logger.info(
-                                    f"Tournament {tournament.tournament_id} round {current_round.round_id} is completed, "
-                                    f"advancing..."
+                                    f"Tournament {tournament.tournament_id} round {current_round.round_id} is already completed, "
+                                    f"checking if tournament should advance..."
                                 )
                                 await advance_tournament(tournament, current_round, config, config.psql_db)
-                        elif current_round.status == RoundStatus.COMPLETED:
-                            # If the round is already completed but tournament is still active,
-                            # we need to advance the tournament
-                            logger.info(
-                                f"Tournament {tournament.tournament_id} round {current_round.round_id} is already completed, "
-                                f"checking if tournament should advance..."
-                            )
-                            await advance_tournament(tournament, current_round, config, config.psql_db)
+                except Exception as e:
+                    logger.error(
+                        f"Error processing active tournament {tournament.tournament_id}: {e}", exc_info=True
+                    )
         except Exception as e:
             logger.error(f"Error processing active tournaments: {e}", exc_info=True)
         finally:
             await asyncio.sleep(t_cst.TOURNAMENT_ACTIVE_CYCLE_INTERVAL)
+
+
+async def process_freeform_publications(config: Config):
+    """Re-derive and redo the freeform publications a restart or an HF outage lost; first pass at startup."""
+    logger.info("Processing freeform publications...")
+
+    while True:
+        try:
+            await reconcile_freeform_publications(config, config.psql_db)
+        except Exception as e:
+            logger.error(f"Error reconciling freeform publications: {type(e).__name__}", exc_info=True)
+        finally:
+            await asyncio.sleep(t_cst.FREEFORM_PUBLICATION_RECONCILE_INTERVAL)
+
+
+async def _return_boss_round_for_node_assignment(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    outcome: RoundOutcome,
+    config: Config,
+    psql_db: PSQLDB,
+) -> None:
+    """Put a boss round that holds tasks with no assigned nodes back to PENDING.
+
+    PENDING is what gets the tasks trained: process_pending_rounds assigns nodes to anything in the
+    round without them and flips it back to ACTIVE, after which the round completes and advances normally.
+    A task that never ran must not be scored against anyone, so the round is not resolved around it.
+    """
+    if not outcome.unassigned_task_ids:
+        logger.error(f"Round {completed_round.round_id} deferred with no unassigned tasks attached; not advancing")
+        return
+
+    await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+    logger.warning(
+        f"Round {completed_round.round_id} returned to PENDING to assign nodes to "
+        f"{len(outcome.unassigned_task_ids)} orphaned task(s): {outcome.unassigned_task_ids}"
+    )
+    await _notify_discord(
+        f"Boss round returned for node assignment\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"{outcome.deferred_reason}\n"
+        f"Most likely a crash between creating a task and returning the round to PENDING. "
+        f"No action needed unless it repeats.",
+        config,
+    )
 
 
 async def _add_boss_round_deciders(
@@ -1353,6 +2079,13 @@ async def _add_boss_round_deciders(
     Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries. The
     partial batch is rolled back by the creator, so the retry starts from the same state this one did.
     """
+    # A boss round of a seeded text or planned image tournament has no draws (it is decided on the crown rule), so it has no
+    # deciders.
+    if tournament.tournament_type != TournamentType.QUANT and await plays_round_plan(tournament, psql_db):
+        raise RuntimeError(
+            f"Tournament {tournament.tournament_id} plays the round plan: its boss round never adds deciders"
+        )
+
     # Nothing to create - the round already holds tasks that never got nodes (a crash between
     # creating deciders and this status flip). PENDING is the whole fix: node assignment picks them
     # up and the round runs them.
@@ -1426,6 +2159,53 @@ async def _add_boss_round_deciders(
     )
 
 
+async def _add_seeded_text_big_task(
+    tournament: TournamentData,
+    completed_round: TournamentRoundData,
+    outcome: RoundOutcome,
+    config: Config,
+    psql_db: PSQLDB,
+) -> None:
+    """Stage 2 of a seeded text boss round: add the big task and put the round back to PENDING.
+
+    PENDING is what gets it trained: process_pending_rounds assigns both players to the new task and flips the round back
+    to ACTIVE, after which it completes and is resolved over all seven tasks. Creation is idempotent (a round that already
+    holds its big task only gets the status flip), so a crash between the two is repaired on the next pass.
+
+    Failure to create leaves the round COMPLETED and unadvanced, so the next cycle retries, with a one-time alert.
+    """
+    try:
+        task = await create_seeded_text_big_task(tournament.tournament_id, completed_round.round_id, config)
+    except Exception as e:
+        logger.error(
+            f"Failed to create the big task of boss round {completed_round.round_id}: {e}. "
+            f"Round stays completed and unadvanced; retrying next cycle.",
+            exc_info=True,
+        )
+        await _alert_once(
+            completed_round.round_id,
+            _BIG_TASK_CREATION_FAILED_ROUNDS,
+            f"Boss round big task creation FAILED\n"
+            f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+            f"Round: {completed_round.round_id}\n"
+            f"Error: {e}\n"
+            f"The round will retry every cycle but will NOT advance until this succeeds.",
+            config,
+        )
+        return
+
+    await update_round_status(completed_round.round_id, RoundStatus.PENDING, psql_db)
+    logger.info(f"Round {completed_round.round_id} returned to PENDING with its big task {task.task_id}")
+    await _notify_discord(
+        f"Boss round extended - big task\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"{outcome.deferred_reason}\n"
+        f"Added task {task.task_id} ({task.model_id}).",
+        config,
+    )
+
+
 async def _alert_empty_score_groups(
     tournament: TournamentData,
     completed_round: TournamentRoundData,
@@ -1455,6 +2235,32 @@ async def _alert_empty_score_groups(
         f"{len(empty_score_groups)} group(s) completed with no valid scores:\n{detail}\n"
         f"The next round has NOT been created and no one has been eliminated. "
         f"Evaluation data is missing for these groups — fix the scores, then the cycle will advance on its own.",
+        config,
+    )
+
+
+async def _alert_crown_evaluation_fault(
+    tournament: TournamentData, completed_round: TournamentRoundData, task_ids: list[str], config: Config
+) -> None:
+    """Hold a round whose crown tasks have an evaluation fault, once per round per process (as _alert_empty_score_groups).
+
+    Nothing is advanced, decided or changed: the round stays completed and unadvanced, so the next cycle reads the results
+    again and the round proceeds on its own once the evaluation results exist.
+    """
+    logger.error(
+        f"HOLDING tournament {tournament.tournament_id} at round {completed_round.round_id}: both entries trained and neither "
+        f"has a result on task(s) {task_ids}"
+    )
+    await _alert_once(
+        completed_round.round_id,
+        _CROWN_EVALUATION_FAULT_ROUNDS_ALERTED,
+        f"Tournament crown evaluation fault\n"
+        f"Tournament: {tournament.tournament_id} ({tournament.tournament_type.value})\n"
+        f"Round: {completed_round.round_id}\n"
+        f"Task(s) {', '.join(task_ids)}: the contender's and the boss's trainings both succeeded and neither has an "
+        f"evaluation result.\n"
+        f"Nothing has been advanced or decided. Evaluation data is missing for these tasks; the round resolves on its own "
+        f"once the results exist.",
         config,
     )
 
@@ -1538,6 +2344,68 @@ async def _majority_failure_blocks_completion(tournament_task: TournamentTask, c
     return True
 
 
+async def _quant_task_completion(
+    tournament_task: TournamentTask, task_obj: AnyTypeTask, config: Config
+) -> tuple[bool, str] | None:
+    """The quant-only completion outcomes; None leaves the task to the ordinary rules.
+
+    A boss-round seed (the boss's upfront entry) is never replaced: its entries are trained upfront and never retrained.
+    When it failed prep after attach, or failed with the boss's row failed, and the challenger has a usable run, it
+    counts as completed and the round result gives the slot to the challenger. A boss-round seed that failed prep with
+    no usable challenger run also counts as completed, and the boss keeps the slot by default. A successful task
+    whose majority of failed trainings is the boss's own failed entry is resolved by the round, so it needs no review.
+    """
+    if task_obj.status == TaskStatus.SUCCESS.value:
+        trainings = await get_training_status_for_task(tournament_task.task_id, config.psql_db)
+        if exceeds_failure_threshold(trainings) and await seeds_sql.boss_compression_entry_failed(
+            tournament_task.task_id, config.psql_db
+        ):
+            logger.info(f"Task {tournament_task.task_id}: the boss's compression entry failed; the round resolves it, no review")
+            return True, "Task completed successfully"
+        return None
+
+    seed_role = await seeds_sql.boss_side_seed_failure(tournament_task.task_id, task_obj.status, config.psql_db)
+    if seed_role is not None:
+        # The boss's entries are trained upfront and never retrained: no replacement, the round counts the slot as the
+        # boss's failure (round_results.get_knockout_winners).
+        stage = "prep" if task_obj.status == TaskStatus.PREP_TASK_FAILURE.value else "training"
+        reason = f"boss-side seed {seed_role.value} failed {stage} after attach"
+        await alert_seed_issue(
+            boss_side_failure_key(tournament_task.tournament_id, tournament_task.task_id),
+            f"Tournament {tournament_task.tournament_id} round {tournament_task.round_id}: {reason} (task {task_obj.task_id}, "
+            f"status {task_obj.status}); not replaced, the slot goes to the challenger",
+            config,
+        )
+        return True, f"Boss-side seed failure ({reason}); the challenger takes the slot."
+
+    if task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:
+        seed = await seeds_sql.get_seed_task_by_task_id(tournament_task.task_id, config.psql_db)
+        if seed is not None and seed.role in ANY_BOSS_ROUND_SEED_ROLES:
+            # Nobody has a result here, and replacing the task would not bring the boss's upfront entry back.
+            await alert_seed_issue(
+                boss_side_failure_key(tournament_task.tournament_id, tournament_task.task_id),
+                f"Tournament {tournament_task.tournament_id} round {tournament_task.round_id}: boss-round seed "
+                f"{seed.role.value} failed prep and nobody has a usable result (task {task_obj.task_id}); "
+                f"not replaced, the slot stays with the boss",
+                config,
+            )
+            return True, (
+                f"Boss-round seed {seed.role.value} failed prep and nobody has a result; "
+                f"not replaced, the boss keeps the slot by default."
+            )
+
+    if task_obj.status == TaskStatus.FAILURE.value and await seeds_sql.boss_compression_entry_failed(
+        tournament_task.task_id, config.psql_db
+    ):
+        # The boss's run and the challenger's both came to nothing: the ordinary rule holds, the boss wins the task by default.
+        return True, "The boss's compression entry failed and the challenger has no successful run; boss wins by default."
+
+    if task_obj.status == TaskStatus.AWAITING_UPSTREAM.value:
+        return False, "Held until its upstream instruct task is scored"
+
+    return None
+
+
 async def is_tourn_task_completed(
     tournament_task: TournamentTask, task_obj: AnyTypeTask, config: Config, final_round: bool = False
 ) -> tuple[bool, str]:
@@ -1550,6 +2418,11 @@ async def is_tourn_task_completed(
 
     Returns a tuple of (is_completed, reason)
     """
+
+    if task_obj.task_type in QUANT_TASK_TYPES:
+        quant_completion = await _quant_task_completion(tournament_task, task_obj, config)
+        if quant_completion is not None:
+            return quant_completion
 
     if task_obj.status == TaskStatus.SUCCESS.value:
         if await _majority_failure_blocks_completion(tournament_task, config):
@@ -1567,6 +2440,12 @@ async def is_tourn_task_completed(
         return False, "Tournament task failed."
 
     elif task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:
+        seed = await seeds_sql.get_seed_task_by_task_id(tournament_task.task_id, config.psql_db)
+        if seed is not None and seed.role in SWAPPED_SEED_ROLES and seed.status != SeedStatus.FAILED:
+            # A text or quant round seed is redrawn by the seed loop, which moves its place in the round to the new task.
+            # Once the role is out of replacements (`failed`) the loop is done with it: the ordinary replacement below
+            # takes over.
+            return False, "seed task failed prep; the seed is redrawn"
         logger.info(f"Task {task_obj.task_id} failed during preparation, creating replacement immediately.")
         new_task_id = await replace_tournament_task(
             tournament_task.task_id,
@@ -1619,8 +2498,8 @@ async def check_if_round_is_completed(round_data: TournamentRoundData, config: C
 async def process_tournament_scheduling(config: Config):
     """
     Process tournament scheduling to automatically start new tournaments when the previous ones finish.
-    Checks text and image tournaments independently. Environment tournaments are retired and no
-    longer scheduled.
+    Checks text, image and quant tournaments independently.
+    Environment tournaments are retired and no longer scheduled.
 
     Tournaments only start during their scheduled day/hour window. If a scheduled start is missed,
     the system waits until the next week's scheduled time rather than starting late.
@@ -1629,7 +2508,7 @@ async def process_tournament_scheduling(config: Config):
 
     while True:
         try:
-            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE]:
+            for tournament_type in [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.QUANT]:
                 await check_and_start_tournament(tournament_type, config.psql_db, config)
 
         except Exception as e:
@@ -1750,6 +2629,8 @@ def _get_tournament_schedule(tournament_type: TournamentType) -> tuple[int, int]
         return (t_cst.TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_TEXT_HOUR)
     elif tournament_type == TournamentType.IMAGE:
         return (t_cst.TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_IMAGE_HOUR)
+    elif tournament_type == TournamentType.QUANT:
+        return (t_cst.TOURNAMENT_SCHEDULE_QUANT_DAY_OF_WEEK, t_cst.TOURNAMENT_SCHEDULE_QUANT_HOUR)
     else:
         # Default fallback
         return (0, 14)
@@ -1815,6 +2696,11 @@ async def upload_participant_repository(
     if backup_repo_url:
         await update_tournament_participant_backup_repo(tournament_id, hotkey, backup_repo_url, psql_db)
         logger.info(f"Successfully stored backup repository URL for {hotkey}: {backup_repo_url}")
+        if tournament_type == TournamentType.QUANT:
+            try:
+                schedule_freeform_release(tournament_id, hotkey, config, psql_db)
+            except Exception as e:
+                logger.error(f"Decoder release could not be scheduled for {hotkey}: {type(e).__name__}")
     else:
         logger.warning(f"Repository upload failed for participant {hotkey}")
 

@@ -1,10 +1,10 @@
 # Docs
 
-This folder contains the maintained human-facing documentation.
+Index of the guides in this folder. Module internals are documented in the `README.md` next to the code.
 
-## Contents
-
-- `developer.md`: repo layout, local development, validator/trainer/miner operation, testing, and common ops workflows.
-- `miner.md`: miner requirements, miner endpoint contract, training repository contract, tournament types, and scoring expectations.
-
-Keep this folder intentionally small. If a doc is audience-specific, fold it into one of the two maintained guides instead of adding a new standalone document.
+| Doc | Reader | What it answers |
+| --- | --- | --- |
+| [miner.md](miner.md) | Miners | Everything shared by the three tournaments: schedule, fees, repository rules, how code runs, entry, payouts, results, fair play. |
+| [miner_text.md](miner_text.md), [miner_image.md](miner_image.md), [miner_compression.md](miner_compression.md) | Miners | One tournament each: rounds, boss round, what your code receives, output contract, scoring, the crown. |
+| [developer.md](developer.md) | Operators and developers | Repository layout, setup, running a validator, trainer or miner, evaluations, tests. |
+| [organic-package.md](organic-package.md) | Developers | What each install extra of the organic package covers. |

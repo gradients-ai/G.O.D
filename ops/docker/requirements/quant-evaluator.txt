@@ -1,0 +1,16 @@
+# Quant evaluator stack, pinned to the versions verified on H100. vLLM is pinned exactly: kernel
+# routing and the expected kernel classes in validator/evaluation/constants.py
+# (QUANT_EXPECTED_KERNEL_CLASSES) are specific to this release. The repo itself is installed with
+# --no-deps: the scorer modules need only these, and fiber's pydantic pin conflicts with vLLM's.
+vllm==0.31.0
+torch==2.13.0
+transformers==5.17.0
+# Already ==-pinned by vLLM 0.31.0; repeated so a vLLM bump cannot move it silently. Its own packer pads
+# 3-bit weights (10 per int32), unlike the dense layout miners save and quant_structure checks, but vLLM
+# allocates and loads the dense layout itself and never calls it. The image build asserts both
+# (ops/docker/scripts/check_quant_packed_layout.py); do not force a newer release past vLLM's pin.
+compressed-tensors==0.17.0
+# W3A16 kernels. quant_vllm.disable_humming_stream_k patches a private function of this release.
+humming-kernels[cu13]==0.1.16
+# core.constants loads .env files.
+python-dotenv==1.0.1

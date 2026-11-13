@@ -141,8 +141,6 @@ async def test_fees_and_weights_accept_responses_without_environment_fields() ->
         "/v1/performance/latest-tournament-weights",
         json={
             "burn_data": {
-                "text_performance_diff": None,
-                "image_performance_diff": 0.1,
                 "text_burn_proportion": 0.2,
                 "image_burn_proportion": 0.3,
                 "text_tournament_weight": 0.4,

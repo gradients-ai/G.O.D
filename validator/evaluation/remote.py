@@ -28,4 +28,6 @@ async def run_remote_eval_repos(**kwargs):
 
     from validator.evaluation.basilica import run_basilica_eval_repos
 
+    # Runpod-only: Basilica selects its GPU from gpu_models alone.
+    kwargs.pop("runpod_instance_types", None)
     return await run_basilica_eval_repos(**kwargs)

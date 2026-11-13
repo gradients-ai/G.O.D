@@ -1,6 +1,7 @@
 import asyncio
 
 from core.logging import get_logger
+from core.logging import redact_url_queries
 from validator.app.config import load_config
 from validator.tasks.datasets.preparation import prepare_text_task
 from validator.tasks.models import ChatRawTask
@@ -30,11 +31,10 @@ async def main():
     config = load_config()
 
     try:
-        test_data, synth_data, train_data = await prepare_text_task(task=task, keypair=config.keypair)
+        split = await prepare_text_task(task=task, keypair=config.keypair)
 
-        logger.info(f"Test data URL: {test_data}")
-        logger.info(f"Synthetic data URL: {synth_data}")
-        logger.info(f"Training data URL: {train_data}")
+        logger.info(redact_url_queries(f"Test data URL: {split.test_url}"))
+        logger.info(redact_url_queries(f"Training data URL: {split.train_url}"))
 
     except Exception as e:
         logger.error(f"Error in task preparation: {e}", exc_info=True)

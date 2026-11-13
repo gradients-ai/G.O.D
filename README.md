@@ -1,86 +1,64 @@
-<h1 align="center">G.O.D Subnet</h1>
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/banner-dark.svg"><img src="docs/assets/readme/banner-light.svg" alt="G.O.D: Gradients on Demand, Bittensor subnet 56" width="100%"></picture>
+</p>
 
-Welcome to the [Gradients on Demand](https://gradients.io) subnet.
+<h3 align="center">The best training recipes are found by open competition.</h3>
 
-G.O.D is the subnet runtime behind Gradients.io training jobs and tournaments. Validators create tasks, coordinate miner and trainer infrastructure, evaluate results, and set weights. Miners expose training repositories for tournament tasks; trainers run those repositories on validator-controlled GPU infrastructure.
+<p align="center">
+  Every week, miners' code trains text and image models and compresses language models on the same tasks and the same hardware. Up to three places per tournament are paid from the subnet's miner emissions, and the winning code is <a href="https://github.com/gradients-opensource">published in the open</a>.
+</p>
 
-## Tournaments
+<p align="center">
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-paper-dark.svg"><img src="docs/assets/readme/cta-paper-light.svg" alt="Read the paper" height="40"></picture></a>
+  <a href="https://gradients.io"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-train-dark.svg"><img src="docs/assets/readme/cta-train-light.svg" alt="Train on gradients.io" height="40"></picture></a>
+  <a href="docs/miner.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/cta-compete-dark.svg"><img src="docs/assets/readme/cta-compete-light.svg" alt="Compete as a miner" height="40"></picture></a>
+</p>
 
-Tournaments are recurring competitions where miners submit open-source training code. The validator asks each miner for a repository and exact commit, validates the repository, runs the code on dedicated trainers, evaluates the resulting models, and advances winners through tournament rounds.
+<br>
 
-Tournament types are scheduled independently:
+<p align="center">
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-1-dark.svg"><img src="docs/assets/readme/stat-1-light.svg" alt="100% win rate against TogetherAI, Databricks and Google Cloud" width="270"></picture></a>
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-2-dark.svg"><img src="docs/assets/readme/stat-2-light.svg" alt="82.8% of experiments won against HuggingFace AutoTrain" width="270"></picture></a>
+  <a href="https://arxiv.org/abs/2506.07940"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/stat-3-dark.svg"><img src="docs/assets/readme/stat-3-light.svg" alt="180 fine-tuning tasks, on models from 70M to 70B parameters" width="270"></picture></a>
+  <br>
+  Results reported in <a href="https://arxiv.org/abs/2506.07940">Gradients: When Markets Meet Fine-tuning</a> (arXiv:2506.07940).
+</p>
 
-| Type | Scheduled start | Task family | Participation fee | Minimum miners |
-| --- | --- | --- | --- | --- |
-| Text | Monday 11:00 UTC | Instruct, Chat, DPO, and GRPO tasks | `0.7 TAO` | 4 |
-| Image | Monday 13:00 UTC | Diffusion/image tasks | `0.4 TAO` | 4 |
+## Three tournaments
 
-Environment tournaments have been retired and are no longer scheduled or emission-weighted. Historical
-environment tournaments remain queryable through the tournament analytics endpoints.
+<p align="center">
+  <a href="docs/miner_text.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-text-dark.svg"><img src="docs/assets/readme/card-text-light.svg" alt="Text tournament. Fine-tune a given language model on an instruct, chat, DPO or GRPO task. Ranked by lowest loss on held-out data; on GRPO, highest reward. Open the text guide." width="270"></picture></a>
+  <a href="docs/miner_image.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-image-dark.svg"><img src="docs/assets/readme/card-image-light.svg" alt="Image tournament. Train a LoRA for a given image model on a text-to-image or edit task. Ranked by lowest loss on held-out images. Open the image guide." width="270"></picture></a>
+  <a href="docs/miner_compression.md"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/card-compression-dark.svg"><img src="docs/assets/readme/card-compression-light.svg" alt="Compression tournament. Compress a given language model: a fixed quantised format, or freeform, any format with your own decoder. Ranked by lowest loss in the fixed format; in freeform by fewest bytes, with a penalty on loss. Open the compression guide." width="270"></picture></a>
+</p>
 
-Scheduling notes:
+## How it works
 
-- The scheduler creates a new pending tournament only when there is no pending or active tournament of the same type.
-- Follow-up tournaments are created only during the configured UTC start hour. If the window is missed, the next opportunity is the following week's window.
-- Tournament length is round- and task-dependent rather than a fixed 4-7 day duration. Pending tournaments collect and validate participants, deduct fees, and activate after the minimum miner count is met; active tournaments advance as training and evaluation rounds finish.
-- Text and image tournaments use group, knockout/final, and boss/champion rounds.
-- Winning repositories are published to [github.com/gradients-opensource](https://github.com/gradients-opensource), and tournament performance feeds validator weight setting.
+Miners compete with training code. Each miner enters a tournament with a GitHub repository at a pinned commit. For every task the validator runs that code on its own GPUs, then evaluates and ranks the resulting models.
 
-Useful public endpoints:
+<p align="center">
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/steps-1-2-dark.svg"><img src="docs/assets/readme/steps-1-2-light.svg" alt="01 Enter: a GitHub repository at a pinned commit. 02 Rounds: same tasks, same hardware; one challenger remains." width="405"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme/steps-3-4-dark.svg"><img src="docs/assets/readme/steps-3-4-light.svg" alt="03 Boss round: the challenger is compared with the boss, task by task. 04 Crown: beat the boss to take it; the winning code is published." width="405"></picture>
+</p>
 
-```bash
-curl https://api.gradients.io/v1/tournaments/next-dates
-curl https://api.gradients.io/v1/tournaments/active
-curl https://api.gradients.io/v1/tournaments/latest/details
-curl https://api.gradients.io/tournament/fees
-```
+The crown is decided head-to-head against the boss, the defending champion. That is seven tasks in every tournament: the three round tasks, which the boss also runs, and the four boss-round tasks. The challenger needs at least five wins, under the [crown rule](docs/miner.md#the-boss-and-the-crown); otherwise the boss keeps the crown.
+
+## Start here
+
+Miners start at the [miner hub](docs/miner.md).
 
 ## Documentation
 
-- [Developer Guide](docs/developer.md): repo layout, setup, validator/trainer/miner operations, tests, and common development workflows.
-- [Miner Guide](docs/miner.md): miner participation requirements, training repository contract, tournament types, and scoring expectations.
+| I want to... | Read |
+| --- | --- |
+| Enter a tournament | [Miner hub](docs/miner.md) |
+| Know one tournament's rules | [Text](docs/miner_text.md), [image](docs/miner_image.md) or [compression](docs/miner_compression.md) guide |
+| Know how the crown is decided | [The boss and the crown](docs/miner.md#the-boss-and-the-crown) |
+| Know how emissions are paid | [Payouts](docs/miner.md#payouts) |
+| See results and balances | [Results](docs/miner.md#results) |
+| Run a validator or a trainer, or change this codebase | [Developer guide](docs/developer.md) |
+| Use the Gradients API | [SKILL.md](SKILL.md) |
 
-## Running Evaluations
+## Licence
 
-You can re-evaluate existing tasks on your own machine. Or you can run non-submitted models to check if they are good.
-This works for tasks not older than 7 days.
-
-Make sure to build the latest docker images before running the evaluation.
-
-```bash
-docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
-docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
-```
-
-To see the available options, run:
-
-```bash
-python -m ops.validator_ops.run_evaluation --help
-```
-
-To re-evaluate a task, run:
-
-```bash
-python -m ops.validator_ops.run_evaluation --task_id <task_id>
-```
-
-To re-evaluate a PvP environment task for selected hotkeys, run:
-
-```bash
-python -m ops.validator_ops.run_evaluation --task_id <task_id> --gpu_ids 0 1 --hotkeys <hotkey_a> <hotkey_b>
-```
-
-For continuation-round PvP (previous-round adapter as `base_chain`), run:
-
-```bash
-python -m ops.validator_ops.run_evaluation --task_id <task_id> --gpu_ids 0 1 \
-  --hotkeys <hotkey_a> <hotkey_b> \
-  --base_chain <hotkey_a>=<prev_repo_a> \
-  --base_chain <hotkey_b>=<prev_repo_b>
-```
-
-To run a non-submitted model, run:
-
-```bash
-python -m ops.validator_ops.run_evaluation --task_id <task_id> --models <model_name>
-```
+Apache 2.0. See [LICENSE.md](LICENSE.md) and [NOTICE](NOTICE).

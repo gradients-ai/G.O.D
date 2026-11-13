@@ -7,18 +7,23 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+
+# Before any project import: modules such as validator/infrastructure/minio_client.py (reached via trainer.endpoints)
+# read S3_* and other settings at import time, so a later load would leave them at their defaults. A variable already
+# in the environment (e.g. from `uvicorn --env-file`) still wins.
+TRAINER_ENV_FILE = ".trainer.env"
+load_dotenv(TRAINER_ENV_FILE)
+
+from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
+from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
 from trainer.job_state import complete_model_prep
 from trainer.job_state import complete_task
 from trainer.job_state import get_running_jobs
 from trainer.job_state import log_task
-from trainer.cleanup import start_cleanup_loop_in_thread
-from core.logging import get_logger
 
-
-load_dotenv(".trainer.env")
 
 logger = get_logger(__name__)
 
@@ -33,7 +38,7 @@ def _remove_container(container) -> None:
     container.reload()
     if container.status == "running":
         container.kill()
-    container.remove(force=True)
+    container.remove(force=True, v=True)
 
 
 async def cleanup_orphaned_trainer_state():

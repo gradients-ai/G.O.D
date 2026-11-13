@@ -1,9 +1,10 @@
-# Validator Nodes
+# Validator nodes
 
-Metagraph node refresh and node state helpers.
+Node refresh and node-facing models.
 
 ## Contents
 
-- `refresh.py`: refreshes nodes from chain/metagraph state into validator persistence.
-- `models.py`: node stats, performance, and leaderboard response models.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `refresh.py` | Fetches the current nodes from the network, stores them and moves replaced nodes to history. |
+| `models.py` | Node stats, performance and leaderboard response models. |

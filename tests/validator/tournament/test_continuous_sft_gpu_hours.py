@@ -64,26 +64,25 @@ class TestComputeHours:
             training_start_point=training_start_point,
         )
 
-    def test_continuous_sft_budget_divides_by_4_gpus(self):
-        # Identical stats, chat task: DEFAULT sizes GPUs from params (~8.6B -> 2xH100) while
-        # CONTINUOUS_SFT uses the forced 4xH100, so its budget must be strictly smaller.
-        continuous = self._hours(TrainingStartPoint.CONTINUOUS_SFT)
-        default = self._hours(TrainingStartPoint.DEFAULT)
+    def test_continuous_sft_hours_are_pinned(self):
+        assert self._hours(TrainingStartPoint.CONTINUOUS_SFT) == 2.5
+
+    def test_throughput_budget_divides_by_4_gpus_for_continuous_start_point(self):
+        # The throughput estimate itself still sizes by the forced 4xH100 (DEFAULT sizes GPUs from
+        # params: ~8.6B -> 2xH100), though continuous-SFT tasks do not use its result. A dataset small
+        # enough that neither budget hits the MAX_TRAINING_HOURS cap.
+        continuous = scheduler.compute_training_hours(
+            20_000_000, SEED_PARAMS, TaskType.CHATTASK, 8_000.0, TrainingStartPoint.CONTINUOUS_SFT
+        )
+        default = scheduler.compute_training_hours(
+            20_000_000, SEED_PARAMS, TaskType.CHATTASK, 8_000.0, TrainingStartPoint.DEFAULT
+        )
         assert continuous < default
 
-    def test_params_fetched_from_seed_not_carried_winner(self, monkeypatch):
-        # The exact orchestrator configuration: stats present, model_params_count unset, model_id
-        # is the carried winner (round 2+: possibly a LoRA adapter whose safetensors total is
-        # adapter-sized). The seed must be resolved from ds INSIDE the function so no call site
-        # can feed the winner into the param fetch.
-        fetched = []
-
-        def _record(model_id):
-            fetched.append(model_id)
-            return SEED_PARAMS
-
-        monkeypatch.setattr(scheduler, "get_model_num_params", _record)
-        scheduler.compute_hours_from_baseline_stats(
+    def test_no_param_fetch_for_continuous_sft(self, monkeypatch):
+        # The carried winner may be an unfetchable LoRA adapter; the pinned budget never looks at params.
+        monkeypatch.setattr(scheduler, "get_model_num_params", _boom)
+        hours = scheduler.compute_hours_from_baseline_stats(
             current_hours=4.0,
             baseline_stats=_stats(total_tokens=200_000_000, num_records=100_000, tokens_per_sec=8_000.0),
             task_type=TaskType.CHATTASK,
@@ -92,9 +91,9 @@ class TestComputeHours:
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
             ds="continuous-sft:qwen:chunk-00003",
         )
-        assert fetched == [LINEAGE_SEED]
+        assert hours == 2.5
 
-    def test_no_baseline_stats_keeps_the_fallback_budget(self, monkeypatch):
+    def test_no_baseline_stats_gives_the_pinned_budget(self, monkeypatch):
         monkeypatch.setattr(scheduler, "get_model_num_params", _boom)
         hours = scheduler.compute_hours_from_baseline_stats(
             current_hours=4.0,
@@ -103,4 +102,4 @@ class TestComputeHours:
             model_id=LINEAGE_SEED,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
         )
-        assert hours == 4.0
+        assert hours == 2.5

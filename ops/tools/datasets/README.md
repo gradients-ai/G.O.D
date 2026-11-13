@@ -1,8 +1,9 @@
-# Dataset Tools
+# Dataset tools
 
-Dataset generation and formatting tools.
+Dataset generation tools.
 
 ## Contents
 
-- `sft_dataset_gen/`: synthetic SFT dataset generator.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `sft_dataset_gen/` | Generates instruct-style datasets from recorded game episodes. |

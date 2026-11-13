@@ -1,13 +1,16 @@
-# Task Prep
+# Task prep
 
-Pre-training task preparation helpers.
+Preparation that runs before miners are assigned to a task.
 
 ## Contents
 
-- `augmentation.py`: decides and applies augmentation configuration. Text
-  augmentation is skipped for bases >= 35B so model-prep does not upload a
-  full 70B copy.
-- `constants.py`: task prep feature flags and probabilities.
-- `model.py`: model-prep API calls to trainer nodes.
-- `yarn.py`: YaRN extension helpers.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `augmentation.py` | Pure functions that decide a task's augmentation config. |
+| `constants.py` | Prep and augmentation switches and probabilities, and the compression eval-set bounds. |
+| `model.py` | Dispatches model prep (augmentation and baseline stats) to a trainer with a GPU. |
+| `yarn.py` | YaRN context-length extension helpers. |
+
+## See also
+
+- [Model prep](../../../trainer/model_prep/README.md): the model prep job a trainer runs.

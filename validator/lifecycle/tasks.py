@@ -5,28 +5,38 @@ import time
 import core.constants.environments as core_cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
+import validator.db.sql.tournament_seeds as seeds_sql
 import validator.db.sql.tournaments as tournament_sql
 import validator.infrastructure.cache_policy as cache_cst
+import validator.lifecycle.boss_seed_eval as boss_seed_eval
 import validator.lifecycle.constants as lifecycle_cst
 import validator.tasks.prep.constants as prep_cst
 from core.logging import LogContext
 from core.logging import add_context_tag
 from core.logging import get_logger
 from core.models.pvp_models import PvPIncompleteError
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
-from validator.evaluation.basilica import EvaluationRetryableError
+from validator.evaluation.errors import EvaluationCapacityUnavailable
+from validator.evaluation.errors import EvaluationRetryableError
 from validator.evaluation.notifications import notify_evaluation_exception
 from validator.evaluation.notifications import task_deployment_ids_for_hotkeys
 from validator.evaluation.reconcile import reconcile_eval_deployments
 from validator.infrastructure.cache import clean_all_hf_datasets_cache
 from validator.infrastructure.cache import manage_models_cache
+from validator.lifecycle.eval_infra_errors import record_infra_error
+from validator.lifecycle.eval_infra_errors import remind_held_rows
+from validator.lifecycle.eval_infra_errors import requeue_backing_off
+from validator.lifecycle.quant_reference import ensure_quant_references
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.tasks import evaluate_and_score_hotkeys
 from validator.scoring.tasks import finalize_task_scores_from_raw_losses
 from validator.tasks.config import get_task_config
+from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.requests import get_model_num_params
@@ -150,6 +160,17 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
             task.status = TaskStatus.PREP_TASK_FAILURE
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
+            if isinstance(e, CalibrationUnavailableError):
+                await notify_evaluation_exception(
+                    config,
+                    task_id=str(task.task_id),
+                    task_type=task.task_type,
+                    context=(
+                        "Data prep failed: no calibration set could be produced for this task. It is replaced like any "
+                        "prep failure and was not released to miners."
+                    ),
+                    error=e,
+                )
 
 
 async def _processing_pending_tasks(config: Config):
@@ -199,8 +220,72 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
             logger.error(f"Failed to seed evaluations for organic task {task.task_id}: {e}", exc_info=True)
 
 
+async def _held_boss_round_seed(task: AnyTypeRawTask, config: Config) -> bool:
+    """A TRAINING seed (a boss-round compression or a text seed) whose finalisation is held (not attached, or a player is
+    unfinished).
+
+    Its rows are evaluated as their training succeeds (the boss's at seed time); only ranking and closing wait.
+    """
+    return task.status == TaskStatus.TRAINING and not await seeds_sql.boss_round_seed_ready_to_finalise(
+        task.task_id, config.psql_db
+    )
+
+
+async def _seed_evaluation_deferred(task: AnyTypeRawTask, config: Config) -> bool:
+    """Whether a TRAINING boss-round seed's seed-time evaluation is parked until the boss round attaches it, or backing off
+    after a failure (boss_seed_eval.evaluation_parked, evaluation_backing_off).
+
+    Any other TRAINING tournament task with pending or running evaluation rows is picked up like a settled one: a boss-round
+    seed's boss row is evaluated at seed time.
+    """
+    if task.status != TaskStatus.TRAINING or task.task_type not in QUANT_TASK_TYPES:
+        return False
+    if await boss_seed_eval.evaluation_parked(task, config):
+        logger.info(f"Boss-round seed {task.task_id}: seed-time evaluation parked until the boss round attaches it")
+        return True
+    if await boss_seed_eval.evaluation_backing_off(task, config):
+        logger.info(f"Boss-round seed {task.task_id}: seed-time evaluation retry backing off after a failure")
+        return True
+    return False
+
+
+async def _score_quant_task(task: AnyTypeRawTask, rows: list[dict], successful_hotkeys: list[str], config: Config) -> bool | None:
+    """Write a quant task's scores once its bf16 references are in; None when they are written.
+
+    Otherwise what _finalize_task_status_from_evaluations returns: False while the task is held (references still being
+    measured, or a boss-round seed missing one), True once it is marked PREP_TASK_FAILURE for replacement.
+    """
+    try:
+        if not await ensure_quant_references(task, successful_hotkeys, config):
+            return False
+        await finalize_task_scores_from_raw_losses(task, [row["hotkey"] for row in rows], config)
+    except QuantReferenceUnavailable as e:
+        # No reference model (an own-model miner with no starting model) or a row whose SKU never got a
+        # reference. PREP_TASK_FAILURE sends the tournament straight to replacement, except for a boss-round seed:
+        # there an infrastructure failure must not decide the slot, so the task is held instead.
+        try:
+            held = await boss_seed_eval.hold_for_missing_reference(task, e, config)
+        except Exception as hold_error:
+            # Whether this is a boss-round seed is unknown: fail closed. PREP_TASK_FAILURE would replace a trained
+            # boss seed, so leave the task as it is and decide again next cycle.
+            logger.error(f"Task {task.task_id}: holding for a missing quant reference failed: {hold_error}", exc_info=True)
+            return False
+        if held:
+            return False
+        task.status = TaskStatus.PREP_TASK_FAILURE
+        add_context_tag("status", task.status.value)
+        task.n_eval_attempts = (task.n_eval_attempts or 0) + 1
+        await tasks_sql.update_task(task, config.psql_db)
+        logger.error(f"Task {task.task_id} has no usable quant reference, marking it for replacement: {e}")
+        return True
+    return None
+
+
 async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: Config) -> bool:
     assert task.task_id is not None
+    if await _held_boss_round_seed(task, config):
+        logger.debug(f"Boss-round seed {task.task_id}: finalisation held until the challenger is scored")
+        return False
     training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
     is_tournament_task = bool(training_statuses)
 
@@ -248,8 +333,16 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
     statuses = [row["evaluation_status"] for row in rows]
     if any(status in ("pending", "evaluating") for status in statuses):
         return False
+    if lifecycle_cst.EVALUATION_STATUS_INFRA_HELD in statuses:
+        # Held after repeated evaluation errors that are not the miner's fault: never finalise around them.
+        logger.info(f"Task {task.task_id} has evaluation rows held for infra errors; not finalising until re-queued")
+        held_hotkeys = [row["hotkey"] for row in rows if row["evaluation_status"] == lifecycle_cst.EVALUATION_STATUS_INFRA_HELD]
+        await remind_held_rows(task, held_hotkeys, config)
+        return False
 
     successful_hotkeys = [row["hotkey"] for row in rows if row["evaluation_status"] == "success"]
+    if is_tournament_task and task.task_type in QUANT_TASK_TYPES:
+        await boss_seed_eval.alert_on_eval_set_mismatch(task, successful_hotkeys, config)
     if not successful_hotkeys:
         task.status = TaskStatus.FAILURE
         add_context_tag("status", task.status.value)
@@ -258,7 +351,12 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
         logger.info(f"Task {task.task_id} finalized as failure because no evaluation succeeded")
         return True
 
-    await finalize_task_scores_from_raw_losses(task, [row["hotkey"] for row in rows], config)
+    if task.task_type in QUANT_TASK_TYPES:
+        finalised = await _score_quant_task(task, rows, successful_hotkeys, config)
+        if finalised is not None:
+            return finalised
+    else:
+        await finalize_task_scores_from_raw_losses(task, [row["hotkey"] for row in rows], config)
 
     if not successful_hotkeys:
         task.status = TaskStatus.FAILURE
@@ -274,6 +372,14 @@ async def _finalize_task_status_from_evaluations(task: AnyTypeRawTask, config: C
     await tasks_sql.update_task(task, config.psql_db)
     logger.info(f"Task {task.task_id} finalized as {task.status.value}")
     return True
+
+
+async def _record_quant_evaluation_error(task: AnyTypeRawTask, hotkeys: list[str], error: BaseException, config: Config) -> None:
+    """A quant evaluation error that is not the miner's: an unattached boss-round seed retries at seed time and is then parked
+    for the boss round (boss_seed_eval); any other row is re-queued, counted and eventually held (eval_infra_errors)."""
+    if await boss_seed_eval.retry_seed_time_exception(task, hotkeys, error, config):
+        return
+    await record_infra_error(task, hotkeys, error, config)
 
 
 async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str], num_gpus: int, config: Config) -> None:
@@ -294,6 +400,10 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
             "failure",
             config.psql_db,
         )
+        # The boss's entry on an unattached boss-round seed: an evaluation error is retried (never scored) and a stored
+        # result missing its same-SKU reference is re-evaluated now, not in the boss round.
+        if task.task_type in QUANT_TASK_TYPES:
+            await boss_seed_eval.settle_seed_time_evaluation(task, sorted(eval_result.failed), not_evaluated_hotkeys, config)
         if deferred_set:
             logger.info(
                 f"Evaluation deferred for task {task.task_id} hotkeys={sorted(deferred_set)} — "
@@ -312,11 +422,22 @@ async def _evaluate_and_update_hotkeys(task: AnyTypeRawTask, hotkeys: list[str],
         logger.info(f"PvP eval incomplete for task {task.task_id}: {e} — resetting to pending for retry")
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
     except EvaluationRetryableError as e:
+        if task.task_type in QUANT_TASK_TYPES and not isinstance(e, EvaluationCapacityUnavailable):
+            # EvaluationInfraError, a pod that never became ready (otherwise a crash-looping evaluator would start a paid pod
+            # every cycle forever), or a backend's own retryable failure (a deployment whose deletion it cannot verify).
+            # The counted path also clears the rows' GPU count, so the next attempt launches a fresh deployment.
+            await _record_quant_evaluation_error(task, hotkeys, e, config)
+            return
+        # Waiting for a GPU is the queue, not an error: re-queued, never counted.
         logger.info(f"Evaluation retryable for task {task.task_id}: {e} — resetting to pending for retry")
         await tasks_sql.update_task_evaluations_status(task.task_id, hotkeys, "pending", config.psql_db)
         await tasks_sql.clear_task_evaluation_deployments(task.task_id, hotkeys, config.psql_db)
     except Exception as e:
         logger.error(f"Error evaluating pending pairs for task {task.task_id}: {e}", exc_info=True)
+        if task.task_type in QUANT_TASK_TYPES:
+            # Miner faults come back as results, never as exceptions: whatever escaped is infrastructure or our code.
+            await _record_quant_evaluation_error(task, hotkeys, e, config)
+            return
         await notify_evaluation_exception(
             config,
             task_id=str(task.task_id),
@@ -364,6 +485,10 @@ async def _evaluate_pending_pairs_for_task(
     for hotkeys in hotkey_batches:
         job_key = (str(task.task_id), "__batch__" if batch_together else hotkeys[0])
         if active_evaluation_jobs is not None and job_key in active_evaluation_jobs:
+            continue
+
+        hotkeys = [hotkey for hotkey in hotkeys if not (hotkey in pending_hotkeys and requeue_backing_off(task.task_id, hotkey))]
+        if not hotkeys:
             continue
 
         pending_batch = [hotkey for hotkey in hotkeys if hotkey in pending_hotkeys]
@@ -505,13 +630,15 @@ async def _get_tasks_ready_for_evaluation(config: Config) -> list[RawTask]:
     )
     for task_id in tournament_task_ids:
         task = await tasks_sql.get_task(task_id, config.psql_db)
+        if task and await _seed_evaluation_deferred(task, config):
+            continue
         if task:
             tasks_by_id[str(task.task_id)] = task
 
     completed_training_task_ids = await tournament_sql.get_tasks_with_all_training_completed(config.psql_db)
     for task_id in completed_training_task_ids:
         task = await tasks_sql.get_task(task_id, config.psql_db)
-        if task:
+        if task and not await _held_boss_round_seed(task, config):
             tasks_by_id[str(task.task_id)] = task
 
     return list(tasks_by_id.values())

@@ -6,12 +6,12 @@ from datetime import datetime
 from typing import List
 from typing import Optional
 
+from core.logging import get_logger
+from validator.db.database import PSQLDB
 from validator.transfers.models import BalanceEvent
 from validator.transfers.models import ColdkeyBalance
 from validator.transfers.models import TransferData
 from validator.transfers.models import TransferProcessingState
-from validator.db.database import PSQLDB
-from core.logging import get_logger
 
 
 logger = get_logger(__name__)

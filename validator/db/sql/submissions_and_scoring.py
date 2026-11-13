@@ -5,6 +5,9 @@ from asyncpg.connection import Connection
 
 import validator.db.constants as cst
 from core.constants.network import NETUID
+from core.logging import get_logger
+from core.models.quant_artifact_models import QuantDecodedFile
+from core.models.quant_models import QuantEvalGpu
 from core.models.task_models import TaskStatus
 from validator.db.database import PSQLDB
 from validator.nodes.models import AllNodeStats
@@ -12,7 +15,14 @@ from validator.nodes.models import ModelMetrics
 from validator.nodes.models import NodeStats
 from validator.nodes.models import QualityMetrics
 from validator.nodes.models import WorkloadMetrics
+from validator.scoring.models import HubArtifactFile
+from validator.scoring.models import QuantScorecardRow
 from validator.scoring.models import Submission
+from validator.scoring.quant_ranking import eval_gpu_from_column
+from validator.tournament.models import QuantDecodeRow
+
+
+logger = get_logger(__name__)
 
 
 async def add_submission(submission: Submission, psql_db: PSQLDB) -> Submission:
@@ -61,13 +71,20 @@ async def set_task_node_quality_score(
     synth_loss: float,
     psql_db: PSQLDB,
     score_reason: str | None = None,
+    passed_bar: bool | None = None,
+    quant_failure: str | None = None,
+    freeform_penalty: float | None = None,
 ) -> None:
-    """Set quality score, losses and zero score reason for a node's task submission.
+    """Set quality score, losses, score reason, freeform cap status and penalty (ln P as scored) for a node's
+    task submission.
 
     Deliberately does NOT touch the per-example loss columns. This runs later in the lifecycle than
     set_task_node_losses, and on the finalize path its results are rebuilt from the DB row without
     the vector - writing it here would NULL out what the raw-loss write persisted, leaving the boss
     round to silently fall back to the scalar margin.
+
+    quant_failure is only ever added (COALESCE): a finalize-time scored fail is written, and a
+    persisted one (e.g. from the decode job) is never erased by a result that carries none.
     """
     async with await psql_db.connection() as connection:
         connection: Connection
@@ -79,15 +96,21 @@ async def set_task_node_quality_score(
                 {cst.TASK_NODE_QUALITY_SCORE},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.PASSED_BAR},
+                {cst.QUANT_FAILURE},
+                {cst.FREEFORM_PENALTY}
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO UPDATE
             SET
                 {cst.TASK_NODE_QUALITY_SCORE} = $4,
                 {cst.TEST_LOSS} = $5,
                 {cst.SYNTH_LOSS} = $6,
-                {cst.SCORE_REASON} = $7
+                {cst.SCORE_REASON} = $7,
+                {cst.PASSED_BAR} = $8,
+                {cst.QUANT_FAILURE} = COALESCE($9, {cst.TASK_NODES_TABLE}.{cst.QUANT_FAILURE}),
+                {cst.FREEFORM_PENALTY} = $10
         """
         await connection.execute(
             query,
@@ -98,7 +121,29 @@ async def set_task_node_quality_score(
             test_loss,
             synth_loss,
             score_reason,
+            passed_bar,
+            quant_failure,
+            freeform_penalty,
         )
+
+
+async def set_task_node_quant_failure(task_id: UUID, hotkey: str, quant_failure: str, psql_db: PSQLDB) -> None:
+    """Persist a scored fail on an existing task_nodes row without touching any other column."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        result = await connection.execute(
+            f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET {cst.QUANT_FAILURE} = $4
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkey,
+            NETUID,
+            quant_failure,
+        )
+    if result == "UPDATE 0":
+        logger.warning(f"No task_nodes row for task {task_id} hotkey {hotkey}; quant failure not persisted")
 
 
 async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) -> tuple[list[float] | None, str | None]:
@@ -118,8 +163,7 @@ async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
         if row is None or row[cst.PER_EXAMPLE_LOSSES] is None:
             return None, None
 
-        losses = [float("nan") if loss is None else float(loss) for loss in row[cst.PER_EXAMPLE_LOSSES]]
-        return losses, row[cst.EVAL_SET_FINGERPRINT]
+        return losses_from_column(row[cst.PER_EXAMPLE_LOSSES]), row[cst.EVAL_SET_FINGERPRINT]
 
 
 async def update_task_node_quality_score_only(
@@ -151,18 +195,42 @@ async def update_task_node_quality_score_only(
         )
 
 
-def _json_safe_losses(losses: list[float] | None) -> list[float | None] | None:
+async def get_task_node_eval_gpus(task_id: UUID, hotkeys: list[str], psql_db: PSQLDB) -> dict[str, QuantEvalGpu | None]:
+    """The GPU each hotkey's quant row was scored on (None for a non-quant row or one with no recorded GPU)."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.HOTKEY}, {cst.EVAL_GPU}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = ANY($2) AND {cst.NETUID} = $3
+            """,
+            task_id,
+            hotkeys,
+            NETUID,
+        )
+    return {row[cst.HOTKEY]: eval_gpu_from_column(row[cst.EVAL_GPU]) for row in rows}
+
+
+def json_safe_losses(losses: list[float] | None) -> list[float | None] | None:
     """Replace non-finite entries with JSON null.
 
     The list binds through the pooled jsonb codec, which uses json.dumps - and json.dumps emits a
     bare NaN token that PostgreSQL's json parser rejects outright. A single unscorable example
     would otherwise fail the whole INSERT, and the exception propagates far enough to mark every
     hotkey in the batch as an evaluation failure, discarding a completed GPU run. Nulls read back
-    as NaN and the paired comparison already drops non-finite entries from both sides.
+    as NaN (losses_from_column) and the paired comparison already drops non-finite entries from both
+    sides. The quant scorer keeps NaN in place for an example with no supervised token, so a bf16
+    reference vector (quant_references) needs this as much as a submission's.
     """
     if losses is None:
         return None
     return [loss if math.isfinite(loss) else None for loss in losses]
+
+
+def losses_from_column(values: list[float | None]) -> list[float]:
+    """A stored per-example vector with its JSON nulls back as NaN, in example order."""
+    return [float("nan") if loss is None else float(loss) for loss in values]
 
 
 async def set_task_node_losses(
@@ -174,8 +242,16 @@ async def set_task_node_losses(
     score_reason: str | None = None,
     per_example_losses: list[float] | None = None,
     eval_set_fingerprint: str | None = None,
+    artifact_bytes: int | None = None,
+    decoder_bytes: int | None = None,
+    quant_failure: str | None = None,
+    eval_gpu: QuantEvalGpu | None = None,
+    artifact_files: list[HubArtifactFile] | None = None,
+    artifact_revision: str | None = None,
 ) -> None:
     """Persist raw evaluation outputs without final ranking.
+
+    artifact_files / artifact_revision (freeform hub listing) never overwrite a stored value with NULL.
 
     The only write of raw evaluator losses, and so the only place the per-example vector is stored.
     Passed only for head-to-head tasks (see is_paired_comparison_task) since those are its
@@ -193,16 +269,28 @@ async def set_task_node_losses(
                 {cst.SYNTH_LOSS},
                 {cst.SCORE_REASON},
                 {cst.PER_EXAMPLE_LOSSES},
-                {cst.EVAL_SET_FINGERPRINT}
+                {cst.EVAL_SET_FINGERPRINT},
+                {cst.ARTIFACT_BYTES},
+                {cst.DECODER_BYTES},
+                {cst.QUANT_FAILURE},
+                {cst.EVAL_GPU},
+                {cst.ARTIFACT_FILES},
+                {cst.ARTIFACT_REVISION}
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14)
             ON CONFLICT ({cst.TASK_ID}, {cst.HOTKEY}, {cst.NETUID}) DO UPDATE
             SET
                 {cst.TEST_LOSS} = $4,
                 {cst.SYNTH_LOSS} = $5,
                 {cst.SCORE_REASON} = $6,
                 {cst.PER_EXAMPLE_LOSSES} = $7::jsonb,
-                {cst.EVAL_SET_FINGERPRINT} = $8
+                {cst.EVAL_SET_FINGERPRINT} = $8,
+                {cst.ARTIFACT_BYTES} = $9,
+                {cst.DECODER_BYTES} = $10,
+                {cst.QUANT_FAILURE} = $11,
+                {cst.EVAL_GPU} = $12::jsonb,
+                {cst.ARTIFACT_FILES} = COALESCE($13::jsonb, {cst.TASK_NODES_TABLE}.{cst.ARTIFACT_FILES}),
+                {cst.ARTIFACT_REVISION} = COALESCE($14, {cst.TASK_NODES_TABLE}.{cst.ARTIFACT_REVISION})
         """
         await connection.execute(
             query,
@@ -212,9 +300,125 @@ async def set_task_node_losses(
             test_loss,
             synth_loss,
             score_reason,
-            _json_safe_losses(per_example_losses),
+            json_safe_losses(per_example_losses),
             eval_set_fingerprint,
+            artifact_bytes,
+            decoder_bytes,
+            quant_failure,
+            eval_gpu.model_dump() if eval_gpu else None,
+            [f.model_dump() for f in artifact_files] if artifact_files else None,
+            artifact_revision,
         )
+
+
+async def set_quant_decode_result(
+    task_id: UUID,
+    hotkey: str,
+    *,
+    artifact_bytes: int | None,
+    decoder_bytes: int | None,
+    decoder_sha256: str | None,
+    quant_failure: str | None,
+    psql_db: PSQLDB,
+    build_warning: str | None = None,
+    artifact_files: list[QuantDecodedFile] | None = None,
+    decoded_files: list[QuantDecodedFile] | None = None,
+) -> None:
+    """Persist a freeform entry's trainer-side decode outcome on its task_nodes row (written at assignment).
+
+    artifact_files / decoded_files are the decode's file lists (JSONB, codec-bound like per_example_losses); an empty
+    or missing list is stored as NULL, the same as a row with no stored file lists.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET {cst.ARTIFACT_BYTES} = $4,
+                {cst.DECODER_BYTES} = $5,
+                {cst.DECODER_SHA256} = $6,
+                {cst.QUANT_FAILURE} = $7,
+                {cst.DECODER_BUILD_WARNING} = $8,
+                {cst.DECODE_ARTIFACT_FILES} = $9::jsonb,
+                {cst.DECODED_FILES} = $10::jsonb
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+        """
+        result = await connection.execute(
+            query,
+            task_id,
+            hotkey,
+            NETUID,
+            artifact_bytes,
+            decoder_bytes,
+            decoder_sha256,
+            quant_failure,
+            build_warning,
+            [f.model_dump() for f in artifact_files] if artifact_files else None,
+            [f.model_dump() for f in decoded_files] if decoded_files else None,
+        )
+    if result == "UPDATE 0":
+        logger.warning(f"No task_nodes row for task {task_id} hotkey {hotkey}; decode result not persisted")
+
+
+async def set_decoded_hf_repo(task_id: UUID | str, hotkey: str, repo: str, psql_db: PSQLDB) -> None:
+    """Record the public HF copy of a freeform entry's decoded model on its task_nodes row."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            UPDATE {cst.TASK_NODES_TABLE}
+            SET {cst.DECODED_HF_REPO} = $4
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2 AND {cst.NETUID} = $3
+        """
+        await connection.execute(query, task_id, hotkey, NETUID, repo)
+
+
+async def get_quant_decode_rows(task_id: UUID, psql_db: PSQLDB) -> dict[str, QuantDecodeRow]:
+    """Decode outcome per hotkey for a freeform task.
+
+    set_task_node_losses later overwrites artifact_bytes, decoder_bytes and quant_failure with the
+    evaluation's values but never touches decoder_sha256, which is why QuantDecodeRow.settled keys
+    off decoder_sha256 (or a persisted quant_failure) rather than the byte counts.
+    """
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            SELECT {cst.HOTKEY}, {cst.ARTIFACT_BYTES}, {cst.DECODER_BYTES}, {cst.DECODER_SHA256}, {cst.QUANT_FAILURE}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2
+        """
+        rows = await connection.fetch(query, task_id, NETUID)
+    return {
+        row[cst.HOTKEY]: QuantDecodeRow(
+            hotkey=row[cst.HOTKEY],
+            artifact_bytes=row[cst.ARTIFACT_BYTES],
+            decoder_bytes=row[cst.DECODER_BYTES],
+            decoder_sha256=row[cst.DECODER_SHA256],
+            quant_failure=row[cst.QUANT_FAILURE],
+        )
+        for row in rows
+    }
+
+
+async def get_quant_scorecard_rows(task_id: UUID | str, psql_db: PSQLDB) -> dict[str, QuantScorecardRow]:
+    """The scorecard inputs of every task_nodes row of a freeform task, by hotkey (repo from its latest submission)."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        query = f"""
+            SELECT tn.{cst.HOTKEY}, tn.{cst.TEST_LOSS}, tn.{cst.QUANT_FAILURE}, tn.{cst.ARTIFACT_BYTES},
+                   tn.{cst.DECODER_BYTES}, tn.{cst.PASSED_BAR}, tn.{cst.FREEFORM_PENALTY}, tn.{cst.EVAL_GPU},
+                   tn.{cst.ARTIFACT_FILES}, tn.{cst.ARTIFACT_REVISION}, tn.{cst.DECODE_ARTIFACT_FILES},
+                   tn.{cst.DECODED_FILES}, tn.{cst.DECODED_HF_REPO}, s.{cst.REPO}
+            FROM {cst.TASK_NODES_TABLE} tn
+            LEFT JOIN LATERAL (
+                SELECT sub.{cst.REPO}
+                FROM {cst.SUBMISSIONS_TABLE} sub
+                WHERE sub.{cst.TASK_ID} = tn.{cst.TASK_ID} AND sub.{cst.HOTKEY} = tn.{cst.HOTKEY}
+                ORDER BY sub.{cst.CREATED_ON} DESC NULLS LAST, sub.{cst.SUBMISSION_ID} DESC
+                LIMIT 1
+            ) s ON TRUE
+            WHERE tn.{cst.TASK_ID} = $1 AND tn.{cst.NETUID} = $2
+        """
+        rows = await connection.fetch(query, task_id, NETUID)
+    return {row[cst.HOTKEY]: QuantScorecardRow.model_validate(dict(row)) for row in rows}
 
 
 async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
@@ -227,7 +431,14 @@ async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
                 {cst.TASK_NODE_QUALITY_SCORE},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.ARTIFACT_BYTES},
+                {cst.DECODER_BYTES},
+                {cst.DECODER_SHA256},
+                {cst.PASSED_BAR},
+                {cst.FREEFORM_PENALTY},
+                {cst.QUANT_FAILURE},
+                {cst.EVAL_GPU}
             FROM {cst.TASK_NODES_TABLE}
             WHERE {cst.TASK_ID} = $1
             AND {cst.NETUID} = $2
@@ -249,6 +460,13 @@ async def get_task_node_losses(task_id: UUID, psql_db: PSQLDB) -> list[dict]:
                 cst.TEST_LOSS: clean_float(row[cst.TEST_LOSS]),
                 cst.SYNTH_LOSS: clean_float(row[cst.SYNTH_LOSS]),
                 cst.SCORE_REASON: row[cst.SCORE_REASON],
+                cst.ARTIFACT_BYTES: row[cst.ARTIFACT_BYTES],
+                cst.DECODER_BYTES: row[cst.DECODER_BYTES],
+                cst.DECODER_SHA256: row[cst.DECODER_SHA256],
+                cst.PASSED_BAR: row[cst.PASSED_BAR],
+                cst.FREEFORM_PENALTY: clean_float(row[cst.FREEFORM_PENALTY]),
+                cst.QUANT_FAILURE: row[cst.QUANT_FAILURE],
+                cst.EVAL_GPU: row[cst.EVAL_GPU],  # QuantEvalGpu JSON, parsed by the quant scorer
             }
             for row in rows
         ]
@@ -264,7 +482,14 @@ async def get_all_scores_and_losses_for_task(task_id: UUID, psql_db: PSQLDB) -> 
                 {cst.TASK_NODE_QUALITY_SCORE},
                 {cst.TEST_LOSS},
                 {cst.SYNTH_LOSS},
-                {cst.SCORE_REASON}
+                {cst.SCORE_REASON},
+                {cst.ARTIFACT_BYTES},
+                {cst.DECODER_BYTES},
+                {cst.DECODER_SHA256},
+                {cst.PASSED_BAR},
+                {cst.FREEFORM_PENALTY},
+                {cst.QUANT_FAILURE},
+                {cst.EVAL_GPU}
             FROM {cst.TASK_NODES_TABLE}
             WHERE {cst.TASK_ID} = $1
             AND {cst.NETUID} = $2
@@ -287,6 +512,13 @@ async def get_all_scores_and_losses_for_task(task_id: UUID, psql_db: PSQLDB) -> 
                 cst.TEST_LOSS: clean_float(row[cst.TEST_LOSS]),
                 cst.SYNTH_LOSS: clean_float(row[cst.SYNTH_LOSS]),
                 cst.SCORE_REASON: row[cst.SCORE_REASON],
+                cst.ARTIFACT_BYTES: row[cst.ARTIFACT_BYTES],
+                cst.DECODER_BYTES: row[cst.DECODER_BYTES],
+                cst.DECODER_SHA256: row[cst.DECODER_SHA256],
+                cst.PASSED_BAR: row[cst.PASSED_BAR],
+                cst.FREEFORM_PENALTY: clean_float(row[cst.FREEFORM_PENALTY]),
+                cst.QUANT_FAILURE: row[cst.QUANT_FAILURE],
+                cst.EVAL_GPU: row[cst.EVAL_GPU],  # QuantEvalGpu JSON, parsed by the quant scorer
             }
             for row in rows
         ]
