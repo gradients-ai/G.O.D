@@ -108,6 +108,8 @@ logger = get_logger(__name__)
 RANKED_FIRST_REASON_PREFIX = "Ranked 1st by "
 RANKED_BELOW_REASON_PREFIX = "Ranked below top 1 by "
 BOTTOM_PENALTY_REASON_PREFIX = "Bottom 25% ranked by "
+NON_FINETUNED_REASON = "Non-finetuned submission"
+INVALID_TEST_LOSS_REASON = "Invalid test loss"
 
 
 def _is_ranking_derived_reason(reason: str | None) -> bool:
@@ -211,13 +213,13 @@ def _calculate_quant_ranking_and_scores(
             if result.score_reason:
                 continue
             elif not result.is_finetune:
-                result.score_reason = "Non-finetuned submission"
+                result.score_reason = NON_FINETUNED_REASON
                 logger.info(f"Miner {result.hotkey}: Non-finetuned, score initialized to 0.0")
             elif fail_reason := _quant_scored_fail_reason(result, policy):
                 result.score_reason = f"{SCORED_FAIL_REASON_PREFIX}{fail_reason}"
                 scored_fails.append(result)
             elif np.isnan(result.test_loss):
-                result.score_reason = "Invalid test loss"
+                result.score_reason = INVALID_TEST_LOSS_REASON
                 logger.info(f"Miner {result.hotkey}: Invalid test loss, score initialized to 0.0")
             else:
                 valid_results.append(result)
@@ -332,10 +334,10 @@ def calculate_miner_ranking_and_scores(
             if result.score_reason:
                 continue
             elif not result.is_finetune:
-                result.score_reason = "Non-finetuned submission"
+                result.score_reason = NON_FINETUNED_REASON
                 logger.info(f"Miner {result.hotkey}: Non-finetuned, score initialized to 0.0")
             elif np.isnan(result.test_loss):
-                result.score_reason = "Invalid test loss"
+                result.score_reason = INVALID_TEST_LOSS_REASON
                 logger.info(f"Miner {result.hotkey}: Invalid test loss, score initialized to 0.0")
             else:
                 valid_results.append(result)
@@ -514,26 +516,70 @@ def _create_failed_miner_result(hotkey: str, score_reason: str, task_type: TaskT
 
 
 def _calculate_weighted_loss_for_image_eval(eval_result: EvaluationResultImage) -> float:
-    if isinstance(eval_result.eval_loss, DiffusionLosses):
-        text_guided_avg = (
-            sum(eval_result.eval_loss.text_guided_losses) / len(eval_result.eval_loss.text_guided_losses)
-            if eval_result.eval_loss.text_guided_losses
-            else 0
-        )
+    """The task's weighted image loss: DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * mean(text-guided) + the rest * mean(no-text).
 
-        no_text_avg = (
-            sum(eval_result.eval_loss.no_text_losses) / len(eval_result.eval_loss.no_text_losses)
-            if eval_result.eval_loss.no_text_losses
-            else 0
-        )
+    NaN when the result carries no per-image losses or either loss vector is empty: nothing was measured, and a
+    missing mean is never a loss of 0.
+    """
+    losses = eval_result.eval_loss
+    if not isinstance(losses, DiffusionLosses) or not losses.text_guided_losses or not losses.no_text_losses:
+        return math.nan
 
-        weighted_loss = (
-            eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg
-            + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
-        )
-        return weighted_loss
+    text_guided_avg = sum(losses.text_guided_losses) / len(losses.text_guided_losses)
+    no_text_avg = sum(losses.no_text_losses) / len(losses.no_text_losses)
+    return (
+        eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT * text_guided_avg
+        + (1 - eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT) * no_text_avg
+    )
 
-    return None
+
+def _per_image_losses(eval_result: EvaluationResultImage) -> list[float] | None:
+    """The weighted loss of each test image, in test-image order; its mean is the task's weighted loss.
+
+    None unless both loss vectors are non-empty and hold one value per test image (the same length).
+    """
+    losses = eval_result.eval_loss
+    if not isinstance(losses, DiffusionLosses) or not losses.text_guided_losses:
+        return None
+    if len(losses.text_guided_losses) != len(losses.no_text_losses):
+        return None
+    weight = eval_cst.DIFFUSION_TEXT_GUIDED_EVAL_WEIGHT
+    return [
+        weight * text_guided + (1 - weight) * no_text
+        for text_guided, no_text in zip(losses.text_guided_losses, losses.no_text_losses)
+    ]
+
+
+def _image_miner_result(hotkey: str, eval_result: EvaluationResultImage, submission: Submission | None) -> MinerResultsImage:
+    """One image entry's result. An entry that is not a fine-tune, or whose losses are empty, has no valid loss:
+    NaN, with its reason, so it is never stored or ranked as a score."""
+    weighted_loss = _calculate_weighted_loss_for_image_eval(eval_result)
+    if not eval_result.is_finetune:
+        return MinerResultsImage(
+            hotkey=hotkey,
+            test_loss=math.nan,
+            synth_loss=math.nan,
+            is_finetune=False,
+            submission=submission,
+            score_reason=NON_FINETUNED_REASON,
+        )
+    if math.isnan(weighted_loss):
+        return MinerResultsImage(
+            hotkey=hotkey,
+            test_loss=math.nan,
+            synth_loss=math.nan,
+            is_finetune=True,
+            submission=submission,
+            score_reason=INVALID_TEST_LOSS_REASON,
+        )
+    return MinerResultsImage(
+        hotkey=hotkey,
+        test_loss=weighted_loss,
+        synth_loss=weighted_loss,
+        is_finetune=True,
+        submission=submission,
+        per_example_losses=_per_image_losses(eval_result),
+    )
 
 
 def _base_model_submission_result(task_type: TaskType) -> EvaluationResultText:
@@ -916,9 +962,12 @@ async def _persist_raw_task_results(
 ) -> None:
     assert task.task_id is not None, "task id needs to be set to persist losses"
 
-    # The paired boss-round comparison is the only consumer of the per-example vectors, so they are
-    # only stored for boss-round tasks. Checked once per task rather than once per miner.
-    keep_per_example_losses = await is_paired_comparison_task(task.task_id, psql_db)
+    # The paired comparison reads the per-example vectors of head-to-head tasks, so those are stored. An image
+    # tournament task also stores its per-image vector; no verdict reads it. Checked once per task, not per miner.
+    keep_per_example_losses = await is_paired_comparison_task(task.task_id, psql_db) or (
+        task.task_type == TaskType.IMAGETASK
+        and await tournament_sql.get_tournament_task_by_task_id(str(task.task_id), psql_db) is not None
+    )
 
     for result in task_results:
         with LogContext(miner_hotkey=result.hotkey):
@@ -1212,12 +1261,8 @@ async def process_miners_pool(
                             )
                         )
                         continue
-                    elif task.task_type in TEXT_TASK_TYPES:
+                    elif task.task_type in TEXT_TASK_TYPES or task.task_type == TaskType.IMAGETASK:
                         test_result = eval_result
-                    elif task.task_type == TaskType.IMAGETASK:
-                        test_result = eval_result.model_copy(
-                            update={"eval_loss": _calculate_weighted_loss_for_image_eval(eval_result)}
-                        )
                     else:
                         raise ValueError(f"Unknown task type: {task.task_type}")
 
@@ -1273,15 +1318,7 @@ async def process_miners_pool(
                         )
                     )
                 elif task.task_type == TaskType.IMAGETASK:
-                    results.append(
-                        MinerResultsImage(
-                            hotkey=miner.hotkey,
-                            test_loss=float(test_result.eval_loss),
-                            synth_loss=float(test_result.eval_loss),
-                            is_finetune=test_result.is_finetune,
-                            submission=submission,
-                        )
-                    )
+                    results.append(_image_miner_result(miner.hotkey, test_result, submission))
                 else:
                     raise ValueError(f"Unknown task type: {task.task_type}")
 
