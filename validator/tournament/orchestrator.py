@@ -879,6 +879,7 @@ async def _create_training_request(
             expected_repo_name=expected_repo_name,
             dataset_zip=task.training_data,
             model_type=task.model_type,
+            training_mode=task.training_mode,
             trigger_word=task.trigger_word,
             baseline_stats=baseline_stats,
         )

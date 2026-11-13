@@ -12,6 +12,7 @@ from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.image_models import ImageModelType
+from core.models.image_models import ImageTrainingMode
 from core.models.payload_models import DockerEvaluationResults
 from validator.db.database import PSQLDB
 from validator.evaluation.basilica_deployments import create_basilica_eval_runner_source
@@ -263,7 +264,9 @@ async def run_evaluation_basilica_image(
     original_model_repo: str,
     models: list[str],
     model_type: ImageModelType,
+    training_mode: ImageTrainingMode,
     num_gpus: int,
+    trigger_word: str | None = None,
     task_id: UUID | None = None,
     psql_db: PSQLDB | None = None,
 ) -> DockerEvaluationResults:
@@ -287,10 +290,13 @@ async def run_evaluation_basilica_image(
     base_env = {
         "ORIGINAL_MODEL_REPO": original_model_repo,
         "MODEL_TYPE": model_type.value,
+        "IMAGE_TRAINING_MODE": training_mode.value,
         "TRANSFORMERS_ALLOW_TORCH_LOAD": "true",
         "PYTHONUNBUFFERED": "1",
         **vcst.HF_CONTAINER_ENV_IMAGE,
     }
+    if trigger_word:
+        base_env["TRIGGER_WORD"] = trigger_word
 
     logger.debug(f"Starting Basilica image evaluation for {len(models)} repos: {models}")
 
@@ -302,11 +308,22 @@ async def run_evaluation_basilica_image(
 
     deployment_ids_str = {r: v for r, v in deployment_ids_by_repo.items() if isinstance(v, str)}
 
+    toolkit_eval_models = {
+        ImageModelType.FLUX2_KLEIN_4B,
+        ImageModelType.QWEN_IMAGE_EDIT_2511,
+        ImageModelType.HIDREAM_O1,
+        ImageModelType.MOSS_IMAGE_BASE,
+    }
+    if model_type in toolkit_eval_models:
+        evaluator_image = docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION_TOOLKIT
+    else:
+        evaluator_image = docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION
+
     repo_results = await run_remote_eval_repos(
         repos=models,
         model_name=original_model_repo,
         task_type="image",
-        image=docker_cst.VALIDATOR_DOCKER_IMAGE_DIFFUSION,
+        image=evaluator_image,
         source=source,
         build_env_for_repo=build_env_for_repo,
         gpu_count=max(1, num_gpus),

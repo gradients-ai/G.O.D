@@ -340,11 +340,30 @@ Used for `ImageTask`:
 --task-id             # Unique task UUID/string
 --model               # Base model identifier or local cached model path
 --dataset-zip         # Original task dataset zip URL
---model-type          # flux, z-image, qwen-image, ideogram4, or krea2
+--model-type          # Existing types plus flux2-klein-4b, qwen-image-edit-2511,
+                      # hidream-o1, and moss-image-base
+--training-mode       # text-to-image (default) or edit
 --expected-repo-name  # Hugging Face repo name the uploader expects
 --hours-to-complete   # Task timeout in hours
 --trigger-word        # Optional, only when provided by task data
 ```
+
+The in-repo AI Toolkit trainer supports FLUX.2 Klein and MOSS Base in both
+modes, Qwen Image Edit 2511 in edit mode, and HiDream O1 in text-to-image
+mode. HiDream O1 editing runs the pinned Musubi trainer directly from the
+Python entrypoint until AI Toolkit supports O1 reference conditioning.
+
+Qwen Image Edit 2511 uses AI Toolkit's `qwen_image_edit_plus` trainer with
+the 2511 checkpoint override. Keep it behind a rollout flag until a one-step
+training/reload probe confirms parity with 2511's reference `zero_cond_t`
+training behavior.
+
+Edit datasets contain one `manifest.jsonl`. Each non-empty line has
+`sample_id`, a relative `target` image path, an `instruction`, and one to
+three relative paths in `sources`. Every sample in one task must have the
+same source count. The trainer converts this manifest into AI Toolkit's
+same-filename target/control folder layout and rejects missing or escaping
+paths.
 
 ## Runtime Environment Variables
 
@@ -442,15 +461,17 @@ Your submission's `config.json` must not declare a smaller `max_position_embeddi
 
 Image tournaments use `ImageTask`.
 
-- Round 1 always uses one group and three smaller image tasks: one Flux,
-  one Ideogram, and one Z-Image task. These tasks use at most 30 source
-  image/text pairs (at most 45 minutes of competition time and three held-out
+- Round 1 always uses one group and three smaller **text-to-image** tasks:
+  Z-Image, FLUX.2 Klein 4B, and MOSS-Image-Base. These tasks use at most 30
+  source pairs (at most 45 minutes of competition time and three held-out
   evaluation images). Average rank across the three tasks determines the top
   two miners.
-- Round 2 is one pairwise knockout task, randomly using Qwen-Image or Krea.
-  Its winner advances to the boss round.
-- The final boss round remains 6 image tasks: Krea x2, Ideogram x2,
-  Qwen-Image x1, and Z-Image x1.
+- Round 2 is one pairwise knockout task. The validator picks uniformly from
+  the `(model, capability)` slots of Qwen-Image (t2i), Krea2 (t2i),
+  Qwen-Image-Edit-2511 (edit), and HiDream-O1 (t2i or edit). Its winner
+  advances to the boss round.
+- The final boss round has **6** image tasks: FLUX.2 / HiDream / MOSS edit,
+  plus Krea2 / HiDream / MOSS text-to-image.
 - Each boss-round task is won by beating the boss's score by at least `BOSS_ROUND_WIN_MARGIN` (currently a fixed 1%, applied additively on the magnitude of the boss's score).
 - The challenger must win all but at most one of the 6 boss-round tasks to dethrone the defending champion (no separate continuous-SFT gate for image).
 

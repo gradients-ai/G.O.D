@@ -269,19 +269,31 @@ async def _insert_chat_task(connection: Connection, task: ChatRawTask, task_reco
 async def _insert_image_task(connection: Connection, task: ImageRawTask, task_record: dict) -> None:
     query = f"""
         INSERT INTO {cst.IMAGE_TASKS_TABLE}
-        ({cst.TASK_ID}, {cst.MODEL_TYPE}, {cst.TRIGGER_WORD})
-        VALUES ($1, $2, $3)
+        ({cst.TASK_ID}, {cst.MODEL_TYPE}, {cst.TRAINING_MODE}, {cst.TRIGGER_WORD})
+        VALUES ($1, $2, $3, $4)
     """
-    await connection.execute(query, task_record[cst.TASK_ID], task.model_type.value, task.trigger_word)
+    await connection.execute(
+        query,
+        task_record[cst.TASK_ID],
+        task.model_type.value,
+        task.training_mode.value,
+        task.trigger_word,
+    )
 
     if task.image_text_pairs:
         query_pairs = f"""
             INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE}
-            ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL})
-            VALUES ($1, $2, $3)
+            ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL}, {cst.SOURCE_IMAGE_URL})
+            VALUES ($1, $2, $3, $4)
         """
         for pair in task.image_text_pairs:
-            await connection.execute(query_pairs, task_record[cst.TASK_ID], pair.image_url, pair.text_url)
+            await connection.execute(
+                query_pairs,
+                task_record[cst.TASK_ID],
+                pair.image_url,
+                pair.text_url,
+                pair.source_image_url,
+            )
 
 
 async def _insert_dpo_task(connection: Connection, task: DpoRawTask, task_record: dict) -> None:
@@ -480,7 +492,7 @@ async def get_tasks_with_status(
                 """
             elif task_type == TaskType.IMAGETASK.value:
                 specific_query = f"""
-                    SELECT t.*, it.model_type, it.trigger_word
+                    SELECT t.*, it.model_type, it.training_mode, it.trigger_word
                     FROM {cst.TASKS_TABLE} t
                     LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                     WHERE t.{cst.TASK_ID} = $1
@@ -768,6 +780,11 @@ async def update_task(updated_task: AnyTypeRawTask, psql_db: PSQLDB) -> AnyTypeR
                 if cst.MODEL_TYPE in specific_updates and specific_updates[cst.MODEL_TYPE] is not None:
                     model_type = specific_updates[cst.MODEL_TYPE]
                     specific_updates[cst.MODEL_TYPE] = model_type.value if hasattr(model_type, "value") else model_type
+                if cst.TRAINING_MODE in specific_updates and specific_updates[cst.TRAINING_MODE] is not None:
+                    training_mode = specific_updates[cst.TRAINING_MODE]
+                    specific_updates[cst.TRAINING_MODE] = (
+                        training_mode.value if hasattr(training_mode, "value") else training_mode
+                    )
                 if specific_updates:
                     specific_clause = ", ".join([f"{column} = ${i + 2}" for i, column in enumerate(specific_updates.keys())])
                     specific_values = list(specific_updates.values())
@@ -1067,7 +1084,7 @@ async def get_task(task_id: UUID, psql_db: PSQLDB, connection: Connection | None
             """
         elif task_type == TaskType.IMAGETASK.value:
             specific_query = f"""
-                SELECT t.*, it.model_type, it.trigger_word
+                SELECT t.*, it.model_type, it.training_mode, it.trigger_word
                 FROM {cst.TASKS_TABLE} t
                 LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
                 WHERE t.{cst.TASK_ID} = $1
@@ -1210,6 +1227,7 @@ async def get_task_by_id(task_id: UUID, psql_db: PSQLDB) -> AnyTypeTask:
                 SELECT
                     tasks.*,
                     it.model_type,
+                    it.training_mode,
                     it.trigger_word,
                     victorious_repo.repo as trained_model_repository
                 FROM {cst.TASKS_TABLE} tasks
@@ -1391,7 +1409,7 @@ def _get_specific_query_for_task_type(task_type: str) -> str | None:
         """
     elif task_type == TaskType.IMAGETASK.value:
         return f"""
-            SELECT t.*, it.model_type, it.trigger_word
+            SELECT t.*, it.model_type, it.training_mode, it.trigger_word
             FROM {cst.TASKS_TABLE} t
             LEFT JOIN {cst.IMAGE_TASKS_TABLE} it ON t.{cst.TASK_ID} = it.{cst.TASK_ID}
             WHERE t.{cst.TASK_ID} = ANY($1)
@@ -2280,26 +2298,34 @@ async def get_active_evaluation_deployments(psql_db: PSQLDB) -> list[dict]:
 
 async def add_image_text_pairs(task_id: UUID, pairs: list[ImageTextPair], psql_db: PSQLDB) -> None:
     query = f"""
-        INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE} ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL})
-        VALUES ($1, $2, $3)
+        INSERT INTO {cst.IMAGE_TEXT_PAIRS_TABLE}
+        ({cst.TASK_ID}, {cst.IMAGE_URL}, {cst.TEXT_URL}, {cst.SOURCE_IMAGE_URL})
+        VALUES ($1, $2, $3, $4)
     """
 
     async with await psql_db.connection() as conn:
         async with conn.transaction():
             for pair in pairs:
-                await conn.execute(query, task_id, pair.image_url, pair.text_url)
+                await conn.execute(query, task_id, pair.image_url, pair.text_url, pair.source_image_url)
 
 
 async def get_image_text_pairs(task_id: UUID, psql_db: PSQLDB, connection: Connection | None = None) -> list[ImageTextPair]:
     async def _get_image_text_pairs(conn: Connection) -> list[ImageTextPair]:
         query = f"""
-            SELECT {cst.IMAGE_URL}, {cst.TEXT_URL}
+            SELECT {cst.IMAGE_URL}, {cst.TEXT_URL}, {cst.SOURCE_IMAGE_URL}
             FROM {cst.IMAGE_TEXT_PAIRS_TABLE}
             WHERE {cst.TASK_ID} = $1
             ORDER BY {cst.ID}
         """
         rows = await conn.fetch(query, task_id)
-        return [ImageTextPair(image_url=row["image_url"], text_url=row["text_url"]) for row in rows]
+        return [
+            ImageTextPair(
+                image_url=row[cst.IMAGE_URL],
+                text_url=row[cst.TEXT_URL],
+                source_image_url=row[cst.SOURCE_IMAGE_URL],
+            )
+            for row in rows
+        ]
 
     if connection is not None:
         return await _get_image_text_pairs(connection)

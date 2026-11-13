@@ -1,0 +1,51 @@
+job: extension
+config:
+  name: last
+  process:
+    - type: diffusion_trainer
+      training_folder: /app/checkpoints
+      device: cuda
+      network:
+        type: lora
+        linear: 32
+        linear_alpha: 32
+      save:
+        dtype: bf16
+        save_every: 250
+        max_step_saves_to_keep: 4
+        save_format: diffusers
+      datasets:
+        - folder_path: /dataset/images/targets
+          control_path: [/dataset/images/controls/0]
+          caption_ext: txt
+          cache_latents_to_disk: true
+          resolution: [512, 768, 1024]
+      train:
+        batch_size: 1
+        steps: 500
+        lr: 0.0001
+        optimizer: adamw8bit
+        gradient_checkpointing: true
+        noise_scheduler: flowmatch
+        timestep_type: weighted
+        dtype: bf16
+        cache_text_embeddings: false
+        train_unet: true
+        train_text_encoder: false
+        skip_first_sample: true
+        disable_sampling: true
+      model:
+        name_or_path: /cache/models
+        arch: "moss_image:base_edit"
+        quantize: true
+        qtype: convrot8
+        quantize_te: true
+        qtype_te: convrot8
+        model_kwargs:
+          edit: true
+          kv_cache: true
+          match_target_res: true
+          uncond_skip_layers: [22]
+meta:
+  name: moss_image_base_edit_lora
+  version: "1.0"

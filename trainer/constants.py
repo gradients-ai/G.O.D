@@ -44,6 +44,7 @@ CONTAINER_START_RETRY_DELAY_SECONDS = 3
 # Cache and output paths
 CACHE_ROOT_PATH = "/cache"
 HUGGINGFACE_CACHE_PATH = "/cache/hf_cache"
+AI_TOOLKIT_MODELS_PATH = "/cache/ai_toolkit_models"
 OUTPUT_CHECKPOINTS_PATH = "/app/checkpoints/"
 CACHE_MODELS_DIR = "/cache/models"
 CACHE_DATASETS_DIR = "/cache/datasets"
