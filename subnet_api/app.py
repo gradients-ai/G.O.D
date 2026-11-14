@@ -14,6 +14,7 @@ from loguru import logger
 from pydantic import ValidationError
 
 from subnet_api import models
+from subnet_api.docs import install_docs
 from subnet_api.settings import Settings
 from subnet_api.validator_client import ValidatorClient
 
@@ -63,11 +64,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
             app.state.validator = ValidatorClient(http, timeout=settings.request_timeout, cache_seconds=settings.cache_seconds)
             yield
 
-    app = FastAPI(
-        title="Gradients SN56 API",
-        description="Public, read-only data for subnet 56: auditing, tournaments and emissions.",
-        lifespan=lifespan,
-    )
+    app = FastAPI(title="Gradients SN56 API", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     if settings.cors_origins:
         app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_methods=["GET"])
@@ -146,6 +143,7 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
         body = await _validator(request).get("/v1/performance/last-boss-battle", timeout=slow)
         return models.BossBattleResponse.model_validate(body)
 
+    install_docs(app, settings.public_url)
     return app
 
 

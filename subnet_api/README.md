@@ -15,18 +15,18 @@ SUBNET_API_PORT=9100
 
 `ops/validator_ops/start_validator.sh` then starts it under pm2 as `subnet_api`
 whenever the validator starts or auto-updates. It reuses `VALIDATOR_PORT` and
-`FRONTEND_API_KEY` from `.vali.env`, and listens on `127.0.0.1` only: the
-Cloudflare tunnel below is its only public entry point.
+`FRONTEND_API_KEY` from `.vali.env`, and listens on `0.0.0.0` so the port is
+reachable on the machine's public IP.
 
-To start it now without restarting the validator:
+To start (or restart) it without restarting the validator:
 
 ```bash
-set -a; . ./.vali.env; set +a
-VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
-  pm2 start "uvicorn --factory subnet_api.app:app --host 127.0.0.1 --port ${SUBNET_API_PORT} --no-server-header" \
-  --name subnet_api
+task subnet-api
 curl -s localhost:${SUBNET_API_PORT}/health
 ```
+
+Open the firewall for that port if needed, then point `sn56.io` (or any host) at
+the validator's public IP. DNS A/AAAA records expose that IP.
 
 Optional settings, also read from the environment:
 
@@ -36,32 +36,8 @@ Optional settings, also read from the environment:
 | `SUBNET_API_REQUEST_TIMEOUT` | `30` | Seconds to wait for the validator |
 | `SUBNET_API_SLOW_REQUEST_TIMEOUT` | `120` | Same, for the heavy performance routes |
 | `SUBNET_API_CORS_ORIGINS` | none | Comma-separated browser origins allowed to call it |
+| `SUBNET_API_PUBLIC_URL` | `https://api.sn56.io` | Base URL shown in the code samples on `/docs` |
 
-## Publish it on sn56.io with Cloudflare
+The API reference is served at `/docs`, from `/openapi.json`.
 
-1. **Put the domain on Cloudflare.** In the Cloudflare dashboard, *Add a domain*
-   `sn56.io`, then set the two nameservers it shows at your registrar. Wait until
-   the domain shows *Active*.
-2. **Install cloudflared on the validator** (Ubuntu/Debian):
-
-   ```bash
-   sudo mkdir -p --mode=0755 /usr/share/keyrings
-   curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
-     | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
-   echo 'deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main' \
-     | sudo tee /etc/apt/sources.list.d/cloudflared.list
-   sudo apt-get update && sudo apt-get install -y cloudflared
-   ```
-
-3. **Create the tunnel.** *Zero Trust → Networks → Tunnels → Create a tunnel →
-   Cloudflared*, name it `sn56`. Copy the `sudo cloudflared service install <token>`
-   command it shows and run it on the validator. It installs a systemd service
-   that reconnects on its own after reboots; the tunnel turns *Healthy*.
-4. **Route the domain.** In the tunnel's *Public hostnames*, add hostname
-   `sn56.io` (no subdomain) with service type `HTTP` and URL
-   `localhost:9100` (your `SUBNET_API_PORT`). Cloudflare creates the DNS record.
-5. **Check it:** `curl https://sn56.io/health` returns `{"status":"ok"}`.
-
-The tunnel only makes outbound connections, so no inbound port is opened on the
-validator. Optionally, add a Cloudflare rate-limiting rule for `sn56.io` to cap
-requests per client IP.
+Keep `VALIDATOR_PORT` firewalled / bound as today — only publish `SUBNET_API_PORT`.

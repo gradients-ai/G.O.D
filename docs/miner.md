@@ -118,8 +118,8 @@ Balances are tracked per coldkey, so hotkeys under the same coldkey share the sa
 Useful API endpoints:
 
 ```bash
-curl https://api.gradients.io/tournament/fees
-curl https://api.gradients.io/tournament/balance/{coldkey}
+curl https://api.sn56.io/tournament/fees
+curl https://api.sn56.io/tournament/balance/{coldkey}
 ```
 
 Collected fees are burned through the tournament balance system.

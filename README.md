@@ -29,10 +29,9 @@ Scheduling notes:
 Useful public endpoints:
 
 ```bash
-curl https://api.gradients.io/v1/tournaments/next-dates
-curl https://api.gradients.io/v1/tournaments/active
-curl https://api.gradients.io/v1/tournaments/latest/details
-curl https://api.gradients.io/tournament/fees
+curl https://api.sn56.io/tournament/latest/details
+curl https://api.sn56.io/tournament/fees
+curl https://api.sn56.io/v1/performance/latest-tournament-weights
 ```
 
 ## Documentation
