@@ -327,6 +327,8 @@ Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../valid
 | Compression | Fixed | normalised loss `r` | at least 1% lower, and a pass on the paired per-example test |
 | Compression | Freeform | effective size `S`: bytes, penalised above the loss bar | at least 3% lower |
 
+The paired per-example test compares the two models on the same held-out examples. An example counts only if their losses on it differ by more than 0.01 nats. The challenger must be better on at least 55% of the examples that count, and better on average by at least 0.01 nats or 1% of the boss's mean loss, whichever is larger, both at 99% confidence. Below a mean loss of 1.0 the 0.01-nat floor is the larger, so the bar there is above 1%. Details: [The paired per-example test](../validator/tournament/README.md#the-paired-per-example-test).
+
 The allowances are the same everywhere: for freeform, "at most 1% worse" means an `S` at most 1% larger. How each value is scored is in the guides: [text](miner_text.md#the-crown), [image](miner_image.md#the-crown), [compression](miner_compression.md#the-crown). The mechanics behind the rule and its edge cases are in [Crown, early stop and placements](../validator/tournament/README.md#crown-early-stop-and-placements).
 
 ### The champion's next week
