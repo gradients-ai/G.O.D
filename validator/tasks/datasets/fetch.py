@@ -32,11 +32,26 @@ async def fetch_s3_file(url: str, save_path: str | None = None) -> str:
         raise DataFetchError(redact_url_queries(f"could not download {url}: {type(e).__name__}: {e}")) from e
 
 
-def is_transient_hub_error(error: BaseException) -> bool:
-    """Whether a Hugging Face hub / datasets error is a connection failure, a timeout, rate limiting or a server error."""
+def _is_transient_hub_exception(error: BaseException) -> bool:
     if isinstance(error, (requests.ConnectionError, requests.Timeout)):
         return True
     if isinstance(error, HfHubHTTPError) and error.response is not None:
         status = error.response.status_code
         return status >= _TRANSIENT_HUB_STATUS_FLOOR or status == _HUB_RATE_LIMITED_STATUS
+    return False
+
+
+def is_transient_hub_error(error: BaseException) -> bool:
+    """Whether a Hugging Face hub / datasets error is a connection failure, a timeout, rate limiting or a server error.
+
+    The cause/context chain is followed: transformers reports an unreachable hub as an OSError raised from
+    huggingface_hub's LocalEntryNotFoundError, itself raised from the requests error.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        if _is_transient_hub_exception(current):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
     return False

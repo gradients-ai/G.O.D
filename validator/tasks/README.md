@@ -16,7 +16,7 @@ Task models, dataset preparation, model prep, reward functions and synthetic tas
 | `quant_eval_set.py` | Tokenises a compression task's held-out split into the scorer's test set. |
 | `quant_input_repo.py` | `full_model_rejection`: whether a hub repo is a full model a compression task can take as input. |
 | `quant_shapes.py` | Which base models a compression task may use, read from the validator's download of `config.json`. |
-| `quant_tokenizer.py` | The task's base tokenizer for compression prep. The only compression prep module that imports transformers. |
+| `quant_tokenizer.py` | The task's base tokenizer for compression prep, and its context length read from config.json as JSON (no AutoConfig, so a model_type the installed transformers does not know still preps). The only compression prep module that imports transformers. |
 | `requests.py` | Model parameter lookup, task prep for each task type and train-request construction. |
 
 ## Compression eval sets
