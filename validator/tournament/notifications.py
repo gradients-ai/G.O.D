@@ -57,7 +57,10 @@ async def send_to_discord(webhook: str, message: str):
         response = await client.post(webhook, json=payload)
         return response
 
-async def notify_tournament_started(tournament_id: str, tournament_type: str, participants: int, discord_url: str):
+async def notify_tournament_started(tournament_id: str, tournament_type: str, participants: int, discord_url: str | None):
+    if not discord_url:
+        logger.debug(f"No Discord webhook configured; not announcing the start of tournament {tournament_id}")
+        return
     try:
         message = (
             f"Tournament Started!\nTournament ID: {tournament_id}\nType: {tournament_type}\n"
@@ -68,8 +71,11 @@ async def notify_tournament_started(tournament_id: str, tournament_type: str, pa
         logger.error(f"Failed to send Discord notification for tournament start: {e}")
 
 async def notify_tournament_completed(
-    tournament_id: str, tournament_type: str, winner: str, discord_url: str, diff_report: str | None = None
+    tournament_id: str, tournament_type: str, winner: str, discord_url: str | None, diff_report: str | None = None
 ):
+    if not discord_url:
+        logger.debug(f"No Discord webhook configured; not announcing the completion of tournament {tournament_id}")
+        return
     try:
         message = (
             f"Tournament Completed!\nTournament ID: {tournament_id}\nType: {tournament_type}\nWinner: {winner}\nStatus: COMPLETED"

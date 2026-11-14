@@ -10,6 +10,7 @@ Dataset validation, column mapping, splitting and upload for validator tasks.
 | `columns.py` | Column inspection of a dataset per task type. |
 | `constants.py` | Dataset preparation and training-hours constants. |
 | `hub_safety.py` | Admits only Hugging Face datasets without loading scripts, pinned to the checked commit. |
+| `fetch.py` | Data downloads of prep and `DataFetchError`, the error that marks a prep failure as a failure to reach the data (retried, never charged to the task). |
 | `mapping.py` | Maps source columns to the standard task columns and merges datasets. |
 | `models.py` | Dataset payload models. |
 | `preparation.py` | Download, train/test split, duplicate and near-duplicate checks, and upload. |

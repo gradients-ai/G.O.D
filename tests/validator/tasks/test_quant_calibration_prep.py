@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 import validator.tasks.prep.constants as prep_cst
@@ -19,6 +20,7 @@ from validator.evaluation.quant_loss import load_examples
 from validator.evaluation.quant_loss import quant_eval_set_fingerprint
 from validator.tasks import requests
 from validator.tasks.datasets.calibration import CalibrationUnavailableError
+from validator.tasks.datasets.fetch import DataFetchError
 from validator.tasks.datasets.preparation import PreparedTextSplit
 from validator.tasks.models import QuantFixedRawTask
 from validator.tasks.models import QuantFreeformRawTask
@@ -230,3 +232,14 @@ async def test_a_successful_prep_always_has_all_three_calibration_fields(prep, m
 
     assert task.calibration_data and task.calibration_fingerprint and task.calibration_n_examples > 0
     assert task.status == TaskStatus.LOOKING_FOR_NODES
+
+
+async def test_a_calibration_download_that_keeps_failing_on_http_is_a_fetch_error_not_a_calibration_failure(prep):
+    prep.download_error = httpx.ConnectError(f"connection refused for {CAL_URL}?X-Amz-Signature=secret")
+
+    with pytest.raises(DataFetchError, match="after 3 attempts") as raised:
+        await _run(_freeform())
+
+    assert not isinstance(raised.value, CalibrationUnavailableError)
+    assert "secret" not in str(raised.value)
+    assert prep.downloads.count(CAL_URL) == prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS

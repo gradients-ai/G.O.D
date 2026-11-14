@@ -6,6 +6,7 @@ import re
 import tempfile
 from typing import Callable
 
+import httpx
 from huggingface_hub import HfApi
 from pydantic import BaseModel
 
@@ -30,6 +31,7 @@ from validator.evaluation.quant_loss import QuantEvalExample
 from validator.evaluation.quant_loss import quant_eval_set_fingerprint
 from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import shared_split_seed
+from validator.tasks.datasets.fetch import DataFetchError
 from validator.tasks.datasets.preparation import prepare_image_task
 from validator.tasks.datasets.preparation import prepare_text_task
 from validator.tasks.details import save_json_to_temp_file
@@ -163,7 +165,10 @@ def _standard_instruct_dataset_type(dataset_type: InstructTextDatasetType) -> In
 
 async def _download_json_rows(url: str) -> list[dict]:
     with tempfile.TemporaryDirectory() as temp_dir:
-        local_path = await download_s3_file(url, save_path=temp_dir)
+        try:
+            local_path = await download_s3_file(url, save_path=temp_dir)
+        except httpx.HTTPError as e:
+            raise DataFetchError(redact_url_queries(f"could not download {url}: {type(e).__name__}: {e}")) from e
         with open(local_path) as f:
             return json.load(f)
 
@@ -211,7 +216,7 @@ async def _upload_quant_jsonl(examples: list[QuantEvalExample], object_suffix: s
     finally:
         os.remove(path)
     if not url:
-        raise Exception(f"Failed to upload the {what} to MinIO storage")
+        raise DataFetchError(f"Failed to upload the {what} to MinIO storage")
     return url.strip('"')
 
 
@@ -263,10 +268,12 @@ async def _publish_quant_calibration_set(
 
     An example equal to an eval example (token level) is dropped, so a calibration row is never a scored row. Fewer than
     QUANT_CALIBRATION_MIN_EXAMPLES survivors raise CalibrationUnavailableError at once (the outcome is deterministic). Any
-    other failure is retried up to QUANT_CALIBRATION_PUBLISH_ATTEMPTS attempts in all, then raises CalibrationUnavailableError.
+    other failure is retried up to QUANT_CALIBRATION_PUBLISH_ATTEMPTS attempts in all, then raises DataFetchError when the
+    last attempt could not fetch or store the data (prep is retried with backoff), else CalibrationUnavailableError.
     The urls are presigned, so every message is redacted.
     """
     last_error = ""
+    last_was_fetch = False
     for attempt in range(1, prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS + 1):
         try:
             return await _build_and_upload_quant_calibration_set(
@@ -276,12 +283,14 @@ async def _publish_quant_calibration_set(
             raise CalibrationUnavailableError(redact_url_queries(str(e))) from None
         except Exception as e:
             last_error = redact_url_queries(f"{type(e).__name__}: {e}")
+            last_was_fetch = isinstance(e, DataFetchError)
             logger.warning(
                 f"Quant calibration set: attempt {attempt}/{prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS} failed: {last_error}"
             )
             if attempt < prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS:
                 await asyncio.sleep(prep_cst.QUANT_CALIBRATION_PUBLISH_BACKOFF_SECONDS * attempt)
-    raise CalibrationUnavailableError(
+    error_type = DataFetchError if last_was_fetch else CalibrationUnavailableError
+    raise error_type(
         f"Quant calibration set could not be published after {prep_cst.QUANT_CALIBRATION_PUBLISH_ATTEMPTS} attempts: {last_error}"
     )
 

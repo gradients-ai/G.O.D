@@ -23,7 +23,6 @@ import core.constants.datasets as core_cst
 import validator.tasks.datasets.constants as cst
 import validator.tournament.constants as t_cst
 from core.constants.credentials import BUCKET_NAME
-from core.downloads import download_s3_file
 from core.interfaces import KeypairLike
 from core.logging import get_logger
 from core.logging import redact_url_queries
@@ -44,6 +43,9 @@ from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import carve_calibration
 from validator.tasks.datasets.calibration import shared_split_seed
 from validator.tasks.datasets.calibration import with_row_hashes
+from validator.tasks.datasets.fetch import DataFetchError
+from validator.tasks.datasets.fetch import fetch_s3_file
+from validator.tasks.datasets.fetch import is_transient_hub_error
 from validator.tasks.datasets.hub_safety import resolve_code_free_hub_dataset
 from validator.tasks.details import save_json_to_temp_file
 from validator.tasks.details import upload_file_to_minio
@@ -146,7 +148,7 @@ async def load_dataset_from_s3(dataset_url: str, max_file_size_bytes: int = None
     """Load a dataset from S3 storage."""
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
-            local_file_path = await download_s3_file(dataset_url, save_path=temp_dir)
+            local_file_path = await fetch_s3_file(dataset_url, save_path=temp_dir)
             if max_file_size_bytes:
                 file_size = os.path.getsize(local_file_path)
                 if file_size > max_file_size_bytes:
@@ -303,9 +305,14 @@ async def download_and_load_dataset(
     if file_format == FileFormat.S3:
         dataset = await load_dataset_from_s3(dataset_name, max_file_size_bytes)
     else:
-        revision = resolve_code_free_hub_dataset(dataset_name)
-        config_name = get_default_dataset_config(dataset_name, revision=revision)
-        dataset = load_dataset(dataset_name, config_name, revision=revision, trust_remote_code=False)
+        try:
+            revision = resolve_code_free_hub_dataset(dataset_name)
+            config_name = get_default_dataset_config(dataset_name, revision=revision)
+            dataset = load_dataset(dataset_name, config_name, revision=revision, trust_remote_code=False)
+        except Exception as e:
+            if is_transient_hub_error(e):
+                raise DataFetchError(f"could not load {dataset_name} from the hub: {type(e).__name__}: {e}") from e
+            raise
 
     if isinstance(dataset, DatasetDict):
         combined_dataset = concatenate_datasets([split for split in dataset.values()])
@@ -459,7 +466,7 @@ async def _process_and_upload_datasets(
                 calibration_path, BUCKET_NAME, f"{os.urandom(8).hex()}_calibration_data.json"
             )
             if not calibration_json_url:
-                raise Exception("Failed to upload calibration data to MinIO storage")
+                raise DataFetchError("Failed to upload calibration data to MinIO storage")
     except Exception as e:
         logger.error(f"There was a problem going to json {e}")
         raise e
@@ -467,9 +474,9 @@ async def _process_and_upload_datasets(
     logger.info(redact_url_queries(f"Train json url: {train_json_url}\nTest json url: {test_json_url}"))
 
     if not train_json_url:
-        raise Exception("Failed to upload training data to MinIO storage")
+        raise DataFetchError("Failed to upload training data to MinIO storage")
     if not test_json_url:
-        raise Exception("Failed to upload test data to MinIO storage")
+        raise DataFetchError("Failed to upload test data to MinIO storage")
 
     for file_path in files_to_delete:
         if os.path.exists(file_path):
@@ -905,7 +912,7 @@ async def prepare_image_task(
 
     if dataset_zip_url:
         with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as download_dir:
-            local_zip_path = await download_s3_file(dataset_zip_url, save_path=download_dir)
+            local_zip_path = await fetch_s3_file(dataset_zip_url, save_path=download_dir)
             dataset_path = unzip_to_temp_path(local_zip_path)
             try:
                 test_zip_path, train_zip_path = train_test_split_image(
@@ -933,16 +940,16 @@ async def prepare_image_task(
     with tempfile.TemporaryDirectory(dir=cst.TEMP_PATH_FOR_IMAGES) as source_dir:
         for i, pair in enumerate(image_text_pairs):
             txt_path = Path(source_dir) / f"{i}.txt"
-            await download_s3_file(pair.text_url, str(txt_path))
+            await fetch_s3_file(pair.text_url, str(txt_path))
 
-            tmp_img_path = Path(await download_s3_file(pair.image_url))
+            tmp_img_path = Path(await fetch_s3_file(pair.image_url))
             img_extension = tmp_img_path.suffix
             img_path = Path(source_dir) / f"{i}{img_extension}"
             shutil.move(tmp_img_path, img_path)
             if pair.source_image_url:
                 controls_dir = Path(source_dir) / "controls" / "0"
                 controls_dir.mkdir(parents=True, exist_ok=True)
-                tmp_source_path = Path(await download_s3_file(pair.source_image_url))
+                tmp_source_path = Path(await fetch_s3_file(pair.source_image_url))
                 shutil.move(tmp_source_path, controls_dir / f"{i}{tmp_source_path.suffix}")
             elif training_mode == ImageTrainingMode.EDIT:
                 raise ValueError(f"Image-edit pair {i} is missing source_image_url")

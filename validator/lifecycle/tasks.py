@@ -2,6 +2,8 @@ import asyncio
 import datetime
 import time
 
+from pydantic import BaseModel
+
 import core.constants.environments as core_cst
 import validator.db.sql.nodes as nodes_sql
 import validator.db.sql.tasks as tasks_sql
@@ -37,6 +39,7 @@ from validator.scoring.tasks import evaluate_and_score_hotkeys
 from validator.scoring.tasks import finalize_task_scores_from_raw_losses
 from validator.tasks.config import get_task_config
 from validator.tasks.datasets.calibration import CalibrationUnavailableError
+from validator.tasks.datasets.fetch import DataFetchError
 from validator.tasks.models import AnyTypeRawTask
 from validator.tasks.models import RawTask
 from validator.tasks.requests import get_model_num_params
@@ -44,6 +47,28 @@ from validator.tasks.requests import get_model_num_params
 
 logger = get_logger(__name__)
 _TOURNAMENT_GROUP_EVAL_TYPES = frozenset({core_cst.EvalType.PVP, core_cst.EvalType.INDIVIDUAL})
+
+
+class PrepFetchBackoff(BaseModel):
+    """Consecutive DataFetchError prep failures of one task, and when (time.monotonic) it may be prepped again."""
+
+    failures: int
+    retry_at: float
+
+
+# Per task id, in this process: a restart preps every PENDING task at once and starts the count again.
+_PREP_FETCH_BACKOFF: dict[str, PrepFetchBackoff] = {}
+
+
+def prep_fetch_retry_delay_seconds(failures: int) -> float:
+    """The wait after the given number of consecutive fetch failures: doubling from the base, capped."""
+    delay = lifecycle_cst.PREP_FETCH_RETRY_BASE_SECONDS * 2 ** (failures - 1)
+    return min(delay, lifecycle_cst.PREP_FETCH_RETRY_MAX_SECONDS)
+
+
+def _prep_backing_off(task: AnyTypeRawTask, now: float) -> bool:
+    backoff = _PREP_FETCH_BACKOFF.get(str(task.task_id))
+    return backoff is not None and backoff.retry_at > now
 
 
 def _tournament_environment_names() -> list[str]:
@@ -135,8 +160,41 @@ async def _find_miners_for_task(config: Config):
     )
 
 
+async def _hold_prep_after_fetch_failure(original: AnyTypeRawTask, error: DataFetchError, config: Config) -> None:
+    """Put a task whose prep could not fetch its data back to PENDING exactly as it was before prep, and back off.
+
+    It is neither failed nor replaced: a redraw would fetch from the same service. The failure that reaches
+    PREP_FETCH_FAILURES_BEFORE_ALERT alerts once; the retries go on at the capped backoff for as long as the outage lasts.
+    """
+    task_id = str(original.task_id)
+    previous = _PREP_FETCH_BACKOFF.get(task_id)
+    failures = previous.failures + 1 if previous else 1
+    delay = prep_fetch_retry_delay_seconds(failures)
+    _PREP_FETCH_BACKOFF[task_id] = PrepFetchBackoff(failures=failures, retry_at=time.monotonic() + delay)
+    original.status = TaskStatus.PENDING
+    add_context_tag("status", original.status.value)
+    await tasks_sql.update_task(original, config.psql_db)
+    logger.warning(
+        f"Task {task_id}: data prep could not fetch its data ({failures} consecutive failures): {error}; "
+        f"left {TaskStatus.PENDING.value}, prepped again in {int(delay)} s"
+    )
+    if failures == lifecycle_cst.PREP_FETCH_FAILURES_BEFORE_ALERT:
+        await notify_evaluation_exception(
+            config,
+            task_id=task_id,
+            task_type=original.task_type,
+            context=(
+                f"Data prep could not fetch the task's data {failures} times in a row. The task is not failed or replaced: "
+                f"it stays pending and prep is retried with backoff (at most every "
+                f"{lifecycle_cst.PREP_FETCH_RETRY_MAX_SECONDS // 60} min) until the data can be fetched."
+            ),
+            error=error,
+        )
+
+
 async def _prep_task(task: AnyTypeRawTask, config: Config):
     with LogContext(task_id=str(task.task_id)):
+        original = task.model_copy(deep=True)
         try:
             task.status = TaskStatus.PREPARING_DATA
             add_context_tag("status", task.status.value)
@@ -155,7 +213,11 @@ async def _prep_task(task: AnyTypeRawTask, config: Config):
 
             add_context_tag("status", task.status.value)
             await tasks_sql.update_task(task, config.psql_db)
+            _PREP_FETCH_BACKOFF.pop(str(task.task_id), None)
+        except DataFetchError as e:
+            await _hold_prep_after_fetch_failure(original, e, config)
         except Exception as e:
+            _PREP_FETCH_BACKOFF.pop(str(task.task_id), None)
             logger.error(f"Error during task prep: {e}", exc_info=True)
             task.status = TaskStatus.PREP_TASK_FAILURE
             add_context_tag("status", task.status.value)
@@ -177,6 +239,11 @@ async def _processing_pending_tasks(config: Config):
     logger.debug("Processing pending tasks")
 
     pending_tasks = await tasks_sql.get_tasks_with_status(status=TaskStatus.PENDING, psql_db=config.psql_db)
+    now = time.monotonic()
+    backing_off = [task for task in pending_tasks if _prep_backing_off(task, now)]
+    if backing_off:
+        logger.info(f"{len(backing_off)} pending tasks wait out a data-fetch backoff before prep")
+    pending_tasks = [task for task in pending_tasks if not _prep_backing_off(task, now)]
     logger.info(f"Found {len(pending_tasks)} pending tasks! Will prep them all now...")
     await asyncio.gather(*[_prep_task(task, config) for task in pending_tasks[: lifecycle_cst.MAX_CONCURRENT_TASK_PREPS]])
     clean_all_hf_datasets_cache()

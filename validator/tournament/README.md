@@ -247,6 +247,7 @@ The 20th prep-stage rejection marks the role `failed`.
 <summary>Replacement and failure handling</summary>
 
 - A seed whose task dies before its round attaches it is redrawn as the next attempt, and held tasks chained on it are re-pointed to the replacement.
+- A prep that cannot fetch or store the seed's data (an HTTP error or timeout on a data URL, an unreachable hub, a failed upload) is not a failure of the seed. The task stays `PENDING` and the same seed is prepped again with a backoff from 1 to 30 minutes, for as long as the outage lasts. The third consecutive failure sends one alert. No replacement is charged and the role is never `failed` for it. Tournament tasks that are not seeds are retried the same way ([Data prep failures](../lifecycle/README.md#data-prep-failures)).
 - A prep-stage dataset rejection of a text round seed (`text_r1` to `text_r3`) is not charged. The redraw skips every dataset already rejected in the tournament.
 - A failed boss training run on a compression seed is not redrawn. It is the boss's failed entry and ranks behind every valid entry.
 - A failed boss run on a text seed is redrawn while the seed is unattached and replacements are left. Otherwise it is the boss's failed entry.

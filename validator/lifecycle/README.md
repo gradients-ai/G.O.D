@@ -13,6 +13,15 @@ The validator loops that create, prepare, assign, evaluate and finalise tasks.
 | `quant_reference.py` | `ensure_quant_references`: the check at finalisation that every scored compression row has a bf16 reference on its GPU SKU. |
 | `boss_seed_eval.py` | Evaluation of the boss's seed entries as soon as they train, with retries and alerts. |
 
+## Data prep failures
+
+A task's data prep fails in one of two ways.
+
+| Failure | Effect |
+| --- | --- |
+| Prep could not fetch or store the task's data: an HTTP error, status or timeout on a data URL, an unreachable or erroring Hugging Face hub, or an object-store upload that did not go through (`DataFetchError`, `validator/tasks/datasets/fetch.py`) | The task returns to `PENDING` unchanged and is prepped again after a backoff. The backoff starts at `PREP_FETCH_RETRY_BASE_SECONDS` (1 min), doubles per consecutive failure and is capped at `PREP_FETCH_RETRY_MAX_SECONDS` (30 min). The `PREP_FETCH_FAILURES_BEFORE_ALERT`-th (3rd) consecutive failure sends one alert. The task is never failed for it, so the tournament does not replace it, and the retries go on until the data can be fetched. The count is per validator process. |
+| Anything else: a near-duplicate dataset, too few rows, no calibration set, a dataset or model that cannot be used | The task is marked `PREP_TASK_FAILURE`. A tournament replaces it. |
+
 ## Finalising a compression task
 
 Finalisation of a compression task waits for `ensure_quant_references`. The function measures nothing. Each evaluation deployment scores the reference on its SKU.
