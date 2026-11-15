@@ -27,6 +27,8 @@ from validator.tasks.quant_eval_set import QuantTokenizer
 CONTEXT_LEN_KEY = "max_position_embeddings"
 # Multimodal configs (gemma3, llama4, ...) keep the language model's fields under this key.
 TEXT_CONFIG_KEY = "text_config"
+# Encodes to at least one ordinary token under any real vocabulary.
+VOCAB_PROBE_TEXT = "Hello world"
 
 
 def _read_model_config(model_id: str) -> dict:
@@ -57,6 +59,9 @@ class HfQuantTokenizer:
             if is_transient_hub_error(e):
                 raise DataFetchError(f"could not load the tokenizer of {model_id} from the hub: {type(e).__name__}: {e}") from e
             raise
+        # A repo missing its vocabulary files loads as a tokenizer of special tokens only.
+        if not self._tokenizer.encode(VOCAB_PROBE_TEXT, add_special_tokens=False):
+            raise ValueError(f"the tokenizer of {model_id} has no vocabulary (tokenizer files missing)")
         self.bos_token_id: int | None = self._tokenizer.bos_token_id
         self.eos_token_id: int | None = self._tokenizer.eos_token_id
         self.vocab_size: int = len(self._tokenizer)

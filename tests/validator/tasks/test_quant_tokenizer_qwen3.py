@@ -9,6 +9,7 @@ chat_template.jinja. Skipped where transformers is not installed (the `gpu` extr
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 import requests as requests_lib
 from huggingface_hub.errors import LocalEntryNotFoundError
@@ -116,7 +117,7 @@ def test_the_installed_transformers_knows_every_quant_model_type():
 
 
 def test_prep_does_not_need_transformers_to_know_the_model_type(qwen3_dir):
-    """The F5 failure mode: a model_type newer than the installed transformers. The tokenizer names its own class, and
+    """A model_type newer than the installed transformers. The tokenizer names its own class, and
     the context length is read from config.json as JSON, so prep still loads."""
     (qwen3_dir / "config.json").write_text(json.dumps({**QWEN3_CONFIG, "model_type": "qwen9_not_released"}))
 
@@ -130,12 +131,15 @@ def test_a_multimodal_config_reads_the_context_len_from_its_text_config():
     assert quant_tokenizer.config_context_len({"model_type": "qwen3"}) is None
 
 
-def test_an_unreachable_hub_is_a_fetch_error(monkeypatch):
+@pytest.mark.parametrize(
+    "transport_error", [requests_lib.ConnectionError("offline"), httpx.ConnectError("refused"), httpx.ReadTimeout("slow")]
+)
+def test_an_unreachable_hub_is_a_fetch_error(monkeypatch, transport_error):
     def unreachable(*args, **kwargs):
         try:
             try:
-                raise requests_lib.ConnectionError("offline")
-            except requests_lib.ConnectionError as e:
+                raise transport_error
+            except Exception as e:
                 raise LocalEntryNotFoundError("not in the cache") from e
         except LocalEntryNotFoundError as e:
             raise OSError("We couldn't connect to 'https://huggingface.co'") from e
@@ -161,3 +165,10 @@ def test_the_prep_max_sequence_len_is_capped_below_the_qwen3_context(qwen3_dir):
 
     max_len = requests.quant_eval_max_sequence_len(tokenizer.context_len, prep_cst.QUANT_EVAL_MAX_SEQUENCE_LEN)
     assert max_len == min(prep_cst.QUANT_EVAL_MAX_SEQUENCE_LEN, QWEN3_CONTEXT_LEN - 1)
+
+
+def test_a_tokenizer_without_vocabulary_files_fails_prep(qwen3_dir):
+    (qwen3_dir / "tokenizer.json").unlink()
+
+    with pytest.raises(ValueError, match="no vocabulary"):
+        quant_tokenizer.load_quant_tokenizer(str(qwen3_dir))

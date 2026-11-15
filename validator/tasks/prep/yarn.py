@@ -11,7 +11,6 @@ from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_download
 from huggingface_hub import repo_exists
 from huggingface_hub.utils import build_hf_headers
-from huggingface_hub.utils import hf_raise_for_status
 
 from core.constants.credentials import YARN_HUGGINGFACE_TOKEN
 from core.constants.credentials import YARN_HUGGINGFACE_USERNAME
@@ -43,7 +42,7 @@ def duplicate_model_to_yarn_repo(source_repo: str, dst_repo: str) -> str | None:
             json={"repository": dst_repo},
             timeout=300,  # 5 minute timeout for large models
         )
-        hf_raise_for_status(r)
+        r.raise_for_status()
 
         result_url = r.json().get("url")
         logger.info(f"Successfully duplicated model from {source_repo} to {dst_repo}")

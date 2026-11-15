@@ -4,6 +4,7 @@
 # --no-deps: the scorer modules need only these, and fiber's pydantic pin conflicts with vLLM's.
 vllm==0.31.0
 torch==2.13.0
+# Must equal the validator's `gpu` extra pin in pyproject.toml.
 transformers==5.17.0
 # Already ==-pinned by vLLM 0.31.0; repeated so a vLLM bump cannot move it silently. Its own packer pads
 # 3-bit weights (10 per int32), unlike the dense layout miners save and quant_structure checks, but vLLM

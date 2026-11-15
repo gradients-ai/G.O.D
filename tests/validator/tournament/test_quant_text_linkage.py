@@ -24,7 +24,6 @@ from uuid import uuid4
 
 import pytest
 from datasets import Dataset
-from huggingface_hub.errors import RepositoryNotFoundError
 from tenacity import wait_none
 
 import validator.db.constants as db_cst
@@ -35,6 +34,7 @@ from core.models.quant_models import QuantFormat
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
+from tests.hub_errors import repo_not_found
 from tests.validator.tournament import test_seed_tasks as seed_fixtures
 from tests.validator.tournament.quant_source_fakes import FakeQuantSourceStore
 from tests.validator.tournament.test_seed_adapter_merge import FULL_MODEL_FILES
@@ -302,7 +302,7 @@ class QuantWorld:
         if repo in self.hub_errors:
             raise HubDown(repo)
         if repo not in self.hub:
-            raise RepositoryNotFoundError(f"{repo} not found")
+            raise repo_not_found(f"{repo} not found")
         return self.hub[repo] == "adapter"
 
     # --- creation seams

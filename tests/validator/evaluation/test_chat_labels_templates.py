@@ -65,6 +65,8 @@ def _load_tokenizer(repo: str):
         tokenizer = transformers.AutoTokenizer.from_pretrained(repo, local_files_only=True)
     except Exception as exc:  # noqa: BLE001 - not cached / incomplete snapshot
         pytest.skip(f"{repo} not usable from the local HF cache: {type(exc).__name__}")
+    if not tokenizer.encode("Hello world", add_special_tokens=False):
+        pytest.skip(f"{repo} is cached without its vocabulary files")
     if not tokenizer.chat_template:
         pytest.skip(f"{repo} has no chat template")
     return tokenizer

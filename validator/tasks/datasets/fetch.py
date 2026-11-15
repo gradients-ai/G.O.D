@@ -33,7 +33,8 @@ async def fetch_s3_file(url: str, save_path: str | None = None) -> str:
 
 
 def _is_transient_hub_exception(error: BaseException) -> bool:
-    if isinstance(error, (requests.ConnectionError, requests.Timeout)):
+    # huggingface_hub requests go over httpx; datasets' own URL fetches over requests.
+    if isinstance(error, (httpx.TransportError, requests.ConnectionError, requests.Timeout)):
         return True
     if isinstance(error, HfHubHTTPError) and error.response is not None:
         status = error.response.status_code
@@ -45,7 +46,7 @@ def is_transient_hub_error(error: BaseException) -> bool:
     """Whether a Hugging Face hub / datasets error is a connection failure, a timeout, rate limiting or a server error.
 
     The cause/context chain is followed: transformers reports an unreachable hub as an OSError raised from
-    huggingface_hub's LocalEntryNotFoundError, itself raised from the requests error.
+    huggingface_hub's LocalEntryNotFoundError, itself raised from the transport error.
     """
     seen: set[int] = set()
     current: BaseException | None = error

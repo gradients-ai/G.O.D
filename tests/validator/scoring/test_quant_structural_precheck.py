@@ -6,13 +6,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from huggingface_hub.errors import RepositoryNotFoundError
 
 from core.constants.environments import TrainingStartPoint
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultText
 from core.models.quant_models import QuantFormat
+from tests.hub_errors import repo_not_found
 from validator.evaluation.basilica import EvaluationRetryableError
 from validator.evaluation.quant_structure import StructuralCheckUnavailable
 from validator.evaluation.quant_structure import TensorSet
@@ -246,7 +246,7 @@ class TestHubTokens:
                 tokens.append(token)
 
             def repo_info(self, repo, timeout):
-                raise RepositoryNotFoundError("stop here")
+                raise repo_not_found("stop here")
 
         async def expected_name(task_id, hotkey, psql_db):
             return "repo"

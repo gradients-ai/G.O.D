@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from huggingface_hub.errors import RepositoryNotFoundError
 
+from tests.hub_errors import repo_not_found
 from validator.tasks import quant_input_repo
 
 
@@ -101,7 +102,7 @@ async def test_unparseable_or_empty_index_is_rejected(hub, contents):
 
 
 async def test_hub_errors_propagate(monkeypatch):
-    monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=RepositoryNotFoundError("missing")))
+    monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=repo_not_found("missing")))
 
     with pytest.raises(RepositoryNotFoundError):
         await quant_input_repo.full_model_rejection("org/repo")
@@ -123,7 +124,7 @@ async def test_is_adapter_repo_looks_only_at_the_adapter_config(hub, files, is_a
 
 
 async def test_is_adapter_repo_lets_hub_errors_propagate(monkeypatch):
-    monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=RepositoryNotFoundError("missing")))
+    monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=repo_not_found("missing")))
 
     with pytest.raises(RepositoryNotFoundError):
         await quant_input_repo.is_adapter_repo("org/repo")

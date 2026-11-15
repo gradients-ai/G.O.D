@@ -21,6 +21,7 @@ from core.constants.quant import QUANT_MODEL_CONFIG_FILENAME
 from core.merged_repo import merged_repo_name
 from core.models.payload_models import ModelPrepResponse
 from core.models.task_models import TaskStatus
+from tests.hub_errors import repo_not_found
 from tests.validator.tournament.test_chained_release import _chained_fixed
 from tests.validator.tournament.test_chained_release import _chained_freeform
 from tests.validator.tournament.test_seed_tasks import FakeSeedStore
@@ -143,7 +144,7 @@ class World:
 
     def _list_repo_files(self, repo, token=None):
         if repo not in self.hub:
-            raise seed_tasks.RepositoryNotFoundError(f"{repo} not found")
+            raise repo_not_found(f"{repo} not found")
         return self.hub[repo]
 
     def wait(self, seconds: float) -> None:

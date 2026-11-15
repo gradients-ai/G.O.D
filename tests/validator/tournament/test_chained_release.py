@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 
 import pytest
-from huggingface_hub.errors import RepositoryNotFoundError
 
 import validator.tasks.datasets.constants as data_cst
 import validator.tournament.constants as t_cst
@@ -34,6 +33,7 @@ from core.models.model_prep_models import WeightStats
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
+from tests.hub_errors import repo_not_found
 from validator.tasks import quant_input_repo
 from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
@@ -379,7 +379,7 @@ class TestIsFullModelRepo:
         assert await orchestrator._is_full_model_repo("org/repo") is full
 
     async def test_missing_repo_is_not_a_full_model(self, monkeypatch):
-        monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=RepositoryNotFoundError("missing")))
+        monkeypatch.setattr(quant_input_repo, "list_repo_files", MagicMock(side_effect=repo_not_found("missing")))
 
         assert await orchestrator._is_full_model_repo("org/repo") is False
 

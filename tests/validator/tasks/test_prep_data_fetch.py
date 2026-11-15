@@ -9,6 +9,7 @@ from huggingface_hub.errors import HfHubHTTPError
 from huggingface_hub.errors import RepositoryNotFoundError
 
 from core.models.dataset_models import FileFormat
+from tests.hub_errors import hub_response
 from validator.tasks.datasets import fetch
 from validator.tasks.datasets import preparation
 from validator.tasks.datasets.fetch import DataFetchError
@@ -23,9 +24,7 @@ def _status_error(status: int) -> httpx.HTTPStatusError:
 
 
 def _hub_error(status: int) -> HfHubHTTPError:
-    response = requests_lib.Response()
-    response.status_code = status
-    return HfHubHTTPError(f"{status} from the hub", response=response)
+    return HfHubHTTPError(f"{status} from the hub", response=hub_response(status))
 
 
 @pytest.mark.parametrize(
@@ -51,6 +50,8 @@ async def test_a_non_http_download_error_is_not_a_fetch_error(monkeypatch):
     ("error", "transient"),
     [
         (requests_lib.ConnectionError("offline"), True),
+        (httpx.ConnectError("refused"), True),
+        (httpx.ReadTimeout("slow"), True),
         (requests_lib.Timeout("slow"), True),
         (_hub_error(502), True),
         (_hub_error(429), True),
