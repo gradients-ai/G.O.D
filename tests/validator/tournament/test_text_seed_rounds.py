@@ -1045,7 +1045,7 @@ class TestRoleHousekeeping:
         assert [s.seed_role for s in t_cst.TEXT_ROUND_PLAN] == [SeedRole.TEXT_R1, SeedRole.TEXT_R2, SeedRole.TEXT_R3]
 
     def test_round_size_bands(self):
-        assert [spec.model_size_b for spec in t_cst.TEXT_ROUND_PLAN] == [(0.1, 1.5), (1.0, 4.0), (4.0, 8.0)]
+        assert [spec.model_size_b for spec in t_cst.TEXT_ROUND_PLAN] == [(1.0, 2.0), (1.5, 4.0), (4.0, 8.0)]
         # Every round's model is compressed by the compression tournament, so every band lies inside the compression band.
         low, high = QUANT_MODEL_SIZE_B
         assert all(low <= spec.model_size_b[0] and spec.model_size_b[1] <= high for spec in t_cst.TEXT_ROUND_PLAN)

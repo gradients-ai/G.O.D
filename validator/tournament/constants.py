@@ -605,8 +605,9 @@ def gpu_count_multiplier(task_type: TaskType, ds: str | None) -> int:
 # Model-size bands in B params for the two instruct input seeds, both inside QUANT_MODEL_SIZE_B.
 SEED_INPUT_SMALL_SIZE_B = (1.0, 4.0)
 SEED_INPUT_LARGE_SIZE_B = (4.0, 8.0)
-# Model-size band in B params of text round 1, inside QUANT_MODEL_SIZE_B; 0.1B is the floor of the standard model pool.
-TEXT_R1_SIZE_B = (0.1, 1.5)
+# Model-size bands in B params of text rounds 1 and 2, inside QUANT_MODEL_SIZE_B; round 3 uses SEED_INPUT_LARGE_SIZE_B.
+TEXT_R1_SIZE_B = (1.0, 2.0)
+TEXT_R2_SIZE_B = (1.5, 4.0)
 # The one switch for the 7-8B case: when True the large input seed draws from the small band instead.
 SEED_INPUT_LARGE_FALLS_BACK_TO_SMALL = False
 # Replacements per role after a seed fails in training (the boss's row failed, a FAILURE status, a non-full-model output, an
@@ -630,7 +631,7 @@ SEED_CURSOR_KEY_SUFFIX = "_seed"
 # standings but never takes an advancement slot.
 TEXT_ROUND_PLAN = (
     TextRoundSpec(round_number=1, seed_role=SeedRole.TEXT_R1, model_size_b=TEXT_R1_SIZE_B, advance=8),
-    TextRoundSpec(round_number=2, seed_role=SeedRole.TEXT_R2, model_size_b=SEED_INPUT_SMALL_SIZE_B, advance=4),
+    TextRoundSpec(round_number=2, seed_role=SeedRole.TEXT_R2, model_size_b=TEXT_R2_SIZE_B, advance=4),
     TextRoundSpec(round_number=3, seed_role=SeedRole.TEXT_R3, model_size_b=SEED_INPUT_LARGE_SIZE_B, advance=1),
 )
 
