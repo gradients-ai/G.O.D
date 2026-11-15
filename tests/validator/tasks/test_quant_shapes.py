@@ -32,6 +32,32 @@ def test_dense_qwen2_config_is_compatible():
     assert quant_compatible(_qwen2_1_5b()) is None
 
 
+@pytest.mark.parametrize(
+    "config",
+    [
+        # Qwen2.5-0.5B
+        {
+            "model_type": "qwen2",
+            "hidden_size": 896,
+            "intermediate_size": 4864,
+            "num_attention_heads": 14,
+            "num_key_value_heads": 2,
+        },
+        # Qwen3-0.6B
+        {
+            "model_type": "qwen3",
+            "hidden_size": 1024,
+            "intermediate_size": 3072,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+        },
+    ],
+)
+def test_sub_1b_dense_configs_are_compatible(config):
+    assert quant_compatible(config) is None
+
+
 def test_head_dim_defaults_to_hidden_over_heads():
     config = _qwen2_1_5b()
     del config["head_dim"]

@@ -33,7 +33,7 @@ Each round is one task. Every miner in the round, and the boss, trains the same 
 
 | Round | Task | Model size | Advance |
 | --- | --- | --- | --- |
-| R1 | instruct | 1-4B | top 8 |
+| R1 | instruct | 0.1-1.5B | top 8 |
 | R2 | instruct | 1-4B | top 4 |
 | R3 | instruct | 4-8B | top 1 |
 

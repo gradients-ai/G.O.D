@@ -30,7 +30,7 @@ QUANT_MODEL_CONFIG_FILENAME = "config.json"
 QUANT_ADAPTER_CONFIG_FILENAME = "adapter_config.json"
 
 # Size band in B params for every quant task's base model; validator/tasks/quant_shapes.py checks the rest (dense, shapes).
-QUANT_MODEL_SIZE_B = (1.0, 8.0)
+QUANT_MODEL_SIZE_B = (0.1, 8.0)
 
 # Miner-written completion marker at the root of a quant output dir; the trainer uploads exactly the files it lists.
 QUANT_MANIFEST_NAME = "quant_manifest.json"

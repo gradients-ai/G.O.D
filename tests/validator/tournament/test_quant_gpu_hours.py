@@ -44,7 +44,7 @@ PARAMS_B_GRID = [0.35, 1.5, 3.82, 8.0, 12.0]
 
 
 class TestQuantGpuRequirement:
-    @pytest.mark.parametrize("params", [2e9, 4e9, 6e9, 8e9, 12e9])
+    @pytest.mark.parametrize("params", [0.1e9, 0.5e9, 2e9, 4e9, 6e9, 8e9, 12e9])
     @pytest.mark.parametrize("task_type", sorted(QUANT_TASK_TYPES))
     def test_quant_is_sized_like_instruct(self, task_type, params):
         expected = get_tournament_gpu_requirement(TaskType.INSTRUCTTEXTTASK, int(params))
@@ -53,6 +53,8 @@ class TestQuantGpuRequirement:
     @pytest.mark.parametrize(
         ("params", "expected"),
         [
+            (0.1e9, GpuRequirement.H100_1X),
+            (0.5e9, GpuRequirement.H100_1X),
             (2e9, GpuRequirement.H100_1X),
             (4e9, GpuRequirement.H100_1X),
             (6e9, GpuRequirement.H100_2X),
@@ -72,7 +74,7 @@ class TestQuantFlatHours:
 
     @pytest.mark.parametrize(
         ("params_b", "expected"),
-        [(1, 1.25), (4, 1.25), (6, 1.625), (8, 2.0), (12, 2.0)],
+        [(0.1, 1.25), (0.5, 1.25), (1, 1.25), (4, 1.25), (6, 1.625), (8, 2.0), (12, 2.0)],
     )
     def test_fixed_ramps_linearly_with_size(self, params_b, expected):
         assert quant_fixed_hours(params_b) == pytest.approx(expected)

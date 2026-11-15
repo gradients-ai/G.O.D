@@ -44,7 +44,7 @@ Source: [`QUANT_ROUND_PLAN`](../validator/tournament/constants.py), [`round_resu
 
 The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>`. `A16` means bf16 activations.
 
-- The input models have the sizes in the [text guide](miner_text.md#rounds). A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
+- The input models have the sizes in the [text guide](miner_text.md#rounds), 0.1-8B in all. A compression tournament takes all its tasks from one text tournament: an active one, else one completed in the last 7 days. Until one is available it waits.
 - Advancement uses average rank over every round played so far, ranked among the surviving miners.
 - With fewer miners than slots, all advance.
 - Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. Round 3 can therefore have fewer miners than advanced from round 2.

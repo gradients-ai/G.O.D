@@ -17,6 +17,7 @@ import pytest
 import validator.lifecycle.tasks as lifecycle_tasks
 import validator.tournament.round_results as rr
 import validator.tournament.tournament_manager as tm
+from core.constants.quant import QUANT_MODEL_SIZE_B
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from tests.validator.tournament.quant_source_fakes import FakeQuantSourceStore
@@ -1042,6 +1043,12 @@ class TestRoleHousekeeping:
         assert TEXT_SEED_ROLES == TEXT_ROUND_SEED_ROLES | {SeedRole.TEXT_CONTINUOUS}
         assert math.isclose(sum(spec.advance for spec in t_cst.TEXT_ROUND_PLAN), 13)
         assert [s.seed_role for s in t_cst.TEXT_ROUND_PLAN] == [SeedRole.TEXT_R1, SeedRole.TEXT_R2, SeedRole.TEXT_R3]
+
+    def test_round_size_bands(self):
+        assert [spec.model_size_b for spec in t_cst.TEXT_ROUND_PLAN] == [(0.1, 1.5), (1.0, 4.0), (4.0, 8.0)]
+        # Every round's model is compressed by the compression tournament, so every band lies inside the compression band.
+        low, high = QUANT_MODEL_SIZE_B
+        assert all(low <= spec.model_size_b[0] and spec.model_size_b[1] <= high for spec in t_cst.TEXT_ROUND_PLAN)
 
 
 async def test_the_hiding_rule_of_the_text_roles_in_postgres(cluster):  # noqa: F811
