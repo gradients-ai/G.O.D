@@ -728,7 +728,9 @@ async def process_pending_tournament_tasks(config: Config):
                 await asyncio.sleep(cst.PROCESS_PENDING_TASKS_CYCLE_INTERVAL)
                 continue
 
-            await schedule_tasks_for_training(tournament_tasks, config)
+            if await schedule_tasks_for_training(tournament_tasks, config):
+                # Every row was held without dispatch work: nothing changes until another loop acts, so wait a cycle.
+                await asyncio.sleep(cst.PROCESS_PENDING_TASKS_CYCLE_INTERVAL)
         except Exception as e:
             logger.error(f"Error in process_pending_tournament_tasks cycle: {str(e)}", exc_info=True)
             await asyncio.sleep(cst.PROCESS_PENDING_TASKS_CYCLE_INTERVAL)
@@ -740,11 +742,15 @@ def _is_quant_tournament_row(row_rank: int, task: AnyTypeRawTask) -> bool:
     return task.task_type in QUANT_TASK_TYPES or row_rank != NON_SEED_TRAINING_RANK
 
 
-async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTaskTraining], config: Config):
+async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTaskTraining], config: Config) -> bool:
     """
     Process tasks from the list and schedule them for training.
     Only pop tasks when we're 100% sure GPUs are available.
+
+    Returns True when every row was held (no calibration set, no reference yet, or raising while checked), so the caller
+    waits before fetching them again.
     """
+    n_rows = len(pending_training_tasks)
     # Track failed attempts for this scheduling session
     failed_attempts = {}
 
@@ -960,6 +966,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
         )
 
     logger.info(f"Completed scheduling cycle, {len(pending_training_tasks)} tasks remaining")
+    return n_rows > 0 and len(missing_calibration) + len(waiting_for_reference) + len(failing_quant_rows) == n_rows
 
 
 async def _reference_ready(task: AnyTypeRawTask, hotkey: str, config: Config) -> bool:

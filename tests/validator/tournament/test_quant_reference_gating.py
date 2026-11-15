@@ -329,8 +329,9 @@ class TestSchedulingWaitsForTheReference:
     async def test_pair_without_a_reference_is_deferred_before_any_gpu_lookup(self, scheduling, references):
         pending = [self._training(_task())]
 
-        await orchestrator.schedule_tasks_for_training(pending, CONFIG)
+        held = await orchestrator.schedule_tasks_for_training(pending, CONFIG)
 
+        assert held is True
         scheduling.check_gpus.assert_not_called()
         scheduling.start.assert_not_called()
         scheduling.set_status.assert_not_called()
@@ -349,10 +350,28 @@ class TestSchedulingWaitsForTheReference:
         references[task.task_id] = [_reference(task, hotkey=HOTKEY)]
         pending = [self._training(task, OTHER), self._training(task, HOTKEY)]  # the last one is taken first
 
-        await orchestrator.schedule_tasks_for_training(pending, CONFIG)
+        held = await orchestrator.schedule_tasks_for_training(pending, CONFIG)
 
+        assert held is False
         assert scheduling.start.await_count == 1
         assert scheduling.create_request.await_args.args[1] == HOTKEY
+
+    async def test_pending_loop_waits_a_cycle_when_every_row_is_held(self, monkeypatch):
+        rows = [SimpleNamespace(task=SimpleNamespace(backend=None))]
+        monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_training_tasks", AsyncMock(return_value=rows))
+        monkeypatch.setattr(orchestrator, "schedule_tasks_for_training", AsyncMock(return_value=True))
+        sleeps = []
+
+        async def stop_after_first_sleep(seconds):
+            sleeps.append(seconds)
+            raise _StopLoop
+
+        monkeypatch.setattr(orchestrator.asyncio, "sleep", stop_after_first_sleep)
+
+        with pytest.raises(_StopLoop):
+            await orchestrator.process_pending_tournament_tasks(CONFIG)
+
+        assert sleeps == [orchestrator.cst.PROCESS_PENDING_TASKS_CYCLE_INTERVAL]
 
     async def test_task_common_task_waits_for_the_common_row_not_a_miners(self, scheduling, references):
         task = _task(training_start_point=TrainingStartPoint.DEFAULT)
@@ -371,3 +390,7 @@ class TestSchedulingWaitsForTheReference:
         await orchestrator.schedule_tasks_for_training([self._training(task, OTHER), self._training(task, HOTKEY)], CONFIG)
 
         assert scheduling.start.await_count == 2
+
+
+class _StopLoop(BaseException):
+    pass
