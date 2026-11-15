@@ -1000,7 +1000,7 @@ async def retire_unattached_quant_seeds(tournament_id: str, config: Config) -> l
         if not unstarted:
             logger.debug(
                 f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} is "
-                f"{task.status.value if task is not None else 'gone'}; left as it is"
+                f"{task.status if task is not None else 'gone'}; left as it is"
             )
             continue
         if boss_status == TrainingStatus.PENDING.value:
