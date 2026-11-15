@@ -34,6 +34,8 @@ A tournament with more participants than its minimum share implies cedes floatin
 
 The pool of a tournament is exactly its base share. The three pools sum to 1.0, so the pools fill the whole emission pie and nothing is renormalised. Every place of a tournament, the champion's included, is paid from its one pool.
 
+Until the first compression tournament completes, its share follows the latest text tournament's placements (`get_latest_paying_tournament` in `weights.py`): the same hotkeys, the boss's places paid to text's defending champion, at compression's pool and place split.
+
 | Constant | Value | Meaning |
 | --- | --- | --- |
 | `EMISSION_BALANCE_ROLLING_WINDOW` | 4 | Completed tournaments averaged, after the lag. |
@@ -43,7 +45,7 @@ The pool of a tournament is exactly its base share. The three pools sum to 1.0, 
 
 **Undistributed weight goes to the burn node.** That covers:
 
-- the pool of text, image or compression when it has no completed tournament and winner
+- the pool of text or image when it has no completed tournament and winner, and compression's when neither it nor text has one
 - the part of a pool not paid out to its places
 - a share left on the burn hotkey because no defending champion is known
 - a share whose hotkey is not registered

@@ -330,6 +330,16 @@ async def stored_boss_rank_comparisons(tournament_id: str, psql_db) -> list[Boss
         return []
 
 
+async def get_latest_paying_tournament(psql_db, tournament_type: TournamentType) -> TournamentData | None:
+    """The latest completed tournament of a type; for quant with none completed, the latest completed text one."""
+    tournament = await get_latest_completed_tournament(psql_db, tournament_type)
+    if tournament is None and tournament_type == TournamentType.QUANT:
+        tournament = await get_latest_completed_tournament(psql_db, TournamentType.TEXT)
+        if tournament is not None:
+            logger.info(f"No completed quant tournament; quant pool uses tournament {tournament.tournament_id} placements")
+    return tournament
+
+
 async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
     """
     Build TournamentAuditData with all necessary tournament information.
@@ -360,7 +370,7 @@ async def build_tournament_audit_data(psql_db) -> TournamentAuditData:
         )
 
     # Fetch quant tournament data
-    quant_tournament = await get_latest_completed_tournament(psql_db, TournamentType.QUANT)
+    quant_tournament = await get_latest_paying_tournament(psql_db, TournamentType.QUANT)
     if quant_tournament:
         tournament_results = await get_tournament_full_results(quant_tournament.tournament_id, psql_db)
         participants = await get_tournament_participants(quant_tournament.tournament_id, psql_db)

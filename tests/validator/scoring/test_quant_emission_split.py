@@ -19,8 +19,13 @@ from validator.scoring.weights import get_node_weights_from_tournament_audit_dat
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament import constants as t_cst
 from validator.tournament import cost_constants
+from validator.scoring.tournaments import exponential_decline_mapping
 from validator.tournament.models import TournamentAuditData
+from validator.tournament.models import TournamentData
+from validator.tournament.models import TournamentParticipant
+from validator.tournament.models import TournamentResults
 from validator.tournament.models import TournamentResultsWithWinners
+from validator.tournament.models import TournamentStatus
 
 
 TEXT = TournamentType.TEXT
@@ -202,3 +207,118 @@ async def test_fee_endpoint_reports_the_quant_fee():
     assert response.quant_tournament_fee_rao == 600_000_000
     assert response.text_tournament_fee_rao == 700_000_000
     assert response.image_tournament_fee_rao == 400_000_000
+
+
+def _completed(tournament_id: str, tournament_type: TournamentType, base_winner: str, winner: str) -> TournamentData:
+    return TournamentData(
+        tournament_id=tournament_id,
+        tournament_type=tournament_type,
+        status=TournamentStatus.COMPLETED,
+        base_winner_hotkey=base_winner,
+        winner_hotkey=winner,
+    )
+
+
+# The text tournament was kept by its boss: 1st is the burn placeholder, paid to the defending champion "champ".
+TEXT_DONE = _completed("text_1", TEXT, base_winner="champ", winner=BURN)
+QUANT_DONE = _completed("quant_1", QUANT, base_winner="q_champ", winner="q1")
+IMAGE_DONE = _completed("image_1", IMAGE, base_winner="i1", winner="i1")
+PLACES = {
+    "text_1": {BURN: 1, "t2": 2, "t3": 3, "t4": 4},
+    "quant_1": {"q1": 1, "q2": 2, "q3": 3},
+    "image_1": {"i1": 1, "i2": 2},
+}
+
+
+async def _audit_with(completed: list[TournamentData]) -> TournamentAuditData:
+    by_type = {tournament.tournament_type: tournament for tournament in completed}
+
+    async def latest(psql_db, tournament_type, exclude_tournament_id=None):
+        return by_type.get(tournament_type)
+
+    async def results(tournament_id, psql_db):
+        return TournamentResults(tournament_id=tournament_id, rounds=[])
+
+    async def participants(tournament_id, psql_db):
+        return [
+            TournamentParticipant(tournament_id=tournament_id, hotkey=hotkey, final_position=position)
+            for hotkey, position in PLACES[tournament_id].items()
+        ]
+
+    with (
+        patch("validator.scoring.weights.get_latest_completed_tournament", latest),
+        patch("validator.scoring.weights.get_tournament_full_results", results),
+        patch("validator.scoring.weights.get_tournament_participants", participants),
+        patch("validator.scoring.weights.get_boss_rank_comparisons", AsyncMock(return_value=[])),
+        patch("validator.scoring.weights.get_active_tournament_participants", AsyncMock(return_value=[])),
+        patch("validator.scoring.weights.get_weekly_task_participation_data", AsyncMock(return_value=[])),
+        patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])),
+    ):
+        return await build_tournament_audit_data(MagicMock())
+
+
+async def _node_weights(audit: TournamentAuditData, hotkeys: list[str]) -> dict[str, float]:
+    nodes = [MagicMock(hotkey=hotkey, node_id=idx) for idx, hotkey in enumerate(hotkeys)]
+    with (
+        patch("validator.scoring.weights.fetch_nodes") as fetch,
+        patch("validator.scoring.weights.cts.EMISSION_BURN_HOTKEY", BURN),
+    ):
+        fetch._get_nodes_for_uid.return_value = nodes
+        result = await get_node_weights_from_tournament_audit_data(MagicMock(), 1, audit)
+    return dict(zip(hotkeys, result.node_weights))
+
+
+@pytest.mark.asyncio
+async def test_quant_pool_pays_text_placements_until_a_quant_tournament_completes():
+    audit = await _audit_with([TEXT_DONE, IMAGE_DONE])
+
+    assert audit.quant_tournament_data == audit.text_tournament_data
+    assert audit.quant_tournament_data.tournament_id == "text_1"
+
+    hotkeys = ["champ", "t2", "t3", "t4", "i1", "i2", BURN]
+    weights = await _node_weights(audit, hotkeys)
+
+    text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
+    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
+    assert weights["t2"] == pytest.approx(exponential_decline_mapping(3, 2) * text_and_quant)
+    assert weights["t3"] == pytest.approx(exponential_decline_mapping(3, 3) * text_and_quant)
+    assert weights["t4"] == 0.0
+    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
+    assert weights["i2"] == pytest.approx(exponential_decline_mapping(2, 2) * audit.image_tournament_weight)
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_quant_pool_pays_its_own_placements_once_a_quant_tournament_completes():
+    audit = await _audit_with([TEXT_DONE, QUANT_DONE, IMAGE_DONE])
+
+    assert audit.quant_tournament_data.tournament_id == "quant_1"
+    assert audit.quant_tournament_data.final_positions == PLACES["quant_1"]
+
+    hotkeys = ["champ", "t2", "t3", "q1", "q2", "q3", "i1", "i2", BURN]
+    weights = await _node_weights(audit, hotkeys)
+
+    for hotkey, position in (("champ", 1), ("t2", 2), ("t3", 3)):
+        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.text_tournament_weight)
+    for hotkey, position in (("q1", 1), ("q2", 2), ("q3", 3)):
+        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.quant_tournament_weight)
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_text_and_image_data_do_not_depend_on_the_quant_fallback():
+    without_quant = await _audit_with([TEXT_DONE, IMAGE_DONE])
+    with_quant = await _audit_with([TEXT_DONE, QUANT_DONE, IMAGE_DONE])
+
+    assert without_quant.text_tournament_data == with_quant.text_tournament_data
+    assert without_quant.image_tournament_data == with_quant.image_tournament_data
+    assert without_quant.text_tournament_data.tournament_id == "text_1"
+    assert without_quant.image_tournament_data.tournament_id == "image_1"
+
+
+@pytest.mark.asyncio
+async def test_no_completed_tournament_of_any_type_leaves_the_quant_pool_unpaid():
+    audit = await _audit_with([])
+
+    assert audit.quant_tournament_data is None
+    assert audit.text_tournament_data is None

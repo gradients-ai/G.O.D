@@ -386,6 +386,7 @@ Each paid place gets a quarter of the one above. Two places are paid when the to
 | Outside the top three | Nothing from the tournament's share. |
 | Participation weight | `0.0001` to each miner not yet eliminated from an active tournament. The tournament shares scale down by the total paid this way. |
 | No winner | A tournament with no completed run has no payee. Its share is not paid out. |
+| First compression tournament | Until the first compression tournament completes, its share follows the latest text tournament's placements: the same hotkeys, paid compression's share on the split above. |
 
 ## Results
 
