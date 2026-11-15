@@ -245,6 +245,10 @@ def _parse_requirement_token(token: str, source_file: str) -> RequirementSpec | 
     if token.split("[", 1)[0].strip().lower() in _DOCKER_KEYWORDS:
         return None
 
+    # Bare http(s) URLs that are not git installs — do not treat "https" as a PyPI name.
+    if re.match(r"https?://", token, re.IGNORECASE) and "github.com/" not in token.lower():
+        return None
+
     git_match = re.match(r"git\+(\S+)", token)
     if git_match or token.startswith("https://github.com/") and ".git" in token:
         raw = token if token.startswith("git+") else f"git+{token}"
