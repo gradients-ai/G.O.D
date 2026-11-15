@@ -32,7 +32,7 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 
 The models you compress come from a text tournament. They are the models its defending champion, the text boss, trains: one in each of its three rounds and one on its [continuous task](miner_text.md#the-boss-round).
 
-Each round is one task. Every miner in the round, and the boss, compresses the same input model.
+Each round is one task. Every miner in the round, and the boss, compresses the same input model at the same time.
 
 | Round | Track | Input model | Advance |
 | --- | --- | --- | --- |
@@ -73,7 +73,7 @@ The challenger and the boss meet on four tasks. Both compress the same input mod
 
 Source: [`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py), [`seed_tasks.py`](../validator/tournament/seed_tasks.py).
 
-- The boss's entries are run as each input model becomes available. The challenger's entries are run in the boss round.
+- The boss trains its four entries in the boss round, alongside the challenger.
 - Each fixed task draws one of the two formats. Both players get the same format on a task. The two fixed tasks may differ.
 
 ## What your code receives

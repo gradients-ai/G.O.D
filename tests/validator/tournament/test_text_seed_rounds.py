@@ -891,9 +891,7 @@ class TestTrainingRowsOfAnAttachedSeed:
             world.env.tasks[seeds[role].task_id].status = TaskStatus.TRAINING
         world.env.store.attached.add(seeds[SeedRole.TEXT_R1].task_id)
         add = AsyncMock()
-        alert = AsyncMock()
         monkeypatch.setattr(orchestrator, "_add_challenger_rows", add)
-        monkeypatch.setattr(orchestrator.boss_seed_eval, "alert_if_boss_evaluation_missing", alert)
         monkeypatch.setattr(orchestrator, "_training_status_of", AsyncMock(return_value="success"))
         monkeypatch.setattr(
             tournament_sql,
@@ -904,7 +902,6 @@ class TestTrainingRowsOfAnAttachedSeed:
         await orchestrator._boss_round_seed_cycle(world.env.config)
 
         assert [call.args[0] for call in add.await_args_list] == [SeedRole.TEXT_R1]  # attached; the other is not yet
-        alert.assert_not_awaited()  # the quant-reference check is for quant compressions only
 
     def test_every_attached_role_is_a_boss_round_a_text_or_a_quant_round_seed(self):
         # Every boss-round role and every round seed is attached after it was trained.

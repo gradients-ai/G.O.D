@@ -240,25 +240,8 @@ class TestSkipSites:
         assert plain.status == TaskStatus.PREEVALUATION
 
 
-class TestRoundOpenCheck:
-    async def test_the_cycle_checks_each_attached_seed_whose_boss_row_trained(self, pipe, monkeypatch):
-        alert = AsyncMock(return_value=True)
-        monkeypatch.setattr(orchestrator.boss_seed_eval, "alert_if_boss_evaluation_missing", alert)
-        _, (free, fixed) = pipe.seed_set()
-        pipe.training[str(free.task_id)][BOSS] = SUCCESS
-        free.status = fixed.status = TaskStatus.TRAINING
-        await task_creator._attach_boss_round_seeds(pipe.seeds, "tid", ROUND_ID, f"{ROUND_ID}_pair_001", CONFIG)
-
-        await orchestrator._boss_round_seed_cycle(CONFIG)
-
-        # Only the seed whose boss row is SUCCESS is checked, after the challenger's row.
-        assert [call.args[0].task_id for call in alert.await_args_list] == [free.task_id]
-        assert pipe.training[str(free.task_id)][CHALLENGER] == TrainingStatus.PENDING.value
-
-    async def test_a_failing_check_never_blocks_the_challengers_rows(self, pipe, monkeypatch):
-        monkeypatch.setattr(
-            orchestrator.boss_seed_eval.tasks_sql, "get_task_evaluation_rows", AsyncMock(side_effect=RuntimeError("db"))
-        )
+class TestAttachedCompressionSeedRows:
+    async def test_the_cycle_adds_the_challengers_row_to_an_attached_seed_already_training(self, pipe):
         _, (free, fixed) = pipe.seed_set()
         pipe.training[str(free.task_id)][BOSS] = SUCCESS
         free.status = fixed.status = TaskStatus.TRAINING

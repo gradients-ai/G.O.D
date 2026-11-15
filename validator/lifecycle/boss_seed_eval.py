@@ -1,23 +1,20 @@
-"""Seed-time evaluation of the boss's boss-round entries (validator/tournament/README.md,
-"Design notes").
+"""Seed-time evaluation of the text boss's upfront entries and the quant boss-round evaluation holds
+(validator/tournament/README.md, "Design notes").
 
-A boss-round seed (the Free and the Fixed compression task) is trained by the boss when the first round is created. Its
-boss row is evaluated as soon as it trains, through the ordinary per-hotkey path (an evaluation row is seeded the moment
-the training row is SUCCESS), and the raw result is stored in task_nodes. Only the task's finalisation is held until the
-challenger has been scored (seeds_sql.boss_round_seed_ready_to_finalise), so the boss round evaluates the challenger
-alone and ranks the task from both stored rows.
+A text seed is trained by the boss when the first round is created. Its boss row is evaluated as soon as it trains, through
+the ordinary per-hotkey path (an evaluation row is seeded the moment the training row is SUCCESS), and the raw result is
+stored in task_nodes. Only the task's finalisation is held until the round's players have been scored
+(seeds_sql.boss_round_seed_ready_to_finalise), so the round evaluates its miners alone and ranks the task from the stored
+rows. A compression seed is not trained before its round attaches it, so it has no seed-time evaluation.
 
-This module holds the seed-time rules that keep that stored boss result complete and never wrongly scored:
+This module holds the rules that keep those stored results complete and never wrongly scored:
 
-  * an evaluation error of the boss's entry before the boss round attaches the seed (a scorer-side failure: an
-    exception, a missing result, an unreadable repo) is never a scored fail: the row goes back to pending and is
-    retried, up to SEED_TIME_BOSS_EVAL_RETRIES in all, each no sooner than SEED_TIME_BOSS_EVAL_BACKOFF_SECONDS after the
-    last failure; after that it is parked (alerted once) and evaluated at the boss
-    round instead;
-  * a quant entry whose stored result has no bf16 reference for its own eval SKU is re-evaluated at seed time (same
-    budget), so finalisation in the boss round never resets the boss's row to measure one;
-  * at the boss round, a boss entry that trained but still has no settled evaluation is alerted once and evaluated then
-    (the fallback); a stored boss entry and the challenger's scored on different eval sets is alerted once.
+  * an evaluation error of the boss's entry before a round attaches the seed (a scorer-side failure: an exception, a
+    missing result, an unreadable repo) is never a scored fail: the row goes back to pending and is retried, up to
+    SEED_TIME_BOSS_EVAL_RETRIES in all, each no sooner than SEED_TIME_BOSS_EVAL_BACKOFF_SECONDS after the last failure;
+    after that it is parked (alerted once) and evaluated in the round instead;
+  * a compression boss-round task with no usable bf16 reference is held, never failed, and alerted once; stored entries
+    of one compression seed scored on different eval sets are alerted once.
 
 The retry count and the alert sets are process-local, like the reference pre-pass counters: a restart grants a fresh
 budget at worst and never scores anything twice.
@@ -30,26 +27,21 @@ import validator.db.sql.tasks as tasks_sql
 import validator.db.sql.tournament_seeds as seeds_sql
 import validator.lifecycle.constants as lifecycle_cst
 from core.logging import get_logger
-from core.models.task_models import QUANT_TASK_TYPES
 from validator.app.config import Config
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.submissions_and_scoring import get_task_node_losses
 from validator.evaluation.notifications import notify_evaluation_exception
 from validator.lifecycle.eval_infra_errors import reference_requeue_sql
 from validator.lifecycle.quant_reference import rows_missing_a_reference
-from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tasks.models import AnyTypeRawTask
 from validator.tournament.models import ANY_QUANT_SEED_ROLES
 
 
 logger = get_logger(__name__)
 
-_TERMINAL_EVALUATION_STATUSES = frozenset({"success", "failure"})
-
 _SEED_TIME_RETRIES: dict[str, int] = {}
 _LAST_RETRY_AT: dict[str, float] = {}
 _PARKED_ALERTED: set[str] = set()
-_ROUND_OPEN_ALERTED: set[str] = set()
 _EVAL_SET_MISMATCH_ALERTED: set[str] = set()
 _REFERENCE_HELD_ALERTED: set[str] = set()
 
@@ -59,14 +51,14 @@ def seed_time_retries_spent(task_id) -> bool:
 
 
 async def evaluation_parked(task: AnyTypeRawTask, config: Config) -> bool:
-    """An unattached boss-round seed whose seed-time evaluation used up its retries: left for the boss round."""
+    """An unattached seed whose seed-time evaluation used up its retries: left for its round."""
     if not seed_time_retries_spent(task.task_id):
         return False
     return await seeds_sql.is_unattached_boss_round_seed(task.task_id, config.psql_db)
 
 
 async def evaluation_backing_off(task: AnyTypeRawTask, config: Config) -> bool:
-    """An unattached boss-round seed whose seed-time evaluation failed less than SEED_TIME_BOSS_EVAL_BACKOFF_SECONDS ago."""
+    """An unattached seed whose seed-time evaluation failed less than SEED_TIME_BOSS_EVAL_BACKOFF_SECONDS ago."""
     failed_at = _LAST_RETRY_AT.get(str(task.task_id))
     if failed_at is None or time.monotonic() - failed_at >= lifecycle_cst.SEED_TIME_BOSS_EVAL_BACKOFF_SECONDS:
         return False
@@ -89,7 +81,7 @@ async def _retry_at_seed_time(task: AnyTypeRawTask, hotkeys: list[str], reason: 
         return
     message = (
         f"Seed-time evaluation of the boss's entry on {task_id} ({hotkeys}) did not settle after {attempts} attempts "
-        f"(last: {reason}); parked, it will be evaluated when the boss round attaches the task"
+        f"(last: {reason}); parked, it will be evaluated when its round attaches the task"
     )
     logger.error(message)
     if task_id in _PARKED_ALERTED:
@@ -122,11 +114,9 @@ async def _scorer_side_failures(task: AnyTypeRawTask, hotkeys: list[str], config
 async def settle_seed_time_evaluation(
     task: AnyTypeRawTask, failed: list[str], not_evaluated: list[str], config: Config
 ) -> list[str]:
-    """After an evaluation pass wrote its statuses, on an unattached boss-round seed (a no-op on any other task):
-
-    the scorer-side failures and the rows that came back with no result go back to pending, and a quant row scored
-    successfully without a stored bf16 reference on its own eval SKU is re-evaluated (check_seed_time_references).
-    Returns the hotkeys put back to pending. Never raises: a lookup error leaves the pass's own statuses as written.
+    """After an evaluation pass wrote its statuses, on an unattached seed (a no-op on any other task): the scorer-side
+    failures and the rows that came back with no result go back to pending. Returns the hotkeys put back to pending. Never
+    raises: a lookup error leaves the pass's own statuses as written.
     """
     try:
         if not await seeds_sql.is_unattached_boss_round_seed(task.task_id, config.psql_db):
@@ -134,15 +124,14 @@ async def settle_seed_time_evaluation(
         retry = sorted(set(not_evaluated) | set(await _scorer_side_failures(task, failed, config)))
         if retry:
             await _retry_at_seed_time(task, retry, "evaluation error", config)
-            return retry
-        return await check_seed_time_references(task, config)
+        return retry
     except Exception as e:
         logger.error(f"Task {task.task_id}: settling the seed-time evaluation failed: {e}", exc_info=True)
         return []
 
 
 async def retry_seed_time_exception(task: AnyTypeRawTask, hotkeys: list[str], error: Exception, config: Config) -> bool:
-    """The evaluation pass raised. On an unattached boss-round seed the rows go back to pending and True is returned.
+    """The evaluation pass raised. On an unattached seed the rows go back to pending and True is returned.
 
     Never raises: on a lookup error the caller's ordinary exception handling applies."""
     try:
@@ -153,64 +142,6 @@ async def retry_seed_time_exception(task: AnyTypeRawTask, hotkeys: list[str], er
     except Exception as e:
         logger.error(f"Task {task.task_id}: seed-time retry after an evaluation exception failed: {e}", exc_info=True)
         return False
-
-
-async def check_seed_time_references(task: AnyTypeRawTask, config: Config) -> list[str]:
-    """Quant, unattached boss-round seed: a successfully evaluated row with no bf16 reference on its own eval SKU is
-    re-evaluated now (that deployment measures it), so the boss round never re-evaluates the boss's entry for it.
-
-    Own-model compressions pair each side on its own reference (thresholds.sku_aligned_losses), so the boss's entry
-    needs exactly the one on the SKU it was scored on. Stored references are never deleted. The caller
-    (settle_seed_time_evaluation) has checked the task is an unattached boss-round seed. Returns the rows re-evaluated.
-    """
-    if task.task_type not in QUANT_TASK_TYPES or seed_time_retries_spent(task.task_id):
-        return []
-    rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
-    successful = [row["hotkey"] for row in rows if row["evaluation_status"] == "success"]
-    if not successful:
-        return []
-    missing = await rows_missing_a_reference(task, successful, config)
-    if missing:
-        await _retry_at_seed_time(task, missing, "no bf16 reference stored for its eval SKU", config)
-    return missing
-
-
-async def alert_if_boss_evaluation_missing(task: AnyTypeRawTask, config: Config) -> bool:
-    """An attached boss-round seed whose boss row trained SUCCESS but has no settled evaluation: True, alerted once.
-
-    Nothing waits on this: the row is evaluated in the boss round like any pending row.
-    Alert only: never raises.
-    """
-    try:
-        return await _alert_if_boss_evaluation_missing(task, config)
-    except Exception as e:
-        logger.error(f"Task {task.task_id}: check of the boss's seed-time evaluation failed: {e}", exc_info=True)
-        return False
-
-
-async def _alert_if_boss_evaluation_missing(task: AnyTypeRawTask, config: Config) -> bool:
-    rows = await tasks_sql.get_task_evaluation_rows(task.task_id, config.psql_db)
-    boss_row = next((row for row in rows if row["hotkey"] == EMISSION_BURN_HOTKEY), None)
-    if boss_row is not None and boss_row["evaluation_status"] in _TERMINAL_EVALUATION_STATUSES:
-        return False
-    task_id = str(task.task_id)
-    status = boss_row["evaluation_status"] if boss_row is not None else "no evaluation row"
-    message = (
-        f"Boss round opened with the boss's entry on {task_id} trained but not evaluated ({status}); "
-        f"it is evaluated now, alongside the challenger"
-    )
-    logger.warning(message)
-    if task_id not in _ROUND_OPEN_ALERTED:
-        _ROUND_OPEN_ALERTED.add(task_id)
-        await notify_evaluation_exception(
-            config,
-            task_id=task_id,
-            task_type=task.task_type,
-            context="Seed-time boss evaluation missing at the boss round",
-            error=message,
-            hotkeys=[EMISSION_BURN_HOTKEY],
-        )
-    return True
 
 
 async def hold_for_missing_reference(task: AnyTypeRawTask, error: Exception, config: Config) -> bool:

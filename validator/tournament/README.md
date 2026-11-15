@@ -78,16 +78,16 @@ The image tournament has no seed tasks: the boss trains each round's task in the
 ## Compression tournament flow
 
 1. **Binding.** The compression tournament binds to one text tournament ([Sources](#sources)). Until one qualifies it waits.
-2. **Seeds.** When the first round is created, the seven compression seeds are created. Each is held until the text boss's model for it has landed, then trained by the compression boss ([Seeds](#seeds)).
-3. **Round 1.** A freeform task on the text boss's round-1 model. All enrolled miners play.
+2. **Seeds.** When the first round is created, the seven compression seeds are created. Each is held until the text boss's model for it has landed, then prepped. None is trained before its round ([Seeds](#seeds)).
+3. **Round 1.** A freeform task on the text boss's round-1 model. All enrolled miners and the boss train it.
 4. **Entry gates.** As in the text flow, before round 2 is built.
 5. **Round 2.** A fixed task on the round-2 model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
 6. **Round 3.** A freeform task on the round-3 model.
 7. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
-8. **Boss round.** The four boss-round seeds are attached ([Seeds](#seeds)). The tasks and who trains them are in the [compression guide](../../docs/miner_compression.md#the-boss-round).
+8. **Boss round.** The four boss-round seeds are attached, and the boss and the challenger train them ([Seeds](#seeds)). The tasks are in the [compression guide](../../docs/miner_compression.md#the-boss-round).
 9. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-Each round is one task attached from its seed, so the miners and the boss compress the same model. Formats, advancement and tie-breaks are in the [compression guide](../../docs/miner_compression.md#rounds) (`QUANT_ROUND_PLAN`).
+Each round is one task attached from its seed, so the miners and the boss compress the same model, trained at the same time. Formats, advancement and tie-breaks are in the [compression guide](../../docs/miner_compression.md#rounds) (`QUANT_ROUND_PLAN`).
 
 ## Crown, early stop and placements
 
@@ -95,7 +95,7 @@ The crown rule below decides every tournament. Miners read the rule in plain wor
 
 ### The boss in rounds 1-3
 
-The boss is the tournament's defending champion. It has an entry on the task of each of rounds 1-3: the seed task it trained in text and compression, the round's own task in image, which it trains with the miners. That entry is ranked in the round's standings with the ordering used between miners. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Its three entries are also its side of the first three head-to-heads.
+The boss is the tournament's defending champion. It has an entry on the task of each of rounds 1-3: the seed task it trained upfront in text, the round's seed task in compression and the round's own task in image, both of which it trains with the miners. That entry is ranked in the round's standings with the ordering used between miners. A boss entry with no valid result ranks behind every valid entry. The boss never takes an advancement slot. Its three entries are also its side of the first three head-to-heads.
 
 ### Seven head-to-heads
 
@@ -213,7 +213,7 @@ The comparison is computed once at completion and stored in `tournament_boss_ran
 
 ## Seeds
 
-A seed is a task the boss trains with its pinned repo and commit, created when the tournament's first round is created (`seed_tasks.py`, table `tournament_seed_tasks`). A round attaches its seed as the round's task, which adds the miners.
+A seed is a task the boss trains with its pinned repo and commit, created when the tournament's first round is created (`seed_tasks.py`, table `tournament_seed_tasks`). A round attaches its seed as the round's task, which adds the miners. The text boss trains its seeds upfront, because the compression tournament compresses their models. A compression seed is prepped ahead but trained only once its round attaches it, by the boss and the round's players together, so the compression boss trains in round order. A boss-round seed is never trained if the early stop skips the boss round.
 
 | Role | Tournament | Task | Attached by |
 | --- | --- | --- | --- |
@@ -226,7 +226,7 @@ A seed is a task the boss trains with its pinned repo and commit, created when t
 | `boss_r3_fixed` | compression | compression of the `text_r3` model | boss round |
 | `boss_continuous_freeform`, `boss_continuous_fixed` | compression | compression of the `text_continuous` model | boss round |
 
-**Lifecycle.** `training` (the boss's run is not finished), `trained` (the boss's run is over and the seed is held for its round), `ready` (the task has completed). A superseded attempt is `replaced`. A role out of replacements is `failed`.
+**Lifecycle.** `training` (the boss's run is not finished, or a compression seed waits for its round), `trained` (the boss's run is over and the seed is held for its round's other players), `ready` (the task has completed). A superseded attempt is `replaced`. A role out of replacements is `failed`.
 
 **Limits.**
 
@@ -256,7 +256,7 @@ The 20th prep-stage rejection marks the role `failed`.
 - A boss upload that is a LoRA adapter is not a failure. The seed waits for its merge into a full model.
 - A `failed` role never halts the tournament. Its round draws a task for that slot with no boss entry. For `text_continuous`, the boss round draws a continuous task that the boss and the challenger both train.
 - While a role's latest row is `replaced`, its round waits in `PENDING`.
-- Once a compression tournament is decided, its unattached seeds that the boss has not started are retired. The others finish and close with the boss's stored result. None is replaced.
+- Once a compression tournament is decided, its unattached seeds are retired untrained (a seed whose prep is in flight is retired once prep ends). None is replaced.
 - A role out of replacements raises one Discord alert per tournament and role, per validator process.
 - The fixed format of a compression boss-round seed is drawn from `QUANT_BOSS_ROUND_FIXED_FORMATS`, seeded by tournament and role, so a redraw gets the same format.
 
@@ -298,7 +298,7 @@ The 20th prep-stage rejection marks the role `failed`.
 | Queue buckets | Tournament tasks reach training through three buckets: image, compression, and everything else. Each is fed while it has fewer than 8 pending assignments (`PENDING_QUEUE_THRESHOLD_PER_TYPE`). |
 | Reference pre-pass | Each compression task's bf16 reference is measured once before miners train, or copied from a task with the same model and a byte-identical eval set. Training waits for it. |
 | Chained release | A compression task is held in `AWAITING_UPSTREAM` until the text boss's model has landed and its nodes are assigned. That repo becomes its `model_id`. |
-| Seed priority | The compression boss's boss-round entries rank last. In a cycle where an earlier row found no GPUs, they are not tried. |
+| Round hold | A prepped compression seed waits in `LOOKING_FOR_NODES` until its round attaches it. The boss's training row is then created with the miners'. |
 | Seed hold | A seed is not finalised until its round has attached it and every assigned miner has finished. |
 | Adapter merge | A boss output that is a LoRA adapter is merged into a full model by a trainer model-prep job, and the merged repo becomes the seed's output. |
 
@@ -310,9 +310,9 @@ The 20th prep-stage rejection marks the role `failed`.
 - **Reference failures.** A failed measurement is an infra error, retried every cycle for as long as it takes; the rows wait. An alert goes out at every third consecutive failure.
 - **Calibration reference.** The prepass measures the reference bf16 model on the calibration rows after its test-set reference (per hotkey on an own-model task, once for the task otherwise, or copied from the previous round when the model and the calibration set are identical). It is never used to score. A tournament row waits for it. A stored reference measured on another calibration set than the task's current one counts as missing and is replaced by the re-measurement. A row is never dispatched without its target, its calibration set and the reference losses on it; one that cannot be given all three is held and alerted.
 - **Counters.** The failure counters are in memory. A validator restart resets them.
-- **Priority.** A challenger's row is never deferred by the seed priority rule, and a running job is never preempted.
-- **Seed-time evaluation.** The boss's entry is evaluated as soon as it has trained, so the round evaluates only the miners. Retry rules are in `validator/lifecycle/boss_seed_eval.py`.
-- **Challenger rows.** A cycle adds training rows for the miners assigned to each attached seed. A boss entry that has not finished is logged at WARNING. The round does not wait for it.
+- **Priority.** A running job is never preempted.
+- **Seed-time evaluation.** The text boss's entry is evaluated as soon as it has trained, so the round evaluates only the miners. Retry rules are in `validator/lifecycle/boss_seed_eval.py`.
+- **Challenger rows.** A cycle adds training rows for the miners assigned to each attached seed. A text boss entry that has not finished is logged at WARNING. The round does not wait for it.
 - **Merge failures.** The seed waits and is never redrawn or charged. Retries back off from 10 to 60 minutes. Three consecutive failures raise an alert. After six the merge is parked until the orchestrator restarts.
 - **Decode results.** A freeform training's decode result is stored on `task_nodes`. Only a miner fault is scored: no decoder snapshot, or the trainer's `quant_failure`. An infra error, a missing result or a snapshot mismatch holds the task and alerts once.
 - **Isolation.** A compression row that raises during scheduling is dropped for that cycle, so it does not hold text and image rows.
@@ -345,9 +345,9 @@ Checks shared by every tournament are in [Entering a tournament](../../docs/mine
 ## Design notes
 
 - **Boss-trained inputs are fair.** The models the compression tournament compresses are trained by the text boss on the validator's draw of base model and dataset. The text boss's code is public, so every miner can read what trained the input. The compression boss and the miners compress the same model.
-- **Boss entries are visible, not usable.** The compression boss's entries are public on the hub before the challenger trains. Training containers have no network and run pinned code, so this allows offline study only.
-- **Hold rule.** A seed is a `TRAINING` task whose only row is the boss's until its round attaches it. It is ranked and closed once, when every assigned hotkey has a terminal training row or a persisted `quant_failure`. A seed of a decided tournament that no round attached closes with the boss's stored result.
-- **Chained release does not wait on the hold.** It keys on the text boss's model having landed as a full model. The compression boss trains each entry as soon as its source exists.
+- **Compression boss entries train with the field.** The compression boss trains each entry when its round is created, alongside the miners. Training containers have no network and run pinned code, so an entry that lands first allows offline study only.
+- **Hold rule.** A text seed is a `TRAINING` task whose only row is the boss's until its round attaches it. Any seed is ranked and closed once, when every assigned hotkey has a terminal training row or a persisted `quant_failure`. A text seed of a decided tournament that no round attached closes with the boss's stored result.
+- **Chained release does not wait on the round.** It keys on the text boss's model having landed as a full model, so a compression seed's prep, calibration set and reference are ready before its round.
 - **Seed-time evaluation is order-independent.** Ranking reads only what the evaluation stored: loss, per-example losses, eval-set fingerprint, eval GPU, bytes and `quant_failure`. Penalty, cap verdict and adjusted loss are derived at ranking from those and the task's pinned policy. The verdict does not depend on when the boss was scored.
 
 ## Decoder columns

@@ -1,14 +1,17 @@
-"""Seed tasks: everything the boss trains, created and trained upfront when a tournament's first round is created.
+"""Seed tasks: the tasks created for the boss when a tournament's first round is created.
 
 See validator/tournament/README.md. A text tournament has four seeds (TEXT_SEED_CREATION_ORDER): the instruct task of rounds
-1-3 and the continuous-SFT task of the boss round. A quant tournament has seven (SEED_CREATION_ORDER): the quant task of each
-of rounds 1-3 (R1 freeform, R2 fixed, R3 freeform on the text boss's round-1, round-2 and round-3 models) and the four
-boss-round compressions (the R2 model freeform, the R3 model fixed, the continuous model freeform and fixed). A quant seed is
-a new chained quant task on a seed of the BOUND text tournament (see quant_sources.py), held until the text boss's model has
-landed, then trained by the quant boss with the quant tournament's pinned code. Each seed is an ordinary task assigned to
-the boss's node (EMISSION_BURN_HOTKEY) and trained with the boss participant's pinned repo + commit by the normal pipeline
-(prep -> model prep -> LOOKING_FOR_NODES -> orchestrator). Nothing creates the input-seed roles (input_small, input_large,
-boss_instruct, boss_chained_*) or the boss-round roles boss_r2_fixed and boss_r3_freeform; rows of them load.
+1-3 and the continuous-SFT task of the boss round. The text boss trains them upfront: their models are what the compression
+tournament compresses. A quant tournament has seven (SEED_CREATION_ORDER): the quant task of each of rounds 1-3 (R1
+freeform, R2 fixed, R3 freeform on the text boss's round-1, round-2 and round-3 models) and the four boss-round
+compressions (the R2 model freeform, the R3 model fixed, the continuous model freeform and fixed). A quant seed is a new
+chained quant task on a seed of the BOUND text tournament (see quant_sources.py), held until the text boss's model has
+landed, then prepped. It is not trained until its round attaches it (the orchestrator holds it while
+seeds_sql.is_unattached_quant_seed), so the quant boss trains each entry with the round's miners, in round order. Each seed is an
+ordinary task assigned to the boss's node (EMISSION_BURN_HOTKEY) and trained with the boss participant's pinned repo +
+commit by the normal pipeline (prep -> model prep -> LOOKING_FOR_NODES -> orchestrator). Nothing creates the input-seed
+roles (input_small, input_large, boss_instruct, boss_chained_*) or the boss-round roles boss_r2_fixed and
+boss_r3_freeform; rows of them load.
 Seeds are not tournament_tasks rows until their round attaches them (rounds 1-3 their round seed, the boss round its own).
 This module owns creation, status, replacement and the halt (only an input-seed role halts a tournament; a text or quant
 role out of replacements is `failed`, alerts once and the tournament goes on without it).
@@ -16,7 +19,7 @@ role out of replacements is `failed`, alerts once and the tournament goes on wit
 Entry points:
   * live_seed_tasks(tournament_id, db) -> dict[SeedRole, TournamentSeedTask]: the current row of every role.
   * seeds_sql.boss_round_seed_ready_to_finalise(task_id, db): the hold on every path that finalises a seed (its rows are
-    evaluated as they train, the boss's at seed time).
+    evaluated as they train, the text boss's at seed time).
   * seed_halt_reason(tournament_id, db): a non-empty reason while an input-seed role is out of replacements.
 """
 
@@ -978,49 +981,39 @@ async def _retry_missing_boss_round_seeds(tournament_id: str, config: Config) ->
 
 
 async def retire_unattached_quant_seeds(tournament_id: str, config: Config) -> list[SeedRole]:
-    """Stop the boss's work on the quant seeds no round attached, once the tournament is decided (it ended early, or without a
-    boss round): nothing will ever attach them.
+    """Retire the quant seeds no round attached, once the tournament is decided (it ended early, or without a boss round):
+    nothing will ever attach them, so they are never trained.
 
-    A live quant seed (a round seed or a boss-round seed) whose task has not started training (held for its source model,
-    waiting for prep or for nodes, or in TRAINING with the boss's row still pending) gets the boss's pending training row and
-    its task failed and its row marked failed, as replace_seed retires a held task: nothing dispatches, releases or
-    replaces it. A seed whose task is in prep or already training or done is left alone: the finalisation hold releases it
-    (boss_round_seed_ready_to_finalise) and it closes with the boss's stored result. Returns the retired roles.
+    A live quant seed whose task is held for its source model, waiting for prep or waiting for its round
+    (_UNSTARTED_TASK_STATUSES) gets its task failed and its row marked failed, as replace_seed retires a held task: nothing
+    releases, dispatches or replaces it. A seed whose prep is in flight is left for a later pass (prep would overwrite the
+    status), and one in any other state is left alone. Returns the retired roles.
     """
     retired: list[SeedRole] = []
     for seed in await seeds_sql.get_active_seed_tasks(tournament_id, config.psql_db):
         if seed.role not in ANY_QUANT_SEED_ROLES or await _was_attached(seed, config.psql_db):
             continue
         task = await task_sql.get_task(seed.task_id, config.psql_db)
-        boss_status = await _boss_row_status(seed, config) if task is not None else None
-        unstarted = task is not None and (
-            task.status in _UNSTARTED_TASK_STATUSES
-            or (task.status == TaskStatus.TRAINING and boss_status in (None, TrainingStatus.PENDING.value))
-        )
-        if not unstarted:
+        if task is None or task.status not in _UNSTARTED_TASK_STATUSES:
             logger.debug(
                 f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} is "
-                f"{task.status if task is not None else 'gone'}; left as it is"
+                f"{task.status if task is not None else 'gone'}; not retired now"
             )
             continue
-        if boss_status == TrainingStatus.PENDING.value:
-            await tournament_sql.update_tournament_task_training_status(
-                str(seed.task_id), EMISSION_BURN_HOTKEY, TrainingStatus.FAILURE, config.psql_db
-            )
         task.status = TaskStatus.FAILURE
         await task_sql.update_task(task, config.psql_db)
         await seeds_sql.update_seed_status(tournament_id, seed.role, seed.attempt, SeedStatus.FAILED, config.psql_db)
         retired.append(seed.role)
         logger.warning(
-            f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} retired before the boss trained it: "
-            f"the tournament is decided and no round will attach it"
+            f"Tournament {tournament_id}: quant seed {seed.role.value} task {seed.task_id} retired untrained: the tournament "
+            f"is decided and no round will attach it"
         )
     return retired
 
 
 async def process_tournament_seed_tasks(tournament_id: str, config: Config) -> None:
     """Advance the status of one tournament's seeds, replacing the ones that failed. Once a quant tournament is decided, its
-    seeds no round attached and the boss has not started are retired first (retire_unattached_quant_seeds).
+    seeds no round attached are retired first (retire_unattached_quant_seeds).
 
     A tournament with no seed rows at all started before the seed design (create_seed_tasks writes the input seeds when
     the tournament's first round is created and replaced rows stay in the history, so a seeded tournament always has rows): it is
@@ -1073,35 +1066,17 @@ async def process_seed_tasks(config: Config) -> None:
 # Lower ranks are tried first in a scheduling cycle. A running job is never preempted.
 INPUT_SMALL_SEED_TRAINING_RANK = 0  # the small input seed
 INPUT_LARGE_SEED_TRAINING_RANK = 1  # the large input seed
-NON_SEED_TRAINING_RANK = 2  # miner-round rows (R1-R3) and every non-seed task
-BOSS_INSTRUCT_SEED_TRAINING_RANK = 3  # the boss's entry on the boss round's input
-DEFERRABLE_BOSS_SEED_TRAINING_RANK = 4  # the boss's two compression entries
-# Rank comes from the task's role alone, the same for both players: the challenger's row on a task ties with the boss's row.
-BOSS_ENTRY_TRAINING_RANKS = (BOSS_INSTRUCT_SEED_TRAINING_RANK, DEFERRABLE_BOSS_SEED_TRAINING_RANK)
-# A row of a lower rank than this short of GPUs makes the boss entries (ranks 3-4) yield for the cycle.
-FIRST_BOSS_ENTRY_TRAINING_RANK = BOSS_INSTRUCT_SEED_TRAINING_RANK
+NON_SEED_TRAINING_RANK = 2  # every other row
 
 
 def training_rank(role: SeedRole | None) -> int:
-    """Where a training row sits in a scheduling cycle (lower first): the two input seeds, every other row (miner rounds,
-    non-seed tasks), then the boss round's input and its two compression tasks. The rank is the task's, the same for the
-    boss's and the challenger's row. Only the input seeds are never deferred; the boss's own entries (see is_boss_entry_row)
-    yield in a cycle where a row of rank below FIRST_BOSS_ENTRY_TRAINING_RANK is short of GPUs."""
+    """Where a training row sits in a scheduling cycle (lower first): the two input seeds, then every other row. The rank
+    is the task's, the same for every player on it."""
     if role == SeedRole.INPUT_SMALL:
         return INPUT_SMALL_SEED_TRAINING_RANK
     if role == SeedRole.INPUT_LARGE:
         return INPUT_LARGE_SEED_TRAINING_RANK
-    if role == SeedRole.BOSS_INSTRUCT:
-        return BOSS_INSTRUCT_SEED_TRAINING_RANK
-    if role in ANY_BOSS_ROUND_SEED_ROLES:
-        return DEFERRABLE_BOSS_SEED_TRAINING_RANK
     return NON_SEED_TRAINING_RANK
-
-
-def is_boss_entry_row(row_rank: int, hotkey: str) -> bool:
-    """Whether a training row (its task's rank and hotkey) is one of the boss's own entries (the boss input or a compression):
-    the only rows that yield to a starved miner row. The challenger's row on the same task ties in rank but never yields."""
-    return row_rank in BOSS_ENTRY_TRAINING_RANKS and hotkey == EMISSION_BURN_HOTKEY
 
 
 async def training_ranks(task_ids: list[str], psql_db: PSQLDB) -> dict[str, int]:

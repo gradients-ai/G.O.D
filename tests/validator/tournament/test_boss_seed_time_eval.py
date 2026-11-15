@@ -9,8 +9,11 @@ seeding, the evaluation pass, finalisation and ranking) over an in-memory store,
     is finalised once, only after the challenger is scored;
   * the verdict equals the one from scoring both together at the boss round (instruct within 0.2 %, freeform cap and
     bytes, fixed paired gate across SKUs, a boss training failure);
-  * an evaluation error of the boss's entry at seed time is retried, never scored; spent retries park it and the boss
-    round evaluates it (fallback, alerted); a missing same-SKU reference is re-measured at seed time.
+  * an evaluation error of the boss's entry at seed time is retried, never scored; spent retries park it and the round
+    that attaches the seed evaluates it (the fallback).
+
+A compression seed is no longer trained before its round attaches it (test_quant_boss_round_order.py); the harness drives
+the lifecycle with a boss row trained before the attach, the state a seed trained upfront is in.
 """
 
 import math
@@ -332,7 +335,6 @@ def _fresh_seed_time_state(monkeypatch):
         boss_seed_eval._SEED_TIME_RETRIES,
         boss_seed_eval._LAST_RETRY_AT,
         boss_seed_eval._PARKED_ALERTED,
-        boss_seed_eval._ROUND_OPEN_ALERTED,
         boss_seed_eval._EVAL_SET_MISMATCH_ALERTED,
     ):
         state.clear()
@@ -559,39 +561,13 @@ class TestSeedTimeFailures:
         assert store.alerts == ["Seed-time boss evaluation parked"]
         assert not await lifecycle_tasks._get_tasks_ready_for_evaluation(CONFIG)  # parked
 
-        # The boss round opens: the missing seed-time result is alerted, and the row is evaluated now (the fallback).
+        # The round attaches the seed: the row is evaluated now (the fallback).
         store.attach()
-        assert await boss_seed_eval.alert_if_boss_evaluation_missing(store.task, CONFIG)
-        assert await boss_seed_eval.alert_if_boss_evaluation_missing(store.task, CONFIG)
-        assert store.alerts.count("Seed-time boss evaluation missing at the boss round") == 1
         await store.cycle()
         assert store.eval_rows[BOSS] == "success" and store.evaluations_of[BOSS] == retries + 1
         store.train(CHALLENGER)
         await store.cycle()
         assert store.result(CHALLENGER).rank == 1 and store.evaluations_of[CHALLENGER] == 1
-
-    async def test_a_settled_seed_time_result_raises_no_round_open_alert(self, monkeypatch):
-        store = Store(monkeypatch, _fixed_task(), SeedRole.BOSS_CHAINED_FIXED, {BOSS: [_quant(_REF, 1.05, H100_SXM)]})
-        store.train(BOSS)
-        await store.cycle()
-        store.attach()
-
-        assert not await boss_seed_eval.alert_if_boss_evaluation_missing(store.task, CONFIG)
-        assert not store.alerts
-
-    async def test_a_missing_same_sku_reference_is_measured_at_seed_time(self, monkeypatch):
-        unmeasured = _quant(_REF, 1.05, H100_SXM).model_copy(update={"reference_per_example": None})
-        store = Store(
-            monkeypatch, _fixed_task(), SeedRole.BOSS_CHAINED_FIXED, {BOSS: [unmeasured, _quant(_REF, 1.05, H100_SXM)]}
-        )
-        store.train(BOSS)
-        await store.cycle()
-        assert store.eval_rows[BOSS] == "pending" and not store.references  # re-evaluated now, not at the boss round
-
-        await store.cycle()
-        assert store.eval_rows[BOSS] == "success" and (BOSS, "H100 SXM") in store.references
-        await store.cycle()
-        assert store.evaluations_of[BOSS] == 2
 
     async def test_after_attach_an_exception_is_an_infra_error_like_any_task(self, monkeypatch):
         # Attached: no seed-time retry; the exception is re-queued and counted (validator/lifecycle/eval_infra_errors.py).

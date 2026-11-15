@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-# Every task that belongs to a tournament: a round's task or a seed task (the boss's upfront training).
+# Every task that belongs to a tournament: a round's task or a seed task (created for the boss ahead of its round).
 TOURNAMENT_AND_SEED_TASK_IDS = (
     f"SELECT {cst.TASK_ID}::uuid FROM {cst.TOURNAMENT_TASKS_TABLE} "
     f"UNION SELECT {cst.TASK_ID} FROM {cst.TOURNAMENT_SEED_TASKS_TABLE}"
@@ -565,7 +565,7 @@ async def get_tasks_with_status(
     delay_timestamp_clause = (
         "" if include_not_ready_tasks else f"AND ({cst.NEXT_DELAY_AT} IS NULL OR {cst.NEXT_DELAY_AT} <= NOW())"
     )
-    # Seed tasks (the boss's upfront tasks) are tournament tasks even before the boss round attaches them to a round.
+    # Seed tasks are tournament tasks even before a round attaches them.
     if tournament_filter == "exclude":
         tournament_tasks_clause = f"AND {cst.TASK_ID} NOT IN ({TOURNAMENT_AND_SEED_TASK_IDS})"
     elif tournament_filter == "only":

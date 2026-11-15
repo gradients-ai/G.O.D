@@ -1,7 +1,7 @@
 """Early stop of a quant tournament: once the round-3 cut leaves the last contender, a crown out of reach on its round 1-3
 head-to-heads ends the tournament with the boss retained and no boss round. Rounds 1 and 2 always run in full.
 
-Also the boss side: the quant seeds no round attached and the boss has not started are retired, a decided tournament
+Also the boss side: the quant seeds no round attached are retired untrained, a decided tournament
 replaces or re-creates no quant seed, and its seeds no round attached no longer hold their finalisation.
 """
 
@@ -333,16 +333,13 @@ class SeedWorld:
 
 
 class TestBossSideAfterAnEarlyStop:
-    async def test_every_unattached_quant_seed_the_boss_has_not_started_is_retired(self, monkeypatch):
+    async def test_every_unattached_quant_seed_not_in_prep_is_retired_untrained(self, monkeypatch):
         world = SeedWorld(monkeypatch)
         held = world.add(SeedRole.BOSS_CONTINUOUS_FIXED, TaskStatus.AWAITING_UPSTREAM)
-        waiting = world.add(SeedRole.BOSS_R2_FREEFORM, TaskStatus.LOOKING_FOR_NODES)
+        waiting = world.add(SeedRole.BOSS_R2_FREEFORM, TaskStatus.LOOKING_FOR_NODES)  # prepped, waiting for the boss round
         round_seed = world.add(SeedRole.QUANT_R3, TaskStatus.AWAITING_UPSTREAM)  # a round seed of a round never played
-        queued = world.add(SeedRole.BOSS_CONTINUOUS_FREEFORM, TaskStatus.TRAINING)
-        world.boss_rows[str(queued.task_id)] = TrainingStatus.PENDING.value
-        running = world.add(SeedRole.BOSS_R3_FIXED, TaskStatus.TRAINING)
-        world.boss_rows[str(running.task_id)] = TrainingStatus.TRAINING.value
-        world.add(SeedRole.BOSS_R3_FREEFORM, TaskStatus.PREPARING_DATA)  # prep in flight: left to finish
+        queued = world.add(SeedRole.BOSS_CONTINUOUS_FREEFORM, TaskStatus.PENDING)
+        world.add(SeedRole.BOSS_R3_FREEFORM, TaskStatus.PREPARING_DATA)  # prep in flight: retired on a later pass
         attached = world.add(SeedRole.QUANT_R2, TaskStatus.AWAITING_UPSTREAM)
         world.attached.add(str(attached.task_id))
 
@@ -358,23 +355,18 @@ class TestBossSideAfterAnEarlyStop:
             (str(seed.task_id), TaskStatus.FAILURE) for seed in (held, waiting, round_seed, queued)
         ]
         assert world.status_updates == [(role, SeedStatus.FAILED) for role in retired]
-        # The boss's queued run is never dispatched; the running one is left to finish.
-        assert world.row_updates == [(str(queued.task_id), BOSS, TrainingStatus.FAILURE)]
+        assert world.row_updates == []  # an unattached compression seed has no training rows
 
-    async def test_a_seed_the_boss_already_trained_is_left_alone_without_error(self, monkeypatch):
-        # Run-2 pseudo-comp regression: the boss-round seeds were TRAINING with the boss's row done; logging the
-        # "left as it is" line called .value on the RawTask's str status and the early stop crashed every cycle.
+    async def test_a_seed_whose_prep_ends_is_retired_on_the_next_pass(self, monkeypatch):
+        # Also the run-2 regression: logging the "not retired now" line must not call .value on the RawTask's str status.
         world = SeedWorld(monkeypatch)
-        trained = world.add(SeedRole.BOSS_R2_FREEFORM, TaskStatus.TRAINING)
-        world.boss_rows[str(trained.task_id)] = TrainingStatus.SUCCESS.value
-        world.add(SeedRole.BOSS_R3_FIXED, TaskStatus.PREPARING_DATA)
-        held = world.add(SeedRole.BOSS_CONTINUOUS_FIXED, TaskStatus.AWAITING_UPSTREAM)
+        in_prep = world.add(SeedRole.BOSS_R3_FIXED, TaskStatus.PREPARING_DATA)
 
-        retired = await seed_tasks.retire_unattached_quant_seeds(TID, world.config)
+        assert await seed_tasks.retire_unattached_quant_seeds(TID, world.config) == []
 
-        assert retired == [SeedRole.BOSS_CONTINUOUS_FIXED]
-        assert world.task_updates == [(str(held.task_id), TaskStatus.FAILURE)]
-        assert world.row_updates == []
+        world.tasks[str(in_prep.task_id)].status = TaskStatus.LOOKING_FOR_NODES.value
+        assert await seed_tasks.retire_unattached_quant_seeds(TID, world.config) == [SeedRole.BOSS_R3_FIXED]
+        assert world.task_updates == [(str(in_prep.task_id), TaskStatus.FAILURE)]
 
     async def test_the_seed_pass_of_a_decided_quant_tournament_retires_them(self, monkeypatch):
         world = SeedWorld(monkeypatch)

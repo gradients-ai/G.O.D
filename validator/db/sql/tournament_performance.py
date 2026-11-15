@@ -28,8 +28,8 @@ async def is_paired_comparison_task(task_id: UUID, psql_db: PSQLDB) -> bool:
     the quant tournament's rounds 1-3 seeds and its boss-round compression seeds).
 
     Gates the request for, and the persistence of, per-example loss vectors. A seed counts before its round attaches it:
-    the boss's entry is evaluated at seed time, and its stored vector and eval-set fingerprint are what the crown rule
-    compares each challenger's against. Every player on a seed task gets a vector, since any of them may meet the boss.
+    the text boss's upfront entry is evaluated at seed time, and its stored vector and eval-set fingerprint are what the
+    crown rule compares each challenger's against. Every player on a seed task gets a vector, since any of them may meet the boss.
     An ordinary group-round task ranks N miners and stores none.
     """
     async with await psql_db.connection() as connection:

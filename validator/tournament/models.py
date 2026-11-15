@@ -1228,7 +1228,7 @@ class ContinuousRowsPart(str, Enum):
 class QuantSourceSlot(str, Enum):
     """The place a quant task takes in a quant tournament, and so which text seed task's boss model it compresses.
 
-    r1, r2 and r3 are the miner rounds (one quant task each, trained by the quant boss as a seed and by the round's miners);
+    r1, r2 and r3 are the miner rounds (one quant task each, a seed trained by the quant boss and the round's miners);
     the boss_* slots are the compressions of the quant boss round: the R2 model freeform, the R3 model fixed and the
     continuous model freeform and fixed. Nothing creates boss_r2_fixed or boss_r3_freeform; rows of them load.
     """
@@ -1355,10 +1355,11 @@ RETIRED_BOSS_ROUND_SEED_ROLES = frozenset({SeedRole.BOSS_CHAINED_FREEFORM, SeedR
 # Every role a row may carry that is a boss-round seed: where rows are READ (hold, attach, completion, ranks), not where
 # roles are created or counted for a new boss round.
 ANY_BOSS_ROUND_SEED_ROLES = BOSS_ROUND_SEED_ROLES | UNCREATED_BOSS_ROUND_SEED_ROLES | RETIRED_BOSS_ROUND_SEED_ROLES
-# The quant tournament's round seeds: the one quant task of each of rounds 1-3, trained by the quant boss as soon as its
-# source model lands and by the round's miners once the round attaches it.
+# The quant tournament's round seeds: the one quant task of each of rounds 1-3, trained by the quant boss and the round's
+# miners once the round attaches it.
 QUANT_ROUND_SEED_ROLES = frozenset({SeedRole.QUANT_R1, SeedRole.QUANT_R2, SeedRole.QUANT_R3})
-# Every quant seed role a row may carry: the boss's compression entries whose result is stored at seed time.
+# Every quant seed role a row may carry: the boss's compression entries, prepped ahead and trained once their round
+# attaches them.
 ANY_QUANT_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | QUANT_ROUND_SEED_ROLES
 # The instruct seeds only the boss trains: upstreams of the chained compression seeds.
 BOSS_INSTRUCT_SEED_ROLES = frozenset({SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CONTINUOUS_INSTRUCT})
@@ -1373,7 +1374,7 @@ TEXT_SEED_ROLES = TEXT_ROUND_SEED_ROLES | {SeedRole.TEXT_CONTINUOUS}
 # Seeds a round attaches by registering the seed task itself in the round's group or pair: a prep failure after attach is
 # redrawn and the replacement takes the attached task's place (replace_seed).
 SWAPPED_SEED_ROLES = TEXT_SEED_ROLES | QUANT_ROUND_SEED_ROLES
-# Every role whose task is attached to a round after it was trained: its finalisation is held until it is attached.
+# Every role whose task is attached to a round after it was created: its finalisation is held until it is attached.
 ATTACHED_SEED_ROLES = ANY_BOSS_ROUND_SEED_ROLES | TEXT_SEED_ROLES | QUANT_ROUND_SEED_ROLES
 
 
@@ -1429,7 +1430,7 @@ class SeedStatus(str, Enum):
 
 
 class TournamentSeedTask(BaseModel):
-    """One attempt at one seed role of a tournament: the task the boss trains upfront and the code it trained with."""
+    """One attempt at one seed role of a tournament: the task created for the boss and the code it trains with."""
 
     tournament_id: str
     role: SeedRole

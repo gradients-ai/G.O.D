@@ -1,4 +1,4 @@
-"""SQL for tournament_seed_tasks: the tasks the boss trains upfront (see validator/tournament/seed_tasks.py)."""
+"""SQL for tournament_seed_tasks: the tasks created for the boss ahead of their round (see validator/tournament/seed_tasks.py)."""
 
 from uuid import UUID
 
@@ -14,6 +14,7 @@ from validator.db.sql import tournaments as tournament_sql
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament.models import ANY_BOSS_COMPRESSION_SEED_ROLES
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
+from validator.tournament.models import ANY_QUANT_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import SWAPPED_SEED_ROLES
 from validator.tournament.models import TEXT_SEED_ROLES
@@ -226,8 +227,8 @@ async def boss_side_seed_failure(task_id: UUID | str, task_status: TaskStatus | 
     Dead on the boss's side: the task failed prep after the boss round attached it (PREP_TASK_FAILURE) while the boss's
     own training row is not SUCCESS (a boss that trained successfully was not the cause), or it ended FAILURE with the
     boss's own training row FAILURE. In both cases the challenger's side must be intact: a non-burn hotkey with a
-    SUCCESS training row and no persisted quant_failure. The boss's entries are trained upfront and never retrained, so
-    such a slot is not replaced: the round counts it as the boss's failure (the challenger takes the task). A slot
+    SUCCESS training row and no persisted quant_failure. An attached boss-round seed is never replaced: the round counts
+    such a slot as the boss's failure (the challenger takes the task). A slot
     where nobody produced a usable result is never credited to the challenger (that would crown it on no evidence);
     None is returned and the ordinary rule holds: no valid results, the boss keeps the task by default.
     """
@@ -302,6 +303,15 @@ async def is_task_attached_to_round(task_id: UUID | str, psql_db: PSQLDB) -> boo
             str(task_id),
         )
     return found is not None
+
+
+async def is_unattached_quant_seed(task_id: UUID | str, psql_db: PSQLDB) -> bool:
+    """Whether a task is a compression seed no round has attached yet. It is prepped but not trained: the boss trains it with
+    the round's miners once its round attaches it."""
+    seed = await get_seed_task_by_task_id(task_id, psql_db)
+    if seed is None or seed.role not in ANY_QUANT_SEED_ROLES:
+        return False
+    return seed.attached_round_id is None and not await is_task_attached_to_round(task_id, psql_db)
 
 
 # The round whose completion releases an input seed: input_small feeds R1 and R2, input_large feeds R3. A boss-round seed
@@ -422,8 +432,8 @@ async def boss_round_seed_ready_to_finalise(task_id: UUID | str, psql_db: PSQLDB
     player is assigned, and every assigned player has a terminal training row or a persisted quant_failure. Once its
     tournament is decided (no longer pending or active, or a winner is set) a seed no round attached is released, and so is
     any text or quant round seed: it closes with the boss's stored result instead of waiting in TRAINING for good. The hold is
-    on finalisation only: each player's entry is evaluated as soon as its own training row succeeds, so the boss's entry is
-    scored at seed time and stored, and the task is ranked once, from the stored rows of both players. Every path that
+    on finalisation only: each player's entry is evaluated as soon as its own training row succeeds (a text boss's upfront
+    entry at seed time) and stored, and the task is ranked once, from the stored rows of both players. Every path that
     finalises a TRAINING tournament task, or moves it to PREEVALUATION, applies this.
     """
     seed = await get_seed_task_by_task_id(task_id, psql_db)

@@ -698,7 +698,7 @@ async def _complete_without_boss_round(
     longer be crowned, so no boss round is created and nothing is attached or dispatched for it.
 
     Text: the continuous lineage is carried forward first (its seed was never attached). Quant: the quant seeds no round
-    attached and the boss has not started are retired (retire_unattached_quant_seeds). Image has no seeds and no lineage, so
+    attached are retired untrained (retire_unattached_quant_seeds). Image has no seeds and no lineage, so
     nothing is retired or carried. Then the placements are written: the
     boss first, the last contender second and third whoever a played and lost boss round would have placed third (the
     runner-up of round 3's standings); this also sets the winner, which is the re-entry guard. Then the same completion
@@ -2349,11 +2349,11 @@ async def _quant_task_completion(
 ) -> tuple[bool, str] | None:
     """The quant-only completion outcomes; None leaves the task to the ordinary rules.
 
-    A boss-round seed (the boss's upfront entry) is never replaced: its entries are trained upfront and never retrained.
-    When it failed prep after attach, or failed with the boss's row failed, and the challenger has a usable run, it
-    counts as completed and the round result gives the slot to the challenger. A boss-round seed that failed prep with
-    no usable challenger run also counts as completed, and the boss keeps the slot by default. A successful task
-    whose majority of failed trainings is the boss's own failed entry is resolved by the round, so it needs no review.
+    A boss-round seed (the task of the boss's entry) is never replaced once attached. When it failed prep after attach,
+    or failed with the boss's row failed, and the challenger has a usable run, it counts as completed and the round
+    result gives the slot to the challenger. A boss-round seed that failed prep with no usable challenger run also counts
+    as completed, and the boss keeps the slot by default. A successful task whose majority of failed trainings is the
+    boss's own failed entry is resolved by the round, so it needs no review.
     """
     if task_obj.status == TaskStatus.SUCCESS.value:
         trainings = await get_training_status_for_task(tournament_task.task_id, config.psql_db)
@@ -2366,8 +2366,8 @@ async def _quant_task_completion(
 
     seed_role = await seeds_sql.boss_side_seed_failure(tournament_task.task_id, task_obj.status, config.psql_db)
     if seed_role is not None:
-        # The boss's entries are trained upfront and never retrained: no replacement, the round counts the slot as the
-        # boss's failure (round_results.get_knockout_winners).
+        # An attached boss-round seed is never replaced: the round counts the slot as the boss's failure
+        # (round_results.get_knockout_winners).
         stage = "prep" if task_obj.status == TaskStatus.PREP_TASK_FAILURE.value else "training"
         reason = f"boss-side seed {seed_role.value} failed {stage} after attach"
         await alert_seed_issue(
@@ -2381,7 +2381,7 @@ async def _quant_task_completion(
     if task_obj.status == TaskStatus.PREP_TASK_FAILURE.value:
         seed = await seeds_sql.get_seed_task_by_task_id(tournament_task.task_id, config.psql_db)
         if seed is not None and seed.role in ANY_BOSS_ROUND_SEED_ROLES:
-            # Nobody has a result here, and replacing the task would not bring the boss's upfront entry back.
+            # Nobody has a result here, and an attached boss-round seed is never replaced.
             await alert_seed_issue(
                 boss_side_failure_key(tournament_task.tournament_id, tournament_task.task_id),
                 f"Tournament {tournament_task.tournament_id} round {tournament_task.round_id}: boss-round seed "

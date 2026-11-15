@@ -13,9 +13,9 @@ MODEL_SIZE_REQUIRING_2_GPUS = 30 * 10**9
 # 2xA100-80GB (with expandable CUDA segments); jump straight to 4 above this threshold.
 MODEL_SIZE_REQUIRING_4_GPUS = 75 * 10**9
 
-# Seed-time evaluation of the boss's boss-round entries (lifecycle/boss_seed_eval.py): how many times in all an evaluation
-# error (or a missing same-SKU bf16 reference) of the boss's entry is retried before the boss round attaches the task.
-# After that the row is parked and evaluated in the boss round.
+# Seed-time evaluation of the text boss's upfront entries (lifecycle/boss_seed_eval.py): how many times in all an evaluation
+# error of the boss's entry is retried before a round attaches the task. After that the row is parked and evaluated in
+# the round.
 SEED_TIME_BOSS_EVAL_RETRIES = 3
 # A retried seed-time evaluation is not dispatched again until this long after its last failure, so the budget above
 # outlasts a short hub or deployment-service outage instead of being spent within a few 30 s cycles.

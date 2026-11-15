@@ -540,26 +540,11 @@ class TestTrainerPriority:
             )
         return rows
 
-    def test_rank_order_for_every_role(self):
+    def test_input_seeds_go_first_and_every_other_row_ranks_the_same(self):
         rank = seed_tasks.training_rank
-        ordered = [
-            rank(SeedRole.INPUT_SMALL),
-            rank(SeedRole.INPUT_LARGE),
-            rank(None),
-            rank(SeedRole.BOSS_INSTRUCT),
-        ]
-        assert ordered == [0, 1, 2, 3]
-        for role in (SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED):
-            assert rank(role) == seed_tasks.DEFERRABLE_BOSS_SEED_TRAINING_RANK == 4
-
-    def test_the_boss_entry_check_is_the_boss_hotkey_at_a_boss_rank_only(self):
-        is_entry = seed_tasks.is_boss_entry_row
-        burn, challenger = EMISSION_BURN_HOTKEY, "5Challenger"
-        for role in (SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED):
-            assert is_entry(seed_tasks.training_rank(role), burn) and not is_entry(seed_tasks.training_rank(role), challenger)
-        for role in (SeedRole.INPUT_SMALL, SeedRole.INPUT_LARGE, None):  # incl. an organic task trained under the burn hotkey
-            assert not is_entry(seed_tasks.training_rank(role), burn)
-        assert not hasattr(seed_tasks, "row_training_rank")
+        assert [rank(SeedRole.INPUT_SMALL), rank(SeedRole.INPUT_LARGE)] == [0, 1]
+        for role in [None, *(role for role in SeedRole if role not in INPUT_SEED_ROLES)]:
+            assert rank(role) == seed_tasks.NON_SEED_TRAINING_RANK == 2
 
     async def test_activation_dispatches_i1_i4_b_in_one_cycle_in_order(self, scheduling):
         env = scheduling.env
@@ -591,28 +576,17 @@ class TestTrainerPriority:
 
         assert scheduling.order == [i1]
 
-    @pytest.mark.parametrize("role", [SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CHAINED_FIXED])
-    async def test_a_boss_entry_yields_to_a_starved_miner_row(self, scheduling, role):
+    @pytest.mark.parametrize("role", [SeedRole.QUANT_R1, SeedRole.BOSS_R2_FREEFORM])
+    async def test_a_boss_compression_row_takes_a_free_gpu_a_starved_miner_row_cannot_use(self, scheduling, role):
         env = scheduling.env
         scheduling.free_gpus = 1
         rows = self._rows(env, [role, None])
-        miner = rows[1].task.task_id
+        boss_row, miner = rows[0].task.task_id, rows[1].task.task_id
         scheduling.needs[miner] = 2  # the miner row is short of GPUs
 
         await orchestrator.schedule_tasks_for_training(rows, env.config)
 
-        assert scheduling.order == []  # the entry did not take the free GPU the miner row could not use
-
-    async def test_a_miner_row_goes_before_mba(self, scheduling):
-        env = scheduling.env
-        scheduling.free_gpus = 1
-        rows = self._rows(env, [SeedRole.BOSS_INSTRUCT, None])
-        mba, miner = rows[0].task.task_id, rows[1].task.task_id
-
-        await orchestrator.schedule_tasks_for_training(rows, env.config)
-
-        assert scheduling.order == [miner]
-        assert mba not in scheduling.order
+        assert scheduling.order == [boss_row]
 
     async def test_a_starved_boss_input_does_not_stop_the_compression_when_it_fits(self, scheduling):
         env = scheduling.env
@@ -637,47 +611,18 @@ class TestTrainerPriority:
         assert scheduling.order == [i4]
         assert not rows  # the small input seed and the miner row were starved and fell through, nothing blocked
 
-    async def test_order_is_i1_i4_miner_rows_mba_compressions(self, scheduling):
+    async def test_order_is_input_seeds_then_every_other_row_oldest_first(self, scheduling):
         env = scheduling.env
         roles_in = [
-            SeedRole.BOSS_CHAINED_FIXED, None, SeedRole.BOSS_INSTRUCT,
-            SeedRole.INPUT_LARGE, SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.INPUT_SMALL, None,
+            SeedRole.BOSS_R3_FIXED, None, SeedRole.QUANT_R2,
+            SeedRole.INPUT_LARGE, SeedRole.BOSS_R2_FREEFORM, SeedRole.INPUT_SMALL, None,
         ]
-        rows = self._rows(env, roles_in)
-        by_id = {row.task.task_id: role for row, role in zip(rows, roles_in)}
+        rows = self._rows(env, roles_in)  # the query returns newest first
+        ids = [row.task.task_id for row in rows]
 
         await orchestrator.schedule_tasks_for_training(rows, env.config)
 
-        roles = [by_id[task_id] for task_id in scheduling.order]
-        assert roles[:5] == [SeedRole.INPUT_SMALL, SeedRole.INPUT_LARGE, None, None, SeedRole.BOSS_INSTRUCT]
-        assert set(roles[5:]) == {SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED}
-
-    async def test_boss_entries_are_skipped_when_a_miner_row_found_no_gpus_but_challenger_rows_are_not(self, scheduling):
-        env = scheduling.env
-        scheduling.no_gpus = True
-        rows = self._rows(env, [SeedRole.BOSS_CHAINED_FIXED, SeedRole.BOSS_INSTRUCT, None, SeedRole.INPUT_SMALL])
-        challenger_row = self._rows(env, [SeedRole.BOSS_INSTRUCT])[0].model_copy(update={"hotkey": "5Challenger"})
-        rows.append(challenger_row)
-
-        await orchestrator.schedule_tasks_for_training(rows, env.config)
-
-        # the small input seed and the miner row looked; the two boss entries did not; the challenger's boss instruct row
-        # (rank 3) did, after them.
-        assert scheduling.gpu_lookups == [1, 1, 1]
-
-    async def test_a_starved_miner_row_defers_a_boss_compression_but_never_a_challenger_row(self, scheduling):
-        env = scheduling.env
-        scheduling.free_gpus = 2
-        rows = self._rows(env, [SeedRole.BOSS_CHAINED_FIXED, None, SeedRole.BOSS_CHAINED_FIXED])
-        boss_row, miner = rows[0].task.task_id, rows[1].task.task_id
-        challenger_row = rows[2].model_copy(update={"hotkey": "5Challenger"})  # same rank as the boss's compression row
-        rows[2] = challenger_row
-        scheduling.needs[miner] = 3  # the miner row is short of GPUs
-
-        await orchestrator.schedule_tasks_for_training(rows, env.config)
-
-        assert scheduling.order == [challenger_row.task.task_id]  # the challenger ran; the boss's own entry yielded
-        assert boss_row not in scheduling.order
+        assert scheduling.order == [ids[5], ids[3], ids[6], ids[4], ids[2], ids[1], ids[0]]
 
     @pytest.mark.parametrize("role", [SeedRole.BOSS_INSTRUCT, SeedRole.BOSS_CHAINED_FIXED])
     async def test_a_challenger_row_ties_with_the_boss_row_of_the_same_task_and_goes_oldest_first(self, scheduling, role):
@@ -701,32 +646,6 @@ class TestTrainerPriority:
         scheduling.free_gpus = 1
         await orchestrator.schedule_tasks_for_training(env2_rows, env.config)
         assert scheduling.order == [new_challenger.task.task_id]
-
-    async def test_challenger_mba_does_not_wait_behind_a_boss_compression(self, scheduling):
-        """Rank is the task's: the challenger's boss instruct row (rank 3) goes before the boss's compressions (4)."""
-        env = scheduling.env
-        scheduling.free_gpus = 1
-        compression, other_compression = self._rows(env, [SeedRole.BOSS_CHAINED_FREEFORM, SeedRole.BOSS_CHAINED_FIXED])
-        challenger_mba = self._rows(env, [SeedRole.BOSS_INSTRUCT])[0].model_copy(update={"hotkey": "5Challenger"})
-        rows = [compression, other_compression, challenger_mba]
-
-        await orchestrator.schedule_tasks_for_training(rows, env.config)
-
-        assert scheduling.order == [challenger_mba.task.task_id]
-
-    async def test_an_unfinished_mba_goes_ahead_of_the_challengers_compression_rows(self, scheduling):
-        """Once the boss round exists there are no miner rows: the boss instruct task still pending goes before the challenger's
-        compression rows (rank 3 against 4), whoever's row it is."""
-        env = scheduling.env
-        scheduling.free_gpus = 1
-        boss_mba = self._rows(env, [SeedRole.BOSS_INSTRUCT])[0]
-        challenger_compression = self._rows(env, [SeedRole.BOSS_CHAINED_FIXED])[0]
-        challenger_compression = challenger_compression.model_copy(update={"hotkey": "5Challenger"})
-        rows = [challenger_compression, boss_mba]
-
-        await orchestrator.schedule_tasks_for_training(rows, env.config)
-
-        assert scheduling.order == [boss_mba.task.task_id]
 
     async def test_boss_round_seeds_alone_still_train(self, scheduling):
         env = scheduling.env

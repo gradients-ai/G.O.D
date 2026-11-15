@@ -31,6 +31,12 @@ OTHER = "5Other"
 CONFIG = SimpleNamespace(psql_db=None)
 
 
+@pytest.fixture(autouse=True)
+def _round_tasks_not_seeds(monkeypatch):
+    # The tasks here are round tasks: none is a compression seed waiting for its round.
+    monkeypatch.setattr(orchestrator.seeds_sql, "is_unattached_quant_seed", AsyncMock(return_value=False))
+
+
 def _task(cls=QuantFixedRawTask, **overrides):
     fields = {
         "is_organic": False,

@@ -536,19 +536,17 @@ class TestSeedHold:
 
 
 class TestWarning:
-    async def test_a_boss_row_still_training_is_logged_at_warning_and_does_not_block(self, world, caplog):
-        instruct, free, fixed = world.boss_round(boss_status=SUCCESS)
+    async def test_a_compression_boss_row_still_training_is_not_a_warning_and_does_not_block(self, world, caplog):
+        _, free, fixed = world.boss_round(boss_status=SUCCESS)
         world.training[str(free.task_id)][EMISSION_BURN_HOTKEY] = TRAINING
         world.training[str(fixed.task_id)] = {}
 
         with caplog.at_level(logging.WARNING):
             await orchestrator._boss_round_seed_cycle(CONFIG)
 
-        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and "still training" in r.getMessage()]
-        assert f"boss entry {SeedRole.BOSS_CHAINED_FREEFORM.label} {free.task_id} still training" in warnings
-        assert f"boss entry {SeedRole.BOSS_CHAINED_FIXED.label} {fixed.task_id} still training" in warnings
-        assert not any(str(instruct.task_id) in message for message in warnings)
-        # The challenger's rows still went out.
+        # The compression boss trains with the challenger, so its run in progress is not a lagging upfront entry.
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING and "still training" in r.getMessage()]
+        # The challenger's rows went out.
         assert {row.task_id for row in world.rows} >= {str(free.task_id), str(fixed.task_id)}
 
 

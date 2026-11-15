@@ -309,7 +309,7 @@ NVLINK_PEERS = "nvlink_peers"
 QUALITY_SCORE = "quality_score"  # Used in both submissions and task_nodes
 
 
-# Tournament Seed Tasks Table (the boss's upfront tasks; see validator/db/sql/tournament_seeds.py)
+# Tournament Seed Tasks Table (the tasks created for the boss ahead of their round; see validator/db/sql/tournament_seeds.py)
 TOURNAMENT_SEED_TASKS_TABLE = "tournament_seed_tasks"
 SEED_ROLE = "role"
 SEED_ATTEMPT = "attempt"

@@ -601,8 +601,7 @@ def gpu_count_multiplier(task_type: TaskType, ds: str | None) -> int:
     return 1
 
 
-# Seed tasks: everything the boss trains, created and trained upfront when the first round is created
-# (validator/tournament/seed_tasks.py).
+# Seed tasks: the tasks created for the boss when the first round is created (validator/tournament/seed_tasks.py).
 # Model-size bands in B params for the two instruct input seeds, both inside QUANT_MODEL_SIZE_B.
 SEED_INPUT_SMALL_SIZE_B = (1.0, 4.0)
 SEED_INPUT_LARGE_SIZE_B = (4.0, 8.0)

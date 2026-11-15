@@ -1812,7 +1812,7 @@ async def get_tournament_id_by_task_id(task_id: str, psql_db: PSQLDB) -> str | N
         if benchmark_result:
             return benchmark_result[cst.TOURNAMENT_ID]
 
-        # A seed task (the boss's upfront training) belongs to its tournament before it is attached to any round.
+        # A seed task belongs to its tournament before it is attached to any round.
         seed_result = await connection.fetchrow(
             f"""
             SELECT {cst.TOURNAMENT_ID}

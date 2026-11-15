@@ -1468,8 +1468,9 @@ async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: s
     """R1-R3: the round's one quant task is the round's quant seed (QUANT_ROUND_PLAN: round 1 quant_r1 on the text boss's
     text_r1 model, round 2 quant_r2 on its text_r2 model, round 3 quant_r3 on its text_r3 model).
 
-    The quant boss trains the seed as soon as its source model lands; the round registers the seed task under its group and
-    marks it attached, so the round's miners train the same task and the boss's entry is ranked with theirs. Idempotent: a
+    The seed is prepped as soon as its source model lands and waits untrained; the round registers the seed task under its
+    group and marks it attached, so the boss and the round's miners train it together and the boss's entry is ranked with
+    theirs. Idempotent: a
     round that already has its task returns it (and sets a marker a stop left unset). Raises MissingBossRoundSeeds while the
     role has no live seed and is not `failed` (the tournament is not bound yet, or a replacement is pending), so the round
     stays PENDING and is retried. A `failed` role (out of replacements) does not block the round: it plays a task of its own

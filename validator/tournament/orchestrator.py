@@ -64,7 +64,6 @@ from validator.infrastructure.service_constants import GET_GPU_AVAILABILITY_ENDP
 from validator.infrastructure.service_constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDPOINT
 from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
-from validator.lifecycle import boss_seed_eval
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import QuantSkuReference
 from validator.scoring.quant_ranking import freeform_bar
@@ -92,7 +91,6 @@ from validator.tournament import chaining
 from validator.tournament import quant_sources
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import ANY_QUANT_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
 from validator.tournament.models import QUANT_ROUND_SEED_ROLES
@@ -114,7 +112,6 @@ from validator.tournament.notifications import notify_quant_decode_infra_error
 from validator.tournament.quant_reference import is_own_model_start_point
 from validator.tournament.quant_reference import reference_hotkey_for
 from validator.tournament.quant_reference_prepass import measure_quant_references_cycle
-from validator.tournament.seed_tasks import FIRST_BOSS_ENTRY_TRAINING_RANK
 from validator.tournament.seed_tasks import INSTRUCT_INPUT_SEED_ROLES
 from validator.tournament.seed_tasks import NON_SEED_TRAINING_RANK
 from validator.tournament.seed_tasks import SEED_ADAPTER_MERGE_COOLDOWN_BASE_SECONDS
@@ -124,7 +121,6 @@ from validator.tournament.seed_tasks import SEED_ADAPTER_MERGE_MAX_FAILURES
 from validator.tournament.seed_tasks import SEED_ADAPTER_MERGE_UNKNOWN_CYCLES_BEFORE_DISPATCH
 from validator.tournament.seed_tasks import alert_seed_issue
 from validator.tournament.seed_tasks import boss_output_awaits_merge
-from validator.tournament.seed_tasks import is_boss_entry_row
 from validator.tournament.seed_tasks import live_seed_tasks
 from validator.tournament.seed_tasks import repoint_task_onto_seed
 from validator.tournament.seed_tasks import training_ranks
@@ -590,12 +586,19 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
     assignments = []
     tasks_to_update = []
     tasks_without_nodes = []
+    held_for_round = []
 
     for task in tasks:
         # Environment tournaments are retired; never assign environment tasks for training.
         # This covers leftover pending tournament ENVIRONMENTTASKs and organic environment tasks.
         if task.task_type == TaskType.ENVIRONMENTTASK:
             logger.info(f"Skipping environment task {task.task_id} for training; environment tournaments are retired")
+            continue
+
+        if priority == 2 and await seeds_sql.is_unattached_quant_seed(task.task_id, config.psql_db):
+            # A compression seed is prepped ahead but trains only once its round attaches it: the boss's row is created
+            # here together with the round's miners'.
+            held_for_round.append(str(task.task_id))
             continue
 
         # For tournament and benchmark tasks (priority 2 and 3), get actual assigned nodes
@@ -679,6 +682,9 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
             )
             tasks_to_update.append(task)
 
+    if held_for_round:
+        logger.info(f"{len(held_for_round)} compression seed task(s) prepped and waiting for their round: {held_for_round}")
+
     if tasks_without_nodes:
         logger.warning(
             f"Found {len(tasks_without_nodes)} tasks with priority {priority} without assigned nodes: "
@@ -729,8 +735,8 @@ async def process_pending_tournament_tasks(config: Config):
 
 
 def _is_quant_tournament_row(row_rank: int, task: AnyTypeRawTask) -> bool:
-    """Whether a training row belongs to a quant tournament: a quant task, or an instruct seed task (only a quant tournament
-    has seed tasks, and they are the rows whose rank is not the ordinary one)."""
+    """Whether a training row belongs to a quant tournament: a quant task, or an input seed task (an instruct task only a
+    quant tournament has, and the rows whose rank is not the ordinary one)."""
     return task.task_type in QUANT_TASK_TYPES or row_rank != NON_SEED_TRAINING_RANK
 
 
@@ -747,27 +753,18 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     missing_calibration = []
     failing_quant_rows = []
 
-    # Rows are taken from the END of the list. Order them small input seed, large input seed, every other row (miner
-    # rounds), the boss round's input, then the compression tasks; the rank is the task's, so the boss's and the
-    # challenger's rows on a task tie. The query returns newest first and the sort is stable, so popping from the end takes the
-    # oldest first within a rank.
+    # Rows are taken from the END of the list. Order them small input seed, large input seed, then every other row; the
+    # rank is the task's, so every player's row on a task ties. The query returns newest first and the sort is stable, so
+    # popping from the end takes the oldest first within a rank.
     task_ranks = await training_ranks([str(row.task.task_id) for row in pending_training_tasks], config.psql_db)
 
     def rank_of(row: TournamentTaskTraining) -> int:
         return task_ranks[str(row.task.task_id)]
 
     pending_training_tasks[:] = sorted(pending_training_tasks, key=lambda row: -rank_of(row))
-    miner_row_starved = False
-    boss_entries_deferred = []
 
     while pending_training_tasks:
         oldest_task_training = pending_training_tasks[-1]
-        if miner_row_starved and is_boss_entry_row(rank_of(oldest_task_training), oldest_task_training.hotkey):
-            # A boss entry (the boss round's input, a compression: they have a day of slack) yields in a cycle where an
-            # input seed or a miner row is short of GPUs. Entries do not skip each other, and the challenger's
-            # boss-round rows (which share the compressions' rank but are not boss entries) are never skipped.
-            boss_entries_deferred.append(pending_training_tasks.pop())
-            continue
         tournament_id = await get_tournament_id_by_task_id(oldest_task_training.task.task_id, config.psql_db)
         with LogContext(
             task_id=oldest_task_training.task.task_id, hotkey=oldest_task_training.hotkey, tournament_id=tournament_id
@@ -830,8 +827,6 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     f"No suitable GPUs found for requirement {required_gpus.value}, skipping this task and continuing with next"
                 )
 
-                if rank_of(oldest_task_training) < FIRST_BOSS_ENTRY_TRAINING_RANK:
-                    miner_row_starved = True
                 tasks_without_gpus.append(pending_training_tasks.pop())
                 await asyncio.sleep(1)  # TODO: put in constant or even remove
                 continue
@@ -945,12 +940,6 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
         logger.warning(
             f"Deferred {len(failing_quant_rows)} quant training row(s) that raised while being scheduled; they are fetched "
             f"again in the next cycle."
-        )
-
-    if boss_entries_deferred:
-        logger.info(
-            f"A miner-round row is waiting for GPUs; {len(boss_entries_deferred)} boss entry row(s) (boss input / compressions) "
-            f"yield this cycle and are retried in the next"
         )
 
     if tasks_without_gpus:
@@ -2998,11 +2987,12 @@ async def _prepare_challenger_start(task: AnyTypeRawTask, hotkey: str, config: C
 
 
 async def _add_challenger_rows(seed_role: SeedRole, task: AnyTypeRawTask, config: Config) -> None:
-    """Training rows for every assigned non-boss player of an attached boss-round seed that has none yet.
+    """Training rows for every assigned non-boss player of an attached seed that has none yet.
 
-    The boss (EMISSION_BURN_HOTKEY) never gets a row here: its upfront run was scheduled when the first round was created. A task
-    still before TRAINING gets its rows when it moves there (_process_tasks_for_training), so this only adds rows to
-    a task already past that; for an own-upstream task it also settles each player's starting model first.
+    The boss (EMISSION_BURN_HOTKEY) never gets a row here: it has one from the task's move to TRAINING (a text seed's
+    upfront run; a compression seed moves there only once its round attached it). A task still before TRAINING gets its
+    rows when it moves there (_process_tasks_for_training), so this only adds rows to a task already past that (a player
+    assigned after the move); for an own-upstream task it also settles each player's starting model first.
     """
     challengers = [
         node.hotkey
@@ -3044,9 +3034,9 @@ async def _add_challenger_rows(seed_role: SeedRole, task: AnyTypeRawTask, config
 
 
 async def _boss_round_seed_cycle(config: Config) -> None:
-    """One pass over the attached seeds (boss-round compressions and text seeds) of every active quant and text tournament.
+    """One pass over the attached seeds (compression seeds and text seeds) of every active quant and text tournament.
 
-    Adds the miners' training rows (never the boss's) and, while a seed's boss row is not terminal, logs
+    Adds the miners' training rows (never the boss's) and, while a text seed's upfront boss row is not terminal, logs
     `boss entry <role> <task_id> still training` at WARNING; the round never waits on it.
     """
     for tournament in await tournament_sql.get_tournaments_with_status(TournamentStatus.ACTIVE, config.psql_db):
@@ -3060,13 +3050,11 @@ async def _boss_round_seed_cycle(config: Config) -> None:
                     task = await task_sql.get_task(seed.task_id, config.psql_db)
                     if task is None or task.status in (TaskStatus.FAILURE, TaskStatus.PREP_TASK_FAILURE, TaskStatus.SUCCESS):
                         continue
-                    boss_status = await _training_status_of(seed.task_id, EMISSION_BURN_HOTKEY, config)
-                    if boss_status not in (TrainingStatus.SUCCESS.value, TrainingStatus.FAILURE.value):
-                        logger.warning(f"boss entry {role.label} {seed.task_id} still training")
+                    if role in TEXT_SEED_ROLES:
+                        boss_status = await _training_status_of(seed.task_id, EMISSION_BURN_HOTKEY, config)
+                        if boss_status not in (TrainingStatus.SUCCESS.value, TrainingStatus.FAILURE.value):
+                            logger.warning(f"boss entry {role.label} {seed.task_id} still training")
                     await _add_challenger_rows(role, task, config)
-                    if boss_status == TrainingStatus.SUCCESS.value and role in ANY_QUANT_SEED_ROLES:
-                        # Trained at seed time but its seed-time evaluation is not settled: alert; it is evaluated now.
-                        await boss_seed_eval.alert_if_boss_evaluation_missing(task, config)
                 except Exception as e:
                     logger.error(f"Error processing boss-round seed {role.value} task {seed.task_id}: {e}", exc_info=True)
 
