@@ -26,6 +26,7 @@ from validator.tasks.synthetics import scheduler
 from validator.tournament import constants as t_cst
 from validator.tournament import seed_tasks
 from validator.tournament import task_creator
+from validator.tournament.compression_assignment import legacy_compression_assignment
 from validator.tournament.models import QUANT_SLOT_SPECS
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentSeedTask
@@ -67,7 +68,7 @@ def seams(monkeypatch):
     monkeypatch.setattr(task_creator, "_get_text_models", lambda *a, **k: _models())
     monkeypatch.setattr(task_creator, "_get_instruct_text_datasets", lambda *a, **k: MagicMock())
     monkeypatch.setattr(task_creator, "_get_dpo_datasets", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(task_creator, "filter_quant_compatible", lambda models: models)
+    monkeypatch.setattr(task_creator, "filter_quant_compatible", lambda pool, track: pool)
     chunk = {"train_s3_url": "https://minio/train?sig=1", "test_s3_url": "https://minio/test?sig=2"}
     monkeypatch.setattr(scheduler, "call_content_service", AsyncMock(return_value=chunk))
     monkeypatch.setattr(task_creator, "_get_existing_tasks_by_identifier", AsyncMock(return_value=[]))
@@ -101,7 +102,7 @@ def _fixed_task(**overrides) -> QuantFixedRawTask:
 @pytest.mark.parametrize("round_number", [1, 2, 3])
 async def test_miner_round_task_never_augments(seams, monkeypatch, round_number):
     """R1-R3 chain on a text seed task (which may carry the augmentation): the round's quant seed task itself rolls none."""
-    role = t_cst.QUANT_ROUND_PLAN[round_number - 1].input_role
+    role = legacy_compression_assignment("text_tourn").text_role(t_cst.QUANT_ROUND_PLAN[round_number - 1].slot)
     seed = TournamentSeedTask(tournament_id="text_tourn", role=role, attempt=1, task_id=uuid4(), status=SeedStatus.TRAINING)
     FakeQuantSourceStore().install(monkeypatch).bind("tourn", "text_tourn")
     monkeypatch.setattr(task_creator.tournament_sql, "get_tournament_task_by_task_id", AsyncMock(return_value=None))

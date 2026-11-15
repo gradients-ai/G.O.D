@@ -24,6 +24,7 @@ Postgres access for the validator: the connection pool, the schema migrations, t
 | `tournament_task_hotkey_trainings` | One row per (task, miner) training run. |
 | `tournament_seed_tasks` | The tasks a boss trains ahead of the round that uses them. |
 | `quant_tournament_sources`, `quant_task_sources` | Which text tournament and text task each compression tournament and task takes its model from. |
+| `compression_source_assignments` | Per text tournament, which text round's model each compression round and boss-round compression takes. |
 | `quant_sku_references` | The uncompressed reference loss per task, hotkey and evaluation GPU type. |
 | `continuous_sft_state`, `continuous_sft_task_chunks` | The position of each continuous-SFT lineage and the position each task was created with. |
 | `tournament_boss_rank_comparisons` | The rank comparison between the boss and each paid contender, written when a text or compression tournament completes with the boss keeping the crown. |

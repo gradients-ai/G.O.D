@@ -43,8 +43,10 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | `test_prep_failed_seed_slots.py` | A slot nobody produced a result on never credits the challenger. |
 | `test_seed_adapter_merge.py` | A boss adapter output is merged, and the seed is never replaced for it. |
 | `test_quant_text_linkage.py` | Compression tasks are created from the text boss's tasks with a persisted link. |
+| `test_compression_assignment.py` | The text-to-compression source assignment: the rule, the recorded draw, the per-track model rule and the slots that follow it. |
 | `test_quant_source_failed_role.py` | A failed text seed role never stalls a compression tournament. The slot takes the fallback. |
 | `quant_source_fakes.py` | In-memory stand-in for the source tables, with their constraints. |
+| `conftest.py` | Runs every test under the one-to-one source assignment unless it is marked `real_compression_assignment`. |
 
 **Rounds and standings**
 

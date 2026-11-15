@@ -36,11 +36,13 @@ Each round is one task. Every miner in the round, and the boss, compresses the s
 
 | Round | Track | Input model | Advance |
 | --- | --- | --- | --- |
-| R1 | freeform | text boss's round-1 model | top 8 |
-| R2 | fixed, `W2A16-asym-g64` | text boss's round-2 model | top 4, then the viability cut |
-| R3 | freeform | text boss's round-3 model | top 1 |
+| R1 | freeform | the smaller of the two text boss models R2 does not use | top 8 |
+| R2 | fixed, `W2A16-asym-g64` | one of the text boss's three round models, drawn at random | top 4, then the viability cut |
+| R3 | freeform | the larger of the two text boss models R2 does not use | top 1 |
 
-Source: [`QUANT_ROUND_PLAN`](../validator/tournament/constants.py), [`round_results.py`](../validator/tournament/round_results.py).
+Source: [`QUANT_ROUND_PLAN`](../validator/tournament/constants.py), [`compression_assignment.py`](../validator/tournament/compression_assignment.py), [`round_results.py`](../validator/tournament/round_results.py).
+
+- The tracks are the same every week. Which text round's model feeds R2 is drawn at random once per text tournament, seeded by its id and recorded, so input model sizes vary from week to week. For example, if R2 gets the text round-1 model, R1 compresses the round-2 model and R3 the round-3 model.
 
 The format name reads `W<weight bits>A<activation bits>-<sym|asym>-g<group size>`. `A16` means bf16 activations.
 
@@ -66,14 +68,15 @@ The challenger and the boss meet on four tasks. Both compress the same input mod
 
 | Task | Track | Input model | Format |
 | --- | --- | --- | --- |
-| 1 | freeform | text boss's round-2 model | yours |
-| 2 | fixed | text boss's round-3 model | `W3A16-asym-g128` or `W2A16-asym-g64` |
+| 1 | freeform | the model R2 compressed | yours |
+| 2 | fixed | the model R3 compressed | `W3A16-asym-g128` or `W2A16-asym-g64` |
 | 3 | freeform | text boss's continuous model | yours |
 | 4 | fixed | text boss's continuous model | `W3A16-asym-g128` or `W2A16-asym-g64` |
 
 Source: [`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py), [`seed_tasks.py`](../validator/tournament/seed_tasks.py).
 
 - The boss trains its four entries in the boss round, alongside the challenger.
+- Tasks 1 and 2 put each model on the track its round did not use.
 - Each fixed task draws one of the two formats. Both players get the same format on a task. The two fixed tasks may differ.
 
 ## What your code receives

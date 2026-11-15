@@ -1029,10 +1029,10 @@ class TestRoleHousekeeping:
             "Text continuous",
         ]
         assert [SeedRole(v).label for v in ("boss_r2_freeform", "boss_r2_fixed", "boss_r3_freeform", "boss_r3_fixed")] == [
-            "R2 model freeform",
+            "Boss freeform",
             "R2 model fixed",
             "R3 model freeform",
-            "R3 model fixed",
+            "Boss fixed",
         ]
         assert [SeedRole(v).label for v in ("boss_continuous_freeform", "boss_continuous_fixed")] == [
             "Continuous model freeform",

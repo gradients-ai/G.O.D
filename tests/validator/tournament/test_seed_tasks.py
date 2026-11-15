@@ -220,7 +220,7 @@ def env(monkeypatch):
     monkeypatch.setattr(seed_tasks, "SEED_CREATION_ORDER", RETIRED_SEED_CREATION_ORDER)
     monkeypatch.setattr(seed_tasks, "_get_text_models", text_models)
     monkeypatch.setattr(seed_tasks, "_get_instruct_text_datasets", MagicMock(return_value="datasets"))
-    monkeypatch.setattr(seed_tasks, "filter_quant_compatible", lambda pool: pool)
+    monkeypatch.setattr(seed_tasks, "filter_quant_compatible", lambda pool, track: pool)
     monkeypatch.setattr(seed_tasks, "create_synthetic_instruct_text_task", make_instruct)
     monkeypatch.setattr(seed_tasks, "create_chained_quant_task", make_chained)
     monkeypatch.setattr(seed_tasks, "repoint_chained_quant_task", ns.repoint)

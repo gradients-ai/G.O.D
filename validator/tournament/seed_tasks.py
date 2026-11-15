@@ -3,8 +3,9 @@
 See validator/tournament/README.md. A text tournament has four seeds (TEXT_SEED_CREATION_ORDER): the instruct task of rounds
 1-3 and the continuous-SFT task of the boss round. The text boss trains them upfront: their models are what the compression
 tournament compresses. A quant tournament has seven (SEED_CREATION_ORDER): the quant task of each of rounds 1-3 (R1
-freeform, R2 fixed, R3 freeform on the text boss's round-1, round-2 and round-3 models) and the four boss-round
-compressions (the R2 model freeform, the R3 model fixed, the continuous model freeform and fixed). A quant seed is a new
+freeform, R2 fixed, R3 freeform, on the text round models the text tournament's CompressionSourceAssignment gives them) and
+the four boss-round compressions (the fixed round's model freeform, round 3's model fixed, the continuous model freeform
+and fixed). A quant seed is a new
 chained quant task on a seed of the BOUND text tournament (see quant_sources.py), held until the text boss's model has
 landed, then prepped. It is not trained until its round attaches it (the orchestrator holds it while
 seeds_sql.is_unattached_quant_seed), so the quant boss trains each entry with the round's miners, in round order. Each seed is an
@@ -62,6 +63,7 @@ from validator.tasks.synthetics.scheduler import repoint_chained_quant_task
 from validator.tournament import chaining
 from validator.tournament import constants as t_cst
 from validator.tournament import quant_sources
+from validator.tournament.compression_assignment import compression_assignment
 from validator.tournament.models import ANY_BOSS_COMPRESSION_SEED_ROLES
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import ANY_QUANT_SEED_ROLES
@@ -275,12 +277,17 @@ async def _draw_instruct(role: SeedRole, tournament_id: str, config: Config, rej
         # The boss round's input (an ordinary synthetic instruct task, KL off) from the quant pool, not augmented: the
         # boss's output on it is compressed by the two chained compression seeds, which inherit its split at release. It
         # carves a calibration set like the input seeds, so those compression tasks publish one to both players.
-        models = filter_quant_compatible(_get_text_models(keypair, *QUANT_MODEL_SIZE_B))
+        models = filter_quant_compatible(_get_text_models(keypair, *QUANT_MODEL_SIZE_B), TaskType.QUANTFIXEDTASK)
         return await create_synthetic_instruct_text_task(
             config, models, datasets, enable_kl=False, allow_augmentation=False, carve_calibration=True
         )
-    # Input seeds: quant-compatible band, augmentation rolled, calibration carved.
-    models = filter_quant_compatible(_get_text_models(keypair, *_draw_band(role)))
+    # Input and text round seeds: quant-compatible band, augmentation rolled, calibration carved. A text round seed takes the
+    # rule of the compression track its model feeds (the text tournament's recorded assignment); the input seeds fed fixed
+    # rounds, so they take the fixed rule.
+    track = TaskType.QUANTFIXEDTASK
+    if role in TEXT_ROUND_SEED_ROLES:
+        track = (await compression_assignment(tournament_id, config.psql_db)).track(role)
+    models = filter_quant_compatible(_get_text_models(keypair, *_draw_band(role)), track)
     return await create_synthetic_instruct_text_task(
         config, models, datasets, enable_kl=False, allow_augmentation=True, carve_calibration=True
     )
@@ -412,9 +419,10 @@ async def _acquire_compression_task(
             return held
     text_seed = await quant_sources.slot_text_seed(binding, slot, config)
     if text_seed is None:
+        text_role = await quant_sources.slot_text_role(binding, slot, config)
         logger.warning(
             f"Tournament {tournament_id}: text tournament {binding.source_tournament_id} has no live "
-            f"{QUANT_SLOT_SPECS[slot].text_role.value} seed; deferring {role.value}"
+            f"{text_role.value} seed; deferring {role.value}"
         )
         return None
     task = await draw_compression_task(role, tournament_id, text_seed, config)

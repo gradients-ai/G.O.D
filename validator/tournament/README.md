@@ -12,6 +12,7 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 | `boss_rank_shares.py` | Per-contender rule: each paid contender's average rank against the boss's. |
 | `brackets.py` | Bracket creation and advancement helpers. |
 | `chaining.py` | Read-only helpers for chained compression tasks (`upstream_task_id`). |
+| `compression_assignment.py` | Which text round model each compression round and boss-round task compresses. |
 | `challenger_code_review.py` | Automated code review of every miner entering round 2. |
 | `constants.py` | Schedule, round plans, fees, crown and paired-test constants, retry limits. |
 | `cost_calculator.py` | Weekly training, prep and evaluation cost roll-up. |
@@ -79,10 +80,10 @@ The image tournament has no seed tasks: the boss trains each round's task in the
 
 1. **Binding.** The compression tournament binds to one text tournament ([Sources](#sources)). Until one qualifies it waits.
 2. **Seeds.** When the first round is created, the seven compression seeds are created. Each is held until the text boss's model for it has landed, then prepped. None is trained before its round ([Seeds](#seeds)).
-3. **Round 1.** A freeform task on the text boss's round-1 model. All enrolled miners and the boss train it.
+3. **Round 1.** A freeform task on the text boss's model assigned to it ([Source assignment](#source-assignment)). All enrolled miners and the boss train it.
 4. **Entry gates.** As in the text flow, before round 2 is built.
-5. **Round 2.** A fixed task on the round-2 model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
-6. **Round 3.** A freeform task on the round-3 model.
+5. **Round 2.** A fixed task on its assigned model. After the cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
+6. **Round 3.** A freeform task on its assigned model.
 7. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
 8. **Boss round.** The four boss-round seeds are attached, and the boss and the challenger train them ([Seeds](#seeds)). The tasks are in the [compression guide](../../docs/miner_compression.md#the-boss-round).
 9. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
@@ -219,11 +220,11 @@ A seed is a task the boss trains with its pinned repo and commit, created when t
 | --- | --- | --- | --- |
 | `text_r1`, `text_r2`, `text_r3` | text | instruct | rounds 1, 2 and 3 |
 | `text_continuous` | text | continuous task | boss round |
-| `quant_r1` | compression | compression of the `text_r1` model | round 1 |
-| `quant_r2` | compression | compression of the `text_r2` model | round 2 |
-| `quant_r3` | compression | compression of the `text_r3` model | round 3 |
-| `boss_r2_freeform` | compression | compression of the `text_r2` model | boss round |
-| `boss_r3_fixed` | compression | compression of the `text_r3` model | boss round |
+| `quant_r1` | compression | freeform compression of the smaller model not assigned to round 2 | round 1 |
+| `quant_r2` | compression | fixed compression of the model assigned to round 2 | round 2 |
+| `quant_r3` | compression | freeform compression of the larger model not assigned to round 2 | round 3 |
+| `boss_r2_freeform` | compression | freeform compression of the `quant_r2` model | boss round |
+| `boss_r3_fixed` | compression | fixed compression of the `quant_r3` model | boss round |
 | `boss_continuous_freeform`, `boss_continuous_fixed` | compression | compression of the `text_continuous` model | boss round |
 
 **Lifecycle.** `training` (the boss's run is not finished, or a compression seed waits for its round), `trained` (the boss's run is over and the seed is held for its round's other players), `ready` (the task has completed). A superseded attempt is `replaced`. A role out of replacements is `failed`.
@@ -288,6 +289,25 @@ The 20th prep-stage rejection marks the role `failed`.
 - A task on a failed seed whose text task was never prepped is released on a freshly drawn instruct dataset.
 
 </details>
+
+### Source assignment
+
+`compression_assignment.py` records, per text tournament, which text round's model each compression slot compresses (table `compression_source_assignments`). The compression tracks never change: round 1 freeform, round 2 fixed, round 3 freeform.
+
+| Slot | Text model |
+| --- | --- |
+| Round 2 (fixed) | one of `text_r1`, `text_r2`, `text_r3`, drawn at random |
+| Round 1 (freeform) | the smaller-band of the other two |
+| Round 3 (freeform) | the larger-band of the other two |
+| Boss-round freeform | the round 2 model |
+| Boss-round fixed | the round 3 model |
+| Boss-round continuous | `text_continuous` |
+
+- The draw is made when the text tournament draws its first seed, seeded by the tournament id (`COMPRESSION_SOURCE_ASSIGNMENT_SEED_SALT`), and stored. Every later read, restart or bound compression tournament uses the stored row.
+- A text tournament that already had seed rows when the table was added records `text_r2` as the round-2 model: rounds map one to one.
+- No model is compressed twice on the same track: each boss-round task takes a model the field compressed on the other track.
+- The text round seeds that feed a fixed slot (the round-2 and round-3 models) draw with the fixed rule: dense, supported architecture, no remote code, and `hidden_size`, `intermediate_size` and `num_key_value_heads x head_dim` divisible by 128. The compression round-1 model draws with the freeform rule, which drops the shape check (`quant_shapes.py`). A replacement or a failed role's own task draws with the same rule.
+- A text seed replacement moves the compression tasks on it to the replacement, in whatever slot they hold.
 
 ## Orchestration
 

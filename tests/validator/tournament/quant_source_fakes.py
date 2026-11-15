@@ -6,6 +6,7 @@ from uuid import UUID
 from validator.db.sql import quant_sources as quant_sources_sql
 from validator.db.sql import tasks as task_sql
 from validator.db.sql.quant_sources import QuantTaskSourceInsert
+from validator.tournament.models import CompressionSourceAssignment
 from validator.tournament.models import QuantSourceSlot
 from validator.tournament.models import QuantTaskSource
 from validator.tournament.models import QuantTournamentSource
@@ -16,6 +17,7 @@ class FakeQuantSourceStore:
         self.bindings: dict[str, QuantTournamentSource] = {}
         self.sources: list[QuantTaskSource] = []
         self.deleted: list[UUID] = []
+        self.assignments: dict[str, CompressionSourceAssignment] = {}
 
     def install(self, monkeypatch) -> "FakeQuantSourceStore":
         for name in (
@@ -29,6 +31,8 @@ class FakeQuantSourceStore:
             "set_quant_task_source_model",
             "mark_quant_task_source_superseded",
             "repoint_quant_task_source",
+            "get_compression_source_assignment",
+            "insert_compression_source_assignment",
         ):
             monkeypatch.setattr(quant_sources_sql, name, getattr(self, name))
         monkeypatch.setattr(task_sql, "delete_task", self.delete_task)
@@ -98,3 +102,9 @@ class FakeQuantSourceStore:
         row = await self.get_quant_task_source(quant_task_id, _db)
         if row is not None and row.source_model_repo is None:
             row.source_task_id = UUID(str(new_source_task_id))
+
+    async def get_compression_source_assignment(self, text_tournament_id, _db):
+        return self.assignments.get(text_tournament_id)
+
+    async def insert_compression_source_assignment(self, assignment, _db):
+        return self.assignments.setdefault(assignment.text_tournament_id, assignment)

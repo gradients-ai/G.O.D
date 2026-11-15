@@ -16,7 +16,7 @@ Query functions for the validator database, one module per domain. Table and col
 | `nodes.py` | Node and metagraph persistence. |
 | `quant_calibration_references.py` | Reference loss on the published calibration rows, per task and hotkey. |
 | `quant_references.py` | Reference loss per task, hotkey and evaluation GPU type (`quant_sku_references`). |
-| `quant_sources.py` | Links from a compression tournament and its tasks to their text tournament, task and model. |
+| `quant_sources.py` | Links from a compression tournament and its tasks to their text tournament, task and model, and each text tournament's compression source assignment. |
 | `submissions_and_scoring.py` | Submissions, task node scores and losses, compression decode results. |
 | `task_failure_reviews.py` | Reviews of tasks where most trainings failed (`tournament_task_failure_reviews`). |
 | `tasks.py` | Task create, read, update, stats and status transitions. |

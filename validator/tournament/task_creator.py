@@ -6,7 +6,6 @@ from uuid import UUID
 from fiber.chain.models import Node
 
 from core.constants.credentials import RAYONLABS_HF_USERNAME
-from core.constants.quant import QUANT_MODEL_SIZE_B
 from core.logging import get_logger
 from core.models.image_models import ImageModelType
 from core.models.image_models import ImageTrainingMode
@@ -50,6 +49,7 @@ from validator.tasks.synthetics.scheduler import repoint_chained_quant_task
 from validator.tournament import constants as t_cst
 from validator.tournament import quant_sources
 from validator.tournament.chaining import is_chained
+from validator.tournament.compression_assignment import compression_assignment
 from validator.tournament.crown import is_text_big_task
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
@@ -140,14 +140,18 @@ def text_round_spec(round_number: int) -> TextRoundSpec:
     raise ValueError(f"Text round {round_number} is not a miner round (TEXT_ROUND_PLAN has {len(t_cst.TEXT_ROUND_PLAN)})")
 
 
-async def draw_text_round_task(spec: TextRoundSpec, config: Config, datasets: AsyncGenerator | None = None) -> RawTask:
+async def draw_text_round_task(
+    spec: TextRoundSpec, tournament_id: str, config: Config, datasets: AsyncGenerator | None = None
+) -> RawTask:
     """One ordinary instruct task for a miner round of a seeded text tournament, drawn like that round's seed task: a model in
-    the round's size band from the quant-compatible pool, KL off, augmentation rolled, a calibration set carved.
+    the round's size band that passes the rule of the compression track the round's model feeds (the tournament's
+    CompressionSourceAssignment), KL off, augmentation rolled, a calibration set carved.
 
     Used when the round's seed role failed: the round plays a task of its own, which the boss has no result on.
     datasets: the dataset generator to draw from (default: the instruct pool).
     """
-    models = filter_quant_compatible(_get_text_models(config.keypair, *spec.model_size_b))
+    track = (await compression_assignment(tournament_id, config.psql_db)).track(spec.seed_role)
+    models = filter_quant_compatible(_get_text_models(config.keypair, *spec.model_size_b), track)
     return await create_synthetic_instruct_text_task(
         config,
         models,
@@ -192,7 +196,7 @@ async def _attach_text_round_seed(round_data: GroupRound, tournament_id: str, co
     if seed is None:
         if not await _role_is_failed(tournament_id, spec.seed_role, config.psql_db):
             raise MissingBossRoundSeeds(tournament_id, [spec.seed_role.value])
-        task = await draw_text_round_task(spec, config)
+        task = await draw_text_round_task(spec, tournament_id, config)
         await _create_and_register_tournament_task(task, tournament_id, round_id, config, group_id=group_id)
         logger.warning(f"Round {round_id}: seed {spec.seed_role.value} failed; drew its own task {task.task_id} (no boss result)")
         return [task]
@@ -1310,7 +1314,7 @@ async def replace_tournament_task(
                 if round_data.round_id == round_id
             )
             logger.info(f"Replacing the task of seeded text round {round_number} with a new task drawn like its seed")
-            new_task = await draw_text_round_task(text_round_spec(round_number), config)
+            new_task = await draw_text_round_task(text_round_spec(round_number), tournament_id, config)
         elif _is_round_one_group_text_task(original_task_obj, round_id, group_id, pair_id):
             logger.info(
                 "Detected round-1 group text task replacement; redrawing a small-model task "
@@ -1465,8 +1469,8 @@ def quant_round_spec(round_number: int) -> QuantRoundSpec:
 
 
 async def _create_seed_input_round_task(round_data: GroupRound, tournament_id: str, config: Config) -> list[RawTask]:
-    """R1-R3: the round's one quant task is the round's quant seed (QUANT_ROUND_PLAN: round 1 quant_r1 on the text boss's
-    text_r1 model, round 2 quant_r2 on its text_r2 model, round 3 quant_r3 on its text_r3 model).
+    """R1-R3: the round's one quant task is the round's quant seed (QUANT_ROUND_PLAN: round 1 quant_r1, round 2 quant_r2, round
+    3 quant_r3, each on the text boss's model of the text round the source tournament's CompressionSourceAssignment gives it).
 
     The seed is prepped as soon as its source model lands and waits untrained; the round registers the seed task under its
     group and marks it attached, so the boss and the round's miners train it together and the boss's entry is ranked with
@@ -1519,7 +1523,7 @@ async def _create_round_task_without_boss(round_data: GroupRound, tournament_id:
     group_id = f"{round_id}_group_001"
     binding = await quant_sources.bind_quant_source_tournament(tournament_id, config)
     if binding is None:
-        raise MissingBossRoundSeeds(tournament_id, [spec.input_role.value])
+        raise MissingBossRoundSeeds(tournament_id, [spec.slot.value])
     task = None
     live = await quant_sources_sql.get_live_quant_task_source(tournament_id, spec.slot, config.psql_db)
     replacing_task_id = None
@@ -1532,11 +1536,11 @@ async def _create_round_task_without_boss(round_data: GroupRound, tournament_id:
     if task is None:
         text_seed = await quant_sources.slot_text_seed(binding, spec.slot, config)
         if text_seed is None:
-            raise MissingBossRoundSeeds(tournament_id, [spec.input_role.value])
+            raise MissingBossRoundSeeds(tournament_id, [(await quant_sources.slot_text_role(binding, spec.slot, config)).value])
         upstream = await task_sql.get_task(text_seed.task_id, config.psql_db)
         if upstream is None:
             raise ValueError(
-                f"Text seed task {text_seed.task_id} ({spec.input_role.value}) of tournament {text_seed.tournament_id} not found"
+                f"Text seed task {text_seed.task_id} ({text_seed.role.value}) of tournament {text_seed.tournament_id} not found"
             )
         quant_format = spec.quant_format
         if quant_format is None and spec.task_type == TaskType.QUANTFIXEDTASK:
@@ -1615,11 +1619,6 @@ async def _is_full_model_repo(repo_id: str) -> bool:
     return False
 
 
-def _quant_models(config: Config) -> AsyncGenerator[str, None]:
-    """Shape-compatible dense models in QUANT_MODEL_SIZE_B: the pool every drawn quant task takes its model from."""
-    return filter_quant_compatible(_get_text_models(config.keypair, *QUANT_MODEL_SIZE_B))
-
-
 async def _attach_boss_round_seeds(
     seeds: dict[SeedRole, TournamentSeedTask], tournament_id: str, round_id: str, pair_id: str, config: Config
 ) -> list[RawTask]:
@@ -1687,10 +1686,9 @@ async def _create_boss_round_task_without_boss(
     from validator.tournament.seed_tasks import draw_compression_task
 
     slot = QUANT_SLOT_BY_SEED_ROLE[role]
-    text_role = QUANT_SLOT_SPECS[slot].text_role
     binding = await quant_sources.bind_quant_source_tournament(tournament_id, config)
     if binding is None:
-        raise MissingBossRoundSeeds(tournament_id, [text_role.value])
+        raise MissingBossRoundSeeds(tournament_id, [slot.value])
     task = None
     replacing_task_id = None
     live = await quant_sources_sql.get_live_quant_task_source(tournament_id, slot, config.psql_db)
@@ -1702,7 +1700,7 @@ async def _create_boss_round_task_without_boss(
     if task is None:
         text_seed = await quant_sources.slot_text_seed(binding, slot, config)
         if text_seed is None:
-            raise MissingBossRoundSeeds(tournament_id, [text_role.value])
+            raise MissingBossRoundSeeds(tournament_id, [(await quant_sources.slot_text_role(binding, slot, config)).value])
         created = await draw_compression_task(role, tournament_id, text_seed, config)
         source = await quant_sources.record_new_quant_task(
             quant_sources.new_task_source(UUID(str(created.task_id)), binding, slot, text_seed), config, replacing_task_id

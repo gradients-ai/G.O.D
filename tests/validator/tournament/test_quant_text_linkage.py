@@ -58,6 +58,7 @@ from validator.tournament import orchestrator
 from validator.tournament import quant_sources
 from validator.tournament import seed_tasks
 from validator.tournament import task_creator
+from validator.tournament.compression_assignment import legacy_compression_assignment
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import QUANT_ROUND_SEED_ROLES
@@ -82,6 +83,8 @@ from validator.tournament.models import TrainingStatus
 
 QUANT_TID = seed_fixtures.TID  # the quant tournament
 TEXT_TID = "text_tourn_1"  # the text tournament it is bound to
+# The assignment the tests run under (conftest.py): text R1/R2/R3 -> compression R1/R2/R3.
+LEGACY = legacy_compression_assignment(TEXT_TID)
 CHALLENGER = "5Challenger"
 CHUNK_INDEX = 7
 REAL_SEED_CREATION_ORDER = seed_tasks.SEED_CREATION_ORDER
@@ -417,7 +420,7 @@ class TestSlotTable:
             "boss_continuous_freeform",
             "boss_continuous_fixed",
         ]
-        assert {slot: spec.text_role for slot, spec in QUANT_SLOT_SPECS.items()} == {
+        assert {slot: LEGACY.text_role(slot) for slot in QUANT_SLOT_SPECS} == {
             QuantSourceSlot.R1: SeedRole.TEXT_R1,
             QuantSourceSlot.R2: SeedRole.TEXT_R2,
             QuantSourceSlot.R3: SeedRole.TEXT_R3,
@@ -432,8 +435,8 @@ class TestSlotTable:
     def test_the_round_plan_follows_the_slot_table(self):
         for spec in t_cst.QUANT_ROUND_PLAN:
             slot_spec = QUANT_SLOT_SPECS[spec.slot]
-            assert (spec.task_type, spec.input_role) == (slot_spec.task_type, slot_spec.text_role)
-            assert slot_spec.quant_seed_role in QUANT_ROUND_SEED_ROLES and spec.input_role in TEXT_SEED_ROLES
+            assert spec.task_type == slot_spec.task_type
+            assert slot_spec.quant_seed_role in QUANT_ROUND_SEED_ROLES and LEGACY.text_role(spec.slot) in TEXT_SEED_ROLES
         assert [spec.slot for spec in t_cst.QUANT_ROUND_PLAN] == list(ROUND_SLOTS)
 
     def test_every_slot_has_a_seed_role_and_seven_are_created(self):
@@ -853,7 +856,7 @@ class TestRoundTasks:
     @pytest.mark.parametrize("round_number", [1, 2, 3])
     async def test_a_round_attaches_its_quant_seed_chained_on_the_text_seed_task(self, qw, round_number):
         slot = QuantSourceSlot(f"r{round_number}")
-        text_role = QUANT_SLOT_SPECS[slot].text_role
+        text_role = LEGACY.text_role(slot)
 
         task = await qw.create_round_task(round_number)
 
@@ -933,7 +936,7 @@ class TestRoundTasksOfAFailedRole:
 
         task = await _round_task_without_seed(qw, round_number)
 
-        text_task = qw.text_task(QUANT_SLOT_SPECS[slot].text_role)
+        text_task = qw.text_task(LEGACY.text_role(slot))
         assert task.upstream_task_id == text_task.task_id and task.status == TaskStatus.AWAITING_UPSTREAM
         assert _source(qw, slot).quant_task_id == task.task_id and qw.registered == [task.task_id]
         assert str(task.task_id) not in qw.env.assigned  # no boss assignment
@@ -1211,7 +1214,7 @@ class TestCompressionSeeds:
         assert list(seeds) == list(seed_tasks.SEED_CREATION_ORDER) and len(qw.sources.sources) == 7
         for role, seed in seeds.items():
             slot = QUANT_SLOT_BY_SEED_ROLE[role]
-            text_task = qw.text_task(QUANT_SLOT_SPECS[slot].text_role)
+            text_task = qw.text_task(LEGACY.text_role(slot))
             task = qw.env.tasks[seed.task_id]
             assert task.task_id != text_task.task_id and task.upstream_task_id == text_task.task_id
             assert task.status == TaskStatus.AWAITING_UPSTREAM and task.task_type == QUANT_SLOT_SPECS[slot].task_type
@@ -1221,7 +1224,7 @@ class TestCompressionSeeds:
                 TEXT_TID,
                 text_task.task_id,
             )
-            assert source.source_role == QUANT_SLOT_SPECS[slot].text_role
+            assert source.source_role == LEGACY.text_role(slot)
 
     async def test_the_quant_seeds_belong_to_the_quant_tournament_and_the_text_rows_are_untouched(self, qw):
         before = qw.text_snapshot()
@@ -1242,7 +1245,8 @@ class TestCompressionSeeds:
         for role in (SeedRole.QUANT_R1, SeedRole.QUANT_R2, SeedRole.QUANT_R3):
             upstream, fmt, boss = by_task[seeds[role].task_id]
             spec = next(plan for plan in t_cst.QUANT_ROUND_PLAN if plan.slot == QUANT_SLOT_BY_SEED_ROLE[role])
-            assert boss is False and upstream.task_id == qw.text_task(spec.input_role).task_id  # the miner-round budget
+            text_task = qw.text_task(LEGACY.text_role(spec.slot))
+            assert boss is False and upstream.task_id == text_task.task_id  # the miner-round budget
             assert fmt == spec.quant_format  # R2 is the pinned W2A16-asym-g64, R1 and R3 are freeform
         for role in (SeedRole.BOSS_R2_FREEFORM, SeedRole.BOSS_R3_FIXED):
             upstream, fmt, boss = by_task[seeds[role].task_id]
@@ -1534,7 +1538,7 @@ class TestRelease:
     async def test_every_boss_slot_is_released_on_the_exact_repo_and_the_source_row_names_it(self, qw, role):
         await qw.create_seeds()
         slot = QUANT_SLOT_BY_SEED_ROLE[role]
-        text_role = QUANT_SLOT_SPECS[slot].text_role
+        text_role = LEGACY.text_role(slot)
         task = qw.quant_task(role)
         raw = qw.land(text_role)
 
@@ -1548,7 +1552,7 @@ class TestRelease:
     @pytest.mark.parametrize("round_number", [1, 2, 3])
     async def test_every_miner_round_slot_is_released_on_the_exact_repo_and_the_source_row_names_it(self, qw, round_number):
         slot = QuantSourceSlot(f"r{round_number}")
-        text_role = QUANT_SLOT_SPECS[slot].text_role
+        text_role = LEGACY.text_role(slot)
         task = await self._round_task(qw, round_number)
         raw = qw.land(text_role)
 

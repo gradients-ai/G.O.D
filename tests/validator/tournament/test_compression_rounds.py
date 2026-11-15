@@ -72,20 +72,18 @@ CALIBRATION = "https://minio/seed_calibration.json"
 # --------------------------------------------------------------------------------------------- the round plan
 
 
-def test_the_plan_is_freeform_on_text_r1_then_fixed_on_text_r2_then_freeform_on_text_r3_with_cuts_8_4_1():
+def test_the_plan_is_freeform_then_fixed_then_freeform_with_cuts_8_4_1():
     assert t_cst.QUANT_ROUND_PLAN == (
         QuantRoundSpec(
             round_number=1,
             slot=QuantSourceSlot.R1,
             task_type=TaskType.QUANTFREEFORMTASK,
-            input_role=SeedRole.TEXT_R1,
             advance=8,
         ),
         QuantRoundSpec(
             round_number=2,
             slot=QuantSourceSlot.R2,
             task_type=TaskType.QUANTFIXEDTASK,
-            input_role=SeedRole.TEXT_R2,
             advance=4,
             quant_format=QuantFormat.W2A16_ASYM_G64,
         ),
@@ -93,7 +91,6 @@ def test_the_plan_is_freeform_on_text_r1_then_fixed_on_text_r2_then_freeform_on_
             round_number=3,
             slot=QuantSourceSlot.R3,
             task_type=TaskType.QUANTFREEFORMTASK,
-            input_role=SeedRole.TEXT_R3,
             advance=1,
         ),
     )

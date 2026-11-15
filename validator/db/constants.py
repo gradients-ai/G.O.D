@@ -334,6 +334,10 @@ QUANT_SOURCE_TASK_ID = "source_task_id"
 QUANT_SOURCE_MODEL_REPO = "source_model_repo"
 QUANT_SOURCE_IS_FALLBACK = "source_is_fallback"
 QUANT_SOURCE_SUPERSEDED = "superseded"
+COMPRESSION_SOURCE_ASSIGNMENTS_TABLE = "compression_source_assignments"
+TEXT_TOURNAMENT_ID = "text_tournament_id"
+FIXED_TEXT_ROLE = "fixed_text_role"
+RNG_SEED = "rng_seed"
 
 
 # Boss rank comparisons: a paid contender of a tournament the boss kept, compared with the boss on average round rank

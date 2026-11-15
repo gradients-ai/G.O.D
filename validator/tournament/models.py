@@ -1205,10 +1205,10 @@ class SeedRole(str, Enum):
             SeedRole.TEXT_R2: "Text R2",
             SeedRole.TEXT_R3: "Text R3",
             SeedRole.TEXT_CONTINUOUS: "Text continuous",
-            SeedRole.BOSS_R2_FREEFORM: "R2 model freeform",
+            SeedRole.BOSS_R2_FREEFORM: "Boss freeform",
             SeedRole.BOSS_R2_FIXED: "R2 model fixed",
             SeedRole.BOSS_R3_FREEFORM: "R3 model freeform",
-            SeedRole.BOSS_R3_FIXED: "R3 model fixed",
+            SeedRole.BOSS_R3_FIXED: "Boss fixed",
             SeedRole.QUANT_R1: "Quant R1",
             SeedRole.QUANT_R2: "Quant R2",
             SeedRole.QUANT_R3: "Quant R3",
@@ -1229,8 +1229,10 @@ class QuantSourceSlot(str, Enum):
     """The place a quant task takes in a quant tournament, and so which text seed task's boss model it compresses.
 
     r1, r2 and r3 are the miner rounds (one quant task each, a seed trained by the quant boss and the round's miners);
-    the boss_* slots are the compressions of the quant boss round: the R2 model freeform, the R3 model fixed and the
-    continuous model freeform and fixed. Nothing creates boss_r2_fixed or boss_r3_freeform; rows of them load.
+    the boss_* slots are the compressions of the quant boss round: boss_r2_freeform is the boss round's freeform task and
+    boss_r3_fixed its fixed task (which text round models they compress comes from the text tournament's
+    CompressionSourceAssignment; the names are stable identifiers), and the continuous model freeform and fixed. Nothing
+    creates boss_r2_fixed or boss_r3_freeform; rows of them load.
     """
 
     R1 = "r1"
@@ -1246,25 +1248,28 @@ class QuantSourceSlot(str, Enum):
 
 class QuantSlotSpec(BaseModel):
     """What a slot is made of: the text seed role whose boss model it compresses, its quant task type and the quant seed role
-    that holds its task (the boss trains every slot's task as a seed)."""
+    that holds its task (the boss trains every slot's task as a seed).
 
-    text_role: SeedRole
+    text_role is None for the slots whose text round model is assigned per text tournament
+    (CompressionSourceAssignment.text_role gives it); the continuous slots and the uncreated boss slots name theirs."""
+
+    text_role: SeedRole | None
     task_type: TaskType
     quant_seed_role: SeedRole | None = None
 
 
 QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
     QuantSourceSlot.R1: QuantSlotSpec(
-        text_role=SeedRole.TEXT_R1, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R1
+        text_role=None, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R1
     ),
     QuantSourceSlot.R2: QuantSlotSpec(
-        text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.QUANT_R2
+        text_role=None, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.QUANT_R2
     ),
     QuantSourceSlot.R3: QuantSlotSpec(
-        text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R3
+        text_role=None, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.QUANT_R3
     ),
     QuantSourceSlot.BOSS_R2_FREEFORM: QuantSlotSpec(
-        text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R2_FREEFORM
+        text_role=None, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R2_FREEFORM
     ),
     QuantSourceSlot.BOSS_R2_FIXED: QuantSlotSpec(
         text_role=SeedRole.TEXT_R2, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.BOSS_R2_FIXED
@@ -1273,7 +1278,7 @@ QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
         text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFREEFORMTASK, quant_seed_role=SeedRole.BOSS_R3_FREEFORM
     ),
     QuantSourceSlot.BOSS_R3_FIXED: QuantSlotSpec(
-        text_role=SeedRole.TEXT_R3, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.BOSS_R3_FIXED
+        text_role=None, task_type=TaskType.QUANTFIXEDTASK, quant_seed_role=SeedRole.BOSS_R3_FIXED
     ),
     QuantSourceSlot.BOSS_CONTINUOUS_FREEFORM: QuantSlotSpec(
         text_role=SeedRole.TEXT_CONTINUOUS,
@@ -1290,6 +1295,73 @@ QUANT_SLOT_SPECS: dict[QuantSourceSlot, QuantSlotSpec] = {
 QUANT_SLOT_BY_SEED_ROLE: dict[SeedRole, QuantSourceSlot] = {
     spec.quant_seed_role: slot for slot, spec in QUANT_SLOT_SPECS.items() if spec.quant_seed_role is not None
 }
+
+# The text round roles from the smallest model-size band to the largest (TEXT_ROUND_PLAN: R1 1-2B, R2 1.5-4B, R3 4-8B).
+TEXT_ROUND_ROLES_BY_SIZE = (SeedRole.TEXT_R1, SeedRole.TEXT_R2, SeedRole.TEXT_R3)
+# The slots a quant tournament creates whose text round model comes from the assignment.
+ASSIGNED_QUANT_SLOTS = (
+    QuantSourceSlot.R1,
+    QuantSourceSlot.R2,
+    QuantSourceSlot.R3,
+    QuantSourceSlot.BOSS_R2_FREEFORM,
+    QuantSourceSlot.BOSS_R3_FIXED,
+)
+
+
+class CompressionSourceAssignment(BaseModel):
+    """Which text round boss model each compression slot compresses, recorded once per text tournament (table
+    compression_source_assignments, see validator/tournament/compression_assignment.py).
+
+    The one random choice is fixed_text_role: the text round whose model compression round 2 (the fixed round) compresses.
+    The other two text rounds feed the freeform rounds, the smaller-band model round 1 and the larger round 3. The boss
+    round's freeform task compresses the fixed round's model and its fixed task the round-3 model, so every boss-round task
+    is a model the field already compressed on the other track. rng_seed is the seed the choice was drawn with; None for a
+    text tournament seeded before assignments were drawn, which keeps the earlier text R1/R2/R3 -> compression R1/R2/R3
+    mapping (fixed_text_role text_r2).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    text_tournament_id: str
+    fixed_text_role: SeedRole
+    rng_seed: str | None = None
+    created_at: datetime | None = None
+
+    @field_validator("fixed_text_role")
+    @classmethod
+    def _is_text_round_role(cls, value: SeedRole) -> SeedRole:
+        if value not in TEXT_ROUND_ROLES_BY_SIZE:
+            raise ValueError(f"fixed_text_role must be one of {[role.value for role in TEXT_ROUND_ROLES_BY_SIZE]}")
+        return value
+
+    @property
+    def freeform_text_roles(self) -> tuple[SeedRole, SeedRole]:
+        """The text roles of compression rounds 1 and 3, smaller band first."""
+        first, second = (role for role in TEXT_ROUND_ROLES_BY_SIZE if role != self.fixed_text_role)
+        return first, second
+
+    def text_role(self, slot: QuantSourceSlot) -> SeedRole:
+        """The text seed role whose boss model the slot compresses."""
+        named = QUANT_SLOT_SPECS[slot].text_role
+        if named is not None:
+            return named
+        small, large = self.freeform_text_roles
+        return {
+            QuantSourceSlot.R1: small,
+            QuantSourceSlot.R2: self.fixed_text_role,
+            QuantSourceSlot.R3: large,
+            QuantSourceSlot.BOSS_R2_FREEFORM: self.fixed_text_role,
+            QuantSourceSlot.BOSS_R3_FIXED: large,
+        }[slot]
+
+    def track(self, text_role: SeedRole) -> TaskType:
+        """The model rule a text round's seed is drawn with: QUANTFIXEDTASK when any created slot compresses its model in a
+        fixed format, else QUANTFREEFORMTASK."""
+        fixed = any(
+            self.text_role(slot) == text_role and QUANT_SLOT_SPECS[slot].task_type == TaskType.QUANTFIXEDTASK
+            for slot in ASSIGNED_QUANT_SLOTS
+        )
+        return TaskType.QUANTFIXEDTASK if fixed else TaskType.QUANTFREEFORMTASK
 
 
 class QuantTournamentSource(BaseModel):
@@ -1325,19 +1397,19 @@ class QuantTaskSource(BaseModel):
 
 
 class QuantRoundSpec(BaseModel):
-    """One miner round of a quant tournament: the quant task every entrant plays on the text boss's model of a text seed
-    role, and the cut after it."""
+    """One miner round of a quant tournament: the quant task every entrant plays on the text boss's model of the text round
+    its slot is assigned (CompressionSourceAssignment), and the cut after it."""
 
     round_number: int
     slot: QuantSourceSlot
     task_type: TaskType
-    input_role: SeedRole  # the TEXT seed role of the bound text tournament whose boss model the round compresses
     advance: int
     quant_format: QuantFormat | None = None  # a fixed round's pinned format; None draws one from the round id
 
 
-# The quant boss round's tasks: four compressions of the text boss's models, the R2 model freeform, the R3 model fixed, and
-# the continuous model freeform and fixed.
+# The quant boss round's tasks: four compressions of the text boss's models, the boss freeform task (the fixed round's model),
+# the boss fixed task (compression round 3's model; see CompressionSourceAssignment), and the continuous model freeform and
+# fixed.
 BOSS_ROUND_SEED_ROLES = frozenset(
     {
         SeedRole.BOSS_R2_FREEFORM,

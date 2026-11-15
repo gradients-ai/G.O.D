@@ -1,4 +1,4 @@
-"""Quant model-pool shape filter and the seeded fixed-track format draw."""
+"""Quant model-pool filters per track (freeform, fixed) and the seeded fixed-track format draw."""
 
 import inspect
 import json
@@ -8,9 +8,12 @@ import pytest
 
 import core.constants.credentials as credentials
 from core.models.quant_models import LAUNCH_QUANT_FORMATS
+from core.models.task_models import TaskType
 from validator.tasks import quant_shapes
 from validator.tasks.quant_shapes import filter_has_chat_template
 from validator.tasks.quant_shapes import filter_quant_compatible
+from validator.tasks.quant_shapes import fixed_compatible
+from validator.tasks.quant_shapes import freeform_compatible
 from validator.tasks.quant_shapes import quant_compatible
 from validator.tasks.synthetics.scheduler import draw_quant_format
 
@@ -29,13 +32,14 @@ def _qwen2_1_5b(**overrides) -> dict:
 
 
 def test_dense_qwen2_config_is_compatible():
-    assert quant_compatible(_qwen2_1_5b()) is None
+    assert quant_compatible(_qwen2_1_5b(), TaskType.QUANTFIXEDTASK) is None
+    assert quant_compatible(_qwen2_1_5b(), TaskType.QUANTFREEFORMTASK) is None
 
 
 def test_head_dim_defaults_to_hidden_over_heads():
     config = _qwen2_1_5b()
     del config["head_dim"]
-    assert quant_compatible(config) is None  # 1536 / 12 = 128, 2 kv heads -> 256
+    assert quant_compatible(config, TaskType.QUANTFIXEDTASK) is None  # 1536 / 12 = 128, 2 kv heads -> 256
 
 
 @pytest.mark.parametrize(
@@ -48,15 +52,50 @@ def test_head_dim_defaults_to_hidden_over_heads():
         ({"num_key_value_heads": 3, "head_dim": 64}, "num_key_value_heads * head_dim=192"),
     ],
 )
-def test_incompatible_configs_give_a_reason(overrides, reason_fragment):
-    reason = quant_compatible(_qwen2_1_5b(**overrides))
+def test_fixed_incompatible_configs_give_a_reason(overrides, reason_fragment):
+    reason = quant_compatible(_qwen2_1_5b(**overrides), TaskType.QUANTFIXEDTASK)
     assert reason is not None and reason_fragment in reason
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason_fragment"),
+    [
+        ({"auto_map": {"AutoModel": "modeling_x.X"}}, "remote code"),
+        ({"num_local_experts": 8}, "mixture-of-experts"),
+        ({"model_type": "mamba"}, "model_type"),
+    ],
+)
+def test_freeform_rejects_remote_code_moe_and_unsupported_types(overrides, reason_fragment):
+    reason = freeform_compatible(_qwen2_1_5b(**overrides))
+    assert reason is not None and reason_fragment in reason
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"intermediate_size": 8964}, {"num_key_value_heads": 3, "head_dim": 64}, {"hidden_size": 1000}],
+)
+def test_non_divisible_shapes_are_freeform_compatible_but_not_fixed(overrides):
+    """The freeform path assumes no shapes, so only the fixed rule checks divisibility by the launch group size."""
+    config = _qwen2_1_5b(**overrides)
+    assert freeform_compatible(config) is None
+    assert quant_compatible(config, TaskType.QUANTFREEFORMTASK) is None
+    assert fixed_compatible(config) is not None
+
+
+def test_freeform_needs_no_shape_keys():
+    assert freeform_compatible({"model_type": "llama"}) is None
+    assert "missing" in fixed_compatible({"model_type": "llama"})
+
+
+def test_quant_compatible_rejects_a_non_quant_track():
+    with pytest.raises(ValueError):
+        quant_compatible(_qwen2_1_5b(), TaskType.INSTRUCTTEXTTASK)
 
 
 def test_missing_shape_key_gives_a_reason():
     config = _qwen2_1_5b()
     del config["num_key_value_heads"]
-    assert "missing" in quant_compatible(config)
+    assert "missing" in quant_compatible(config, TaskType.QUANTFIXEDTASK)
 
 
 async def test_filter_yields_only_compatible_models_and_skips_download_errors(monkeypatch, tmp_path):
@@ -64,6 +103,7 @@ async def test_filter_yields_only_compatible_models_and_skips_download_errors(mo
         "org/dense": _qwen2_1_5b(),
         "org/moe": _qwen2_1_5b(num_experts=64),
         "org/also-dense": _qwen2_1_5b(model_type="llama"),
+        "org/odd-shape": _qwen2_1_5b(intermediate_size=8964),
     }
 
     def fake_download(model_id, filename, token=None):
@@ -76,10 +116,22 @@ async def test_filter_yields_only_compatible_models_and_skips_download_errors(mo
     monkeypatch.setattr(quant_shapes, "hf_hub_download", fake_download)
 
     async def models():
-        for model_id in ("org/dense", "org/moe", "org/gone", "org/also-dense"):
+        for model_id in ("org/dense", "org/moe", "org/gone", "org/odd-shape", "org/also-dense"):
             yield model_id
 
-    assert [model_id async for model_id in filter_quant_compatible(models())] == ["org/dense", "org/also-dense"]
+    fixed = [model_id async for model_id in filter_quant_compatible(models(), TaskType.QUANTFIXEDTASK)]
+    assert fixed == ["org/dense", "org/also-dense"]
+    freeform = [model_id async for model_id in filter_quant_compatible(models(), TaskType.QUANTFREEFORMTASK)]
+    assert freeform == ["org/dense", "org/odd-shape", "org/also-dense"]
+
+
+async def test_filter_requires_a_quant_track():
+    async def models():
+        yield "org/dense"
+
+    with pytest.raises(ValueError):
+        [model_id async for model_id in filter_quant_compatible(models(), TaskType.INSTRUCTTEXTTASK)]
+    assert inspect.signature(filter_quant_compatible).parameters["track"].default is inspect.Parameter.empty
 
 
 def test_filter_defaults_to_the_validator_hf_token():
@@ -100,7 +152,8 @@ async def test_filter_accepts_an_explicit_none_token(monkeypatch, tmp_path):
 
     monkeypatch.setattr(quant_shapes, "hf_hub_download", fake_download)
 
-    assert [model_id async for model_id in filter_quant_compatible(one_model(), token=None)] == ["org/gated"]
+    kept = [model_id async for model_id in filter_quant_compatible(one_model(), TaskType.QUANTFIXEDTASK, token=None)]
+    assert kept == ["org/gated"]
     assert tokens == [None]
 
 

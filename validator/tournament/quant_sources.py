@@ -5,6 +5,7 @@ rows, own GPU reservations, own status) that compresses the model the text boss 
 tasks. The two tournaments never share a task row, a result or a status. The link is stored, not derived from names:
   * quant_tournament_sources: which text tournament feeds which quant tournament (bind_quant_source_tournament);
   * quant_task_sources: per quant task, its slot, the text seed task it compresses and, once released, the exact model repo.
+Which text seed role a slot compresses is the text tournament's compression_source_assignments row (compression_assignment.py).
 
 This module binds, resolves the text seed of a slot and records a new quant task's source so that a slot never ends up with
 two live tasks and a quant task never exists without its link.
@@ -22,7 +23,7 @@ from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournament_seeds as seeds_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.tournament import constants as t_cst
-from validator.tournament.models import QUANT_SLOT_SPECS
+from validator.tournament.compression_assignment import compression_assignment
 from validator.tournament.models import TEXT_SEED_ROLES
 from validator.tournament.models import QuantSourceSlot
 from validator.tournament.models import QuantTaskSource
@@ -137,10 +138,15 @@ async def final_text_seed(source_tournament_id: str, text_role: SeedRole, config
     return None
 
 
+async def slot_text_role(binding: QuantTournamentSource, slot: QuantSourceSlot, config: Config) -> SeedRole:
+    """The text seed role a slot compresses: the bound text tournament's recorded CompressionSourceAssignment."""
+    return (await compression_assignment(binding.source_tournament_id, config.psql_db)).text_role(slot)
+
+
 async def slot_text_seed(binding: QuantTournamentSource, slot: QuantSourceSlot, config: Config) -> TournamentSeedTask | None:
-    """The text seed row a slot of the bound text tournament compresses (see final_text_seed): a role that is out of replacements
-    still gives its failed row, so the quant task is created on it and takes the fallback model."""
-    return await final_text_seed(binding.source_tournament_id, QUANT_SLOT_SPECS[slot].text_role, config)
+    """The text seed row a slot of the bound text tournament compresses (slot_text_role, then final_text_seed): a role that is
+    out of replacements still gives its failed row, so the quant task is created on it and takes the fallback model."""
+    return await final_text_seed(binding.source_tournament_id, await slot_text_role(binding, slot, config), config)
 
 
 def new_task_source(

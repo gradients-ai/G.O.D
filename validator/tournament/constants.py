@@ -372,9 +372,10 @@ MULTI_GPU_REQUIRES_HIGH_INTERCONNECT = True
 # Quant tournament
 # =====================================================================================================
 
-# Quant tournament rounds. Each of rounds 1-3 is one quant task (one group) on the text boss's model of the matching text
-# round: round 1 compresses the model the text boss trained on the bound text tournament's text_r1 seed task, round 2 its
-# text_r2 model and round 3 its text_r3 model. Every miner compresses that one model, and so does the quant boss: the task is
+# Quant tournament rounds. Each of rounds 1-3 is one quant task (one group) on the text boss's model of one text round of the
+# bound text tournament: round 2 (fixed) compresses the text round drawn at random when the text tournament was seeded, round
+# 1 (freeform) the smaller of the other two and round 3 (freeform) the larger (CompressionSourceAssignment). Every miner
+# compresses that one model, and so does the quant boss: the task is
 # the round's quant seed, which the boss trains as soon as the source model lands. Advancement is the average rank over every
 # round played, ranks within the surviving challenger cohort (the boss never takes a slot); round 3 is always played, even
 # by a lone survivor of round 2, and its winner plays the boss round.
@@ -383,14 +384,12 @@ QUANT_ROUND_PLAN = (
         round_number=1,
         slot=QuantSourceSlot.R1,
         task_type=QUANT_SLOT_SPECS[QuantSourceSlot.R1].task_type,
-        input_role=QUANT_SLOT_SPECS[QuantSourceSlot.R1].text_role,
         advance=8,
     ),
     QuantRoundSpec(
         round_number=2,
         slot=QuantSourceSlot.R2,
         task_type=QUANT_SLOT_SPECS[QuantSourceSlot.R2].task_type,
-        input_role=QUANT_SLOT_SPECS[QuantSourceSlot.R2].text_role,
         advance=4,
         quant_format=QuantFormat.W2A16_ASYM_G64,
     ),
@@ -398,10 +397,12 @@ QUANT_ROUND_PLAN = (
         round_number=3,
         slot=QuantSourceSlot.R3,
         task_type=QUANT_SLOT_SPECS[QuantSourceSlot.R3].task_type,
-        input_role=QUANT_SLOT_SPECS[QuantSourceSlot.R3].text_role,
         advance=1,
     ),
 )
+# Salts the per-text-tournament draw of which text round's model compression round 2 (the fixed round) compresses
+# (compression_assignment.draw_compression_assignment). The draw is recorded; bumping the version changes only new draws.
+COMPRESSION_SOURCE_ASSIGNMENT_SEED_SALT = "compression-source-assignment-v1"
 QUANT_ROUND_ONE_ADVANCE = QUANT_ROUND_PLAN[0].advance
 QUANT_ROUND_TWO_ADVANCE = QUANT_ROUND_PLAN[1].advance
 QUANT_ROUND_THREE_ADVANCE = QUANT_ROUND_PLAN[2].advance
@@ -411,10 +412,11 @@ QUANT_INPUT_LISTING_RETRY_DELAY_SECONDS = 5
 # Every validator derives the same seed from the round id; bump the version to reshuffle all rounds.
 R2_TIEBREAK_SEED_SALT = "quant-r2-tiebreak-v1"
 
-# The quant boss round is four compression tasks: the text boss's round-2 model freeform, its round-3 model fixed, and its
-# continuous model freeform and fixed. The quant boss trains its four entries as soon as each source model has landed (they
-# are seed tasks); the challenger trains the same tasks in the boss round and compresses the same model. The crown is decided
-# over these four and rounds 1-3 (crown.py). The fixed tasks use 2-bit or 3-bit formats only (QUANT_BOSS_ROUND_FIXED_FORMATS).
+# The quant boss round is four compression tasks: the model of the fixed round freeform, the model of round 3 fixed
+# (CompressionSourceAssignment), and the text boss's continuous model freeform and fixed. The quant boss trains its four
+# entries as soon as each source model has landed (they are seed tasks); the challenger trains the same tasks in the boss
+# round and compresses the same model. The crown is decided over these four and rounds 1-3 (crown.py). The fixed tasks use
+# 2-bit or 3-bit formats only (QUANT_BOSS_ROUND_FIXED_FORMATS).
 FINAL_ROUND_QUANT_TASK_DISTRIBUTION: dict[TaskType, int] = {
     TaskType.QUANTFREEFORMTASK: 2,
     TaskType.QUANTFIXEDTASK: 2,

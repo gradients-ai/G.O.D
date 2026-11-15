@@ -1,5 +1,7 @@
 """SQL for quant_tournament_sources and quant_task_sources: which text tournament feeds a quant tournament, and which text
-seed task and boss model each quant task came from (see validator/tournament/quant_sources.py)."""
+seed task and boss model each quant task came from (see validator/tournament/quant_sources.py); and for
+compression_source_assignments: which text round each compression slot of a text tournament takes its model from (see
+validator/tournament/compression_assignment.py)."""
 
 from uuid import UUID
 
@@ -9,6 +11,7 @@ from pydantic import BaseModel
 import validator.db.constants as cst
 from core.logging import get_logger
 from validator.db.database import PSQLDB
+from validator.tournament.models import CompressionSourceAssignment
 from validator.tournament.models import QuantSourceSlot
 from validator.tournament.models import QuantTaskSource
 from validator.tournament.models import QuantTournamentSource
@@ -22,6 +25,9 @@ _TASK_SOURCE_COLUMNS = (
     f"{cst.QUANT_SOURCE_ROLE}, {cst.QUANT_SOURCE_TASK_ID}, {cst.QUANT_SOURCE_MODEL_REPO}, {cst.QUANT_SOURCE_IS_FALLBACK}, "
     f"{cst.QUANT_SOURCE_SUPERSEDED}, {cst.CREATED_AT}, {cst.UPDATED_AT}"
 )
+
+
+_ASSIGNMENT_COLUMNS = f"{cst.TEXT_TOURNAMENT_ID}, {cst.FIXED_TEXT_ROLE}, {cst.RNG_SEED}, {cst.CREATED_AT}"
 
 
 class QuantTaskSourceInsert(BaseModel):
@@ -253,3 +259,49 @@ async def repoint_quant_task_source(quant_task_id: UUID | str, new_source_task_i
             UUID(str(quant_task_id)),
             UUID(str(new_source_task_id)),
         )
+
+
+def _assignment_from_row(row) -> CompressionSourceAssignment:
+    return CompressionSourceAssignment(**dict(row))
+
+
+async def get_compression_source_assignment(text_tournament_id: str, psql_db: PSQLDB) -> CompressionSourceAssignment | None:
+    """The recorded compression source assignment of a text tournament, or None when it has none."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        row = await connection.fetchrow(
+            f"""
+            SELECT {_ASSIGNMENT_COLUMNS} FROM {cst.COMPRESSION_SOURCE_ASSIGNMENTS_TABLE}
+            WHERE {cst.TEXT_TOURNAMENT_ID} = $1
+            """,
+            text_tournament_id,
+        )
+    return _assignment_from_row(row) if row else None
+
+
+async def insert_compression_source_assignment(
+    assignment: CompressionSourceAssignment, psql_db: PSQLDB
+) -> CompressionSourceAssignment:
+    """Record a text tournament's assignment unless it has one, then read back the stored row, so two passes or two
+    processes agree on the first one written."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        await connection.execute(
+            f"""
+            INSERT INTO {cst.COMPRESSION_SOURCE_ASSIGNMENTS_TABLE}
+                ({cst.TEXT_TOURNAMENT_ID}, {cst.FIXED_TEXT_ROLE}, {cst.RNG_SEED})
+            VALUES ($1, $2, $3)
+            ON CONFLICT ({cst.TEXT_TOURNAMENT_ID}) DO NOTHING
+            """,
+            assignment.text_tournament_id,
+            assignment.fixed_text_role.value,
+            assignment.rng_seed,
+        )
+        row = await connection.fetchrow(
+            f"""
+            SELECT {_ASSIGNMENT_COLUMNS} FROM {cst.COMPRESSION_SOURCE_ASSIGNMENTS_TABLE}
+            WHERE {cst.TEXT_TOURNAMENT_ID} = $1
+            """,
+            assignment.text_tournament_id,
+        )
+    return _assignment_from_row(row)

@@ -133,7 +133,7 @@ def drawn(world, monkeypatch) -> list:
 
     monkeypatch.setattr(task_creator, "_get_text_models", lambda _keypair, low, high: ("pool", low, high))
     monkeypatch.setattr(task_creator, "_get_instruct_text_datasets", lambda _keypair: "datasets")
-    monkeypatch.setattr(task_creator, "filter_quant_compatible", lambda pool: pool)
+    monkeypatch.setattr(task_creator, "filter_quant_compatible", lambda pool, track: pool)
     monkeypatch.setattr(task_creator, "create_synthetic_instruct_text_task", make_instruct)
     return calls
 

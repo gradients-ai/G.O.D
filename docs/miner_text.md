@@ -39,7 +39,8 @@ Each round is one task. Every miner in the round, and the boss, trains the same 
 
 Source: [`TEXT_ROUND_PLAN`](../validator/tournament/constants.py).
 
-- Models are drawn from the standard pool, the validator's list of supported language models, within the round's size band, among models that can also be compressed.
+- Models are drawn from the standard pool, the validator's list of supported language models, within the round's size band, among models that can also be compressed: dense, a supported architecture, no remote code.
+- Two of the three rounds feed a fixed-format compression task (which two varies by tournament, see the [compression guide](miner_compression.md#rounds)). Those rounds draw only models whose `hidden_size`, `intermediate_size` and `num_key_value_heads x head_dim` are multiples of 128 ([`quant_shapes.py`](../validator/tasks/quant_shapes.py)).
 - Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
 - With fewer miners than slots, all advance.
 - A miner with no valid result on a task ranks behind every miner with one on it. A miner missing a result in any round sorts below every miner with a result in all rounds.
