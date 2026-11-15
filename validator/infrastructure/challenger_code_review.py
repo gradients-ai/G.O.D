@@ -100,22 +100,56 @@ async def _run_claude(cwd: Path, tournament_type: str, requested_datasets: list[
     return _parse_verdict(result_text)
 
 
+# Infra/access failures while fetching a package. These must not pause R2 by themselves —
+# Claude already reviewed with whatever could be materialized, and a transient PyPI miss
+# (or a garbage token like `https`) is not evidence of cheating.
+_ACCESS_UNRESOLVED_MARKERS = (
+    "pypi lookup failed",
+    "download/extract failed",
+    "artifact missing url",
+    "clone not yet materialized",
+)
+
+
+def _is_access_unresolved(item: str) -> bool:
+    lowered = item.lower()
+    return any(marker in lowered for marker in _ACCESS_UNRESOLVED_MARKERS)
+
+
 def _merge_materialization_into_verdict(verdict: IntegrityVerdict, unresolved: list[str]) -> IntegrityVerdict:
-    """Fail closed: unresolved non-allowlisted deps cannot be marked clean."""
+    """Attach unresolved deps; only policy/security misses force needs_review.
+
+    Access failures (PyPI down, missing artifact, download errors) stay visible in
+    the verdict but do not override a clean Claude result or pause round 2.
+    Unpinned git deps and sha256 mismatches still fail closed.
+    """
     if not unresolved:
         return verdict
-    if verdict.flagged:
-        verdict.unresolved_dependencies = list(dict.fromkeys([*verdict.unresolved_dependencies, *unresolved]))
+
+    access = [item for item in unresolved if _is_access_unresolved(item)]
+    policy = [item for item in unresolved if not _is_access_unresolved(item)]
+    verdict.unresolved_dependencies = list(
+        dict.fromkeys([*verdict.unresolved_dependencies, *unresolved])
+    )
+
+    if access and not any("access failure" in e.lower() for e in verdict.evidence):
+        note = "Dependency access failures (non-blocking): " + "; ".join(access[:12])
+        verdict.evidence = [*verdict.evidence, f"_manifests/unresolved.json - {note}"]
+        logger.warning(f"Ignoring non-blocking dependency access failures: {access[:12]}")
+
+    if not policy:
         return verdict
+    if verdict.flagged:
+        return verdict
+
     verdict.needs_review = True
     verdict.flagged = False
-    verdict.unresolved_dependencies = list(dict.fromkeys([*verdict.unresolved_dependencies, *unresolved]))
-    extra = "Unresolved dependencies require manual review: " + "; ".join(unresolved[:12])
+    extra = "Unresolved dependencies require manual review: " + "; ".join(policy[:12])
     if verdict.reason:
         verdict.reason = f"{verdict.reason.rstrip()} | {extra}"
     else:
         verdict.reason = extra
-    if not any("unresolved" in e.lower() for e in verdict.evidence):
+    if not any("require manual review" in e.lower() for e in verdict.evidence):
         verdict.evidence = [*verdict.evidence, f"_manifests/unresolved.json - {extra}"]
     return verdict
 
