@@ -25,7 +25,7 @@ from trainer.job_state import task_history
 logger = get_logger(__name__)
 
 # Extra stale-deadline slack for a freeform job that decodes after its upload: build + run caps plus transfers.
-# Lives here, not in trainer/constants.py, because the cache-cleanup image ships trainer/ without core/.
+# Lives here, next to the decode timeout it is derived from.
 QUANT_DECODE_GRACE_MINUTES = 2 * DECODE_TIMEOUT_SECONDS // 60 + 30
 
 
