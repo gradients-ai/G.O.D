@@ -5,7 +5,7 @@ trainer/task_history.json as the trainer API — that is how alerts name the job
   DISCORD_WEBHOOK            webhook URL (required to alert; without it, logs only)
   GPU_MONITOR_HOST_LABEL     name shown in alerts (default: hostname)
   GPU_MONITOR_POLL_SECONDS   poll interval (default 5)
-  GPU_MONITOR_TRIGGER_POLLS  consecutive throttled polls before alerting (default 6 = 30 s)
+  GPU_MONITOR_TRIGGER_POLLS  consecutive throttled polls before alerting (default 2 = 10 s)
   GPU_MONITOR_RECOVER_POLLS  consecutive clean polls before a recovery message (default 60 = 5 min)
   GPU_MONITOR_MAX_CLOCK_RATIO  poll only counts if SM clock < ratio * max (default 0.9)
   GPU_MONITOR_INCLUDE_POWER_CAP  "1" to also alert on SW_POWER_CAP (default off)
@@ -97,7 +97,7 @@ def main() -> None:
     thresholds = MonitorThresholds(
         alert_reasons=int(alert_reasons),
         max_clock_ratio=float(os.getenv("GPU_MONITOR_MAX_CLOCK_RATIO", "0.9")),
-        trigger_polls=int(os.getenv("GPU_MONITOR_TRIGGER_POLLS", "6")),
+        trigger_polls=int(os.getenv("GPU_MONITOR_TRIGGER_POLLS", "2")),
         recover_polls=int(os.getenv("GPU_MONITOR_RECOVER_POLLS", "60")),
     )
     if not webhook:

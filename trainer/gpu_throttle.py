@@ -55,9 +55,9 @@ class MonitorThresholds(BaseModel):
     # A poll only counts as throttled if a bad reason is set AND the SM clock is actually depressed;
     # a reason bit with clocks near max costs nothing and is the main false-positive source.
     max_clock_ratio: float = Field(default=0.9, gt=0, le=1)
-    # At 5 s polls: alert after 30 s sustained, declare recovery only after 5 min clean, so a
+    # At 5 s polls: alert after 10 s sustained, declare recovery only after 5 min clean, so a
     # flapping GPU produces one alert per episode rather than a stream.
-    trigger_polls: int = Field(default=6, ge=1)
+    trigger_polls: int = Field(default=2, ge=1)
     recover_polls: int = Field(default=60, ge=1)
 
 
