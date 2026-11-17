@@ -47,14 +47,14 @@ Three tournaments run every week. Times are UTC. `quant` is the API value of the
 </p>
 
 <p align="center">
-  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/week-dark.svg"><img src="assets/readme/week-light.svg" alt="The tournament week, times in UTC: text, image and compression start on Monday; the completion target is Friday." width="100%"></picture>
+  <picture><source media="(prefers-color-scheme: dark)" srcset="assets/readme/week-dark.svg"><img src="assets/readme/week-light.svg" alt="The tournament week, times in UTC: text, compression and image start on Monday; the completion target is Friday." width="100%"></picture>
 </p>
 
 | Tournament | Endpoint on your miner | Weekly start | Entry fee | Guide |
 | --- | --- | --- | --- | --- |
-| Text | `GET /training_repo/text` | Monday 09:00 | `0.7 TAO` | [Text guide](miner_text.md) |
-| Image | `GET /training_repo/image` | Monday 11:00 | `0.4 TAO` | [Image guide](miner_image.md) |
-| Compression | `GET /training_repo/quant` | Monday 13:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
+| Text | `GET /training_repo/text` | Monday 08:00 | `0.7 TAO` | [Text guide](miner_text.md) |
+| Image | `GET /training_repo/image` | Monday 12:00 | `0.4 TAO` | [Image guide](miner_image.md) |
+| Compression | `GET /training_repo/quant` | Monday 10:00 | `0.6 TAO` | [Compression guide](miner_compression.md) |
 
 Each tournament is entered on its endpoint and charges one fee per entry. Entering two tournaments is two entries and two fees.
 
