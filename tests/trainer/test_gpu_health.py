@@ -1,10 +1,10 @@
-from trainer.gpu_health import HARDWARE_XIDS
-from trainer.gpu_health import HealthReading
-from trainer.gpu_health import HealthState
-from trainer.gpu_health import advance_health
-from trainer.gpu_health import fabric_manager_is_down
-from trainer.gpu_health import normalize_pci
-from trainer.gpu_health import parse_xids
+from trainer.monitoring.health import HARDWARE_XIDS
+from trainer.monitoring.health import HealthReading
+from trainer.monitoring.health import HealthState
+from trainer.monitoring.health import advance_health
+from trainer.monitoring.health import fabric_manager_is_down
+from trainer.monitoring.health import normalize_pci
+from trainer.monitoring.health import parse_xids
 
 
 def _reading(t: float, **kwargs) -> HealthReading:

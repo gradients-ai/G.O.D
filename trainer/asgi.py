@@ -7,16 +7,16 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
+from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
 from trainer.job_state import complete_model_prep
 from trainer.job_state import complete_task
 from trainer.job_state import get_running_jobs
 from trainer.job_state import log_task
-from trainer.cleanup import start_cleanup_loop_in_thread
-from trainer.gpu_monitor import start_in_thread as start_gpu_monitor_in_thread
-from core.logging import get_logger
+from trainer.monitoring.monitor import start_in_thread as start_gpu_monitor_in_thread
 
 
 load_dotenv(".trainer.env")

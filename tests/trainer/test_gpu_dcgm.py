@@ -1,8 +1,8 @@
 import json
 import subprocess
 
-from trainer.gpu_dcgm import parse_dcgm_health
-from trainer.gpu_dcgm import query_dcgm_health
+from trainer.monitoring.dcgm import parse_dcgm_health
+from trainer.monitoring.dcgm import query_dcgm_health
 
 
 def test_parses_failure_and_ignores_skipped_nvlink_on_pcie():

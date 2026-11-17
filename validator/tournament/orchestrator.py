@@ -25,7 +25,7 @@ from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
-from trainer.gpu_throttle import logs_mark_gpu_throttle_failure
+from trainer.monitoring.throttle import logs_mark_gpu_throttle_failure
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import gpu_costs as gpu_cost_sql
@@ -600,7 +600,12 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     continue
                 elif training_result:
                     await tournament_sql.update_tournament_task_training_status(
-                        training_task.task.task_id, training_task.hotkey, TrainingStatus.TRAINING, config.psql_db, trainer_ip
+                        training_task.task.task_id,
+                        training_task.hotkey,
+                        TrainingStatus.TRAINING,
+                        config.psql_db,
+                        trainer_ip,
+                        count_attempt=False,
                     )
                     attempt = training_task.n_training_attempts + 1
                     run_key = _training_cost_run_key(str(training_task.task.task_id), training_task.hotkey)
@@ -1079,7 +1084,11 @@ async def _monitor_training_tasks(config: Config):
                     await _finish_training_cost_run(training_task, False, config)
                     # Move task back to PENDING since trainer may have restarted or lost the task
                     await tournament_sql.update_tournament_task_training_status(
-                        training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
+                        training_task.task.task_id,
+                        training_task.hotkey,
+                        TrainingStatus.PENDING,
+                        config.psql_db,
+                        count_attempt=True,
                     )
                     logger.info(
                         f"Moved task {training_task.task.task_id} with hotkey {training_task.hotkey} back to PENDING status"
@@ -1103,7 +1112,11 @@ async def _monitor_training_tasks(config: Config):
                         ended_at=successful_log.finished_at,
                     )
                     await tournament_sql.update_tournament_task_training_status(
-                        training_task.task.task_id, training_task.hotkey, TrainingStatus.SUCCESS, config.psql_db
+                        training_task.task.task_id,
+                        training_task.hotkey,
+                        TrainingStatus.SUCCESS,
+                        config.psql_db,
+                        count_attempt=True,
                     )
                 elif all(s == TaskStatus.FAILURE for s in statuses):
                     any_completed = True
@@ -1119,14 +1132,13 @@ async def _monitor_training_tasks(config: Config):
                         config,
                         ended_at=max(finished_times) if finished_times else None,
                     )
-                    if gpu_fault:
-                        await tournament_sql.requeue_training_after_gpu_fault(
-                            training_task.task.task_id, training_task.hotkey, config.psql_db
-                        )
-                    else:
-                        await tournament_sql.update_tournament_task_training_status(
-                            training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
-                        )
+                    await tournament_sql.update_tournament_task_training_status(
+                        training_task.task.task_id,
+                        training_task.hotkey,
+                        TrainingStatus.PENDING,
+                        config.psql_db,
+                        count_attempt=not gpu_fault,
+                    )
                 else:
                     logger.info(
                         f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} is still training on at least "

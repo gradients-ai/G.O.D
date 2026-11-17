@@ -42,25 +42,25 @@ from core.logging import get_logger
 from core.models.payload_models import TrainerTaskLog
 from core.models.task_models import TaskStatus
 from trainer import job_state
-from trainer.gpu_blacklist import blacklist_gpu
-from trainer.gpu_dcgm import query_dcgm_health
-from trainer.gpu_fault import abort_trainings_on_gpu
-from trainer.gpu_health import HARDWARE_XIDS
-from trainer.gpu_health import HealthReading
-from trainer.gpu_health import HealthState
-from trainer.gpu_health import advance_health
-from trainer.gpu_health import fabric_manager_is_down
-from trainer.gpu_health import normalize_pci
-from trainer.gpu_health import parse_xids
-from trainer.gpu_throttle import DEFAULT_ALERT_REASONS
-from trainer.gpu_throttle import ClockEventReason
-from trainer.gpu_throttle import GpuJob
-from trainer.gpu_throttle import GpuSample
-from trainer.gpu_throttle import GpuThrottleState
-from trainer.gpu_throttle import MonitorThresholds
-from trainer.gpu_throttle import evaluate
-from trainer.gpu_throttle import format_alert
-from trainer.gpu_throttle import reason_names
+from trainer.monitoring.blacklist import blacklist_gpu
+from trainer.monitoring.dcgm import query_dcgm_health
+from trainer.monitoring.fault import abort_trainings_on_gpu
+from trainer.monitoring.health import HARDWARE_XIDS
+from trainer.monitoring.health import HealthReading
+from trainer.monitoring.health import HealthState
+from trainer.monitoring.health import advance_health
+from trainer.monitoring.health import fabric_manager_is_down
+from trainer.monitoring.health import normalize_pci
+from trainer.monitoring.health import parse_xids
+from trainer.monitoring.throttle import DEFAULT_ALERT_REASONS
+from trainer.monitoring.throttle import ClockEventReason
+from trainer.monitoring.throttle import GpuJob
+from trainer.monitoring.throttle import GpuSample
+from trainer.monitoring.throttle import GpuThrottleState
+from trainer.monitoring.throttle import MonitorThresholds
+from trainer.monitoring.throttle import evaluate
+from trainer.monitoring.throttle import format_alert
+from trainer.monitoring.throttle import reason_names
 
 
 logger = get_logger(__name__)

@@ -16,7 +16,6 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.trainer_contract_models import GPUInfo
 from trainer import constants as cst
 from trainer.containers.dataset_cache import download_whitelisted_datasets
-from trainer.gpu_blacklist import blacklisted_gpu_ids
 from trainer.host import are_gpus_available
 from trainer.host import clone_repo
 from trainer.host import get_gpu_info
@@ -30,6 +29,7 @@ from trainer.job_state import get_recent_tasks
 from trainer.job_state import get_task
 from trainer.job_state import load_task_history
 from trainer.job_state import log_task
+from trainer.monitoring.blacklist import blacklisted_gpu_ids
 from trainer.runtime import run_model_prep_container
 from trainer.runtime import start_training_task
 from trainer.telemetry import logger

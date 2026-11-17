@@ -1,11 +1,11 @@
-from trainer.gpu_throttle import ClockEventReason
-from trainer.gpu_throttle import GpuJob
-from trainer.gpu_throttle import GpuSample
-from trainer.gpu_throttle import GpuThrottleState
-from trainer.gpu_throttle import MonitorThresholds
-from trainer.gpu_throttle import ThrottleAlert
-from trainer.gpu_throttle import evaluate
-from trainer.gpu_throttle import format_alert
+from trainer.monitoring.throttle import ClockEventReason
+from trainer.monitoring.throttle import GpuJob
+from trainer.monitoring.throttle import GpuSample
+from trainer.monitoring.throttle import GpuThrottleState
+from trainer.monitoring.throttle import MonitorThresholds
+from trainer.monitoring.throttle import ThrottleAlert
+from trainer.monitoring.throttle import evaluate
+from trainer.monitoring.throttle import format_alert
 
 
 T = MonitorThresholds(trigger_polls=3, recover_polls=2, fault_window_seconds=60, fault_alert_seconds=10)

@@ -8,7 +8,7 @@ from core.logging import get_logger
 from core.models.payload_models import TrainerTaskLog
 from core.models.task_models import TaskStatus
 from trainer import job_state
-from trainer.gpu_throttle import GPU_THROTTLE_FAILURE_MARKER
+from trainer.monitoring.throttle import GPU_THROTTLE_FAILURE_MARKER
 
 
 logger = get_logger(__name__)
@@ -28,7 +28,7 @@ async def abort_trainings_on_gpu(gpu_index: int, reason: str) -> None:
     """Mark every training on this GPU as failed and stop its container.
 
     The failure log carries GPU_THROTTLE_FAILURE_MARKER so the orchestrator can
-    requeue the training without incrementing n_training_attempts.
+    put the training back to pending without counting an n_training_attempts.
     """
     victims = [
         job

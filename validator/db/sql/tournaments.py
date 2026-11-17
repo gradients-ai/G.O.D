@@ -1158,13 +1158,23 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
 
 
 async def update_tournament_task_training_status(
-    task_id: str, hotkey: str, status: TrainingStatus, psql_db: PSQLDB, trainer_ip: str | None = None
+    task_id: str,
+    hotkey: str,
+    status: TrainingStatus,
+    psql_db: PSQLDB,
+    trainer_ip: str | None = None,
+    count_attempt: bool | None = None,
 ):
-    """Update the training status of a specific task-hotkey pair"""
+    """Update the training status of a specific task-hotkey pair.
+
+    n_training_attempts increases only when count_attempt is true. The default counts a move to
+    TRAINING, which is the dstack path. The trainer orchestrator passes False while a run is still
+    in progress and True when that run finishes for a reason other than a GPU fault.
+    """
     async with await psql_db.connection() as connection:
-        increment_clause = (
-            f", {cst.N_TRAINING_ATTEMPTS} = {cst.N_TRAINING_ATTEMPTS} + 1" if status == TrainingStatus.TRAINING else ""
-        )
+        if count_attempt is None:
+            count_attempt = status == TrainingStatus.TRAINING
+        increment_clause = f", {cst.N_TRAINING_ATTEMPTS} = {cst.N_TRAINING_ATTEMPTS} + 1" if count_attempt else ""
         trainer_ip_clause = f", {cst.TRAINER_IP} = $4" if trainer_ip else ""
 
         query = f"""
@@ -1178,24 +1188,6 @@ async def update_tournament_task_training_status(
             params.append(trainer_ip)
         await connection.execute(query, *params)
         logger.info(f"Marked task-hotkey pair ({task_id}, {hotkey}) as {status}")
-
-
-async def requeue_training_after_gpu_fault(task_id: str, hotkey: str, psql_db: PSQLDB) -> None:
-    """Put a GPU-throttle failure back to pending and give back the attempt it consumed.
-
-    Starting a training increments n_training_attempts. A throttle fault is the trainer's
-    hardware, so that increment is undone and the next start counts as the same attempt.
-    """
-    async with await psql_db.connection() as connection:
-        query = f"""
-            UPDATE {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
-            SET {cst.TRAINING_STATUS} = $3,
-                {cst.N_TRAINING_ATTEMPTS} = GREATEST({cst.N_TRAINING_ATTEMPTS} - 1, 0),
-                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2
-        """
-        await connection.execute(query, task_id, hotkey, TrainingStatus.PENDING.value)
-        logger.info(f"Requeued task-hotkey pair ({task_id}, {hotkey}) after a GPU throttle fault without a new attempt")
 
 
 async def update_dstack_runname(task_id: str, hotkey: str, runname: str, psql_db: PSQLDB):

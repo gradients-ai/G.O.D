@@ -2,6 +2,7 @@ import threading
 
 import pynvml
 
+
 # Older nvidia-ml-py builds omit policies the monitor reads. The pinned package has them;
 # define stand-ins only when missing so this module can import on either build.
 for _name, _value in (
@@ -12,9 +13,9 @@ for _name, _value in (
     if not hasattr(pynvml, _name):
         setattr(pynvml, _name, _value)
 
-import trainer.gpu_monitor as gpu_monitor
+import trainer.monitoring.monitor as gpu_monitor
 from trainer import job_state
-from trainer.gpu_monitor import start_in_thread
+from trainer.monitoring.monitor import start_in_thread
 
 
 def test_start_in_thread_runs_monitor(monkeypatch):

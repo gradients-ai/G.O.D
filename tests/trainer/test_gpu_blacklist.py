@@ -1,12 +1,12 @@
 from trainer import job_state
-from trainer.gpu_blacklist import blacklist_gpu
-from trainer.gpu_blacklist import blacklisted_gpu_ids
-from trainer.gpu_blacklist import clear_blacklisted_gpus
-from trainer.gpu_throttle import GPU_THROTTLE_FAILURE_MARKER
-from trainer.gpu_throttle import logs_mark_gpu_throttle_failure
 from trainer.host import are_gpus_available
 from trainer.job_state import is_gpu_throttle_failure
 from trainer.job_state import note_gpu_throttle_failure
+from trainer.monitoring.blacklist import blacklist_gpu
+from trainer.monitoring.blacklist import blacklisted_gpu_ids
+from trainer.monitoring.blacklist import clear_blacklisted_gpus
+from trainer.monitoring.throttle import GPU_THROTTLE_FAILURE_MARKER
+from trainer.monitoring.throttle import logs_mark_gpu_throttle_failure
 
 
 def setup_function():

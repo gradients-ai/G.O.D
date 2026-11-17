@@ -13,8 +13,8 @@ from core.git import sanitize_git_text
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
-from trainer.gpu_blacklist import blacklisted_gpu_ids
 from trainer.job_state import get_running_jobs
+from trainer.monitoring.blacklist import blacklisted_gpu_ids
 
 
 def _gpu_has_nvlink(pynvml, handle) -> bool:
