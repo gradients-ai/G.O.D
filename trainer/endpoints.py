@@ -16,6 +16,7 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.trainer_contract_models import GPUInfo
 from trainer import constants as cst
 from trainer.containers.dataset_cache import download_whitelisted_datasets
+from trainer.gpu_blacklist import blacklisted_gpu_ids
 from trainer.host import are_gpus_available
 from trainer.host import clone_repo
 from trainer.host import get_gpu_info
@@ -48,6 +49,19 @@ async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) 
     async with _task_lock:
         if _active_tasks.get(task_key) is bg_task:
             _active_tasks.pop(task_key, None)
+
+
+def cancel_active_training(task_id: str, hotkey: str) -> None:
+    bg_task = _active_tasks.get((task_id, hotkey))
+    if bg_task and not bg_task.done():
+        bg_task.cancel()
+
+
+def _gpu_rejection_detail(gpu_ids: list[int], in_use_detail: str) -> str:
+    withdrawn = sorted(set(gpu_ids) & blacklisted_gpu_ids())
+    if withdrawn:
+        return f"GPU(s) {withdrawn} are withdrawn after a throttle fault"
+    return in_use_detail
 
 
 async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
@@ -116,7 +130,10 @@ async def start_training(req: TrainerProxyRequest) -> JSONResponse:
         if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
             raise HTTPException(
                 status_code=409,
-                detail="GPU conflict detected. Requested GPUs are already in use by running training tasks.",
+                detail=_gpu_rejection_detail(
+                    req.gpu_ids,
+                    "GPU conflict detected. Requested GPUs are already in use by running training tasks.",
+                ),
             )
         try:
             await _start_task_unlocked(req)
@@ -135,7 +152,10 @@ async def model_prep(req: ModelPrepRequest) -> ModelPrepResponse:
         if not await asyncio.to_thread(are_gpus_available, req.gpu_ids):
             raise HTTPException(
                 status_code=409,
-                detail="GPU conflict detected. Requested GPUs are already in use.",
+                detail=_gpu_rejection_detail(
+                    req.gpu_ids,
+                    "GPU conflict detected. Requested GPUs are already in use.",
+                ),
             )
         await _start_model_prep_unlocked(req.task_id, req.model_id, req.gpu_ids, req.hotkey)
     try:

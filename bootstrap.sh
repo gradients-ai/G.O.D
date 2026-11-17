@@ -101,6 +101,10 @@ fi
 nvidia-ctk runtime configure --runtime=docker
 systemctl restart docker
 
+# DCGM for the trainer GPU monitor. A failure here still finishes bootstrap.
+echo_ checking for DCGM
+bash ops/trainer_ops/install_dcgm.sh || echo_ "DCGM install failed; the trainer will use NVML health checks"
+
 
 # do not upgrade openssh server whilst installing
 ################################################################################

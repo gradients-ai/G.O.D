@@ -13,6 +13,7 @@ from core.git import sanitize_git_text
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
+from trainer.gpu_blacklist import blacklisted_gpu_ids
 from trainer.job_state import get_running_jobs
 
 
@@ -173,6 +174,7 @@ def _get_gpu_info_sync() -> list[GPUInfo]:
     index_to_peers = _nvlink_peers(pynvml, index_to_handle)
 
     busy_gpu_ids: set[int] = set()
+    busy_gpu_ids.update(blacklisted_gpu_ids())
     running_jobs = get_running_jobs()
 
     if running_jobs:
@@ -226,11 +228,15 @@ def extract_container_error(logs: str) -> str | None:
 
 def are_gpus_available(requested_gpu_ids: list[int]) -> bool:
     """
-    Check if any of the requested GPU IDs are already in use by running jobs.
+    Check if any of the requested GPU IDs are already in use by running jobs
+    or withdrawn after a throttle fault.
 
     Returns:
         bool: True if all requested GPUs are available, False otherwise
     """
+    if set(requested_gpu_ids) & blacklisted_gpu_ids():
+        return False
+
     running_jobs = get_running_jobs()
 
     for job in running_jobs:

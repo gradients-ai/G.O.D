@@ -25,6 +25,7 @@ from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
 from core.models.trainer_contract_models import GPUType
+from trainer.gpu_throttle import logs_mark_gpu_throttle_failure
 from validator.app.config import Config
 from validator.app.config import load_config
 from validator.db.sql import gpu_costs as gpu_cost_sql
@@ -1106,7 +1107,11 @@ async def _monitor_training_tasks(config: Config):
                     )
                 elif all(s == TaskStatus.FAILURE for s in statuses):
                     any_completed = True
-                    logger.info(f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} failed on all trainers")
+                    gpu_fault = any(logs_mark_gpu_throttle_failure(task_log.logs) for _, task_log in responses)
+                    logger.info(
+                        f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} failed on all trainers"
+                        + (" because a GPU throttled" if gpu_fault else "")
+                    )
                     finished_times = [task_log.finished_at for _, task_log in responses if task_log.finished_at is not None]
                     await _finish_training_cost_run(
                         training_task,
@@ -1114,9 +1119,14 @@ async def _monitor_training_tasks(config: Config):
                         config,
                         ended_at=max(finished_times) if finished_times else None,
                     )
-                    await tournament_sql.update_tournament_task_training_status(
-                        training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
-                    )
+                    if gpu_fault:
+                        await tournament_sql.requeue_training_after_gpu_fault(
+                            training_task.task.task_id, training_task.hotkey, config.psql_db
+                        )
+                    else:
+                        await tournament_sql.update_tournament_task_training_status(
+                            training_task.task.task_id, training_task.hotkey, TrainingStatus.PENDING, config.psql_db
+                        )
                 else:
                     logger.info(
                         f"Task {training_task.task.task_id} with hotkey {training_task.hotkey} is still training on at least "

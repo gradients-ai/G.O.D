@@ -1180,6 +1180,24 @@ async def update_tournament_task_training_status(
         logger.info(f"Marked task-hotkey pair ({task_id}, {hotkey}) as {status}")
 
 
+async def requeue_training_after_gpu_fault(task_id: str, hotkey: str, psql_db: PSQLDB) -> None:
+    """Put a GPU-throttle failure back to pending and give back the attempt it consumed.
+
+    Starting a training increments n_training_attempts. A throttle fault is the trainer's
+    hardware, so that increment is undone and the next start counts as the same attempt.
+    """
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
+            SET {cst.TRAINING_STATUS} = $3,
+                {cst.N_TRAINING_ATTEMPTS} = GREATEST({cst.N_TRAINING_ATTEMPTS} - 1, 0),
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TASK_ID} = $1 AND {cst.HOTKEY} = $2
+        """
+        await connection.execute(query, task_id, hotkey, TrainingStatus.PENDING.value)
+        logger.info(f"Requeued task-hotkey pair ({task_id}, {hotkey}) after a GPU throttle fault without a new attempt")
+
+
 async def update_dstack_runname(task_id: str, hotkey: str, runname: str, psql_db: PSQLDB):
     """Update the dstack runname for a specific task-hotkey pair"""
     async with await psql_db.connection() as connection:

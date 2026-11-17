@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 
 task_history: list[TrainerJob] = []
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
+# Trainings failed because their GPU throttled. complete_task will not later record these as success.
+_gpu_throttle_failures: set[tuple[str, str]] = set()
 _task_lock = asyncio.Lock()
 _task_file_lock = threading.Lock()
 _TASK_HISTORY_READ_RETRIES = 3
@@ -69,6 +71,14 @@ async def _start_task_unlocked(task: TrainerProxyRequest) -> tuple[str, str]:
     return log_entry.training_data.task_id, log_entry.hotkey
 
 
+def note_gpu_throttle_failure(task_id: str, hotkey: str) -> None:
+    _gpu_throttle_failures.add((task_id, hotkey))
+
+
+def is_gpu_throttle_failure(task_id: str, hotkey: str) -> bool:
+    return (task_id, hotkey) in _gpu_throttle_failures
+
+
 async def complete_task(task_id: str, hotkey: str, success: bool = True):
     async with _task_lock:
         load_task_history()
@@ -76,6 +86,8 @@ async def complete_task(task_id: str, hotkey: str, success: bool = True):
         task = get_task(task_id, hotkey)
         if task is None:
             return
+        if success and is_gpu_throttle_failure(task_id, hotkey):
+            success = False
         task.status = TaskStatus.SUCCESS if success else TaskStatus.FAILURE
         task.finished_at = datetime.utcnow()
         await save_task_history()

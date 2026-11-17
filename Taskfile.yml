@@ -29,8 +29,9 @@ tasks:
       - ENV=DEV uvicorn miner.asgi:app --reload --host 0.0.0.0 --port 7999 --env-file .1.env --log-level debug
 
   trainer:
-    desc: "Start the trainer API. The GPU throttle monitor starts inside that process."
+    desc: "Start the trainer API. Installs DCGM when missing. The GPU throttle monitor starts inside that process."
     cmds:
+      - bash ops/trainer_ops/install_dcgm.sh || echo "DCGM install failed; the trainer will use NVML health checks"
       - pm2 delete trainer || true
       # Drop a monitor left over from the standalone task so it cannot alert twice.
       - pm2 delete trainer-gpu-monitor || true

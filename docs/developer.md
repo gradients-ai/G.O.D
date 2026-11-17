@@ -156,7 +156,7 @@ task db-restore
 
 ## Running A Trainer On A New Machine
 
-Trainer nodes execute miner code. They need Docker, NVIDIA drivers, NVIDIA Container Toolkit, the repo, and the Python package installed. Training containers should target CUDA **12.8 or lower**.
+Trainer nodes execute miner code. They need Docker, NVIDIA drivers, NVIDIA Container Toolkit, the repo, and the Python package installed. `task bootstrap` and `task trainer` install DCGM (`datacenter-gpu-manager` and the `nvidia-dcgm` service) when it is not already running. Training containers should target CUDA **12.8 or lower**.
 
 1. Clone and install:
 
@@ -196,7 +196,9 @@ curl http://localhost:8001/v1/trainer/get_gpu_availability
 
 The GPU throttle monitor starts with the trainer. `task trainer` and `ops/trainer_ops/trainer.service` both run `uvicorn trainer.asgi:app`, and that process starts the monitor. Set `DISCORD_WEBHOOK` in `.trainer.env` to post alerts; omit it to log only.
 
-It polls each GPU every 5 s and alerts when a GPU is slowed by a thermal, power-brake or hardware-slowdown event: 10 s sustained with the SM clock below 90% of max, or 10 s of NVML thermal/reliability/board-limit throttle time within 5 min. Normal power-capping under load is ignored. A recovery message follows after 5 min clean. Alerts include the task id, hotkey and repo/commit of the job on that GPU. Every non-clean poll is logged as `gpu_throttle_observation`. Thresholds are configurable via the `GPU_MONITOR_*` env vars documented in `trainer/gpu_monitor.py`.
+It ticks every 5 s (`GPU_MONITOR_POLL_SECONDS`). A clock alert needs a thermal, power-brake, or hardware-slowdown reason and an SM clock below 90% of max for two ticks (10 s), or 10 s of NVML thermal/reliability/board-limit throttle time inside 5 min. Temperature is included in the alert text and is not its own cutoff. Normal power-capping under load is ignored. `gpu_throttle_observation` logs every non-clean poll so the 90% line can be checked against a healthy loaded box. `task trainer` and the trainer systemd unit install and start DCGM when `dcgmi` or `nvidia-dcgm` is missing. Once the hostengine is up, that same tick uses `dcgmi health` for ECC, NVLink, PCIe, thermal, and power failures. Warnings are logged. A PCIe box with no DCGM, or no `nvidia-fabricmanager` unit, falls back to the NVML checks: a new uncorrected ECC error, pending page retirement, 10 new corrected ECC errors in 5 min (`GPU_MONITOR_ECC_SBE_THRESHOLD`), an NVLink error increase, or a hardware Xid. Application Xids are logged and left alone. Set `GPU_MONITOR_DCGM=0` to force the NVML path. If `nvidia-fabricmanager` is installed and not active, every GPU on the box is withdrawn; a machine without that unit is left alone.
+
+A fault withdraws that GPU until the trainer process restarts and fails any training already on it. The trainer log line starts with `[GPU_THROTTLE]`. The orchestrator puts that training back to pending and does not charge another `n_training_attempts`. Other GPUs on the box keep taking work, and the round is not held. A recovery message follows 5 min after a clock throttle clears; ECC, Xid, and fabric-manager withdrawals stay until restart.
 
 The trainer builds miner-provided Dockerfiles, starts training containers, streams logs, writes model outputs under the `checkpoints` Docker volume, caches models/datasets under the `cache` Docker volume, and uploads finished models to Hugging Face.
 

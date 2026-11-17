@@ -37,6 +37,7 @@ from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
 from trainer.job_state import complete_task
+from trainer.job_state import is_gpu_throttle_failure
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
 from trainer.job_state import update_training_started_at
@@ -895,6 +896,9 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
         async def _final_cleanup():
             nonlocal success
+
+            if is_gpu_throttle_failure(training_data.task_id, task.hotkey):
+                success = False
 
             if cancel_log_message:
                 await log_task(training_data.task_id, task.hotkey, cancel_log_message)

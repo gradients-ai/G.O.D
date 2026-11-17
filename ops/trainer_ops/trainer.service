@@ -14,6 +14,8 @@ Environment="ENV=DEV"
 TimeoutStartSec=30min
 # Deploy log shipping before starting the server
 ExecStartPre=/bin/bash -c 'source /root/.venv/bin/activate && cd /root/G.O.D && task deploy-trainer-logs'
+# Install DCGM if the host does not already have a running hostengine. Failure here still starts the trainer.
+ExecStartPre=/bin/bash -c 'cd /root/G.O.D && bash ops/trainer_ops/install_dcgm.sh || echo "DCGM install failed; the trainer will use NVML health checks"'
 # Pull trainer images before starting.
 ExecStartPre=/bin/bash -c 'set -euo pipefail; docker_cli=$(command -v docker); [ -n "${docker_cli:-}" ] || { echo "god-trainer: docker not found in PATH" >&2; exit 1; }; for img in gradientsio/trainer-uploader:latest gradientsio/trainer-downloader:latest gradientsio/trainer-cacher-cleaner:latest gradientsio/model-prep-text:latest; do "$docker_cli" pull "$img"; done'
 # Start uvicorn. The GPU throttle monitor starts in this process.

@@ -6,6 +6,15 @@ from pydantic import BaseModel
 from pydantic import Field
 
 
+# Written into the trainer task log when a training is failed because its GPU faulted.
+# The orchestrator sees this and requeues the training without charging another attempt.
+GPU_THROTTLE_FAILURE_MARKER = "[GPU_THROTTLE]"
+
+
+def logs_mark_gpu_throttle_failure(logs: list[str]) -> bool:
+    return any(GPU_THROTTLE_FAILURE_MARKER in line for line in logs)
+
+
 class ClockEventReason(IntFlag):
     """Mirror of NVML's nvmlClocksEventReason* bitmask."""
 
