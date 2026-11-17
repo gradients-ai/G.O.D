@@ -4,11 +4,12 @@ Service that receives work from the validator, clones miner repositories, builds
 
 ## Contents
 
-- `asgi.py`: FastAPI app factory, startup cleanup, and service entrypoint.
+- `asgi.py`: FastAPI app factory, startup cleanup, GPU throttle monitor, and service entrypoint.
 - `cleanup.py`: background cleanup loop for stale trainer state and cache (training stale timeout uses `started_at`, refreshed when the train container starts).
 - `constants.py`: trainer Docker images, volumes, resource defaults, and container paths.
 - `containers/`: downloader, uploader, cache cleanup, and miner dataset cache helpers.
 - `endpoints.py`: trainer API routes called by validators.
+- `monitoring/`: GPU monitor started with the trainer. `monitor.py` posts Discord alerts, fails trainings on the bad GPU, and withdraws that GPU. `blacklist.py` keeps withdrawn GPUs out for the life of the process. `fault.py` stops their containers. `health.py` is the NVML ECC, NVLink, and Xid fallback. `dcgm.py` parses `dcgmi health` after `ops/trainer_ops/install_dcgm.sh` installs DCGM. `throttle.py` is the clock-throttle rules.
 - `host.py`: host/GPU inspection, repository cloning, and Docker host helpers.
 - `job_state.py`: persisted trainer task/model-prep state (`started_at` is set on accept and refreshed at container start for training jobs).
 - `dataset_adapters.py`: text dataset column adapters used by training entrypoints.

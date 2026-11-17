@@ -23,6 +23,8 @@ logger = get_logger(__name__)
 
 task_history: list[TrainerJob] = []
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
+# Trainings failed because their GPU throttled. complete_task will not later record these as success.
+_gpu_throttle_failures: set[tuple[str, str]] = set()
 _task_lock = asyncio.Lock()
 _task_file_lock = threading.Lock()
 _TASK_HISTORY_READ_RETRIES = 3
@@ -69,6 +71,14 @@ async def _start_task_unlocked(task: TrainerProxyRequest) -> tuple[str, str]:
     return log_entry.training_data.task_id, log_entry.hotkey
 
 
+def note_gpu_throttle_failure(task_id: str, hotkey: str) -> None:
+    _gpu_throttle_failures.add((task_id, hotkey))
+
+
+def is_gpu_throttle_failure(task_id: str, hotkey: str) -> bool:
+    return (task_id, hotkey) in _gpu_throttle_failures
+
+
 async def complete_task(task_id: str, hotkey: str, success: bool = True):
     async with _task_lock:
         load_task_history()
@@ -76,6 +86,8 @@ async def complete_task(task_id: str, hotkey: str, success: bool = True):
         task = get_task(task_id, hotkey)
         if task is None:
             return
+        if success and is_gpu_throttle_failure(task_id, hotkey):
+            success = False
         task.status = TaskStatus.SUCCESS if success else TaskStatus.FAILURE
         task.finished_at = datetime.utcnow()
         await save_task_history()
@@ -263,23 +275,36 @@ async def save_task_history():
     await asyncio.to_thread(_atomic_write_task_history, data)
 
 
+def _load_history_items() -> list[TrainerJob] | None:
+    """Parse the history file. None means missing or unreadable; the caller must not clear memory."""
+    if not TASK_HISTORY_FILE.exists():
+        return None
+    for attempt in range(_TASK_HISTORY_READ_RETRIES):
+        try:
+            data = _read_task_history()
+            return [_job_adapter.validate_python(item) for item in data]
+        except (json.JSONDecodeError, ValueError) as e:
+            if attempt < _TASK_HISTORY_READ_RETRIES - 1:
+                time.sleep(_TASK_HISTORY_RETRY_DELAY_SECONDS)
+                continue
+            logger.error(f"Failed to load task history from {TASK_HISTORY_FILE}: {e}")
+        except Exception as e:
+            logger.error(f"Unexpected error loading task history: {e}")
+            return None
+    return None
+
+
 def load_task_history():
-    global task_history
-    if TASK_HISTORY_FILE.exists():
-        for attempt in range(_TASK_HISTORY_READ_RETRIES):
-            try:
-                data = _read_task_history()
-                task_history.clear()
-                task_history.extend(_job_adapter.validate_python(item) for item in data)
-                return
-            except (json.JSONDecodeError, ValueError) as e:
-                if attempt < _TASK_HISTORY_READ_RETRIES - 1:
-                    time.sleep(_TASK_HISTORY_RETRY_DELAY_SECONDS)
-                    continue
-                logger.error(f"Failed to load task history from {TASK_HISTORY_FILE}: {e}")
-            except Exception as e:
-                logger.error(f"Unexpected error loading task history: {e}")
-                return
+    items = _load_history_items()
+    if items is None:
+        return
+    task_history.clear()
+    task_history.extend(items)
+
+
+def read_persisted_jobs() -> list[TrainerJob]:
+    """Jobs on disk. Does not replace the in-memory task list."""
+    return _load_history_items() or []
 
 
 def _read_task_history() -> list[dict]:

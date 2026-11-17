@@ -1158,13 +1158,23 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
 
 
 async def update_tournament_task_training_status(
-    task_id: str, hotkey: str, status: TrainingStatus, psql_db: PSQLDB, trainer_ip: str | None = None
+    task_id: str,
+    hotkey: str,
+    status: TrainingStatus,
+    psql_db: PSQLDB,
+    trainer_ip: str | None = None,
+    count_attempt: bool | None = None,
 ):
-    """Update the training status of a specific task-hotkey pair"""
+    """Update the training status of a specific task-hotkey pair.
+
+    n_training_attempts increases only when count_attempt is true. The default counts a move to
+    TRAINING, which is the dstack path. The trainer orchestrator passes False while a run is still
+    in progress and True when that run finishes for a reason other than a GPU fault.
+    """
     async with await psql_db.connection() as connection:
-        increment_clause = (
-            f", {cst.N_TRAINING_ATTEMPTS} = {cst.N_TRAINING_ATTEMPTS} + 1" if status == TrainingStatus.TRAINING else ""
-        )
+        if count_attempt is None:
+            count_attempt = status == TrainingStatus.TRAINING
+        increment_clause = f", {cst.N_TRAINING_ATTEMPTS} = {cst.N_TRAINING_ATTEMPTS} + 1" if count_attempt else ""
         trainer_ip_clause = f", {cst.TRAINER_IP} = $4" if trainer_ip else ""
 
         query = f"""
