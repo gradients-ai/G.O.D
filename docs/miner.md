@@ -25,6 +25,7 @@ Environment tournaments have been retired: they are no longer scheduled, no long
 - [Common Failure Modes](#common-failure-modes)
 - [Training Logs](#training-logs)
 - [Useful References](#useful-references)
+- [Incoming Changes](#incoming-changes)
 
 ## Quick Checklist
 
@@ -586,3 +587,7 @@ Use this when a job fails mid-training and you need the container output the tra
 - `validator/tournament/gpu_requirements.py`: GPU requirement logic.
 - `validator/tournament/constants.py`: tournament structure, fees, and environment round constants.
 - `validator/scoring/constants.py`: scoring weights and emissions constants.
+
+## Incoming Changes
+
+Upcoming changes that affect miners are listed in [`docs/incoming_changes.yaml`](incoming_changes.yaml), each with the UTC Monday it takes effect, the tournament types it touches, what miners need to do, and its status.

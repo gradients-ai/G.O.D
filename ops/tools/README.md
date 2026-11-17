@@ -8,6 +8,7 @@ Python and shell tools grouped by operational domain.
 - `db/`: database inspection snippets and helpers.
 - `datasets/`: dataset generation/formatting tools.
 - `evaluation/`: manual evaluation and reward-function tools.
+- `incoming_changes/`: validate `docs/incoming_changes.yaml` and mark entries shipped.
 - `god_monitor/`: read-only tournament monitoring CLI (`python -m ops.tools.god_monitor`).
 - `observability/`: observability smoke tools.
 - `scoring/`: scoring and weight calculation probes.

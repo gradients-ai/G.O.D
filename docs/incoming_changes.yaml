@@ -1,0 +1,56 @@
+# Incoming changes for miners.
+#
+# Each entry is a change that affects miners, with the UTC Monday it takes effect.
+# Validate with: python -m ops.tools.incoming_changes.validate
+#
+# Fields:
+#   id            kebab-case, unique; also used in the PR label `incoming:<id>`
+#   title         short name
+#   summary       1-2 miner-facing sentences
+#   areas         any of: text, image, compression
+#   status        planned | in_progress | testing | shipped | postponed
+#   date          ISO date (YYYY-MM-DD) of the UTC Monday the change takes effect
+#   miner_action  what miners need to do, or "Nothing."
+#   prs           gradients-ai/G.O.D PR numbers, e.g. [1432]
+#   docs          repo-relative doc paths, e.g. [docs/miner.md]
+#   shipped_on    ISO date the change merged, or null until shipped
+#
+# Merging a PR labelled `incoming:<id>` marks that entry shipped automatically
+# (see docs/developer.md, "Incoming Changes For Miners").
+
+changes:
+  - id: threshold-recalibration
+    title: Threshold recalibration
+    summary: Tournament thresholds are recalibrated across text, image and compression tournaments.
+    areas: [text, image, compression]
+    status: planned
+    date: 2026-12-07
+    miner_action: Nothing. Check the updated thresholds in the docs once this ships.
+    prs: []
+    docs: []
+    shipped_on: null
+
+  - id: compression-nats-budget
+    title: Compression quality budget in nats per token
+    summary: >-
+      The freeform compression quality line becomes a fixed budget of extra loss in nats per token,
+      instead of a ratio of the reference loss, so the allowed quality loss means the same on every task.
+      The exact budget is announced before this date.
+    areas: [compression]
+    status: planned
+    date: 2026-12-14
+    miner_action: Tune freeform submissions to stay within the new per-token loss budget once it is announced.
+    prs: []
+    docs: []
+    shipped_on: null
+
+  - id: fixed-vllm-quant-types
+    title: More fixed quantisation formats
+    summary: The fixed compression track adds more quantisation formats that vLLM can serve.
+    areas: [compression]
+    status: planned
+    date: 2026-12-14
+    miner_action: Nothing required. Miners can choose to support the new formats.
+    prs: []
+    docs: []
+    shipped_on: null

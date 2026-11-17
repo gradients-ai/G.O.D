@@ -1,0 +1,44 @@
+name: Incoming Changes
+
+on:
+  pull_request:
+    paths:
+      - docs/incoming_changes.yaml
+      - ops/tools/incoming_changes/**
+      - tests/ops/test_incoming_changes.py
+      - .github/workflows/incoming-changes*.yml
+  push:
+    branches:
+      - main
+    paths:
+      - docs/incoming_changes.yaml
+      - ops/tools/incoming_changes/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incoming-changes-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate incoming_changes.yaml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install "pydantic>=2.9,<3" pyyaml "pytest~=8.1.0"
+
+      - name: Validate
+        run: python -m ops.tools.incoming_changes.validate
+
+      - name: Test
+        run: python -m pytest -q -o addopts='' tests/ops/test_incoming_changes.py
