@@ -12,6 +12,7 @@ from pydantic import field_validator
 
 import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName as EnvironmentName
+from core.models.payload_models import PreparedTrainingImage
 from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
@@ -49,6 +50,45 @@ class TrainingStatus(str, Enum):
     TRAINING = "training"
     SUCCESS = "success"
     FAILURE = "failure"
+
+
+class ImageBuildVariant(str, Enum):
+    TEXT = "text"
+    IMAGE_FLUX = "image-flux"
+    IMAGE_TOOLKIT = "image-toolkit"
+
+
+class ImageBuildStatus(str, Enum):
+    QUEUED = "queued"
+    BUILDING = "building"
+    PUBLISHING = "publishing"
+    READY = "ready"
+    RETRY_WAIT = "retry_wait"
+    FAILED = "failed"
+
+
+class ImageBuild(BaseModel):
+    build_id: str
+    batch_id: str
+    tournament_id: str
+    hotkey: str
+    variant: ImageBuildVariant
+    stable_build_id: str
+    repo: str
+    commit_sha: str
+    dockerfile_path: str
+    build_context: str
+    platform: str = "linux/amd64"
+    depot_project_id: str | None = None
+    status: ImageBuildStatus = ImageBuildStatus.QUEUED
+    current_attempt: int = 0
+    github_token: str | None = Field(default=None, exclude=True)
+    pull_ref: str | None = None
+    digest: str | None = None
+    failure_class: str | None = None
+    log_ref: str | None = None
+    error_message: str | None = None
+    retry_after_at: datetime | None = None
 
 
 class RoundStatus(str, Enum):
@@ -276,6 +316,7 @@ class TaskTrainingAssignment(BaseModel):
     training_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prepared_image: PreparedTrainingImage | None = None
 
 
 class TournamentTaskTraining(BaseModel):
@@ -291,6 +332,7 @@ class TournamentTaskTraining(BaseModel):
     requested_datasets: list[str] | None = None
     priority: int = 1  # Training priority: 1=organic, 2=tournament, 3=benchmark
     trainer_ip: str | None = None
+    prepared_image: PreparedTrainingImage | None = None
 
 
 class TournamentTaskScore(BaseModel):

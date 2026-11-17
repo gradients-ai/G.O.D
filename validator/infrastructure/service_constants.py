@@ -49,6 +49,8 @@ MODEL_PREP_STATUS_ENDPOINT = "/v1/trainer/model_prep/{task_id}"
 GET_GPU_AVAILABILITY_ENDPOINT = "/v1/trainer/get_gpu_availability"
 TASK_DETAILS_ENDPOINT = "/v1/trainer/{task_id}"
 GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
+TRAINER_PREFETCH_IMAGES_ENDPOINT = "/v1/trainer/images/prefetch"
+TRAINER_IMAGES_INVENTORY_ENDPOINT = "/v1/trainer/images"
 
 # Dstack API endpoints
 DSTACK_RUNS_APPLY_ENDPOINT = "/api/project/{project}/runs/apply"

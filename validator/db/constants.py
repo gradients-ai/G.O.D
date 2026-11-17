@@ -43,6 +43,13 @@ PVP_PAIR_RESULTS_TABLE = "pvp_pair_results"
 TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
 TOURNAMENT_TASK_FAILURE_REVIEWS_TABLE = "tournament_task_failure_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
+IMAGE_BUILD_BATCHES_TABLE = "image_build_batches"
+IMAGE_BUILDS_TABLE = "image_builds"
+IMAGE_BUILD_ATTEMPTS_TABLE = "image_build_attempts"
+IMAGE_BUILD_VARIANT = "image_build_variant"
+IMAGE_BUILD_ID = "image_build_id"
+IMAGE_PULL_REF = "image_pull_ref"
+IMAGE_DIGEST = "image_digest"
 
 # Continuous-SFT lineage state (one row per lineage slug): the monotonic train_index cursor passed
 # to the content service + the carried-forward winner repo. Chunk data itself lives in the service.
