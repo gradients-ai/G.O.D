@@ -36,6 +36,7 @@ from core.models.quant_artifact_models import QuantDecodedFile
 from core.models.quant_artifact_models import QuantDecodedIndex
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
+from trainer.host_resources import ContainerResources
 from trainer.quant_decode.output_check import BF16_BYTES
 from trainer.quant_decode.output_check import SAFETENSORS_INDEX_NAME
 from trainer.quant_decode.output_check import SAFETENSORS_SUFFIX
@@ -341,8 +342,10 @@ def _raise_for_phase(outcome: DecodeOutcome, timeout_failure: str, failure_prefi
     raise _ScoredFail(f"{failure_prefix}: {outcome.failure}")
 
 
-async def _build(docker_client: docker.DockerClient, work: _WorkDirs, progress: _DecodeProgress) -> None:
-    outcome = await run_phase(docker_client, build_phase_spec(work.decoder, work.build))
+async def _build(
+    docker_client: docker.DockerClient, work: _WorkDirs, progress: _DecodeProgress, cpu_share: ContainerResources | None
+) -> None:
+    outcome = await run_phase(docker_client, build_phase_spec(work.decoder, work.build, cpu_share=cpu_share))
     progress.build_seconds = outcome.wall_seconds
     _raise_for_phase(outcome, "decoder build timed out", "decoder build")
     ran_build_script = (work.decoder / cst.DECODE_BUILD_SCRIPT).exists()
@@ -351,8 +354,14 @@ async def _build(docker_client: docker.DockerClient, work: _WorkDirs, progress: 
         logger.warning(f"!!! QUANT DECODER BUILD WARNING (not a scored fail): {progress.build_warning} !!!")
 
 
-async def _run(docker_client: docker.DockerClient, work: _WorkDirs, bf16_bytes: int, progress: _DecodeProgress) -> None:
-    spec = run_phase_spec(work.artifact, work.decoder, work.output, bf16_bytes, build_dir=work.build)
+async def _run(
+    docker_client: docker.DockerClient,
+    work: _WorkDirs,
+    bf16_bytes: int,
+    progress: _DecodeProgress,
+    cpu_share: ContainerResources | None,
+) -> None:
+    spec = run_phase_spec(work.artifact, work.decoder, work.output, bf16_bytes, build_dir=work.build, cpu_share=cpu_share)
     outcome = await run_phase(docker_client, spec)
     progress.run_seconds = outcome.wall_seconds
     _raise_for_phase(outcome, f"decoder timed out after {DECODE_TIMEOUT_SECONDS}s", "decoder")
@@ -446,6 +455,7 @@ async def _decode(
     docker_client: docker.DockerClient,
     progress: _DecodeProgress,
     report: ProgressReporter,
+    cpu_share: ContainerResources | None,
 ) -> None:
     work.create()
     progress.decoder_bytes = await asyncio.to_thread(_fetch_decoder, request, work.decoder_xz)
@@ -465,9 +475,9 @@ async def _decode(
     await report(f"decode: artifact fetched ({progress.artifact_bytes} bytes)")
 
     expected = await asyncio.to_thread(_expected_tensors, base_model_dir)
-    await _build(docker_client, work, progress)
+    await _build(docker_client, work, progress, cpu_share)
     await report(f"decode: decoder built in {progress.build_seconds:.0f}s")
-    await _run(docker_client, work, _bf16_bytes(expected), progress)
+    await _run(docker_client, work, _bf16_bytes(expected), progress, cpu_share)
     await report(f"decode: decoder ran in {progress.run_seconds:.0f}s")
     progress.n_tensors = await asyncio.to_thread(_check_output, work.output, expected)
     await report(f"decode: output checked ({progress.n_tensors} tensors)")
@@ -496,6 +506,7 @@ async def run_freeform_decode(
     work_root: Path,
     docker_client: docker.DockerClient,
     report: ProgressReporter = _no_report,
+    cpu_share: ContainerResources | None = None,
 ) -> QuantDecodeResult:
     """Decode one freeform submission end to end. Never raises for a miner's fault; the work dir is always removed.
 
@@ -515,6 +526,7 @@ async def run_freeform_decode(
             docker_client=docker_client,
             progress=progress,
             report=report,
+            cpu_share=cpu_share,
         )
         return QuantDecodeResult(ok=True, **progress.model_dump())
     except _ScoredFail as e:

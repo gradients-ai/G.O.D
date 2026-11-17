@@ -27,12 +27,15 @@ from core.models.quant_models import QuantTarget
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from trainer import cleanup
+from trainer import host_resources
 from trainer import runtime
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.output_reclaim import OutputReclaimError
 
 
 SPEC = QuantFormat.W4A16_SYM_G128.spec()
+# GPU 0's share of the conftest host (40 CPUs as 20 hyperthreaded cores, 2 GPUs, one core reserved).
+GPU0_CPUSET = "4-21"
 REAL_UPLOAD_REPO_TO_HF = runtime.upload_repo_to_hf
 DECODE = QuantDecodeRequest(
     decoder_snapshot_url="https://minio.example/decoder.tar.xz?sig=x",
@@ -291,6 +294,34 @@ async def test_text_container_gets_quant_spec_argument_and_env(monkeypatch, tmp_
     assert client.run_kwargs["environment"][core_cst.QUANT_SPEC_ENV] == SPEC.model_dump_json()
 
 
+async def test_text_container_is_pinned_to_its_gpu_share(monkeypatch, tmp_path: Path):
+    client = FakeDockerClient(tmp_path)
+    monkeypatch.setattr(runtime.docker, "from_env", lambda: client)
+    monkeypatch.setattr(runtime, "ensure_internal_network", lambda: None)
+    monkeypatch.setattr(runtime, "stream_container_logs", lambda *args: None)
+    training_data = _quant_request(TaskType.QUANTFIXEDTASK, quant_spec=SPEC).training_data
+
+    await runtime.run_trainer_container_text(
+        task_id="task-1",
+        hotkey="hk",
+        tag="tag",
+        model="org/model",
+        dataset=training_data.dataset,
+        dataset_type=training_data.dataset_type,
+        task_type=TaskType.QUANTFIXEDTASK,
+        file_format=training_data.file_format,
+        expected_repo_name="repo-1",
+        hours_to_complete=1.0,
+        gpu_ids=[0],
+    )
+
+    assert client.run_kwargs["cpuset_cpus"] == GPU0_CPUSET
+    assert "nano_cpus" not in client.run_kwargs
+    assert client.run_kwargs["mem_limit"] == host_resources.host_plan().memory_bytes_per_gpu
+    for var in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert client.run_kwargs["environment"][var] == "18"
+
+
 async def test_text_container_without_quant_spec_has_no_quant_contract(monkeypatch, tmp_path: Path):
     client = FakeDockerClient(tmp_path)
     monkeypatch.setattr(runtime.docker, "from_env", lambda: client)
@@ -491,7 +522,9 @@ async def test_quant_job_with_manifest_uploads_verbatim_then_decodes(recorder: R
     upload_run = recorder.docker_client.run_kwargs
     assert upload_run["image"] == runtime.cst.HF_UPLOAD_DOCKER_IMAGE
     assert upload_run["environment"]["UPLOAD_VERBATIM"] == "1"
+    assert upload_run["cpuset_cpus"] == GPU0_CPUSET  # the uploader runs on its job's cores
     assert len(recorder.decode_calls) == 1
+    assert recorder.decode_calls[0]["cpu_share"].cpuset_cpus == GPU0_CPUSET
     assert recorder.completed == [True]
 
 

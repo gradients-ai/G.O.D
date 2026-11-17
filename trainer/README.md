@@ -14,6 +14,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `diffusion_dataset.py` | Arranges image datasets for diffusion training. |
 | `endpoints.py` | API routes the validator calls. |
 | `host.py` | GPU inspection, repository cloning and Docker host helpers. |
+| `host_resources.py` | Splits the host's cores and RAM into one equal share per GPU; every job container gets its GPUs' shares. |
 | `job_state.py` | Persisted job and model-prep state (`task_history.json`). |
 | `model_artifacts.py` | Anonymous model directory names and identity scrubbing. |
 | `model_prep/` | Model preparation and baseline statistics. |
@@ -33,6 +34,20 @@ The service that takes jobs from the validator, clones miner repositories, build
 - Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
 - After each job the image is removed and dangling images are pruned.
 - The host-wide BuildKit cache prune runs while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
+
+## CPU and memory shares
+
+`host_resources.py` reads the host once per trainer process: the CPUs the trainer may use, their hyperthread siblings, RAM, and each GPU's local CPUs (`nvidia-smi` bus id, then `/sys/bus/pci/devices/<bdf>/local_cpulist`). If `nvidia-smi` fails, the GPU count comes from `/proc/driver/nvidia/gpus` and the split is even.
+
+- Each GPU owns an equal set of whole physical cores. GPUs on separate NUMA domains take cores from their own domain; when the affinity is missing, overlapping or too uneven for equal shares, the cores are split evenly in order.
+- `HOST_CPU_RESERVE_FRACTION` of the cores (at least one) and `HOST_MEMORY_RESERVE_FRACTION` of RAM (at least `HOST_MEMORY_RESERVE_MIN_GB`) stay with the host. The lowest cores are the ones kept.
+- A job with N GPUs gets N shares: `cpuset_cpus` for the union of their cores, N memory shares as `mem_limit`, and the thread-pool variables (`THREAD_ENV_VARS`) set to one GPU's share (one process per GPU). A pinned job has no CFS quota on top.
+- Training, image training and model prep get the full share. The job's downloader, requested-dataset download, uploader and freeform decode run on the same cores, inside the job's GPU reservation (decode keeps its `DECODE_CPUS` quota). Cache cleanup and output reclaim are not pinned.
+- The host reserve is only cores no job is given: the trainer, dockerd and the unpinned containers may still run on any core.
+- When the GPUs' NUMA domains cannot give equal local shares (e.g. both GPUs on one socket of a two-socket host), the even split is fair but not local.
+- A host with fewer physical cores than GPUs is shared by quota (`nano_cpus`) instead.
+
+The split is logged once at the first job (`Host split: ...`) and per container (`Allocating GPUs [...]`).
 
 ## Cleanup
 

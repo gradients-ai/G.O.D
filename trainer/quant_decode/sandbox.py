@@ -25,6 +25,9 @@ from core.constants.quant import DECODE_MEMORY_MULTIPLIER
 from core.constants.quant import DECODE_PIDS_LIMIT
 from core.constants.quant import DECODE_TIMEOUT_SECONDS
 from core.constants.quant import DECODER_ENTRYPOINT
+from trainer.host_resources import NANO_CPUS_PER_CPU
+from trainer.host_resources import ContainerResources
+from trainer.host_resources import thread_env
 from trainer.telemetry import logger
 
 
@@ -53,6 +56,8 @@ class DecodeContainerSpec(BaseModel):
     volumes: dict[str, dict[str, str]]  # docker-py bind form: {host_path: {"bind": path, "mode": "ro"|"rw"}}
     mem_limit: str
     nano_cpus: int
+    # The job's own cores (the decode runs inside the job's GPU slot), so it never competes with another job.
+    cpuset_cpus: str | None = None
     pids_limit: int
     timeout_seconds: float
     network_disabled: bool = True
@@ -76,7 +81,7 @@ class DecodeContainerSpec(BaseModel):
     def docker_run_kwargs(self) -> dict:
         """Kwargs for `client.containers.run`. No device_requests (no GPU) and no bridge network:
         even the internal bridge allows container-to-container traffic, so networking is disabled outright."""
-        return self.model_dump(exclude={"phase", "timeout_seconds"})
+        return self.model_dump(exclude={"phase", "timeout_seconds"}, exclude_none=True)
 
 
 class DecodeOutcome(BaseModel):
@@ -94,11 +99,24 @@ def sandbox_user() -> str:
     return f"{os.geteuid()}:{os.getegid()}"
 
 
+def _cpu_limits(cpu_share: ContainerResources | None) -> dict:
+    """CPU fields of a phase: DECODE_CPUS, placed on the job's cores when it has a pinned share (fewer if the share is
+    smaller), with the thread pools sized to match."""
+    if cpu_share is None or not cpu_share.cpus:
+        return {"nano_cpus": DECODE_CPUS * NANO_CPUS_PER_CPU, "environment": {**DECODE_ENVIRONMENT, **thread_env(DECODE_CPUS)}}
+    cpus = min(DECODE_CPUS, cpu_share.cpu_count)
+    return {
+        "nano_cpus": cpus * NANO_CPUS_PER_CPU,
+        "cpuset_cpus": cpu_share.cpuset_cpus,
+        "environment": {**DECODE_ENVIRONMENT, **thread_env(cpus)},
+    }
+
+
 def _bind(host_path: Path, container_path: str, mode: str) -> dict[str, dict[str, str]]:
     return {str(host_path): {"bind": container_path, "mode": mode}}
 
 
-def build_phase_spec(decoder_src: Path, build_out: Path) -> DecodeContainerSpec:
+def build_phase_spec(decoder_src: Path, build_out: Path, cpu_share: ContainerResources | None = None) -> DecodeContainerSpec:
     """Build phase: only the decoder source (read-only) and an empty build dir; the compiler is available."""
     if (decoder_src / cst.DECODE_BUILD_SCRIPT).exists():
         command = ["/bin/sh", f"{cst.DECODE_DECODER_PATH}/{cst.DECODE_BUILD_SCRIPT}"]
@@ -113,7 +131,7 @@ def build_phase_spec(decoder_src: Path, build_out: Path) -> DecodeContainerSpec:
             **_bind(build_out, cst.DECODE_BUILD_OUT_PATH, "rw"),
         },
         mem_limit=f"{cst.QUANT_DECODE_MIN_MEMORY_GB}g",
-        nano_cpus=DECODE_CPUS * 1_000_000_000,
+        **_cpu_limits(cpu_share),
         pids_limit=DECODE_PIDS_LIMIT,
         timeout_seconds=DECODE_TIMEOUT_SECONDS,
         user=sandbox_user(),
@@ -129,7 +147,12 @@ def run_phase_mem_limit_bytes(bf16_model_bytes: int) -> int:
 
 
 def run_phase_spec(
-    artifact_dir: Path, decoder_dir: Path, output_dir: Path, bf16_model_bytes: int, build_dir: Path | None = None
+    artifact_dir: Path,
+    decoder_dir: Path,
+    output_dir: Path,
+    bf16_model_bytes: int,
+    build_dir: Path | None = None,
+    cpu_share: ContainerResources | None = None,
 ) -> DecodeContainerSpec:
     """Run phase: artifact, decoder source and build output read-only, an empty output dir; no compiler in the image.
 
@@ -152,7 +175,7 @@ def run_phase_spec(
             **build_mount,
         },
         mem_limit=str(run_phase_mem_limit_bytes(bf16_model_bytes)),
-        nano_cpus=DECODE_CPUS * 1_000_000_000,
+        **_cpu_limits(cpu_share),
         pids_limit=DECODE_PIDS_LIMIT,
         timeout_seconds=DECODE_TIMEOUT_SECONDS,
         user=sandbox_user(),

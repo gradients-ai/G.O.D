@@ -31,10 +31,10 @@ Both phases share these limits. The constants are in `core/constants/quant.py` a
 | User | the trainer process's uid:gid (`sandbox.sandbox_user`) |
 | Network | disabled (`network_disabled`) |
 | GPU | none |
-| Environment | `HOME=/tmp` only. Credential-like keys are rejected |
+| Environment | `HOME=/tmp` and the thread-pool variables (`host_resources.THREAD_ENV_VARS`). Credential-like keys are rejected |
 | Filesystem | read-only root, tmpfs at `/tmp` (`sandbox.DECODE_TMPFS`) |
 | Privileges | all capabilities dropped, `no-new-privileges` |
-| CPUs | `DECODE_CPUS` |
+| CPUs | `DECODE_CPUS`, pinned to the job's cores (`cpuset_cpus`); fewer when the job's share is smaller |
 | Processes | `DECODE_PIDS_LIMIT` |
 | Wall clock | `DECODE_TIMEOUT_SECONDS` per phase |
 | Memory, build | `QUANT_DECODE_MIN_MEMORY_GB` |

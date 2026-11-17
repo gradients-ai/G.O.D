@@ -48,6 +48,8 @@ from core.models.task_models import TaskType
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
+from trainer.host_resources import container_resources
+from trainer.host_resources import pinned_helper_kwargs
 from trainer.job_state import complete_task
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
@@ -90,23 +92,6 @@ def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
         client.networks.get(name)
     except docker.errors.NotFound:
         client.networks.create(name, driver="bridge", internal=True)
-
-
-def calculate_container_resources(gpu_ids: list[int]) -> tuple[str, int]:
-    """Calculate memory limit and CPU limit based on GPU count.
-
-    Returns:
-        tuple: (memory_limit_str, cpu_limit_nanocpus)
-    """
-    num_gpus = len(gpu_ids)
-    memory_limit = f"{num_gpus * cst.MEMORY_PER_GPU_GB}g"
-    # Docker rejects a limit above the host's cores, which a 2-GPU container reaches on a small host (e.g. 40 cores).
-    host_cpus = os.cpu_count()
-    cpus = num_gpus * cst.CPUS_PER_GPU if host_cpus is None else min(num_gpus * cst.CPUS_PER_GPU, host_cpus)
-    cpu_limit_nanocpus = cpus * 1_000_000_000
-
-    logger.info(f"Allocating resources for {num_gpus} GPUs: {memory_limit} memory, {cpus} CPUs")
-    return memory_limit, cpu_limit_nanocpus
 
 
 def build_docker_image(
@@ -279,8 +264,8 @@ async def run_trainer_container_image(
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
-    # Calculate resources based on GPU count
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    environment.update(resources.thread_env())
 
     # Set shared memory size based on GPU count
     shm_size = "16g" if len(gpu_ids) >= 4 else "8g"
@@ -302,8 +287,7 @@ async def run_trainer_container_image(
                 shm_size=shm_size,
                 name=container_name,
                 labels=log_labels,
-                mem_limit=memory_limit,
-                nano_cpus=cpu_limit_nanocpus,
+                **resources.docker_kwargs(),
                 device_requests=[docker.types.DeviceRequest(device_ids=[str(i) for i in gpu_ids], capabilities=[["gpu"]])],
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
@@ -415,8 +399,8 @@ async def run_trainer_container_text(
 
     container_name = f"text-trainer-{uuid.uuid4().hex}"
 
-    # Calculate resources based on GPU count
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    environment.update(resources.thread_env())
 
     # Set shared memory size based on GPU count
     shm_size = "16g" if len(gpu_ids) >= 4 else "8g"
@@ -438,8 +422,7 @@ async def run_trainer_container_text(
                 shm_size=shm_size,
                 name=container_name,
                 labels=log_labels,
-                mem_limit=memory_limit,
-                nano_cpus=cpu_limit_nanocpus,
+                **resources.docker_kwargs(),
                 device_requests=[docker.types.DeviceRequest(device_ids=[str(i) for i in gpu_ids], capabilities=[["gpu"]])],
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
@@ -491,6 +474,7 @@ def run_downloader_container(
     training_mode: ImageTrainingMode | None = None,
     log_labels: dict[str, str] | None = None,
     anonymize: bool = True,
+    gpu_ids: list[int] | None = None,
 ) -> tuple[int, Exception | None]:
     client = docker.from_env()
 
@@ -532,6 +516,7 @@ def run_downloader_container(
             environment=environment,
             remove=False,
             detach=True,
+            **pinned_helper_kwargs(gpu_ids),
         )
 
         try:
@@ -590,6 +575,7 @@ def run_model_prep_container(
         hotkey="",
         file_format=FileFormat.S3,
         log_labels=log_labels,
+        gpu_ids=gpu_ids,
     )
     if download_exit != 0:
         raise RuntimeError(f"Downloader failed: {download_err}")
@@ -625,7 +611,8 @@ def run_model_prep_container(
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    env.update(resources.thread_env())
 
     model_prep_image = cst.MODEL_PREP_TEXT_DOCKER_IMAGE
 
@@ -642,8 +629,7 @@ def run_model_prep_container(
                 device_ids=[str(i) for i in gpu_ids],
                 capabilities=[["gpu"]],
             )],
-            mem_limit=memory_limit,
-            nano_cpus=cpu_limit_nanocpus,
+            **resources.docker_kwargs(),
             network=None,
             remove=False,
             detach=True,
@@ -682,6 +668,7 @@ async def upload_repo_to_hf(
     wandb_token: str | None = None,
     path_in_repo: str | None = None,
     verbatim: bool = False,
+    gpu_ids: list[int] | None = None,
 ):
     container = None
     try:
@@ -720,6 +707,7 @@ async def upload_repo_to_hf(
             detach=True,
             remove=False,
             name=container_name,
+            **pinned_helper_kwargs(gpu_ids),
         )
 
         _log_streaming_task = asyncio.create_task(
@@ -837,6 +825,7 @@ async def freeform_decode_result(task: TrainerProxyRequest) -> QuantDecodeResult
             work_root=cst.QUANT_DECODE_WORK_ROOT,
             docker_client=client,
             report=partial(log_task, training_data.task_id, task.hotkey),
+            cpu_share=container_resources(task.gpu_ids),
         )
     except Exception as e:  # anything the job did not classify is ours, never the miner's
         logger.exception(f"Freeform decode crashed for task {training_data.task_id}")
@@ -941,6 +930,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             training_mode=training_data.training_mode if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
             anonymize=model_prep_ran,
+            gpu_ids=task.gpu_ids,
         )
 
         if download_status == 0:
@@ -1145,6 +1135,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                         wandb_token=wandb_token,
                         path_in_repo=path_in_repo,
                         verbatim=task_type in QUANT_TASK_TYPES,
+                        gpu_ids=task.gpu_ids,
                     )
 
                     await log_task(training_data.task_id, task.hotkey, "Repo uploaded successfully.")

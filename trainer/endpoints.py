@@ -81,6 +81,7 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
                 requested_datasets=req.requested_datasets,
                 hotkey=hotkey,
                 task_id=task_id,
+                gpu_ids=req.gpu_ids,
             )
             req.requested_datasets = downloaded or None
         except Exception as e:

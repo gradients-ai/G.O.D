@@ -51,8 +51,11 @@ QUANT_DECODER_BUILD_IMAGE = "gradientsio/quant-decoder-build:pinned"
 QUANT_DECODER_RUN_IMAGE = "gradientsio/quant-decoder-run:pinned"
 
 # Resource allocation
-MEMORY_PER_GPU_GB = 110  # ~61% of 1440GB / 8 GPUs
-CPUS_PER_GPU = 24  # Conservative allocation leaving headroom
+# Each GPU owns an equal share of the host's cores and RAM (host_resources.py). These reserves stay with the host,
+# the trainer and its helper containers.
+HOST_CPU_RESERVE_FRACTION = 0.03  # of physical cores, rounded up, at least one core
+HOST_MEMORY_RESERVE_FRACTION = 0.10
+HOST_MEMORY_RESERVE_MIN_GB = 16
 QUANT_DECODE_MIN_MEMORY_GB = 8  # memory floor for both decoder sandbox phases
 
 # Timing and retries

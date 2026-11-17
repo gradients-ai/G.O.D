@@ -12,6 +12,8 @@ from pydantic import ValidationError
 import trainer.constants as cst
 from core.constants.quant import DECODE_CPUS
 from core.constants.quant import DECODE_PIDS_LIMIT
+from trainer.host_resources import ContainerResources
+from trainer.host_resources import thread_env
 from trainer.quant_decode import sandbox
 from trainer.quant_decode.sandbox import DecodeContainerSpec
 from trainer.quant_decode.sandbox import DecodePhase
@@ -67,8 +69,10 @@ class FakeClient:
         self.containers = FakeContainers(container)
 
 
-def _run_spec(tmp_path: Path, bf16_model_bytes: int = 16 * GB) -> DecodeContainerSpec:
-    return run_phase_spec(tmp_path / "artifact", tmp_path / "decoder", tmp_path / "output", bf16_model_bytes)
+def _run_spec(
+    tmp_path: Path, bf16_model_bytes: int = 16 * GB, cpu_share: ContainerResources | None = None
+) -> DecodeContainerSpec:
+    return run_phase_spec(tmp_path / "artifact", tmp_path / "decoder", tmp_path / "output", bf16_model_bytes, cpu_share=cpu_share)
 
 
 def _assert_sandboxed(kwargs: dict) -> None:
@@ -78,12 +82,33 @@ def _assert_sandboxed(kwargs: dict) -> None:
     assert kwargs["read_only"] is True
     assert kwargs["cap_drop"] == ["ALL"]
     assert kwargs["security_opt"] == ["no-new-privileges"]
-    assert kwargs["environment"] == {"HOME": "/tmp"}
+    assert kwargs["environment"] == {"HOME": "/tmp", **thread_env(DECODE_CPUS)}
     assert kwargs["user"] == f"{os.geteuid()}:{os.getegid()}"
     assert kwargs["user"] != "0:0" or os.geteuid() == 0
     assert kwargs["pids_limit"] == DECODE_PIDS_LIMIT
     assert kwargs["nano_cpus"] == DECODE_CPUS * 1e9
     assert kwargs["tmpfs"] == {"/tmp": "size=1g"}
+
+
+@pytest.mark.parametrize(("share_cpus", "expected_cpus"), [(list(range(20, 40)), DECODE_CPUS), ([4, 5, 6, 7], 4)])
+def test_specs_run_on_the_job_cores(tmp_path: Path, share_cpus: list[int], expected_cpus: int):
+    share = ContainerResources(gpu_ids=[1], cpus=share_cpus, cpu_count=len(share_cpus), memory_bytes=GB)
+
+    for spec in (build_phase_spec(tmp_path / "src", tmp_path / "build", cpu_share=share), _run_spec(tmp_path, cpu_share=share)):
+        kwargs = spec.docker_run_kwargs()
+        assert kwargs["cpuset_cpus"] == share.cpuset_cpus
+        assert kwargs["nano_cpus"] == expected_cpus * 1e9
+        assert kwargs["environment"]["HOME"] == "/tmp"
+        assert kwargs["environment"]["OMP_NUM_THREADS"] == str(expected_cpus)
+
+
+def test_unpinned_share_keeps_the_plain_cpu_quota(tmp_path: Path):
+    share = ContainerResources(gpu_ids=[0], cpus=[], cpu_count=8, memory_bytes=GB)
+
+    kwargs = build_phase_spec(tmp_path / "src", tmp_path / "build", cpu_share=share).docker_run_kwargs()
+
+    assert "cpuset_cpus" not in kwargs
+    _assert_sandboxed(kwargs)
 
 
 def test_build_spec_mounts_and_limits(tmp_path: Path):

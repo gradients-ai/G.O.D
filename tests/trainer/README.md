@@ -8,7 +8,8 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | --- | --- |
 | `model_prep/` | Model-prep statistics, device probes, merged-repo naming and round trips. |
 | `test_build_context_review.py` | Large build-context files are flagged for review, `.git` excluded, and never fail a build. |
-| `test_container_resources.py` | Training container CPU limits never exceed the host. |
+| `conftest.py` | Gives every trainer test a fake 40-CPU, 2-GPU host split. |
+| `test_container_resources.py` | Per-GPU CPU and memory shares on fake hosts: fair disjoint core sets, NUMA, fallbacks, thread env. |
 | `test_dataset_and_anonymizer_flow.py` | Requested-dataset whitelist validation, field propagation and model anonymisation. |
 | `test_downloader_image_cache.py` | Image-model cache classification, validation and atomic replacement, without network. |
 | `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |

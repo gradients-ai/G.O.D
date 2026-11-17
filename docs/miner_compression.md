@@ -266,11 +266,12 @@ The decoder is snapshotted at enrolment and that snapshot is what runs. It runs 
 | Decoder size after xz | 1,048,576 bytes |
 | Decoder size extracted | 64 MiB |
 | Wall clock | 900 s per phase |
-| CPUs | 16 |
+| CPUs | 16, on the job's own cores (all of them if the job has fewer) |
 | Memory | run: 2.5 x the input model's bf16 bytes, at least 8 GiB. Build: 8 GiB |
 | Processes | 256 |
 | Writable scratch | 1 GiB at `/tmp`. The root filesystem is read-only |
-| GPU, network, base model, environment | none (`HOME=/tmp` is the only variable) |
+| GPU, network, base model | none |
+| Environment | `HOME=/tmp`, and the thread-pool variables (`OMP_NUM_THREADS` and the others in the [miner guide](miner.md)) set to the CPU count |
 
 Source: [`core/constants/quant.py`](../core/constants/quant.py), [`sandbox.py`](../trainer/quant_decode/sandbox.py), [`quant-decoder-run.dockerfile`](../ops/docker/quant-decoder-run.dockerfile).
 

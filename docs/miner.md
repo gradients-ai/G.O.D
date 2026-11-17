@@ -106,8 +106,9 @@ The held-out split used for scoring is never given to your container.
 | --- | --- |
 | Image build | No layer cache, 30 minute limit. |
 | GPUs | H100s, and only those assigned to the task. Counts are in the guides. |
-| Memory | 110 GB per GPU. |
-| CPU | 24 cores per GPU, capped at the host's cores. |
+| Memory | An equal share of the host's RAM per GPU, after a reserve for the host (10%, at least 16 GB). |
+| CPU | An equal share of the host's physical cores per GPU, pinned (`cpuset`), local to the GPU where the host reports it. A small reserve stays with the host. No other job runs on these cores. |
+| Threads | `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `NUMEXPR_NUM_THREADS`, `NUMEXPR_MAX_THREADS` and `RAYON_NUM_THREADS` are set to one GPU's share of CPUs: a multi-GPU job is expected to run one process per GPU. |
 | Shared memory | 8 GB, or 16 GB with four or more GPUs. |
 | Network | An internal Docker bridge with no internet access. |
 | Privileges | `no-new-privileges`, all Linux capabilities dropped. |
