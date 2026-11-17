@@ -27,8 +27,11 @@ class DcgmGpuHealth(BaseModel):
     warnings: list[DcgmSubsystem] = []
 
 
+_watches_enabled = False
+
+
 def parse_dcgm_health(payload: str) -> list[DcgmGpuHealth]:
-    """Turn `dcgmi health -c a -j` into per-GPU failures and warnings.
+    """Turn `dcgmi health -c -j` into per-GPU failures and warnings.
 
     NVLink and other subsystems reported as skipped or healthy are ignored, so a PCIe
     box with no NVLink and no fabric manager does not produce a fault.
@@ -39,10 +42,26 @@ def parse_dcgm_health(payload: str) -> list[DcgmGpuHealth]:
 
 
 def query_dcgm_health() -> list[DcgmGpuHealth] | None:
-    """Run dcgmi. None when the binary or the hostengine is unavailable."""
+    """Run dcgmi. None when the binary or the hostengine is unavailable.
+
+    DCGM 3.3 takes no argument to `-c`. `a` means all watches and is passed to `-s`.
+    Watches are enabled once; PCIe, memory, thermal, and NVLink need about a minute of
+    samples before they can report a failure. An overall Healthy body has no per-GPU block.
+    """
+    global _watches_enabled
     try:
+        if not _watches_enabled:
+            enabled = subprocess.run(
+                ["dcgmi", "health", "-s", "a"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if enabled.returncode != 0:
+                return None
+            _watches_enabled = True
         proc = subprocess.run(
-            ["dcgmi", "health", "-c", "a", "-j"],
+            ["dcgmi", "health", "-c", "-j"],
             capture_output=True,
             text=True,
             timeout=10,

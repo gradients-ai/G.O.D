@@ -8,8 +8,8 @@ is not a separate threshold, because a hot GPU at full clocks is normal and a co
 throttled. Tune the ratio from `gpu_throttle_observation` lines on a healthy loaded box.
 
 `task trainer`, the trainer systemd unit, and `task bootstrap` install DCGM when it is missing.
-The same tick asks DCGM (`dcgmi health -c a`) once that hostengine is up. A DCGM failure withdraws
-that GPU. Warnings are logged. If the install fails, or the box has no nvidia-fabricmanager unit,
+The same tick asks DCGM (`dcgmi health -s a` once, then `dcgmi health -c -j`) once that hostengine is up.
+A DCGM failure withdraws that GPU. Warnings are logged. If the install fails, or the box has no nvidia-fabricmanager unit,
 the NVML ECC, NVLink, and hardware-Xid checks run instead. Fabric manager is always a systemd check:
 the unit has to be installed and inactive before every GPU on the box is withdrawn.
 Env:
