@@ -33,6 +33,12 @@ tasks:
       - pm2 delete trainer || true
       - pm2 start bash --name trainer -- -c 'ENV=DEV uvicorn trainer.asgi:app --host 0.0.0.0 --port 8001 --env-file .trainer.env --log-level debug'
 
+  trainer-gpu-monitor:
+    desc: "Watch trainer GPUs for clock throttling and alert DISCORD_WEBHOOK (from .trainer.env)"
+    cmds:
+      - pm2 delete trainer-gpu-monitor || true
+      - pm2 start bash --name trainer-gpu-monitor -- -c 'set -a && . ./.trainer.env && set +a && python -m trainer.gpu_monitor'
+
   dbdown:
     cmds:
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml run dbmate --wait down
