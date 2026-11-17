@@ -16,6 +16,7 @@ from core.logging import LogContext
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
 from core.models.payload_models import ModelPrepJob
+from core.models.payload_models import PreparedTrainingImage
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestImage
@@ -44,6 +45,7 @@ from validator.tasks.models import EnvRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.synthetics.scheduler import compute_hours_from_baseline_stats
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
+from validator.tournament.image_builds.gate import attach_prepared_images
 from validator.tournament.models import GpuRequirement
 from validator.tournament.models import TaskTrainingAssignment
 from validator.tournament.models import TournamentTaskTraining
@@ -503,6 +505,9 @@ async def process_pending_tournament_tasks(config: Config):
 
             logger.info(f"Fetched {len(pending_training_tasks)} pending training tasks, {len(tournament_tasks)}")
 
+            # Attach prebuilt images; trainings whose image is still building wait for a later cycle.
+            tournament_tasks = await attach_prepared_images(tournament_tasks, config)
+
             if not tournament_tasks:
                 await asyncio.sleep(cst.PROCESS_PENDING_TASKS_CYCLE_INTERVAL)
                 continue
@@ -587,6 +592,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     training_task.github_token,
                     training_task.requested_datasets,
                     config,
+                    prepared_image=training_task.prepared_image,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
 
@@ -828,6 +834,7 @@ async def _create_training_request(
     github_token: str | None,
     requested_datasets: list[str] | None,
     config: Config,
+    prepared_image: PreparedTrainingImage | None = None,
 ) -> TrainerProxyRequest:
     """
     Create a TrainerProxyRequest based on the task type.
@@ -908,6 +915,7 @@ async def _create_training_request(
         github_commit_hash=training_commit_hash,
         github_token=github_token,
         requested_datasets=requested_datasets,
+        prepared_image=prepared_image,
     )
 
 

@@ -15,6 +15,7 @@ Service that receives work from the validator, clones miner repositories, builds
 - `diffusion_dataset.py`: diffusion image dataset extraction/arrangement helpers.
 - `model_artifacts.py`: model artifact path and metadata helpers.
 - `model_prep/`: baseline/model-prep routines.
+- `prepared_images/`: tournament images built once and stored in R2 (builder, puller, local staging registry, cache eviction).
 - `runtime.py`: core Docker orchestration for downloader, model prep, training, env sidecars, and upload containers.
 - `telemetry.py`: trainer logging setup.
 - `training_config.py`: trainer-only config file writing and reward function materialization helpers.

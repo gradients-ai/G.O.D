@@ -92,6 +92,66 @@ class TrainRequestImage(TrainRequest):
         return self
 
 
+ImageBuildVariantName = Literal["text", "image-flux", "image-toolkit"]
+ImageBuildFailureClass = Literal["dockerfile", "clone", "build", "infrastructure", "timeout", "stalled", "cancelled"]
+ImageBuildJobState = Literal["queued", "cloning", "building", "publishing", "ready", "failed"]
+
+
+class PreparedTrainingImage(BaseModel):
+    """A tournament training image built once and stored in the R2 image registry (see core/image_registry.py)."""
+
+    build_id: str
+    repository: str = Field(..., description="Registry repository path, e.g. god/<tournament>/<hotkey>-<variant>")
+    digest: str = Field(..., pattern=r"^sha256:[0-9a-f]{64}$")
+    variant: ImageBuildVariantName
+
+
+class ImageBuildRequest(BaseModel):
+    """Validator -> trainer: build one miner repo and publish it to the R2 image registry.
+
+    Idempotent on (build_id, attempt): re-posting returns the existing job.
+    """
+
+    build_id: str
+    attempt: int = Field(..., ge=1)
+    repo: str
+    commit: str | None = Field(None, description="Commit to build; None builds the default branch HEAD")
+    github_token: str | None = None
+    variant: ImageBuildVariantName
+    repository: str
+    tag: str = Field(..., pattern=r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
+
+
+class ImageBuildStatusResponse(BaseModel):
+    build_id: str
+    attempt: int
+    state: ImageBuildJobState
+    digest: str | None = None
+    resolved_commit: str | None = None
+    dockerfile_path: str | None = None
+    size_bytes: int | None = None
+    failure_class: ImageBuildFailureClass | None = None
+    error: str | None = Field(None, description="Sanitized tail of the build output for failed builds")
+    started_at: datetime | None = None
+    last_progress_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ImageBuilderStatus(BaseModel):
+    """Trainer -> validator: whether this host can take image builds right now."""
+
+    enabled: bool
+    reason: str | None = Field(None, description="Why the builder is disabled, when it is")
+    slots_total: int = 0
+    active_builds: int = 0
+    free_slots: int = 0
+    compression: Literal["zstd", "gzip"] | None = Field(
+        None, description="Layer compression this host produces: zstd on the containerd image store, gzip on overlay2"
+    )
+    gpu_jobs_running: int = 0
+    free_disk_gb: float = 0.0
+
+
 class TrainerProxyRequest(BaseModel):
     training_data: TrainRequestImage | TrainRequestText
     github_repo: str
@@ -100,6 +160,13 @@ class TrainerProxyRequest(BaseModel):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prepared_image: PreparedTrainingImage | None = Field(
+        None,
+        description=(
+            "Prebuilt image to pull instead of building the repo on the trainer. The repo fields stay set so the "
+            "trainer can fall back to a local build if the pull fails."
+        ),
+    )
 
 
 class TrainerJob(BaseModel):

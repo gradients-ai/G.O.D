@@ -10,5 +10,6 @@ Shared code used by more than one runtime. Keep this package free of validator-o
 - `training_templates/`: base Axolotl and diffusion training templates copied into trainer containers.
 - `downloads.py`: shared S3 download helper.
 - `git.py`: Git repository URL and clone helpers.
+- `image_registry.py`: R2 layout, naming, and settings for prebuilt tournament images (shared by trainer builders/pullers and validator pruning).
 - `logging.py`: common logger setup.
 - `training_config.py`: shared Axolotl dataset entry construction used by trainer and validator evaluation flows.

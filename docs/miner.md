@@ -286,6 +286,9 @@ For each assigned task, the trainer:
 1. Clones your submitted GitHub repository at `commit_hash`.
 2. Downloads the base model and task dataset into a shared Docker cache volume.
 3. Builds the task-specific Dockerfile from your repository root.
+
+Validators may instead build your image once at tournament start (on a separate machine, with `--pull`) and reuse that exact image, pinned by digest, for all of your tasks in the tournament. Build output is the same, so make your build deterministic: pin commits and package versions, and do not depend on a step re-running per task. A build that shows no output for 10 minutes or runs over 60 minutes is stopped; if a prebuilt image cannot be produced, the trainer builds your repository itself as described above.
+
 4. Starts your training container with assigned GPU IDs, CLI arguments, mounted volumes, and environment variables.
 5. Waits up to `hours_to_complete`.
 6. Uploads `/app/checkpoints/{task_id}/{expected_repo_name}` to the validator Hugging Face account.

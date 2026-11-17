@@ -35,6 +35,7 @@ from core.models.payload_models import TrainRequestText
 from core.models.task_models import TaskType
 from trainer import constants as cst
 from trainer.host import build_wandb_env
+from trainer.host import clone_repo
 from trainer.host import extract_container_error
 from trainer.job_state import complete_task
 from trainer.job_state import log_task
@@ -42,6 +43,7 @@ from trainer.job_state import update_container_name
 from trainer.job_state import update_training_started_at
 from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
+from trainer.prepared_images.puller import ensure_prepared_image
 from trainer.telemetry import logger
 
 
@@ -716,9 +718,35 @@ def _resolve_dockerfile_path(local_repo_path: str, candidate_paths: tuple[str, .
     raise FileNotFoundError(f"Training repository is missing a supported Dockerfile. Checked: {searched}")
 
 
-async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
+async def _build_from_repo(
+    task: TrainerProxyRequest, task_type: TaskType, local_repo_path: str | None, log_labels: dict
+) -> tuple[str | None, str | None]:
+    """Today's path: (clone if needed and) build the miner repo on this trainer."""
+    training_data = task.training_data
+    if local_repo_path is None:
+        local_repo_path = await asyncio.to_thread(
+            clone_repo,
+            repo_url=task.github_repo,
+            parent_dir=cst.TEMP_REPO_PATH,
+            commit_hash=task.github_commit_hash or "HEAD",
+            github_token=task.github_token,
+            task_id=training_data.task_id,
+            hotkey=task.hotkey,
+        )
+    dockerfile_path = get_dockerfile_path(task_type, training_data, local_repo_path)
+    return await asyncio.to_thread(
+        build_docker_image,
+        dockerfile_path=dockerfile_path,
+        log_labels=log_labels,
+        is_image_task=(task_type == TaskType.IMAGETASK),
+        context_path=local_repo_path,
+    )
+
+
+async def start_training_task(task: TrainerProxyRequest, local_repo_path: str | None):
     cancelled_exc: asyncio.CancelledError | None = None
     cancel_log_message: str | None = None
+    pull_task: asyncio.Task | None = None
 
     try:
         training_data = task.training_data
@@ -726,6 +754,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         container = None
         env_server_containers = []
         tag = None
+        prepared_image_in_use = False
         timeout_seconds = max(1, int(training_data.hours_to_complete * 3600))
         task_type = get_task_type(task)
         await create_volumes_if_dont_exist()
@@ -743,7 +772,13 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             ),
         }
 
-        dockerfile_path = get_dockerfile_path(task_type, training_data, local_repo_path)
+        if task.prepared_image is not None:
+            # Pull the prebuilt image while the downloader fetches model/dataset.
+            await log_task(training_data.task_id, task.hotkey, f"Fetching prepared image {task.prepared_image.digest}")
+            pull_task = asyncio.create_task(ensure_prepared_image(task.prepared_image, log_labels))
+        else:
+            # Fail fast on a missing Dockerfile before the (long) download.
+            get_dockerfile_path(task_type, training_data, local_repo_path)
 
         logger.info("Running Cache Download Container", extra=log_labels)
         await log_task(training_data.task_id, task.hotkey, "Downloading data")
@@ -773,13 +808,24 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Downloader container failed: {exc}")
 
-        tag, exc = await asyncio.to_thread(
-            build_docker_image,
-            dockerfile_path=dockerfile_path,
-            log_labels=log_labels,
-            is_image_task=(task_type == TaskType.IMAGETASK),
-            context_path=local_repo_path,
-        )
+        tag, exc = None, None
+        if pull_task is not None:
+            try:
+                tag = await pull_task
+                prepared_image_in_use = True
+                await log_task(training_data.task_id, task.hotkey, f"Using prepared image {tag}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as pull_error:
+                logger.warning(f"Prepared image unavailable, building locally instead: {pull_error}", extra=log_labels)
+                await log_task(
+                    training_data.task_id, task.hotkey, f"Prepared image unavailable ({pull_error}); building locally"
+                )
+        if tag is None:
+            try:
+                tag, exc = await _build_from_repo(task, task_type, local_repo_path, log_labels)
+            except Exception as build_error:
+                tag, exc = None, str(build_error)
 
         if not tag:
             message = f"[ERROR] Image Build failed | ExitCode: Unknown | LastError: {exc}"
@@ -788,7 +834,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Image build failed: {exc}")
 
-        await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
+        if not prepared_image_in_use:
+            await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
 
         env_server_url_str = None
         if task_type == TaskType.ENVIRONMENTTASK:
@@ -919,7 +966,12 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     await log_task(training_data.task_id, task.hotkey, f"Error during container cleanup: {cleanup_err}")
 
             logger.info("Cleaning up", extra=log_labels)
-            if tag:
+            if pull_task is not None and not pull_task.done():
+                pull_task.cancel()
+            if tag and prepared_image_in_use:
+                # Kept for later rounds on this trainer; trainer/prepared_images/cache.py evicts it.
+                logger.info("Keeping prepared image in the host cache.", extra=log_labels)
+            elif tag:
                 await asyncio.to_thread(delete_image_and_cleanup, tag)
                 logger.info("Cleaned up Docker resources.", extra=log_labels)
             else:

@@ -49,6 +49,10 @@ MODEL_PREP_STATUS_ENDPOINT = "/v1/trainer/model_prep/{task_id}"
 GET_GPU_AVAILABILITY_ENDPOINT = "/v1/trainer/get_gpu_availability"
 TASK_DETAILS_ENDPOINT = "/v1/trainer/{task_id}"
 GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
+# Prepared tournament images (trainer/prepared_images, validator/tournament/image_builds)
+IMAGE_BUILD_ENDPOINT = "/v1/trainer/images/build"
+IMAGE_BUILD_STATUS_ENDPOINT = "/v1/trainer/images/build/{build_id}/{attempt}"
+IMAGE_BUILDER_STATUS_ENDPOINT = "/v1/trainer/images/builder"
 
 # Dstack API endpoints
 DSTACK_RUNS_APPLY_ENDPOINT = "/api/project/{project}/runs/apply"

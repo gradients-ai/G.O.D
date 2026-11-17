@@ -335,7 +335,7 @@ Important safety and practical notes for agents
 Tournament system overview
 - Tournaments are separate from paid organic jobs, but share the same ecosystem.
 - Miners expose GET /training_repo/{task_type} from their miner.
-- Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
+- Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance. Validators can build each miner's image once per tournament and reuse it, pinned by digest, for all of that miner's tasks.
 - Tournament types include text and image. Environment tournaments have been retired and are no longer scheduled or emission-weighted; historical environment tournament rows remain queryable through the analytics endpoints.
 - Typical cadence:
   - text tournaments start Mondays at 11:00 UTC

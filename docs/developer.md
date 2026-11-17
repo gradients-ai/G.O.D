@@ -198,6 +198,22 @@ The trainer builds miner-provided Dockerfiles, starts training containers, strea
 
 Trainer API endpoints are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`.
 
+### Prebuilt Tournament Images (optional)
+
+With `TOURNAMENT_IMAGE_BUILDS_ENABLED=true` on the validator, each participant's image is built once per tournament on an idle trainer (or a Shadeform CPU fallback), stored in a Cloudflare R2 bucket, and pulled by digest for every training instead of being rebuilt. A failed prebuild falls back to building on the trainer, so it never fails a miner. Details: `validator/tournament/image_builds/README.md` and `trainer/prepared_images/README.md`.
+
+Trainer `.trainer.env` (all trainers need the registry settings to pull; with them set, an idle trainer also builds unless `IMAGE_BUILDER_ENABLED=false`):
+
+```bash
+IMAGE_REGISTRY_ENDPOINT=https://<account>.r2.cloudflarestorage.com
+IMAGE_REGISTRY_BUCKET=<bucket>
+IMAGE_REGISTRY_ACCESS_KEY=<bucket-scoped key id>
+IMAGE_REGISTRY_SECRET_KEY=<secret>
+IMAGE_REGISTRY_PREFIX=registry
+```
+
+Builders need Docker with buildx; any image store works (zstd layers on the containerd image store, gzip on overlay2; pulls handle both). Recommended in `daemon.json`: `"dns": ["1.1.1.1", "8.8.8.8"]` and `"max-concurrent-downloads": 10`, plus `docker login` to Docker Hub. Validator `.vali.env` takes the same `IMAGE_REGISTRY_*` values (used for the Friday pruning) and, for the fallback builder, `SHADEFORM_BUILDER_ENABLED=true`, `SHADEFORM_API_KEY`, and `SHADEFORM_BUILDER_ORCHESTRATOR_IPS`. `task trainer-config` / `task config` prompt for these. Apply `validator/db/migrations/20261117170000_add_tournament_image_builds.sql` before enabling.
+
 ## Running A Miner Locally
 
 Generate miner config:

@@ -10,6 +10,7 @@ Tournament state machine, participant management, task creation, scoring support
 - `dstack_orchestrator.py`: dstack-backed training orchestration.
 - `github_validation.py`: repository/license/commit validation.
 - `gpu_requirements.py`: tournament GPU requirement calculation.
+- `image_builds/`: build each participant's training image once per tournament, store it in R2, prune on Fridays.
 - `models.py`: tournament schemas, training status enums, trainer aggregate views, and response models.
 - `notifications.py`: tournament notification helpers.
 - `obfuscation_detection/`: anti-obfuscation binary and wrapper package.

@@ -7,6 +7,9 @@ from fastapi import HTTPException
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from core.models.payload_models import ImageBuilderStatus
+from core.models.payload_models import ImageBuildRequest
+from core.models.payload_models import ImageBuildStatusResponse
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
@@ -29,11 +32,16 @@ from trainer.job_state import get_recent_tasks
 from trainer.job_state import get_task
 from trainer.job_state import load_task_history
 from trainer.job_state import log_task
+from trainer.prepared_images.builder import BuilderUnavailable
+from trainer.prepared_images.builder import image_builder
 from trainer.runtime import run_model_prep_container
 from trainer.runtime import start_training_task
 from trainer.telemetry import logger
 from validator.infrastructure.service_constants import GET_GPU_AVAILABILITY_ENDPOINT
 from validator.infrastructure.service_constants import GET_RECENT_TASKS_ENDPOINT
+from validator.infrastructure.service_constants import IMAGE_BUILD_ENDPOINT
+from validator.infrastructure.service_constants import IMAGE_BUILD_STATUS_ENDPOINT
+from validator.infrastructure.service_constants import IMAGE_BUILDER_STATUS_ENDPOINT
 from validator.infrastructure.service_constants import MODEL_PREP_ENDPOINT
 from validator.infrastructure.service_constants import MODEL_PREP_STATUS_ENDPOINT
 from validator.infrastructure.service_constants import PROXY_TRAINING_IMAGE_ENDPOINT
@@ -53,26 +61,29 @@ async def _remove_active_task(task_key: tuple[str, str], bg_task: asyncio.Task) 
 async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
     task_id = req.training_data.task_id
     hotkey = req.hotkey
-    try:
-        local_repo_path = await asyncio.to_thread(
-            clone_repo,
-            repo_url=req.github_repo,
-            parent_dir=cst.TEMP_REPO_PATH,
-            commit_hash=req.github_commit_hash,
-            github_token=req.github_token,
-            task_id=req.training_data.task_id,
-            hotkey=req.hotkey,
-        )
-    except Exception:
-        await log_task(task_id, hotkey, "Failed to clone repository")
-        await complete_task(task_id, hotkey, success=False)
-        logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
-        return
+    local_repo_path = None
+    # With a prepared image the repo is only cloned if the image pull fails (runtime falls back to a local build).
+    if req.prepared_image is None:
+        try:
+            local_repo_path = await asyncio.to_thread(
+                clone_repo,
+                repo_url=req.github_repo,
+                parent_dir=cst.TEMP_REPO_PATH,
+                commit_hash=req.github_commit_hash,
+                github_token=req.github_token,
+                task_id=req.training_data.task_id,
+                hotkey=req.hotkey,
+            )
+        except Exception:
+            await log_task(task_id, hotkey, "Failed to clone repository")
+            await complete_task(task_id, hotkey, success=False)
+            logger.exception("Repository clone failed before training start", extra={"task_id": task_id, "hotkey": hotkey})
+            return
 
-    logger.info(
-        "Repository cloned successfully",
-        extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
-    )
+        logger.info(
+            "Repository cloned successfully",
+            extra={"task_id": task_id, "hotkey": hotkey, "model": req.training_data.model},
+        )
 
     if req.requested_datasets:
         try:
@@ -182,6 +193,25 @@ async def get_recent_tasks_list(hours: int) -> list[TrainerJob]:
     return tasks
 
 
+async def build_image(req: ImageBuildRequest) -> ImageBuildStatusResponse:
+    try:
+        job = await image_builder.submit(req)
+    except BuilderUnavailable as exc:
+        raise HTTPException(status_code=503, detail=f"Image builder unavailable: {exc}")
+    return job.to_response()
+
+
+async def get_image_build(build_id: str, attempt: int) -> ImageBuildStatusResponse:
+    job = image_builder.get(build_id, attempt)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Image build {build_id} attempt {attempt} not found.")
+    return job.to_response()
+
+
+async def get_image_builder_status() -> ImageBuilderStatus:
+    return await asyncio.to_thread(image_builder.status)
+
+
 def factory_router() -> APIRouter:
     router = APIRouter(tags=["Proxy Trainer"])
     router.add_api_route(
@@ -199,5 +229,12 @@ def factory_router() -> APIRouter:
     router.add_api_route(TASK_DETAILS_ENDPOINT, get_task_details, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)])
     router.add_api_route(
         MODEL_PREP_STATUS_ENDPOINT, get_model_prep_status, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
+    router.add_api_route(IMAGE_BUILD_ENDPOINT, build_image, methods=["POST"], dependencies=[Depends(verify_orchestrator_ip)])
+    router.add_api_route(
+        IMAGE_BUILD_STATUS_ENDPOINT, get_image_build, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
+    )
+    router.add_api_route(
+        IMAGE_BUILDER_STATUS_ENDPOINT, get_image_builder_status, methods=["GET"], dependencies=[Depends(verify_orchestrator_ip)]
     )
     return router

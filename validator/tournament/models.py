@@ -12,6 +12,7 @@ from pydantic import field_validator
 
 import validator.scoring.constants as cts
 from core.constants.environments import EnvironmentName as EnvironmentName
+from core.models.payload_models import PreparedTrainingImage
 from core.models.payload_models import TrainingRepoResponse
 from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
@@ -291,6 +292,8 @@ class TournamentTaskTraining(BaseModel):
     requested_datasets: list[str] | None = None
     priority: int = 1  # Training priority: 1=organic, 2=tournament, 3=benchmark
     trainer_ip: str | None = None
+    # Set at scheduling time by validator/tournament/image_builds/gate.py; not persisted.
+    prepared_image: PreparedTrainingImage | None = None
 
 
 class TournamentTaskScore(BaseModel):

@@ -17,6 +17,7 @@ from core.models.task_models import TaskStatus
 from trainer import constants as cst
 from trainer.job_state import save_task_history
 from trainer.job_state import task_history
+from trainer.prepared_images.cache import evict_prepared_images
 
 
 logger = get_logger(__name__)
@@ -116,5 +117,10 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
             logger.info("Container and volume cleanup completed.")
         except Exception as e:
             logger.error(f"Error during container cleanup: {e}")
+
+        try:
+            await asyncio.to_thread(evict_prepared_images)
+        except Exception as e:
+            logger.error(f"Error during prepared image eviction: {e}")
 
         await asyncio.sleep(poll_interval_seconds)

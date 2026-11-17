@@ -64,6 +64,7 @@ from validator.tournament.github_validation import deduplicate_by_ip_address
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
+from validator.tournament.image_builds.gate import enqueue_tournament_builds
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import Group
 from validator.tournament.models import GroupRound
@@ -1142,6 +1143,8 @@ async def process_pending_tournaments(config: Config) -> list[str]:
                     num_participants = await populate_tournament_participants(tournament.tournament_id, config, config.psql_db)
 
                     if num_participants > 0:
+                        # Queue prepared image builds before activation; never blocks activation.
+                        await enqueue_tournament_builds(tournament.tournament_id, config)
                         activated = await activate_pending_tournament(tournament.tournament_id, config.psql_db)
                         if activated:
                             activated_tournaments.append(tournament.tournament_id)

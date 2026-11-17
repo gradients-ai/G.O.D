@@ -71,6 +71,30 @@ def generate_miner_config(dev: bool = False) -> dict[str, Any]:
     return vars(config)
 
 
+def prompt_image_registry_config(role: str) -> dict[str, Any]:
+    """Optional prepared tournament image settings (validator/tournament/image_builds, trainer/prepared_images)."""
+    if not parse_bool_input("Enable prebuilt tournament images stored in R2?", default=False):
+        return {}
+    print("Use an R2 API token scoped to the image bucket only (Object Read & Write).")
+    extra = {
+        "image_registry_endpoint": input("🪣 R2 S3 endpoint (https://<account>.r2.cloudflarestorage.com): "),
+        "image_registry_bucket": input("🪣 R2 bucket for images: "),
+        "image_registry_access_key": input("🔑 R2 access key id: "),
+        "image_registry_secret_key": input("🔑 R2 secret access key: "),
+        "image_registry_prefix": input("📁 Key prefix inside the bucket (default: registry): ") or "registry",
+    }
+    if role == "trainer":
+        if not parse_bool_input("Let this trainer build images when idle?", default=True):
+            extra["image_builder_enabled"] = False
+    else:
+        extra["tournament_image_builds_enabled"] = True
+        if parse_bool_input("Use a Shadeform CPU instance as fallback builder?", default=False):
+            extra["shadeform_builder_enabled"] = True
+            extra["shadeform_api_key"] = input("🔑 Shadeform API key: ")
+            extra["shadeform_builder_orchestrator_ips"] = input("🌐 Validator public IP(s) the builder must accept: ")
+    return extra
+
+
 def generate_trainer_config() -> dict[str, Any]:
     print("\n🤖 Let's configure your Trainer! 🛠️\n")
 
@@ -80,7 +104,7 @@ def generate_trainer_config() -> dict[str, Any]:
         huggingface_username=input("🏗️ Enter your huggingface username where you would like to save the models: "),
     )
 
-    return vars(config)
+    return {**vars(config), **prompt_image_registry_config("trainer")}
 
 
 def generate_validator_config(dev: bool = False) -> dict[str, Any]:
@@ -159,7 +183,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         postgres_profile=postgres_profile,
         discord_webhook=discord_url,
     )
-    return vars(config)
+    return {**vars(config), **prompt_image_registry_config("validator")}
 
 
 def generate_config(dev: bool = False, miner: bool = False, trainer: bool = False) -> dict[str, Any]:
