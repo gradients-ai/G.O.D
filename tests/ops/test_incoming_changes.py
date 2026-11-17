@@ -22,6 +22,7 @@ SAMPLE = textwrap.dedent(
     changes:
       - id: first-change
         title: First
+        why: Because.
         summary: >-
           A folded summary
           over two lines.
@@ -37,6 +38,7 @@ SAMPLE = textwrap.dedent(
       - id: second-change
         title: Second
         summary: Second summary.
+        why: Because.
         areas: [image, compression]
         status: testing
         date: 2026-12-14
@@ -53,6 +55,7 @@ def _entry(**overrides) -> dict:
         "id": "some-change",
         "title": "Title",
         "summary": "Summary.",
+        "why": "Because.",
         "areas": ["text"],
         "status": "planned",
         "date": "2026-12-07",
@@ -94,6 +97,7 @@ def test_sample_parses():
         {"docs": ["../outside.md"]},
         {"unexpected": "field"},
         {"summary": "  "},
+        {"why": "  "},
     ],
 )
 def test_invalid_entries_rejected(overrides):

@@ -337,6 +337,7 @@ Add an entry in a PR:
   - id: my-change               # kebab-case, unique
     title: Short name
     summary: One or two sentences for miners.
+    why: Why the change is being made.
     areas: [text]               # any of: text, image, compression
     status: planned
     date: 2026-12-07            # UTC Monday it takes effect

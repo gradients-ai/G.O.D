@@ -7,6 +7,7 @@
 #   id            kebab-case, unique; also used in the PR label `incoming:<id>`
 #   title         short name
 #   summary       1-2 miner-facing sentences
+#   why           why the change is being made
 #   areas         any of: text, image, compression
 #   status        planned | in_progress | testing | shipped | postponed
 #   date          ISO date (YYYY-MM-DD) of the UTC Monday the change takes effect
@@ -26,6 +27,10 @@ changes:
       re-measured against recent tournament results and recalibrated. These include the margin a challenger
       needs to beat the boss and the quality thresholds a submission must meet. Not decided yet: which
       thresholds change and their new values. Both are published in the docs before this date.
+    why: >-
+      A threshold should mark a difference customers can actually notice in a model's outputs, not an
+      arbitrary percentage. The new values are set from measured output quality: blind comparisons of model
+      outputs at known score gaps, to find the gap at which one model is reliably preferred over another.
     areas: [text, image, compression]
     status: planned
     date: 2026-12-07
@@ -44,6 +49,10 @@ changes:
       reference model's loss plus the budget, in nats per token; going past it is penalised the same way as
       crossing the line is today. The allowed quality loss then means the same on every task, whether the base
       model is strong or weak. Not decided yet: the budget value. It is published in the docs before this date.
+    why: >-
+      A percentage of the reference loss gives weak models a much looser budget than strong ones: the same
+      ratio allows far more extra loss per token on a model whose loss is already high. A fixed budget in nats
+      per token keeps the quality a customer gets from a compressed model the same on every task.
     areas: [compression]
     status: planned
     date: 2026-12-14
@@ -63,6 +72,9 @@ changes:
       W2 and W3 integer formats. From this date fixed-track tasks can request any format on the list, and a
       submission must be in the requested format and load and run in vLLM to be scored. Not decided yet: the
       exact formats, group sizes and layouts. The list is published in the docs before this date.
+    why: >-
+      Compressed models are served with vLLM, so the formats that matter are the ones it runs efficiently.
+      Covering more of them makes the fixed track reward compression that can be deployed directly.
     areas: [compression]
     status: planned
     date: 2026-12-14

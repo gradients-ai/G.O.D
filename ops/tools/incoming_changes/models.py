@@ -44,6 +44,7 @@ class IncomingChange(BaseModel):
     id: ChangeId = Field(description="Kebab-case id; the PR label `incoming:<id>` ships this entry.")
     title: NonEmptyText
     summary: NonEmptyText = Field(description="One or two miner-facing sentences.")
+    why: NonEmptyText = Field(description="Why the change is being made.")
     areas: list[ChangeArea] = Field(min_length=1)
     status: ChangeStatus
     date: datetime.date = Field(description="The UTC Monday the change takes effect.")
