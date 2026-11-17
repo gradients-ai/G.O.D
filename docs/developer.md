@@ -194,15 +194,9 @@ task trainer
 curl http://localhost:8001/v1/trainer/get_gpu_availability
 ```
 
-6. Optionally start the GPU throttle monitor:
+The GPU throttle monitor starts with the trainer. `task trainer` and `ops/trainer_ops/trainer.service` both run `uvicorn trainer.asgi:app`, and that process starts the monitor. Set `DISCORD_WEBHOOK` in `.trainer.env` to post alerts; omit it to log only.
 
-```bash
-# in .trainer.env; omit it to run log-only
-DISCORD_WEBHOOK=<webhook-url>
-task trainer-gpu-monitor
-```
-
-It polls each GPU every 5 s and alerts when a GPU is slowed by a thermal, power-brake or hardware-slowdown event: 10 s sustained with the SM clock below 90% of max, or 10 s of NVML thermal/reliability/board-limit throttle time within 5 min. Normal power-capping under load is ignored. A recovery message follows after 5 min clean. Alerts include the task id, hotkey and repo/commit of the job on that GPU. Every non-clean poll is logged as `gpu_throttle_observation`, so running log-only gives a baseline for a box. Thresholds are configurable via the `GPU_MONITOR_*` env vars documented in `trainer/gpu_monitor.py`. `.trainer.env` is loaded by the shell, so values must not contain unquoted spaces.
+It polls each GPU every 5 s and alerts when a GPU is slowed by a thermal, power-brake or hardware-slowdown event: 10 s sustained with the SM clock below 90% of max, or 10 s of NVML thermal/reliability/board-limit throttle time within 5 min. Normal power-capping under load is ignored. A recovery message follows after 5 min clean. Alerts include the task id, hotkey and repo/commit of the job on that GPU. Every non-clean poll is logged as `gpu_throttle_observation`. Thresholds are configurable via the `GPU_MONITOR_*` env vars documented in `trainer/gpu_monitor.py`.
 
 The trainer builds miner-provided Dockerfiles, starts training containers, streams logs, writes model outputs under the `checkpoints` Docker volume, caches models/datasets under the `cache` Docker volume, and uploads finished models to Hugging Face.
 

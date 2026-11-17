@@ -1,8 +1,9 @@
 """Trainer GPU throttle monitor: polls NVML clock-event reasons and alerts Discord on transitions.
 
-Run on the trainer host (see `task trainer-gpu-monitor`). Alerts name the job and hotkey on the GPU by
-reading the trainer API's task history file. Every non-clean poll is logged even below the alert threshold,
-so running without a webhook ("log-only") builds a baseline of what normal looks like on a box. Env:
+Starts with the trainer process (`trainer.asgi` startup, which is what `task trainer` and the systemd
+unit run). Alerts name the job and hotkey on the GPU by reading the trainer's task history file without
+replacing the in-memory job list. Every non-clean poll is logged even below the alert threshold, so
+running without a webhook ("log-only") builds a baseline of what normal looks like on a box. Env:
   DISCORD_WEBHOOK            webhook URL (without it: log-only)
   GPU_MONITOR_TASK_HISTORY   trainer task history file (default trainer/task_history.json, relative to cwd)
   GPU_MONITOR_HOST_LABEL     name shown in alerts (default: hostname)
@@ -17,6 +18,7 @@ so running without a webhook ("log-only") builds a baseline of what normal looks
 
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -80,9 +82,8 @@ def read_sample(index: int) -> GpuSample:
 
 def jobs_on_gpu(index: int) -> list[GpuJob]:
     """Re-read the trainer's task_history.json and return the running jobs assigned to this GPU index."""
-    job_state.load_task_history()
     jobs = []
-    for job in job_state.task_history:
+    for job in job_state.read_persisted_jobs():
         if job.status != TaskStatus.TRAINING or index not in job.gpu_ids:
             continue
         if isinstance(job, TrainerTaskLog):
@@ -155,6 +156,18 @@ def main() -> None:
                 if alert:
                     post_discord(client, webhook, format_alert(host, alert, jobs_on_gpu(i)))
             time.sleep(poll_seconds)
+
+
+def _run_forever() -> None:
+    try:
+        main()
+    except Exception:
+        logger.exception("GPU throttle monitor exited")
+
+
+def start_in_thread() -> None:
+    """Run the monitor beside the trainer API. A failure here does not stop the API."""
+    threading.Thread(target=_run_forever, name="gpu-throttle-monitor", daemon=True).start()
 
 
 if __name__ == "__main__":
