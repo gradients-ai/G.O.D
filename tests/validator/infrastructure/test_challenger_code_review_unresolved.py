@@ -1,6 +1,8 @@
+from validator.infrastructure.challenger_code_review import _demote_materialization_noise
 from validator.infrastructure.challenger_code_review import _is_access_unresolved
 from validator.infrastructure.challenger_code_review import _merge_materialization_into_verdict
 from validator.infrastructure.challenger_dependency_review import _parse_requirement_token
+from validator.infrastructure.challenger_dependency_review import _trusted_git_repo
 from validator.tournament.models import IntegrityVerdict
 
 
@@ -54,3 +56,53 @@ def test_policy_unresolved_still_forces_needs_review():
 def test_http_url_tokens_are_not_parsed_as_pypi_packages():
     assert _parse_requirement_token("https://example.com/weights.bin", "Dockerfile") is None
     assert _parse_requirement_token("http://files.example/data.tgz", "requirements.txt") is None
+
+
+def test_demote_needs_review_that_only_cites_missing_musubi_materialization():
+    verdict = IntegrityVerdict(
+        flagged=False,
+        needs_review=True,
+        confidence=0.85,
+        reason=(
+            "First-party code is clean, but musubi-tuner and ai-toolkit were NOT "
+            "materialized under _dependencies and could not be inspected."
+        ),
+        evidence=[
+            "challenger/train.py:10 training rows only from validator zip",
+            "_dependencies absent; PACKAGE_FILE_INVENTORY.json missing",
+        ],
+    )
+    demoted = _demote_materialization_noise(verdict)
+    assert demoted.needs_review is False
+    assert demoted.flagged is False
+    assert any("demoted needs_review" in item.lower() for item in demoted.evidence)
+
+
+def test_keep_needs_review_when_exploit_signal_is_present():
+    verdict = IntegrityVerdict(
+        flagged=False,
+        needs_review=True,
+        confidence=0.7,
+        reason="Dependency may inject bundled dataset rows via fingerprint lookup.",
+        evidence=["_dependencies/python/secret-lib/loader.py:40 fingerprint select"],
+    )
+    kept = _demote_materialization_noise(verdict)
+    assert kept.needs_review is True
+
+
+def test_keep_needs_review_for_custom_uninspectable_dependency():
+    verdict = IntegrityVerdict(
+        flagged=False,
+        needs_review=True,
+        confidence=0.6,
+        reason="Custom secret-lib on the training path could not be inspected.",
+        evidence=["challenger/train.py:20 imports secret_lib.load_rows"],
+    )
+    kept = _demote_materialization_noise(verdict)
+    assert kept.needs_review is True
+
+
+def test_trusted_git_repos_are_recognized():
+    assert _trusted_git_repo("git+https://github.com/kohya-ss/musubi-tuner.git@30c658c4")
+    assert _trusted_git_repo("https://github.com/ostris/ai-toolkit.git")
+    assert not _trusted_git_repo("git+https://github.com/evil/backdoor.git@abc123")

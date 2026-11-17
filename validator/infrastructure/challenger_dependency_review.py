@@ -112,6 +112,39 @@ DEFAULT_ALLOWLIST: frozenset[str] = frozenset(
         "restrictedpython",
         "liger-kernel",
         "liger_kernel",
+        # Image trainer stack the validator itself pins (and common companions).
+        # These are too large to unpack for review; first-party wiring is what matters.
+        "diffusers",
+        "musubi-tuner",
+        "musubi_tuner",
+        "ai-toolkit",
+        "ostris-ai-toolkit",
+        "comfyui",
+        "comfy",
+        "comfy-kitchen",
+        "comfy_kitchen",
+        "optimum",
+        "quanto",
+        "optimum-quanto",
+        "lycoris",
+        "lycoris-lora",
+        "opencv-contrib-python",
+        "opencv-contrib-python-headless",
+    }
+)
+
+# Public trainer frameworks miners clone in Dockerfiles. Commit-pinned installs of these
+# are treated like the allowlist: record them, do not force needs_review for missing unpack.
+TRUSTED_GIT_REPO_MARKERS: frozenset[str] = frozenset(
+    {
+        "github.com/kohya-ss/musubi-tuner",
+        "github.com/ostris/ai-toolkit",
+        "github.com/comfyanonymous/comfyui",
+        "github.com/huggingface/diffusers",
+        "github.com/huggingface/transformers",
+        "github.com/huggingface/accelerate",
+        "github.com/huggingface/peft",
+        "github.com/huggingface/trl",
     }
 )
 
@@ -232,6 +265,13 @@ class DependencyMaterialization:
 
 def _normalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _trusted_git_repo(git_url: str | None) -> bool:
+    if not git_url:
+        return False
+    lowered = git_url.lower().replace("git+", "")
+    return any(marker in lowered for marker in TRUSTED_GIT_REPO_MARKERS)
 
 
 def _parse_requirement_token(token: str, source_file: str) -> RequirementSpec | None:
@@ -931,6 +971,19 @@ def materialize_dependencies(
                 continue
 
             if spec.git_url:
+                if _trusted_git_repo(spec.git_url) and spec.pinned:
+                    result.packages.append(
+                        ResolvedPackage(
+                            name=spec.name,
+                            version=spec.version_spec,
+                            status="allowlisted",
+                            pinned=True,
+                            artifact_url=spec.git_url,
+                            source_file=spec.source_file,
+                            detail="skipped unpack (trusted public trainer framework)",
+                        )
+                    )
+                    continue
                 # Non-allowlisted git deps must be commit-pinned to be reviewable later;
                 # until clone support lands, fail closed so Claude cannot mark them clean.
                 detail = (

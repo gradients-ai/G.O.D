@@ -116,6 +116,45 @@ def _is_access_unresolved(item: str) -> bool:
     return any(marker in lowered for marker in _ACCESS_UNRESOLVED_MARKERS)
 
 
+# Claude sometimes still returns needs_review because ai-toolkit / musubi / ComfyUI were
+# not unpacked, even when first-party wiring is clean. That is not exploit evidence.
+_KNOWN_TRAINER_FRAMEWORK = re.compile(
+    r"\b(musubi(?:-tuner)?|ai-toolkit|comfyui|comfy[_-]?kitchen|diffusers|transformers)\b",
+    re.IGNORECASE,
+)
+_INSPECT_GAP = re.compile(
+    r"(not materialized|un-?inspectable|cannot be inspected|could not be inspected|"
+    r"could not be certified|PACKAGE_FILE_INVENTORY)",
+    re.IGNORECASE,
+)
+_EXPLOIT_SIGNAL = re.compile(
+    r"(inject|bundled.{0,40}(data|dataset|row|sample)|fingerprint.{0,40}(lookup|select|match)|"
+    r"score.?manip|external.?dataset|undeclared|pretrained.?adapter|eval.?leak|"
+    r"benchmark.?answer|holdout.?leak|test.?set)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _demote_materialization_noise(verdict: IntegrityVerdict) -> IntegrityVerdict:
+    """Drop needs_review that is only about missing common-trainer unpacks."""
+    if not verdict.needs_review or verdict.flagged:
+        return verdict
+    text = " ".join([verdict.reason, *verdict.evidence, *verdict.unresolved_dependencies])
+    if _EXPLOIT_SIGNAL.search(text):
+        return verdict
+    if not (_KNOWN_TRAINER_FRAMEWORK.search(text) and _INSPECT_GAP.search(text)):
+        return verdict
+    logger.warning(
+        "Demoting needs_review that only cites unmaterialized common trainer deps "
+        f"(reason={verdict.reason[:200]!r})"
+    )
+    verdict.needs_review = False
+    note = "Demoted needs_review: missing common-trainer materialization is not exploit evidence"
+    if not any("demoted needs_review" in item.lower() for item in verdict.evidence):
+        verdict.evidence = [*verdict.evidence, note]
+    return verdict
+
+
 def _merge_materialization_into_verdict(verdict: IntegrityVerdict, unresolved: list[str]) -> IntegrityVerdict:
     """Attach unresolved deps; only policy/security misses force needs_review.
 
@@ -192,6 +231,7 @@ async def review_challenger_code(
             participant.requested_datasets or [],
         )
         verdict = _merge_materialization_into_verdict(verdict, materialization.unresolved)
+        verdict = _demote_materialization_noise(verdict)
         verdict.reason = _sanitize_reason(verdict.reason, {token} if token else set())
         verdict.evidence = [_sanitize_reason(item, {token} if token else set()) for item in verdict.evidence]
         status = (
