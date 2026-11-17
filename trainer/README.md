@@ -9,6 +9,8 @@ Service that receives work from the validator, clones miner repositories, builds
 - `constants.py`: trainer Docker images, volumes, resource defaults, and container paths.
 - `containers/`: downloader, uploader, cache cleanup, and miner dataset cache helpers.
 - `endpoints.py`: trainer API routes called by validators.
+- `gpu_monitor.py`: standalone GPU throttle monitor (`task trainer-gpu-monitor`); polls NVML and posts Discord alerts naming the job and hotkey on the GPU.
+- `gpu_throttle.py`: pure throttle detection and alert formatting used by `gpu_monitor.py`.
 - `host.py`: host/GPU inspection, repository cloning, and Docker host helpers.
 - `job_state.py`: persisted trainer task/model-prep state (`started_at` is set on accept and refreshed at container start for training jobs).
 - `dataset_adapters.py`: text dataset column adapters used by training entrypoints.

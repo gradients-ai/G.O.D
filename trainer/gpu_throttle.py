@@ -31,6 +31,7 @@ DEFAULT_ALERT_REASONS = (
 
 
 class GpuSample(BaseModel):
+    timestamp_s: float  # monotonic clock
     index: int
     uuid: str
     name: str
@@ -41,6 +42,9 @@ class GpuSample(BaseModel):
     power_w: float
     power_limit_w: float
     utilization_pct: int
+    # Cumulative ns throttled under NVML's thermal/reliability/board-limit policies (nvmlDeviceGetViolationStatus).
+    # Zero on a healthy GPU; None if the driver doesn't expose it. Catches short bursts that fall between polls.
+    fault_throttle_ns: int | None = None
 
 
 class GpuThrottleState(BaseModel):
@@ -48,6 +52,8 @@ class GpuThrottleState(BaseModel):
     consecutive_bad: int = 0
     consecutive_good: int = 0
     active_reasons: int = 0
+    last_fault_throttle_ns: int | None = None
+    fault_window: list[tuple[float, int]] = []  # (timestamp_s, ns throttled since previous poll)
 
 
 class MonitorThresholds(BaseModel):
@@ -59,6 +65,10 @@ class MonitorThresholds(BaseModel):
     # flapping GPU produces one alert per episode rather than a stream.
     trigger_polls: int = Field(default=2, ge=1)
     recover_polls: int = Field(default=60, ge=1)
+    # Second trigger from the cumulative counter: alert if this much fault-throttle time accumulates
+    # within the window, even if no single poll ever sampled it.
+    fault_window_seconds: float = Field(default=300, gt=0)
+    fault_alert_seconds: float = Field(default=10, gt=0)
 
 
 class GpuJob(BaseModel):
@@ -74,6 +84,19 @@ class ThrottleAlert(BaseModel):
     recovered: bool
     sample: GpuSample
     reasons: int
+    fault_window_seconds: float  # fault-throttle time accumulated in the current window
+
+
+class PollObservation(BaseModel):
+    """What one poll saw, before hysteresis. Logged whenever non-clean to build a baseline."""
+
+    sampled_reasons: int  # alert reasons set while the clock was actually depressed
+    fault_delta_ns: int  # counter increase since the previous poll
+    fault_window_seconds: float
+
+    @property
+    def clean(self) -> bool:
+        return not self.sampled_reasons and not self.fault_delta_ns
 
 
 def reason_names(mask: int) -> list[str]:
@@ -82,32 +105,52 @@ def reason_names(mask: int) -> list[str]:
 
 def evaluate(
     state: GpuThrottleState, sample: GpuSample, thresholds: MonitorThresholds
-) -> tuple[GpuThrottleState, ThrottleAlert | None]:
-    """Advance one GPU's hysteresis state by one poll; return an alert only on a transition."""
-    bad = sample.reasons & thresholds.alert_reasons
+) -> tuple[GpuThrottleState, PollObservation, ThrottleAlert | None]:
+    """Advance one GPU's hysteresis state by one poll; return an alert only on a transition.
+
+    Triggers on either `trigger_polls` consecutive sampled throttle polls, or `fault_alert_seconds` of
+    fault-counter throttle time within `fault_window_seconds`. Recovers after `recover_polls` polls
+    with neither a sampled reason nor any counter increase.
+    """
+    new = state.model_copy(deep=True)
+
     clock_depressed = sample.max_sm_clock_mhz > 0 and sample.sm_clock_mhz < thresholds.max_clock_ratio * sample.max_sm_clock_mhz
-    if not clock_depressed:
-        bad = 0
-    new = state.model_copy()
+    sampled = sample.reasons & thresholds.alert_reasons if clock_depressed else 0
 
-    if bad:
-        new.consecutive_bad += 1
-        new.consecutive_good = 0
-        new.active_reasons |= bad
-        if not new.throttling and new.consecutive_bad >= thresholds.trigger_polls:
-            new.throttling = True
-            return new, ThrottleAlert(recovered=False, sample=sample, reasons=new.active_reasons)
-        return new, None
+    delta = 0
+    if sample.fault_throttle_ns is not None:
+        last = state.last_fault_throttle_ns
+        # A counter that went backwards (driver reload, GPU reset) re-baselines instead of counting.
+        if last is not None and sample.fault_throttle_ns >= last:
+            delta = sample.fault_throttle_ns - last
+        new.last_fault_throttle_ns = sample.fault_throttle_ns
+    cutoff = sample.timestamp_s - thresholds.fault_window_seconds
+    new.fault_window = [(t, d) for t, d in new.fault_window if t > cutoff]
+    if delta:
+        new.fault_window.append((sample.timestamp_s, delta))
+    window_s = sum(d for _, d in new.fault_window) / 1e9
+    obs = PollObservation(sampled_reasons=sampled, fault_delta_ns=delta, fault_window_seconds=window_s)
 
-    new.consecutive_good += 1
-    new.consecutive_bad = 0
+    new.consecutive_bad = new.consecutive_bad + 1 if sampled else 0
+    new.consecutive_good = new.consecutive_good + 1 if obs.clean else 0
+    new.active_reasons |= sampled
+
     if not new.throttling:
-        new.active_reasons = 0
-        return new, None
+        if new.consecutive_bad >= thresholds.trigger_polls or window_s >= thresholds.fault_alert_seconds:
+            new.throttling = True
+            return (
+                new,
+                obs,
+                ThrottleAlert(recovered=False, sample=sample, reasons=new.active_reasons, fault_window_seconds=window_s),
+            )
+        if not sampled:
+            new.active_reasons = 0
+        return new, obs, None
+
     if new.consecutive_good >= thresholds.recover_polls:
-        alert = ThrottleAlert(recovered=True, sample=sample, reasons=new.active_reasons)
-        return GpuThrottleState(), alert
-    return new, None
+        alert = ThrottleAlert(recovered=True, sample=sample, reasons=new.active_reasons, fault_window_seconds=window_s)
+        return GpuThrottleState(last_fault_throttle_ns=new.last_fault_throttle_ns), obs, alert
+    return new, obs, None
 
 
 def _format_job(job: GpuJob) -> str:
@@ -126,7 +169,7 @@ def format_alert(host: str, alert: ThrottleAlert, jobs: list[GpuJob]) -> str:
     )
     return (
         f"{head}\n"
-        f"reasons: `{reasons}`\n"
+        f"reasons: `{reasons}` · fault-throttle time in window: {alert.fault_window_seconds:.1f} s\n"
         f"{s.name} · SM {s.sm_clock_mhz}/{s.max_sm_clock_mhz} MHz ({clock_pct:.0f}%) · "
         f"{s.temperature_c}°C · {s.power_w:.0f}/{s.power_limit_w:.0f} W · util {s.utilization_pct}%\n"
         f"uuid `{s.uuid}`\n" + ("\n".join(f"job: {_format_job(j)}" for j in jobs) if jobs else "job: none (GPU not assigned)")

@@ -1,19 +1,24 @@
 """Trainer GPU throttle monitor: polls NVML clock-event reasons and alerts Discord on transitions.
 
-Run on the trainer host from the repo root (see `task trainer-gpu-monitor`) so it reads the same
-trainer/task_history.json as the trainer API — that is how alerts name the job and hotkey on the GPU. Env:
-  DISCORD_WEBHOOK            webhook URL (required to alert; without it, logs only)
+Run on the trainer host (see `task trainer-gpu-monitor`). Alerts name the job and hotkey on the GPU by
+reading the trainer API's task history file. Every non-clean poll is logged even below the alert threshold,
+so running without a webhook ("log-only") builds a baseline of what normal looks like on a box. Env:
+  DISCORD_WEBHOOK            webhook URL (without it: log-only)
+  GPU_MONITOR_TASK_HISTORY   trainer task history file (default trainer/task_history.json, relative to cwd)
   GPU_MONITOR_HOST_LABEL     name shown in alerts (default: hostname)
   GPU_MONITOR_POLL_SECONDS   poll interval (default 5)
   GPU_MONITOR_TRIGGER_POLLS  consecutive throttled polls before alerting (default 2 = 10 s)
   GPU_MONITOR_RECOVER_POLLS  consecutive clean polls before a recovery message (default 60 = 5 min)
   GPU_MONITOR_MAX_CLOCK_RATIO  poll only counts if SM clock < ratio * max (default 0.9)
   GPU_MONITOR_INCLUDE_POWER_CAP  "1" to also alert on SW_POWER_CAP (default off)
+  GPU_MONITOR_FAULT_WINDOW_SECONDS  window for the cumulative fault-throttle counter (default 300)
+  GPU_MONITOR_FAULT_ALERT_SECONDS   fault-throttle seconds within the window that trigger an alert (default 10)
 """
 
 import os
 import socket
 import time
+from pathlib import Path
 
 import httpx
 import pynvml
@@ -30,18 +35,35 @@ from trainer.gpu_throttle import GpuThrottleState
 from trainer.gpu_throttle import MonitorThresholds
 from trainer.gpu_throttle import evaluate
 from trainer.gpu_throttle import format_alert
+from trainer.gpu_throttle import reason_names
 
 
 logger = get_logger(__name__)
+
+# Violation-counter policies that stay at zero on a healthy GPU. POWER is excluded: a loaded GPU
+# accumulates power-cap time continuously (hours of it on a healthy H100).
+FAULT_POLICIES = (pynvml.NVML_PERF_POLICY_THERMAL, pynvml.NVML_PERF_POLICY_RELIABILITY, pynvml.NVML_PERF_POLICY_BOARD_LIMIT)
 
 
 def _str(value: str | bytes) -> str:
     return value.decode() if isinstance(value, bytes) else value
 
 
+def read_fault_throttle_ns(handle) -> int | None:
+    total, supported = 0, False
+    for policy in FAULT_POLICIES:
+        try:
+            total += pynvml.nvmlDeviceGetViolationStatus(handle, policy).violationTime
+            supported = True
+        except pynvml.NVMLError:
+            continue
+    return total if supported else None
+
+
 def read_sample(index: int) -> GpuSample:
     h = pynvml.nvmlDeviceGetHandleByIndex(index)
     return GpuSample(
+        timestamp_s=time.monotonic(),
         index=index,
         uuid=_str(pynvml.nvmlDeviceGetUUID(h)),
         name=_str(pynvml.nvmlDeviceGetName(h)),
@@ -52,6 +74,7 @@ def read_sample(index: int) -> GpuSample:
         power_w=pynvml.nvmlDeviceGetPowerUsage(h) / 1000,
         power_limit_w=pynvml.nvmlDeviceGetEnforcedPowerLimit(h) / 1000,
         utilization_pct=pynvml.nvmlDeviceGetUtilizationRates(h).gpu,
+        fault_throttle_ns=read_fault_throttle_ns(h),
     )
 
 
@@ -99,7 +122,11 @@ def main() -> None:
         max_clock_ratio=float(os.getenv("GPU_MONITOR_MAX_CLOCK_RATIO", "0.9")),
         trigger_polls=int(os.getenv("GPU_MONITOR_TRIGGER_POLLS", "2")),
         recover_polls=int(os.getenv("GPU_MONITOR_RECOVER_POLLS", "60")),
+        fault_window_seconds=float(os.getenv("GPU_MONITOR_FAULT_WINDOW_SECONDS", "300")),
+        fault_alert_seconds=float(os.getenv("GPU_MONITOR_FAULT_ALERT_SECONDS", "10")),
     )
+    if history := os.getenv("GPU_MONITOR_TASK_HISTORY"):
+        job_state.TASK_HISTORY_FILE = Path(history)
     if not webhook:
         logger.warning("DISCORD_WEBHOOK not set — throttle events will only be logged")
 
@@ -117,7 +144,14 @@ def main() -> None:
                 except pynvml.NVMLError as e:
                     logger.error(f"NVML read failed for GPU {i}: {e}")
                     continue
-                states[i], alert = evaluate(states[i], sample, thresholds)
+                states[i], obs, alert = evaluate(states[i], sample, thresholds)
+                if not obs.clean:
+                    logger.info(
+                        f"gpu_throttle_observation gpu={i} reasons={'|'.join(reason_names(obs.sampled_reasons)) or '-'} "
+                        f"fault_delta_ms={obs.fault_delta_ns / 1e6:.1f} fault_window_s={obs.fault_window_seconds:.2f} "
+                        f"sm={sample.sm_clock_mhz}/{sample.max_sm_clock_mhz} temp={sample.temperature_c} "
+                        f"power={sample.power_w:.0f}/{sample.power_limit_w:.0f} util={sample.utilization_pct}"
+                    )
                 if alert:
                     post_discord(client, webhook, format_alert(host, alert, jobs_on_gpu(i)))
             time.sleep(poll_seconds)
