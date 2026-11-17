@@ -100,6 +100,24 @@ OPERATIONS: dict[tuple[str, str], dict[str, Any]] = {
         "summary": "Get a tournament",
         "description": ("One tournament: who entered, every round and its tasks, head-to-head results and the final ranking."),
     },
+    ("get", "/tournament/active"): {
+        "tags": ["Tournaments"],
+        "summary": "Active tournaments",
+        "description": "The tournament running now on each track, if any, with the hotkeys taking part.",
+    },
+    ("get", "/tournament/next-dates"): {
+        "tags": ["Tournaments"],
+        "summary": "Tournament schedule",
+        "description": (
+            "Where each track stands: the current round if a tournament is running, otherwise when the next one starts "
+            "(UTC), plus the weekly day and hour it is scheduled for."
+        ),
+    },
+    ("get", "/tournament/history"): {
+        "tags": ["Tournaments"],
+        "summary": "Tournament history",
+        "description": "Every active and completed tournament, newest first, with its winner.",
+    },
     ("get", "/tournament/fees"): {
         "tags": ["Tournaments"],
         "summary": "Entry fees",

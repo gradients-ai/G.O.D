@@ -272,6 +272,55 @@ class LatestTournamentsDetailsPublicResponse(PublicModel):
     environment: TournamentDetailsPublicResponse | None = None
 
 
+class ActiveTournamentParticipantPublic(PublicModel):
+    hotkey: str
+
+
+class ActiveTournamentPublic(PublicModel):
+    tournament_id: str
+    tournament_type: str
+    status: str
+    participants: list[ActiveTournamentParticipantPublic] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class ActiveTournamentsResponse(PublicModel):
+    text: ActiveTournamentPublic | None = None
+    image: ActiveTournamentPublic | None = None
+    environment: ActiveTournamentPublic | None = None
+
+
+class NextTournamentInfoPublic(PublicModel):
+    tournament_type: str
+    tournament_status: str | None = None
+    current_round_number: int | None = None
+    next_start_date: datetime | None = None
+    next_end_date: datetime | None = None
+    interval_hours: int | None = None
+    scheduled_day_of_week: int | None = None
+    scheduled_hour: int | None = None
+    scheduled_minute: int | None = None
+
+
+class NextTournamentDatesResponse(PublicModel):
+    text: NextTournamentInfoPublic | None = None
+    image: NextTournamentInfoPublic | None = None
+    environment: NextTournamentInfoPublic | None = None
+
+
+class TournamentHistoryEntryPublic(PublicModel):
+    tournament_id: str
+    tournament_type: str
+    status: str
+    winner_hotkey: str | None = None
+    base_winner_hotkey: str | None = None
+    created_at: datetime | None = None
+
+
+class TournamentHistoryResponse(PublicModel):
+    tournaments: list[TournamentHistoryEntryPublic] = Field(default_factory=list)
+
+
 # Performance
 
 

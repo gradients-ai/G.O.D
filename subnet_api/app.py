@@ -108,6 +108,21 @@ def create_app(settings: Settings, transport: httpx.AsyncBaseTransport | None = 
     async def tournament_fees(request: Request) -> models.TournamentFeesResponse:
         return models.TournamentFeesResponse.model_validate(await _validator(request).get("/tournament/fees"))
 
+    @app.get("/tournament/active", tags=["tournaments"])
+    async def active_tournaments(request: Request) -> models.ActiveTournamentsResponse:
+        body = await _validator(request).get("/v1/tournaments/active", timeout=slow)
+        return models.ActiveTournamentsResponse.model_validate(body)
+
+    @app.get("/tournament/next-dates", tags=["tournaments"])
+    async def next_tournament_dates(request: Request) -> models.NextTournamentDatesResponse:
+        body = await _validator(request).get("/v1/tournaments/next-dates", timeout=slow)
+        return models.NextTournamentDatesResponse.model_validate(body)
+
+    @app.get("/tournament/history", tags=["tournaments"])
+    async def tournament_history(request: Request) -> models.TournamentHistoryResponse:
+        body = await _validator(request).get("/v1/tournaments/history", timeout=slow)
+        return models.TournamentHistoryResponse.model_validate(body)
+
     @app.get("/tournament/latest/details", tags=["tournaments"])
     async def latest_tournaments(request: Request) -> models.LatestTournamentsDetailsPublicResponse:
         body = await _validator(request).get("/v1/tournaments/latest/details", timeout=slow)

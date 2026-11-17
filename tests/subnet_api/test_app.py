@@ -161,6 +161,72 @@ async def test_fees_and_weights_accept_responses_without_environment_fields() ->
 
 
 @pytest.mark.asyncio
+async def test_tournament_schedule_routes_relay_public_fields_only() -> None:
+    validator = FakeValidator()
+    validator.respond(
+        "/v1/tournaments/active",
+        json={
+            "text": {
+                "tournament_id": "tourn_abc",
+                "tournament_type": "text",
+                "status": "active",
+                "participants": [{"hotkey": HOTKEY, "training_repo": "https://github.com/miner/private"}],
+                "created_at": "2026-11-16T00:00:00Z",
+            },
+            "image": None,
+        },
+    )
+    validator.respond(
+        "/v1/tournaments/next-dates",
+        json={
+            "text": {"tournament_type": "text", "tournament_status": "active", "current_round_number": 2, "interval_hours": 24},
+            "image": {
+                "tournament_type": "image",
+                "tournament_status": "waiting",
+                "next_start_date": "2026-11-20T14:00:00Z",
+                "scheduled_day_of_week": 3,
+                "scheduled_hour": 14,
+                "scheduled_minute": 0,
+            },
+        },
+    )
+    validator.respond(
+        "/v1/tournaments/history",
+        json={
+            "tournaments": [
+                {
+                    "tournament_id": "tourn_abc",
+                    "tournament_type": "text",
+                    "status": "completed",
+                    "winner_hotkey": HOTKEY,
+                    "created_at": "2026-11-10T00:00:00Z",
+                    "diff_report": "internal",
+                }
+            ]
+        },
+    )
+    async with client(validator) as api:
+        active = await api.get("/tournament/active")
+        next_dates = await api.get("/tournament/next-dates")
+        history = await api.get("/tournament/history")
+
+    assert [c.url.path for c in validator.calls] == [
+        "/v1/tournaments/active",
+        "/v1/tournaments/next-dates",
+        "/v1/tournaments/history",
+    ]
+    assert active.status_code == 200
+    assert active.json()["text"]["participants"] == [{"hotkey": HOTKEY}]
+    assert active.json()["image"] is None and active.json()["environment"] is None
+    assert next_dates.status_code == 200
+    assert next_dates.json()["text"]["current_round_number"] == 2
+    assert next_dates.json()["image"]["scheduled_hour"] == 14
+    assert history.status_code == 200
+    assert history.json()["tournaments"][0]["winner_hotkey"] == HOTKEY
+    assert "private" not in active.text and "internal" not in history.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "path",
     ["/tournament/balance/not-a-key", "/auditing/tasks/not-a-uuid", "/auditing/tasks?limit=1000", "/tournament/bad%20id/details"],
