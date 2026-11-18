@@ -1,5 +1,8 @@
 import json
+import os
+import re
 import shutil
+import time
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
@@ -13,6 +16,17 @@ CHECKPOINTS_DIR = Path(cst.OUTPUT_CHECKPOINTS_PATH)
 CACHE_MODELS_DIR = Path(cst.CACHE_MODELS_DIR)
 CACHE_DATASETS_DIR = Path(cst.CACHE_DATASETS_DIR)
 CUTOFF_HOURS = cst.CACHE_CLEANUP_CUTOFF_HOURS
+PARTIAL_DOWNLOAD_ROOTS = (
+    CACHE_MODELS_DIR,
+    CACHE_DATASETS_DIR,
+    Path(cst.MINER_DATASETS_CACHE_DIR),
+    Path(cst.HUGGINGFACE_CACHE_PATH),
+)
+# A download in progress (".<name>.download-<random>", plus the ".merged_tmp" a LoRA merge builds beside it), a cache
+# entry mid-swap (".<name>.backup-<random>"), and the "<name>.tmp.<pid>" / "<name>.merged_tmp" older downloaders left.
+PARTIAL_DOWNLOAD_NAME = re.compile(
+    rf"^\..+(?:{re.escape(cst.CACHE_DOWNLOAD_TAG)}|\.backup-)|\.tmp\.\d+$|\.merged_tmp$"
+)
 
 
 def parse_time(dt_str: str | None) -> datetime | None:
@@ -108,12 +122,47 @@ def clean_models(task_history: list[dict]):
                 shutil.rmtree(model_dir, ignore_errors=True)
 
 
+def _last_write_time(path: Path) -> float:
+    """Newest mtime anywhere under path: a running download keeps touching the file it is writing."""
+    newest = path.lstat().st_mtime
+    if path.is_dir() and not path.is_symlink():
+        for root, dirs, files in os.walk(path):
+            for name in dirs + files:
+                try:
+                    newest = max(newest, os.lstat(os.path.join(root, name)).st_mtime)
+                except FileNotFoundError:
+                    continue
+    return newest
+
+
+def clean_partial_downloads(roots=PARTIAL_DOWNLOAD_ROOTS, stale_hours: float = cst.CACHE_PARTIAL_DOWNLOAD_STALE_HOURS):
+    """Remove partial downloads nothing has written to for stale_hours; a younger one may belong to a running download."""
+    cutoff = time.time() - stale_hours * 3600
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for entry in root.iterdir():
+            if not PARTIAL_DOWNLOAD_NAME.search(entry.name):
+                continue
+            try:
+                if _last_write_time(entry) > cutoff:
+                    continue
+                print(f"Deleting stale partial download: {entry}")
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry, ignore_errors=True)
+                else:
+                    entry.unlink()
+            except FileNotFoundError:
+                continue
+
+
 def main():
     print(f"[{datetime.utcnow()}] Starting cleanup...")
     task_history = load_task_history()
     clean_checkpoints(task_history)
     clean_datasets(task_history)
     clean_models(task_history)
+    clean_partial_downloads()
     print(f"[{datetime.utcnow()}] Cleanup complete.")
 
 

@@ -81,6 +81,13 @@ OUTPUT_CHECKPOINTS_PATH = "/app/checkpoints/"
 CACHE_MODELS_DIR = "/cache/models"
 CACHE_DATASETS_DIR = "/cache/datasets"
 MINER_DATASETS_CACHE_DIR = "/cache/miner_datasets"
+# Cache downloads build in a hidden sibling ".<name>.download-<random>" and are renamed into place only once complete, so a
+# path under a cache root is either a finished entry or absent. Directory entries carry this marker file; a directory
+# without it predates atomic downloads and is verified before reuse. A partial left by a killed download is garbage that
+# cache_cleanup.py removes once nothing in it has been written for CACHE_PARTIAL_DOWNLOAD_STALE_HOURS.
+CACHE_DOWNLOAD_TAG = ".download-"
+CACHE_COMPLETE_MARKER = ".cache_complete"
+CACHE_PARTIAL_DOWNLOAD_STALE_HOURS = 12
 WANDB_LOGS_DIR = "/app/checkpoints/wandb_logs"
 
 # Container training paths
