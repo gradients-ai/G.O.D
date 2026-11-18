@@ -449,20 +449,20 @@ class TestPinnedHours:
         )
 
     def test_the_constant_is_the_pinned_value(self):
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 3.0
 
     def test_no_stats(self):
-        assert self._hours(None) == 2.5
+        assert self._hours(None) == 3.0
 
     def test_stats_that_would_compute_far_more(self):
-        assert self._hours(_stats(50_000_000_000, 5_000_000, 500.0)) == 2.5
+        assert self._hours(_stats(50_000_000_000, 5_000_000, 500.0)) == 3.0
 
     def test_stats_that_would_compute_far_less(self):
-        assert self._hours(_stats(1_000, 10, 1_000_000.0), current_hours=30.0) == 2.5
+        assert self._hours(_stats(1_000, 10, 1_000_000.0), current_hours=30.0) == 3.0
 
     @pytest.mark.parametrize("max_hours", [1.0, 2.0, 3.0, 10.0, 48.0])
     def test_max_hours_does_not_change_it(self, max_hours):
-        assert self._hours(_stats(200_000_000, 100_000, 8_000.0), max_hours=max_hours) == 2.5
+        assert self._hours(_stats(200_000_000, 100_000, 8_000.0), max_hours=max_hours) == 3.0
 
     def test_start_point_alone_or_ds_alone_identifies_it(self):
         stats = _stats(200_000_000, 100_000, 8_000.0)
@@ -476,7 +476,7 @@ class TestPinnedHours:
         by_ds = scheduler.compute_hours_from_baseline_stats(
             9.0, stats, TaskType.CHATTASK, model_params_count=8_600_000_000, ds=t_cst.continuous_sft_ds(LINEAGE, "x")
         )
-        assert by_start_point == by_ds == 2.5
+        assert by_start_point == by_ds == 3.0
 
     def test_plain_instruct_task_is_unchanged(self):
         stats = _stats(200_000_000, 100_000, 8_000.0)

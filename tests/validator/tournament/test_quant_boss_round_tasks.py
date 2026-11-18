@@ -110,7 +110,7 @@ async def test_the_continuous_instruct_task_is_a_default_start_chat_task_without
     c = await world.c_task()
 
     assert isinstance(c, ChatRawTask) and c.task_type == TaskType.CHATTASK
-    assert c.training_start_point == TrainingStartPoint.DEFAULT  # CONTINUOUS_SFT would force 4xH100
+    assert c.training_start_point == TrainingStartPoint.DEFAULT  # CONTINUOUS_SFT would force 2xH100
     assert c.chat_template == "tokenizer_default"
     assert c.file_format == FileFormat.S3 and c.model_id == BASE and c.augmentation_config is None
     assert t_cst.continuous_chat_parts(c.ds) == (C_INDEX, TID)

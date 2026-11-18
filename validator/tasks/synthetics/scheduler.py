@@ -271,7 +271,7 @@ def compute_training_hours(
 ) -> float:
     """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
 
-    training_start_point matters for the GPU count: continuous-SFT trains on a forced 4xH100
+    training_start_point matters for the GPU count: continuous-SFT trains on a forced 2xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
     max_hours overrides the global MAX_TRAINING_HOURS ceiling when set. gpu_count_multiplier is the
     task's multiple of its size tier (the continuous instruct task trains on 2x: tournament constants
@@ -1300,7 +1300,7 @@ async def create_continuous_instruct_task(config: Config, *, model_id: str, trai
     """The boss round's continuous instruct task: a raw quant-pool base trained on a continuous chat chunk.
 
     A ChatRawTask under the base's own chat template (ShareGPT, as the continuous-SFT task) with start point DEFAULT:
-    CONTINUOUS_SFT would force 4xH100, while this task's GPU tier comes from its size doubled (gpu_count_multiplier). No KL, no
+    CONTINUOUS_SFT would force 2xH100, while this task's GPU tier comes from its size doubled (gpu_count_multiplier). No KL, no
     augmentation, so the evaluator's tokenizer is the raw base's (original_model). The ds carries the chunk and the tournament
     that seeds the row split: prep takes the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS rows of the chunk
     (select_continuous_rows), and the creation estimate prices that many rows.

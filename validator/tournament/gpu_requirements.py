@@ -42,11 +42,11 @@ def get_tournament_gpu_requirement(
     instruct task trains on 2x its tier: 1x -> 2x, 2x -> 4x, capped at 8x); it does not scale the
     parameter count the way ``gpu_multiplier`` does.
 
-    Continuous-SFT gets a FIXED 4xH100, checked first so we never hit the (gated/custom-arch)
+    Continuous-SFT gets a FIXED 2xH100, checked first so we never hit the (gated/custom-arch)
     HuggingFace param fetch below.
     """
     if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
-        return GpuRequirement.H100_4X
+        return GpuRequirement.H100_2X
 
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X

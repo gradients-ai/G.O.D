@@ -39,7 +39,7 @@ class TestLineages:
 
     def test_training_hours_is_pinned(self):
         # Fixed budget, pinned after prep too.
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 3.0
 
 
 class TestDsRoundTrip:

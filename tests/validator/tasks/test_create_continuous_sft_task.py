@@ -56,7 +56,7 @@ async def test_builds_expected_chatrawtask(monkeypatch):
     assert task.training_data == "https://s3/train"
     assert task.test_data == "https://s3/test"
     assert task.ds == "continuous-sft:qwen:chunk-00003"
-    assert task.hours_to_complete == 2.5  # fixed budget, unchanged after prep
+    assert task.hours_to_complete == 3.0  # fixed budget, unchanged after prep
     assert task.is_organic is False
     assert task.augmentation_config is None
 

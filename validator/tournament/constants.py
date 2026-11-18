@@ -252,8 +252,8 @@ def continuous_sft_seed_repo_for_ds(ds: str | None) -> str | None:
 
 # Fixed training budget: every continuous-SFT task gets exactly this many hours, pinned as both floor and
 # cap after prep (compute_hours_from_baseline_stats ignores the measured stats for these tasks). GPUs stay
-# a forced 4xH100 (gpu_requirements.py).
-CONTINUOUS_SFT_TRAINING_HOURS = 2.5
+# a forced 2xH100 (gpu_requirements.py).
+CONTINUOUS_SFT_TRAINING_HOURS = 3.0
 
 # The chunk scheme of every continuous-SFT task this code creates; its train_index counts chunks of that scheme.
 CONTINUOUS_SFT_CHUNK_SCHEME = ChunkScheme.V2
@@ -508,7 +508,7 @@ QUANT_TRUSTED_FETCH_URL_PREFIXES = (
 # train rows are two disjoint, tournament-seeded shares of that chunk's train file (select_continuous_rows at prep):
 # the instruct task the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS, the compressions the next ones. Neither is a continuous-SFT
 # task: the ds prefixes are on purpose not parsed by continuous_sft_lineage_from_ds (which would pin a seed tokenizer and size
-# hours off a seed), and the start point stays DEFAULT / OWN_UPSTREAM_MODEL (CONTINUOUS_SFT forces 4xH100).
+# hours off a seed), and the start point stays DEFAULT / OWN_UPSTREAM_MODEL (CONTINUOUS_SFT forces 2xH100).
 # Compression tasks: ds is "{prefix}:{train_index}:{tournament_id}:{label}".
 QUANT_CONTINUOUS_DS_PREFIX = "continuous-quant"
 # Continuous instruct task: ds is "{prefix}:{train_index}:{tournament_id}:{label}". The tournament id seeds the row split and
