@@ -318,3 +318,17 @@ def test_cleaner_removes_stale_partials_and_keeps_running_downloads(tmp_path):
     cache_cleanup.clean_partial_downloads(roots=(models, tmp_path / "missing"))
 
     assert sorted(entry.name for entry in models.iterdir()) == sorted([running.name, finished.name])
+
+
+def test_cache_entries_are_readable_by_other_users(tmp_path: Path) -> None:
+    # Cache directories and files are read by containers running as other users (decode, upload checks): a promoted
+    # entry must not keep the owner-only mode tempfile gives its partial directory or file.
+    entry = tmp_path / "models" / "entry"
+    downloader._cache_directory(entry, lambda d: _write(d, {"config.json": b"{}", "model.safetensors": b"w"}), "model")
+    assert entry.stat().st_mode & 0o777 == downloader.CACHE_DIR_MODE
+
+    source = tmp_path / "source.json"
+    source.write_bytes(b"[]")
+    dest = tmp_path / "datasets" / "rows.json"
+    downloader._copy_file_into_place(source, dest)
+    assert dest.stat().st_mode & 0o777 == downloader.CACHE_FILE_MODE

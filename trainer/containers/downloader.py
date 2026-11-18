@@ -247,6 +247,10 @@ def _normalize_standalone_checkpoint(cache_path: Path, checkpoint: RepoFileMetad
         raise RuntimeError(f"Failed to normalize standalone FLUX checkpoint cache at {cache_path}")
 
 
+CACHE_DIR_MODE = 0o755
+CACHE_FILE_MODE = 0o644
+
+
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -272,7 +276,11 @@ def _promote_directory(download_path: Path, save_path: Path) -> None:
 
 
 def _new_partial_download_dir(save_path: Path) -> Path:
-    return Path(tempfile.mkdtemp(prefix=f".{save_path.name}{cst.CACHE_DOWNLOAD_TAG}", dir=save_path.parent))
+    # mkdtemp creates the directory owner-only (0o700); it is renamed into place as the cache entry, which containers
+    # running as other users (decode, upload checks) must read, so give it the permissions a normal mkdir would.
+    path = Path(tempfile.mkdtemp(prefix=f".{save_path.name}{cst.CACHE_DOWNLOAD_TAG}", dir=save_path.parent))
+    path.chmod(CACHE_DIR_MODE)
+    return path
 
 
 def _legacy_model_dir_is_complete(model_dir: Path) -> bool:
@@ -349,6 +357,7 @@ def _copy_file_into_place(source: Path, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     fd, partial_path = tempfile.mkstemp(prefix=f".{dest.name}{cst.CACHE_DOWNLOAD_TAG}", dir=dest.parent)
     os.close(fd)
+    os.chmod(partial_path, CACHE_FILE_MODE)  # mkstemp is owner-only (0o600); readers may run as other users
     try:
         shutil.copyfile(source, partial_path)
         os.replace(partial_path, dest)
