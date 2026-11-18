@@ -57,7 +57,6 @@ from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantRawTask
 from validator.tasks.rewards.functions import validate_reward_function
-from validator.tournament.models import ContinuousRowsPart
 
 
 logger = get_logger(__name__)
@@ -733,29 +732,26 @@ def _row_hash(seed: str, row: dict) -> str:
 
 
 def select_continuous_rows(task: AnyTextTypeRawTask | QuantRawTask, train_ds: Dataset) -> Dataset:
-    """The continuous instruct task's or the compression tasks' share of one continuous chunk's train rows; any other task
-    is returned unchanged.
+    """An own-upstream compression task's share of its continuous chunk's train rows; any other task is returned unchanged.
 
     The rows are ordered by a hash of (tournament seed, row content), which does not depend on the order of the file. The
-    instruct task takes the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS of that order and the compression tasks the next ones,
-    so the two shares are disjoint, each exactly that size, reproducible for a tournament and different for another, and the
-    freeform and fixed compression tasks (same seed, same chunk) get identical rows. A chunk with fewer than twice as many
-    rows is split into disjoint halves (WARNING). The test split is not touched. Taken here because prep already holds
-    the downloaded train file and re-uploads it, and the baseline stats that size the hours are measured on what prep
-    uploads (task.training_data).
+    task takes the QUANT_CONTINUOUS_SHARE_ROWS rows after the first QUANT_CONTINUOUS_SHARE_ROWS of that order, so the share is
+    exactly that size, reproducible for a tournament and different for another, and the freeform and fixed compression tasks
+    (same seed, same chunk) get identical rows. A chunk with fewer than twice as many rows gives its second half (WARNING).
+    The test split is not touched. Taken here because prep already holds the downloaded train file and re-uploads it, and the
+    baseline stats that size the hours are measured on what prep uploads (task.training_data).
     """
-    selected = t_cst.continuous_rows_part(task)
-    if selected is None:
+    seed = t_cst.continuous_share_seed(task)
+    if seed is None:
         return train_ds
-    part, seed = selected
-    size = t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS
+    size = t_cst.QUANT_CONTINUOUS_SHARE_ROWS
     if len(train_ds) < 2 * size:
         logger.warning(f"Task {task.task_id}: the chunk has {len(train_ds)} train rows, under {2 * size}: using disjoint halves")
         size = len(train_ds) // 2
     hashes = [_row_hash(seed, row) for row in train_ds.to_list()]  # one pass over the table, not one Arrow read per row
     order = sorted(range(len(train_ds)), key=hashes.__getitem__)
-    start = 0 if part == ContinuousRowsPart.INSTRUCT else size
-    logger.info(f"Task {task.task_id}: {part.value} share, {size} of {len(train_ds)} chunk rows")
+    start = size  # the share's offset in the seeded order: the rows after the first share
+    logger.info(f"Task {task.task_id}: compression share, {size} of {len(train_ds)} chunk rows")
     return train_ds.select(sorted(order[start : start + size]))
 
 

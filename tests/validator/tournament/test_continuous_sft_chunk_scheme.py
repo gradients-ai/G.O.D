@@ -487,7 +487,6 @@ class TestPinnedHours:
             8_000.0,
             TrainingStartPoint.DEFAULT,
             max_hours=None,
-            gpu_count_multiplier=t_cst.gpu_count_multiplier(TaskType.INSTRUCTTEXTTASK, None),
         )
         got = scheduler.compute_hours_from_baseline_stats(
             4.0, stats, TaskType.INSTRUCTTEXTTASK, model_id="org/model", model_params_count=8_600_000_000

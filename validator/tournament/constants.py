@@ -10,7 +10,6 @@ from core.models.task_models import TaskType
 from core.models.tournament_models import TournamentType
 from validator.tournament.models import QUANT_SLOT_SPECS
 from validator.tournament.models import ChunkScheme
-from validator.tournament.models import ContinuousRowsPart
 from validator.tournament.models import ImageRoundSpec
 from validator.tournament.models import QuantRoundSpec
 from validator.tournament.models import QuantSourceSlot
@@ -502,28 +501,17 @@ QUANT_TRUSTED_FETCH_URL_PREFIXES = (
     "https://astral.sh/uv/",
 )
 
-# --- Continuous-data tasks of the boss round: the continuous instruct task and its two compression tasks -----------
-# The continuous instruct task is a CHATTASK on a raw quant-pool base trained on one continuous-SFT chat chunk; its compressions
-# (its freeform / fixed compression tasks) are quant tasks on the SAME chunk. The chunk is pulled once per tournament. Their
-# train rows are two disjoint, tournament-seeded shares of that chunk's train file (select_continuous_rows at prep):
-# the instruct task the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS, the compressions the next ones. Neither is a continuous-SFT
-# task: the ds prefixes are on purpose not parsed by continuous_sft_lineage_from_ds (which would pin a seed tokenizer and size
-# hours off a seed), and the start point stays DEFAULT / OWN_UPSTREAM_MODEL (CONTINUOUS_SFT forces 2xH100).
-# Compression tasks: ds is "{prefix}:{train_index}:{tournament_id}:{label}".
+# --- Compression tasks on a continuous-SFT chunk ------------------------------------------------------------------------
+# A quant task whose ds names a continuous-SFT chat chunk carries that chunk's train/test files from creation. A compression of
+# the text boss's continuous model (start point DEFAULT, a shared input) trains on every row of the chunk; an own-upstream one
+# (OWN_UPSTREAM_MODEL) takes a tournament-seeded share of the chunk's train rows (select_continuous_rows at prep): the
+# QUANT_CONTINUOUS_SHARE_ROWS rows after the first QUANT_CONTINUOUS_SHARE_ROWS of that order. Neither is a continuous-SFT
+# task: the ds prefix is on purpose not parsed by continuous_sft_lineage_from_ds (which would pin a seed tokenizer and size
+# hours off a seed). ds is "{prefix}:{train_index}:{tournament_id}:{label}".
 QUANT_CONTINUOUS_DS_PREFIX = "continuous-quant"
-# Continuous instruct task: ds is "{prefix}:{train_index}:{tournament_id}:{label}". The tournament id seeds the row split and
-# the prefix marks it for the GPU tier; continuous_sft_lineage_from_ds does not match either prefix.
-CONTINUOUS_CHAT_DS_PREFIX = "continuous-chat"
-# A cursor row in continuous_sft_state (not a lineage: it is not in CONTINUOUS_SFT_LINEAGES). One advance per tournament
-# hands out the chunk index; once a task exists its ds is the truth, not the row.
-QUANT_CONTINUOUS_LINEAGE = "quant-random-base"
-# Row-count estimate of one chunk, used only for the creation-time hours estimate; prep resizes.
-QUANT_CONTINUOUS_CHUNK_ROWS = 95_000
-# Each of the two shares is this many rows (halves of the chunk if it has fewer than twice as many).
-QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS = 40_000
-# The continuous instruct task trains on this multiple of the GPUs its size would normally take (2 up to 4B, 4 above:
-# 1x -> 2x, 2x -> 4x).
-CONTINUOUS_INSTRUCT_GPU_MULTIPLIER = 2
+# The size of an own-upstream compression task's share of a chunk's train rows, and its offset in the seeded order (halves of
+# the chunk if it has fewer than twice as many).
+QUANT_CONTINUOUS_SHARE_ROWS = 40_000
 
 
 def continuous_quant_ds(train_index: int, tournament_id: str, label: str) -> str:
@@ -550,55 +538,22 @@ def continuous_quant_tournament(ds: str | None) -> str | None:
 
 
 def is_continuous_quant_task(task) -> bool:
-    """True if a task is a quant task on a continuous-SFT chunk (one of the continuous instruct task's two compressions)."""
+    """True if a task is a quant task on a continuous-SFT chunk."""
     return task.task_type in QUANT_TASK_TYPES and continuous_quant_train_index(getattr(task, "ds", None)) is not None
 
 
-def continuous_chat_ds(train_index: int, tournament_id: str, label: str) -> str:
-    """The continuous instruct task's ds: the chunk index, the tournament id that seeds the row split, the content label."""
-    return f"{CONTINUOUS_CHAT_DS_PREFIX}:{train_index}:{tournament_id}:{label}"
+def continuous_share_seed(task) -> str | None:
+    """The row-split seed of a compression task that takes a share of its chunk's train rows, else None.
 
-
-def continuous_chat_parts(ds: str | None) -> tuple[int, str] | None:
-    """(chunk index, tournament id) of the continuous instruct task's ds, or None if ds isn't its."""
-    if not ds:
-        return None
-    parts = ds.split(":", 3)
-    if len(parts) == 4 and parts[0] == CONTINUOUS_CHAT_DS_PREFIX and parts[1].isdigit():
-        return int(parts[1]), parts[2]
-    return None
-
-
-def is_continuous_instruct_task(task) -> bool:
-    """True if a task is the continuous instruct task, the boss round's continuous-chunk instruct task."""
-    return task.task_type == TaskType.CHATTASK and continuous_chat_parts(getattr(task, "ds", None)) is not None
-
-
-def continuous_rows_part(task) -> tuple[ContinuousRowsPart, str] | None:
-    """(which share of the chunk's train rows, split seed) of the continuous instruct task or a compression task, else None.
-
-    The seed is "{tournament_id}:{train_index}", the same for all three tasks, which is what makes their shares of one
-    chunk disjoint and reproducible."""
-    chat = continuous_chat_parts(getattr(task, "ds", None))
-    if chat is not None and task.task_type == TaskType.CHATTASK:
-        return ContinuousRowsPart.INSTRUCT, f"{chat[1]}:{chat[0]}"
+    The seed is "{tournament_id}:{train_index}", so the freeform and fixed tasks of one tournament get the same rows."""
     train_index, tournament_id = continuous_quant_train_index(getattr(task, "ds", None)), continuous_quant_tournament(task.ds)
     if task.task_type in QUANT_TASK_TYPES and train_index is not None and tournament_id is not None:
         if getattr(task, "training_start_point", None) == TrainingStartPoint.DEFAULT:
-            # A shared-input compression of the text boss's continuous model: no instruct task takes the other share, and the
-            # text task trained on the whole chunk, so the quant task takes every row (a chunk is about 47.5k rows, under
-            # the 80k a split into two 40k shares needs).
+            # A shared-input compression of the text boss's continuous model: the text task trained on the whole chunk, so
+            # the quant task takes every row.
             return None
-        return ContinuousRowsPart.COMPRESSION, f"{tournament_id}:{train_index}"
+        return f"{tournament_id}:{train_index}"
     return None
-
-
-def gpu_count_multiplier(task_type: TaskType, ds: str | None) -> int:
-    """How many times its normal GPU tier a task trains on: CONTINUOUS_INSTRUCT_GPU_MULTIPLIER for the continuous instruct
-    task, 1 otherwise."""
-    if task_type == TaskType.CHATTASK and continuous_chat_parts(ds) is not None:
-        return CONTINUOUS_INSTRUCT_GPU_MULTIPLIER
-    return 1
 
 
 # Seed tasks: the tasks created for the boss when the first round is created (validator/tournament/seed_tasks.py).
@@ -620,10 +575,6 @@ SEED_MAX_REPLACEMENTS = 2
 SEED_MAX_PREP_REJECTIONS = 20
 # Task-level model-prep failures of a seed before it is given up and redrawn as a prep rejection (prep otherwise retries forever).
 SEED_MAX_PREP_ATTEMPTS = 3
-# The continuous-chunk cursor is advanced once per tournament, keyed on f"{tournament_id}{SEED_CURSOR_KEY_SUFFIX}": the chunk
-# is fixed at the first draw of the continuous instruct task or its compressions and every later draw (a retry, a
-# replacement) reuses it.
-SEED_CURSOR_KEY_SUFFIX = "_seed"
 
 # Rounds 1-3 of a seeded text tournament are one instruct task each, in one group: the task is trained by the boss at
 # tournament start and by the round's miners when the round is reached. Round 1 advances on its task; rounds 2 and 3 on

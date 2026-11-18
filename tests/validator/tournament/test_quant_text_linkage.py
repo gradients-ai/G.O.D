@@ -1732,13 +1732,13 @@ class TestCreateChainedContinuousQuantTask:
             tournament_id=QUANT_TID,
         )
 
-        assert t_cst.continuous_rows_part(task) is None
+        assert t_cst.continuous_share_seed(task) is None
         assert preparation.select_continuous_rows(task, chunk) is chunk
-        # A compression on the own-upstream model of a continuous chunk is split into disjoint shares.
+        # A compression on the own-upstream model of a continuous chunk takes a seeded share of the rows.
         own = SimpleNamespace(
             task_id=uuid4(), task_type=task.task_type, ds=task.ds, training_start_point=TrainingStartPoint.OWN_UPSTREAM_MODEL
         )
-        assert t_cst.continuous_rows_part(own)[0] == t_cst.ContinuousRowsPart.COMPRESSION
+        assert t_cst.continuous_share_seed(own) == f"{QUANT_TID}:{CHUNK_INDEX}"
 
     async def test_repointing_a_continuous_task_moves_only_the_upstream_and_keeps_the_data(self, seams):
         old_upstream, new_upstream = _chat_task(), _chat_task(model_id="org/other-carried", model_params_count=4_000_000_000)

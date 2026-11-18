@@ -267,19 +267,14 @@ def compute_training_hours(
     measured_tokens_per_sec: float | None = None,
     training_start_point: TrainingStartPoint = TrainingStartPoint.DEFAULT,
     max_hours: float | None = None,
-    gpu_count_multiplier: int = 1,
 ) -> float:
     """Hours for TARGET_TRAINING_EPOCHS over the dataset at expected miner throughput.
 
     training_start_point matters for the GPU count: continuous-SFT trains on a forced 2xH100
     regardless of params, so sizing from params alone would budget for half the real GPUs.
-    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set. gpu_count_multiplier is the
-    task's multiple of its size tier (the continuous instruct task trains on 2x: tournament constants
-    gpu_count_multiplier), so the budget divides by the GPUs the task really gets.
+    max_hours overrides the global MAX_TRAINING_HOURS ceiling when set.
     """
-    gpus = get_tournament_gpu_requirement(
-        task_type, int(num_params), training_start_point=training_start_point, gpu_count_multiplier=gpu_count_multiplier
-    ).gpu_count
+    gpus = get_tournament_gpu_requirement(task_type, int(num_params), training_start_point=training_start_point).gpu_count
     analytic_tps = _analytic_tokens_per_sec_per_gpu(num_params)
     if measured_tokens_per_sec:
         lo, hi = data_cst.MEASURED_THROUGHPUT_CLAMP
@@ -305,7 +300,7 @@ def get_grpo_training_hours(num_params: float | None) -> float:
 
 
 def _get_training_hours_from_num_rows(
-    num_rows: int, model_id: str | None = None, task_type: TaskType | None = None, gpu_count_multiplier: int = 1
+    num_rows: int, model_id: str | None = None, task_type: TaskType | None = None
 ) -> float:
     """Pre-prep estimate using ASSUMED_TOKENS_PER_ROW until measured stats arrive."""
     num_params = get_model_num_params(model_id) if model_id is not None else None
@@ -314,9 +309,7 @@ def _get_training_hours_from_num_rows(
     if task_type == TaskType.GRPOTASK:
         return get_grpo_training_hours(num_params)
     tokens_per_epoch = num_rows * data_cst.ASSUMED_TOKENS_PER_ROW
-    return compute_training_hours(
-        tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK, gpu_count_multiplier=gpu_count_multiplier
-    )
+    return compute_training_hours(tokens_per_epoch, num_params, task_type or TaskType.INSTRUCTTEXTTASK)
 
 
 def compute_hours_from_baseline_stats(
@@ -366,7 +359,6 @@ def compute_hours_from_baseline_stats(
         measured_tps,
         training_start_point,
         max_hours=max_hours,
-        gpu_count_multiplier=t_cst.gpu_count_multiplier(task_type, ds),
     )
 
 
@@ -1088,7 +1080,7 @@ async def create_own_upstream_quant_task(
     train_index None: the data is the upstream's (create_chained_quant_task's columns), copied from it at
     release, and the hours follow the upstream's stats. With train_index and tournament_id: the task carries
     the SAME continuous chunk as the upstream from creation, with model_id the upstream's base; at prep it takes the
-    second, disjoint share of the chunk's train rows (select_continuous_rows), the release leaves that data alone,
+    second share (in the seeded order) of the chunk's train rows (select_continuous_rows), the release leaves that data alone,
     calibration is carved from those rows, and hours are the normal quant budget (boss multiplier 1.0, no instruct term)
     from the task's own prep stats once they exist.
     """
@@ -1231,7 +1223,7 @@ async def recreate_chained_quant_task(config: Config, task: QuantFixedRawTask | 
     """A fresh held copy of a chained task: same upstream, data, columns, spec or bar cap, hours and start point (an
     own-upstream task stays OWN_UPSTREAM_MODEL, so it is released per player rather than as a shared input).
 
-    A compression task of the continuous instruct task, on its own chunk, gets freshly signed urls for the same chunk: the failed
+    A compression task on its own continuous chunk gets freshly signed urls for the same chunk: the failed
     task's own urls are never copied (after prep its test_data is the tokenised eval set).
     """
     chunk_fields: dict[str, Any] = {}
@@ -1293,46 +1285,6 @@ async def _fetch_continuous_quant_chunk(config: Config, train_index: int) -> Con
     return ContinuousChunk(
         train_url=train_url, test_url=test_url, label=response.get("ds") or f"train-index-{train_index}"
     )
-
-
-@retry_with_backoff
-async def create_continuous_instruct_task(config: Config, *, model_id: str, train_index: int, tournament_id: str) -> RawTask:
-    """The boss round's continuous instruct task: a raw quant-pool base trained on a continuous chat chunk.
-
-    A ChatRawTask under the base's own chat template (ShareGPT, as the continuous-SFT task) with start point DEFAULT:
-    CONTINUOUS_SFT would force 2xH100, while this task's GPU tier comes from its size doubled (gpu_count_multiplier). No KL, no
-    augmentation, so the evaluator's tokenizer is the raw base's (original_model). The ds carries the chunk and the tournament
-    that seeds the row split: prep takes the first QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS rows of the chunk
-    (select_continuous_rows), and the creation estimate prices that many rows.
-    """
-    chunk = await _fetch_continuous_quant_chunk(config, train_index)
-    ds = t_cst.continuous_chat_ds(train_index, tournament_id, chunk.label)
-    hours = _get_training_hours_from_num_rows(
-        t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS,
-        model_id,
-        TaskType.CHATTASK,
-        gpu_count_multiplier=t_cst.CONTINUOUS_INSTRUCT_GPU_MULTIPLIER,
-    )
-    current_time = datetime.utcnow()
-    task = ChatRawTask(
-        model_id=model_id,
-        ds=ds,
-        status=TaskStatus.PENDING,
-        is_organic=False,
-        created_at=current_time,
-        termination_at=current_time + timedelta(hours=hours),
-        hours_to_complete=hours,
-        account_id=service_cst.NULL_ACCOUNT_ID,
-        file_format=FileFormat.S3,
-        training_data=chunk.train_url,
-        test_data=chunk.test_url,
-        training_start_point=TrainingStartPoint.DEFAULT,
-        chat_template="tokenizer_default",
-    )
-    logger.info(f"CONTINUOUS_INSTRUCT_TASK: continuous chat chunk on {model_id} with dataset {ds}, hours={hours}")
-    task = await add_task(task, config.psql_db)
-    logger.info(f"CONTINUOUS_INSTRUCT_TASK: saved task {task.task_id}")
-    return task
 
 
 async def recreate_quant_task(

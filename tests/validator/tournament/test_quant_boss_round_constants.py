@@ -58,9 +58,6 @@ class TestContinuousQuantDs:
         assert t_cst.continuous_sft_lineage_from_ds(ds) is None
         assert t_cst.continuous_sft_seed_repo_for_ds(ds) is None
 
-    def test_lineage_cursor_is_not_a_continuous_sft_lineage(self):
-        assert t_cst.QUANT_CONTINUOUS_LINEAGE not in t_cst.CONTINUOUS_SFT_LINEAGES
-
     def test_is_continuous_quant_task_needs_a_quant_type_and_the_prefix(self):
         ds = t_cst.continuous_quant_ds(1, "t1", "chunk")
         assert t_cst.is_continuous_quant_task(SimpleNamespace(task_type=TaskType.QUANTFIXEDTASK, ds=ds))

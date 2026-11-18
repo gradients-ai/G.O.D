@@ -1218,13 +1218,6 @@ class SeedRole(str, Enum):
 INPUT_SEED_ROLES = frozenset({SeedRole.INPUT_SMALL, SeedRole.INPUT_LARGE})
 
 
-class ContinuousRowsPart(str, Enum):
-    """Which disjoint share of a continuous chunk's train rows a task trains on (see select_continuous_rows)."""
-
-    INSTRUCT = "instruct"  # the continuous instruct task: the first rows in the tournament-seeded hash order
-    COMPRESSION = "compression"  # its freeform / fixed compression tasks: the next rows, the same for both tasks
-
-
 class QuantSourceSlot(str, Enum):
     """The place a quant task takes in a quant tournament, and so which text seed task's boss model it compresses.
 

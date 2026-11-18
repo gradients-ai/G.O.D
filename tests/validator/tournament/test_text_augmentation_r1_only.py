@@ -139,12 +139,6 @@ async def test_drawn_quant_task_never_augments(seams, task_type):
     assert task.augmentation_config is None
 
 
-async def test_the_continuous_instruct_task_never_augments(seams):
-    task = await scheduler.create_continuous_instruct_task(MagicMock(), model_id="org/base", train_index=3, tournament_id="tourn")
-
-    assert task.augmentation_config is None
-
-
 async def test_quant_replacement_never_augments(seams):
     """A chained quant task is replaced by an identical held copy, which drops the config of an older augmented one."""
     original = _fixed_task(augmentation_config=AUG, upstream_task_id=uuid4())

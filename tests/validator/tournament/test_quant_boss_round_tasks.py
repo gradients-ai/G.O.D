@@ -1,9 +1,8 @@
 """The quant boss round: four tasks, the text boss's round-2 model freeform, its round-3 model fixed and its continuous model
 freeform and fixed (no instruct, chat or DPO).
 
-Also the continuous-chunk machinery for the continuous instruct task and its compressions (a CHATTASK on a raw quant-pool
-base trained on a continuous chat chunk, 2x its normal GPU tier; compressions of its own output on a different chunk): the
-creation, hours, GPU tier, row-share and URL-redaction behaviour of that code.
+Also the continuous-chunk machinery for own-upstream compressions of a chat task on a continuous chat chunk: the creation,
+hours, row-share and URL-redaction behaviour of that code.
 """
 
 import logging
@@ -29,22 +28,17 @@ from core.models.task_models import TaskType
 from validator.tasks import requests
 from validator.tasks.datasets import constants as data_cst
 from validator.tasks.datasets import preparation
-from validator.tasks.datasets.calibration import ROW_HASH_COLUMN
-from validator.tasks.datasets.calibration import carve_calibration
-from validator.tasks.datasets.calibration import with_row_hashes
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.quant_eval_set import build_quant_eval_set
 from validator.tasks.synthetics import scheduler
 from validator.tournament import constants as t_cst
-from validator.tournament import gpu_requirements
 from validator.tournament import orchestrator
 from validator.tournament import task_creator
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import RETIRED_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import UNCREATED_BOSS_ROUND_SEED_ROLES
-from validator.tournament.models import GpuRequirement
 from validator.tournament.models import SeedRole
 from validator.tournament.models import SeedStatus
 from validator.tournament.models import TournamentSeedTask
@@ -54,8 +48,8 @@ from validator.tournament.seed_tasks import SEED_CREATION_ORDER
 
 BASE = "org/random-base"
 TID = "tourn"
-C_INDEX = 7
-X_INDEX = C_INDEX  # one chunk per tournament
+
+X_INDEX = 7
 
 
 class World:
@@ -81,11 +75,15 @@ class World:
         monkeypatch.setattr(scheduler, "add_task", add_task)
         monkeypatch.setattr(scheduler, "get_model_num_params", lambda model_id: params)
         monkeypatch.setattr(scheduler, "call_content_service", content_service)
-        for creator in (scheduler.create_own_upstream_quant_task, scheduler.create_continuous_instruct_task):
-            monkeypatch.setattr(creator.retry, "wait", wait_none())
+        monkeypatch.setattr(scheduler.create_own_upstream_quant_task.retry, "wait", wait_none())
 
     async def c_task(self) -> ChatRawTask:
-        return await scheduler.create_continuous_instruct_task(self.config, model_id=BASE, train_index=C_INDEX, tournament_id=TID)
+        """A chat upstream on the base, with its own fetch of the chunk."""
+        return ChatRawTask(
+            task_id=uuid4(), model_id=BASE, ds="org/chat", status=TaskStatus.SUCCESS.value, is_organic=False,
+            account_id=uuid4(), hours_to_complete=3.0, created_at=datetime(2026, 1, 1), file_format=FileFormat.S3,
+            training_data="https://minio/c-train", test_data="https://minio/c-test", chat_template="tokenizer_default",
+        )
 
     async def compression(self, c_task, task_type=TaskType.QUANTFREEFORMTASK, quant_format=None, train_index=X_INDEX):
         c_task.model_params_count = 3_000_000_000
@@ -106,31 +104,7 @@ async def test_the_quant_round_is_four_compression_tasks():
     assert not hasattr(t_cst, "CHAINED_BOSS_SLOTS")
 
 
-async def test_the_continuous_instruct_task_is_a_default_start_chat_task_without_kl_on_the_tokenizer_default_template(world):
-    c = await world.c_task()
-
-    assert isinstance(c, ChatRawTask) and c.task_type == TaskType.CHATTASK
-    assert c.training_start_point == TrainingStartPoint.DEFAULT  # CONTINUOUS_SFT would force 2xH100
-    assert c.chat_template == "tokenizer_default"
-    assert c.file_format == FileFormat.S3 and c.model_id == BASE and c.augmentation_config is None
-    assert t_cst.continuous_chat_parts(c.ds) == (C_INDEX, TID)
-    assert t_cst.continuous_sft_lineage_from_ds(c.ds) is None and t_cst.continuous_quant_train_index(c.ds) is None
-    assert t_cst.is_continuous_instruct_task(c) and not t_cst.is_continuous_sft_task(c)
-    assert c.training_data and c.test_data
-
-
-async def test_the_continuous_instruct_hours_are_the_creation_estimate_on_40k_rows_with_doubled_gpus(world):
-    c = await world.c_task()
-
-    expected = scheduler._get_training_hours_from_num_rows(
-        t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS, BASE, TaskType.CHATTASK, gpu_count_multiplier=2
-    )
-    assert c.hours_to_complete == expected <= data_cst.MAX_TRAINING_HOURS
-    rows = t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS
-    assert expected < scheduler._get_training_hours_from_num_rows(rows, BASE, TaskType.CHATTASK)
-
-
-async def test_the_continuous_compressions_are_own_upstream_on_the_same_chunk_with_the_instruct_task_s_base(world):
+async def test_the_continuous_compressions_are_own_upstream_on_the_chunk_with_the_upstream_s_base(world):
     c = await world.c_task()
     for task_type in QUANT_TASK_TYPES:
         fmt = None
@@ -141,8 +115,8 @@ async def test_the_continuous_compressions_are_own_upstream_on_the_same_chunk_wi
         assert task.training_start_point == TrainingStartPoint.OWN_UPSTREAM_MODEL
         assert task.upstream_task_id == c.task_id and task.status == TaskStatus.AWAITING_UPSTREAM
         assert task.model_id == c.model_id == BASE
-        assert t_cst.continuous_quant_train_index(task.ds) == t_cst.continuous_chat_parts(c.ds)[0]  # one chunk
-        assert t_cst.continuous_quant_tournament(task.ds) == t_cst.continuous_chat_parts(c.ds)[1] == TID
+        assert t_cst.continuous_quant_train_index(task.ds) == X_INDEX
+        assert t_cst.continuous_quant_tournament(task.ds) == TID
         assert task.training_data and task.test_data and task.training_data != c.training_data  # their own fetch of the chunk
         assert task.file_format == FileFormat.S3 and isinstance(task.dataset_type, ChatTemplateDatasetType)
         assert task.carve_calibration is True
@@ -197,8 +171,8 @@ async def test_the_own_upstream_release_refetches_the_compression_task_s_chunk_w
 
     assert task.status == TaskStatus.PENDING
     assert world.content_calls[calls_before:] == [{"train_index": X_INDEX}]  # the same chunk
-    assert task.training_data == "https://minio/train-3?X-Amz-Signature=secret3" != old_train
-    assert task.test_data == "https://minio/test-3?X-Amz-Signature=secret3" != old_test
+    assert task.training_data == "https://minio/train-2?X-Amz-Signature=secret2" != old_train
+    assert task.test_data == "https://minio/test-2?X-Amz-Signature=secret2" != old_test
     assert (task.ds, task.hours_to_complete) == (ds, hours)  # ds (label) and hours stay as created
     orchestrator.task_sql.set_starting_model_repo.assert_awaited_once()
 
@@ -294,78 +268,12 @@ async def test_the_own_upstream_release_alerts_when_the_upstream_published_no_ca
     assert "fail data prep and be replaced" in alert.await_args.args[1]
 
 
-# --- GPU tier and hours of the continuous instruct task ------------------------------------------------------------
-
-
-def _chat_task(params: int, ds: str) -> ChatRawTask:
-    return ChatRawTask(
-        task_id=uuid4(), model_id="org/m", ds=ds, status=TaskStatus.PENDING, is_organic=False, account_id=uuid4(),
-        hours_to_complete=3.0, created_at=datetime(2026, 1, 1), model_params_count=params,
-    )
-
-
-@pytest.mark.parametrize(
-    ("params_b", "expected"),
-    [(1.0, GpuRequirement.H100_2X), (1.7, GpuRequirement.H100_2X), (3.5, GpuRequirement.H100_2X), (4.0, GpuRequirement.H100_2X),
-     (5.0, GpuRequirement.H100_4X), (8.0, GpuRequirement.H100_4X)],
-)
-def test_the_continuous_instruct_task_trains_on_double_its_tier(params_b, expected):
-    c_ds = t_cst.continuous_chat_ds(1, TID, "x")
-    assert gpu_requirements.get_task_gpu_requirement(_chat_task(int(params_b * 1e9), c_ds)) == expected
-
-
-@pytest.mark.parametrize("params_b", [1.7, 3.5, 8.0])
-def test_nothing_else_changes_tier(params_b):
-    params = int(params_b * 1e9)
-    normal = gpu_requirements.get_tournament_gpu_requirement(TaskType.CHATTASK, params)
-    # a continuous-SFT-lineage chat task and an ordinary chat task keep their tier
-    assert gpu_requirements.get_task_gpu_requirement(_chat_task(params, "org/ordinary")) == normal
-    assert gpu_requirements.get_task_gpu_requirement(_chat_task(params, t_cst.continuous_quant_ds(3, TID, "x"))) == normal
-    for task_type in (TaskType.INSTRUCTTEXTTASK, *QUANT_TASK_TYPES):
-        assert t_cst.gpu_count_multiplier(task_type, t_cst.continuous_chat_ds(1, TID, "x")) == 1
-    assert t_cst.gpu_count_multiplier(TaskType.CHATTASK, "org/ordinary") == 1
-    assert gpu_requirements.get_tournament_gpu_requirement(TaskType.INSTRUCTTEXTTASK, params, use_kl=True) == (
-        gpu_requirements.get_tournament_gpu_requirement(TaskType.INSTRUCTTEXTTASK, params, use_kl=True, gpu_count_multiplier=1)
-    )
-
-
-def test_the_multiplier_is_capped_at_eight_gpus():
-    assert gpu_requirements.get_tournament_gpu_requirement(
-        TaskType.CHATTASK, int(30e9), gpu_count_multiplier=2
-    ) == GpuRequirement.H100_8X
-
-
-def test_post_prep_hours_use_the_doubled_gpu_count():
-    stats = _stats()
-    c_ds = t_cst.continuous_chat_ds(1, TID, "x")
-    doubled = scheduler.compute_hours_from_baseline_stats(3.0, stats, TaskType.CHATTASK, model_params_count=int(3.5e9), ds=c_ds)
-    single = scheduler.compute_hours_from_baseline_stats(
-        3.0, stats, TaskType.CHATTASK, model_params_count=int(3.5e9), ds="org/ordinary"
-    )
-    assert doubled < single
-    assert doubled == scheduler.compute_training_hours(
-        stats.dataset.total_tokens, 3.5e9, TaskType.CHATTASK, stats.throughput.tokens_per_sec, gpu_count_multiplier=2
-    )
-
-
-def _stats():
-    from tests.validator.tournament.test_quant_gpu_hours import _task_stats
-
-    return _task_stats(12_000.0, 1790.0, 40_000 * 1790, 40_000)
-
-
-# --- the chat task's and the compressions' disjoint shares of one chunk ------------------------------------------------------
+# --- the compressions' share of one chunk -------------------------------------------------------------------------------------
 
 
 def _chunk(n: int, order: list[int] | None = None) -> Dataset:
     ids = order if order is not None else list(range(n))
     return Dataset.from_dict({"id": ids, "text": [f"row {i}" for i in ids]})
-
-
-def _continuous_instruct_task(tournament: str, index: int = 3) -> SimpleNamespace:
-    return SimpleNamespace(
-        task_id=uuid4(), task_type=TaskType.CHATTASK, ds=t_cst.continuous_chat_ds(index, tournament, "label")
-    )
 
 
 def _compression_task(tournament: str, index: int = 3, task_type=TaskType.QUANTFREEFORMTASK) -> SimpleNamespace:
@@ -378,9 +286,9 @@ def _ids(dataset: Dataset) -> set[int]:
 
 def test_the_selection_equals_the_per_row_hash_order_and_reads_the_table_once(monkeypatch):
     chunk = _chunk(300)
-    monkeypatch.setattr(t_cst, "QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS", 100)
-    task = _continuous_instruct_task("t1")
-    _, seed = t_cst.continuous_rows_part(task)
+    monkeypatch.setattr(t_cst, "QUANT_CONTINUOUS_SHARE_ROWS", 100)
+    task = _compression_task("t1")
+    seed = t_cst.continuous_share_seed(task)
     expected_order = sorted(range(len(chunk)), key=lambda i: preparation._row_hash(seed, chunk[i]))
 
     reads = []
@@ -388,18 +296,16 @@ def test_the_selection_equals_the_per_row_hash_order_and_reads_the_table_once(mo
     monkeypatch.setattr(Dataset, "__getitem__", lambda self, key: (reads.append(key), original(self, key))[1])
     selected = preparation.select_continuous_rows(task, chunk)
 
-    assert selected["id"] == sorted(expected_order[:100])
+    assert selected["id"] == sorted(expected_order[100:200])  # the share after the first 100 rows of the order
     assert not [key for key in reads if isinstance(key, int)]  # no single-row Arrow read
 
 
-def test_the_two_shares_are_disjoint_and_exactly_40k_rows_each():
+def test_the_share_is_exactly_40k_rows():
     chunk = _chunk(95_000)
 
-    instruct = preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk)
     compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
 
-    assert len(instruct) == len(compression) == t_cst.QUANT_CONTINUOUS_INSTRUCT_TRAIN_ROWS == 40_000
-    assert not _ids(instruct) & _ids(compression)
+    assert len(compression) == t_cst.QUANT_CONTINUOUS_SHARE_ROWS == 40_000
 
 
 def test_the_freeform_and_fixed_compressions_get_identical_rows():
@@ -412,41 +318,32 @@ def test_the_freeform_and_fixed_compressions_get_identical_rows():
 
 def test_shares_are_reproducible_per_tournament_and_different_across_tournaments():
     chunk = _chunk(95_000)
-    first = _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
+    first = _ids(preparation.select_continuous_rows(_compression_task("t1"), chunk))
 
-    assert first == _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
-    assert first != _ids(preparation.select_continuous_rows(_continuous_instruct_task("t2"), chunk))
+    assert first == _ids(preparation.select_continuous_rows(_compression_task("t1"), chunk))
+    assert first != _ids(preparation.select_continuous_rows(_compression_task("t2"), chunk))
 
 
 def test_shares_do_not_depend_on_the_row_order_of_the_file():
     ids = list(range(95_000))
     shuffled = random.Random(5).sample(ids, len(ids))
 
-    for task in (_continuous_instruct_task("t1"), _compression_task("t1")):
-        assert _ids(preparation.select_continuous_rows(task, _chunk(0, ids))) == _ids(
-            preparation.select_continuous_rows(task, _chunk(0, shuffled))
-        )
+    task = _compression_task("t1")
+    assert _ids(preparation.select_continuous_rows(task, _chunk(0, ids))) == _ids(
+        preparation.select_continuous_rows(task, _chunk(0, shuffled))
+    )
 
 
-def test_a_calibration_carve_from_the_compression_rows_never_overlaps_the_instruct_rows():
-    chunk = _chunk(95_000)
-    instruct = _ids(preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk))
-    compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
-    hashed = with_row_hashes(compression)
-    carved = carve_calibration("seed", hashed[ROW_HASH_COLUMN], set(), [100] * len(hashed))
-
-    assert carved is not None and carved.calibration_indices
-    assert not {compression[i]["id"] for i in carved.calibration_indices} & instruct
-
-
-def test_a_small_chunk_is_split_into_disjoint_halves_with_a_warning(caplog):
+def test_a_small_chunk_gives_the_second_half_with_a_warning(caplog):
     chunk = _chunk(60_000)
+    task = _compression_task("t1")
+    seed = t_cst.continuous_share_seed(task)
+    order = sorted(range(len(chunk)), key=lambda i: preparation._row_hash(seed, chunk[i]))
 
     with caplog.at_level(logging.WARNING):
-        instruct = preparation.select_continuous_rows(_continuous_instruct_task("t1"), chunk)
-        compression = preparation.select_continuous_rows(_compression_task("t1"), chunk)
+        compression = preparation.select_continuous_rows(task, chunk)
 
-    assert len(instruct) == len(compression) == 30_000 and not _ids(instruct) & _ids(compression)
+    assert len(compression) == 30_000 and _ids(compression) == set(order[30_000:])
     assert "disjoint halves" in caplog.text
 
 
@@ -655,7 +552,7 @@ async def test_malformed_responses_raise_without_a_url_in_the_error(monkeypatch,
     monkeypatch.setattr(scheduler, "call_content_service", AsyncMock(return_value=response))
 
     with pytest.raises(ValueError) as error:
-        await scheduler.create_continuous_instruct_task(MagicMock(), model_id=BASE, train_index=3, tournament_id=TID)
+        await scheduler._fetch_continuous_quant_chunk(MagicMock(), 3)
 
     assert "s3cr3t" not in str(error.value) and "https://" not in str(error.value)
 
