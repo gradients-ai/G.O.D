@@ -502,9 +502,10 @@ QUANT_TRUSTED_FETCH_URL_PREFIXES = (
 )
 
 # --- Compression tasks on a continuous-SFT chunk ------------------------------------------------------------------------
-# A quant task whose ds names a continuous-SFT chat chunk carries that chunk's train/test files from creation. A compression of
-# the text boss's continuous model (start point DEFAULT, a shared input) trains on every row of the chunk; an own-upstream one
-# (OWN_UPSTREAM_MODEL) takes a tournament-seeded share of the chunk's train rows (select_continuous_rows at prep): the
+# A quant task whose ds names a continuous-SFT chat chunk carries that chunk's train/test files from creation; its release
+# replaces them with the continuous-SFT task's prepped split of the chunk, without the calibration rows. A compression of
+# the text boss's continuous model (start point DEFAULT, a shared input) trains on every row of that train file; an
+# own-upstream one (OWN_UPSTREAM_MODEL) takes a tournament-seeded share of its rows (select_continuous_rows at prep): the
 # QUANT_CONTINUOUS_SHARE_ROWS rows after the first QUANT_CONTINUOUS_SHARE_ROWS of that order. Neither is a continuous-SFT
 # task: the ds prefix is on purpose not parsed by continuous_sft_lineage_from_ds (which would pin a seed tokenizer and size
 # hours off a seed). ds is "{prefix}:{train_index}:{tournament_id}:{label}".

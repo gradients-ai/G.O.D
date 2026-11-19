@@ -61,7 +61,9 @@ def _text_task(carve: bool = True, label: str = "chunk-7") -> ChatRawTask:
     )
 
 
-def _compression_task(calibration_data: str | None) -> QuantFreeformRawTask:
+def _compression_task(
+    training_data: str, test_data: str, calibration_data: str | None, start_point: TrainingStartPoint
+) -> QuantFreeformRawTask:
     return QuantFreeformRawTask(
         task_id=uuid.uuid4(),
         is_organic=False,
@@ -73,10 +75,10 @@ def _compression_task(calibration_data: str | None) -> QuantFreeformRawTask:
         created_at=datetime(2026, 11, 7),
         dataset_type=ChatTemplateDatasetType(chat_template="tokenizer_default", chat_column="conversations"),
         file_format=FileFormat.S3,
-        training_data=TRAIN_URL,
-        test_data=TEST_URL,
+        training_data=training_data,
+        test_data=test_data,
         calibration_data=calibration_data,
-        training_start_point=TrainingStartPoint.DEFAULT,
+        training_start_point=start_point,
     )
 
 
@@ -87,6 +89,8 @@ def seams(monkeypatch):
     )
 
     async def download(name, file_format, max_file_size_bytes=None):
+        if name in state.urls:  # a file prep uploaded earlier
+            return Dataset.from_list(state.urls[name])
         return Dataset.from_list(state.train if name == TRAIN_URL else state.test)
 
     async def upload(path, bucket, object_name):
@@ -169,17 +173,22 @@ async def test_an_unflagged_continuous_task_trains_on_every_row(seams):
     assert len(seams.uploads["train_data.json"]) == N_TRAIN
 
 
-async def test_the_compression_task_takes_exactly_the_rows_the_text_task_held_out(seams):
+@pytest.mark.parametrize("start_point", [TrainingStartPoint.DEFAULT, TrainingStartPoint.OWN_UPSTREAM_MODEL])
+async def test_the_compression_task_takes_exactly_the_held_out_rows_and_trains_on_none_of_them(seams, start_point):
+    seams.train += _rows(20_000, N_TRAIN)  # an own-upstream task takes half the chunk; the half must still be a dataset
     text_split = await _prep_text(seams, _text_task())
-    held_out = seams.urls[text_split.calibration_url]
+    held_out = {_key(r) for r in seams.urls[text_split.calibration_url]}
     text_train = {_key(r) for r in seams.uploads["train_data.json"]}
     seams.uploads.clear()
 
-    quant_split = await preparation.prepare_text_task(
-        _compression_task(text_split.calibration_url), keypair=None, psql_db="db"
-    )
+    # The release hands the compression task the text task's prepped split (see _copy_upstream_chunk_split).
+    task = _compression_task(text_split.train_url, text_split.test_url, text_split.calibration_url, start_point)
+    quant_split = await preparation.prepare_text_task(task, keypair=None, psql_db="db")
 
     assert quant_split.calibration_url == text_split.calibration_url  # passed through, not carved again
     assert "calibration_data.json" not in seams.uploads
-    assert not any(_key(r) in text_train for r in held_out)  # the input model never trained on them
-    assert {_key(r) for r in held_out}.isdisjoint({_key(r) for r in seams.uploads["test_data.json"]})
+    assert held_out and held_out.isdisjoint(text_train)  # the input model never trained on them
+    quant_train = {_key(r) for r in seams.uploads["train_data.json"]}
+    assert quant_train and held_out.isdisjoint(quant_train)  # nor can the compression miner
+    assert held_out.isdisjoint({_key(r) for r in seams.uploads["test_data.json"]})
+    assert seams.uploads["test_data.json"] == seams.test  # the split the text task was scored on

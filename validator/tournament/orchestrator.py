@@ -2609,11 +2609,21 @@ def _copy_upstream_data(task: AnyQuantRawTask, upstream: InstructTextRawTask, bo
     task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
 
 
+def _copy_upstream_chunk_split(task: AnyQuantRawTask, upstream: ChatRawTask) -> None:
+    """A task on its own continuous chunk trains and is scored on the continuous-SFT task's prepped split of that chunk: its
+    train file without the calibration rows the text task held out, the test split it was scored on, and those calibration
+    rows. The columns are already the chunk's chat columns, and the hours stay the task's own."""
+    task.training_data = upstream.training_data
+    task.test_data = upstream.test_data
+    task.calibration_data = upstream.calibration_data
+    task.file_format = FileFormat.S3
+
+
 async def _set_calibration_source(
     task: AnyQuantRawTask, config: Config, copied_from: InstructTextRawTask | ChatRawTask | None = None
 ) -> None:
     """Leave a task released to PENDING with a calibration source: the upstream's raw rows (copied_from: copied by
-    _copy_upstream_data, or by the release of a task on its own continuous chunk, which keeps its data) or its own prep's
+    _copy_upstream_data or _copy_upstream_chunk_split) or its own prep's
     carve, which carve_calibration marks. An upstream that published no calibration rows should not exist (a flagged text
     task fails prep when it carves nothing); the compression task copied from it fails data prep with
     CalibrationUnavailableError (its train rows are the ones its input model was trained on) and is replaced, and the alert
@@ -2741,8 +2751,11 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
 
     The quant task is its own task: only its own row, its source row and its own nodes are read or written here, never the
     text task, its seed row or its status. model_id becomes the model repo; the upstream's prepped data is copied for a
-    pinned-data task exactly as for any chained task, a task on its own continuous chunk keeps its data and gets freshly
-    signed urls for it. The source row is written before the task moves, so a crash in between is repaired by the next pass.
+    pinned-data task exactly as for any chained task, and a task on its own continuous chunk takes the continuous task's
+    prepped split of the chunk (_copy_upstream_chunk_split). Only when the upstream held no calibration rows out and the input
+    is the fallback base, which never trained on the chunk, does such a task get freshly signed urls for the whole chunk and
+    carve its own calibration set. The source row is written before the task moves, so a crash in between is repaired by
+    the next pass.
     Held while no node is assigned to the quant task.
 
     A task still on a replaced seed follows the role's successor (its live row, or the failed row of a role out of
@@ -2790,14 +2803,17 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
         except Exception as e:
             logger.warning(redact_url_queries(f"Chained task {task.task_id}: could not draw a fresh dataset ({e}); holding"))
             return
-    if cst.is_continuous_quant_task(task):
+    continuous = cst.is_continuous_quant_task(task)
+    carves_own_chunk = continuous and not upstream.calibration_data and model.is_fallback
+    if carves_own_chunk:
         try:
             chunk = await _fetch_continuous_quant_chunk(config, cst.continuous_quant_train_index(task.ds))
         except Exception as e:
             logger.warning(redact_url_queries(f"Chained task {task.task_id}: could not refresh the chunk ({e}); holding"))
             return
         task.training_data, task.test_data = chunk.train_url, chunk.test_url
-        task.calibration_data = upstream.calibration_data
+    elif continuous:
+        _copy_upstream_chunk_split(task, upstream)
     task.model_id = model.repo
     if upstream.model_params_count:
         # The task was created when the text task might not have been prepped yet (no size then): the GPU tier and the hours
@@ -2809,10 +2825,7 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
         task.ds, task.dataset_type, task.file_format = ds, dataset_type, FileFormat.HF
         task.training_data = task.test_data = task.calibration_data = None
         task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
-    # A task on its own continuous chunk takes the rows its upstream held out of training. It carves its chunk only when the
-    # upstream held none out and its input is the fallback base, which never trained on the chunk.
-    carves_own_chunk = cst.is_continuous_quant_task(task) and not upstream.calibration_data and model.is_fallback
-    takes_upstream_calibration = copies_data or (cst.is_continuous_quant_task(task) and not carves_own_chunk)
+    takes_upstream_calibration = copies_data or (continuous and not carves_own_chunk)
     await _set_calibration_source(task, config, copied_from=upstream if takes_upstream_calibration else None)
     await quant_sources_sql.set_quant_task_source_model(task.task_id, model.repo, model.is_fallback, config.psql_db)
     task.status = TaskStatus.PENDING
@@ -2908,10 +2921,8 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
     Does not wait for the upstream task itself: it is held until the challenger has trained. The boss compresses
     its own upstream output (starting_model_repo); model_id stays the upstream's base (both players fine-tune the same
     base, so prep's tokenisation is right). The compression tasks take the upstream's prepped split and calibration set with
-    boss hours. A compression task on a continuous chunk (cst.is_continuous_quant_task) carries its own chunk from creation:
-    only the upstream's calibration rows are copied, and its hours are its own. Its presigned urls were signed at creation,
-    hours or days before prep, so the release re-fetches the same chunk (same index and ds) and overwrites both urls; when the
-    content service fails the task stays held, never released with stale urls.
+    boss hours. A compression task on a continuous chunk (cst.is_continuous_quant_task) takes the upstream's prepped split of
+    that chunk and its calibration set (_copy_upstream_chunk_split), and its hours are its own.
     Held while the upstream is unprepped or the boss's output is not a full model (seed replacement handles that).
     """
     upstream = await task_sql.get_task(task.upstream_task_id, config.psql_db)
@@ -2930,13 +2941,7 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
     repo = await chaining.chained_input_repo(upstream.task_id, EMISSION_BURN_HOTKEY, config.psql_db)
     takes_upstream_calibration = False
     if cst.is_continuous_quant_task(task):
-        try:
-            chunk = await _fetch_continuous_quant_chunk(config, cst.continuous_quant_train_index(task.ds))
-        except Exception as e:
-            logger.warning(redact_url_queries(f"Own-upstream task {task.task_id}: could not refresh the chunk ({e}); holding"))
-            return
-        task.training_data, task.test_data = chunk.train_url, chunk.test_url
-        task.calibration_data = upstream.calibration_data  # the rows the upstream held out of its training on the chunk
+        _copy_upstream_chunk_split(task, upstream)
         takes_upstream_calibration = True
     elif task.training_data is None:
         _copy_upstream_data(task, upstream, boss=True)

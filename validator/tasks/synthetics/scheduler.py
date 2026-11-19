@@ -1080,9 +1080,10 @@ async def create_own_upstream_quant_task(
     train_index None: the data is the upstream's (create_chained_quant_task's columns), copied from it at
     release, and the hours follow the upstream's stats. With train_index and tournament_id: the task carries
     the SAME continuous chunk as the upstream from creation, with model_id the upstream's base; at prep it takes the
-    second share (in the seeded order) of the chunk's train rows (select_continuous_rows), the release leaves that data alone
-    but gives the task the upstream's calibration rows (held out of the upstream's training), and hours are the normal quant
-    budget (boss multiplier 1.0, no instruct term) from the task's own prep stats once they exist.
+    second share (in the seeded order) of the chunk's train rows (select_continuous_rows); the release replaces the chunk urls
+    with the upstream's prepped split of the chunk and its calibration rows (held out of the upstream's training), so the
+    share is drawn from rows without them; hours are the normal quant budget (boss multiplier 1.0, no instruct term) from
+    the task's own prep stats once they exist.
     """
     quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
     if train_index is None:
@@ -1133,10 +1134,10 @@ async def create_chained_continuous_quant_task(
     """Create a held quant task that compresses the model the text boss trains on a continuous-SFT task.
 
     The task carries the SAME continuous chunk as the upstream from creation (train_index is the one recorded for the
-    upstream task, never read from a name), so its data is not copied at release; model_id is the upstream's base until
-    the release sets it to the boss's output. Start point DEFAULT: it is released as a SHARED input, both players compress
-    the text boss's model. The release gives it the upstream's calibration rows, which the upstream carved from the chunk's
-    train rows and held out of its training. Hours are the flat boss-round quant budget for
+    upstream task, never read from a name); model_id is the upstream's base until the release sets it to the boss's
+    output. Start point DEFAULT: it is released as a SHARED input, both players compress the text boss's model. The release
+    gives it the upstream's prepped split of the chunk: the train rows without the calibration rows the upstream held out of
+    its training, the test split, and those calibration rows. Hours are the flat boss-round quant budget for
     the base's size (the upstream's persisted size when prep has written one; its base may be an adapter repo, which
     cannot be sized from the hub); prep resizes them from the task's own stats.
     """

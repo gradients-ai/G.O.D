@@ -159,10 +159,10 @@ def _wire_release(monkeypatch, upstream) -> None:
     monkeypatch.setattr(orchestrator.chaining, "chained_input_repo", AsyncMock(return_value="rayon/boss-c-output"))
 
 
-async def test_the_own_upstream_release_refetches_the_compression_task_s_chunk_with_fresh_urls(world, monkeypatch):
+async def test_the_own_upstream_release_takes_the_upstream_s_prepped_split_of_the_chunk(world, monkeypatch):
     c = await world.c_task()
     task = await world.compression(c)
-    old_train, old_test, hours, ds = task.training_data, task.test_data, task.hours_to_complete, task.ds
+    hours, ds = task.hours_to_complete, task.ds
     c.training_data, c.test_data = "prepped-c-train", "prepped-c-test"
     _wire_release(monkeypatch, c)
     calls_before = len(world.content_calls)
@@ -170,9 +170,8 @@ async def test_the_own_upstream_release_refetches_the_compression_task_s_chunk_w
     await orchestrator._release_own_upstream_task(task, world.config)
 
     assert task.status == TaskStatus.PENDING
-    assert world.content_calls[calls_before:] == [{"train_index": X_INDEX}]  # the same chunk
-    assert task.training_data == "https://minio/train-2?X-Amz-Signature=secret2" != old_train
-    assert task.test_data == "https://minio/test-2?X-Amz-Signature=secret2" != old_test
+    assert world.content_calls[calls_before:] == []  # the chunk is not fetched again
+    assert (task.training_data, task.test_data) == ("prepped-c-train", "prepped-c-test")
     assert (task.ds, task.hours_to_complete) == (ds, hours)  # ds (label) and hours stay as created
     orchestrator.task_sql.set_starting_model_repo.assert_awaited_once()
 
@@ -190,7 +189,7 @@ async def test_the_own_upstream_release_of_a_continuous_compression_takes_the_up
 
     assert task.status == TaskStatus.PENDING
     assert task.calibration_data == "prepped-c-calibration" and task.carve_calibration is False
-    assert task.training_data == "https://minio/train-2?X-Amz-Signature=secret2"  # its data stays its own chunk
+    assert task.training_data == "prepped-c-train"  # the train file the upstream trained on, without those rows
     alert.assert_not_awaited()
 
 
@@ -208,23 +207,6 @@ async def test_the_own_upstream_release_of_a_continuous_compression_on_an_upstre
 
     assert task.calibration_data is None and task.carve_calibration is False  # its prep fails rather than carve
     alert.assert_awaited_once()
-
-
-async def test_a_failed_chunk_refetch_holds_the_compression_task(world, monkeypatch):
-    c = await world.c_task()
-    task = await world.compression(c)
-    old_train, old_test = task.training_data, task.test_data
-    c.training_data, c.test_data = "prepped-c-train", "prepped-c-test"
-    _wire_release(monkeypatch, c)
-    fetch = AsyncMock(side_effect=RuntimeError("content service down"))
-    monkeypatch.setattr(orchestrator, "_fetch_continuous_quant_chunk", fetch)
-
-    await orchestrator._release_own_upstream_task(task, world.config)
-
-    assert task.status == TaskStatus.AWAITING_UPSTREAM
-    assert (task.training_data, task.test_data) == (old_train, old_test)
-    orchestrator.task_sql.set_starting_model_repo.assert_not_awaited()
-    orchestrator.task_sql.update_task.assert_not_awaited()
 
 
 async def test_the_own_upstream_release_still_copies_an_instruct_upstream_s_data_for_its_compressions(world, monkeypatch):

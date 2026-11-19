@@ -325,7 +325,7 @@ class TestReleaseOnAFailedSeed:
         task = qw.quant_task(SeedRole.BOSS_CONTINUOUS_FREEFORM)
         text_task = qw.text_task(SeedRole.TEXT_CONTINUOUS)
         _fail(qw, SeedRole.TEXT_CONTINUOUS)
-        text_task.training_data = text_task.test_data = None
+        text_task.training_data = text_task.test_data = text_task.calibration_data = None
         qw.hub[text_task.model_id] = "full"
         qw.mp.setattr(orchestrator, "_draw_quant_instruct_dataset", AsyncMock())
 
@@ -333,6 +333,7 @@ class TestReleaseOnAFailedSeed:
 
         assert task.status == TaskStatus.PENDING and task.model_id == text_task.model_id
         assert task.training_data.startswith("https://minio/train-fresh") and task.ds.startswith("continuous-quant:")
+        assert task.carve_calibration is True  # the fallback base never trained on the chunk
         assert orchestrator._draw_quant_instruct_dataset.await_count == 0
 
 

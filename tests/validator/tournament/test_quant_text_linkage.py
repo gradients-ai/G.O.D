@@ -1605,9 +1605,10 @@ class TestReleaseLeavesACalibrationSource:
 
 
 class TestReleaseOfTheContinuousCompressions:
-    async def test_the_continuous_task_keeps_its_chunk_data_gets_fresh_urls_and_is_released_on_the_models_repo(self, qw):
+    async def test_the_continuous_task_takes_the_text_tasks_prepped_split_and_is_released_on_the_models_repo(self, qw):
         await qw.create_seeds()
         task = qw.quant_task(SeedRole.BOSS_CONTINUOUS_FIXED)
+        text_task = qw.text_task(SeedRole.TEXT_CONTINUOUS)
         ds_before = task.ds
         raw = qw.land(SeedRole.TEXT_CONTINUOUS)
 
@@ -1615,9 +1616,10 @@ class TestReleaseOfTheContinuousCompressions:
 
         assert task.status == TaskStatus.PENDING and task.model_id == raw
         assert task.ds == ds_before and t_cst.continuous_quant_train_index(task.ds) == CHUNK_INDEX
-        assert qw.chunk_fetches == [CHUNK_INDEX] and task.training_data.startswith("https://minio/train-fresh")
+        # The train file the text task trained on (without its held-out rows) and the test split it was scored on.
+        assert qw.chunk_fetches == []
+        assert (task.training_data, task.test_data) == (text_task.training_data, text_task.test_data)
         assert task.training_start_point == TrainingStartPoint.DEFAULT  # a shared input: both players compress the one model
-        # The rows the continuous task held out of its training on the chunk, never a carve from rows the model trained on.
         assert task.calibration_data == CONTINUOUS_CALIBRATION
         assert task.carve_calibration is False
         assert qw.alerts.await_count == 0
@@ -1646,12 +1648,17 @@ class TestReleaseOfTheContinuousCompressions:
 
         assert task.status == TaskStatus.PENDING and task.model_id == text_task.model_id
         assert task.calibration_data is None and task.carve_calibration is True
+        assert qw.chunk_fetches == [CHUNK_INDEX] and task.training_data.startswith("https://minio/train-fresh")
         assert "published no calibration rows" not in qw.alerts.await_args.kwargs["message"]  # only the fallback alert
 
-    async def test_a_failed_chunk_refresh_holds_the_task(self, qw):
+    async def test_a_failed_chunk_refresh_holds_a_task_that_carves_its_own_chunk(self, qw):
         await qw.create_seeds()
         task = qw.quant_task(SeedRole.BOSS_CONTINUOUS_FREEFORM)
-        qw.land(SeedRole.TEXT_CONTINUOUS)
+        text_task = qw.text_task(SeedRole.TEXT_CONTINUOUS)
+        text_task.calibration_data = None
+        qw.training[str(text_task.task_id)] = FAILURE
+        qw.text_rows[SeedRole.TEXT_CONTINUOUS].status = SeedStatus.TRAINED
+        qw.hub[text_task.model_id] = "full"
         qw.mp.setattr(
             orchestrator, "_fetch_continuous_quant_chunk", AsyncMock(side_effect=ConnectionError("content service down"))
         )
