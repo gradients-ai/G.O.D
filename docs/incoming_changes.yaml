@@ -30,7 +30,7 @@ changes:
       score gap at which people can see a difference between two models' outputs; and whether boss changes
       under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
       repository comparisons of past submissions where they are still available. Results are due by
-      30 November 2026, and any new thresholds take effect on this date. One option being considered is a
+      23 November 2026, and any new thresholds take effect on this date. One option being considered is a
       higher threshold together with a smaller share of emissions for the boss and a larger share for second
       and third place.
     why: >-
@@ -40,7 +40,7 @@ changes:
       real progress and keep participation high without rewarding noise.
     areas: [text, image, compression]
     status: in_progress
-    date: 2026-12-07
+    date: 2026-11-30
     miner_action: >-
       Nothing beyond adjusting to the new thresholds and reward split once they are published.
     prs: []
