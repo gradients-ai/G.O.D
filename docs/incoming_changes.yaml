@@ -23,20 +23,25 @@ changes:
   - id: threshold-recalibration
     title: Threshold recalibration
     summary: >-
-      The thresholds that score and advance submissions in text, image and compression tournaments are
-      re-measured against recent tournament results and recalibrated. These include the margin a challenger
-      needs to beat the boss and the quality thresholds a submission must meet. Not decided yet: which
-      thresholds change and their new values. Both are published in the docs before this date.
+      A challenger currently has to beat the boss by 1% in text and image tournaments and by 3% in freeform
+      compression tournaments. These thresholds are being re-measured. The investigation covers three things:
+      how much scores vary between runs of the boss's own code with different seeds, for each task type; the
+      score gap at which people can see a difference between two models' outputs; and whether boss changes
+      under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
+      repository comparisons of past submissions where they are still available. Results are due by
+      30 November 2026, and any new thresholds take effect on this date. One option being considered is a
+      higher threshold together with a smaller share of emissions for the boss and a larger share for second
+      and third place.
     why: >-
-      A threshold should mark a difference customers can actually notice in a model's outputs, not an
-      arbitrary percentage. The new values are set from measured output quality: blind comparisons of model
-      outputs at known score gaps, to find the gap at which one model is reliably preferred over another.
+      A boss should change only when a challenger is meaningfully better. A threshold inside run-to-run noise
+      lets the boss change hands with little or no real improvement, while one set too high leaves real progress
+      unrewarded. Calibrating against measured noise and visible differences in output quality aims to reward
+      real progress and keep participation high without rewarding noise.
     areas: [text, image, compression]
-    status: planned
+    status: in_progress
     date: 2026-12-07
     miner_action: >-
-      Not decided yet. Once the new values are published, check them against your recent results and adjust
-      any targets or margins your pipeline relies on before this date.
+      Nothing beyond adjusting to the new thresholds and reward split once they are published.
     prs: []
     docs: []
     shipped_on: null
