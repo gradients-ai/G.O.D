@@ -81,9 +81,9 @@ changes:
       study of which formats vLLM runs with optimised kernels on H100 (Hopper) GPUs. Standard 4-bit and 8-bit
       formats are not on the list, because they leave little room to tell submissions apart. Specialised
       formats being explored include 4-bit integer weights with FP8 activations (W4A8), 4-bit floating-point
-      weights (MXFP4, NVFP4), 2:4 structured sparsity combined with FP8, codebook formats such as AQLM and GGUF
-      i-quants, and mixed precision per layer. Formats, group sizes and layouts are confirmed here as the study
-      completes, and each is tested further before it is added to the validator.
+      weights (MXFP4, NVFP4, which run as weight-only formats on H100), and mixed precision per layer. Formats,
+      group sizes and layouts are confirmed here as the study completes, and each is tested further before it
+      is added to the validator.
     why: >-
       Compressed models are served with vLLM, so the formats that matter are the ones it runs efficiently.
       Covering more of them makes the fixed track reward compression that can be deployed directly.
