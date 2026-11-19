@@ -24,7 +24,8 @@ changes:
     title: Threshold recalibration
     summary: >-
       A challenger currently has to beat the boss by 1% in text and image tournaments and by 3% in freeform
-      compression tournaments. These thresholds are being re-measured. The investigation covers three things:
+      compression tournaments, and a freeform compression submission must stay within 1.04 times the reference
+      model's loss. These thresholds are being re-measured. The investigation covers three things:
       how much scores vary between runs of the boss's own code with different seeds, for each task type; the
       score gap at which people can see a difference between two models' outputs; and whether boss changes
       under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
@@ -53,7 +54,8 @@ changes:
       percentage of the reference loss. A submission is within the line when its test loss is at most the
       reference model's loss plus the budget, in nats per token; going past it is penalised the same way as
       crossing the line is today. The allowed quality loss then means the same on every task, whether the base
-      model is strong or weak. Not decided yet: the budget value. It is published in the docs before this date.
+      model is strong or weak. The budget value is set by the threshold recalibration and published in the docs
+      before this date.
     why: >-
       A percentage of the reference loss gives weak models a much looser budget than strong ones: the same
       ratio allows far more extra loss per token on a model whose loss is already high. A fixed budget in nats
