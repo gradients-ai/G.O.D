@@ -16,6 +16,7 @@ CHECKPOINTS_DIR = Path(cst.OUTPUT_CHECKPOINTS_PATH)
 CACHE_MODELS_DIR = Path(cst.CACHE_MODELS_DIR)
 CACHE_DATASETS_DIR = Path(cst.CACHE_DATASETS_DIR)
 CUTOFF_HOURS = cst.CACHE_CLEANUP_CUTOFF_HOURS
+TERMINAL_STATUSES = {"success", "failure"}
 PARTIAL_DOWNLOAD_ROOTS = (
     CACHE_MODELS_DIR,
     CACHE_DATASETS_DIR,
@@ -75,19 +76,38 @@ def clean_checkpoints(task_history: list[dict]):
             shutil.rmtree(target, ignore_errors=True)
 
 
+def _finished_before_cutoff(task: dict) -> bool:
+    return task.get("status") in TERMINAL_STATUSES and is_older_than(task.get("finished_at"), CUTOFF_HOURS)
+
+
 def clean_datasets(task_history: list[dict]):
+    """Delete a task's dataset files once every job for that task id finished over CUTOFF_HOURS ago.
+
+    Jobs of different hotkeys share one dataset file per task id, so any job that is still active, or finished
+    recently, keeps it. A file written within CUTOFF_HOURS is kept too: it may belong to a job accepted after this run
+    read the task history.
+    """
+    tasks_by_id: dict[str, list[dict]] = {}
     for task in task_history:
         task_id = task.get("training_data", {}).get("task_id")
-        finished_at = task.get("finished_at")
-        if task_id and is_older_than(finished_at, CUTOFF_HOURS):
-            candidate_files = [
-                CACHE_DATASETS_DIR / f"{task_id}_train_data.json",
-                CACHE_DATASETS_DIR / f"{task_id}_tourn.zip"
-            ]
-            for dataset_file in candidate_files:
-                if dataset_file.exists():
-                    print(f"Deleting dataset file: {dataset_file}")
-                    dataset_file.unlink()
+        if task_id:
+            tasks_by_id.setdefault(task_id, []).append(task)
+
+    file_cutoff = time.time() - CUTOFF_HOURS * 3600
+    for task_id, tasks in tasks_by_id.items():
+        if not all(_finished_before_cutoff(task) for task in tasks):
+            continue
+        for dataset_file in (
+            CACHE_DATASETS_DIR / f"{task_id}_train_data.json",
+            CACHE_DATASETS_DIR / f"{task_id}_tourn.zip",
+        ):
+            try:
+                if dataset_file.stat().st_mtime > file_cutoff:
+                    continue
+                print(f"Deleting dataset file: {dataset_file}")
+                dataset_file.unlink()
+            except FileNotFoundError:
+                continue
 
 
 def clean_models(task_history: list[dict]):

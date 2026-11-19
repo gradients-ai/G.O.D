@@ -69,7 +69,9 @@ async def download_text_dataset(task_id, dataset_url, file_format, dataset_dir):
     if file_format == FileFormat.S3.value:
         input_data_path = train_paths.get_text_dataset_path(task_id)
 
-        if not os.path.exists(input_data_path):
+        try:
+            os.utime(input_data_path)  # cache cleanup keeps recently written files, so a reuse counts as a write
+        except FileNotFoundError:
             local_path = await download_s3_file(dataset_url)
             _copy_file_into_place(Path(local_path), Path(input_data_path))
 
