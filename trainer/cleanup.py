@@ -18,6 +18,7 @@ from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
 from core.models.task_models import TaskStatus
 from trainer import constants as cst
+from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import save_task_history
 from trainer.job_state import task_history
 
@@ -132,5 +133,10 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
             remove_stale_trainer_containers(docker.from_env())
         except Exception as e:
             logger.error(f"Error during container cleanup: {e}")
+
+        try:
+            prune_build_leftovers()
+        except Exception as e:
+            logger.error(f"Error during build cleanup: {e}")
 
         await asyncio.sleep(poll_interval_seconds)

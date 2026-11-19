@@ -66,9 +66,9 @@ MODEL_PREP_TIMEOUT_MINUTES = 60
 DOCKER_BUILD_TIMEOUT_MINUTES = 30
 
 # Miner images are always built with no cache (runtime.build_docker_image), so a build never reuses layers from another
-# entrant's build. After each job the trainer also runs a host-wide `docker builder prune` (BuildKit cache), which
-# reclaims nothing this trainer built (docker-py's build API defaults to the legacy builder) but wipes every other BuildKit
-# cache on the host. On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
+# entrant's build. After each job, and periodically, the trainer also runs a host-wide `docker builder prune`, only while
+# none of its own image builds is in progress (trainer.image_builds). It also wipes every other build cache on the host.
+# On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
 PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3

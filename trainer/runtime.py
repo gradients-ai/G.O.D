@@ -3,6 +3,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from functools import partial
@@ -50,6 +51,8 @@ from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
 from trainer.host_resources import container_resources
 from trainer.host_resources import pinned_helper_kwargs
+from trainer.image_builds import image_build_in_flight
+from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import complete_task
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
@@ -116,51 +119,53 @@ def build_docker_image(
         extra=log_labels,
     )
 
-    build_output = None
-    executor = None
-    try:
-        build_output = client.api.build(
-            path=context_path,
-            dockerfile=dockerfile_path,
-            tag=tag,
-            nocache=no_cache,
-            # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
-            # failure.
-            rm=True,
-            forcerm=True,
-            decode=True,
-        )
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(stream_image_build_logs, build_output, logger, log_labels)
+    with image_build_in_flight():
+        build_output = None
+        executor = None
         try:
-            future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError:
-            message = f"Docker image build exceeded {timeout_seconds} seconds"
-            logger.error(message, extra=log_labels)
-            if build_output is not None:
-                try:
-                    build_output.close()
-                except Exception:
-                    pass
-            return None, message
+            build_output = client.api.build(
+                path=context_path,
+                dockerfile=dockerfile_path,
+                tag=tag,
+                nocache=no_cache,
+                # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
+                # failure.
+                rm=True,
+                forcerm=True,
+                decode=True,
+            )
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(_stream_build_logs, build_output, log_labels)
+            try:
+                future.result(timeout=timeout_seconds)
+            except FuturesTimeoutError:
+                message = f"Docker image build exceeded {timeout_seconds} seconds"
+                logger.error(message, extra=log_labels)
+                return None, message
 
-        # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
-        # ends normally with no image, and the job would only fail later on a missing tag at container start.
-        try:
-            client.images.get(tag)
-        except ImageNotFound:
-            message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
-            logger.error(message, extra=log_labels)
-            return None, message
+            # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
+            # ends normally with no image, and the job would only fail later on a missing tag at container start.
+            try:
+                client.images.get(tag)
+            except ImageNotFound:
+                message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
+                logger.error(message, extra=log_labels)
+                return None, message
 
-        logger.info("Docker image built successfully.", extra=log_labels)
-        return tag, None
-    except (BuildError, APIError) as e:
-        logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
-        return None, str(e)
-    finally:
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            logger.info("Docker image built successfully.", extra=log_labels)
+            return tag, None
+        except (BuildError, APIError) as e:
+            logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
+            return None, str(e)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _stream_build_logs(build_output: Iterator[dict], log_labels: dict[str, str] | None) -> None:
+    # A build abandoned on timeout keeps running on the daemon until its stream ends, so it stays counted until then.
+    with image_build_in_flight():
+        stream_image_build_logs(build_output, logger, log_labels)
 
 
 def flag_large_build_context_files(context_path: str, log_labels: dict[str, str] | None = None) -> str | None:
@@ -191,13 +196,7 @@ def delete_image_and_cleanup(tag: str):
         logger.error(f"Failed to delete image '{tag}': {e}")
 
     try:
-        # Dangling images include a failed build's leftover intermediate layers, which nothing else removes.
-        client.images.prune(filters={"dangling": True})
-        if cst.PRUNE_HOST_BUILD_CACHE:
-            client.api.prune_builds()
-            logger.info("Cleaned up dangling images and build cache.")
-        else:
-            logger.info("Cleaned up dangling images; host build cache kept (TRAINER_PRUNE_BUILD_CACHE=false).")
+        prune_build_leftovers()
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
 

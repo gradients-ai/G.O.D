@@ -32,7 +32,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 - Miner images are built with no cache, so one entrant's build never reuses another's layers.
 - A build whose step failed is detected by the missing image tag. The job fails at the build stage with `Docker image build failed: no image ...`.
 - Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
-- After each job the image is removed and dangling images are pruned.
+- After each job the image is removed. Dangling images are pruned after each job and by the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
 - The host-wide BuildKit cache prune runs while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
 
 ## CPU and memory shares
