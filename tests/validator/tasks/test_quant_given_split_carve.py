@@ -1,5 +1,5 @@
-"""prepare_text_task on a quant task with a given split: the freeform / fixed compression tasks carve a calibration set
-unless they carry calibration rows."""
+"""prepare_text_task on a quant task with a given split: the freeform / fixed compression tasks take the calibration rows
+they carry; only a flagged task on its own continuous chunk (its input never trained on the chunk) carves one."""
 
 import json
 import uuid
@@ -131,11 +131,18 @@ async def test_a_different_chunk_carves_different_rows(seams):
     assert shared_split_seed(other.ds) != shared_split_seed(_task().ds)
 
 
-async def test_the_flag_does_not_matter_a_given_split_is_carved(seams):
-    split = await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
+async def test_an_unflagged_continuous_given_split_without_calibration_rows_fails_prep_and_uploads_nothing(seams):
+    with pytest.raises(CalibrationUnavailableError, match="input model was trained on"):
+        await preparation.prepare_text_task(_task(carve=False), keypair=None, psql_db="db")
 
-    assert "calibration_data.json" in seams.uploads and split.calibration_url is not None
-    assert len(seams.uploads["train_data.json"]) < N_TRAIN
+    assert seams.uploads == {} and seams.record_calls == []
+
+
+async def test_a_flagged_continuous_task_carrying_calibration_rows_passes_them_through(seams):
+    split = await preparation.prepare_text_task(_task(calibration_data="https://minio/cal.json"), keypair=None, psql_db="db")
+
+    assert split.calibration_url == "https://minio/cal.json" and "calibration_data.json" not in seams.uploads
+    assert len(seams.uploads["train_data.json"]) == N_TRAIN
 
 
 async def test_a_task_that_already_carries_calibration_rows_is_not_carved_again(seams):

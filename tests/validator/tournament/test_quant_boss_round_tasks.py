@@ -177,7 +177,24 @@ async def test_the_own_upstream_release_refetches_the_compression_task_s_chunk_w
     orchestrator.task_sql.set_starting_model_repo.assert_awaited_once()
 
 
-async def test_the_own_upstream_release_of_a_continuous_compression_carves_its_own_calibration_without_an_alert(
+async def test_the_own_upstream_release_of_a_continuous_compression_takes_the_upstream_s_held_out_rows(world, monkeypatch):
+    c = await world.c_task()
+    task = await world.compression(c)
+    c.training_data, c.test_data = "prepped-c-train", "prepped-c-test"
+    c.calibration_data = "prepped-c-calibration"
+    _wire_release(monkeypatch, c)
+    alert = AsyncMock()
+    monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
+
+    await orchestrator._release_own_upstream_task(task, world.config)
+
+    assert task.status == TaskStatus.PENDING
+    assert task.calibration_data == "prepped-c-calibration" and task.carve_calibration is False
+    assert task.training_data == "https://minio/train-2?X-Amz-Signature=secret2"  # its data stays its own chunk
+    alert.assert_not_awaited()
+
+
+async def test_the_own_upstream_release_of_a_continuous_compression_on_an_upstream_with_no_held_out_rows_alerts(
     world, monkeypatch
 ):
     c = await world.c_task()
@@ -186,12 +203,11 @@ async def test_the_own_upstream_release_of_a_continuous_compression_carves_its_o
     _wire_release(monkeypatch, c)
     alert = AsyncMock()
     monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
-    task.carve_calibration = False
 
     await orchestrator._release_own_upstream_task(task, world.config)
 
-    assert task.status == TaskStatus.PENDING and task.carve_calibration is True
-    alert.assert_not_awaited()
+    assert task.calibration_data is None and task.carve_calibration is False  # its prep fails rather than carve
+    alert.assert_awaited_once()
 
 
 async def test_a_failed_chunk_refetch_holds_the_compression_task(world, monkeypatch):
@@ -227,7 +243,7 @@ async def test_the_own_upstream_release_still_copies_an_instruct_upstream_s_data
     assert world.content_calls == []  # the upstream instruct task's data path never touches the content service
 
 
-async def test_the_own_upstream_release_copies_the_upstream_calibration_rows_and_carves_when_it_has_none(world, monkeypatch):
+async def test_the_own_upstream_release_copies_the_upstream_calibration_rows_and_is_not_flagged_to_carve(world, monkeypatch):
     upstream = InstructTextRawTask(
         task_id=uuid4(), model_id=BASE, ds="org/ds", field_instruction="i", field_output="o",
         status=TaskStatus.SUCCESS.value, is_organic=False, account_id=uuid4(), hours_to_complete=3.0,
@@ -238,11 +254,11 @@ async def test_the_own_upstream_release_copies_the_upstream_calibration_rows_and
     _wire_release(monkeypatch, upstream)
     alert = AsyncMock()
     monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
-    task.carve_calibration = False
+    task.carve_calibration = True
 
     await orchestrator._release_own_upstream_task(task, world.config)
 
-    assert task.calibration_data == "b-calibration" and task.carve_calibration is True
+    assert task.calibration_data == "b-calibration" and task.carve_calibration is False
     alert.assert_not_awaited()
 
 
@@ -257,11 +273,11 @@ async def test_the_own_upstream_release_alerts_when_the_upstream_published_no_ca
     _wire_release(monkeypatch, upstream)
     alert = AsyncMock()
     monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
-    task.carve_calibration = False
+    task.carve_calibration = True
 
     await orchestrator._release_own_upstream_task(task, world.config)
 
-    assert task.calibration_data is None and task.carve_calibration is True
+    assert task.calibration_data is None and task.carve_calibration is False
     alert.assert_awaited_once()
     assert alert.await_args.args[0] == f"{task.task_id}:quant-upstream-no-calibration"
     assert "published no calibration rows" in alert.await_args.args[1]

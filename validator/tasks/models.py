@@ -60,8 +60,9 @@ class RawTask(BaseModel):
     calibration_data: str | None = None
     calibration_fingerprint: str | None = None
     calibration_n_examples: int | None = None
-    # Instruct tasks: prep carves calibration_data from this task's own split (a tournament round-1 task). Quant tasks are
-    # created flagged and always get a calibration set, carved unless they carry calibration_data from a given split.
+    # Text tasks: prep carves calibration_data from this task's train rows and holds it out of training (a tournament round-1
+    # instruct task on its own split, a continuous-SFT task on its chunk). Quant tasks always get a calibration set: carved
+    # from their own split, else the calibration_data carried from the upstream (see _task_carves_calibration).
     carve_calibration: bool = False
     training_data: str | None = None
     assigned_miners: list[int] | None = None

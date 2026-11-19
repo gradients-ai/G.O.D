@@ -115,6 +115,9 @@ class HubDown(Exception):
 # --------------------------------------------------------------------------------------------------------- the world
 
 
+CONTINUOUS_CALIBRATION = "s3://bucket/continuous_calibration.json"
+
+
 def _chat_task(**overrides) -> ChatRawTask:
     fields = dict(
         task_id=uuid4(),
@@ -254,7 +257,8 @@ class QuantWorld:
 
     def add_text_seed(self, role: SeedRole, attempt: int = 1) -> TournamentSeedTask:
         if role == SeedRole.TEXT_CONTINUOUS:
-            task = _chat_task()
+            # Prepped: its prep held these rows out of the chunk's train rows.
+            task = _chat_task(carve_calibration=True, calibration_data=CONTINUOUS_CALIBRATION)
         else:
             task = _instruct(
                 model_id=f"org/base-{role.value}",
@@ -1572,17 +1576,16 @@ class TestRelease:
 
 
 class TestReleaseLeavesACalibrationSource:
-    async def test_a_released_task_copies_the_text_tasks_calibration_rows_and_still_carves_when_it_has_none(self, qw):
+    async def test_a_released_task_copies_the_text_tasks_calibration_rows_and_is_not_flagged_to_carve(self, qw):
         task = await qw.create_round_task(1)
         text_task = qw.text_task(SeedRole.TEXT_R1)
         qw.land(SeedRole.TEXT_R1, "full")
-        task.carve_calibration = False  # a task created with the flag off
 
         await orchestrator._release_chained_task(task, qw.config)
 
         assert task.status == TaskStatus.PENDING
         assert task.calibration_data == text_task.calibration_data == "s3://bucket/seed_calibration.json"
-        assert task.carve_calibration is True
+        assert task.carve_calibration is False
         assert qw.alerts.await_count == 0
 
     async def test_a_text_task_that_published_no_calibration_rows_is_alerted_and_the_task_will_fail_prep(self, qw, caplog):
@@ -1594,7 +1597,7 @@ class TestReleaseLeavesACalibrationSource:
         with caplog.at_level("ERROR"):
             await orchestrator._release_chained_task(task, qw.config)
 
-        assert task.status == TaskStatus.PENDING and task.calibration_data is None and task.carve_calibration is True
+        assert task.status == TaskStatus.PENDING and task.calibration_data is None and task.carve_calibration is False
         assert qw.alerts.await_count == 1
         message = qw.alerts.await_args.kwargs["message"]
         assert str(text_task.task_id) in message and "published no calibration rows" in message
@@ -1614,9 +1617,36 @@ class TestReleaseOfTheContinuousCompressions:
         assert task.ds == ds_before and t_cst.continuous_quant_train_index(task.ds) == CHUNK_INDEX
         assert qw.chunk_fetches == [CHUNK_INDEX] and task.training_data.startswith("https://minio/train-fresh")
         assert task.training_start_point == TrainingStartPoint.DEFAULT  # a shared input: both players compress the one model
-        assert task.calibration_data is None  # nothing was copied from the text task, which has no such split
-        assert task.carve_calibration is True  # its own prep carves from the chunk
+        # The rows the continuous task held out of its training on the chunk, never a carve from rows the model trained on.
+        assert task.calibration_data == CONTINUOUS_CALIBRATION
+        assert task.carve_calibration is False
         assert qw.alerts.await_count == 0
+
+    async def test_a_continuous_task_on_a_text_task_with_no_held_out_rows_is_alerted_and_will_fail_prep(self, qw):
+        await qw.create_seeds()
+        task = qw.quant_task(SeedRole.BOSS_CONTINUOUS_FREEFORM)
+        qw.text_task(SeedRole.TEXT_CONTINUOUS).calibration_data = None
+        qw.land(SeedRole.TEXT_CONTINUOUS)
+
+        await orchestrator._release_chained_task(task, qw.config)
+
+        assert task.status == TaskStatus.PENDING and task.calibration_data is None and task.carve_calibration is False
+        assert qw.alerts.await_count == 1 and "published no calibration rows" in qw.alerts.await_args.kwargs["message"]
+
+    async def test_a_continuous_task_on_the_fallback_base_carves_its_chunk_when_the_text_task_held_no_rows_out(self, qw):
+        await qw.create_seeds()
+        task = qw.quant_task(SeedRole.BOSS_CONTINUOUS_FIXED)
+        text_task = qw.text_task(SeedRole.TEXT_CONTINUOUS)
+        text_task.calibration_data = None  # never prepped: the base the task falls back on never trained on the chunk
+        qw.training[str(text_task.task_id)] = FAILURE
+        qw.text_rows[SeedRole.TEXT_CONTINUOUS].status = SeedStatus.TRAINED
+        qw.hub[text_task.model_id] = "full"
+
+        await orchestrator._release_chained_task(task, qw.config)
+
+        assert task.status == TaskStatus.PENDING and task.model_id == text_task.model_id
+        assert task.calibration_data is None and task.carve_calibration is True
+        assert "published no calibration rows" not in qw.alerts.await_args.kwargs["message"]  # only the fallback alert
 
     async def test_a_failed_chunk_refresh_holds_the_task(self, qw):
         await qw.create_seeds()

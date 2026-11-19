@@ -1080,9 +1080,9 @@ async def create_own_upstream_quant_task(
     train_index None: the data is the upstream's (create_chained_quant_task's columns), copied from it at
     release, and the hours follow the upstream's stats. With train_index and tournament_id: the task carries
     the SAME continuous chunk as the upstream from creation, with model_id the upstream's base; at prep it takes the
-    second share (in the seeded order) of the chunk's train rows (select_continuous_rows), the release leaves that data alone,
-    calibration is carved from those rows, and hours are the normal quant budget (boss multiplier 1.0, no instruct term)
-    from the task's own prep stats once they exist.
+    second share (in the seeded order) of the chunk's train rows (select_continuous_rows), the release leaves that data alone
+    but gives the task the upstream's calibration rows (held out of the upstream's training), and hours are the normal quant
+    budget (boss multiplier 1.0, no instruct term) from the task's own prep stats once they exist.
     """
     quant_spec = quant_format.spec() if task_type == TaskType.QUANTFIXEDTASK else None
     if train_index is None:
@@ -1135,7 +1135,8 @@ async def create_chained_continuous_quant_task(
     The task carries the SAME continuous chunk as the upstream from creation (train_index is the one recorded for the
     upstream task, never read from a name), so its data is not copied at release; model_id is the upstream's base until
     the release sets it to the boss's output. Start point DEFAULT: it is released as a SHARED input, both players compress
-    the text boss's model. Calibration is carved from the chunk's train rows. Hours are the flat boss-round quant budget for
+    the text boss's model. The release gives it the upstream's calibration rows, which the upstream carved from the chunk's
+    train rows and held out of its training. Hours are the flat boss-round quant budget for
     the base's size (the upstream's persisted size when prep has written one; its base may be an adapter repo, which
     cannot be sized from the hub); prep resizes them from the task's own stats.
     """
@@ -1356,9 +1357,10 @@ def _new_quant_task(
 
     Never augmented: quant tasks are text-tournament tasks outside round 1, which play their base unmodified.
     Both tracks take calibration_data (the raw rows carried from the source split) and are always flagged to carve:
-    prep carves a calibration set from the task's own split, or from the given train file when test_data is given and the
-    task is on its own continuous chunk, unless the task already carries calibration_data; any other given split without
-    calibration_data fails prep. A task leaves prep only with its published calibration set.
+    prep carves a calibration set from the task's own split; a task with a given split takes the calibration_data it
+    carries (its upstream's held-out rows) and fails prep without it, unless it is on its own continuous chunk and the
+    release left it flagged (its input model never trained on the chunk). A task leaves prep only with its published
+    calibration set.
     """
     current_time = datetime.utcnow()
     fields = dict(
@@ -1402,8 +1404,9 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
     The content service is stateless: we pass the monotonic train_index and it re-materializes
     train+test at fresh randomized S3 URLs each call, so miners can't derive the held-out test set
     across tournaments. Lineage slug is encoded into the task ds so carry-forward routes the winner.
-    Fixed 4xH100 and a fixed hours budget (the same after prep). No augmentation, so the carried base is
-    never perturbed.
+    Fixed 2xH100 and a fixed hours budget (the same after prep). No augmentation, so the carried base is
+    never perturbed. Flagged to carve: prep holds a calibration set out of the chunk's train rows, which the compressions
+    of this task's model take.
     """
     state = await get_continuous_sft_state(lineage, config.psql_db)
     if state.chunk_scheme != t_cst.CONTINUOUS_SFT_CHUNK_SCHEME:
@@ -1448,6 +1451,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         training_data=train_url,
         test_data=test_url,
         training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
+        carve_calibration=True,
         # Base's own template, not chatml; eval loads the base tokenizer so train+eval match.
         chat_template="tokenizer_default",
         # other chat_* fields keep ChatRawTask ShareGPT defaults; augmentation_config stays None.

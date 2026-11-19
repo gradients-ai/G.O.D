@@ -2609,14 +2609,17 @@ def _copy_upstream_data(task: AnyQuantRawTask, upstream: InstructTextRawTask, bo
     task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
 
 
-async def _set_calibration_source(task: AnyQuantRawTask, config: Config, copied_from: InstructTextRawTask | None = None) -> None:
-    """Leave a task released to PENDING with a calibration source: the upstream's raw rows (copied_from, see
-    _copy_upstream_data) or its own prep's carve. carve_calibration is always set, so a task created with the flag off still
-    carves when it holds no raw rows. An upstream that published no calibration rows should not exist (a flagged text task
-    fails prep when it carves nothing); the compression task copied from it fails data prep with CalibrationUnavailableError
-    (its train rows are the ones its input model was trained on) and is replaced, and the alert says so.
+async def _set_calibration_source(
+    task: AnyQuantRawTask, config: Config, copied_from: InstructTextRawTask | ChatRawTask | None = None
+) -> None:
+    """Leave a task released to PENDING with a calibration source: the upstream's raw rows (copied_from: copied by
+    _copy_upstream_data, or by the release of a task on its own continuous chunk, which keeps its data) or its own prep's
+    carve, which carve_calibration marks. An upstream that published no calibration rows should not exist (a flagged text
+    task fails prep when it carves nothing); the compression task copied from it fails data prep with
+    CalibrationUnavailableError (its train rows are the ones its input model was trained on) and is replaced, and the alert
+    says so.
     """
-    task.carve_calibration = True
+    task.carve_calibration = copied_from is None
     if copied_from is None or copied_from.calibration_data:
         return
     await alert_seed_issue(
@@ -2794,6 +2797,7 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
             logger.warning(redact_url_queries(f"Chained task {task.task_id}: could not refresh the chunk ({e}); holding"))
             return
         task.training_data, task.test_data = chunk.train_url, chunk.test_url
+        task.calibration_data = upstream.calibration_data
     task.model_id = model.repo
     if upstream.model_params_count:
         # The task was created when the text task might not have been prepped yet (no size then): the GPU tier and the hours
@@ -2805,7 +2809,11 @@ async def _release_on_text_boss_model(task: AnyQuantRawTask, upstream, seed: Tou
         task.ds, task.dataset_type, task.file_format = ds, dataset_type, FileFormat.HF
         task.training_data = task.test_data = task.calibration_data = None
         task.termination_at = datetime.utcnow() + timedelta(hours=task.hours_to_complete)
-    await _set_calibration_source(task, config, copied_from=upstream if copies_data else None)
+    # A task on its own continuous chunk takes the rows its upstream held out of training. It carves its chunk only when the
+    # upstream held none out and its input is the fallback base, which never trained on the chunk.
+    carves_own_chunk = cst.is_continuous_quant_task(task) and not upstream.calibration_data and model.is_fallback
+    takes_upstream_calibration = copies_data or (cst.is_continuous_quant_task(task) and not carves_own_chunk)
+    await _set_calibration_source(task, config, copied_from=upstream if takes_upstream_calibration else None)
     await quant_sources_sql.set_quant_task_source_model(task.task_id, model.repo, model.is_fallback, config.psql_db)
     task.status = TaskStatus.PENDING
     await task_sql.update_task(task, config.psql_db)
@@ -2901,9 +2909,9 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
     its own upstream output (starting_model_repo); model_id stays the upstream's base (both players fine-tune the same
     base, so prep's tokenisation is right). The compression tasks take the upstream's prepped split and calibration set with
     boss hours. A compression task on a continuous chunk (cst.is_continuous_quant_task) carries its own chunk from creation:
-    nothing is copied from the upstream, and its hours are its own. Its presigned urls were signed at creation, hours or days
-    before prep, so the release re-fetches the same chunk (same index and ds) and overwrites both urls; when the content service
-    fails the task stays held, never released with stale urls.
+    only the upstream's calibration rows are copied, and its hours are its own. Its presigned urls were signed at creation,
+    hours or days before prep, so the release re-fetches the same chunk (same index and ds) and overwrites both urls; when the
+    content service fails the task stays held, never released with stale urls.
     Held while the upstream is unprepped or the boss's output is not a full model (seed replacement handles that).
     """
     upstream = await task_sql.get_task(task.upstream_task_id, config.psql_db)
@@ -2920,7 +2928,7 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
         logger.warning(f"Own-upstream task {task.task_id}: the boss's output on {upstream.task_id}: {rejection}; holding")
         return
     repo = await chaining.chained_input_repo(upstream.task_id, EMISSION_BURN_HOTKEY, config.psql_db)
-    copies_data = False
+    takes_upstream_calibration = False
     if cst.is_continuous_quant_task(task):
         try:
             chunk = await _fetch_continuous_quant_chunk(config, cst.continuous_quant_train_index(task.ds))
@@ -2928,10 +2936,12 @@ async def _release_own_upstream_task(task: AnyQuantRawTask, config: Config) -> N
             logger.warning(redact_url_queries(f"Own-upstream task {task.task_id}: could not refresh the chunk ({e}); holding"))
             return
         task.training_data, task.test_data = chunk.train_url, chunk.test_url
+        task.calibration_data = upstream.calibration_data  # the rows the upstream held out of its training on the chunk
+        takes_upstream_calibration = True
     elif task.training_data is None:
         _copy_upstream_data(task, upstream, boss=True)
-        copies_data = True
-    await _set_calibration_source(task, config, copied_from=upstream if copies_data else None)
+        takes_upstream_calibration = True
+    await _set_calibration_source(task, config, copied_from=upstream if takes_upstream_calibration else None)
     await task_sql.set_starting_model_repo(str(task.task_id), EMISSION_BURN_HOTKEY, repo, config.psql_db)
     task.status = TaskStatus.PENDING
     await task_sql.update_task(task, config.psql_db)

@@ -35,12 +35,14 @@ from core.near_duplicate import compute_near_duplicate_rate
 from core.near_duplicate import near_duplicate_sample_indices
 from validator.db.sql.calibration import get_calibration_row_hashes
 from validator.db.sql.calibration import record_calibration_rows
+from validator.db.sql.continuous_sft import get_continuous_sft_task_chunk
 from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache
 from validator.tasks.datasets.calibration import ROW_HASH_COLUMN
 from validator.tasks.datasets.calibration import CalibrationUnavailableError
 from validator.tasks.datasets.calibration import carve_calibration
+from validator.tasks.datasets.calibration import chunk_split_seed
 from validator.tasks.datasets.calibration import shared_split_seed
 from validator.tasks.datasets.calibration import with_row_hashes
 from validator.tasks.datasets.fetch import DataFetchError
@@ -681,19 +683,40 @@ def _standardize_quant_instruct_columns(dataset: Dataset, dataset_type: Instruct
 
 
 def _task_carves_calibration(task: AnyTextTypeRawTask | QuantRawTask) -> bool:
-    """Whether prep carves a calibration set from the task's train rows.
+    """Whether prep carves a calibration set from the task's train rows, which then hold it out of the task's training.
 
-    A quant task (fixed or freeform) always carves, whatever its carve_calibration flag, except a task with a given
-    split (test_data set) that carries raw calibration rows (calibration_data): those rows pass through. A given split
-    without calibration rows carves from the given train file only for a task on its own continuous chunk, whose
-    train rows are a share the compressed model did not train on; any other such task fails prep (see prepare_text_task).
-    An instruct task
-    carves when flagged (a tournament round-1 task) and splits its own dataset; an instruct task with a given split is
-    never carved.
+    A quant task (fixed or freeform) carves, whatever its carve_calibration flag, when it splits its own dataset. A given
+    split (test_data set) holds the rows its input model was trained on, so the task takes the raw calibration rows
+    (calibration_data) its upstream text task held out, or fails prep (see prepare_text_task). The one given split it
+    carves is its own continuous chunk when flagged without calibration_data: the release flags it only when its input
+    model never trained on the chunk.
+    A text task carves only when flagged: an instruct task that splits its own dataset (a tournament round-1 task), or a
+    continuous-SFT task, from the given train file of its chunk.
     """
     if isinstance(task, QuantRawTask):
-        return not (task.test_data and task.calibration_data)
-    return bool(task.carve_calibration) and not task.test_data and isinstance(task, InstructTextRawTask)
+        if not task.test_data:
+            return True
+        return t_cst.is_continuous_quant_task(task) and task.carve_calibration and not task.calibration_data
+    if not task.carve_calibration:
+        return False
+    if t_cst.is_continuous_sft_task(task):
+        return True
+    return not task.test_data and isinstance(task, InstructTextRawTask)
+
+
+async def _carve_seed(task: AnyTextTypeRawTask | QuantRawTask, psql_db) -> str:
+    """The calibration carve's seed: the task id for a task that splits its own dataset, else its chunk's, so every task on
+    one continuous chunk carves identical rows."""
+    if not task.test_data:
+        return str(task.task_id)
+    if isinstance(task, QuantRawTask):
+        return shared_split_seed(task.ds)
+    chunk = await get_continuous_sft_task_chunk(task.task_id, psql_db)
+    if chunk is None:
+        raise CalibrationUnavailableError(
+            f"Continuous-SFT task {task.task_id} on {task.ds} has no chunk record to seed its carve"
+        )
+    return chunk_split_seed(chunk.train_index)
 
 
 async def _split_without_recorded(dataset: Dataset, recorded: set[str]) -> DatasetDict:
@@ -770,8 +793,7 @@ async def prepare_text_task(
     
     train_dataset_name = task.training_data if task.training_data else task.ds
     carve = _task_carves_calibration(task)
-    given_split_without_calibration = isinstance(task, QuantRawTask) and task.test_data and not task.calibration_data
-    if given_split_without_calibration and not t_cst.is_continuous_quant_task(task):
+    if isinstance(task, QuantRawTask) and task.test_data and not task.calibration_data and not carve:
         raise CalibrationUnavailableError(
             f"Compression task {task.task_id} on {task.ds} was given a split that carries no calibration rows, and its train "
             f"rows are the ones its input model was trained on"
@@ -860,9 +882,8 @@ async def prepare_text_task(
     calibration_ds = None
     calibration_hashes: list[str] = []
     if carve:
-        # A given split is carved on a seed shared by every task of the chunk, so sibling tasks carve identical rows.
         carved = carve_calibration(
-            shared_split_seed(task.ds) if task.test_data else str(task.task_id),
+            await _carve_seed(task, psql_db),
             train_hashes, set(test_hashes), _completion_chars(train_ds, columns_to_sample)
         )
         if carved is None:

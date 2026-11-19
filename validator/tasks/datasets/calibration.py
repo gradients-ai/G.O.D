@@ -44,15 +44,20 @@ class CalibrationCarve(BaseModel):
     train_indices: list[int]
 
 
+def chunk_split_seed(train_index: int) -> str:
+    """Seed of every row sample drawn from one continuous chunk, whichever task draws it."""
+    return f"{t_cst.QUANT_CONTINUOUS_DS_PREFIX}:{train_index}"
+
+
 def shared_split_seed(ds: str) -> str:
-    """Seed of every row sample drawn from one split: the chunk index for a continuous quant task, else its ds.
+    """Seed of every row sample drawn from one split: the chunk seed for a continuous quant task, else its ds.
 
     The ds label of a continuous chunk comes from the content service and differs per call for the same chunk, so the
-    two tasks on one chunk would otherwise sample different rows. Used by the eval-row cap (validator.tasks.requests)
-    and by the given-split calibration carve, so both sibling tasks see identical rows.
+    two tasks on one chunk would otherwise sample different rows. Used by the eval-row cap (validator.tasks.requests),
+    so both sibling tasks score identical rows.
     """
     train_index = t_cst.continuous_quant_train_index(ds)
-    return ds if train_index is None else f"{t_cst.QUANT_CONTINUOUS_DS_PREFIX}:{train_index}"
+    return ds if train_index is None else chunk_split_seed(train_index)
 
 
 def calibration_row_cap(n_train: int) -> int:
@@ -73,8 +78,8 @@ def carve_calibration(
 ) -> CalibrationCarve | None:
     """Pick the calibration rows from the train side, or None when the task is too small to give any up.
 
-    seed_key seeds the shuffle: the task id for a task that splits its own dataset, shared_split_seed(ds) for a carve
-    from a given split, so sibling tasks on one chunk carve identical rows.
+    seed_key seeds the shuffle: the task id for a task that splits its own dataset, chunk_split_seed(train_index) for a
+    carve from a continuous chunk, so every task on one chunk carves identical rows.
 
     Rows are taken in a seeded shuffle of the train indices, skipping any whose raw hash equals a test row's (a
     dataset duplicate must not leak test content), until at least QUANT_CALIBRATION_MIN_ROWS rows and

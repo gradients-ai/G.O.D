@@ -290,15 +290,15 @@ class TestReleaseChainedTask:
         assert task.calibration_data == "s3://bucket/upstream-calibration.json"
 
     @pytest.mark.parametrize("make_task", [_chained_fixed, _chained_freeform])
-    async def test_a_released_task_always_carves_when_it_has_no_raw_rows(self, release, make_task, monkeypatch):
+    async def test_a_task_that_copies_the_upstream_split_is_never_flagged_to_carve(self, release, make_task, monkeypatch):
         alert = AsyncMock()
         monkeypatch.setattr(orchestrator, "alert_seed_issue", alert)
         task = make_task(release.upstream)
-        assert task.carve_calibration is False
+        task.carve_calibration = True
 
         await orchestrator._release_chained_task(task, CONFIG)
 
-        assert task.carve_calibration is True and task.status == TaskStatus.PENDING
+        assert task.carve_calibration is False and task.status == TaskStatus.PENDING
 
     async def test_a_copy_of_the_upstream_calibration_rows_does_not_alert(self, release, monkeypatch):
         alert = AsyncMock()
@@ -308,7 +308,7 @@ class TestReleaseChainedTask:
 
         await orchestrator._release_chained_task(task, CONFIG)
 
-        assert task.carve_calibration is True
+        assert task.carve_calibration is False
         alert.assert_not_awaited()
 
     async def test_an_upstream_without_calibration_rows_alerts_that_the_task_will_fail_prep(self, release, monkeypatch, caplog):
@@ -319,7 +319,7 @@ class TestReleaseChainedTask:
         with caplog.at_level("ERROR"):
             await orchestrator._release_chained_task(task, CONFIG)
 
-        assert task.calibration_data is None and task.carve_calibration is True
+        assert task.calibration_data is None and task.carve_calibration is False
         alert.assert_awaited_once()
         key, message, _ = alert.await_args.args
         assert key == f"{task.task_id}:quant-upstream-no-calibration"

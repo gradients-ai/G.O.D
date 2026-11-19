@@ -129,7 +129,7 @@ Every task sets `QUANT_TARGET`.
 
 ### The calibration set
 
-The calibration set is tokenised rows, each with the bf16 input model's loss on it. The rows are carved from the train side of the split. They are disjoint from the scored set and are never scored.
+The calibration set is tokenised rows, each with the bf16 input model's loss on it. Your input model has never trained on them: they are carved from the train side of the text task that trains it, continuous task included, and held out of that task's training. When the input is the text task's base model instead, which never trained on the task's data, the rows are carved from the train side of the compression task's own data. They are disjoint from the scored set and are never scored.
 
 The file holds 100 to 1,000 rows. Every task sets `QUANT_CALIBRATION_PATH`, and every row carries the reference's loss, `null` for a row with no supervised token.
 
