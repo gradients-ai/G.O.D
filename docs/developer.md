@@ -333,6 +333,32 @@ uv run --extra dev pytest -q -o addopts='' tests/validator/scoring/test_tourname
 
 `pytest` defaults to random ordering through `pyproject.toml`; use `-o addopts=''` when you need deterministic focused debugging.
 
+## Incoming Changes For Miners
+
+`docs/incoming_changes.yaml` lists changes that affect miners and the UTC Monday each takes effect. The website reads it from `https://raw.githubusercontent.com/gradients-ai/G.O.D/main/docs/incoming_changes.yaml`, so write entries for a first-time miner reader: describe what will be, and never invent numbers that are not decided.
+
+Add an entry in a PR:
+
+```yaml
+  - id: my-change               # kebab-case, unique
+    title: Short name
+    summary: One or two sentences for miners.
+    why: Why the change is being made.
+    areas: [text]               # any of: text, image, compression
+    status: planned
+    date: 2026-12-07            # UTC Monday it takes effect
+    miner_action: Nothing.      # or what miners must do
+    prs: []
+    docs: []                    # repo-relative paths, e.g. [docs/miner.md]
+    shipped_on: null
+```
+
+Statuses: `planned`, `in_progress`, `testing`, `shipped`, `postponed`. A `shipped` entry must have `shipped_on`; other statuses keep it `null`. Move `date` and set `postponed` when a change slips.
+
+Validate locally with `python -m ops.tools.incoming_changes.validate`. CI runs the same check on PRs that touch the file.
+
+To ship an entry, add the label `incoming:<id>` to the PR that delivers it (create the label once with `gh label create "incoming:<id>"`). When the PR merges, the `Incoming Changes Ship` workflow sets `status: shipped`, `shipped_on` to the merge date (UTC) and adds the PR number to `prs`. Because `main` requires reviewed PRs, the workflow pushes the update to `incoming-changes/ship-pr-<N>` and opens a PR for it; approve and merge that PR. If the repo does not allow Actions to open PRs and no `INCOMING_CHANGES_TOKEN` secret is set, the workflow comments a compare link on the merged PR instead.
+
 ## Development Notes
 
 - Keep imports pointing at the owner module. Do not rely on compatibility imports from unrelated domains.

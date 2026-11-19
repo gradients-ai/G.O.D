@@ -1,0 +1,88 @@
+name: Incoming Changes Ship
+
+# When a PR labelled `incoming:<id>` merges, mark that entry in docs/incoming_changes.yaml as shipped.
+# main is protected (reviews required), so the update is proposed as a small PR instead of pushed directly.
+# Runs on pull_request_target so it also works for merged fork PRs; it only checks out the base branch
+# and never runs code from the PR head.
+
+on:
+  pull_request_target:
+    types:
+      - closed
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: incoming-changes-ship
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    name: Mark incoming changes shipped
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(join(github.event.pull_request.labels.*.name, ','), 'incoming:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: python -m pip install "pydantic>=2.9,<3" pyyaml
+
+      - name: Update incoming_changes.yaml
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGED_AT: ${{ github.event.pull_request.merged_at }}
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t labels < <(jq -r '.[]' <<<"${LABELS_JSON}")
+          args=()
+          for label in "${labels[@]}"; do
+            args+=(--label "${label}")
+          done
+          python -m ops.tools.incoming_changes.ship --pr "${PR_NUMBER}" --merged-at "${MERGED_AT}" "${args[@]}"
+          python -m ops.tools.incoming_changes.validate
+
+      - name: Open update PR
+        env:
+          GH_TOKEN: ${{ secrets.INCOMING_CHANGES_TOKEN || github.token }}
+          COMMENT_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- docs/incoming_changes.yaml; then
+            echo "incoming_changes.yaml already up to date"
+            exit 0
+          fi
+
+          branch="incoming-changes/ship-pr-${PR_NUMBER}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "${branch}"
+          git add docs/incoming_changes.yaml
+          git commit -m "Mark incoming changes shipped by #${PR_NUMBER}"
+          git push --force origin "${branch}"
+
+          title="Mark incoming changes shipped by #${PR_NUMBER}"
+          body="Updates docs/incoming_changes.yaml for the \`incoming:\` labels on #${PR_NUMBER}."
+          if ! gh pr create --repo "${REPO}" --base "${BASE_REF}" --head "${branch}" --title "${title}" --body "${body}"; then
+            compare="https://github.com/${REPO}/compare/${BASE_REF}...${branch}?expand=1"
+            GH_TOKEN="${COMMENT_TOKEN}" gh pr comment "${PR_NUMBER}" --repo "${REPO}" \
+              --body "The incoming-changes update is on \`${branch}\`; open a PR from it to ship: ${compare}"
+            echo "::warning::Could not open the update PR; the branch ${branch} is pushed and a link was left on #${PR_NUMBER}."
+          fi

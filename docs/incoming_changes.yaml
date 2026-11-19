@@ -1,0 +1,99 @@
+# Incoming changes for miners.
+#
+# Each entry is a change that affects miners, with the UTC Monday it takes effect.
+# Validate with: python -m ops.tools.incoming_changes.validate
+#
+# Fields:
+#   id            kebab-case, unique; also used in the PR label `incoming:<id>`
+#   title         short name
+#   summary       1-2 miner-facing sentences
+#   why           why the change is being made
+#   areas         any of: text, image, compression
+#   status        planned | in_progress | testing | shipped | postponed
+#   date          ISO date (YYYY-MM-DD) of the UTC Monday the change takes effect
+#   miner_action  what miners need to do, or "Nothing."
+#   prs           gradients-ai/G.O.D PR numbers, e.g. [1432]
+#   docs          repo-relative doc paths, e.g. [docs/miner.md]
+#   shipped_on    ISO date the change merged, or null until shipped
+#
+# Merging a PR labelled `incoming:<id>` marks that entry shipped automatically
+# (see docs/developer.md, "Incoming Changes For Miners").
+
+changes:
+  - id: threshold-recalibration
+    title: Threshold recalibration
+    summary: >-
+      A challenger currently has to beat the boss by 1% in text and image tournaments and by 3% in freeform
+      compression tournaments, and a freeform compression submission must stay within 1.04 times the reference
+      model's loss. These thresholds are being re-measured. The investigation covers three things:
+      how much scores vary between runs of the boss's own code with different seeds, for each task type; the
+      score gap at which people can see a difference between two models' outputs; and whether boss changes
+      under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
+      repository comparisons of past submissions where they are still available. Results are due by
+      30 November 2026, and any new thresholds take effect on this date. One option being considered is a
+      higher threshold together with a smaller share of emissions for the boss and a larger share for second
+      and third place.
+    why: >-
+      A boss should change only when a challenger is meaningfully better. A threshold inside run-to-run noise
+      lets the boss change hands with little or no real improvement, while one set too high leaves real progress
+      unrewarded. Calibrating against measured noise and visible differences in output quality aims to reward
+      real progress and keep participation high without rewarding noise.
+    areas: [text, image, compression]
+    status: in_progress
+    date: 2026-12-07
+    miner_action: >-
+      Nothing beyond adjusting to the new thresholds and reward split once they are published.
+    prs: []
+    docs: []
+    shipped_on: null
+
+  - id: compression-nats-budget
+    title: Compression quality budget in nats per token
+    summary: >-
+      Freeform compression submissions are judged against a fixed budget of extra loss per token instead of a
+      percentage of the reference loss. A submission is within the line when its test loss is at most the
+      reference model's loss plus the budget, in nats per token; going past it is penalised the same way as
+      crossing the line is today. The allowed quality loss then means the same on every task, whether the base
+      model is strong or weak. The budget value is set by the threshold recalibration and published in the docs
+      before this date.
+    why: >-
+      A percentage of the reference loss gives weak models a much looser budget than strong ones: the same
+      ratio allows far more extra loss per token on a model whose loss is already high. A fixed budget in nats
+      per token keeps the quality a customer gets from a compressed model the same on every task.
+    areas: [compression]
+    status: planned
+    date: 2026-12-14
+    miner_action: >-
+      Change how your pipeline sets its quality target, from the reference loss times 1.04 to the reference loss
+      plus the budget, and re-tune your landing: expect less room on tasks whose base model has a high loss and
+      more on tasks with a low loss. The budget is included in each task's published target, so read it from
+      there rather than hard-coding it.
+    prs: []
+    docs: []
+    shipped_on: null
+
+  - id: fixed-vllm-quant-types
+    title: More fixed quantisation formats
+    summary: >-
+      The fixed compression track adds more quantisation formats that vLLM can serve, alongside the current
+      W2 and W3 integer formats. From this date fixed-track tasks can request any format on the list, and a
+      submission must be in the requested format and load and run in vLLM to be scored. The list is set by a
+      study of which formats vLLM runs with optimised kernels on H100 (Hopper) GPUs. Standard 4-bit and 8-bit
+      formats are not on the list, because they leave little room to tell submissions apart. Specialised
+      formats being explored include 4-bit integer weights with FP8 activations (W4A8), 4-bit floating-point
+      weights (MXFP4, NVFP4, which run as weight-only formats on H100), and mixed precision per layer. Formats,
+      group sizes and layouts are confirmed here as the study completes, and each is tested further before it
+      is added to the validator.
+    why: >-
+      Compressed models are served with vLLM, so the formats that matter are the ones it runs efficiently.
+      Covering more of them makes the fixed track reward compression that can be deployed directly.
+    areas: [compression]
+    status: planned
+    date: 2026-12-14
+    miner_action: >-
+      Make sure your fixed-track pipeline can produce every format on the list in the layout vLLM expects, and
+      test that each output loads and serves in vLLM before this date. A task you cannot produce in the
+      requested format scores as a failure for that task.
+    prs: []
+    docs: []
+    shipped_on: null
