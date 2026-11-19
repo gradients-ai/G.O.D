@@ -76,11 +76,12 @@ changes:
       The fixed compression track adds more quantisation formats that vLLM can serve, alongside the current
       W2 and W3 integer formats. From this date fixed-track tasks can request any format on the list, and a
       submission must be in the requested format and load and run in vLLM to be scored. The list is set by a
-      study of which formats vLLM runs with optimised kernels on H100 (Hopper) GPUs. Candidates being explored
-      include FP8 weights and activations (W8A8), INT8 weights and activations (W8A8), and 4-bit and 8-bit
-      integer weights with 16-bit activations (W4A16, W8A16) in the GPTQ, AWQ and compressed-tensors layouts.
-      Formats, group sizes and layouts are confirmed here as the study completes, and each is tested further
-      before it is added to the validator.
+      study of which formats vLLM runs with optimised kernels on H100 (Hopper) GPUs. Standard 4-bit and 8-bit
+      formats are not on the list, because they leave little room to tell submissions apart. Specialised
+      formats being explored include 4-bit integer weights with FP8 activations (W4A8), 4-bit floating-point
+      weights (MXFP4, NVFP4), 2:4 structured sparsity combined with FP8, codebook formats such as AQLM and GGUF
+      i-quants, and mixed precision per layer. Formats, group sizes and layouts are confirmed here as the study
+      completes, and each is tested further before it is added to the validator.
     why: >-
       Compressed models are served with vLLM, so the formats that matter are the ones it runs efficiently.
       Covering more of them makes the fixed track reward compression that can be deployed directly.
