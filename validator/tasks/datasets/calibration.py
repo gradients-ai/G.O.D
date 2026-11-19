@@ -38,7 +38,8 @@ def with_row_hashes(dataset: Dataset) -> Dataset:
 
 
 class CalibrationCarve(BaseModel):
-    """Indices into the train side: the calibration rows in file order, and the train rows left, in original order."""
+    """Indices into the train side: the calibration rows, and the train rows left (no copy of a calibration row), in original
+    order."""
 
     calibration_indices: list[int]
     train_indices: list[int]
@@ -82,8 +83,9 @@ def carve_calibration(
     carve from a continuous chunk, so every task on one chunk carves identical rows.
 
     Rows are taken in a seeded shuffle of the train indices, skipping any whose raw hash equals a test row's (a
-    dataset duplicate must not leak test content), until at least QUANT_CALIBRATION_MIN_ROWS rows and
-    QUANT_CALIBRATION_TARGET_TOKENS estimated tokens, or the row cap.
+    dataset duplicate must not leak test content) or a row already taken, until at least QUANT_CALIBRATION_MIN_ROWS rows
+    and QUANT_CALIBRATION_TARGET_TOKENS estimated tokens, or the row cap. Every copy of a taken row leaves the train
+    side, so no calibration row is trained on.
     """
     n_train = len(train_hashes)
     cap = calibration_row_cap(n_train)
@@ -95,11 +97,13 @@ def carve_calibration(
     random.Random(f"{seed_key}:calibration").shuffle(order)
 
     chosen: list[int] = []
+    chosen_hashes: set[str] = set()
     tokens = 0
     for index in order:
-        if train_hashes[index] in test_hashes:
+        if train_hashes[index] in test_hashes or train_hashes[index] in chosen_hashes:
             continue
         chosen.append(index)
+        chosen_hashes.add(train_hashes[index])
         tokens += estimated_tokens(completion_chars[index])
         if len(chosen) >= cap:
             break
@@ -110,6 +114,10 @@ def carve_calibration(
         logger.info(f"Calibration: carving nothing, only {len(chosen)} train rows are not duplicates of a test row")
         return None
 
-    taken = set(chosen)
-    logger.info(f"Calibration: carved {len(chosen)} of {n_train} train rows (~{tokens} supervised tokens estimated)")
-    return CalibrationCarve(calibration_indices=chosen, train_indices=[i for i in range(n_train) if i not in taken])
+    train_indices = [i for i in range(n_train) if train_hashes[i] not in chosen_hashes]
+    dropped = n_train - len(chosen) - len(train_indices)
+    logger.info(
+        f"Calibration: carved {len(chosen)} of {n_train} train rows (~{tokens} supervised tokens estimated), "
+        f"dropped {dropped} duplicate copies of them from train"
+    )
+    return CalibrationCarve(calibration_indices=chosen, train_indices=train_indices)

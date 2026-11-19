@@ -2,7 +2,6 @@
 
 import json
 import uuid
-from collections import Counter
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -111,12 +110,12 @@ async def test_carving_leaves_the_test_split_identical_and_train_is_the_rest(sea
     calibration = _file(seams, "calibration_data.json")
     new_train = _file(seams, "train_data.json")
     expected_train = [_standard(r) for r in train]
-    # Train is the base train minus the calibration rows (as a multiset: duplicates exist), order preserved.
+    # Train is the base train without any copy of a calibration row (duplicates exist), order preserved.
     assert len(calibration) == int(len(train) * cst.QUANT_CALIBRATION_MAX_TRAIN_FRACTION)
     key = lambda row: json.dumps(row, sort_keys=True)  # noqa: E731
-    assert Counter(map(key, new_train)) + Counter(map(key, calibration)) == Counter(map(key, expected_train))
-    positions = iter(map(key, expected_train))
-    assert all(any(k == candidate for candidate in positions) for k in map(key, new_train))  # a subsequence: order kept
+    calibration_keys = set(map(key, calibration))
+    assert len(calibration_keys) == len(calibration)
+    assert new_train == [row for row in expected_train if key(row) not in calibration_keys]
     assert split.calibration_url is not None and len(split.calibration_row_hashes) == len(calibration)
 
 async def test_no_calibration_row_is_a_test_row_even_with_a_duplicate_in_train(seams):
@@ -165,7 +164,11 @@ async def test_recorded_rows_never_land_in_test_and_are_appended_to_train(seams)
     recorded_standard = {json.dumps(_standard(r), sort_keys=True) for r in seams.rows if raw_row_hash(r) in seams.recorded[DS]}
     assert len(new_test) == len(test)  # the size is still the full dataset's 10 % cap
     assert not any(json.dumps(row, sort_keys=True) in recorded_standard for row in new_test)
-    assert len(new_train) + len(calibration) + len(new_test) == N_ROWS
+    # Every row is in exactly one file, except the extra copies of a calibration row, which leave train.
+    calibration_keys = {json.dumps(row, sort_keys=True) for row in calibration}
+    copies = sum(json.dumps(_standard(r), sort_keys=True) in calibration_keys for r in seams.rows)
+    assert len(new_train) + len(calibration) + len(new_test) == N_ROWS - (copies - len(calibration))
+    assert calibration_keys.isdisjoint(json.dumps(row, sort_keys=True) for row in new_train)
 
 async def test_a_record_that_matches_no_row_leaves_the_test_split_alone(seams):
     _, test = _base_split(seams.rows)

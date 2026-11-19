@@ -1,5 +1,7 @@
 """The calibration carve: size rule, determinism, disjointness from test, and the raw-row hash."""
 
+import random
+
 import pytest
 
 import validator.tasks.datasets.constants as cst
@@ -95,3 +97,28 @@ def test_a_pool_that_is_all_test_duplicates_carves_nothing():
 @pytest.mark.parametrize("chars,expected", [(0, 0), (1, 1), (4, 1), (5, 2)])
 def test_token_estimate_is_ceil_of_chars_over_four(chars, expected):
     assert estimated_tokens(chars) == expected
+
+
+def test_every_copy_of_a_calibration_row_leaves_train():
+    # Each row appears twice: a carved row's twin must not stay on the train side, and calibration holds one copy.
+    n = 10_000
+    hashes = [f"h{i // 2}" for i in range(n)]
+    carve = carve_calibration(TASK_ID, hashes, set(), [100] * n)
+
+    carved = {hashes[i] for i in carve.calibration_indices}
+    assert len(carved) == len(carve.calibration_indices)
+    assert carved.isdisjoint(hashes[i] for i in carve.train_indices)
+    assert len(carve.train_indices) == n - 2 * len(carve.calibration_indices)
+
+
+def test_rows_without_duplicates_carve_exactly_as_a_plain_seeded_draw():
+    # With distinct rows the carve is the seeded shuffle's first rows up to the size rule, and train is everything else.
+    n = 10_000
+    hashes = _hashes(n)
+    carve = carve_calibration(TASK_ID, hashes, set(), [100] * n)
+
+    order = list(range(n))
+    random.Random(f"{TASK_ID}:calibration").shuffle(order)
+    expected = order[: len(carve.calibration_indices)]
+    assert carve.calibration_indices == expected
+    assert carve.train_indices == sorted(set(range(n)) - set(expected))
