@@ -371,7 +371,7 @@ Shares are fractions of the subnet's miner emission.
 
 The minimums sum to 0.75. The other 0.25 floats between the tournaments by participation. A maximum is the minimum plus the whole 0.25. How the floating share is computed: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
-Compression's share phases in linearly over 28 days from a start date set in the validator. Before the start it is 0. During the phase-in it is scaled by the fraction of the 28 days that has passed, and the rest goes to text and image in proportion to their minimums. The table above is the split once the 28 days have passed. Details: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
+Compression always gets its 0.35 minimum. Its part of the floating 0.25 phases in linearly over 28 days from a start date set in the validator. Before the start it gets none of the floating share. During the phase-in its part is scaled by the fraction of the 28 days that has passed, and the rest goes to text and image in proportion to their own parts. Once the 28 days have passed the split is as described above. Details: [Tournament emission split](../validator/scoring/README.md#tournament-emission-split).
 
 ### Split over the paid places
 

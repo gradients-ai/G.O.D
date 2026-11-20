@@ -71,7 +71,7 @@ def test_balanced_entrants_split_flex_at_the_minimums_ratio():
 
 
 def test_max_weight_by_type_returns_the_plain_caps():
-    assert max_weight_by_type(NOW) == {
+    assert max_weight_by_type() == {
         TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         QUANT: cts.MAX_QUANT_TOURNAMENT_WEIGHT,
         IMAGE: cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
@@ -299,12 +299,13 @@ async def test_quant_pool_pays_text_placements_until_a_quant_tournament_complete
 async def test_text_placements_get_only_the_phased_quant_pool_before_a_quant_tournament_completes(ramp, monkeypatch):
     full = await _audit_with([TEXT_DONE, IMAGE_DONE])
     monkeypatch.setattr(cts, "QUANT_EMISSION_RAMP_START", NOW - ramp * timedelta(days=cts.QUANT_EMISSION_RAMP_DAYS))
-    with patch("validator.scoring.weights.datetime") as clock:
+    with patch("validator.scoring.emission_balance.datetime") as clock:
         clock.now.return_value = NOW
         audit = await _audit_with([TEXT_DONE, IMAGE_DONE])
 
+    full_quant_flex = full.quant_tournament_weight - cts.TOURNAMENT_QUANT_WEIGHT
     assert audit.quant_tournament_data.tournament_id == "text_1"
-    assert audit.quant_tournament_weight == pytest.approx(ramp * full.quant_tournament_weight)
+    assert audit.quant_tournament_weight == pytest.approx(cts.TOURNAMENT_QUANT_WEIGHT + ramp * full_quant_flex)
 
     weights = await _node_weights(audit, ["champ", "t2", "t3", "t4", "i1", "i2", BURN])
 

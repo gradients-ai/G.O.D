@@ -57,11 +57,11 @@ MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.40
 MAX_QUANT_TOURNAMENT_WEIGHT = TOURNAMENT_QUANT_WEIGHT + EMISSION_FLEX_POOL  # 0.60
 MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.50
 
-# Phase-in of the compression share. Compression's base share (its minimum and its part of the flex pool) is
-# scaled by ramp = clamp((now - QUANT_EMISSION_RAMP_START) / QUANT_EMISSION_RAMP_DAYS, 0, 1); the part it has not
-# earned yet goes to text and image in proportion to their minimums. Every minimum and cap is phased the same way,
-# so each base stays within its bounds and the bases still sum to 1.0. None: the phase-in has not started and
-# compression's share is 0. Set it to a timezone-aware UTC moment, e.g. datetime(2026, 12, 1, tzinfo=timezone.utc).
+# Phase-in of compression's part of the flex pool. Compression always gets its whole minimum; its flex part is
+# scaled by ramp = clamp((now - QUANT_EMISSION_RAMP_START) / QUANT_EMISSION_RAMP_DAYS, 0, 1) and the part it has not
+# earned yet goes to text and image in proportion to their own flex parts. Bases stay within [minimum, maximum] and
+# sum to 1.0. None: the phase-in has not started and compression gets its minimum only. Set it to a timezone-aware
+# UTC moment, e.g. datetime(2026, 12, 1, tzinfo=timezone.utc).
 QUANT_EMISSION_RAMP_START: datetime | None = None
 QUANT_EMISSION_RAMP_DAYS = 28
 
