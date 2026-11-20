@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 EMISSION_BURN_HOTKEY = "5GU4Xkd3dCGTU3s8VLcHGc5wsD5M8XyxDca5yDQhYm1mVXFu"
 
 # General miner pool sizes
@@ -53,6 +56,14 @@ EMISSION_FLEX_POOL = 1.0 - (TOURNAMENT_TEXT_WEIGHT + TOURNAMENT_QUANT_WEIGHT + T
 MAX_TEXT_TOURNAMENT_WEIGHT = TOURNAMENT_TEXT_WEIGHT + EMISSION_FLEX_POOL  # 0.40
 MAX_QUANT_TOURNAMENT_WEIGHT = TOURNAMENT_QUANT_WEIGHT + EMISSION_FLEX_POOL  # 0.60
 MAX_IMAGE_TOURNAMENT_WEIGHT = TOURNAMENT_IMAGE_WEIGHT + EMISSION_FLEX_POOL  # 0.50
+
+# Phase-in of the compression share. Compression's base share (its minimum and its part of the flex pool) is
+# scaled by ramp = clamp((now - QUANT_EMISSION_RAMP_START) / QUANT_EMISSION_RAMP_DAYS, 0, 1); the part it has not
+# earned yet goes to text and image in proportion to their minimums. Every minimum and cap is phased the same way,
+# so each base stays within its bounds and the bases still sum to 1.0. None: the phase-in has not started and
+# compression's share is 0. Set it to a timezone-aware UTC moment, e.g. datetime(2026, 12, 1, tzinfo=timezone.utc).
+QUANT_EMISSION_RAMP_START: datetime | None = None
+QUANT_EMISSION_RAMP_DAYS = 28
 
 # Participation-driven auto-balancer for the flex pool. Each cycle the flex pool is split from the
 # rolling entrant counts of the last N completed tournaments of each type: an oversubscribed type

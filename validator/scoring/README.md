@@ -32,9 +32,11 @@ Each tournament's pool is its base share: a minimum plus a part of the share tha
 
 A tournament with more participants than its minimum share implies cedes floating share to one with fewer. Each base lies between its minimum and its minimum plus the whole floating share, and the three bases sum to 1.0.
 
+**Compression phase-in.** Compression's base share is scaled by a ramp that rises linearly from 0 at `QUANT_EMISSION_RAMP_START` to 1 after `QUANT_EMISSION_RAMP_DAYS`. The part not yet earned goes to text and image in proportion to their minimums (0.15 : 0.25). The minimums and maximums of all three are phased the same way, so each base stays within its bounds and the bases still sum to 1.0. With no start set, compression's share is 0. At a full ramp the split is the one above.
+
 The pool of a tournament is exactly its base share. The three pools sum to 1.0, so the pools fill the whole emission pie and nothing is renormalised. Every place of a tournament, the champion's included, is paid from its one pool.
 
-Until the first compression tournament completes, its share follows the latest text tournament's placements (`get_latest_paying_tournament` in `weights.py`): the same hotkeys, the boss's places paid to text's defending champion, at compression's pool and place split.
+Until the first compression tournament completes, its share follows the latest text tournament's placements (`get_latest_paying_tournament` in `weights.py`): the same hotkeys, the boss's places paid to text's defending champion, at compression's pool and place split, phase-in included.
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
@@ -42,6 +44,8 @@ Until the first compression tournament completes, its share follows the latest t
 | Lag | 1 | The latest non-cancelled tournament (pending, active or completed) is excluded. |
 | `EMISSION_MIN_ENTRANTS_FOR_BALANCE` | 3 | Tournaments with fewer participants are ignored. |
 | `EMISSION_BALANCE_ALPHA` | 1.25 | Reaction strength. At 0 the floating share splits at the minimums' ratio. |
+| `QUANT_EMISSION_RAMP_START` | `None` | Timezone-aware UTC start of the compression phase-in. `None`: not started, compression's share is 0. |
+| `QUANT_EMISSION_RAMP_DAYS` | 28 | Days from the start until compression has its full share. |
 
 **Undistributed weight goes to the burn node.** That covers:
 

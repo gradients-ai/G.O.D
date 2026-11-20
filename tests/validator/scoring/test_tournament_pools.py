@@ -1,6 +1,8 @@
 """Every tournament type pays its places from one pool: its dynamic base share. A tournament won by the burn hotkey adds
 nothing, and the pools and what they pay always add up."""
 
+from datetime import datetime
+from datetime import timezone
 from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -21,6 +23,7 @@ from validator.tournament.models import TournamentStatus
 
 
 TEXT, QUANT, IMAGE = TournamentType.TEXT, TournamentType.QUANT, TournamentType.IMAGE
+NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
 BOSS = cts.EMISSION_BURN_HOTKEY
 CHAMPION = "5Champion"
 SECOND = "5Second"
@@ -107,9 +110,10 @@ async def test_a_tournament_won_by_the_burn_hotkey_with_no_known_champion_gets_n
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
+@pytest.mark.usefixtures("quant_ramp_complete")
 @pytest.mark.parametrize("text,quant,image", list(product([None, 3, 40, 1000], repeat=3)))
 def test_pools_sum_to_one_and_distributed_plus_undistributed_equal_the_total(text, quant, image):
-    pools = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image})
+    pools = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image}, NOW)
     assert sum(pools.values()) == pytest.approx(1.0, abs=1e-12)
 
     hotkey_to_node_id = {"a": 0, "b": 1, "c": 2}

@@ -2,6 +2,7 @@ import asyncio
 import math
 import os
 from datetime import datetime
+from datetime import timezone
 
 from dotenv import load_dotenv
 
@@ -81,15 +82,17 @@ async def get_tournament_burn_details(psql_db) -> TournamentBurnData:
 
     Each type's pool is its participation-driven base share (guaranteed minimum plus flex). The bases sum to
     exactly 1.0, so the pools fill the whole emission pie and nothing is renormalised. The burn proportion of a
-    type is the fraction of its cap (minimum plus the whole flex pool) its pool leaves unused.
+    type is the fraction of its cap (minimum plus the whole flex pool) its pool leaves unused. Quant's base and cap are
+    phased in (emission_balance.quant_ramp_factor), the part not yet earned sitting with text and image.
 
     Returns:
         TournamentBurnData with the pool of each type and the burn proportions
     """
     logger.info("=== CALCULATING TOURNAMENT POOLS ===")
 
-    dynamic_base_weights = await get_dynamic_base_weights(psql_db)
-    max_weights = max_weight_by_type()
+    now = datetime.now(timezone.utc)
+    dynamic_base_weights = await get_dynamic_base_weights(psql_db, now)
+    max_weights = max_weight_by_type(now)
     text_weight = dynamic_base_weights[TournamentType.TEXT]
     quant_weight = dynamic_base_weights[TournamentType.QUANT]
     image_weight = dynamic_base_weights[TournamentType.IMAGE]
@@ -331,7 +334,9 @@ async def stored_boss_rank_comparisons(tournament_id: str, psql_db) -> list[Boss
 
 
 async def get_latest_paying_tournament(psql_db, tournament_type: TournamentType) -> TournamentData | None:
-    """The latest completed tournament of a type; for quant with none completed, the latest completed text one."""
+    """The latest completed tournament of a type; for quant with none completed, the latest completed text one.
+
+    That fallback pays quant's pool as it stands, phase-in included, to the text placements."""
     tournament = await get_latest_completed_tournament(psql_db, tournament_type)
     if tournament is None and tournament_type == TournamentType.QUANT:
         tournament = await get_latest_completed_tournament(psql_db, TournamentType.TEXT)

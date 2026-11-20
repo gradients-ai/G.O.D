@@ -225,6 +225,7 @@ class TestSeparatedBurnDynamics:
             assert len(result.node_weights) == 2
 
     @pytest.mark.asyncio
+    @pytest.mark.usefixtures("quant_ramp_complete")
     async def test_no_champions_falls_back_to_the_anchor_split(self, mock_psql_db):
         """With no tournament history anywhere, the pools still sum to exactly 1.0 and hold the anchor ratios."""
         with patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])):

@@ -1,5 +1,8 @@
-"""Three-way emission split (text / quant / image): guaranteed minimums apply from the start."""
+"""Three-way emission split (text / quant / image) once compression's phase-in is complete: guaranteed minimums apply."""
 
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from itertools import product
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -31,6 +34,9 @@ from validator.tournament.models import TournamentStatus
 TEXT = TournamentType.TEXT
 QUANT = TournamentType.QUANT
 IMAGE = TournamentType.IMAGE
+NOW = datetime(2026, 11, 20, tzinfo=timezone.utc)
+
+pytestmark = pytest.mark.usefixtures("quant_ramp_complete")
 
 ENTRANTS = [None, 3, 10, 25, 35, 100, 1000]
 BURN = "burn_hotkey"
@@ -48,7 +54,7 @@ def test_minimums_and_flex_constants():
 
 @pytest.mark.parametrize("text,quant,image", list(product(ENTRANTS, repeat=3)))
 def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
-    weights = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image})
+    weights = compute_dynamic_base_weights({TEXT: text, QUANT: quant, IMAGE: image}, NOW)
 
     assert sum(weights.values()) == pytest.approx(1.0, abs=1e-12)
     assert cts.TOURNAMENT_TEXT_WEIGHT <= weights[TEXT] <= cts.MAX_TEXT_TOURNAMENT_WEIGHT
@@ -57,7 +63,7 @@ def test_bases_sum_to_one_and_stay_within_minimum_plus_flex(text, quant, image):
 
 
 def test_balanced_entrants_split_flex_at_the_minimums_ratio():
-    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100})
+    weights = compute_dynamic_base_weights({TEXT: 60, QUANT: 140, IMAGE: 100}, NOW)
 
     total_minimum = 0.15 + 0.35 + 0.25
     for tournament_type, minimum in ((TEXT, 0.15), (QUANT, 0.35), (IMAGE, 0.25)):
@@ -65,7 +71,7 @@ def test_balanced_entrants_split_flex_at_the_minimums_ratio():
 
 
 def test_max_weight_by_type_returns_the_plain_caps():
-    assert max_weight_by_type() == {
+    assert max_weight_by_type(NOW) == {
         TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         QUANT: cts.MAX_QUANT_TOURNAMENT_WEIGHT,
         IMAGE: cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
@@ -73,7 +79,7 @@ def test_max_weight_by_type_returns_the_plain_caps():
 
 
 @pytest.mark.asyncio
-async def test_minimums_apply_with_no_completed_quant_tournament():
+async def test_minimums_apply_after_the_phase_in_with_no_completed_quant_tournament():
     with patch("validator.scoring.emission_balance.get_recent_completed_entrant_counts", AsyncMock(return_value=[])):
         weights = await get_dynamic_base_weights(MagicMock())
 
@@ -285,6 +291,26 @@ async def test_quant_pool_pays_text_placements_until_a_quant_tournament_complete
     assert weights["t4"] == 0.0
     assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
     assert weights["i2"] == pytest.approx(exponential_decline_mapping(2, 2) * audit.image_tournament_weight)
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ramp", [0.0, 0.5])
+async def test_text_placements_get_only_the_phased_quant_pool_before_a_quant_tournament_completes(ramp, monkeypatch):
+    full = await _audit_with([TEXT_DONE, IMAGE_DONE])
+    monkeypatch.setattr(cts, "QUANT_EMISSION_RAMP_START", NOW - ramp * timedelta(days=cts.QUANT_EMISSION_RAMP_DAYS))
+    with patch("validator.scoring.weights.datetime") as clock:
+        clock.now.return_value = NOW
+        audit = await _audit_with([TEXT_DONE, IMAGE_DONE])
+
+    assert audit.quant_tournament_data.tournament_id == "text_1"
+    assert audit.quant_tournament_weight == pytest.approx(ramp * full.quant_tournament_weight)
+
+    weights = await _node_weights(audit, ["champ", "t2", "t3", "t4", "i1", "i2", BURN])
+
+    text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
+    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
+    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
