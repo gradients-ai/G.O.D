@@ -69,11 +69,7 @@ QUANT_EMISSION_RAMP_DAYS = 28
 # rolling entrant counts of the last N completed tournaments of each type: an oversubscribed type
 # cedes flex toward a starved one. Minimums are never touched. See validator.scoring.emission_balance.
 EMISSION_BALANCE_ALPHA = 1.25            # rate of change: 0 = flex split at the minimums' ratio, higher = sharper reaction
-# The window is LAGGED by one tournament: the most recent completed-or-active tournament (position
-# -1) is excluded, and the average is taken over positions -2..-5. This locks the split a cohort
-# competes under before they enter, so it can't move against them (rug them) when their tournament
-# finishes. Window size therefore = number of completed tournaments averaged after the lag.
-EMISSION_BALANCE_ROLLING_WINDOW = 4      # positions -2..-5 (one-tournament lag applied in the query)
+EMISSION_BALANCE_ROLLING_WINDOW = 4      # last N completed tournaments of each type, the latest included
 EMISSION_MIN_ENTRANTS_FOR_BALANCE = 3    # ignore degenerate tournaments below this entrant count
 
 # Burn and emission weight dynamics

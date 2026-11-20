@@ -25,10 +25,9 @@ Each tournament's pool is its base share: a minimum plus a part of the share tha
 
 **How the floating share is computed** (`emission_balance.py`):
 
-1. For each of text, image and compression, take the participant counts of its most recent completed tournaments. The boss's participant row is counted.
-2. Skip the latest one, so the split a cohort competes under is fixed before it enters.
-3. Average the counts. A tournament with no usable history counts as average-subscribed.
-4. Give each tournament a part of the floating share proportional to `minimum_share x (minimum_share / participants) ^ alpha`.
+1. For each of text, image and compression, take the participant counts of its last four completed tournaments, the latest included. Pending, active and cancelled tournaments are not counted. The boss's participant row is counted.
+2. Average the counts. A tournament with no usable history counts as average-subscribed.
+3. Give each tournament a part of the floating share proportional to `minimum_share x (minimum_share / participants) ^ alpha`.
 
 A tournament with more participants than its minimum share implies cedes floating share to one with fewer. Each base lies between its minimum and its minimum plus the whole floating share, and the three bases sum to 1.0.
 
@@ -40,8 +39,7 @@ Until the first compression tournament completes, its share follows the latest t
 
 | Constant | Value | Meaning |
 | --- | --- | --- |
-| `EMISSION_BALANCE_ROLLING_WINDOW` | 4 | Completed tournaments averaged, after the lag. |
-| Lag | 1 | The latest non-cancelled tournament (pending, active or completed) is excluded. |
+| `EMISSION_BALANCE_ROLLING_WINDOW` | 4 | Completed tournaments averaged, the latest included. |
 | `EMISSION_MIN_ENTRANTS_FOR_BALANCE` | 3 | Tournaments with fewer participants are ignored. |
 | `EMISSION_BALANCE_ALPHA` | 1.25 | Reaction strength. At 0 the floating share splits at the minimums' ratio. |
 | `QUANT_EMISSION_RAMP_START` | `None` | Timezone-aware UTC start of the compression phase-in. `None`: not started, compression gets its minimum only. |
