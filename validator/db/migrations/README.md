@@ -135,10 +135,10 @@ task dbup
 | `20261109120000_tournament_seed_tasks.sql` | Create `tournament_seed_tasks`. |
 | `20261110120000_evaluation_infra_error_attempts.sql` | Add `evaluations.infra_error_attempts`. |
 | `20261112120000_tournament_seed_merged_output_repo.sql` | Add `tournament_seed_tasks.merged_output_repo`. |
-| `20261113120000_continuous_sft_chunk_scheme.sql` | Record of the lineage position each continuous task was created at (`continuous_sft_task_chunks`). |
 | `20261113130000_text_seed_roles.sql` | Text seed roles and compression boss-round roles on `tournament_seed_tasks`. |
 | `20261113140000_quant_task_sources.sql` | Create `quant_tournament_sources` and `quant_task_sources`. |
 | `20261113150000_quant_round_seed_roles.sql` | Round seed roles for compression on `tournament_seed_tasks`. |
+| `20261113160000_continuous_sft_chunk_scheme.sql` | Continuous-task chunk scheme: adds `continuous_sft_state.chunk_scheme`, doubles every lineage cursor once, and records the lineage position each continuous task was created at (`continuous_sft_task_chunks`). Apply it between two tournaments, in the same window as the content service's chunk scheme switch. |
 | `20261113170000_tournament_boss_rank_comparisons.sql` | Create `tournament_boss_rank_comparisons`. |
 | `20261114120000_quant_calibration_required.sql` | `tasks_quant_calibration_required` CHECK (NOT VALID): a compression task past prep has its calibration set. |
 

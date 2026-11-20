@@ -8,9 +8,9 @@ Automated tests, grouped by the runtime or package they cover.
 | --- | --- |
 | `core/` | Shared models and helpers: compression models, tokenizer utilities, Git URLs, URL redaction. |
 | `e2e/` | End-to-end scripts and the freeform exposure test. |
-| `ops/` | Ops tools and the `.dockerignore` secret exclusions. |
+| `ops/` | Ops tools, including the incoming-changes checks, and the `.dockerignore` secret exclusions. |
 | `subnet_api/` | Subnet API application. |
-| `trainer/` | Trainer service, model prep, cache and decoder sandbox. |
+| `trainer/` | Trainer service, model prep, cache, decoder sandbox and GPU monitor. |
 | `validator/` | Validator evaluation, scoring, lifecycle, tasks and tournaments. |
 | `conftest.py` | The `--run-gpu` option and the `gpu` marker. |
 | `test_gpu_pair_selection.py` | GPU grouping and trainer selection from reported topology. |

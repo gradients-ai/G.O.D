@@ -2,7 +2,8 @@
 
 Mocks the DB seams (get_task, get_lowest_loss_repo_for_task, advance) and asserts the routing:
 lineage recovered from the task's ds, winner carried as-is, None-winner still advances (so the
-cursor never stalls), a malformed ds is skipped, and a failed advance propagates (and is retried idempotently).
+cursor never stalls), a malformed ds is skipped, a failed advance propagates (and a retry is idempotent),
+and with only_hotkey that hotkey's evaluated repo is carried instead of the lowest-loss one.
 The lineage<->winner pairing is the thing that must never cross wires (one lineage's winner
 landing in another's row silently poisons a lineage).
 """
@@ -55,8 +56,8 @@ async def test_advances_each_lineage_with_its_lowest_loss_winner(monkeypatch):
 
     await tournament_manager._carry_forward_continuous_sft([_round_task("t1"), _round_task("t2")], SRID, PSQL)
 
-    calls = [c.args for c in advance.call_args_list]
-    assert calls == [("alt", "org/alt-win", SRID, PSQL), ("qwen", "org/qwen-win", SRID, PSQL)]
+    calls = [(*c.args, c.kwargs["task_id"]) for c in advance.call_args_list]
+    assert calls == [("alt", "org/alt-win", SRID, PSQL, "t1"), ("qwen", "org/qwen-win", SRID, PSQL, "t2")]
 
 
 async def test_none_winner_still_advances(monkeypatch):
@@ -65,20 +66,21 @@ async def test_none_winner_still_advances(monkeypatch):
     advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id={"t1": None})
     await tournament_manager._carry_forward_continuous_sft([_round_task("t1")], SRID, PSQL)
     assert advance.call_args_list[0].args == ("qwen", None, SRID, PSQL)
+    assert advance.call_args_list[0].kwargs == {"task_id": "t1"}
 
 
 async def test_unrecognized_ds_is_skipped_but_loop_continues(monkeypatch):
     tasks = {"bad": _cont_task("qwen", ds="not-a-continuous-ds"), "good": _cont_task("alt")}
     advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id={"bad": "x", "good": "org/alt-win"})
     await tournament_manager._carry_forward_continuous_sft([_round_task("bad"), _round_task("good")], SRID, PSQL)
-    calls = [c.args for c in advance.call_args_list]
-    assert calls == [("alt", "org/alt-win", SRID, PSQL)]  # bad ds skipped, good still advanced
+    calls = [(*c.args, c.kwargs["task_id"]) for c in advance.call_args_list]
+    assert calls == [("alt", "org/alt-win", SRID, PSQL, "good")]  # bad ds skipped, good still advanced
 
 
-async def test_a_failed_advance_propagates_so_the_caller_does_not_complete_the_tournament(monkeypatch):
-    tasks = {"t1": _cont_task("qwen")}
+async def test_a_failed_advance_propagates(monkeypatch):
+    # The caller must not complete the tournament if the cursor did not move.
     failing = AsyncMock(side_effect=RuntimeError("db down"))
-    advance = _wire(monkeypatch, tasks_by_id=tasks, winners_by_id={"t1": "org/w"}, advance=failing)
+    advance = _wire(monkeypatch, tasks_by_id={"t1": _cont_task("qwen")}, winners_by_id={"t1": "org/w"}, advance=failing)
 
     with pytest.raises(RuntimeError, match="db down"):
         await tournament_manager._carry_forward_continuous_sft([_round_task("t1")], SRID, PSQL)
@@ -87,7 +89,7 @@ async def test_a_failed_advance_propagates_so_the_caller_does_not_complete_the_t
 
 
 class _FakeCursor:
-    """advance_continuous_sft_state's contract: idempotent on the source round id; a transient failure advances nothing."""
+    """advance_continuous_sft_state's contract: idempotent on the source round id; a failure advances nothing."""
 
     def __init__(self):
         self.train_index = 0
@@ -125,13 +127,16 @@ async def test_only_hotkey_carries_that_hotkeys_repo_never_the_lowest_loss_one(m
     advance = _wire(monkeypatch, tasks_by_id={"t1": _cont_task("qwen")}, winners_by_id={"t1": "org/challenger-lowest"})
     repo_of = AsyncMock(return_value="org/boss-repo")
     monkeypatch.setattr(tournament_manager.task_sql, "get_evaluated_repo_for_hotkey", repo_of)
+    lowest = tournament_manager.task_sql.get_lowest_loss_repo_for_task
 
     await tournament_manager._carry_forward_continuous_sft(
         [_round_task("t1")], SRID, PSQL, only_hotkey=tournament_manager.EMISSION_BURN_HOTKEY
     )
 
     repo_of.assert_awaited_once_with("t1", tournament_manager.EMISSION_BURN_HOTKEY, PSQL, ranked=True)
+    lowest.assert_not_awaited()
     assert advance.call_args_list[0].args == ("qwen", "org/boss-repo", SRID, PSQL)
+    assert advance.call_args_list[0].kwargs == {"task_id": "t1"}
 
 
 async def test_only_hotkey_with_no_evaluated_repo_still_advances_with_none(monkeypatch):
@@ -143,6 +148,7 @@ async def test_only_hotkey_with_no_evaluated_repo_still_advances_with_none(monke
     )
 
     assert advance.call_args_list[0].args == ("qwen", None, SRID, PSQL)
+    assert advance.call_args_list[0].kwargs == {"task_id": "t1"}
 
 
 def _seeded_tournament(monkeypatch, *, advance):
@@ -221,5 +227,5 @@ async def test_non_continuous_and_missing_tasks_are_skipped(monkeypatch):
     await tournament_manager._carry_forward_continuous_sft(
         [_round_task("plain"), _round_task("missing"), _round_task("cont")], SRID, PSQL
     )
-    calls = [c.args for c in advance.call_args_list]
-    assert calls == [("qwen", "org/w", SRID, PSQL)]  # only the real continuous task advanced
+    calls = [(*c.args, c.kwargs["task_id"]) for c in advance.call_args_list]
+    assert calls == [("qwen", "org/w", SRID, PSQL, "cont")]  # only the real continuous task advanced

@@ -11,7 +11,7 @@ Everything a miner needs that is the same in every tournament: schedule, fees, r
   <a href="developer.md"><b>Developer guide</b></a>
 </p>
 
-On this page: [What miners do](#what-miners-do) · [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting)
+On this page: [What miners do](#what-miners-do) · [Tournaments](#tournaments) · [Training repository](#training-repository) · [How your code runs](#how-your-code-runs) · [Entering a tournament](#entering-a-tournament) · [The boss and the crown](#the-boss-and-the-crown) · [Payouts](#payouts) · [Results](#results) · [Fair play and review](#fair-play-and-review) · [Troubleshooting](#troubleshooting) · [Incoming changes](#incoming-changes)
 
 ## What miners do
 
@@ -401,7 +401,7 @@ Each paid place gets a quarter of the one above. Two places are paid when the to
 | `GET /tournament/{tournament_id}/details` | The same for one tournament. |
 | `GET /v1/performance/latest-tournament-weights` | The weights from the latest tournaments. |
 
-The API base is `https://api.gradients.io`. None of these needs a key.
+The API base is `https://api.sn56.io`. None of these needs a key.
 
 ## Fair play and review
 
@@ -455,3 +455,7 @@ These lines are tournament policy. The automated checks are a floor, not the ful
 | Nothing to evaluate | The output is not at the [output path](#paths), or nothing was there at the deadline. |
 | Eliminated as a duplicate submission | The code matched another entry. See [Duplicate-submission check](#duplicate-submission-check). |
 | Need the training logs | Grafana: <http://185.141.218.122:3001/>. Filter by the `task_id` and your `hotkey`. |
+
+## Incoming changes
+
+Upcoming changes that affect miners are listed in [`incoming_changes.yaml`](incoming_changes.yaml), each with the UTC Monday it takes effect, the tournaments it touches, what miners need to do, and its status.

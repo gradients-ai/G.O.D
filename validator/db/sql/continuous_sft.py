@@ -106,7 +106,7 @@ async def get_continuous_sft_task_chunk(task_id: UUID, psql_db: PSQLDB) -> Conti
 
 
 def next_train_index_after(chunk: ContinuousSftTaskChunk | None, current_train_index: int) -> int:
-    """The cursor (in V2 units) a completed task leaves behind; never below the current cursor.
+    """The cursor (in v2 chunk units) a completed task leaves behind; never below the current cursor.
 
     V2 task: the next chunk, index + 1. V1 task: its chunk k is the V2 chunks
     2k and 2k+1, so both are consumed and the next unread one is 2k + 2. No record means the task was
@@ -128,7 +128,7 @@ async def advance_continuous_sft_state(
 ) -> None:
     """Advance a lineage's train cursor and record its winner (upsert; creates the row on first run).
 
-    The cursor moves past the chunk the task trained on, in V2 units (see next_train_index_after, which
+    The cursor moves past the chunk the task trained on, in v2 chunk units (see next_train_index_after, which
     the SQL CASE mirrors so the arithmetic runs on the current row inside the one statement), and never
     backwards. task_id selects the task's chunk record; without one the cursor moves by two, as for a task
     created before the scheme switch. winner_repo=None is preserved via COALESCE (a failed/empty week doesn't

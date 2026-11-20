@@ -1079,8 +1079,7 @@ class TestBigTaskComplete:
         done = tm.advance_continuous_sft_state
         monkeypatch.setattr(tm, "advance_continuous_sft_state", AsyncMock(side_effect=RuntimeError("db down")))
 
-        with pytest.raises(RuntimeError):
-            await cup.advance()
+        await cup.advance()  # the failure is logged and completion is held
         assert cup.winners_set == [] and cup.placements == []
 
         monkeypatch.setattr(tm, "advance_continuous_sft_state", done)

@@ -3,12 +3,13 @@
 The mock tests cover the Python-side branches (missing-row default, row mapping, idempotent-skip
 return, orphan warning). The real-DB tests cover the SQL semantics that mocks CANNOT prove and that
 are the scariest failure modes of the whole feature: the idempotency guard (no double +1 on
-reprocess), COALESCE winner-preserve on an empty week, and first-advance == 1. They are gated on
+reprocess), COALESCE winner-preserve on an empty week, and the first-advance value (2 with no chunk record). They are gated on
 RUN_CONTINUOUS_SFT_DB_TESTS=1 (+ a wipeable DATABASE_URL) so a normal `pytest` never touches a DB.
 """
 
 import logging
 import os
+from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -18,7 +19,9 @@ from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
 from validator.db.database import PSQLDB
 from validator.db.sql import continuous_sft as csft
+from validator.tournament.models import ChunkScheme
 from validator.tournament.models import ContinuousSftState
+from validator.tournament.models import ContinuousSftTaskChunk
 
 
 # --------------------------------------------------------------------------------------------------
@@ -56,6 +59,7 @@ class TestStateMockBranches:
         psql, _ = _mock_psql(fetchrow=row)
         state = await csft.get_continuous_sft_state("qwen", psql)
         assert (state.lineage, state.train_index, state.last_winner_repo) == ("qwen", 7, "org/x")
+        assert state.chunk_scheme == ChunkScheme.V2
 
     async def test_advance_idempotent_skip_returns_without_raising(self):
         # RETURNING produced no row (same source_round_id) -> function no-ops, does not raise.
@@ -127,17 +131,17 @@ async def cst_db():
     await db.connect()
     async with await db.connection() as conn:
         await conn.execute(_SCHEMA)
-        await conn.execute("TRUNCATE continuous_sft_state")
+        await conn.execute("TRUNCATE continuous_sft_state, continuous_sft_task_chunks")
     yield db
     async with await db.connection() as conn:
-        await conn.execute("TRUNCATE continuous_sft_state")
+        await conn.execute("TRUNCATE continuous_sft_state, continuous_sft_task_chunks")
 
 
 class TestStateRealDb:
-    async def test_first_advance_from_empty_sets_index_one(self, cst_db):
+    async def test_first_advance_from_empty_without_record_sets_index_two(self, cst_db):
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 1
+        assert state.train_index == 2
         assert state.last_winner_repo == "org/a"
 
     async def test_double_advance_same_round_is_idempotent(self, cst_db):
@@ -145,14 +149,14 @@ class TestStateRealDb:
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", "org/b", "r1", cst_db)  # same round id
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 1
+        assert state.train_index == 2
         assert state.last_winner_repo == "org/a"
 
     async def test_new_round_increments(self, cst_db):
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", "org/b", "r2", cst_db)
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 3  # no task record: first insert 1, then +2
+        assert state.train_index == 4  # no task record: first insert 2, then +2
         assert state.last_winner_repo == "org/b"
 
     async def test_none_winner_preserves_prior_via_coalesce(self, cst_db):
@@ -160,7 +164,7 @@ class TestStateRealDb:
         await csft.advance_continuous_sft_state("qwen", "org/a", "r1", cst_db)
         await csft.advance_continuous_sft_state("qwen", None, "r2", cst_db)
         state = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert state.train_index == 3  # no task record: first insert 1, then +2
+        assert state.train_index == 4  # no task record: first insert 2, then +2
         assert state.last_winner_repo == "org/a"
 
     async def test_lineages_advance_independently(self, cst_db):
@@ -169,5 +173,31 @@ class TestStateRealDb:
         await csft.advance_continuous_sft_state("qwen", "org/w", "r1", cst_db)
         alt = await csft.get_continuous_sft_state("alt", cst_db)
         qwen = await csft.get_continuous_sft_state("qwen", cst_db)
-        assert (alt.train_index, alt.last_winner_repo) == (1, "org/q")
-        assert (qwen.train_index, qwen.last_winner_repo) == (1, "org/w")
+        assert (alt.train_index, alt.last_winner_repo) == (2, "org/q")
+        assert (qwen.train_index, qwen.last_winner_repo) == (2, "org/w")
+
+    async def _advance_with_record(self, db, index, scheme, round_id="r-rec", *, seed_cursor=None):
+        task_id = uuid4()
+        await csft.record_continuous_sft_task_chunk(
+            ContinuousSftTaskChunk(task_id=task_id, lineage="qwen", train_index=index, chunk_scheme=scheme), db
+        )
+        if seed_cursor is not None:
+            async with await db.connection() as conn:
+                await conn.execute(
+                    "INSERT INTO continuous_sft_state (lineage, train_index, last_source_round_id) VALUES ('qwen', $1, 'seed')",
+                    seed_cursor,
+                )
+        await csft.advance_continuous_sft_state("qwen", "org/a", round_id, db, task_id=task_id)
+        return (await csft.get_continuous_sft_state("qwen", db)).train_index
+
+    async def test_new_scheme_record_moves_cursor_past_its_chunk(self, cst_db):
+        assert await self._advance_with_record(cst_db, 10, ChunkScheme.V2, seed_cursor=10) == 11
+
+    async def test_previous_scheme_record_consumes_two_chunks(self, cst_db):
+        assert await self._advance_with_record(cst_db, 5, ChunkScheme.V1, seed_cursor=10) == 12
+
+    async def test_stale_new_scheme_record_never_moves_cursor_back(self, cst_db):
+        assert await self._advance_with_record(cst_db, 3, ChunkScheme.V2, seed_cursor=20) == 20
+
+    async def test_first_insert_with_new_scheme_record(self, cst_db):
+        assert await self._advance_with_record(cst_db, 0, ChunkScheme.V2) == 1

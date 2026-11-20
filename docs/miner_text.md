@@ -129,7 +129,7 @@ The GPU count follows the task's effective size: the model's parameter count, ti
 | above 4B, up to 12B | 2 |
 | above 12B, up to 40B | 4 |
 | above 40B | 8 |
-| the continuous task, any size | 4 |
+| the continuous task, any size | 2 |
 
 Source: [`get_tournament_gpu_requirement`](../validator/tournament/gpu_requirements.py).
 

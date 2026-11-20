@@ -312,8 +312,8 @@ async def _carry_forward_continuous_sft(
 
     With only_hotkey the carried model is that hotkey's own evaluated repo instead of the lowest-loss one (None when it
     has none): used when the challenger is disqualified, so only the boss's model can be carried while the cursor still
-    moves past the chunk both trained. A failed advance propagates, so the caller does not persist the tournament's
-    completion and the next cycle reprocesses the round and retries.
+    moves past the chunk both trained. A failed advance propagates to advance_tournament, which holds completion
+    (the winner stays unset), so the next cycle reprocesses the round and retries.
     """
     # Exactly one task per lineage, which is why this can carry forward the first it finds. A drawn
     # continuous-SFT task is stood in for by a plain instruct task rather than a second chunk of the
@@ -983,16 +983,25 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
             task_ids = [task.task_id for task in round_tasks]
             logger.info(f"Tournament task IDs: {task_ids}")
 
-            # BEFORE setting winner_hotkey (the re-entry guard): the round is reprocessed on the next cycle for as long as
-            # the winner is unset, so a failed advance (it raises) is retried; the advance is idempotent on the round id.
+            # BEFORE setting winner_hotkey (the re-entry guard): a failed advance raises out of the carry-forward and is
+            # caught here, which holds completion; the winner stays unset, so the next cycle reprocesses the round and
+            # retries (the advance is idempotent on the round id).
             # A disqualified challenger's model is never carried: only the boss's own evaluated repo can be.
             if tournament.tournament_type == TournamentType.TEXT:
-                await _carry_forward_continuous_sft(
-                    round_tasks,
-                    completed_round.round_id,
-                    psql_db,
-                    only_hotkey=EMISSION_BURN_HOTKEY if integrity.disqualified else None,
-                )
+                try:
+                    await _carry_forward_continuous_sft(
+                        round_tasks,
+                        completed_round.round_id,
+                        psql_db,
+                        only_hotkey=EMISSION_BURN_HOTKEY if integrity.disqualified else None,
+                    )
+                except Exception:
+                    logger.error(
+                        f"Continuous-SFT carry-forward failed for tournament {tournament.tournament_id}; "
+                        "holding completion so the next cycle retries",
+                        exc_info=True,
+                    )
+                    return
 
             third_place: str | None = None
             if tournament.tournament_type == TournamentType.QUANT:

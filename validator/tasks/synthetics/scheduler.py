@@ -37,10 +37,10 @@ from core.models.task_models import TaskType
 from validator.app.config import Config
 from validator.db.database import PSQLDB
 from validator.db.sql import grpo as grpo_sql
-from validator.db.sql import tasks as task_sql
 from validator.db.sql.continuous_sft import get_continuous_sft_state
 from validator.db.sql.continuous_sft import record_continuous_sft_task_chunk
 from validator.db.sql.tasks import add_task
+from validator.db.sql.tasks import delete_task
 from validator.db.sql.tasks import get_dataset_near_duplicate_rates
 from validator.db.sql.tasks import get_dataset_test_losses
 from validator.infrastructure.content_service import call_content_service
@@ -1414,7 +1414,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
         raise RuntimeError(
             f"continuous_sft_state[{lineage}] is in the {state.chunk_scheme.value} chunk scheme (train_index="
             f"{state.train_index}), but the content service now serves {t_cst.CONTINUOUS_SFT_CHUNK_SCHEME.value} "
-            f"chunks; apply migration 20261113120000_continuous_sft_chunk_scheme.sql before creating this task"
+            f"chunks; apply migration 20261113160000_continuous_sft_chunk_scheme.sql before creating this task"
         )
     base_model = state.last_winner_repo or seed_model
 
@@ -1475,7 +1475,7 @@ async def create_continuous_sft_task(config: Config, lineage: str, seed_model: s
     except Exception:
         # No continuous-SFT task may exist without its chunk record: carry-forward would misread its cursor.
         logger.error(f"CONTINUOUS_SFT_TASK: recording chunk for task {task.task_id} failed; deleting the task")
-        await task_sql.delete_task(task.task_id, config.psql_db)
+        await delete_task(task.task_id, config.psql_db)
         raise
     logger.info(f"CONTINUOUS_SFT_TASK: saved task {task.task_id}")
 

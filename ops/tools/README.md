@@ -11,6 +11,7 @@ Python and shell tools for operators, grouped by domain. Run Python tools from t
 | `db/` | SQL snippets for inspecting task state. |
 | `evaluation/` | Manual evaluation and reward function tools. |
 | `god_monitor/` | Read-only tournament monitoring CLI with an interactive menu. |
+| `incoming_changes/` | Validates `docs/incoming_changes.yaml` and marks entries shipped. |
 | `observability/` | Log shipping smoke test. |
 | `quant/` | Freeform publication tools: `reconcile_freeform_publications.py` and `verify_freeform_release.py`. |
 | `scoring/` | Scoring and weight calculation inspection. |

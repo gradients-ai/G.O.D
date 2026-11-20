@@ -8,3 +8,4 @@ Index of the guides in this folder. Module internals are documented in the `READ
 | [miner_text.md](miner_text.md), [miner_image.md](miner_image.md), [miner_compression.md](miner_compression.md) | Miners | One tournament each: rounds, boss round, what your code receives, output contract, scoring, the crown. |
 | [developer.md](developer.md) | Operators and developers | Repository layout, setup, running a validator, trainer or miner, evaluations, tests. |
 | [organic-package.md](organic-package.md) | Developers | What each install extra of the organic package covers. |
+| [incoming_changes.yaml](incoming_changes.yaml) | Miners | Upcoming miner-facing changes and the UTC Monday each takes effect. Maintained data file: see [developer.md](developer.md#incoming-changes-for-miners). |

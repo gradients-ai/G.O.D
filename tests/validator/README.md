@@ -8,7 +8,7 @@ Tests for the validator package, one directory per tested validator subpackage.
 | --- | --- |
 | `db/` | SQL helpers: continuous task state, placements, compression tasks, the per-SKU reference cache, calibration rows. |
 | `evaluation/` | Evaluators, the compression scorer, remote backends and deployment reconciliation. |
-| `infrastructure/` | The S3-compatible storage client. |
+| `infrastructure/` | The S3-compatible storage client and the challenger code review's handling of unresolved flags. |
 | `lifecycle/` | Evaluation error handling, compression reference checks at finalisation and deployment cleanup. |
 | `nodes/` | Node refresh. |
 | `scoring/` | Task and tournament scoring. |

@@ -1063,8 +1063,8 @@ class ChunkScheme(str, Enum):
 class ContinuousSftState(BaseModel):
     """Per-lineage state for the continuous-SFT boss task (one row per lineage slug).
 
-    train_index: monotonic cursor passed to the stateless content service (advanced by one chunk per task),
-        counted in chunk_scheme units. A lineage with no row starts at index 0 in the current scheme.
+    train_index: monotonic cursor passed to the stateless content service; it is moved past the chunk(s) a task
+        trained when it completes, counted in chunk_scheme units. A lineage with no row starts at index 0 in the current scheme.
     last_winner_repo: previous lowest-eval-loss winner, carried forward as the next base; None first run.
     """
 

@@ -12,6 +12,11 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_container_resources.py` | Per-GPU CPU and memory shares on fake hosts: fair disjoint core sets, NUMA, fallbacks, thread env. |
 | `test_dataset_and_anonymizer_flow.py` | Requested-dataset whitelist validation, field propagation and model anonymisation. |
 | `test_downloader_image_cache.py` | Image-model cache classification, validation and atomic replacement, without network. |
+| `test_gpu_blacklist.py` | Withdrawn GPUs stay out of availability and job starts for the life of the process. |
+| `test_gpu_dcgm.py` | Parsing of `dcgmi health` output. |
+| `test_gpu_health.py` | NVML fallback checks: ECC, NVLink and Xid. |
+| `test_gpu_monitor_startup.py` | The GPU monitor starts with the trainer app. |
+| `test_gpu_throttle.py` | Clock-throttle rules and the fault marker in training logs. |
 | `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
 | `test_job_state_started_at.py` | `started_at` is refreshed when a training container starts. |
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |

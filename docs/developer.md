@@ -140,6 +140,7 @@ Added by hand:
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Same value as on the validator. |
 | `TRAINER_PRUNE_BUILD_CACHE` | `trainer/constants.py` | Default `true`. Set `false` to keep the host Docker build cache. |
 | `LOKI_ENDPOINT`, `LOKI_USERNAME`, `LOKI_PASSWORD` | `task deploy-trainer-logs` | Log shipping. See [Observability](#observability). |
+| `DISCORD_WEBHOOK` | `trainer/monitoring/monitor.py` | Optional. Where the GPU monitor posts alerts. See [GPU monitor](#gpu-monitor). |
 
 ```bash
 echo "MODEL_HASH_SALT=$(openssl rand -hex 32)" >> .trainer.env
@@ -230,7 +231,7 @@ Migrations and the order to deploy them in: [validator/db/migrations/README.md](
 
 ## Running a trainer
 
-A trainer executes miner code. It needs Docker, NVIDIA drivers, the NVIDIA Container Toolkit and this package. Miner images are limited to a maximum CUDA version: see [miner.md](miner.md#training-repository).
+A trainer executes miner code. It needs Docker, NVIDIA drivers, the NVIDIA Container Toolkit and this package. `task bootstrap` and `task trainer` install DCGM (`datacenter-gpu-manager` and the `nvidia-dcgm` service) when it is not already running. Miner images are limited to a maximum CUDA version: see [miner.md](miner.md#training-repository).
 
 1. Clone and install.
 
@@ -278,6 +279,14 @@ The validator then reads the trainer's GPUs from port `8001` (or from `<ip>:<por
 The trainer builds each miner's Dockerfile, runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face.
 
 Endpoint paths are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`.
+
+### GPU monitor
+
+The GPU throttle monitor starts with the trainer. `task trainer` and `ops/trainer_ops/trainer.service` both run `uvicorn trainer.asgi:app`, and that process starts the monitor. Set `DISCORD_WEBHOOK` in `.trainer.env` to post alerts; omit it to log only.
+
+It ticks every 5 s (`GPU_MONITOR_POLL_SECONDS`). A clock alert needs a thermal, power-brake, or hardware-slowdown reason and an SM clock below 90% of max for two ticks (10 s), or 10 s of NVML thermal/reliability/board-limit throttle time inside 5 min. Temperature is included in the alert text and is not its own cutoff. Normal power-capping under load is ignored. `gpu_throttle_observation` logs every non-clean poll so the 90% line can be checked against a healthy loaded box. `task trainer` and the trainer systemd unit install and start DCGM when `dcgmi` or `nvidia-dcgm` is missing. Once the hostengine is up, that same tick uses `dcgmi health` for ECC, NVLink, PCIe, thermal, and power failures. Warnings are logged. A PCIe box with no DCGM, or no `nvidia-fabricmanager` unit, falls back to the NVML checks: a new uncorrected ECC error, pending page retirement, 10 new corrected ECC errors in 5 min (`GPU_MONITOR_ECC_SBE_THRESHOLD`), an NVLink error increase, or a hardware Xid. Application Xids are logged and left alone. Set `GPU_MONITOR_DCGM=0` to force the NVML path. If `nvidia-fabricmanager` is installed and not active, every GPU on the box is withdrawn; a machine without that unit is left alone.
+
+A fault withdraws that GPU until the trainer process restarts and fails any training already on it. The trainer log line starts with `[GPU_THROTTLE]`. The orchestrator puts that training back to pending with the normal status update and does not add an `n_training_attempts`. Other GPUs on the box keep taking work, and the round is not held. A recovery message follows 5 min after a clock throttle clears; ECC, Xid, and fabric-manager withdrawals stay until restart.
 
 ## Running a miner locally
 
@@ -341,7 +350,7 @@ Where miners read their training logs: [miner.md](miner.md#troubleshooting).
 
 ## Evaluations and manual tools
 
-`ops/validator_ops/run_evaluation.py` re-runs the evaluation of a task on your own GPU. It fetches the task from `https://api.gradients.io/auditing/tasks/<task_id>` and runs the same evaluator image as the validator.
+`ops/validator_ops/run_evaluation.py` re-runs the evaluation of a task on your own GPU. It fetches the task from `https://api.sn56.io/auditing/tasks/<task_id>` (`SUBNET_API_URL`) and runs the same evaluator image as the validator.
 
 Supported task types: instruct, chat, DPO, GRPO and image. Compression tasks are not supported: the helper exits with an error.
 
@@ -416,6 +425,32 @@ uv run --extra dev pytest -q -o addopts='' tests/validator/scoring/test_tourname
 ```
 
 `pyproject.toml` runs tests in random order. `-o addopts=''` turns that off.
+
+## Incoming changes for miners
+
+`docs/incoming_changes.yaml` lists changes that affect miners and the UTC Monday each takes effect. The website reads it from `https://raw.githubusercontent.com/gradients-ai/G.O.D/main/docs/incoming_changes.yaml`, so write entries for a first-time miner reader: describe what will be, and never invent numbers that are not decided.
+
+Add an entry in a PR:
+
+```yaml
+  - id: my-change               # kebab-case, unique
+    title: Short name
+    summary: One or two sentences for miners.
+    why: Why the change is being made.
+    areas: [text]               # any of: text, image, compression
+    status: planned
+    date: 2026-12-07            # UTC Monday it takes effect
+    miner_action: Nothing.      # or what miners must do
+    prs: []
+    docs: []                    # repo-relative paths, e.g. [docs/miner.md]
+    shipped_on: null
+```
+
+Statuses: `planned`, `in_progress`, `testing`, `shipped`, `postponed`. A `shipped` entry must have `shipped_on`; other statuses keep it `null`. Move `date` and set `postponed` when a change slips.
+
+Validate locally with `python -m ops.tools.incoming_changes.validate`. CI runs the same check on PRs that touch the file.
+
+To ship an entry, add the label `incoming:<id>` to the PR that delivers it (create the label once with `gh label create "incoming:<id>"`). When the PR merges, the `Incoming Changes Ship` workflow sets `status: shipped`, `shipped_on` to the merge date (UTC) and adds the PR number to `prs`. Because `main` requires reviewed PRs, the workflow pushes the update to `incoming-changes/ship-pr-<N>` and opens a PR for it; approve and merge that PR. If the repo does not allow Actions to open PRs and no `INCOMING_CHANGES_TOKEN` secret is set, the workflow comments a compare link on the merged PR instead.
 
 ## Development notes
 

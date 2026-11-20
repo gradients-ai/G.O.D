@@ -6,7 +6,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 
 | Path | Purpose |
 | --- | --- |
-| `asgi.py` | FastAPI app factory, startup cleanup and service entrypoint. Loads `.trainer.env` before any project import. |
+| `asgi.py` | FastAPI app factory, startup cleanup, GPU monitor start and service entrypoint. Loads `.trainer.env` before any project import. |
 | `cleanup.py` | Background loop that fails overdue jobs, runs the cache cleaner and removes the trainer's stale containers. |
 | `constants.py` | Docker images, volumes, resource defaults, container paths and compression-task limits. |
 | `containers/` | Downloader, uploader, cache cleanup and requested-dataset cache. |
@@ -18,6 +18,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `job_state.py` | Persisted job and model-prep state (`task_history.json`). |
 | `model_artifacts.py` | Anonymous model directory names and identity scrubbing. |
 | `model_prep/` | Model preparation and baseline statistics. |
+| `monitoring/` | GPU monitor started with the trainer. `monitor.py` posts Discord alerts, fails trainings on the bad GPU and withdraws that GPU. `blacklist.py` keeps withdrawn GPUs out for the life of the process. `fault.py` stops their containers. `health.py` is the NVML ECC, NVLink and Xid fallback. `dcgm.py` parses `dcgmi health` after `ops/trainer_ops/install_dcgm.sh` installs DCGM. `throttle.py` holds the clock-throttle rules. |
 | `output_reclaim.py` | Gives a finished job's output directory to the trainer user before it is checked. |
 | `quant_calibration.py` | Fetches a task's calibration set and writes it into the cache volume for the miner. |
 | `quant_decode/` | Sandbox that runs a freeform decoder, the decoded-output check and the re-run CLI. |

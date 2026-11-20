@@ -10,10 +10,10 @@ Public URLs
 - Main product site: https://gradients.io
 - API base URL: https://api.gradients.io
 - Human-friendly API docs: https://api.gradients.io/docs
-- FastAPI swagger docs: https://api.gradients.io/swagger
+- Subnet 56 data API (auditing, tournaments, emissions): https://api.sn56.io, docs at https://api.sn56.io/docs
 - Tournament results page: https://gradients.io/app/research/tournament/{TOURNAMENT_ID}
-- Tournament fees: GET https://api.gradients.io/tournament/fees
-- Tournament balance lookup: GET https://api.gradients.io/tournament/balance/{coldkey}
+- Tournament fees: GET https://api.sn56.io/tournament/fees
+- Tournament balance lookup: GET https://api.sn56.io/tournament/balance/{coldkey}
 
 Important framing
 - Use https://api.gradients.io for creating and monitoring jobs.
