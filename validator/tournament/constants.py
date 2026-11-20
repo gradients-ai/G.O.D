@@ -25,12 +25,16 @@ RUNNER_UP_EMISSION_DAYS = 7
 
 # Tournament scheduling settings: Monday UTC, text 08:00, compression 10:00, image 12:00.
 # Quant starts after text because it compresses the text boss's models.
+# A tournament opens only at that designated time. A late scheduler may still open it for
+# TOURNAMENT_START_DELAY_TOLERANCE_HOURS afterwards; after that it waits until the next week.
+# The first tournament of a type uses the same window.
 TOURNAMENT_SCHEDULE_TEXT_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_TEXT_HOUR = 8
 TOURNAMENT_SCHEDULE_IMAGE_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_IMAGE_HOUR = 12
 TOURNAMENT_SCHEDULE_QUANT_DAY_OF_WEEK = 0
 TOURNAMENT_SCHEDULE_QUANT_HOUR = 10
+TOURNAMENT_START_DELAY_TOLERANCE_HOURS = 1
 
 # Every tournament (any type) is expected to be completed by this day/hour, independent of
 # training time, GPU availability, and round reverts during the week. Completion is a manual

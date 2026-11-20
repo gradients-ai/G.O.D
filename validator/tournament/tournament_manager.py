@@ -2510,8 +2510,10 @@ async def process_tournament_scheduling(config: Config):
     Checks text, image and quant tournaments independently.
     Environment tournaments are retired and no longer scheduled.
 
-    Tournaments only start during their scheduled day/hour window. If a scheduled start is missed,
-    the system waits until the next week's scheduled time rather than starting late.
+    Tournaments open only at their designated UTC day and hour. A start up to
+    TOURNAMENT_START_DELAY_TOLERANCE_HOURS late is still accepted; after that the
+    system waits until the next week's designated time. The first tournament of a type
+    uses the same window.
     """
     logger.info("Processing tournament scheduling...")
 
@@ -2544,27 +2546,26 @@ async def check_and_start_tournament(tournament_type: TournamentType, psql_db: P
             logger.info(f"Pending {tournament_type.value} tournament exists: {pending_of_type[0].tournament_id}")
             return
 
-        # Get the latest tournament and check if enough time has passed
+        # Get the latest tournament and open a new one only inside the designated window.
         latest_tournament, created_at = await get_latest_tournament_with_created_at(psql_db, tournament_type)
 
+        reference = None
         if latest_tournament and latest_tournament.status not in {TournamentStatus.ACTIVE, TournamentStatus.PENDING}:
             completed_at = await get_tournament_completion_time(latest_tournament.tournament_id, psql_db)
-            if await should_start_new_tournament_after_interval(completed_at or created_at, tournament_type):
-                logger.info(
-                    f"Starting new {tournament_type.value} tournament at scheduled time "
-                    f"(previous tournament {latest_tournament.tournament_id} completed)"
-                )
+            reference = completed_at or created_at
+        elif latest_tournament:
+            return
 
-                # Create new tournament of the same type
-                new_tournament_id = await create_basic_tournament(tournament_type, psql_db, config)
-                logger.info(f"Created new {tournament_type.value} tournament: {new_tournament_id}")
+        if await should_start_new_tournament_after_interval(reference, tournament_type):
+            if latest_tournament:
+                previous = f" (previous tournament {latest_tournament.tournament_id})"
             else:
-                logger.info(f"Waiting for next scheduled start time for {tournament_type.value} tournament")
-        elif not latest_tournament:
-            # No tournaments of this type exist, create the first one
-            logger.info(f"No {tournament_type.value} tournaments found, creating first one")
+                previous = " (first of this type)"
+            logger.info(f"Starting new {tournament_type.value} tournament at designated time{previous}")
             new_tournament_id = await create_basic_tournament(tournament_type, psql_db, config)
-            logger.info(f"Created first {tournament_type.value} tournament: {new_tournament_id}")
+            logger.info(f"Created new {tournament_type.value} tournament: {new_tournament_id}")
+        else:
+            logger.info(f"Waiting for next designated start time for {tournament_type.value} tournament")
 
 
 async def get_tournament_completion_time(tournament_id: str, psql_db: PSQLDB) -> datetime | None:
@@ -2579,53 +2580,74 @@ async def get_tournament_completion_time(tournament_id: str, psql_db: PSQLDB) ->
         return result
 
 
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _upcoming_designated_start(
+    now: datetime, tournament_type: TournamentType, not_before: datetime | None = None
+) -> datetime:
+    """The next designated start that can still be used, including one whose delay window is open."""
+    now = _as_utc(now)
+    target_weekday, target_hour = _get_tournament_schedule(tournament_type)
+    days_until = (target_weekday - now.weekday()) % 7
+    candidate = (now + timedelta(days=days_until)).replace(hour=target_hour, minute=0, second=0, microsecond=0)
+    tolerance = timedelta(hours=t_cst.TOURNAMENT_START_DELAY_TOLERANCE_HOURS)
+    if now >= candidate + tolerance:
+        candidate += timedelta(days=7)
+    if not_before is not None and candidate <= _as_utc(not_before):
+        candidate += timedelta(days=7)
+    return candidate
+
+
+def _in_designated_start_window(now: datetime, tournament_type: TournamentType, not_before: datetime | None) -> bool:
+    """True from the designated start until one hour later, and only for a slot after not_before."""
+    now = _as_utc(now)
+    start = _upcoming_designated_start(now, tournament_type, not_before)
+    tolerance = timedelta(hours=t_cst.TOURNAMENT_START_DELAY_TOLERANCE_HOURS)
+    return start <= now < start + tolerance
+
+
 async def should_start_new_tournament_after_interval(last_created_at, tournament_type: TournamentType) -> bool:
     """
-    Check if we're currently in the scheduled tournament start window for the given tournament type.
-    Tournaments only start during their scheduled day and hour. If the window is missed,
-    we wait until the next week's scheduled time.
+    True only inside the designated start window for this tournament type.
+
+    The window opens at the scheduled UTC day and hour and stays open for
+    TOURNAMENT_START_DELAY_TOLERANCE_HOURS. A missed window waits until next week.
+    The first tournament of a type uses the same window. A tournament already opened
+    in the current window does not open another one until the following week.
     """
-    if not last_created_at:
-        return True
-
     now = datetime.now(timezone.utc)
+    not_before = _as_utc(last_created_at) if last_created_at else None
+    upcoming = _upcoming_designated_start(now, tournament_type, not_before)
+    tolerance = timedelta(hours=t_cst.TOURNAMENT_START_DELAY_TOLERANCE_HOURS)
 
-    if last_created_at.tzinfo is None:
-        last_created_at = last_created_at.replace(tzinfo=timezone.utc)
-
-    scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
-
-    next_start_time = _calculate_next_tournament_start_time(last_created_at, tournament_type)
-
-    # Check if we're currently in the scheduled window (same day and hour as the scheduled time)
-    # We allow starting anytime during the scheduled hour
-    is_scheduled_day = now.weekday() == scheduled_day
-    is_scheduled_hour = now.hour == scheduled_hour
-    is_after_next_start = now >= next_start_time
-
-    if is_scheduled_day and is_scheduled_hour and is_after_next_start:
-        days_since_last = (now - last_created_at).days
+    if _in_designated_start_window(now, tournament_type, not_before):
         logger.info(
-            f"{tournament_type.value} tournament - Days since last: {days_since_last}, "
-            f"currently in scheduled window ({next_start_time.strftime('%Y-%m-%d %H:%M UTC')}) - ready to start"
+            f"{tournament_type.value} tournament - in designated window "
+            f"({upcoming.strftime('%Y-%m-%d %H:%M UTC')} "
+            f"for {t_cst.TOURNAMENT_START_DELAY_TOLERANCE_HOURS}h) - ready to start"
         )
         return True
+
+    hours_until = (upcoming - now).total_seconds() / 3600
+    scheduled_day, scheduled_hour = _get_tournament_schedule(tournament_type)
+    on_scheduled_day = now.weekday() == scheduled_day
+    todays_start = now.replace(hour=scheduled_hour, minute=0, second=0, microsecond=0)
+    missed_today = on_scheduled_day and now >= todays_start + tolerance and (not_before is None or todays_start > not_before)
+    if missed_today:
+        logger.info(
+            f"{tournament_type.value} tournament - missed designated window, "
+            f"next opportunity: {upcoming.strftime('%Y-%m-%d %H:%M UTC')} (in {hours_until:.2f} hours)"
+        )
     else:
-        time_until_start = (next_start_time - now).total_seconds() / 3600
-        if is_after_next_start and not (is_scheduled_day and is_scheduled_hour):
-            next_next_start = _calculate_next_tournament_start_time(now, tournament_type)
-            time_until_start = (next_next_start - now).total_seconds() / 3600
-            logger.info(
-                f"{tournament_type.value} tournament - Missed scheduled window, "
-                f"next opportunity: {next_next_start.strftime('%Y-%m-%d %H:%M UTC')} "
-                f"(in {time_until_start:.2f} hours)"
-            )
-        else:
-            logger.info(
-                f"{tournament_type.value} tournament - Next scheduled start: {next_start_time.strftime('%Y-%m-%d %H:%M UTC')} "
-                f"(in {time_until_start:.2f} hours) - waiting for scheduled time"
-            )
-        return False
+        logger.info(
+            f"{tournament_type.value} tournament - next designated start: {upcoming.strftime('%Y-%m-%d %H:%M UTC')} "
+            f"(in {hours_until:.2f} hours) - waiting for scheduled time"
+        )
+    return False
 
 
 def _get_tournament_schedule(tournament_type: TournamentType) -> tuple[int, int]:
