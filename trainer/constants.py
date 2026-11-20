@@ -118,9 +118,24 @@ QUANT_CALIBRATION_RETRY_SLEEP_SECONDS = 5
 QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS = 30  # per attempt, on top of the fetch timeout: parse, fingerprint, write
 QUANT_CALIBRATION_MAX_BYTES = 256 * 1024 * 1024  # the file is ~1,000 tokenised rows; anything larger is not ours
 # Decoded bf16 shards go to S3-compatible storage as multipart uploads; memory in flight is part size x parallel =
-# 512 MiB.
+# 128 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
+# connection, which fails the whole file.
 QUANT_DECODE_UPLOAD_PART_BYTES = 32 * 1024 * 1024
-QUANT_DECODE_UPLOAD_PARALLEL = 16
+QUANT_DECODE_UPLOAD_PARALLEL = 4
+# Each request (one part) is retried by the HTTP client on connection errors and 429/5xx, with backoff and jitter.
+QUANT_DECODE_UPLOAD_HTTP_RETRIES = 5
+QUANT_DECODE_UPLOAD_HTTP_BACKOFF_FACTOR = 1.0  # urllib3: sleeps 0, 2, 4, 8, 16 s between retries
+QUANT_DECODE_UPLOAD_HTTP_BACKOFF_MAX_SECONDS = 30
+QUANT_DECODE_UPLOAD_HTTP_BACKOFF_JITTER_SECONDS = 1.0
+QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = 30
+# Waiting for a response once the body is sent: seconds for a part; the complete call is the slow one. Kept short so
+# a stalled request leaves room in the file deadline for a whole-file retry.
+QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = 90
+# When a file still fails on a transient error, the whole file is uploaded again (same key, so it overwrites) after
+# an exponential backoff with jitter, up to this many attempts and always within the file's deadline below.
+QUANT_DECODE_UPLOAD_ATTEMPTS = 4
+QUANT_DECODE_UPLOAD_RETRY_BASE_SECONDS = 10
+QUANT_DECODE_UPLOAD_RETRY_MAX_SECONDS = 60
 QUANT_DECODE_UPLOAD_MIN_TIMEOUT_SECONDS = 300  # per-file deadline floor
 QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = 2 * 1000 * 1000  # per-file deadline: floor + size at this rate
 QUANT_ARTIFACT_FORBIDDEN_SUFFIXES = (
