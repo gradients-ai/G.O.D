@@ -58,6 +58,7 @@ from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from ops.tools.quant import verify_freeform_release as verifier
 from trainer.quant_decode import job
+from trainer.quant_decode import upload as decode_upload
 from trainer.quant_decode.sandbox import sandbox_user
 from trainer.quant_upload_check import check_quant_output
 from trainer.quant_upload_check import quant_output_max_bytes
@@ -265,6 +266,10 @@ class FakeMinio:
         self.objects[object_name] = Path(file_path).read_bytes()
         return True
 
+    def put_file(self, bucket, object_name, path):
+        """The trainer decode's upload (trainer/quant_decode/upload.put_file)."""
+        self.objects[object_name] = Path(path).read_bytes()
+
     async def download_file(self, bucket, object_name, file_path):
         Path(file_path).write_bytes(self.objects[object_name])
 
@@ -462,6 +467,7 @@ class World:
         mp.setattr(service_cst, "BUCKET_NAME", BUCKET)
         for name in ("upload_file", "download_file", "get_presigned_url"):
             mp.setattr(async_minio_client, name, getattr(self.minio, name))
+        mp.setattr(decode_upload, "put_file", self.minio.put_file)
         mp.setattr(job, "snapshot_download", hub.snapshot_download)
         mp.setattr(quant_artifacts, "snapshot_download", hub.snapshot_download)
         mp.setattr(quant_artifacts, "_hub_model_info", lambda repo, token, timeout: hub.model_info(repo))

@@ -93,7 +93,7 @@ The trainer owns the work directories, and both phases run as the trainer's uid:
 <details>
 <summary>Uploads</summary>
 
-Decoded shards go to S3-compatible storage as multipart uploads: 32 MiB parts, 16 in flight. Each file has a deadline of 300 s plus its size at 2 MB/s. A stalled upload is an `infra_error`. The upload uses the S3-compatible storage settings in `.trainer.env` (see [`docs/developer.md`](../../docs/developer.md#running-a-trainer)).
+Decoded shards go to S3-compatible storage as multipart uploads: 32 MiB parts, 4 in flight. The HTTP client retries each part on connection errors and 429/5xx; when a part still fails on a transient error (dropped connection, TLS EOF, throttling, 5xx) the whole file is uploaded again to the same key, with exponential backoff and jitter, up to 4 attempts. Auth, permission and local-file errors fail at once. Each file has a deadline of 300 s plus its size at 2 MB/s, covering every attempt. A failed or stalled upload is an `infra_error`. The upload uses the S3-compatible storage settings in `.trainer.env` (see [`docs/developer.md`](../../docs/developer.md#running-a-trainer)).
 
 </details>
 

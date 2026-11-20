@@ -48,8 +48,9 @@ from trainer.quant_decode.sandbox import build_phase_warning
 from trainer.quant_decode.sandbox import run_phase
 from trainer.quant_decode.sandbox import run_phase_spec
 from trainer.quant_decode.sandbox import sanitize_failure
+from trainer.quant_decode.upload import UploadFailed
+from trainer.quant_decode.upload import upload_with_retry
 from trainer.telemetry import logger
-from validator.infrastructure.minio_client import async_minio_client
 
 
 DECODER_XZ_NAME = "decoder.tar.xz"
@@ -382,29 +383,22 @@ def upload_timeout_seconds(size_bytes: int) -> float:
 
 
 async def _upload(bucket: str, object_name: str, path: Path, report: ProgressReporter = _no_report) -> None:
-    """Multipart upload with large parts in parallel. A stalled upload is ours, so it ends as an infra_error.
+    """Multipart upload with large parts in parallel, retried as a whole file on transient storage errors (see
+    upload.py). A failed or stalled upload is ours, so it ends as an infra_error.
 
-    On timeout the executor thread is not killed (minio has no cancel); it finishes or fails on its own while the
-    job moves on, and the index is never written, so the validator never sees a partial decode as complete.
+    The deadline covers every attempt and backoff. On timeout the executor thread is not killed (minio has no cancel);
+    it finishes or fails on its own while the job moves on. Shards upload before the index and a shard timeout stops
+    the job, so a partial decode never gets an index; only a timed-out index upload itself can still land late.
     """
     size = path.stat().st_size
     timeout = upload_timeout_seconds(size)
     started = time.monotonic()
     try:
-        uploaded = await asyncio.wait_for(
-            async_minio_client.upload_file(
-                bucket,
-                object_name,
-                str(path),
-                part_size=cst.QUANT_DECODE_UPLOAD_PART_BYTES,
-                num_parallel_uploads=cst.QUANT_DECODE_UPLOAD_PARALLEL,
-            ),
-            timeout=timeout,
-        )
+        await asyncio.wait_for(upload_with_retry(bucket, object_name, path, report), timeout=timeout)
     except asyncio.TimeoutError:
         raise _InfraFault(f"upload of {object_name} timed out after {timeout:.0f}s") from None
-    if not uploaded:
-        raise _InfraFault(f"upload of {object_name} failed")
+    except UploadFailed as e:
+        raise _InfraFault(str(e)) from None
     elapsed = time.monotonic() - started
     rate = size / BYTES_PER_MB / max(elapsed, 1e-3)
     await report(f"decode: uploaded {path.name} ({size} bytes) in {elapsed:.0f}s ({rate:.1f} MB/s)")

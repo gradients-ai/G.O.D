@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from docker.errors import ImageNotFound
+from minio.error import S3Error
 from pydantic import ValidationError
 
 import trainer.constants as cst
@@ -25,6 +26,7 @@ from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
 from trainer.quant_decode import job
 from trainer.quant_decode import sandbox
+from trainer.quant_decode import upload
 from trainer.quant_decode.job import _WorkDirs
 from trainer.quant_decode.job import check_artifact_files
 from trainer.quant_decode.job import run_freeform_decode
@@ -194,12 +196,10 @@ def artifact_repo(monkeypatch) -> FakeArtifactRepo:
 def uploads(monkeypatch) -> list[tuple[str, str, bytes]]:
     calls: list[tuple[str, str, bytes]] = []
 
-    async def fake_upload(bucket, object_name, file_path, part_size=0, num_parallel_uploads=3):
-        assert (part_size, num_parallel_uploads) == (cst.QUANT_DECODE_UPLOAD_PART_BYTES, cst.QUANT_DECODE_UPLOAD_PARALLEL)
-        calls.append((bucket, object_name, Path(file_path).read_bytes()))
-        return True
+    def fake_put_file(bucket, object_name, path):
+        calls.append((bucket, object_name, Path(path).read_bytes()))
 
-    monkeypatch.setattr(job.async_minio_client, "upload_file", fake_upload)
+    monkeypatch.setattr(upload, "put_file", fake_put_file)
     return calls
 
 
@@ -502,10 +502,11 @@ async def test_failures_carry_the_known_artifact_and_decoded_files(setup: Setup,
     assert [f.model_dump() for f in scored.artifact_files] == expected_artifact_files(artifact_repo)
     assert scored.decoded_files == []
 
-    async def fail_index(bucket, object_name, file_path, part_size=0, num_parallel_uploads=3):
-        return not object_name.endswith("index.json")
+    def fail_index(bucket, object_name, path):
+        if object_name.endswith("index.json"):
+            raise access_denied()
 
-    monkeypatch.setattr(job.async_minio_client, "upload_file", fail_index)
+    monkeypatch.setattr(upload, "put_file", fail_index)
     infra = await setup.decode(FakeContainers(write_output=write_good_shard))
     assert infra.infra_error is not None
     assert [f.name for f in infra.decoded_files] == [SHARD]
@@ -794,15 +795,19 @@ async def test_stray_index_is_deleted_and_not_uploaded(setup: Setup, uploads):
     assert all("model.safetensors.index.json" not in object_name for _, object_name, _ in uploads)
 
 
-async def test_failed_upload_is_infra_error(setup: Setup, monkeypatch):
-    async def failing_upload(bucket, object_name, file_path, **kwargs):
-        return False
+def access_denied() -> S3Error:
+    return S3Error("AccessDenied", "Access Denied", "/bucket/key", "req", "host", None)
 
-    monkeypatch.setattr(job.async_minio_client, "upload_file", failing_upload)
+
+async def test_failed_upload_is_infra_error(setup: Setup, monkeypatch):
+    def failing_upload(bucket, object_name, path):
+        raise access_denied()
+
+    monkeypatch.setattr(upload, "put_file", failing_upload)
 
     result = await setup.decode(FakeContainers(write_output=write_good_shard))
 
-    assert result.infra_error == f"upload of {PREFIX}/{SHARD} failed"
+    assert result.infra_error == f"upload of {PREFIX}/{SHARD} failed (S3Error AccessDenied)"
     assert result.index_object is None
     setup.assert_work_removed()
 
@@ -820,10 +825,10 @@ def test_result_rejects_no_outcome():
 async def test_stalled_upload_is_infra_error_not_a_hang(setup: Setup, monkeypatch):
     """A stalled multipart upload ends as an infra_error rather than hanging."""
 
-    async def stalled_upload(bucket, object_name, file_path, **kwargs):
+    async def stalled_upload(bucket, object_name, path, report):
         await asyncio.sleep(3600)
 
-    monkeypatch.setattr(job.async_minio_client, "upload_file", stalled_upload)
+    monkeypatch.setattr(job, "upload_with_retry", stalled_upload)
     monkeypatch.setattr(job, "upload_timeout_seconds", lambda size_bytes: 0.05)
 
     result = await asyncio.wait_for(setup.decode(FakeContainers(write_output=write_good_shard)), timeout=10)
@@ -831,6 +836,31 @@ async def test_stalled_upload_is_infra_error_not_a_hang(setup: Setup, monkeypatc
     assert result.infra_error == f"upload of {PREFIX}/{SHARD} timed out after 0s"
     assert result.index_object is None
     setup.assert_work_removed()
+
+
+async def test_transient_upload_error_is_retried_and_logged(setup: Setup, uploads, monkeypatch):
+    """A dropped connection on one attempt re-uploads the whole file; the decode succeeds and the job log says so."""
+    real_put_file = upload.put_file
+    failures = [ConnectionResetError("Connection aborted")]
+
+    def flaky_put_file(bucket, object_name, path):
+        if object_name.endswith(SHARD) and failures:
+            raise failures.pop()
+        real_put_file(bucket, object_name, path)
+
+    monkeypatch.setattr(upload, "put_file", flaky_put_file)
+    monkeypatch.setattr(upload.UploadRetryPolicy, "delay_seconds", lambda self, failed_attempt: 0.0)
+    lines: list[str] = []
+
+    async def record(message: str) -> None:
+        lines.append(message)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard), report=record)
+
+    assert result.ok, result
+    assert result.uploaded_files == [SHARD, "index.json"]
+    assert [object_name for _, object_name, _ in uploads] == [f"{PREFIX}/{SHARD}", f"{PREFIX}/index.json"]
+    assert any(f"upload of {SHARD} attempt 1/" in line and "ConnectionResetError" in line for line in lines)
 
 
 def test_upload_deadline_scales_with_file_size():
