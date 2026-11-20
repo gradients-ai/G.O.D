@@ -68,6 +68,10 @@ class TestSchedulerLoop:
         assert await _one_scheduler_pass(monkeypatch) == [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.QUANT]
 
 
+def _monday(hour: int, minute: int = 0) -> datetime:
+    return datetime(2026, 11, 9, hour, minute, tzinfo=timezone.utc)
+
+
 class TestFirstTournamentTiming:
     def test_quant_schedule_is_monday_ten(self):
         assert tm._get_tournament_schedule(TournamentType.QUANT) == (0, 10)
@@ -75,16 +79,50 @@ class TestFirstTournamentTiming:
             t_cst.TOURNAMENT_SCHEDULE_QUANT_DAY_OF_WEEK,
             t_cst.TOURNAMENT_SCHEDULE_QUANT_HOUR,
         )
+        assert t_cst.TOURNAMENT_START_DELAY_TOLERANCE_HOURS == 1
 
-    @pytest.mark.parametrize("now", [IN_SLOT, OUT_OF_SLOT])
-    @pytest.mark.parametrize("tournament_type", [TournamentType.TEXT, TournamentType.IMAGE, TournamentType.QUANT])
-    async def test_first_tournament_of_any_type_is_immediate(self, scheduling, monkeypatch, tournament_type, now):
+    @pytest.mark.parametrize(
+        ("tournament_type", "now", "starts"),
+        [
+            (TournamentType.TEXT, _monday(8, 0), True),
+            (TournamentType.TEXT, _monday(8, 59), True),
+            (TournamentType.TEXT, _monday(9, 0), False),
+            (TournamentType.QUANT, _monday(10, 0), True),
+            (TournamentType.QUANT, _monday(10, 59), True),
+            (TournamentType.QUANT, _monday(11, 0), False),
+            (TournamentType.IMAGE, _monday(12, 0), True),
+            (TournamentType.IMAGE, _monday(12, 59), True),
+            (TournamentType.IMAGE, _monday(13, 0), False),
+            (TournamentType.QUANT, OUT_OF_SLOT, False),
+            (TournamentType.TEXT, IN_SLOT, False),
+            (TournamentType.IMAGE, IN_SLOT, False),
+        ],
+    )
+    async def test_first_tournament_opens_only_in_its_designated_hour(
+        self, scheduling, monkeypatch, tournament_type, now, starts
+    ):
         _freeze(monkeypatch, now)
 
         await tm.check_and_start_tournament(tournament_type, None, SimpleNamespace())
 
-        scheduling.create.assert_awaited_once()
-        assert scheduling.create.await_args.args[0] == tournament_type
+        if starts:
+            scheduling.create.assert_awaited_once()
+            assert scheduling.create.await_args.args[0] == tournament_type
+        else:
+            scheduling.create.assert_not_awaited()
+
+    async def test_a_tournament_opened_in_this_window_waits_until_next_week(self, scheduling, monkeypatch):
+        previous = TournamentData(
+            tournament_id="tourn_q1", tournament_type=TournamentType.QUANT, status=TournamentStatus.COMPLETED
+        )
+        opened_at = _monday(10, 5)
+        monkeypatch.setattr(tm, "get_latest_tournament_with_created_at", AsyncMock(return_value=(previous, opened_at)))
+        monkeypatch.setattr(tm, "get_tournament_completion_time", AsyncMock(return_value=opened_at))
+
+        _freeze(monkeypatch, _monday(10, 40))
+        await tm.check_and_start_tournament(TournamentType.QUANT, None, SimpleNamespace())
+
+        scheduling.create.assert_not_awaited()
 
     async def test_later_quant_tournaments_follow_the_ordinary_slot_rule(self, scheduling, monkeypatch):
         previous = TournamentData(
