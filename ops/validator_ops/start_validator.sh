@@ -98,12 +98,18 @@ pm2 start \
     --name dstack_orchestrator
 
 # Public subnet API (sn56.io), only where SUBNET_API_PORT is set. See subnet_api/README.md.
+# Behind Caddy (SUBNET_API_DOMAIN set) it listens on localhost only; otherwise on all interfaces.
 if [ -n "${SUBNET_API_PORT:-}" ]; then
+    if [ -n "${SUBNET_API_DOMAIN:-}" ]; then
+        SUBNET_API_HOST=127.0.0.1
+    else
+        SUBNET_API_HOST=0.0.0.0
+    fi
     VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" \
     VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
     pm2 start \
         "uvicorn --factory subnet_api.app:app \
-        --host 0.0.0.0 \
+        --host ${SUBNET_API_HOST} \
         --port ${SUBNET_API_PORT} \
         --no-server-header" \
         --name subnet_api

@@ -67,6 +67,8 @@ tasks:
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up -d --build --remove-orphans
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml rm -f -v grafana
       - docker compose --env-file .vali.env -f ops/compose/docker-compose.yml up grafana -d
+      # HTTPS for the subnet API when SUBNET_API_DOMAIN is set; never blocks the validator restart.
+      - ./ops/validator_ops/setup_caddy.sh || echo "Caddy setup failed; the subnet API is not served over HTTPS"
       - ./ops/validator_ops/start_validator.sh
 
   postgres:
@@ -101,25 +103,6 @@ tasks:
       - . $HOME/.venv/bin/activate
       - pm2 delete auditor || true
       - pm2 start "python -m ops.auditing.audit" --name auditor
-
-  subnet-api:
-    desc: "Public sn56.io API (needs SUBNET_API_PORT in .vali.env)"
-    cmds:
-      - . $HOME/.venv/bin/activate
-      - |
-        set -a
-        . ./.vali.env
-        set +a
-        if [ -z "${SUBNET_API_PORT:-}" ]; then
-          echo "Set SUBNET_API_PORT in .vali.env (e.g. SUBNET_API_PORT=9100)" >&2
-          exit 1
-        fi
-        pm2 delete subnet_api || true
-        VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" \
-        VALIDATOR_API_KEY="${FRONTEND_API_KEY}" \
-          pm2 start "uvicorn --factory subnet_api.app:app --host 0.0.0.0 --port ${SUBNET_API_PORT} --no-server-header" \
-          --name subnet_api
-        echo "subnet_api on 0.0.0.0:${SUBNET_API_PORT} — curl localhost:${SUBNET_API_PORT}/health"
 
   auditor-autoupdates:
     cmds:

@@ -7,31 +7,43 @@ one query per route and parameters every 30 seconds.
 
 ## Run it on the validator
 
-Add a port to `.vali.env`:
+Add to `.vali.env`:
 
 ```bash
 SUBNET_API_PORT=9100
+SUBNET_API_DOMAIN=api.sn56.io   # optional: serve it over HTTPS through Caddy
 ```
 
-`ops/validator_ops/start_validator.sh` then starts it under pm2 as `subnet_api`
-whenever the validator starts or auto-updates. It reuses `VALIDATOR_PORT` and
-`FRONTEND_API_KEY` from `.vali.env`, and listens on `0.0.0.0` so the port is
-reachable on the machine's public IP.
+`task validator` (also run by the auto-updater) then:
 
-To start (or restart) it without restarting the validator:
+1. Runs `ops/validator_ops/setup_caddy.sh` when `SUBNET_API_DOMAIN` is set. It
+   installs Caddy from the official apt repository if missing, writes
+   `/etc/caddy/Caddyfile` to proxy `SUBNET_API_DOMAIN` to `127.0.0.1:SUBNET_API_PORT`
+   (backing up any different existing file to `Caddyfile.bak.<timestamp>`), and
+   enables or reloads the `caddy` systemd service. Caddy gets and renews the
+   Let's Encrypt certificate itself. It only uses sudo when something changes, and
+   a failure here logs a warning without blocking the validator restart.
+2. Starts the API under pm2 as `subnet_api` from `ops/validator_ops/start_validator.sh`,
+   reusing `VALIDATOR_PORT` and `FRONTEND_API_KEY` from `.vali.env`. With
+   `SUBNET_API_DOMAIN` set it listens on `127.0.0.1` only; without it, on `0.0.0.0`
+   so the port is reachable on the public IP directly.
+
+For HTTPS, point the domain's DNS A/AAAA records at the validator and open ports
+80 and 443 (Let's Encrypt validates over them). Then:
 
 ```bash
-task subnet-api
 curl -s localhost:${SUBNET_API_PORT}/health
+curl -s https://${SUBNET_API_DOMAIN}/health
+journalctl -u caddy -f   # certificate / proxy logs
 ```
 
-Open the firewall for that port if needed, then point `sn56.io` (or any host) at
-the validator's public IP. DNS A/AAAA records expose that IP.
+To restart only the API: `pm2 restart subnet_api`.
 
 Optional settings, also read from the environment:
 
 | Variable | Default | Meaning |
 |---|---|---|
+| `SUBNET_API_DOMAIN` | none | Domain Caddy serves over HTTPS; also binds the API to localhost |
 | `SUBNET_API_CACHE_SECONDS` | `30` | How long responses are cached |
 | `SUBNET_API_REQUEST_TIMEOUT` | `30` | Seconds to wait for the validator |
 | `SUBNET_API_SLOW_REQUEST_TIMEOUT` | `120` | Same, for the heavy performance routes |
@@ -40,4 +52,5 @@ Optional settings, also read from the environment:
 
 The API reference is served at `/docs`, from `/openapi.json`.
 
-Keep `VALIDATOR_PORT` firewalled / bound as today — only publish `SUBNET_API_PORT`.
+Keep `VALIDATOR_PORT` firewalled / bound as today. Publish only 80/443 (with Caddy)
+or `SUBNET_API_PORT` (without it).
