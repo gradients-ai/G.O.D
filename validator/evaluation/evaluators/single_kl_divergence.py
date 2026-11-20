@@ -2,7 +2,7 @@ import sys
 
 from datasets import load_dataset
 
-from validator.evaluation.models import EvaluationArgs
+from core.logging import get_logger
 from validator.evaluation.common import calculate_kl_divergence
 from validator.evaluation.common import load_finetuned_model
 from validator.evaluation.common import load_model
@@ -13,7 +13,7 @@ from validator.evaluation.common import sanitize_tokenizer_for_models
 from validator.evaluation.common import save_results_dict
 from validator.evaluation.evaluators.grpo import _adapt_grpo_columns_to_trl
 from validator.evaluation.model_checks import check_for_lora
-from core.logging import get_logger
+from validator.evaluation.models import EvaluationArgs
 
 
 logger = get_logger(__name__)

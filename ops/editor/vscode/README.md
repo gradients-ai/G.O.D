@@ -4,5 +4,7 @@ VS Code configuration for local development.
 
 ## Contents
 
-- `launch.json`: debugger configurations.
-- `tasks.json`: VS Code task definitions.
+| Path | Purpose |
+| --- | --- |
+| `launch.json` | Debugger configurations. |
+| `tasks.json` | Task definitions. |

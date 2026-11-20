@@ -1,6 +1,6 @@
 # This script is meant to simplify recreating the evaluation process for a specific task.
 # It runs the same evaluation docker as the validator does. Make sure to build the latest docker images before running this script
-# docker build -f ops/docker/validator.dockerfile -t weightswandering/tuning_vali:latest .
+# docker build -f ops/docker/validator.dockerfile -t <your-dockerhub-user>/tuning_vali:latest .
 # docker build -f ops/docker/validator-diffusion.dockerfile -t diagonalge/tuning_validator_diffusion:latest .
 
 import argparse

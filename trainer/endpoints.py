@@ -95,6 +95,7 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
                 requested_datasets=req.requested_datasets,
                 hotkey=hotkey,
                 task_id=task_id,
+                gpu_ids=req.gpu_ids,
             )
             req.requested_datasets = downloaded or None
         except Exception as e:
@@ -189,6 +190,7 @@ async def get_available_gpus() -> list[GPUInfo]:
 
 
 async def get_task_details(task_id: str, hotkey: str) -> TrainerTaskLog:
+    load_task_history()  # serve results written by another process, e.g. trainer/quant_decode/rerun.py
     task = get_task(task_id, hotkey)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task with ID '{task_id}' and hotkey '{hotkey}' not found.")

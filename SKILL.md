@@ -64,7 +64,6 @@ Useful account endpoints
 - POST /account-get-info
 - POST /account-get-public-key
 
-
 Adding balance (funding an account)
 Users fund their Gradients account by sending TAO (Bittensor native token) to their account's deposit address.
 
@@ -127,7 +126,6 @@ Task monitoring and retrieval endpoints
 - GET /v1/tasks/breakdown/{task_id}
 - DELETE /v1/tasks/delete/{task_id}
 - GET /v1/tasks/organic/completed
-- GET /v1/network/status
 
 Public read endpoints (no API key required)
 - GET /v1/network/status
@@ -140,7 +138,6 @@ Public read endpoints (no API key required)
 - GET /auditing/tasks/{task_id}
 - GET /auditing/scores-url
 - GET /tournament/fees
-
 
 Relevant resources to train a model:
 - API docs URL: https://api.gradients.io/docs
@@ -333,27 +330,26 @@ Important safety and practical notes for agents
 - Treat /tournament/* and /auditing/* as read-oriented product endpoints, not training submission endpoints.
 
 Tournament system overview
-- Tournaments are separate from paid organic jobs, but share the same ecosystem.
-- Miners expose GET /training_repo/{task_type} from their miner.
-- Validators pull repo URLs and commit hashes, build miner code in Docker, and score performance.
-- Tournament types include text and image. Environment tournaments have been retired and are no longer scheduled or emission-weighted; historical environment tournament rows remain queryable through the analytics endpoints.
-- Typical cadence:
-  - text tournaments start Mondays at 11:00 UTC
-  - image tournaments start Mondays at 13:00 UTC
-- Fees are burned and can be queried from the public API.
-
-Tournament miner endpoint
-- Miners expose /training_repo/{task_type}
-- Response contains:
+- Tournaments are open competitions between miners, run on the same subnet as paid organic jobs.
+- Three tournaments are scheduled every week:
+  - text: miners compete on training code that fine-tunes language models
+  - image: miners compete on training code that fine-tunes image models
+  - compression: miners compete on code that compresses a language model (API value: quant)
+- How miners enter: a miner serves GET /training_repo/{task_type} (task_type is text, image or quant) and holds a balance that covers the entry fee. The response contains:
   - github_repo
   - commit_hash
-  - github_token (optional for private repos)
-
-Trainer-side expectations inside the subnet
-- Training repos are cloned by trainer infrastructure.
-- Repos are expected to provide standardized Dockerfiles and CLI entrypoints.
-- Output paths are fixed so validators can pick up results reliably.
+  - github_token (optional, for private repos)
+- Validators read the repository and commit, build the miner's code in Docker on trainer infrastructure, and score the result. Repos provide standardised Dockerfiles and CLI entrypoints, and write to fixed output paths.
+- Each tournament runs rounds that narrow the field, then a boss round against the defending champion (the boss). The challenger must beat the boss to take the crown.
 - This matters for miners and tournament participants, not normal API consumers.
+
+Where the tournament rules live (paths in the G.O.D repository)
+- Start times, entry fees and how to enter: docs/miner.md
+- Text rules: docs/miner_text.md
+- Image rules: docs/miner_image.md
+- Compression rules: docs/miner_compression.md
+- Crown, early stop and placements: validator/tournament/README.md, section "Crown, early stop and placements"
+- Current fees from the API: GET /tournament/fees
 
 Chutes deployment support
 Gradients also exposes Chutes deployment for a base model + LoRA combination.
@@ -371,11 +367,7 @@ Deploy payload
 Performance and analytics endpoints
 Useful for research agents, dashboards, and tournament analysis.
 
-Endpoints
-- GET /v1/performance/latest-tournament-weights
-- GET /v1/performance/weight-projection
-- GET /v1/performance/weight-projection-static
-- GET /v1/performance/last-boss-battle
+The four GET /v1/performance/* endpoints are listed under "Public read endpoints" above.
 
 When an agent should use Gradients
 - When the goal is to launch one or more fine-tuning jobs on hosted infrastructure.

@@ -2,6 +2,9 @@ import validator.evaluation.constants as vcst
 from core.models.payload_models import DockerEvaluationResults
 from core.models.payload_models import EvaluationResultImage
 from core.models.payload_models import EvaluationResultText
+from validator.evaluation.errors import EVALUATION_ERROR_RESULT_KEY
+from validator.evaluation.errors import EvaluationInfraError
+from validator.evaluation.errors import RepoEvaluationFailed
 
 
 def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
@@ -85,13 +88,27 @@ def normalize_rewards_and_compute_loss(evaluation_results: dict) -> dict:
 
     return evaluation_results
 
+
+def is_evaluation_error_result(result: object) -> bool:
+    """A results-file entry an evaluator wrote for a repo it could not evaluate through no fault of the miner."""
+    return isinstance(result, dict) and EVALUATION_ERROR_RESULT_KEY in result
+
+
 def process_evaluation_results(results: dict, is_image: bool = False) -> DockerEvaluationResults:
+    """Per repo: a result model; RepoEvaluationFailed for the evaluator's own error string about the repo (the miner's
+    scored fail); EvaluationInfraError for an evaluation-error entry; an exception already in place is kept."""
     model_params_count = results.pop("model_params_count", 0)
 
     processed_results = {}
     for repo, result in results.items():
-        if isinstance(result, str) and not isinstance(result, dict):
-            processed_results[repo] = Exception(result)
+        if isinstance(result, Exception):
+            processed_results[repo] = result
+        elif isinstance(result, str):
+            processed_results[repo] = RepoEvaluationFailed(result)
+        elif is_evaluation_error_result(result):
+            processed_results[repo] = EvaluationInfraError(
+                f"Evaluator could not evaluate {repo}: {result[EVALUATION_ERROR_RESULT_KEY]}"
+            )
         else:
             if is_image:
                 result["is_finetune"] = True

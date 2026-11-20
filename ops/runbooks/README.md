@@ -1,7 +1,9 @@
 # Runbooks
 
-Operational notes and debugging guides.
+Debugging guides for validator operators.
 
 ## Contents
 
-- `evaluation_flow_debugging.md`: validator evaluation flow and debugging guide.
+| Path | Purpose |
+| --- | --- |
+| `evaluation_flow_debugging.md` | How evaluations flow through the validator, and how to find a stuck or failed one. |

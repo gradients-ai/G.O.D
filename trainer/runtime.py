@@ -3,16 +3,23 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from functools import partial
+from pathlib import Path
 
 import docker
 from docker.errors import APIError
 from docker.errors import BuildError
+from docker.errors import ImageNotFound
 from docker.models.containers import Container
 
 import core.constants as core_cst
 import trainer.training_paths as train_paths
+from core.build_context import describe_large_files
+from core.build_context import find_large_files
+from core.constants.quant import QUANT_LARGE_FILE_REVIEW_BYTES
 from core.logging import get_all_context_tags
 from core.logging import stream_container_logs
 from core.logging import stream_image_build_logs
@@ -31,18 +38,36 @@ from core.models.model_prep_models import BaselineStats
 from core.models.payload_models import ModelPrepResponse
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainRequestImage
+from core.models.payload_models import TrainRequestQuant
 from core.models.payload_models import TrainRequestText
+from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationRequest
+from core.models.quant_models import QuantFixedSpec
+from core.models.quant_models import QuantTarget
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from trainer import constants as cst
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
+from trainer.host_resources import container_resources
+from trainer.host_resources import pinned_helper_kwargs
+from trainer.image_builds import image_build_in_flight
+from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import complete_task
 from trainer.job_state import is_gpu_throttle_failure
 from trainer.job_state import log_task
 from trainer.job_state import update_container_name
+from trainer.job_state import update_quant_decode_result
 from trainer.job_state import update_training_started_at
 from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
+from trainer.output_reclaim import reclaim_output_dir
+from trainer.quant_calibration import write_quant_calibration_file
+from trainer.quant_decode.job import run_freeform_decode
+from trainer.quant_decode.sandbox import sanitize_failure
+from trainer.quant_upload_check import QuantUploadVerdict
+from trainer.quant_upload_check import check_quant_output
+from trainer.quant_upload_check import quant_output_max_bytes
 from trainer.telemetry import logger
 
 
@@ -73,20 +98,6 @@ def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
         client.networks.create(name, driver="bridge", internal=True)
 
 
-def calculate_container_resources(gpu_ids: list[int]) -> tuple[str, int]:
-    """Calculate memory limit and CPU limit based on GPU count.
-
-    Returns:
-        tuple: (memory_limit_str, cpu_limit_nanocpus)
-    """
-    num_gpus = len(gpu_ids)
-    memory_limit = f"{num_gpus * cst.MEMORY_PER_GPU_GB}g"
-    cpu_limit_nanocpus = num_gpus * cst.CPUS_PER_GPU * 1_000_000_000
-
-    logger.info(f"Allocating resources for {num_gpus} GPUs: {memory_limit} memory, {num_gpus * cst.CPUS_PER_GPU} CPUs")
-    return memory_limit, cpu_limit_nanocpus
-
-
 def build_docker_image(
     dockerfile_path: str,
     log_labels: dict[str, str] | None = None,
@@ -109,38 +120,70 @@ def build_docker_image(
         extra=log_labels,
     )
 
-    build_output = None
-    executor = None
-    try:
-        build_output = client.api.build(
-            path=context_path,
-            dockerfile=dockerfile_path,
-            tag=tag,
-            nocache=no_cache,
-            decode=True,
-        )
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(stream_image_build_logs, build_output, logger, log_labels)
+    with image_build_in_flight():
+        build_output = None
+        executor = None
         try:
-            future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError:
-            message = f"Docker image build exceeded {timeout_seconds} seconds"
-            logger.error(message, extra=log_labels)
-            if build_output is not None:
-                try:
-                    build_output.close()
-                except Exception:
-                    pass
-            return None, message
+            build_output = client.api.build(
+                path=context_path,
+                dockerfile=dockerfile_path,
+                tag=tag,
+                nocache=no_cache,
+                # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
+                # failure.
+                rm=True,
+                forcerm=True,
+                decode=True,
+            )
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(_stream_build_logs, build_output, log_labels)
+            try:
+                future.result(timeout=timeout_seconds)
+            except FuturesTimeoutError:
+                message = f"Docker image build exceeded {timeout_seconds} seconds"
+                logger.error(message, extra=log_labels)
+                return None, message
 
-        logger.info("Docker image built successfully.", extra=log_labels)
-        return tag, None
-    except (BuildError, APIError) as e:
-        logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
-        return None, str(e)
-    finally:
-        if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
+            # ends normally with no image, and the job would only fail later on a missing tag at container start.
+            try:
+                client.images.get(tag)
+            except ImageNotFound:
+                message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
+                logger.error(message, extra=log_labels)
+                return None, message
+
+            logger.info("Docker image built successfully.", extra=log_labels)
+            return tag, None
+        except (BuildError, APIError) as e:
+            logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
+            return None, str(e)
+        finally:
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+
+def _stream_build_logs(build_output: Iterator[dict], log_labels: dict[str, str] | None) -> None:
+    # A build abandoned on timeout keeps running on the daemon until its stream ends, so it stays counted until then.
+    with image_build_in_flight():
+        stream_image_build_logs(build_output, logger, log_labels)
+
+
+def flag_large_build_context_files(context_path: str, log_labels: dict[str, str] | None = None) -> str | None:
+    """List build-context files over the review size for manual review; never fails the build.
+
+    Weights-derived payloads over about 1 MB are banned and enforced by review. This checkout is what the image
+    is built from, so unlike the registration scan it includes any git LFS objects the clone fetched.
+    """
+    large_files = find_large_files(Path(context_path), QUANT_LARGE_FILE_REVIEW_BYTES)
+    if not large_files:
+        return None
+    message = (
+        f"[REVIEW] Build context has {len(large_files)} file(s) over {QUANT_LARGE_FILE_REVIEW_BYTES} bytes, flagged for "
+        f"manual review (weights-derived payloads are banned): {describe_large_files(large_files)}"
+    )
+    logger.warning(message, extra=log_labels)
+    return message
 
 
 def delete_image_and_cleanup(tag: str):
@@ -154,9 +197,7 @@ def delete_image_and_cleanup(tag: str):
         logger.error(f"Failed to delete image '{tag}': {e}")
 
     try:
-        client.images.prune(filters={"dangling": True})
-        client.api.prune_builds()
-        logger.info("Cleaned up dangling images and build cache.")
+        prune_build_leftovers()
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
 
@@ -223,8 +264,8 @@ async def run_trainer_container_image(
 
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
-    # Calculate resources based on GPU count
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    environment.update(resources.thread_env())
 
     # Set shared memory size based on GPU count
     shm_size = "16g" if len(gpu_ids) >= 4 else "8g"
@@ -246,8 +287,7 @@ async def run_trainer_container_image(
                 shm_size=shm_size,
                 name=container_name,
                 labels=log_labels,
-                mem_limit=memory_limit,
-                nano_cpus=cpu_limit_nanocpus,
+                **resources.docker_kwargs(),
                 device_requests=[docker.types.DeviceRequest(device_ids=[str(i) for i in gpu_ids], capabilities=[["gpu"]])],
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
@@ -273,6 +313,19 @@ async def run_trainer_container_image(
                 raise
 
 
+async def _write_quant_calibration(task_id: str, hotkey: str, calibration: QuantCalibrationRequest) -> dict[str, str]:
+    """The env that points the miner at its calibration file in the cache volume; raises when the file cannot be written
+    within the budget of all its attempts (the training container has no network, so this runs on the host)."""
+    per_attempt = (
+        cst.QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS
+        + cst.QUANT_CALIBRATION_RETRY_SLEEP_SECONDS
+        + cst.QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS
+    )
+    budget = cst.QUANT_CALIBRATION_FETCH_ATTEMPTS * per_attempt
+    volume_dir = docker.from_env().volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"]
+    return await asyncio.wait_for(write_quant_calibration_file(task_id, hotkey, calibration, volume_dir), timeout=budget)
+
+
 async def run_trainer_container_text(
     task_id: str,
     hotkey: str,
@@ -291,6 +344,9 @@ async def run_trainer_container_text(
     miner_datasets: list[str] | None = None,
     use_kl: bool = False,
     kl_coef: float | None = None,
+    quant_spec: QuantFixedSpec | None = None,
+    quant_target: QuantTarget | None = None,
+    extra_environment: dict[str, str] | None = None,
 ) -> Container:
     client: docker.DockerClient = docker.from_env()
 
@@ -303,6 +359,8 @@ async def run_trainer_container_text(
         with open(os.path.join(vol.attrs["Mountpoint"], stats_filename), "w") as f:
             json.dump(baseline_stats.model_dump(), f)
         environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
+    if extra_environment:
+        environment.update(extra_environment)
     if env_server_urls:
         environment["ENVIRONMENT_SERVER_URLS"] = env_server_urls
     if miner_datasets:
@@ -331,11 +389,18 @@ async def run_trainer_container_text(
         "--hours-to-complete",
         str(hours_to_complete),
     ]
+    if quant_spec is not None:
+        quant_spec_json = quant_spec.model_dump_json()
+        command += ["--quant-spec", quant_spec_json]
+        environment[core_cst.QUANT_SPEC_ENV] = quant_spec_json
+    if quant_target is not None:
+        # Env only, never a flag: a miner's strict argparse would reject an unknown --quant-target and fail the job.
+        environment[core_cst.QUANT_TARGET_ENV] = quant_target.model_dump_json()
 
     container_name = f"text-trainer-{uuid.uuid4().hex}"
 
-    # Calculate resources based on GPU count
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    environment.update(resources.thread_env())
 
     # Set shared memory size based on GPU count
     shm_size = "16g" if len(gpu_ids) >= 4 else "8g"
@@ -357,8 +422,7 @@ async def run_trainer_container_text(
                 shm_size=shm_size,
                 name=container_name,
                 labels=log_labels,
-                mem_limit=memory_limit,
-                nano_cpus=cpu_limit_nanocpus,
+                **resources.docker_kwargs(),
                 device_requests=[docker.types.DeviceRequest(device_ids=[str(i) for i in gpu_ids], capabilities=[["gpu"]])],
                 security_opt=["no-new-privileges"],
                 cap_drop=["ALL"],
@@ -410,6 +474,7 @@ def run_downloader_container(
     training_mode: ImageTrainingMode | None = None,
     log_labels: dict[str, str] | None = None,
     anonymize: bool = True,
+    gpu_ids: list[int] | None = None,
 ) -> tuple[int, Exception | None]:
     client = docker.from_env()
 
@@ -451,6 +516,7 @@ def run_downloader_container(
             environment=environment,
             remove=False,
             detach=True,
+            **pinned_helper_kwargs(gpu_ids),
         )
 
         try:
@@ -481,7 +547,7 @@ def run_downloader_container(
     finally:
         if container:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
@@ -509,6 +575,7 @@ def run_model_prep_container(
         hotkey="",
         file_format=FileFormat.S3,
         log_labels=log_labels,
+        gpu_ids=gpu_ids,
     )
     if download_exit != 0:
         raise RuntimeError(f"Downloader failed: {download_err}")
@@ -544,7 +611,8 @@ def run_model_prep_container(
 
     container_name = f"model-prep-{str(uuid.uuid4())[:8]}"
     container = None
-    memory_limit, cpu_limit_nanocpus = calculate_container_resources(gpu_ids)
+    resources = container_resources(gpu_ids)
+    env.update(resources.thread_env())
 
     model_prep_image = cst.MODEL_PREP_TEXT_DOCKER_IMAGE
 
@@ -561,8 +629,7 @@ def run_model_prep_container(
                 device_ids=[str(i) for i in gpu_ids],
                 capabilities=[["gpu"]],
             )],
-            mem_limit=memory_limit,
-            nano_cpus=cpu_limit_nanocpus,
+            **resources.docker_kwargs(),
             network=None,
             remove=False,
             detach=True,
@@ -585,7 +652,7 @@ def run_model_prep_container(
     finally:
         if container:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove container {container_name}: {cleanup_err}", extra=log_labels)
 
@@ -600,6 +667,8 @@ async def upload_repo_to_hf(
     docker_labels: dict[str, str] | None = None,
     wandb_token: str | None = None,
     path_in_repo: str | None = None,
+    verbatim: bool = False,
+    gpu_ids: list[int] | None = None,
 ):
     container = None
     try:
@@ -617,6 +686,8 @@ async def upload_repo_to_hf(
             "EXPECTED_REPO_NAME": expected_repo_name,
             "HF_REPO_SUBFOLDER": path_in_repo,
         }
+        if verbatim:
+            environment["UPLOAD_VERBATIM"] = "1"
 
         volumes = {
             cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
@@ -636,6 +707,7 @@ async def upload_repo_to_hf(
             detach=True,
             remove=False,
             name=container_name,
+            **pinned_helper_kwargs(gpu_ids),
         )
 
         _log_streaming_task = asyncio.create_task(
@@ -668,7 +740,7 @@ async def upload_repo_to_hf(
                 await asyncio.to_thread(container.reload)
                 if container.status == "running":
                     await asyncio.to_thread(container.kill)
-                await asyncio.to_thread(container.remove, force=True)
+                await asyncio.to_thread(container.remove, force=True, v=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove upload container {container.name}: {cleanup_err}")
 
@@ -678,6 +750,9 @@ def get_task_type(request: TrainerProxyRequest) -> TaskType:
 
     if isinstance(training_data, TrainRequestImage):
         return TaskType.IMAGETASK
+
+    elif isinstance(training_data, TrainRequestQuant):
+        return training_data.task_type
 
     elif isinstance(training_data, TrainRequestText):
         if isinstance(training_data.dataset_type, DpoDatasetType):
@@ -715,6 +790,98 @@ def _resolve_dockerfile_path(local_repo_path: str, candidate_paths: tuple[str, .
 
     searched = ", ".join(candidate_paths)
     raise FileNotFoundError(f"Training repository is missing a supported Dockerfile. Checked: {searched}")
+
+
+def _decode_base_model_dir(training_data: TrainRequestQuant, cache_mountpoint: Path) -> Path:
+    """Host path of the base model the training container saw: the anonymised dir when model prep ran.
+
+    task_history.json drops baseline_stats, so a job reloaded from it (the decode re-run) falls back to the anonymised
+    dir when the plain one is absent. Both hold the same tensors; anonymisation only scrubs config identity.
+    """
+    plain = _cache_host_model_dir(training_data.model, cache_mountpoint)
+    if training_data.baseline_stats is None and plain.exists():
+        return plain
+    return _cache_host_model_dir(get_anonymous_model_dir(training_data.model), cache_mountpoint)
+
+
+def _cache_host_model_dir(model_dir_name: str, cache_mountpoint: Path) -> Path:
+    container_path = train_paths.get_text_base_model_path(model_dir_name)
+    return cache_mountpoint / Path(container_path).relative_to(cst.CACHE_ROOT_PATH)
+
+
+async def freeform_decode_result(task: TrainerProxyRequest) -> QuantDecodeResult:
+    """Decode one freeform job's uploaded artifact."""
+    training_data = task.training_data
+    try:
+        client = docker.from_env()
+        cache_mountpoint = Path(client.volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"])
+        return await run_freeform_decode(
+            training_data.decode,
+            task_id=training_data.task_id,
+            hotkey=task.hotkey,
+            artifact_repo=f"{os.getenv('HUGGINGFACE_USERNAME')}/{training_data.expected_repo_name}",
+            base_model_dir=_decode_base_model_dir(training_data, cache_mountpoint),
+            hf_token=os.getenv("HUGGINGFACE_TOKEN") or None,
+            work_root=cst.QUANT_DECODE_WORK_ROOT,
+            docker_client=client,
+            report=partial(log_task, training_data.task_id, task.hotkey),
+            cpu_share=container_resources(task.gpu_ids),
+        )
+    except Exception as e:  # anything the job did not classify is ours, never the miner's
+        logger.exception(f"Freeform decode crashed for task {training_data.task_id}")
+        return QuantDecodeResult(infra_error=sanitize_failure(str(e)) or type(e).__name__)
+
+
+async def _run_freeform_decode_step(task: TrainerProxyRequest, log_labels: dict[str, str]) -> None:
+    """Decode a freeform artifact after its upload and store the outcome on the job log for the validator."""
+    training_data = task.training_data
+    if not isinstance(training_data, TrainRequestQuant) or training_data.decode is None:
+        await log_task(training_data.task_id, task.hotkey, "freeform decode skipped: no decode request")
+        return
+
+    await log_task(training_data.task_id, task.hotkey, "Running freeform decode...")
+    result = await freeform_decode_result(task)
+    await update_quant_decode_result(training_data.task_id, task.hotkey, result)
+    if result.ok:
+        message = f"freeform decode ok: {result.n_tensors} tensors, {len(result.uploaded_files)} files uploaded"
+    elif result.quant_failure is not None:
+        message = f"freeform decode scored fail: {result.quant_failure}"
+    else:
+        message = f"[ERROR] freeform decode infra error: {result.infra_error}"
+    logger.info(message, extra=log_labels)
+    await log_task(training_data.task_id, task.hotkey, message)
+
+
+async def _quant_output_accepted(task: TrainerProxyRequest, training_data: TrainRequestQuant, log_labels: dict[str, str]) -> bool:
+    """Check and prune the quant output dir against its quant_manifest.json before upload; log the reason on rejection.
+
+    The miner's container wrote the output as root, so it is first chowned to the trainer (reclaim_output_dir), which
+    then owns everything it must prune. A reclaim that cannot run raises: the caller fails the job without upload.
+    """
+    client = docker.from_env()
+    checkpoints_mountpoint = Path(client.volumes.get(cst.CHECKPOINTS_VOLUME_NAME).attrs["Mountpoint"])
+    cache_mountpoint = Path(client.volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"])
+    output_dir = checkpoints_mountpoint / training_data.task_id / training_data.expected_repo_name
+    rejection = await reclaim_output_dir(client, task_id=training_data.task_id, repo_name=training_data.expected_repo_name)
+    if rejection is not None:
+        verdict = QuantUploadVerdict(ok=False, failure=f"{cst.QUANT_OUTPUT_REJECTED_PREFIX}{rejection}")
+    else:
+        max_bytes = await asyncio.to_thread(quant_output_max_bytes, _decode_base_model_dir(training_data, cache_mountpoint))
+        verdict = await asyncio.to_thread(
+            check_quant_output,
+            output_dir,
+            task_id=training_data.task_id,
+            task_type=training_data.task_type,
+            max_bytes=max_bytes,
+        )
+    if not verdict.ok:
+        logger.error(verdict.failure, extra=log_labels)
+        await log_task(training_data.task_id, task.hotkey, f"[ERROR] {verdict.failure}")
+        return False
+    await log_task(
+        training_data.task_id, task.hotkey, f"Quant output accepted: {verdict.n_files} files, {verdict.total_bytes} bytes"
+    )
+    return True
 
 
 async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
@@ -763,6 +930,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             training_mode=training_data.training_mode if task_type == TaskType.IMAGETASK else None,
             log_labels=log_labels,
             anonymize=model_prep_ran,
+            gpu_ids=task.gpu_ids,
         )
 
         if download_status == 0:
@@ -773,6 +941,19 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await log_task(training_data.task_id, task.hotkey, message)
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Downloader container failed: {exc}")
+
+        # The compression job's calibration file is written on the host before the image build, with its own time budget
+        # (the container-start timeout must not cut its retries short): no file, no build, no container.
+        extra_environment = (
+            await _write_quant_calibration(training_data.task_id, task.hotkey, training_data.calibration)
+            if isinstance(training_data, TrainRequestQuant)
+            else None
+        )
+
+        if task_type in QUANT_TASK_TYPES:
+            review_message = await asyncio.to_thread(flag_large_build_context_files, local_repo_path, log_labels)
+            if review_message:
+                await log_task(training_data.task_id, task.hotkey, review_message)
 
         tag, exc = await asyncio.to_thread(
             build_docker_image,
@@ -826,6 +1007,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         else:
             use_kl = training_data.use_kl if isinstance(training_data, TrainRequestText) else False
             kl_coef = training_data.kl_coef if isinstance(training_data, TrainRequestText) else None
+            quant_spec = training_data.quant_spec if isinstance(training_data, TrainRequestQuant) else None
+            quant_target = training_data.quant_target if isinstance(training_data, TrainRequestQuant) else None
             container = await asyncio.wait_for(
                 run_trainer_container_text(
                     task_id=training_data.task_id,
@@ -845,6 +1028,9 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     miner_datasets=task.requested_datasets,
                     use_kl=use_kl,
                     kl_coef=kl_coef,
+                    quant_spec=quant_spec,
+                    quant_target=quant_target,
+                    extra_environment=extra_environment,
                 ),
                 timeout=60,
             )
@@ -907,7 +1093,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             for srv in env_server_containers:
                 try:
                     await asyncio.to_thread(srv.stop)
-                    await asyncio.to_thread(srv.remove, force=True)
+                    await asyncio.to_thread(srv.remove, force=True, v=True)
                 except Exception as e:
                     logger.warning(f"Failed to cleanup server {srv.name}: {e}")
 
@@ -916,7 +1102,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     await asyncio.to_thread(container.reload)
                     if container.status == "running":
                         await asyncio.to_thread(container.kill)
-                    await asyncio.to_thread(container.remove, force=True)
+                    await asyncio.to_thread(container.remove, force=True, v=True)
                     await log_task(training_data.task_id, task.hotkey, f"Container {container.name} cleaned up.")
 
                 except Exception as cleanup_err:
@@ -928,6 +1114,14 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 logger.info("Cleaned up Docker resources.", extra=log_labels)
             else:
                 logger.info("No Docker image to clean up.", extra=log_labels)
+
+            if success and task_type in QUANT_TASK_TYPES:
+                try:
+                    success = await _quant_output_accepted(task, training_data, log_labels)
+                except Exception as check_err:  # never upload an unchecked quant output
+                    logger.exception("Quant output check crashed", extra=log_labels)
+                    await log_task(training_data.task_id, task.hotkey, f"[ERROR] Quant output check crashed: {check_err}")
+                    success = False
 
             if success:
                 try:
@@ -943,6 +1137,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                         docker_labels=log_labels,
                         wandb_token=wandb_token,
                         path_in_repo=path_in_repo,
+                        verbatim=task_type in QUANT_TASK_TYPES,
+                        gpu_ids=task.gpu_ids,
                     )
 
                     await log_task(training_data.task_id, task.hotkey, "Repo uploaded successfully.")
@@ -950,6 +1146,10 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     log_message = f"[ERROR] Upload container failed | ExitCode: Unknown | LastError: {upload_err}"
                     await log_task(training_data.task_id, task.hotkey, log_message)
                     success = False
+
+            if success and task_type == TaskType.QUANTFREEFORMTASK:
+                # Never changes success: a decoder fault is a scored fail, kept out of the majority-failure hold.
+                await _run_freeform_decode_step(task, log_labels)
 
             await complete_task(training_data.task_id, task.hotkey, success=success)
 

@@ -1,7 +1,10 @@
 import asyncio
 import datetime
+import ipaddress
 import os
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from urllib.parse import unquote
 from urllib.parse import urlparse
 
 from minio import Minio
@@ -26,6 +29,7 @@ class AsyncMinioClient:
         secure=True,
     ):
         self.endpoint = endpoint
+        self.secure = secure
         self.client = Minio(
             endpoint,
             access_key=access_key,
@@ -35,8 +39,9 @@ class AsyncMinioClient:
         )
         self.executor = ThreadPoolExecutor()
 
-    async def upload_file(self, bucket_name, object_name, file_path):
-        func = self.client.fput_object
+    async def upload_file(self, bucket_name, object_name, file_path, part_size: int = 0, num_parallel_uploads: int = 3):
+        """part_size 0 lets minio pick (5 MiB for files under ~48 GiB); pass a larger one for big files on a slow link."""
+        func = partial(self.client.fput_object, part_size=part_size, num_parallel_uploads=num_parallel_uploads)
         args = (bucket_name, object_name, file_path)
         try:
             loop = asyncio.get_event_loop()
@@ -88,7 +93,8 @@ class AsyncMinioClient:
         return await loop.run_in_executor(self.executor, func, *args)
 
     def get_public_url(self, bucket_name, object_name):
-        return f"https://{self.endpoint}/{bucket_name}/{object_name}"
+        scheme = "https" if self.secure else "http"
+        return f"{scheme}://{self.endpoint}/{bucket_name}/{object_name}"
 
     async def get_new_presigned_url(self, presigned_url: str) -> str:
         try:
@@ -104,21 +110,46 @@ class AsyncMinioClient:
             return None
 
     def parse_s3_url(self, url: str) -> tuple[str, str]:
-        """Extract bucket name and object name from S3 URL."""
+        """Extract bucket name and object name from an S3 URL, path style or virtual-host style.
+
+        minio-py signs virtual-host URLs (bucket.host/key) only for AWS-style endpoints and path-style URLs
+        (host/bucket/key) for everything else, e.g. a plain MinIO. A URL on this client's own endpoint, or on an
+        IP literal or a dotless host such as localhost, cannot carry the bucket in its host, so it is path style.
+        """
         parsed_url = urlparse(url)
-        bucket_name = parsed_url.hostname.split(".")[0]
-        object_name = parsed_url.path.lstrip("/").split("?")[0]
-        return bucket_name, object_name
+        hostname = parsed_url.hostname or ""
+        path = unquote(parsed_url.path).lstrip("/")
+        if _is_path_style(parsed_url.netloc, hostname, self.endpoint):
+            bucket_name, _, object_name = path.partition("/")
+            return bucket_name, object_name
+        return hostname.split(".")[0], path
 
     def __del__(self):
         self.executor.shutdown(wait=False)
+
+
+def _is_path_style(netloc: str, hostname: str, endpoint: str) -> bool:
+    if netloc.lower() == endpoint.lower() or "." not in hostname:
+        return True
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    return True
 
 
 S3_COMPATIBLE_ENDPOINT = os.getenv("S3_COMPATIBLE_ENDPOINT", "localhost:9000")
 S3_COMPATIBLE_ACCESS_KEY = os.getenv("S3_COMPATIBLE_ACCESS_KEY", "minioadmin")
 S3_COMPATIBLE_SECRET_KEY = os.getenv("S3_COMPATIBLE_SECRET_KEY", "minioadmin")
 S3_REGION = os.getenv("S3_REGION", "us-east-1")
+# HTTPS unless set to anything but "true", e.g. for a plain-HTTP local MinIO on a test box. Presigned URLs carry the
+# scheme, so the trainer's downloader and the eval containers must reach the endpoint over the same scheme.
+S3_SECURE = os.getenv("S3_SECURE", "true").lower() == "true"
 
 async_minio_client = AsyncMinioClient(
-    endpoint=S3_COMPATIBLE_ENDPOINT, access_key=S3_COMPATIBLE_ACCESS_KEY, secret_key=S3_COMPATIBLE_SECRET_KEY, region=S3_REGION
+    endpoint=S3_COMPATIBLE_ENDPOINT,
+    access_key=S3_COMPATIBLE_ACCESS_KEY,
+    secret_key=S3_COMPATIBLE_SECRET_KEY,
+    region=S3_REGION,
+    secure=S3_SECURE,
 )

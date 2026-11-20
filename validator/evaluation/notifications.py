@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID
 
 from core.logging import get_logger
+from validator.evaluation.errors import describe_error
 
 
 if TYPE_CHECKING:
@@ -11,6 +12,9 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
+
+DISCORD_CONTENT_LIMIT = 2000
+MIN_ERROR_CHARS = 100
 
 
 async def notify_evaluation_exception(
@@ -30,7 +34,7 @@ async def notify_evaluation_exception(
     try:
         import httpx
 
-        details = str(error)
+        details = describe_error(error) if isinstance(error, BaseException) else str(error)
         if len(details) > 900:
             details = f"{details[:900]}..."
         task_type_value = getattr(task_type, "value", str(task_type))
@@ -52,12 +56,27 @@ async def notify_evaluation_exception(
             lines.append(f"Repos: {_format_items(repos)}")
         if deployment_ids:
             lines.append(f"Deployment IDs: {_format_items(deployment_ids)}")
-        lines.append(f"Error: {details}")
+        content = _bounded_content(lines, details)
 
         async with httpx.AsyncClient() as client:
-            await client.post(config.discord_url, json={"content": "\n".join(lines)}, timeout=10)
+            await client.post(config.discord_url, json={"content": content}, timeout=10)
     except Exception as notify_exc:
         logger.error(f"Failed to send Discord evaluation exception notification: {notify_exc}")
+
+
+def _bounded_content(lines: list[str], details: str) -> str:
+    """The message: lines, then the error, never over Discord's content limit (a longer one is rejected, not trimmed).
+
+    The error is the part that shrinks; if the lines alone are too long, the whole message is cut.
+    """
+    head = "\n".join(lines)
+    room = max(DISCORD_CONTENT_LIMIT - len(head) - len("\nError: "), MIN_ERROR_CHARS)
+    if len(details) > room:
+        details = f"{details[: room - 3]}..."
+    content = f"{head}\nError: {details}"
+    if len(content) > DISCORD_CONTENT_LIMIT:
+        content = f"{content[: DISCORD_CONTENT_LIMIT - 3]}..."
+    return content
 
 
 async def task_deployment_ids_for_hotkeys(

@@ -19,6 +19,7 @@ TYPE_ALIASES = {
     "text": TournamentType.TEXT,
     "image": TournamentType.IMAGE,
     "img": TournamentType.IMAGE,
+    "quant": TournamentType.QUANT,
     "env": TournamentType.ENVIRONMENT,
     "environment": TournamentType.ENVIRONMENT,
 }

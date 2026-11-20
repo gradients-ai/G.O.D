@@ -13,6 +13,17 @@ from huggingface_hub import login
 from core.tokenizer_utils import sanitize_tokenizer_config
 
 
+TRAINING_STATE_PATTERNS = [
+    "trainer_state.json",
+    "training_args.bin",
+    "optimizer.pt",
+    "optimizer.bin",
+    "scheduler.pt",
+    "scaler.pt",
+    "rng_state*.pth",
+]
+
+
 def _resolve_base_model(model_id: str) -> str:
     """If model_id is a LoRA adapter repo, follow the chain to the real base model."""
     from huggingface_hub import hf_hub_download
@@ -164,6 +175,7 @@ def main():
     model = os.getenv("MODEL")
     repo_subfolder = os.getenv("HF_REPO_SUBFOLDER", None)
     wandb_logs_path = os.getenv("WANDB_LOGS_PATH", None)
+    verbatim = os.getenv("UPLOAD_VERBATIM") == "1"
 
     if repo_subfolder:
         repo_subfolder = repo_subfolder.strip("/")
@@ -178,17 +190,22 @@ def main():
     if not os.path.isdir(local_folder):
         raise FileNotFoundError(f"Local folder {local_folder} does not exist")
 
-    checkpoint_subfolder = detect_subfolder(local_folder)
-    if checkpoint_subfolder:
-        local_folder = checkpoint_subfolder
-    
+    if verbatim:
+        # Quant outputs: the bytes are the score and quant_manifest.json at the root lists paths relative to it.
+        print("[upload] Verbatim mode: no subfolder detection, no README/adapter_config patching", flush=True)
+    else:
+        checkpoint_subfolder = detect_subfolder(local_folder)
+        if checkpoint_subfolder:
+            local_folder = checkpoint_subfolder
+
     if is_folder_empty_or_metadata_only(local_folder):
         raise ValueError(f"Local folder {local_folder} is empty or only contains metadata files. Nothing to upload.")
 
-    patch_model_metadata(local_folder, model)
-    # A winning upload becomes the next base (continuous-SFT carry-forward), so a v5-serialized
-    # tokenizer here breaks every v4 miner trainer that loads it next week.
-    sanitize_tokenizer_config(local_folder)
+    if not verbatim:
+        patch_model_metadata(local_folder, model)
+        # A winning upload becomes the next base (continuous-SFT carry-forward), so a v5-serialized
+        # tokenizer here breaks every miner trainer that loads it in a later round.
+        sanitize_tokenizer_config(local_folder)
 
     print(f"Creating repo {repo_id}...", flush=True)
     api = HfApi()
@@ -209,15 +226,9 @@ def main():
                 commit_message=f"Upload task output {task_id}",
                 token=hf_token,
                 delete_patterns=["*"],
-                ignore_patterns=[
-                    "trainer_state.json",
-                    "training_args.bin",
-                    "optimizer.pt",
-                    "optimizer.bin",
-                    "scheduler.pt",
-                    "scaler.pt",
-                    "rng_state*.pth",
-                ],
+                # Verbatim: the manifest check already pruned the dir, and dropping a listed file would make the
+                # hub bytes disagree with the manifest total the miner declared.
+                ignore_patterns=None if verbatim else TRAINING_STATE_PATTERNS,
             )
             break
         except Exception as e:

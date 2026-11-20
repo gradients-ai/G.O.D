@@ -307,6 +307,13 @@ _TOURNAMENT_SCOPE: dict[TournamentType, str] = {
         "Image training (run_trainer_container_image, image dataset/model_type handling, diffusion/LoRA image "
         "scripts) and environment-task code (EnvTask env configs / env servers) NEVER execute in this tournament."
     ),
+    TournamentType.QUANT: (
+        "This is a QUANT (model compression) tournament. The only task types that run are the quantisation tasks "
+        "(fixed-format and freeform), via the same trainer entrypoint (./_god_source/trainer/runtime.py "
+        "run_trainer_container_text) with the quantisation spec / target / calibration inputs and, for freeform, "
+        "the decode step in ./_god_source/trainer/quant_decode. Reward functions, DPO/GRPO training, image "
+        "training (run_trainer_container_image) and environment-task code NEVER execute in this tournament."
+    ),
     TournamentType.IMAGE: (
         "This is an IMAGE tournament. The only task type that runs is ImageTask, via the image training entrypoint "
         "(./_god_source/trainer/runtime.py run_trainer_container_image). Text training (InstructText/Chat/DPO/GRPO), "

@@ -68,7 +68,8 @@ validator = [
 ]
 gpu = [
     "scipy>=1.10.0",
-    "transformers==4.46.2",
+    # Must equal the quant evaluator image's pin (ops/docker/requirements/quant-evaluator.txt).
+    "transformers==5.17.0",
     "peft",
     "Pillow==11.1.0",
     "nvidia-ml-py==13.615.71",
@@ -100,6 +101,7 @@ include = [
     "ops/**/*",
     "subnet_api/**/*.py",
     "trainer/**/*.py",
+    "validator/**/*.jinja",
     "validator/**/*.json",
     "validator/**/*.py",
     "validator/**/*.yml",

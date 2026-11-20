@@ -1,7 +1,9 @@
 # Editor
 
-Editor-specific configuration moved out of the repository root.
+Editor configuration for working on this repository.
 
 ## Contents
 
-- `vscode/`: VS Code launch and task configuration.
+| Path | Purpose |
+| --- | --- |
+| `vscode/` | VS Code launch and task configuration. |

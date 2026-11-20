@@ -1,8 +1,14 @@
-# Scoring Tools
+# Scoring tools
 
-Scoring and weight calculation probes.
+Inspection of scoring and weight calculation.
 
 ## Contents
 
-- `check_scoring.py`: scoring inspection script.
-- `debug_weight_calculation.py`: weight calculation debugging helper.
+| Path | Purpose |
+| --- | --- |
+| `check_scoring.py` | Prints the tournament scoring of one hotkey. |
+| `debug_weight_calculation.py` | Prints each step of the weight calculation. |
+
+## See also
+
+- [Scoring](../../../validator/scoring/README.md): scoring and weights internals.

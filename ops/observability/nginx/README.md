@@ -1,7 +1,9 @@
-# Observability Nginx
+# Observability nginx
 
-Nginx configuration for exposing observability services.
+Nginx configuration that exposes the observability services.
 
 ## Contents
 
-- `nginx.conf`: reverse-proxy and auth configuration for Grafana/Loki endpoints.
+| Path | Purpose |
+| --- | --- |
+| `nginx.conf` | Reverse proxy and authentication for the training Grafana and Loki endpoints. |

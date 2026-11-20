@@ -11,7 +11,7 @@ from ops.tools.god_monitor.queries import Queries
 
 
 def _selected_types(args) -> list[str] | None:
-    selected = [name for name in ("text", "image", "env") if getattr(args, name, False)]
+    selected = [name for name in ("text", "image", "env", "quant") if getattr(args, name, False)]
     if getattr(args, "all", False) or not selected:
         return None  # None == all types
     return selected
@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--text", action="store_true")
     summary.add_argument("--image", action="store_true")
     summary.add_argument("--env", action="store_true")
+    summary.add_argument("--quant", action="store_true")
     summary.add_argument("--all", action="store_true")
     summary.add_argument("--pvp", action="store_true", help="Include PvP tables for env tournaments.")
 
@@ -39,6 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     tourn.add_argument("--text", action="store_true")
     tourn.add_argument("--image", action="store_true")
     tourn.add_argument("--env", action="store_true")
+    tourn.add_argument("--quant", action="store_true")
 
     tlist = sub.add_parser("tournaments", help="List tournaments.")
     tlist.add_argument("--active", action="store_true")
@@ -56,6 +58,8 @@ def _type_alias_from(args) -> str:
         return "image"
     if getattr(args, "env", False):
         return "env"
+    if getattr(args, "quant", False):
+        return "quant"
     return "all"
 
 

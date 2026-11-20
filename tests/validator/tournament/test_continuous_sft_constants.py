@@ -31,9 +31,6 @@ class TestFinalRoundComposition:
         expected = sum(t_cst.FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + t_cst.FINAL_ROUND_CONTINUOUS_SFT_TASKS
         assert t_cst.FINAL_ROUND_TEXT_TASKS == expected == 6
 
-    def test_boss_round_oversampled_task_count_default_is_disabled(self):
-        assert t_cst.FINAL_ROUND_OVERSAMPLED_TASKS == 0
-
 
 class TestLineages:
     def test_lineage_is_qwen3_8b_with_expected_seed(self):
@@ -43,7 +40,7 @@ class TestLineages:
 
     def test_training_hours_constant(self):
         # Fixed budget, pinned after prep too.
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 3.0
 
     def test_chunk_scheme_is_v2(self):
         assert t_cst.CONTINUOUS_SFT_CHUNK_SCHEME == ChunkScheme.V2

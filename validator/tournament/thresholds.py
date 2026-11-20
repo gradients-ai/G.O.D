@@ -1,12 +1,25 @@
+import math
+
 import numpy as np
 
 import validator.tournament.constants as t_cst
+from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
+from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
+from validator.db.sql.quant_references import get_quant_sku_references
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
+from validator.db.sql.submissions_and_scoring import get_task_node_eval_gpus
 from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.scoring.models import MinerResultsText
+from validator.scoring.quant_ranking import QuantReferenceUnavailable
+from validator.scoring.quant_ranking import reference_on
+from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import PairedExampleWins
 from validator.tournament.models import PairedLossComparison
+from validator.tournament.quant_reference import is_own_model_start_point
 from validator.tournament.task_results import get_task_results_for_ranking
 
 
@@ -149,6 +162,76 @@ def compare_paired_losses(
     )
 
 
+def align_onto_sku(losses: list[float], own_reference: list[float], anchor_reference: list[float]) -> list[float]:
+    """A per-example loss vector scored on one SKU, expressed on another SKU's scale: x_i * anchor_i / own_i.
+
+    That is the per-example normalisation x_i / ref_i(own SKU), multiplied back by the anchor side's own
+    reference ref_i(anchor SKU). The anchor's vector is unchanged by the same step, so the gate compares
+    both sides as multiples of their own SKU's reference while its dead zone and mean-gap floor stay in the
+    anchor's nats. An example whose own reference is not finite and positive becomes NaN, which the paired
+    comparison drops from both sides.
+    """
+    x = np.asarray(losses, dtype=np.float64)
+    own = np.asarray(own_reference, dtype=np.float64)
+    anchor = np.asarray(anchor_reference, dtype=np.float64)
+    usable = np.isfinite(own) & (own > 0) & np.isfinite(anchor)
+    aligned = np.divide(x * anchor, own, out=np.full_like(x, np.nan), where=usable)
+    return aligned.tolist()
+
+
+async def sku_aligned_losses(
+    task_type: TaskType,
+    task_id: str,
+    anchor_hotkey: str,
+    other_hotkey: str,
+    other_losses: list[float],
+    psql_db: PSQLDB,
+    start_point: TrainingStartPoint | None = None,
+) -> list[float]:
+    """other_hotkey's per-example losses on anchor_hotkey's SKU scale, for a paired quant comparison.
+
+    Non-quant vectors, and two quant rows scored on the same SKU of a task-common task (whose references
+    cancel exactly), come back unchanged. On an own-model task (start_point, see is_own_model_start_point) each
+    row has its own per-hotkey reference, so the references differ by player even on one SKU: the alignment always
+    runs, and a missing own reference raises (no fallback to the task-common one). Raises QuantReferenceUnavailable
+    when either row has no recorded GPU, either reference is missing, or the two references were not scored on the
+    same examples.
+    """
+    if task_type not in QUANT_TASK_TYPES:
+        return other_losses
+    gpus = await get_task_node_eval_gpus(task_id, [anchor_hotkey, other_hotkey], psql_db)
+    anchor_gpu, other_gpu = gpus.get(anchor_hotkey), gpus.get(other_hotkey)
+    if anchor_gpu is None or other_gpu is None:
+        raise QuantReferenceUnavailable(f"Task {task_id}: no recorded eval GPU for {anchor_hotkey} or {other_hotkey}")
+    own_model = is_own_model_start_point(start_point)
+    if not own_model and anchor_gpu.reference_key == other_gpu.reference_key:
+        return other_losses
+
+    references = await get_quant_sku_references(task_id, psql_db)
+    if own_model:
+        anchor_reference = references.get((anchor_hotkey, anchor_gpu.reference_key))
+        other_reference = references.get((other_hotkey, other_gpu.reference_key))
+    else:
+        # Task-common tasks: the references are the '' (task-common) ones.
+        anchor_reference, other_reference = reference_on("", anchor_gpu, references), reference_on("", other_gpu, references)
+    if anchor_reference is None or other_reference is None:
+        raise QuantReferenceUnavailable(
+            f"Task {task_id}: no cached reference for {anchor_hotkey} on {anchor_gpu.reference_key} "
+            f"or for {other_hotkey} on {other_gpu.reference_key}"
+        )
+    if (
+        anchor_reference.eval_set_fingerprint != other_reference.eval_set_fingerprint
+        or len(anchor_reference.per_example_losses) != len(other_losses)
+        or len(other_reference.per_example_losses) != len(other_losses)
+    ):
+        raise QuantReferenceUnavailable(f"Task {task_id}: the per-SKU references do not pair with the loss vectors")
+    logger.info(
+        f"Task {task_id}: aligning {other_hotkey} ({other_gpu.reference_key}) onto {anchor_hotkey} "
+        f"({anchor_gpu.reference_key}) per example"
+    )
+    return align_onto_sku(other_losses, other_reference.per_example_losses, anchor_reference.per_example_losses)
+
+
 def count_example_wins(
     a_losses: list[float],
     b_losses: list[float],
@@ -173,12 +256,15 @@ async def summarise_paired_examples(
     hotkey_b: str,
     psql_db: PSQLDB,
     deadzone_nats: float = t_cst.BOSS_ROUND_TIE_DEADZONE_NATS,
+    task_type: TaskType | None = None,
+    start_point: TrainingStartPoint | None = None,
 ) -> PairedExampleWins | None:
     """Report how a two-way task split example by example, or None if it cannot be paired.
 
     Read-only view for analytics. Returns None on exactly the cases the winner logic falls back to
     the mean loss for - no stored vector on either side, or vectors that do not line up - so a
-    consumer that gets None should show the mean losses instead.
+    consumer that gets None should show the mean losses instead. A quant task_type aligns hotkey_b
+    onto hotkey_a's SKU first, as the gates do, and is None without the references to do it.
     """
     a_losses, a_fingerprint = await get_per_example_losses(task_id, hotkey_a, psql_db)
     b_losses, b_fingerprint = await get_per_example_losses(task_id, hotkey_b, psql_db)
@@ -187,6 +273,12 @@ async def summarise_paired_examples(
         return None
     if a_fingerprint is not None and b_fingerprint is not None and a_fingerprint != b_fingerprint:
         return None
+    if task_type is not None:
+        try:
+            b_losses = await sku_aligned_losses(task_type, task_id, hotkey_a, hotkey_b, b_losses, psql_db, start_point)
+        except QuantReferenceUnavailable as e:
+            logger.warning(f"Paired summary unavailable: {e}")
+            return None
 
     a_wins, b_wins, n_examples = count_example_wins(a_losses, b_losses, deadzone_nats)
     return PairedExampleWins(
@@ -306,10 +398,141 @@ def challenger_beats_boss(boss_loss: float, challenger_loss: float, higher_is_be
       higher-is-better: challenger >= boss + abs(boss) * margin
       lower-is-better:  challenger <= boss - abs(boss) * margin
     """
-    bar = abs(boss_loss) * margin
+    # The bar is shortened by a relative tolerance so a challenger exactly `margin` better counts despite float rounding.
+    bar = abs(boss_loss) * margin * (1 - t_cst.CROWN_BOUNDARY_RELATIVE_TOLERANCE)
     if higher_is_better:
         return challenger_loss >= boss_loss + bar
     return challenger_loss <= boss_loss - bar
+
+
+def quant_challenger_beats_boss(boss_loss: float, challenger_loss: float, margin: float) -> bool:
+    """challenger_beats_boss for a lower-is-better quant task, whose scored fails carry a non-finite loss.
+
+    A non-finite score (a scored fail is inf, a missing one nan) is never compared arithmetically, since inf - inf is
+    nan and would make every comparison false: a non-finite challenger never beats the boss, and a finite challenger
+    always beats a non-finite boss.
+    """
+    if not math.isfinite(challenger_loss):
+        return False
+    if not math.isfinite(boss_loss):
+        return True
+    return challenger_beats_boss(boss_loss, challenger_loss, False, margin)
+
+
+def quant_challenger_takes_paired_task(
+    comparison: PairedLossComparison,
+    boss_scalar_loss: float,
+    challenger_scalar_loss: float,
+) -> tuple[bool, str]:
+    """challenger_takes_paired_task for a quant task: the ranking scalars may be non-finite (a scored fail).
+
+    A non-finite challenger scalar never wins; a non-finite boss scalar cannot be worse than the challenger's.
+    """
+    if comparison.is_draw or not comparison.challenger_won:
+        return False, comparison.reason
+    if not math.isfinite(challenger_scalar_loss):
+        return False, "won the paired comparison but its ranking scalar is not finite"
+    if not math.isfinite(boss_scalar_loss):
+        return True, comparison.reason
+    return challenger_takes_paired_task(comparison, boss_scalar_loss, challenger_scalar_loss)
+
+
+def quant_challenger_takes_fixed_boss_task(
+    comparison: PairedLossComparison,
+    boss_scalar_loss: float,
+    challenger_scalar_loss: float,
+) -> tuple[bool, str]:
+    """The fixed quant boss-round task: the paired per-example test AND a scalar loss QUANT_FIXED_BOSS_MIN_IMPROVEMENT better.
+
+    A paired win that misses the scalar improvement goes to the boss, and the reason says by how much it missed.
+    Shared by crowning and by the emission projection.
+    """
+    won, reason = quant_challenger_takes_paired_task(comparison, boss_scalar_loss, challenger_scalar_loss)
+    if not won:
+        return False, reason
+    minimum = t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT
+    if quant_challenger_beats_boss(boss_scalar_loss, challenger_scalar_loss, minimum):
+        return True, reason
+    improvement = (boss_scalar_loss - challenger_scalar_loss) / abs(boss_scalar_loss)
+    return False, (
+        f"won the paired comparison but the scalar loss improved only {improvement * 100:.2f}%, "
+        f"below the {minimum * 100:g}% minimum ({challenger_scalar_loss:.6f} vs {boss_scalar_loss:.6f})"
+    )
+
+
+def _under_freeform_cap(result: MinerResultsText | None) -> bool:
+    return result is not None and result.quant_failure is None and result.passed_bar is True
+
+
+def resolve_freeform_boss_task(
+    boss: MinerResultsText | None, opponent: MinerResultsText | None, margin: float
+) -> BossRoundTaskVerdict:
+    """Decide a freeform boss task on the cap, then on effective bytes. Never a draw.
+
+    The challenger takes it only by being under the cap and either the boss not being, or having at
+    most (1 - margin) x the boss's effective bytes (total bytes x the loss penalty). The margin is on
+    effective size. Every other case - both over the cap, the challenger over it, a scored fail, a missing
+    byte count - stays with the boss.
+    """
+    if not _under_freeform_cap(opponent):
+        return BossRoundTaskVerdict(winner_hotkey=EMISSION_BURN_HOTKEY, decided_by="cap: challenger did not pass")
+    if not _under_freeform_cap(boss):
+        return BossRoundTaskVerdict(winner_hotkey=opponent.hotkey, decided_by="cap: boss failed, challenger passed")
+    if opponent.effective_bytes is None or boss.effective_bytes is None:
+        return BossRoundTaskVerdict(winner_hotkey=EMISSION_BURN_HOTKEY, decided_by="bytes: missing byte count")
+    bar = (1 - margin) * boss.effective_bytes * (1 + t_cst.CROWN_BOUNDARY_RELATIVE_TOLERANCE)
+    challenger_won = opponent.effective_bytes <= bar
+    return BossRoundTaskVerdict(
+        winner_hotkey=opponent.hotkey if challenger_won else EMISSION_BURN_HOTKEY,
+        decided_by=(
+            f"effective bytes {opponent.effective_bytes:.0f} vs {boss.effective_bytes:.0f} ({margin * 100:g}% margin)"
+        ),
+    )
+
+
+def challenger_within_freeform_allowed_loss(
+    boss: MinerResultsText | None,
+    challenger: MinerResultsText | None,
+    margin: float = t_cst.BOSS_ROUND_FREEFORM_ALLOWED_LOSS_WITHIN,
+) -> bool:
+    """Whether a challenger that lost a freeform boss task lost within the allowed loss.
+
+    Within means under the cap with effective bytes at most (1 + margin) x the boss's, inclusive. A scored fail,
+    a missing or non-finite byte count on either side, or a missing result is not within.
+    """
+    if not _under_freeform_cap(challenger) or boss is None:
+        return False
+    boss_bytes, challenger_bytes = boss.effective_bytes, challenger.effective_bytes
+    if boss_bytes is None or challenger_bytes is None or not math.isfinite(boss_bytes) or not math.isfinite(challenger_bytes):
+        return False
+    return challenger_bytes <= (1 + margin) * boss_bytes
+
+
+def compare_paired_losses_swapped(boss_losses: list[float], challenger_losses: list[float]) -> PairedLossComparison:
+    """The paired gate with the sides swapped: does the BOSS clear the bar against the challenger?
+
+    Same function and same default constants as the forward call (dead zone, win rate, mean-gap floor,
+    bootstrap, seed), on the same aligned vectors; comparison.challenger_won then means the boss won.
+    """
+    return compare_paired_losses(boss_losses=challenger_losses, challenger_losses=boss_losses)
+
+
+def challenger_within_paired_allowed_loss(
+    boss_losses: list[float],
+    challenger_losses: list[float],
+    boss_scalar_loss: float,
+    challenger_scalar_loss: float,
+) -> tuple[bool, PairedLossComparison]:
+    """Whether a challenger that lost a fixed task (or any other paired-loss task) lost within the allowed loss.
+
+    Within unless the boss would have taken the task from the challenger under the same paired bar with the
+    sides swapped, scalar gate included. A draw in the swapped comparison (nothing decided) is within. The vectors
+    are the ones the forward verdict used: the challenger's already aligned onto the boss's SKU scale. Returns
+    the verdict and the swapped comparison for logging; callers fail closed (not within) when they cannot pair.
+    """
+    swapped = compare_paired_losses_swapped(boss_losses, challenger_losses)
+    boss_takes_it, _ = quant_challenger_takes_paired_task(swapped, challenger_scalar_loss, boss_scalar_loss)
+    return not boss_takes_it, swapped
 
 
 async def update_threshold_adjusted_quality_scores_for_task(

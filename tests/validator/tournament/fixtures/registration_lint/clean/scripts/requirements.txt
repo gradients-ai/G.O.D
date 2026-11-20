@@ -1,0 +1,6 @@
+--index-url https://pypi.org/simple
+# a comment
+torch==2.8.0 \
+    --hash=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+transformers==5.12.1 --hash=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+peft @ git+https://github.com/huggingface/peft.git@0123456789abcdef0123456789abcdef01234567

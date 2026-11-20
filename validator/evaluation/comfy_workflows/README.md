@@ -1,11 +1,13 @@
-# Comfy Workflows
+# Comfy workflows
 
-ComfyUI workflow templates used by image evaluation.
+Location for ComfyUI workflow templates.
 
 ## Contents
 
-- `lora_flux.json`: Flux LoRA evaluation workflow.
-- `lora_ideogram4.json`: Ideogram 4 LoRA evaluation workflow.
-- `lora_krea2.json`: Krea 2 LoRA evaluation workflow.
-- `lora_qwen-image.json`: Qwen image LoRA evaluation workflow.
-- `lora_z-image.json`: Z-Image LoRA evaluation workflow.
+| Path | Purpose |
+| --- | --- |
+| `README.md` | This page. The directory holds no workflow files. |
+
+## See also
+
+- [Evaluation internals](../README.md): evaluation internals and failure classes.

@@ -73,13 +73,29 @@ async def debug_weight_calculation():
     else:
         print("  ❌ No image tournament data")
 
+    print("\n📊 Quant Tournament Data:")
+    if tournament_audit_data.quant_tournament_data:
+        print(f"  Tournament ID: {tournament_audit_data.quant_tournament_data.tournament_id}")
+        print(f"  Base Winner: {tournament_audit_data.quant_tournament_data.base_winner_hotkey}")
+        print(f"  Winner: {tournament_audit_data.quant_tournament_data.winner_hotkey}")
+        print(f"  Number of rounds: {len(tournament_audit_data.quant_tournament_data.rounds)}")
+        for idx, round_data in enumerate(tournament_audit_data.quant_tournament_data.rounds):
+            print(
+                f"    Round {round_data.round_number} ({round_data.round_type}): "
+                f"{round_data.round_id} - {len(round_data.tasks)} tasks"
+            )
+    else:
+        print("  ❌ No quant tournament data")
+
     print("\n💰 Weight Distribution:")
     print(f"  Text tournament weight: {tournament_audit_data.text_tournament_weight:.6f}")
     print(f"  Image tournament weight: {tournament_audit_data.image_tournament_weight:.6f}")
+    print(f"  Quant tournament weight: {tournament_audit_data.quant_tournament_weight:.6f}")
     print(f"  Burn weight: {tournament_audit_data.burn_weight:.6f}")
     total_weight = (
         tournament_audit_data.text_tournament_weight
         + tournament_audit_data.image_tournament_weight
+        + tournament_audit_data.quant_tournament_weight
         + tournament_audit_data.burn_weight
     )
     print(
@@ -177,6 +193,20 @@ async def debug_weight_calculation():
         else:
             print("  ❌ Node not found on chain")
 
+    # Check quant tournament winner
+    if tournament_audit_data.quant_tournament_data and tournament_audit_data.quant_tournament_data.winner_hotkey:
+        winner_hotkey = tournament_audit_data.quant_tournament_data.winner_hotkey
+        print(f"\n🏆 Quant Tournament Winner: {winner_hotkey}")
+        node = hotkey_to_node.get(winner_hotkey)
+        if node:
+            weight = all_node_weights[node.node_id]
+            weight_pct = (weight / sum(all_node_weights) * 100) if sum(all_node_weights) > 0 else 0
+            print(f"  Node ID: {node.node_id}")
+            print(f"  Weight: {weight:.6f} ({weight_pct:.4f}%)")
+            print(f"  Current chain incentive: {node.incentive / 65535:.6f}")
+        else:
+            print("  ❌ Node not found on chain")
+
     # Check a few random participants
     if tournament_audit_data.participants:
         print("\n👥 Sample Tournament Participants (first 3):")
@@ -210,6 +240,7 @@ async def debug_weight_calculation():
         "tournament_audit_data": {
             "text_tournament_weight": tournament_audit_data.text_tournament_weight,
             "image_tournament_weight": tournament_audit_data.image_tournament_weight,
+            "quant_tournament_weight": tournament_audit_data.quant_tournament_weight,
             "burn_weight": tournament_audit_data.burn_weight,
             "participants_count": len(tournament_audit_data.participants),
             "text_tournament_id": tournament_audit_data.text_tournament_data.tournament_id
@@ -217,6 +248,9 @@ async def debug_weight_calculation():
             else None,
             "image_tournament_id": tournament_audit_data.image_tournament_data.tournament_id
             if tournament_audit_data.image_tournament_data
+            else None,
+            "quant_tournament_id": tournament_audit_data.quant_tournament_data.tournament_id
+            if tournament_audit_data.quant_tournament_data
             else None,
         },
         "weight_stats": {

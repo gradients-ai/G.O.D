@@ -12,34 +12,14 @@ from validator.tournament import task_creator
 
 def _patch_replace_seams(monkeypatch, original_task):
     monkeypatch.setattr(task_creator.task_sql, "get_task", AsyncMock(return_value=original_task))
+    # an unseeded text tournament: no seed rows, so a group-round task keeps the earlier redraw
+    monkeypatch.setattr(task_creator.seeds_sql, "is_seeded_text_tournament", AsyncMock(return_value=False))
     monkeypatch.setattr(task_creator.task_sql, "get_nodes_assigned_to_task", AsyncMock(return_value=[]))
     monkeypatch.setattr(task_creator.task_sql, "detach_task_from_tournament", AsyncMock())
     monkeypatch.setattr(task_creator, "_create_and_register_tournament_task", AsyncMock())
 
 
-async def test_round_one_oversampled_replacement_preserves_model(monkeypatch):
-    original = SimpleNamespace(
-        task_id="orig-task",
-        task_type=TaskType.INSTRUCTTEXTTASK,
-        status=TaskStatus.PREP_TASK_FAILURE.value,
-        model_id=task_creator.OVERSAMPLED_LATER_MODELS[0].model_id,
-        model_params_count=2_000_000_000,
-    )
-    _patch_replace_seams(monkeypatch, original)
-
-    replacement_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.INSTRUCTTEXTTASK))
-    monkeypatch.setattr(task_creator, "_create_round_one_group_text_replacement_task", replacement_mock)
-
-    new_task_id = await task_creator.replace_tournament_task(
-        "orig-task", "tourn", "tourn_round_001", "tourn_round_001_group_001", None, MagicMock()
-    )
-
-    assert new_task_id == "new-task"
-    replacement_mock.assert_awaited_once()
-    assert replacement_mock.call_args.kwargs["model_id_override"] == original.model_id
-
-
-async def test_round_one_non_oversampled_replacement_keeps_small_pool(monkeypatch):
+async def test_round_one_replacement_keeps_small_pool(monkeypatch):
     original = SimpleNamespace(
         task_id="orig-task",
         task_type=TaskType.INSTRUCTTEXTTASK,
@@ -57,29 +37,7 @@ async def test_round_one_non_oversampled_replacement_keeps_small_pool(monkeypatc
     )
 
     replacement_mock.assert_awaited_once()
-    assert replacement_mock.call_args.kwargs["model_id_override"] is None
-
-
-async def test_final_round_oversampled_replacement_passes_override_to_same_type(monkeypatch):
-    original = SimpleNamespace(
-        task_id="orig-task",
-        task_type=TaskType.DPOTASK,
-        status=TaskStatus.PREP_TASK_FAILURE.value,
-        model_id=task_creator.OVERSAMPLED_LATER_MODELS[0].model_id,
-        model_params_count=14_000_000_000,
-    )
-    _patch_replace_seams(monkeypatch, original)
-
-    same_type_mock = AsyncMock(return_value=SimpleNamespace(task_id="new-task", task_type=TaskType.DPOTASK))
-    monkeypatch.setattr(task_creator, "create_new_task_of_same_type", same_type_mock)
-
-    new_task_id = await task_creator.replace_tournament_task(
-        "orig-task", "tourn", "tourn_round_004", None, "tourn_round_004_pair_001", MagicMock(), is_final_round=True
-    )
-
-    assert new_task_id == "new-task"
-    same_type_mock.assert_awaited_once()
-    assert same_type_mock.call_args.kwargs["model_id_override"] == original.model_id
+    assert replacement_mock.call_args.kwargs == {}
 
 
 async def test_continuous_sft_replacement_recreates_the_same_lineage(monkeypatch):

@@ -1,15 +1,16 @@
-# SFT Dataset Generator
+# SFT dataset generator
 
-Tools for generating and formatting synthetic SFT datasets.
+Plays game episodes against an environment server with an LLM player and writes them as an instruct-style dataset.
 
 ## Contents
 
-- `claude_client.py`: Claude client wrapper.
-- `config.py`: generator configuration.
-- `dataset_formatter.py`: output formatting helpers.
-- `env_client.py`: environment client helper.
-- `game_prompts.py`: prompt templates for game/environment datasets.
-- `generate.py`: main generation script.
-- `requirements.txt`: tool-specific Python requirements.
-- `run.sh`: shell wrapper for running generation.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `generate.py` | Main script: runs episodes per game and writes the dataset. |
+| `config.py` | Game configuration and argument parsing. |
+| `claude_client.py` | LLM player client with token usage tracking. |
+| `env_client.py` | Environment server client. |
+| `game_prompts.py` | Prompt templates per game. |
+| `dataset_formatter.py` | Checkpointing, formatting and validation of recorded episodes. |
+| `requirements.txt` | Python requirements of the tool. |
+| `run.sh` | Shell wrapper that runs generation. |

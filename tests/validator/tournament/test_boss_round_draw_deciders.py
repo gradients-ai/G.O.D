@@ -428,6 +428,7 @@ async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
 
     monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
     monkeypatch.setattr(round_results, "get_tournament", _tournament)
+    monkeypatch.setattr(round_results, "is_seeded_text_tournament", lambda _tournament_id, _db: _async(False))
     monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", _assigned)
     monkeypatch.setattr(round_results, "get_task", lambda task_id, _psql_db: _async(tasks[task_id]))
     monkeypatch.setattr(round_results, "get_task_results_for_ranking", lambda tid, _db: _async(results[tid]))
@@ -482,6 +483,7 @@ async def test_a_drawn_continuous_sft_task_with_an_unparseable_lineage_gets_a_bu
 
     monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
     monkeypatch.setattr(round_results, "get_tournament", _tournament)
+    monkeypatch.setattr(round_results, "is_seeded_text_tournament", lambda _tournament_id, _db: _async(False))
     monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", lambda _tid, _db: _async(2))
     monkeypatch.setattr(round_results, "get_task", lambda _tid, _db: _async(orphaned))
     monkeypatch.setattr(

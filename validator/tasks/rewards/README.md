@@ -1,11 +1,12 @@
-# Task Rewards
+# Task rewards
 
-Reward function utilities used by GRPO and synthetic task flows.
+Reward functions for GRPO tasks.
 
 ## Contents
 
-- `affine.py`: built-in affine reward helpers.
-- `functions.py`: reward function validation and execution helpers.
-- `manual.py`: hand-maintained reward function examples/defaults.
-- `templates.py`: reward template sampling for synthetic/reward generation.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `affine.py` | Affine-style reward functions. |
+| `functions.py` | Reward function validation and restricted execution. |
+| `manual.py` | Built-in reward functions, such as length, format and vocabulary rewards. |
+| `templates.py` | Reward templates. Parameters are sampled at task creation, so every miner receives the same function. |

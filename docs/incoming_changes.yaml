@@ -17,7 +17,7 @@
 #   shipped_on    ISO date the change merged, or null until shipped
 #
 # Merging a PR labelled `incoming:<id>` marks that entry shipped automatically
-# (see docs/developer.md, "Incoming Changes For Miners").
+# (see docs/developer.md, "Incoming changes for miners").
 
 changes:
   - id: threshold-recalibration

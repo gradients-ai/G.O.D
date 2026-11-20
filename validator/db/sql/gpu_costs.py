@@ -53,6 +53,8 @@ async def start_cost_run(
                     SELECT tournament_id FROM tournament_tasks WHERE task_id = $1
                     UNION ALL
                     SELECT tournament_id FROM benchmark_task_copies WHERE copy_task_id = $1
+                    UNION ALL
+                    SELECT tournament_id FROM tournament_seed_tasks WHERE task_id = $1
                     LIMIT 1
                     """,
                     task_uuid,

@@ -1,10 +1,15 @@
-# Config Tools
+# Config tools
 
-Interactive configuration generation.
+Interactive generation of env files.
 
 ## Contents
 
-- `create_config.py`: writes `.vali.env`, `.trainer.env`, `.1.env`, or auditor env files.
-- `input_validation.py`: reusable prompt/input validators.
-- `models.py`: dataclass config shapes written by the generator.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `create_config.py` | Prompts for settings and writes the env file for a validator, trainer, miner or auditor. |
+| `input_validation.py` | Prompt input validators. |
+| `models.py` | Config shapes the generator writes. |
+
+## See also
+
+- [Setup](../../../docs/developer.md#setup): installation and env files.

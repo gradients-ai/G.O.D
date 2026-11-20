@@ -8,6 +8,7 @@ import random
 import re
 import time
 from collections import defaultdict
+from typing import Callable
 
 import numpy as np
 import torch
@@ -31,14 +32,18 @@ from core.models.model_prep_models import LayerGroupWeightStats
 from core.models.model_prep_models import SeqLengthDistribution
 from core.models.model_prep_models import ThroughputStats
 from core.models.model_prep_models import WeightStats
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from core.near_duplicate import FORWARD_SAMPLE_SIZE
 from core.near_duplicate import LENGTH_SAMPLE_SEED
 from core.near_duplicate import LENGTH_SAMPLE_SIZE
 from core.near_duplicate import compute_near_duplicate_rate as _compute_near_duplicate_rate
+from trainer.model_prep.device_probes import run_quant_device_probes
 
 
 BPB_REFERENCE_MODEL = "gpt2"
+# Column holding the messages of chat-format records (validator STANDARD_CHAT_MESSAGES_COLUMN).
+CHAT_MESSAGES_COLUMN = "conversations"
 
 # Token-length stats are computed on a random sample and scaled to the full
 # record count; model forward passes use a smaller subset of the SAME sample.
@@ -103,7 +108,7 @@ def _extract_chat_texts(records: list[dict]) -> list[tuple[str, str]]:
     """Returns list of (prompt, completion) tuples from conversation turns."""
     results = []
     for r in records:
-        convos = r.get("conversations", [])
+        convos = r.get(CHAT_MESSAGES_COLUMN, [])
         if isinstance(convos, str):
             results.append((convos, ""))
             continue
@@ -118,6 +123,18 @@ def _extract_chat_texts(records: list[dict]) -> list[tuple[str, str]]:
                 assistant_parts.append(content)
         results.append((" ".join(user_parts), " ".join(assistant_parts)))
     return results
+
+
+def text_extractor_for(task_type: TaskType, records: list[dict]) -> Callable[[list[dict]], list[tuple[str, str]]]:
+    """(prompt, completion) extractor for an instruct-like task.
+
+    A quant task carries instruct or chat data, so its records decide: a quant task on
+    chat data would otherwise get an empty-completion baseline.
+    """
+    is_chat = task_type == TaskType.CHATTASK or (
+        task_type in QUANT_TASK_TYPES and bool(records) and CHAT_MESSAGES_COLUMN in records[0]
+    )
+    return _extract_chat_texts if is_chat else _extract_instruct_texts
 
 
 # --- Tokenization helper ---
@@ -492,7 +509,7 @@ def _compute_log_probs(
 
 def _compute_instruct_stats(
     model, tokenizer, records: list[dict], device: str, max_samples: int,
-    text_extractor=None,
+    text_extractor=None, include_training_dynamics: bool = True,
 ) -> InstructBaselineStats:
     t_total = time.time()
     extractor = text_extractor or _extract_instruct_texts
@@ -528,13 +545,15 @@ def _compute_instruct_stats(
     )
     print(f"[stats] Dataset stats done in {time.time() - t0:.1f}s", flush=True)
 
-    base_dynamics = _compute_base_training_dynamics(model, tokenizer, all_texts, device)
+    training = None
+    if include_training_dynamics:
+        base_dynamics = _compute_base_training_dynamics(model, tokenizer, all_texts, device)
 
-    t0 = time.time()
-    masked_loss = _compute_masked_loss(model, tokenizer, list(prompts), list(completions), device)
-    print(f"[stats] Masked loss done in {time.time() - t0:.1f}s (loss={masked_loss:.4f})", flush=True)
+        t0 = time.time()
+        masked_loss = _compute_masked_loss(model, tokenizer, list(prompts), list(completions), device)
+        print(f"[stats] Masked loss done in {time.time() - t0:.1f}s (loss={masked_loss:.4f})", flush=True)
 
-    training = InstructTrainingDynamics(**base_dynamics, masked_completion_loss=masked_loss)
+        training = InstructTrainingDynamics(**base_dynamics, masked_completion_loss=masked_loss)
 
     t0 = time.time()
     weights = compute_weight_stats(model)
@@ -688,6 +707,40 @@ def _generate_completions(model, tokenizer, prompts: list[str], device, max_new_
     return completions
 
 
+def _compute_quant_stats(
+    model,
+    tokenizer,
+    data_records: list[dict],
+    task_type: TaskType,
+    device: str,
+    max_samples: int,
+) -> InstructBaselineStats:
+    """Instruct-like dataset and weight stats (no training-dynamics passes), the throughput probe, then the device probes."""
+    print(f"Computing quant stats (task_type={task_type})...", flush=True)
+    t0 = time.time()
+    extractor = text_extractor_for(task_type, data_records)
+    stats = _compute_instruct_stats(
+        model, tokenizer, data_records, device, max_samples, text_extractor=extractor, include_training_dynamics=False
+    )
+    t_dynamics = time.time() - t0
+
+    t0 = time.time()
+    seq_dist = stats.dataset.seq_length_distribution
+    packed_len = max(seq_dist.p95, 2 * seq_dist.p50)
+    stats.throughput = measure_training_throughput(model, device, packed_len, model.config.vocab_size)
+    t_throughput = time.time() - t0
+
+    t0 = time.time()
+    stats.device = run_quant_device_probes(model, device, stats.throughput, model.config.vocab_size)
+    t_probes = time.time() - t0
+    print(
+        f"[stats] quant: dataset+weights {t_dynamics:.1f}s, throughput probe {t_throughput:.1f}s, "
+        f"device probes {t_probes:.1f}s",
+        flush=True,
+    )
+    return stats
+
+
 # --- Main entry point for text tasks ---
 
 def compute_text_stats(
@@ -698,12 +751,16 @@ def compute_text_stats(
     max_samples: int = FORWARD_SAMPLE_SIZE,
     reward_functions=None,
 ) -> BaselineStats:
-    """Compute stats for text-based tasks (instruct, DPO, GRPO, chat)."""
+    """Compute stats for text-based tasks (instruct, DPO, GRPO, chat); quant tasks also get device probes."""
     device = str(_get_model_device(model))
 
+    if task_type in QUANT_TASK_TYPES:
+        return _compute_quant_stats(model, tokenizer, data_records, task_type, device, max_samples)
+
     if task_type == TaskType.CHATTASK:
-        print("Computing chat stats...", flush=True)
-        stats = _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, text_extractor=_extract_chat_texts)
+        print(f"Computing instruct-like stats (task_type={task_type})...", flush=True)
+        extractor = text_extractor_for(task_type, data_records)
+        stats = _compute_instruct_stats(model, tokenizer, data_records, device, max_samples, text_extractor=extractor)
     elif task_type == TaskType.DPOTASK:
         print("Computing DPO stats...", flush=True)
         stats = _compute_dpo_stats(model, tokenizer, data_records, device, max_samples)

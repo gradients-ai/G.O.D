@@ -22,7 +22,6 @@ async def project(percentage_improvement: float = 10.0):
             tournament_type=TournamentType.TEXT,
             percentage_improvement=percentage_improvement,
             base_weight=cts.TOURNAMENT_TEXT_WEIGHT,
-            max_weight=cts.MAX_TEXT_TOURNAMENT_WEIGHT,
         )
 
 

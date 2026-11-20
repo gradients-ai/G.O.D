@@ -1,7 +1,9 @@
-# Database Tools
+# Database tools
 
-Database inspection snippets and helpers.
+SQL for inspecting validator state by hand.
 
 ## Contents
 
-- `task_inspection.sql`: SQL snippets for inspecting task state.
+| Path | Purpose |
+| --- | --- |
+| `task_inspection.sql` | Queries for inspecting task state, such as recent tasks where every miner scored zero. |

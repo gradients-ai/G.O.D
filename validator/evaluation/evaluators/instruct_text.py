@@ -400,6 +400,14 @@ def evaluate_instruct_text_model(
     return evaluation_results
 
 
+def _read_eval_gpu() -> dict | None:
+    """The GPU this evaluation ran on (QuantEvalGpu fields: name and SM count; no SKU check), or None without CUDA."""
+    if not torch.cuda.is_available():
+        return None
+    props = torch.cuda.get_device_properties(0)
+    return {"name": props.name, "sm_count": props.multi_processor_count}
+
+
 def _warn_if_per_example_mean_diverges(per_example_losses: list[float], eval_loss: float) -> None:
     """The vector must average to the scalar the trainer reported.
 

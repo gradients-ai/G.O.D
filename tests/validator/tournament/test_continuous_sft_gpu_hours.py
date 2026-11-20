@@ -1,4 +1,4 @@
-"""Continuous-SFT compute sizing: GPUs stay a forced 4xH100, hours are a fixed budget.
+"""Continuous-SFT compute sizing: GPUs stay a forced 2xH100, hours are a fixed budget.
 
 The GPU force must return before get_model_num_params is ever reached (the carried base is a
 miner repo that may be gated and would throw during a lookup). Hours are pinned to
@@ -27,7 +27,7 @@ def _boom(*args, **kwargs):
 
 
 class TestGpuRequirement:
-    def test_continuous_sft_forces_4xh100_without_param_fetch(self, monkeypatch):
+    def test_continuous_sft_forces_2xh100_without_param_fetch(self, monkeypatch):
         monkeypatch.setattr(gpu_requirements, "get_model_num_params", _boom)
         req = gpu_requirements.get_tournament_gpu_requirement(
             TaskType.CHATTASK,
@@ -35,7 +35,7 @@ class TestGpuRequirement:
             model_id=LINEAGE_SEED,
             training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
         )
-        assert req == GpuRequirement.H100_4X
+        assert req == GpuRequirement.H100_2X
 
     def test_non_continuous_task_still_uses_normal_routing(self, monkeypatch):
         # The force must not leak into normal tasks: image still 1xH100, no param fetch.
@@ -76,8 +76,8 @@ class TestPinnedHours:
             max_hours=max_hours,
         )
 
-    def test_constant_is_two_and_a_half(self):
-        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 2.5
+    def test_constant_is_three(self):
+        assert t_cst.CONTINUOUS_SFT_TRAINING_HOURS == 3.0
 
     def test_typical_stats(self):
         assert self._hours(_stats(200_000_000, 100_000, 8_000.0)) == t_cst.CONTINUOUS_SFT_TRAINING_HOURS
@@ -140,13 +140,13 @@ class TestPinnedHours:
         assert got == expected
         assert scheduler.compute_hours_from_baseline_stats(4.0, None, TaskType.INSTRUCTTEXTTASK, model_id="org/model") == 4.0
 
-    def test_throughput_budget_still_divides_by_4_gpus_for_continuous_start_point(self):
-        # The raw estimate (no longer used for continuous tasks) still sizes by the forced 4xH100.
-        # A small dataset keeps both budgets under the MAX_TRAINING_HOURS cap.
+    def test_throughput_budget_divides_by_2_gpus_for_continuous_start_point(self):
+        # The raw estimate (not used for continuous tasks) sizes by the forced 2xH100, the same tier DEFAULT gives
+        # an ~8.6B model from params. A small dataset keeps both budgets under the MAX_TRAINING_HOURS cap.
         continuous = scheduler.compute_training_hours(
             20_000_000, SEED_PARAMS, TaskType.CHATTASK, 8_000.0, TrainingStartPoint.CONTINUOUS_SFT
         )
         default = scheduler.compute_training_hours(
             20_000_000, SEED_PARAMS, TaskType.CHATTASK, 8_000.0, TrainingStartPoint.DEFAULT
         )
-        assert continuous < default
+        assert continuous == default

@@ -14,6 +14,12 @@ class TrainingStartPoint(str, Enum):
     CONTINUATION = "continuation"
     FROM_SCRATCH = "from_scratch"
     PREVIOUS_WINNER = "previous_winner"
+    # Each miner starts from, and is referenced against, its own round-1 output (the validator sets
+    # task_nodes.starting_model_repo per miner).
+    OWN_R1_MODEL = "own_r1_model"
+    # Boss-round chained slots: each player starts from, and is referenced against, its OWN output on the upstream
+    # (instruct) task of the same round (the validator sets task_nodes.starting_model_repo per miner).
+    OWN_UPSTREAM_MODEL = "own_upstream_model"
     # Lineage tag for the continuous-SFT boss task; the trainer ignores it, the validator uses it
     # to locate the task and advance continuous_sft_state.
     CONTINUOUS_SFT = "continuous_sft"

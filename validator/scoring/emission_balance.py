@@ -13,8 +13,16 @@ the minimums' ratio, larger values react harder to a given imbalance.
 
     flex_shareᵢ ∝ minimum_shareᵢ · (minimum_shareᵢ / entrant_shareᵢ) ** alpha
     wᵢ = minimumᵢ + EMISSION_FLEX_POOL · flex_shareᵢ
+
+Compression's part of the flex pool phases in over cts.QUANT_EMISSION_RAMP_DAYS from
+cts.QUANT_EMISSION_RAMP_START: it is scaled by the ramp factor and the rest goes to text and image in
+proportion to their own flex parts. Compression keeps its whole minimum throughout. Every base stays in
+[minimum, minimum + flex], and at a full ramp the split is exactly the one above.
 """
 
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from statistics import mean
 
 import validator.scoring.constants as cts
@@ -25,24 +33,50 @@ from validator.db.sql.tournaments import get_recent_completed_entrant_counts
 
 logger = get_logger(__name__)
 
-_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.IMAGE)
+_TYPES: tuple[TournamentType, ...] = (TournamentType.TEXT, TournamentType.QUANT, TournamentType.IMAGE)
 
 
 def _minimums() -> dict[TournamentType, float]:
     return {
         TournamentType.TEXT: cts.TOURNAMENT_TEXT_WEIGHT,
+        TournamentType.QUANT: cts.TOURNAMENT_QUANT_WEIGHT,
         TournamentType.IMAGE: cts.TOURNAMENT_IMAGE_WEIGHT,
+    }
+
+
+def quant_ramp_factor(now: datetime) -> float:
+    """Fraction of its flex part compression has earned at ``now``: 0 before the start (or with none set), 1 after."""
+    if cts.QUANT_EMISSION_RAMP_START is None:
+        return 0.0
+    if cts.QUANT_EMISSION_RAMP_START.tzinfo is None:
+        raise ValueError("QUANT_EMISSION_RAMP_START must be timezone-aware")
+    elapsed = (now - cts.QUANT_EMISSION_RAMP_START) / timedelta(days=cts.QUANT_EMISSION_RAMP_DAYS)
+    return min(max(elapsed, 0.0), 1.0)
+
+
+def _phase_in_quant_flex(desirability: dict[TournamentType, float], ramp: float) -> dict[TournamentType, float]:
+    """Scale quant's flex desirability by ``ramp`` and hand the rest to text and image in proportion to theirs.
+
+    The total is unchanged, so text's and image's flex parts only grow toward, never past, the whole flex pool.
+    """
+    unearned = (1.0 - ramp) * desirability[TournamentType.QUANT]
+    text_image = desirability[TournamentType.TEXT] + desirability[TournamentType.IMAGE]
+    return {
+        TournamentType.TEXT: desirability[TournamentType.TEXT] + unearned * desirability[TournamentType.TEXT] / text_image,
+        TournamentType.QUANT: ramp * desirability[TournamentType.QUANT],
+        TournamentType.IMAGE: desirability[TournamentType.IMAGE] + unearned * desirability[TournamentType.IMAGE] / text_image,
     }
 
 
 def compute_dynamic_base_weights(
     entrant_counts: dict[TournamentType, float | None],
+    now: datetime,
 ) -> dict[TournamentType, float]:
-    """Pure allocator: map rolling entrant counts per type to base emission weights.
+    """Pure allocator: map rolling entrant counts per type to base emission weights at ``now``.
 
     A ``None`` (or non-positive) count means that type has no usable history; it is treated as
     average-subscribed so it neither gains nor loses flex. With balanced participation the flex
-    pool splits at the minimums' ratio.
+    pool splits at the minimums' ratio. Quant's part of the flex pool is phased in by ``quant_ramp_factor``.
     """
     minimum = _minimums()
     minimum_total = sum(minimum.values())
@@ -62,11 +96,22 @@ def compute_dynamic_base_weights(
     alpha = cts.EMISSION_BALANCE_ALPHA
     desirability = {t: minimum_share[t] * (1.0 / pressure[t]) ** alpha for t in _TYPES}
     total_desirability = sum(desirability.values())
+    desirability = _phase_in_quant_flex(desirability, quant_ramp_factor(now))
     return {t: minimum[t] + cts.EMISSION_FLEX_POOL * desirability[t] / total_desirability for t in _TYPES}
 
 
+def max_weight_by_type() -> dict[TournamentType, float]:
+    """Upper bound of each type's pool (its minimum plus the whole flex pool)."""
+    return {
+        TournamentType.TEXT: cts.MAX_TEXT_TOURNAMENT_WEIGHT,
+        TournamentType.QUANT: cts.MAX_QUANT_TOURNAMENT_WEIGHT,
+        TournamentType.IMAGE: cts.MAX_IMAGE_TOURNAMENT_WEIGHT,
+    }
+
+
 async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
-    """Fetch rolling entrant counts per type and compute the dynamic base split."""
+    """Fetch rolling entrant counts per type and compute the dynamic base split at the current time."""
+    now = datetime.now(timezone.utc)
     counts: dict[TournamentType, float | None] = {}
     for tournament_type in _TYPES:
         recent = await get_recent_completed_entrant_counts(
@@ -77,12 +122,14 @@ async def get_dynamic_base_weights(psql_db) -> dict[TournamentType, float]:
         )
         counts[tournament_type] = mean(recent) if recent else None
 
-    weights = compute_dynamic_base_weights(counts)
+    weights = compute_dynamic_base_weights(counts, now)
     logger.info(
-        "Dynamic emission base split (rolling-%d entrants %s): text=%.4f image=%.4f",
+        "Dynamic emission base split (rolling-%d entrants %s, quant ramp %.4f): text=%.4f quant=%.4f image=%.4f",
         cts.EMISSION_BALANCE_ROLLING_WINDOW,
         {t.value: counts[t] for t in _TYPES},
+        quant_ramp_factor(now),
         weights[TournamentType.TEXT],
+        weights[TournamentType.QUANT],
         weights[TournamentType.IMAGE],
     )
     return weights

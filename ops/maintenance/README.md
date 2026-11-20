@@ -1,7 +1,9 @@
-# Maintenance Scripts
+# Maintenance
 
-Host-level maintenance scripts for operator machines. These scripts can modify system state and should be reviewed before running.
+Host-level maintenance scripts for operator machines. They modify system state: read a script before running it.
 
 ## Contents
 
-- `move_docker_to_ephemeral.sh`: relocate Docker storage to ephemeral disk after pruning existing Docker data.
+| Path | Purpose |
+| --- | --- |
+| `move_docker_to_ephemeral.sh` | Prunes existing Docker data and relocates Docker storage to the ephemeral disk. |

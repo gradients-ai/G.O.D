@@ -480,6 +480,16 @@ class TestStateAndCreation:
         db.seed(LINEAGE, 10, "v2")
         assert (await csft.get_continuous_sft_state(LINEAGE, db)).chunk_scheme == ChunkScheme.V2
 
+    async def test_refuses_a_previous_scheme_state(self, monkeypatch):
+        db = FakeContinuousDb()
+        db.seed(LINEAGE, 5, "v1")
+        config, served = _wire_creation(monkeypatch, db)
+        single_attempt = scheduler.create_continuous_sft_task.retry_with(stop=stop_after_attempt(1))
+        with pytest.raises(RuntimeError, match=MIGRATION.name):
+            await single_attempt(config, LINEAGE, SEED)
+        assert served == []  # never sent a previous-scheme index to the content service
+        scheduler.add_task.assert_not_called()
+
     async def test_new_lineage_starts_at_zero_in_the_new_scheme(self, monkeypatch):
         db = FakeContinuousDb()
         config, served = _wire_creation(monkeypatch, db)

@@ -23,6 +23,12 @@ from validator.db.sql import tasks as tasks_sql
 from validator.evaluation.basilica_deployments import EVAL_RESULT_STATUS_PATH
 from validator.evaluation.basilica_deployments import deployment_is_healthy
 from validator.evaluation.db_utils import persist_deployment_ids_for_repo
+from validator.evaluation.errors import DeploymentNotReadyError
+from validator.evaluation.errors import EvaluationCapacityUnavailable
+from validator.evaluation.errors import EvaluationInfraError
+from validator.evaluation.errors import EvaluationRetryableError
+from validator.evaluation.errors import as_infra_error
+from validator.evaluation.errors import describe_error
 from validator.evaluation.evaluation_logging import _log_eval_step
 from validator.evaluation.evaluation_logging import log_basilica_logs_block
 
@@ -100,24 +106,13 @@ async def _resolve_verified_deployment_name(client, deployment, expected_name: s
     )
 
 
-class EvaluationRetryableError(RuntimeError):
-    """Evaluation should be retried later without marking rows as failed."""
-
-
-class EvaluationCapacityUnavailable(EvaluationRetryableError):
-    pass
-
-
-class DeploymentNotReadyError(EvaluationRetryableError):
-    pass
-
-
 @dataclass
 class _BasilicaEvalContext:
     repo: str
     eval_logger: logging.Logger
     deleted_deployment_names: set[str]
     log_eval_step: Callable[..., None]
+    requeue_infra_errors: bool = False
 
 
 async def _db_call_with_retry(coro_factory, op_name: str, eval_logger: logging.Logger, repo: str):
@@ -792,6 +787,10 @@ async def _poll_eval_deployment(
         deleted = await _delete_eval_deployment(ctx, client, deployment, deployment_name, timeout_cleanup_reason)
         if retry_on_failure and not deleted:
             raise EvaluationRetryableError(f"Failed to verify deletion for timed out deployment {deployment_name}")
+        if ctx.requeue_infra_errors:
+            # Whatever the poll returned that is not a result dict is the deployment failing, never a verdict on the repo:
+            # per-repo verdicts come back inside the result dict.
+            raise EvaluationInfraError(f"Deployment {deployment_name}: {result}")
         return result
 
     ctx.log_eval_step("poll_failed", deployment=deployment_name, result=result)
@@ -800,6 +799,8 @@ async def _poll_eval_deployment(
         raise EvaluationRetryableError(f"Failed to verify deletion for failed deployment {deployment_name}")
     if retry_on_failure:
         raise RuntimeError(str(result))
+    if ctx.requeue_infra_errors:
+        raise EvaluationInfraError(f"Resumed deployment {deployment_name} failed: {result or 'poll returned empty'}")
     return str(result) if result else "Resume poll returned empty"
 
 
@@ -836,6 +837,7 @@ async def _run_single_basilica_eval_repo(
     hotkey: str | None = None,
     existing_deployment_name: str | None = None,
     local_logging: bool | None = False,
+    requeue_infra_errors: bool = False,
     deployment_id_persister: Callable[[str, str], Awaitable[None]] | None = None,
     reserve_deployment_id: bool = True,
 ) -> dict | str:
@@ -865,6 +867,7 @@ async def _run_single_basilica_eval_repo(
         eval_logger=eval_logger,
         deleted_deployment_names=set(),
         log_eval_step=log_step,
+        requeue_infra_errors=requeue_infra_errors,
     )
     reserved_hotkeys = [repo_to_hotkey[repo]] if repo in repo_to_hotkey else []
 
@@ -1033,6 +1036,12 @@ async def _run_single_basilica_eval_repo(
                 await asyncio.sleep(vcst.EVAL_BASILICA_RETRY_DELAY_SECONDS)
             else:
                 log_step("all_attempts_failed", deployment=deployment_name, error=e)
+                if requeue_infra_errors:
+                    # Every exception in this loop is the deployment or its control plane failing (per-repo verdicts come
+                    # back inside the result dict), so it is an infra error, never the miner's scored fail.
+                    raise EvaluationInfraError(
+                        f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {describe_error(e)}"
+                    ) from e
                 return f"Evaluation failed after {vcst.EVAL_BASILICA_MAX_RETRIES} attempts: {e}"
         finally:
             await _finish_evaluation_cost_run(
@@ -1044,6 +1053,8 @@ async def _run_single_basilica_eval_repo(
             if deployment is not None:
                 await _fetch_attempt_logs(ctx, deployment, deployment_name)
 
+    if requeue_infra_errors:
+        raise EvaluationInfraError(f"Evaluation of {repo} made no attempt (EVAL_BASILICA_MAX_RETRIES <= 0)")
     return "Evaluation failed"
 
 
@@ -1064,6 +1075,7 @@ async def run_basilica_eval_repos(
     storage: bool | str = False,
     deployment_ids_by_repo: dict[str, str] | None = None,
     local_logging: bool | None = False,
+    requeue_infra_errors: bool = False,
     persist_deployment_ids: bool = True,
     deployment_id_persister: Callable[[str, str], Awaitable[None]] | None = None,
     reserve_deployment_id: bool = False,
@@ -1101,6 +1113,7 @@ async def run_basilica_eval_repos(
                 local_logging=local_logging,
                 deployment_id_persister=effective_persister,
                 reserve_deployment_id=reserve_deployment_id,
+                requeue_infra_errors=requeue_infra_errors,
             )
             for repo in repos
         ],
@@ -1114,7 +1127,14 @@ async def run_basilica_eval_repos(
             logger.info(f"[{repo}] eval deferred (retryable): {result}")
             out[repo] = result
         elif isinstance(result, Exception):
-            out[repo] = f"Evaluation failed: {result}"
+            if requeue_infra_errors:
+                # An exception that escaped the per-repo runner is our code or its clients failing, never the repo's verdict.
+                infra_error = as_infra_error(result, f"Evaluation of {repo} raised")
+                if propagate_retryable:
+                    raise infra_error from result
+                out[repo] = infra_error
+            else:
+                out[repo] = f"Evaluation failed: {result}"
         else:
             out[repo] = result
     return out

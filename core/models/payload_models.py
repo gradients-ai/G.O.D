@@ -14,17 +14,28 @@ from core.constants.datasets import MAX_IMAGE_TEXT_PAIRS
 from core.constants.datasets import MIN_IMAGE_TEXT_PAIRS
 from core.constants.environments import EnvironmentName
 from core.constants.training import YARN_VALID_FACTORS
+from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import GrpoDatasetType
 from core.models.dataset_models import ImageTextPair
+from core.models.dataset_models import InstructTextDatasetType
 from core.models.dataset_models import TextDatasetType
 from core.models.image_models import ImageModelType
 from core.models.image_models import ImageTrainingMode
 from core.models.image_models import supports_image_training_mode
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import BaselineStats
+from core.models.quant_artifact_models import QuantDecodeRequest
+from core.models.quant_artifact_models import QuantDecodeResult
+from core.models.quant_models import QuantCalibrationReference
+from core.models.quant_models import QuantCalibrationRequest
+from core.models.quant_models import QuantEvalGpu
+from core.models.quant_models import QuantFixedSpec
+from core.models.quant_models import QuantReferenceScore
+from core.models.quant_models import QuantTarget
 from core.models.reward_models import RewardFunction
+from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import MinerTaskResult
 from core.models.task_models import TaskMinerResult
 from core.models.task_models import TaskStatus
@@ -32,6 +43,8 @@ from core.models.task_models import TaskType
 
 
 logger = logging.getLogger(__name__)
+
+FREEFORM_TARGET_FIELDS = ("bar_cap", "bar", "knee", "knee_loss", "penalty_curvature", "cap", "cap_loss")
 
 
 class TrainRequest(BaseModel):
@@ -52,6 +65,57 @@ class TrainRequestText(TrainRequest):
     file_format: FileFormat
     use_kl: bool = False
     kl_coef: float | None = None
+
+
+class TrainRequestQuant(TrainRequest):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset: str = Field(
+        ...,
+        description="Path to the dataset file or Hugging Face dataset name",
+        min_length=1,
+    )
+    # The held-out loss is read like instruct/chat text.
+    dataset_type: InstructTextDatasetType | ChatTemplateDatasetType
+    file_format: FileFormat
+    task_type: TaskType
+    quant_spec: QuantFixedSpec | None = Field(None, description="Required format for fixed-track tasks; None for freeform")
+    decode: QuantDecodeRequest | None = Field(
+        None, description="Freeform only: decode the uploaded artifact on the trainer; None skips the decode"
+    )
+    quant_target: QuantTarget = Field(
+        ..., description="The miner's published reference bar (bar fields freeform only); every compression task has one"
+    )
+    calibration: QuantCalibrationRequest = Field(
+        ..., description="The calibration rows the trainer hands the miner; every compression task has them"
+    )
+
+    @field_validator("task_type")
+    @classmethod
+    def validate_task_type(cls, v: TaskType) -> TaskType:
+        if v not in QUANT_TASK_TYPES:
+            raise ValueError(f"task_type must be one of {sorted(t.value for t in QUANT_TASK_TYPES)}")
+        return v
+
+    @model_validator(mode="after")
+    def validate_quant_spec(self) -> "TrainRequestQuant":
+        if self.task_type == TaskType.QUANTFIXEDTASK and self.quant_spec is None:
+            raise ValueError("QuantFixedTask requires quant_spec")
+        if self.task_type == TaskType.QUANTFREEFORMTASK and self.quant_spec is not None:
+            raise ValueError("QuantFreeformTask must not set quant_spec")
+        return self
+
+    @model_validator(mode="after")
+    def validate_quant_target(self) -> "TrainRequestQuant":
+        target = self.quant_target
+        if target is None:  # only a StoredTrainRequestQuant
+            return self
+        freeform_values = [getattr(target, name) for name in FREEFORM_TARGET_FIELDS]
+        if self.task_type == TaskType.QUANTFIXEDTASK and any(value is not None for value in freeform_values):
+            raise ValueError(f"QuantFixedTask quant_target must not set {', '.join(FREEFORM_TARGET_FIELDS)}")
+        if self.task_type == TaskType.QUANTFREEFORMTASK and any(value is None for value in freeform_values):
+            raise ValueError(f"QuantFreeformTask quant_target requires {', '.join(FREEFORM_TARGET_FIELDS)}")
+        return self
 
 
 class TrainRequestGrpo(TrainRequest):
@@ -92,14 +156,57 @@ class TrainRequestImage(TrainRequest):
         return self
 
 
+class StoredQuantCalibrationRequest(QuantCalibrationRequest):
+    """A calibration request as read back from the trainer's task history: an old job's may have no reference."""
+
+    reference: QuantCalibrationReference | None = Field(None, description="None on a job stored without reference losses")
+
+
+class StoredTrainRequestQuant(TrainRequestQuant):
+    """A quant request as read back from the trainer's task history: older jobs may have no calibration, no calibration
+    reference or no target. Such a job is only read (its status, its decode result), never started again; live requests use
+    TrainRequestQuant."""
+
+    quant_target: QuantTarget | None = Field(None, description="None on a job stored without a target")
+    calibration: StoredQuantCalibrationRequest | None = Field(None, description="None on a job stored without calibration")
+
+
+def _stored_quant_request_is_complete(training_data: dict) -> bool:
+    """Whether a stored quant job carries the target, the calibration and the calibration reference, so it validates strict."""
+    calibration = training_data.get("calibration")
+    return (
+        training_data.get("quant_target") is not None
+        and isinstance(calibration, dict)
+        and calibration.get("reference") is not None
+    )
+
+
+def _is_quant_task_type(value) -> bool:
+    try:
+        return TaskType(value) in QUANT_TASK_TYPES
+    except ValueError:
+        return False
+
+
 class TrainerProxyRequest(BaseModel):
-    training_data: TrainRequestImage | TrainRequestText
+    training_data: TrainRequestImage | TrainRequestQuant | TrainRequestText
     github_repo: str
     gpu_ids: list[int]
     hotkey: str
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_quant_payload_strictly(cls, data):
+        """A quant payload must validate as TrainRequestQuant or fail: the union would otherwise fall back to
+        TrainRequestText (which ignores unknown fields) and silently train plain SFT."""
+        if isinstance(data, dict):
+            training_data = data.get("training_data")
+            if isinstance(training_data, dict) and _is_quant_task_type(training_data.get("task_type")):
+                return {**data, "training_data": TrainRequestQuant.model_validate(training_data)}
+        return data
 
 
 class TrainerJob(BaseModel):
@@ -118,13 +225,26 @@ class TrainerTaskLog(TrainerJob):
     """Training job tracked in the trainer's task history."""
 
     job_type: Literal["training"] = "training"
-    training_data: TrainRequestImage | TrainRequestText
+    training_data: TrainRequestImage | TrainRequestQuant | TrainRequestText
     github_repo: str
     hotkey: str
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
     wandb_url: str | None = None
+    quant_decode: QuantDecodeResult | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_quant_training_data_with_stored_tolerance(cls, data):
+        """A quant job stored without a target, a calibration or a calibration reference (null or missing) still loads, as a
+        StoredTrainRequestQuant; a stored job that has all three validates as the strict TrainRequestQuant."""
+        if isinstance(data, dict):
+            training_data = data.get("training_data")
+            if isinstance(training_data, dict) and _is_quant_task_type(training_data.get("task_type")):
+                request_cls = TrainRequestQuant if _stored_quant_request_is_complete(training_data) else StoredTrainRequestQuant
+                return {**data, "training_data": request_cls.model_validate(training_data)}
+        return data
 
 
 class ModelPrepJob(TrainerJob):
@@ -193,7 +313,8 @@ class EvaluationResultImage(BaseModel):
 
 class EvaluationResultText(BaseModel):
     is_finetune: bool
-    eval_loss: float
+    # None only for a quant scored fail, where quant_failure says why the submission was not scored.
+    eval_loss: float | None
     # Held-out loss per example, in eval-set order. Emitted by the instruct and DPO evaluators
     # alongside eval_loss, which is unchanged and remains the ranking metric. Consumed only by the
     # paired boss-round comparison. Absent for evaluators that do not produce it, and for results
@@ -203,6 +324,21 @@ class EvaluationResultText(BaseModel):
     # True when EMIT_PER_EXAMPLE_LOSSES was requested but the vector pass failed after eval_loss
     # succeeded. Distinguishes "attempted and failed" from "never emitted" for boss-round fallbacks.
     per_example_losses_failed: bool = False
+    # Quant evaluator outputs. quant_failure marks a scored fail: the submission did not load or failed
+    # the structural check, so it ranks last on the task rather than counting as an evaluation error.
+    quant_failure: str | None = None
+    artifact_bytes: int | None = None
+    decoder_bytes: int | None = None
+    kernel_classes: dict[str, str] | None = None
+    eval_gpu: QuantEvalGpu | None = None
+    # The bf16 reference scored in the same deployment, set when that deployment's SKU was not cached yet.
+    quant_reference: QuantReferenceScore | None = None
+
+    @model_validator(mode="after")
+    def validate_missing_loss_is_quant_failure(self) -> "EvaluationResultText":
+        if self.eval_loss is None and self.quant_failure is None:
+            raise ValueError("eval_loss may only be None for a quant scored fail (quant_failure set)")
+        return self
 
 
 class DockerEvaluationResults(BaseModel):
@@ -561,6 +697,25 @@ class EnvironmentTaskDetails(TaskDetails):
     model_config = ConfigDict(protected_namespaces=())
 
 
+class QuantFreeformTaskDetails(TaskDetails):
+    """Public view of a freeform quant task: no dataset, calibration or seed information."""
+
+    task_type: TaskType = TaskType.QUANTFREEFORMTASK
+    base_model_repository: str
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
+class QuantFixedTaskDetails(TaskDetails):
+    """Public view of a fixed-format quant task: the format every entrant must produce, nothing internal."""
+
+    task_type: TaskType = TaskType.QUANTFIXEDTASK
+    base_model_repository: str
+    quant_spec: QuantFixedSpec
+
+    model_config = ConfigDict(protected_namespaces=())
+
+
 class ImageTaskDetails(TaskDetails):
     task_type: TaskType = TaskType.IMAGETASK
     image_text_pairs: list[ImageTextPair] | None = None
@@ -643,7 +798,14 @@ class AddRewardFunctionRequest(BaseModel):
 
 # Type alias for task details types
 AnyTypeTaskDetails = (
-    InstructTextTaskDetails | ChatTaskDetails | ImageTaskDetails | DpoTaskDetails | GrpoTaskDetails | EnvironmentTaskDetails
+    InstructTextTaskDetails
+    | ChatTaskDetails
+    | ImageTaskDetails
+    | DpoTaskDetails
+    | GrpoTaskDetails
+    | EnvironmentTaskDetails
+    | QuantFixedTaskDetails
+    | QuantFreeformTaskDetails
 )
 
 

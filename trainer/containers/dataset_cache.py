@@ -4,6 +4,7 @@ import uuid
 import docker
 
 from trainer import constants as cst
+from trainer.host_resources import pinned_helper_kwargs
 from trainer.telemetry import logger
 
 
@@ -11,6 +12,7 @@ def download_whitelisted_datasets(
     requested_datasets: list[str],
     hotkey: str,
     task_id: str,
+    gpu_ids: list[int] | None = None,
 ) -> list[str]:
     """Download pre-validated datasets into the shared cache volume.
 
@@ -22,7 +24,7 @@ def download_whitelisted_datasets(
     for dataset_repo_id in requested_datasets:
         dir_name = dataset_repo_id.replace("/", "--")
         try:
-            _download_dataset_via_container(dataset_repo_id, task_id)
+            _download_dataset_via_container(dataset_repo_id, task_id, gpu_ids)
             downloaded.append(dir_name)
         except Exception as e:
             logger.error(f"Failed to download dataset {dataset_repo_id} for task {task_id}: {e}")
@@ -30,7 +32,7 @@ def download_whitelisted_datasets(
     return downloaded
 
 
-def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
+def _download_dataset_via_container(dataset_repo_id: str, task_id: str, gpu_ids: list[int] | None = None) -> None:
     """Download a single HF dataset into the shared cache volume."""
     client = docker.from_env()
     container_name = f"miner-ds-{task_id[:8]}-{uuid.uuid4().hex[:8]}"
@@ -55,6 +57,7 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
             environment=environment,
             remove=False,
             detach=True,
+            **pinned_helper_kwargs(gpu_ids),
         )
 
         result = container.wait(timeout=1800)
@@ -73,6 +76,6 @@ def _download_dataset_via_container(dataset_repo_id: str, task_id: str) -> None:
     finally:
         if container:
             try:
-                container.remove(force=True)
+                container.remove(force=True, v=True)
             except Exception as cleanup_err:
                 logger.warning(f"Failed to remove dataset download container {container_name}: {cleanup_err}")

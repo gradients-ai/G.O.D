@@ -192,7 +192,7 @@ async def _best_pre_boss_non_finalist(
     challenger_hotkey: str,
     psql_db: PSQLDB,
 ) -> str | None:
-    """Best non-finalist from the round before the boss, for a legacy disqualification."""
+    """Best non-finalist from the round before the boss, for a disqualification by the stored review."""
     rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     pre_boss = next((item for item in rounds if item.round_number == final_round.round_number - 1), None)
     if not pre_boss:
@@ -224,7 +224,7 @@ async def _best_pre_boss_non_finalist(
     return ordered[0] if ordered else None
 
 
-async def resolve_legacy_boss_code_review(
+async def resolve_stored_boss_code_review(
     tournament: TournamentData,
     final_round: TournamentRoundData,
     challenger: TournamentParticipant,
@@ -241,9 +241,9 @@ async def resolve_legacy_boss_code_review(
     if status == "accepted":
         replacement = await _best_pre_boss_non_finalist(tournament, final_round, challenger.hotkey, psql_db)
         logger.warning(
-            f"Legacy boss-round code review accepted for {challenger.hotkey}; "
+            f"Stored boss-round code review accepted for {challenger.hotkey}; "
             f"disqualifying and promoting {replacement} to second place"
         )
         return ChallengerCodeReviewDecision(halt=False, disqualified=True, replacement_hotkey=replacement)
-    logger.warning(f"Legacy boss-round code review for {tournament.tournament_id} is {status}; holding completion")
+    logger.warning(f"Stored boss-round code review for {tournament.tournament_id} is {status}; holding completion")
     return ChallengerCodeReviewDecision(halt=True)

@@ -12,6 +12,7 @@ from validator.db.sql.tournaments import get_tournament_participant
 from validator.db.sql.tournaments import get_tournament_rounds
 from validator.db.sql.tournaments import get_tournament_tasks
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.tournament.constants import BOSS_SEED_TOURNAMENT_TYPE
 from validator.tournament.constants import DEFAULT_PARTICIPANT_COMMIT
 from validator.tournament.constants import DEFAULT_PARTICIPANT_REPO
 from validator.tournament.models import RoundType
@@ -180,6 +181,11 @@ async def get_latest_tournament_winner_participant(
 ) -> TournamentParticipant | None:
     """Get the winner participant from the latest completed tournament of the given type."""
     latest_tournament = await get_latest_completed_tournament(psql_db, tournament_type)
+    seed_tournament_type = BOSS_SEED_TOURNAMENT_TYPE.get(tournament_type)
+    if not latest_tournament and seed_tournament_type is not None:
+        # A type with no completed tournament of its own is seeded from the champion of the mapped type; once it has
+        # completed one, that is never consulted again.
+        latest_tournament = await get_latest_completed_tournament(psql_db, seed_tournament_type)
     if not latest_tournament:
         logger.warning(f"No completed tournaments found for type {tournament_type.value}")
         return None

@@ -17,6 +17,8 @@ from core.constants.environments import TrainingStartPoint
 from core.models.task_models import TaskType
 from validator.tournament import constants as t_cst
 from validator.tournament import tournament_manager
+from validator.tournament.models import SeedRole
+from validator.tournament.models import TournamentType
 
 
 SRID = "round-42"
@@ -131,7 +133,7 @@ async def test_only_hotkey_carries_that_hotkeys_repo_never_the_lowest_loss_one(m
         [_round_task("t1")], SRID, PSQL, only_hotkey=tournament_manager.EMISSION_BURN_HOTKEY
     )
 
-    repo_of.assert_awaited_once_with("t1", tournament_manager.EMISSION_BURN_HOTKEY, PSQL)
+    repo_of.assert_awaited_once_with("t1", tournament_manager.EMISSION_BURN_HOTKEY, PSQL, ranked=True)
     lowest.assert_not_awaited()
     assert advance.call_args_list[0].args == ("qwen", "org/boss-repo", SRID, PSQL)
     assert advance.call_args_list[0].kwargs == {"task_id": "t1"}
@@ -147,6 +149,73 @@ async def test_only_hotkey_with_no_evaluated_repo_still_advances_with_none(monke
 
     assert advance.call_args_list[0].args == ("qwen", None, SRID, PSQL)
     assert advance.call_args_list[0].kwargs == {"task_id": "t1"}
+
+
+def _seeded_tournament(monkeypatch, *, advance):
+    seed = SimpleNamespace(task_id="seed-task", role=SeedRole.TEXT_CONTINUOUS)
+    monkeypatch.setattr(tournament_manager.seeds_sql, "is_seeded_text_tournament", AsyncMock(return_value=True))
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_active_seed_tasks", AsyncMock(return_value=[seed]))
+    monkeypatch.setattr(tournament_manager.task_sql, "get_task", AsyncMock(return_value=_cont_task("qwen")))
+    monkeypatch.setattr(tournament_manager.task_sql, "get_evaluated_repo_for_hotkey", AsyncMock(return_value="org/boss-repo"))
+    monkeypatch.setattr(tournament_manager, "advance_continuous_sft_state", advance)
+    return SimpleNamespace(tournament_id="tourn", tournament_type=TournamentType.TEXT), SimpleNamespace(round_id=SRID)
+
+
+async def test_a_failed_latest_seed_row_still_advances_the_cursor_once_with_none(monkeypatch):
+    cursor = _FakeCursor()
+    tournament, completed_round = _seeded_tournament(monkeypatch, advance=cursor.advance)
+    failed = SimpleNamespace(task_id="failed-task", role=SeedRole.TEXT_CONTINUOUS)
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_active_seed_tasks", AsyncMock(return_value=[]))
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[failed]))
+    monkeypatch.setattr(tournament_manager.task_sql, "get_evaluated_repo_for_hotkey", AsyncMock(return_value=None))
+
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+
+    assert cursor.train_index == 1 and cursor.repos == [None]
+
+
+async def test_a_live_seed_row_wins_over_the_latest_row_lookup(monkeypatch):
+    advance = AsyncMock()
+    tournament, completed_round = _seeded_tournament(monkeypatch, advance=advance)
+    latest = AsyncMock(return_value=[SimpleNamespace(task_id="other", role=SeedRole.TEXT_CONTINUOUS)])
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_latest_seed_tasks", latest)
+
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+
+    latest.assert_not_awaited()
+    assert advance.call_args.kwargs["task_id"] == "seed-task"
+
+
+async def test_a_role_with_no_seed_row_at_all_does_not_advance(monkeypatch):
+    advance = AsyncMock()
+    tournament, completed_round = _seeded_tournament(monkeypatch, advance=advance)
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_active_seed_tasks", AsyncMock(return_value=[]))
+    monkeypatch.setattr(tournament_manager.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[]))
+
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+
+    advance.assert_not_awaited()
+
+
+async def test_a_failed_advance_propagates_out_of_the_seeded_carry_forward(monkeypatch):
+    tournament, completed_round = _seeded_tournament(monkeypatch, advance=AsyncMock(side_effect=RuntimeError("db down")))
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+
+
+async def test_the_seeded_carry_forward_retry_advances_exactly_once(monkeypatch):
+    cursor = _FakeCursor()
+    cursor.fail_next = True
+    tournament, completed_round = _seeded_tournament(monkeypatch, advance=cursor.advance)
+
+    with pytest.raises(RuntimeError):
+        await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+    await tournament_manager._carry_forward_seeded_text_continuous(tournament, completed_round, PSQL)
+
+    assert cursor.train_index == 1 and cursor.repos == ["org/boss-repo"]
 
 
 async def test_non_continuous_and_missing_tasks_are_skipped(monkeypatch):

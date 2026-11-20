@@ -125,6 +125,9 @@ async def create_benchmark_tasks_for_tournament_winner(tournament_id: str, winne
                 TaskType.IMAGETASK,
             ]
             logger.info(f"Creating image benchmark tasks for {tournament.tournament_type.value} tournament")
+        elif tournament.tournament_type == TournamentType.QUANT:
+            logger.info(f"No benchmark tasks for {tournament.tournament_type.value} tournament {tournament_id}: none are defined")
+            return []
         else:
             logger.error(f"Unknown tournament type: {tournament.tournament_type.value}")
             return []

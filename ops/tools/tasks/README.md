@@ -1,7 +1,9 @@
-# Task Tools
+# Task tools
 
-Task creation and preparation probes.
+Task preparation probes.
 
 ## Contents
 
-- `prepare_task_probe.py`: task preparation probe.
+| Path | Purpose |
+| --- | --- |
+| `prepare_task_probe.py` | Runs task preparation with fixed inputs as a smoke test. |

@@ -199,6 +199,7 @@ class TournamentFeesResponse(PublicModel):
     text_tournament_fee_rao: int
     image_tournament_fee_rao: int
     environment_tournament_fee_rao: int | None = None
+    quant_tournament_fee_rao: int | None = None
 
 
 class TournamentParticipantPublic(PublicModel):
@@ -262,6 +263,7 @@ class TournamentDetailsPublicResponse(PublicModel):
     text_tournament_weight: float | None = None
     image_tournament_weight: float | None = None
     environment_tournament_weight: float | None = None
+    quant_tournament_weight: float | None = None
     boss_round_performance: list[dict[str, Any]] | None = None
     sync_performance: list[dict[str, Any]] | None = None
 
@@ -270,6 +272,7 @@ class LatestTournamentsDetailsPublicResponse(PublicModel):
     text: TournamentDetailsPublicResponse | None = None
     image: TournamentDetailsPublicResponse | None = None
     environment: TournamentDetailsPublicResponse | None = None
+    quant: TournamentDetailsPublicResponse | None = None
 
 
 # Performance
@@ -282,17 +285,14 @@ class MinerEmissionWeight(PublicModel):
 
 
 class TournamentBurnData(PublicModel):
-    text_performance_diff: float | None = None
-    image_performance_diff: float | None = None
-    environment_performance_diff: float | None = None
     text_burn_proportion: float
     image_burn_proportion: float
     environment_burn_proportion: float | None = None
+    quant_burn_proportion: float | None = None
     text_tournament_weight: float
     image_tournament_weight: float
     environment_tournament_weight: float | None = None
-    text_base_weight: float | None = None
-    image_base_weight: float | None = None
+    quant_tournament_weight: float | None = None
     burn_weight: float
 
 
@@ -301,6 +301,7 @@ class TournamentWeightsResponse(PublicModel):
     text_top_miners: list[MinerEmissionWeight] = Field(default_factory=list)
     image_top_miners: list[MinerEmissionWeight] = Field(default_factory=list)
     environment_top_miners: list[MinerEmissionWeight] | None = None
+    quant_top_miners: list[MinerEmissionWeight] = Field(default_factory=list)
 
 
 class WeightProjection(PublicModel):
@@ -316,13 +317,13 @@ class TournamentProjection(PublicModel):
     projections: list[WeightProjection]
     placement: str = "champion"
     dethrone_threshold: float = 0.0
-    emission_boost: float = 0.0
 
 
 class WeightProjectionResponse(PublicModel):
     percentage_improvement: float
     text_projection: TournamentProjection
     image_projection: TournamentProjection
+    quant_projection: TournamentProjection | None = None
 
 
 class MultiWeightProjectionResponse(PublicModel):
@@ -339,6 +340,7 @@ class TaskPerformanceDifference(PublicModel):
     challenger_won: bool
     paired_comparison: dict[str, Any] | None = None
     decision_reason: str | None = None
+    within_allowed_loss: bool | None = None
 
 
 class BossBattleResponse(PublicModel):
@@ -348,3 +350,5 @@ class BossBattleResponse(PublicModel):
     image_performance_differences: list[TaskPerformanceDifference] = Field(default_factory=list)
     environment_tournament_id: str | None = None
     environment_performance_differences: list[TaskPerformanceDifference] | None = None
+    quant_tournament_id: str | None = None
+    quant_performance_differences: list[TaskPerformanceDifference] = Field(default_factory=list)

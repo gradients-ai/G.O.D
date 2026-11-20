@@ -8,10 +8,13 @@ from loguru import logger  # noqa
 from core.models.dataset_models import ImageTextPair
 from core.models.reward_models import RewardFunction
 from core.models.task_models import TaskType
+from core.models.task_models import higher_is_better
 from validator.app.config import Config
 from validator.app.dependencies import get_config
 from validator.db import constants as cst
 from validator.db.sql import tasks as tasks_sql
+from validator.db.sql import tournament_seeds as seeds_sql
+from validator.scoring.scorecard import quant_scorecards_for_task
 from validator.tasks.details import hide_sensitive_data_till_finished
 from validator.tasks.details import normalise_float
 from validator.tasks.models import AnyTypeTask
@@ -29,6 +32,8 @@ from validator.tasks.models import ImageTask
 from validator.tasks.models import ImageTaskWithHotkeyDetails
 from validator.tasks.models import InstructTextTask
 from validator.tasks.models import InstructTextTaskWithHotkeyDetails
+from validator.tasks.models import QuantFixedTaskWithHotkeyDetails
+from validator.tasks.models import QuantFreeformTaskWithHotkeyDetails
 
 
 async def get_recent_tasks(
@@ -153,6 +158,7 @@ async def get_recent_tasks(
         else:
             rows = await connection.fetch(base_query, limit, (page - 1) * limit)
 
+        hidden_seed_task_ids = await seeds_sql.get_hidden_seed_task_ids([str(row[cst.TASK_ID]) for row in rows], config.psql_db)
         tasks_processed = []
         for row in rows:
             task_data = dict(row)
@@ -212,14 +218,14 @@ async def get_recent_tasks(
                 logger.warning(f"Unknown task type: {task_type}, skipping task {task_data.get('task_id')}")
                 continue
 
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=str(task.task_id) in hidden_seed_task_ids)
             tasks_processed.append(task)
 
         return tasks_processed
 
 
 async def _process_task_batch(
-    connection, hotkey: str, task_ids: list[str], include_tournament_tasks=False
+    connection, hotkey: str, task_ids: list[str], psql_db, include_tournament_tasks=False
 ) -> list[AnyTypeTaskWithHotkeyDetails]:
     """
     Helper function to process a batch of task IDs.
@@ -239,6 +245,7 @@ async def _process_task_batch(
 
     tasks_with_details = []
 
+    hidden_seed_task_ids = await seeds_sql.get_hidden_seed_task_ids(task_ids, psql_db)
     tasks_by_id = {}
     if task_ids:
         task_placeholders = ", ".join("$%d::uuid" % (i + 1) for i in range(len(task_ids)))
@@ -468,32 +475,32 @@ async def _process_task_batch(
         if task_type == TaskType.INSTRUCTTEXTTASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in InstructTextTask.model_fields}
             task = InstructTextTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(InstructTextTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
         elif task_type == TaskType.CHATTASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in ChatTask.model_fields}
             task = ChatTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(ChatTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
         elif task_type == TaskType.IMAGETASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in ImageTask.model_fields}
             task = ImageTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(ImageTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
         elif task_type == TaskType.DPOTASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in DpoTask.model_fields}
             task = DpoTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(DpoTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
         elif task_type == TaskType.GRPOTASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in GrpoTask.model_fields}
             task = GrpoTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(GrpoTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
         elif task_type == TaskType.ENVIRONMENTTASK.value:
             task_fields = {k: v for k, v in task_data.items() if k in EnvTask.model_fields}
             task = EnvTask(**task_fields)
-            task = hide_sensitive_data_till_finished(task)
+            task = hide_sensitive_data_till_finished(task, force_hidden=task_id in hidden_seed_task_ids)
             tasks_with_details.append(EnvTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details))
 
     return tasks_with_details
@@ -545,11 +552,16 @@ async def get_recent_tasks_for_hotkey(
             all_results = []
             for i in range(0, len(task_ids), MAX_BATCH_SIZE):
                 batch_ids = task_ids[i : i + MAX_BATCH_SIZE]
-                batch_results = await _process_task_batch(connection, hotkey, batch_ids, include_tournament_tasks)
+                batch_results = await _process_task_batch(connection, hotkey, batch_ids, config.psql_db, include_tournament_tasks)
                 all_results.extend(batch_results)
             return all_results
 
-        return await _process_task_batch(connection, hotkey, task_ids, include_tournament_tasks)
+        return await _process_task_batch(connection, hotkey, task_ids, config.psql_db, include_tournament_tasks)
+
+
+def _rank_order_sql(task_type: TaskType) -> str:
+    direction = "DESC" if higher_is_better(task_type) else "ASC"
+    return f"tn.{cst.TEST_LOSS} {direction} NULLS LAST"
 
 
 async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(get_config)) -> AnyTypeTaskWithHotkeyDetails:
@@ -560,7 +572,8 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
 
     logger.info("Got a task!!")
 
-    task = hide_sensitive_data_till_finished(task_raw)
+    hidden_seed_task_ids = await seeds_sql.get_hidden_seed_task_ids([task_id], config.psql_db)
+    task = hide_sensitive_data_till_finished(task_raw, force_hidden=str(task_raw.task_id) in hidden_seed_task_ids)
     if task.task_type == TaskType.ENVIRONMENTTASK:
         async with await config.psql_db.connection() as connection:
             env_task_row = await connection.fetchrow(
@@ -574,8 +587,7 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
         if env_task_row is not None:
             task.environment_names = env_task_row[cst.ENVIRONMENT_NAMES] or []
 
-    higher_is_better = task_raw.task_type in (TaskType.ENVIRONMENTTASK, TaskType.GRPOTASK)
-    rank_order = f"tn.{cst.TEST_LOSS} DESC NULLS LAST" if higher_is_better else f"tn.{cst.TEST_LOSS} ASC NULLS LAST"
+    rank_order = _rank_order_sql(task_raw.task_type)
 
     query = f"""
         SELECT
@@ -603,6 +615,8 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
 
     logger.info(f"Got {len(results)} results for task {task_id}")
 
+    scorecards = await quant_scorecards_for_task(task_raw, config) if task_raw.task_type == TaskType.QUANTFREEFORMTASK else {}
+
     hotkey_details = []
     for result in results:
         result_dict = dict(result)
@@ -613,7 +627,7 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
         for field in float_fields:
             result_dict[field] = normalise_float(result_dict[field])
 
-        hotkey_details.append(HotkeyDetails(**result_dict))
+        hotkey_details.append(HotkeyDetails(**result_dict, quant_scorecard=scorecards.get(result_dict[cst.HOTKEY])))
 
     if task.task_type == TaskType.INSTRUCTTEXTTASK:
         return InstructTextTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
@@ -627,6 +641,10 @@ async def get_task_with_hotkey_details(task_id: str, config: Config = Depends(ge
         return EnvTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
     elif task.task_type == TaskType.CHATTASK:
         return ChatTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
+    elif task.task_type == TaskType.QUANTFIXEDTASK:
+        return QuantFixedTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
+    elif task.task_type == TaskType.QUANTFREEFORMTASK:
+        return QuantFreeformTaskWithHotkeyDetails(**task.model_dump(), hotkey_details=hotkey_details)
 
 
 async def store_latest_scores_url(url: str, config: Config = Depends(get_config)) -> None:

@@ -1,8 +1,9 @@
-# Observability Tools
+# Observability tools
 
-Small tools for validating log shipping and observability setup.
+Checks for the log shipping setup.
 
 ## Contents
 
-- `test_trainer_logs.sh`: creates test trainer-like containers/logs for observability validation.
-- `__init__.py`: package marker.
+| Path | Purpose |
+| --- | --- |
+| `test_trainer_logs.sh` | Starts test containers labelled like training containers, to check that their logs are shipped. |

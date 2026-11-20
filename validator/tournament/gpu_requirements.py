@@ -35,11 +35,11 @@ def get_tournament_gpu_requirement(
     TOURNAMENT_KL_GPU_MULTIPLIER to account for the frozen reference model held resident
     alongside the trainable model.
 
-    Continuous-SFT gets a FIXED 4xH100, checked first so we never hit the (gated/custom-arch)
+    Continuous-SFT gets a FIXED 2xH100, checked first so we never hit the (gated/custom-arch)
     HuggingFace param fetch below.
     """
     if training_start_point == TrainingStartPoint.CONTINUOUS_SFT:
-        return GpuRequirement.H100_4X
+        return GpuRequirement.H100_2X
 
     if task_type == TaskType.IMAGETASK:
         return GpuRequirement.H100_1X

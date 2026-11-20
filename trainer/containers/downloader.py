@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -68,22 +69,21 @@ async def download_text_dataset(task_id, dataset_url, file_format, dataset_dir):
     if file_format == FileFormat.S3.value:
         input_data_path = train_paths.get_text_dataset_path(task_id)
 
-        if not os.path.exists(input_data_path):
+        try:
+            os.utime(input_data_path)  # cache cleanup keeps recently written files, so a reuse counts as a write
+        except FileNotFoundError:
             local_path = await download_s3_file(dataset_url)
-            shutil.copy(local_path, input_data_path)
+            _copy_file_into_place(Path(local_path), Path(input_data_path))
 
     elif file_format == FileFormat.HF.value:
         repo_name = dataset_url.replace("/", "--")
-        input_data_path = os.path.join(dataset_dir, repo_name)
-
-        if not os.path.exists(input_data_path):
-            snapshot_download(
-                repo_id=dataset_url,
-                repo_type="dataset",
-                local_dir=input_data_path,
-                local_dir_use_symlinks=False,
-                token=_huggingface_token(),
+        input_data_path = str(
+            _cache_directory(
+                Path(dataset_dir) / repo_name,
+                lambda download_path: _snapshot_download_to(dataset_url, "dataset", download_path),
+                label=f"Dataset {dataset_url}",
             )
+        )
 
     return input_data_path, file_format
 
@@ -210,7 +210,7 @@ def _weight_index_references_exist(cache_path: Path) -> bool:
                 return False
             relative_parts = parsed_path.parts
             if not any(
-                candidate.is_file()
+                candidate.is_file() and candidate.stat().st_size > 0
                 for candidate in (
                     index_path.parent.joinpath(*relative_parts),
                     cache_path.joinpath(*relative_parts),
@@ -249,6 +249,10 @@ def _normalize_standalone_checkpoint(cache_path: Path, checkpoint: RepoFileMetad
         raise RuntimeError(f"Failed to normalize standalone FLUX checkpoint cache at {cache_path}")
 
 
+CACHE_DIR_MODE = 0o755
+CACHE_FILE_MODE = 0o644
+
+
 def _remove_path(path: Path) -> None:
     if path.is_symlink() or path.is_file():
         path.unlink()
@@ -271,6 +275,107 @@ def _promote_directory(download_path: Path, save_path: Path) -> None:
         raise
     else:
         _remove_path(backup_path)
+
+
+def _new_partial_download_dir(save_path: Path) -> Path:
+    # mkdtemp creates the directory owner-only (0o700); it is renamed into place as the cache entry, which containers
+    # running as other users (decode, upload checks) must read, so give it the permissions a normal mkdir would.
+    path = Path(tempfile.mkdtemp(prefix=f".{save_path.name}{cst.CACHE_DOWNLOAD_TAG}", dir=save_path.parent))
+    path.chmod(CACHE_DIR_MODE)
+    return path
+
+
+def _legacy_model_dir_is_complete(model_dir: Path) -> bool:
+    """Whether a model directory cached before downloads were atomic holds a whole checkpoint.
+
+    Hugging Face writes each file under .cache/huggingface/download and renames it into place once it is complete, so an
+    interrupted snapshot shows up as missing files, not truncated ones. The weights are the bulk of a snapshot, so they
+    are what an interrupted one lacks: every shard a weight index names must be present and non-empty, or for an
+    unsharded checkpoint a root weight file must. An unmerged LoRA adapter is never a finished entry (it is merged
+    before caching).
+    """
+    if not (model_dir / "config.json").is_file() or (model_dir / LORA_ADAPTER_CONFIG).exists():
+        return False
+    if any(index.name.endswith(WEIGHT_INDEX_SUFFIXES) for index in model_dir.rglob("*.index.json")):
+        return _weight_index_references_exist(model_dir)
+    return any(
+        entry.suffix in (".safetensors", ".bin") and entry.is_file() and entry.stat().st_size > 0
+        for entry in model_dir.iterdir()
+    )
+
+
+def _directory_cache_is_complete(cache_path: Path, legacy_is_complete: Callable[[Path], bool] | None) -> bool:
+    """A directory carrying the completion marker was renamed into place whole. One without it predates atomic
+    downloads: it is adopted (and marked) only if legacy_is_complete vouches for it."""
+    if cache_path.is_symlink() or not cache_path.is_dir():
+        return False
+    marker = cache_path / cst.CACHE_COMPLETE_MARKER
+    if marker.is_file():
+        return True
+    if legacy_is_complete is None or not legacy_is_complete(cache_path):
+        return False
+    marker.touch()
+    return True
+
+
+def _cache_directory(
+    cache_path: Path,
+    fill: Callable[[Path], None],
+    label: str,
+    legacy_is_complete: Callable[[Path], bool] | None = None,
+) -> Path:
+    """Return cache_path, first building it with fill(partial_dir) unless it is already a complete entry.
+
+    fill writes into a fresh partial directory beside cache_path (same filesystem), which is marked complete and renamed
+    over cache_path only after fill returns, so an interrupted download never leaves a usable-looking entry.
+    """
+    if _directory_cache_is_complete(cache_path, legacy_is_complete):
+        print(f"{label} is already cached at {cache_path}. Skipping download.", flush=True)
+        return cache_path
+
+    if os.path.lexists(cache_path):
+        print(f"{label} cache at {cache_path} is incomplete. Downloading it again.", flush=True)
+    else:
+        print(f"Downloading {label} to {cache_path}.", flush=True)
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    download_path = _new_partial_download_dir(cache_path)
+    try:
+        fill(download_path)
+        (download_path / cst.CACHE_COMPLETE_MARKER).touch()
+        if _directory_cache_is_complete(cache_path, None):
+            _remove_path(download_path)  # a concurrent download of the same entry finished first
+        else:
+            _promote_directory(download_path, cache_path)
+    except BaseException:
+        _remove_path(download_path)
+        raise
+
+    print(f"{label} cache is ready at {cache_path}.", flush=True)
+    return cache_path
+
+
+def _copy_file_into_place(source: Path, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    fd, partial_path = tempfile.mkstemp(prefix=f".{dest.name}{cst.CACHE_DOWNLOAD_TAG}", dir=dest.parent)
+    os.close(fd)
+    os.chmod(partial_path, CACHE_FILE_MODE)  # mkstemp is owner-only (0o600); readers may run as other users
+    try:
+        shutil.copyfile(source, partial_path)
+        os.replace(partial_path, dest)
+    except BaseException:
+        Path(partial_path).unlink(missing_ok=True)
+        raise
+
+
+def _snapshot_download_to(repo_id: str, repo_type: str, local_dir: Path) -> None:
+    snapshot_download(
+        repo_id=repo_id,
+        repo_type=repo_type,
+        local_dir=str(local_dir),
+        local_dir_use_symlinks=False,
+        token=_huggingface_token(),
+    )
 
 
 def _download_standalone_checkpoint(repo_id: str, checkpoint: RepoFileMetadata, download_path: Path) -> None:
@@ -342,7 +447,7 @@ async def download_base_model(
     else:
         print(f"Downloading model to {save_path}.", flush=True)
 
-    download_path = Path(tempfile.mkdtemp(prefix=f".{model_name}.download-", dir=save_root_path))
+    download_path = _new_partial_download_dir(save_path)
     try:
         if standalone_checkpoint:
             _download_standalone_checkpoint(repo_id, standalone_checkpoint, download_path)
@@ -460,43 +565,27 @@ def _detect_and_merge_lora(model_dir: str) -> None:
 
 
 async def download_axolotl_base_model(repo_id: str, save_dir: str, anonymize: bool = True) -> str:
-    model_dir = os.path.join(save_dir, _model_dir_name(repo_id, anonymize))
-    if os.path.exists(model_dir):
-        print(f"Model already cached at {model_dir}.", flush=True)
-        _detect_and_merge_lora(model_dir)
-        print("Skipping download.", flush=True)
-        return model_dir
-    snapshot_download(
-        repo_id=repo_id,
-        repo_type="model",
-        local_dir=model_dir,
-        local_dir_use_symlinks=False,
-        token=_huggingface_token(),
-    )
-    _detect_and_merge_lora(model_dir)
-    if anonymize:
-        scrub_model_identity(model_dir)
-    return model_dir
+    def fill(download_path: Path) -> None:
+        _snapshot_download_to(repo_id, "model", download_path)
+        _detect_and_merge_lora(str(download_path))
+        if anonymize:
+            scrub_model_identity(str(download_path))
+
+    model_dir = Path(save_dir) / _model_dir_name(repo_id, anonymize)
+    return str(_cache_directory(model_dir, fill, label="Model", legacy_is_complete=_legacy_model_dir_is_complete))
 
 
 async def download_huggingface_snapshot(repo_id: str, save_root: str) -> str:
     """Download a Hugging Face model snapshot to a stable cache directory."""
-    save_path = os.path.join(save_root, repo_id.replace("/", "--"))
-    os.makedirs(save_root, exist_ok=True)
-    if os.path.exists(save_path):
-        print(f"Model already cached at {save_path}. Skipping download.", flush=True)
-        return save_path
-
-    print(f"Downloading {repo_id} to {save_path}...", flush=True)
-    snapshot_download(
-        repo_id=repo_id,
-        repo_type="model",
-        local_dir=save_path,
-        local_dir_use_symlinks=False,
-        token=_huggingface_token(),
+    save_path = Path(save_root) / repo_id.replace("/", "--")
+    return str(
+        _cache_directory(
+            save_path,
+            lambda download_path: _snapshot_download_to(repo_id, "model", download_path),
+            label=f"Model {repo_id}",
+            legacy_is_complete=_legacy_model_dir_is_complete,
+        )
     )
-    print(f"Downloaded {repo_id} to {save_path}", flush=True)
-    return save_path
 
 
 async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> str:
@@ -510,20 +599,24 @@ async def download_adapter(repo_id: str, filename: str, adapters_dir: str) -> st
         return adapter_path
     
     print(f"Downloading adapter {filename} from {repo_id}...", flush=True)
+    # Download beside the cache (same filesystem) so the final rename is atomic and a killed download leaves only a
+    # partial directory the cache cleaner removes.
+    download_path = _new_partial_download_dir(Path(adapters_dir) / PurePosixPath(filename).name)
     try:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_file_path = hf_hub_download(
-                repo_id=repo_id,
-                filename=filename,
-                local_dir=temp_dir,
-                token=_huggingface_token(),
-            )
-            shutil.move(temp_file_path, adapter_path)
+        temp_file_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=filename,
+            local_dir=str(download_path),
+            token=_huggingface_token(),
+        )
+        os.replace(temp_file_path, adapter_path)
         print(f"Adapter {filename} downloaded successfully to {adapter_path}", flush=True)
         return adapter_path
     except Exception as e:
         print(f"Error downloading adapter {filename}: {e}", flush=True)
         raise e
+    finally:
+        _remove_path(download_path)
 
 
 async def download_flux_evaluation_artifacts(cache_dir: str) -> tuple[str, ...]:
@@ -546,14 +639,7 @@ async def main():
     parser.add_argument("--model")
     parser.add_argument(
         "--task-type",
-        choices=[
-            TaskType.IMAGETASK.value,
-            TaskType.INSTRUCTTEXTTASK.value,
-            TaskType.DPOTASK.value,
-            TaskType.GRPOTASK.value,
-            TaskType.CHATTASK.value,
-            TaskType.ENVIRONMENTTASK.value,
-        ],
+        choices=[t.value for t in TaskType],
     )
     parser.add_argument("--dataset")
     parser.add_argument("--file-format")
@@ -730,30 +816,16 @@ async def main():
 
 def download_miner_dataset(repo_id: str, cache_dir: str) -> str:
     """Download a single HF dataset to the miner datasets cache."""
-    cache_name = repo_id.replace("/", "--")
-    cache_path = os.path.join(cache_dir, cache_name)
-
-    if os.path.exists(cache_path):
-        print(f"Dataset {repo_id} already cached at {cache_path}", flush=True)
-        return cache_path
-
-    os.makedirs(cache_dir, exist_ok=True)
-    tmp_path = cache_path + f".tmp.{os.getpid()}"
-    try:
-        print(f"Downloading dataset {repo_id} to {tmp_path}", flush=True)
-        snapshot_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            local_dir=tmp_path,
-            local_dir_use_symlinks=False,
-            token=_huggingface_token(),
+    cache_path = Path(cache_dir) / repo_id.replace("/", "--")
+    # Entries from before the completion marker were already renamed into place whole, so they are trusted as they are.
+    return str(
+        _cache_directory(
+            cache_path,
+            lambda download_path: _snapshot_download_to(repo_id, "dataset", download_path),
+            label=f"Dataset {repo_id}",
+            legacy_is_complete=lambda _: True,
         )
-        os.rename(tmp_path, cache_path)
-        print(f"Download complete: {repo_id}", flush=True)
-    except BaseException:
-        shutil.rmtree(tmp_path, ignore_errors=True)
-        raise
-    return cache_path
+    )
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from transformers import AutoTokenizer
 
 from core.constants.paths import LORA_ADAPTER_CONFIG_FILE
 from core.downloads import download_s3_file
+from core.merged_repo import merged_repo_name
 from core.models.model_prep_models import AugmentationConfig
 from core.models.model_prep_models import AugmentationScope
 from core.models.model_prep_models import AugmentationType
@@ -199,9 +200,7 @@ def generate_anonymous_repo_name(model_id: str, seed: int) -> str:
 
 def generate_merged_repo_name(model_id: str) -> str:
     """Opaque, deterministic repo name for a published LoRA-merge; namespaced apart from augmented-*."""
-    hf_username = os.environ.get("HUGGINGFACE_USERNAME", "gradients-io")
-    repo_hash = hashlib.sha256(f"{model_id}:lora-merge".encode()).hexdigest()[:16]
-    return f"{hf_username}/merged-{repo_hash}"
+    return merged_repo_name(model_id, os.environ.get("HUGGINGFACE_USERNAME", "gradients-io"))
 
 
 def remote_repo_is_adapter(repo_id: str, hf_token: str) -> bool:
@@ -434,7 +433,7 @@ def main():
 
     print(f"[model_prep] Stats computation done in {time.time() - t0:.1f}s", flush=True)
 
-    if stats and hasattr(stats, "training"):
+    if stats and getattr(stats, "training", None) is not None:
         print(f"[model_prep] loss={stats.training.init_loss:.4f}, entropy={stats.training.output_entropy:.4f}", flush=True)
     elif stats and hasattr(stats, "env_stats"):
         for env_name, env_stat in stats.env_stats.items():

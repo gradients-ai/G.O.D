@@ -6,6 +6,8 @@ from pydantic import BaseModel
 
 class TaskStatus(str, Enum):
     PENDING = "pending"
+    # A chained boss task, held until its upstream instruct task is SUCCESS; released to PENDING.
+    AWAITING_UPSTREAM = "awaiting_upstream"
     PREPARING_DATA = "preparing_data"
     PREP_TASK_FAILURE = "prep_task_failure"
     AWAITING_MODEL_PREP = "awaiting_model_prep"
@@ -41,6 +43,24 @@ class TaskType(str, Enum):
     GRPOTASK = "GrpoTask"
     CHATTASK = "ChatTask"
     ENVIRONMENTTASK = "EnvTask"
+    QUANTFIXEDTASK = "QuantFixedTask"
+    QUANTFREEFORMTASK = "QuantFreeformTask"
 
     def __hash__(self):
         return hash(str(self))
+
+
+QUANT_TASK_TYPES = frozenset({TaskType.QUANTFIXEDTASK, TaskType.QUANTFREEFORMTASK})
+
+# Every type ranked through MinerResultsText (all but ImageTask).
+TEXT_TASK_TYPES = (
+    frozenset({TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.GRPOTASK, TaskType.CHATTASK, TaskType.ENVIRONMENTTASK})
+    | QUANT_TASK_TYPES
+)
+
+# Types whose test_loss is a reward: rank descending. Every other type ranks ascending on loss.
+HIGHER_IS_BETTER_TASK_TYPES = frozenset({TaskType.GRPOTASK, TaskType.ENVIRONMENTTASK})
+
+
+def higher_is_better(task_type: TaskType) -> bool:
+    return task_type in HIGHER_IS_BETTER_TASK_TYPES
