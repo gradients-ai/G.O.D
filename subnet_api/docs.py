@@ -48,7 +48,8 @@ curl https://api.sn56.io/v1/performance/latest-tournament-weights
 
 ## How emissions work
 
-Miners compete in **tournaments**, one per track: text, image and environment. Each
+Miners compete in **tournaments**, one per track: text, image and compression (`quant`); environment
+tournaments are discontinued but still appear in history. Each
 tournament runs in rounds of training tasks; the winner becomes the track's **champion**
 and earns that track's share of emissions, which decays over time until someone beats
 them by enough to take the title. The *Emissions* endpoints show the current split and

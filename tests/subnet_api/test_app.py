@@ -172,6 +172,7 @@ async def test_tournament_schedule_routes_relay_public_fields_only() -> None:
                 "created_at": "2026-11-16T00:00:00Z",
             },
             "image": None,
+            "quant": {"tournament_id": "tourn_q", "tournament_type": "quant", "status": "active", "participants": []},
         },
     )
     validator.respond(
@@ -186,6 +187,7 @@ async def test_tournament_schedule_routes_relay_public_fields_only() -> None:
                 "scheduled_hour": 14,
                 "scheduled_minute": 0,
             },
+            "quant": {"tournament_type": "quant", "tournament_status": "waiting", "next_start_date": "2026-11-23T16:00:00Z"},
         },
     )
     validator.respond(
@@ -219,6 +221,9 @@ async def test_tournament_schedule_routes_relay_public_fields_only() -> None:
     assert next_dates.status_code == 200
     assert next_dates.json()["text"]["current_round_number"] == 2
     assert next_dates.json()["image"]["scheduled_hour"] == 14
+    # Compression (quant) is passed through on both, not dropped.
+    assert active.json()["quant"]["tournament_id"] == "tourn_q"
+    assert next_dates.json()["quant"]["next_start_date"] == "2026-11-23T16:00:00Z"
     assert history.status_code == 200
     assert history.json()["tournaments"][0]["winner_hotkey"] == HOTKEY
     assert "private" not in active.text and "internal" not in history.text
