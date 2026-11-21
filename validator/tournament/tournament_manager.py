@@ -35,6 +35,7 @@ from validator.db.sql.tournaments import create_tournament
 from validator.db.sql.tournaments import eliminate_tournament_participants
 from validator.db.sql.tournaments import enroll_tournament_participant_with_fee
 from validator.db.sql.tournaments import get_active_tournament
+from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_latest_tournament_with_created_at
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_group_members
@@ -644,7 +645,6 @@ async def _complete_with_defending_champion(
             config.discord_url,
         )
     )
-    await upload_participant_repository(tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db)
     await _publish_boss_round_decoded(tournament, config, psql_db)
 
 
@@ -1050,20 +1050,14 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 except Exception as e:
                     logger.error(f"Error creating benchmark tasks for tournament winner {winner}: {str(e)}")
 
-            logger.info(f"Uploading winner repository for hotkey: {winner}")
-            position_1_repo = await upload_participant_repository(
-                tournament.tournament_id, tournament.tournament_type, winner, 1, config, psql_db
-            )
-
+            # The winner's repository is uploaded only once the tournament is marked completed
+            # (upload_completed_tournament_winner).
             await _publish_boss_round_decoded(tournament, config, psql_db)
 
-            challenger_repo = position_1_repo
-            challenger_commit_hash = None
-            challenger_github_token = None
+            challenger_repo = diff_candidate.training_repo if diff_candidate else None
+            challenger_commit_hash = diff_candidate.training_commit_hash if diff_candidate else None
+            challenger_github_token = diff_candidate.github_token if diff_candidate else None
             if winner == EMISSION_BURN_HOTKEY:
-                challenger_repo = diff_candidate.training_repo if diff_candidate else None
-                challenger_commit_hash = diff_candidate.training_commit_hash if diff_candidate else None
-                challenger_github_token = diff_candidate.github_token if diff_candidate else None
                 if integrity.disqualified:
                     result_summary = (
                         f"Boss retained after challenger {challenger.hotkey} was disqualified; "
@@ -1075,7 +1069,7 @@ async def advance_tournament(tournament: TournamentData, completed_round: Tourna
                 result_summary = f"Winner changed; new winner hotkey: {winner}."
 
             asyncio.create_task(
-                # Scheduled only after placement persistence and winner repository upload.
+                # Scheduled only after placement persistence.
                 generate_diff_report_and_notify_tournament_completed(
                     tournament,
                     challenger_repo,
@@ -2533,6 +2527,9 @@ async def check_and_start_tournament(tournament_type: TournamentType, psql_db: P
     Check if we should start a new tournament of the given type.
     """
     with LogContext(tournament_type=tournament_type.value):
+        # Before anything else, so the next tournament's boss is seeded from the uploaded repository.
+        await upload_completed_tournament_winner(tournament_type, psql_db, config)
+
         # Check if there's already an active tournament of this type
         active_tournament = await get_active_tournament(psql_db, tournament_type)
         if active_tournament:
@@ -2700,6 +2697,35 @@ def _calculate_next_tournament_start_time(last_created_at: datetime, tournament_
 
     return next_start
 
+
+
+_winner_upload_attempted_at: dict[str, datetime] = {}
+
+
+async def upload_completed_tournament_winner(tournament_type: TournamentType, psql_db: PSQLDB, config: Config) -> None:
+    """Upload the winner's repository of the latest completed tournament of a type, once it is marked completed.
+
+    Completion is a manual step, so the winner's code stays private until then. Idempotent: a winner whose backup_repo is
+    set is skipped. A failed upload is retried at most every WINNER_UPLOAD_RETRY_INTERVAL seconds. Never raises.
+    """
+    try:
+        tournament = await get_latest_completed_tournament(psql_db, tournament_type)
+        if not tournament or not tournament.winner_hotkey:
+            return
+        winner = await get_tournament_participant(tournament.tournament_id, tournament.winner_hotkey, psql_db)
+        if not winner or winner.backup_repo or not winner.training_repo:
+            return
+        now = datetime.now(timezone.utc)
+        last_attempt = _winner_upload_attempted_at.get(tournament.tournament_id)
+        if last_attempt and (now - last_attempt).total_seconds() < t_cst.WINNER_UPLOAD_RETRY_INTERVAL:
+            return
+        _winner_upload_attempted_at[tournament.tournament_id] = now
+        logger.info(f"Tournament {tournament.tournament_id} is completed; uploading winner repository for {winner.hotkey}")
+        await upload_participant_repository(
+            tournament.tournament_id, tournament.tournament_type, winner.hotkey, 1, config, psql_db
+        )
+    except Exception as e:
+        logger.error(f"Winner repository upload for {tournament_type.value} failed: {type(e).__name__}: {e}", exc_info=True)
 
 
 async def upload_participant_repository(

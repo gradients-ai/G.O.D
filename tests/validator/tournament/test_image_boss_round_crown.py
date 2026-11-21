@@ -458,8 +458,7 @@ class TestEarlyStopAfterRoundThree:
         assert (cup.round_three.round_id, [CONTENDER]) in cup.eliminated
         cup.compared.assert_awaited_once_with(TID, CONTENDER, RUNNER_UP, None)
         cup.stored.assert_awaited_once()
-        cup.upload.assert_awaited_once()
-        assert cup.upload.await_args.args[2] == BOSS
+        cup.upload.assert_not_awaited()
         assert len(cup.rounds) == ROUND_TASKS
 
     @pytest.mark.parametrize(
