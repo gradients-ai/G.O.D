@@ -24,7 +24,7 @@ organic = [
     "datasets>=2.16.0,<3.0.0",
     "docker==7.1.0",
     "huggingface-hub>=0.20.0",
-    "minio==7.2.10",
+    "minio==7.2.11",  # 7.2.10 deadlocks a parallel multipart upload when a part fails
     "numpy>=2.0.0",
     "pandas==2.2.3",
     "python-dotenv==1.0.1",
