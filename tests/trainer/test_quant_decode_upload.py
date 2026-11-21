@@ -373,3 +373,28 @@ async def test_real_client_exhausted_part_retries_fall_back_to_a_whole_file_retr
     assert s3.objects[OBJECT] == big_shard.read_bytes()
     assert s3.aborted >= 1  # minio aborted the failed multipart upload before the retry
     assert len(reports) >= 1 and "attempt 1/4 failed" in reports[0]
+
+
+def test_failed_part_surfaces_instead_of_blocking_the_upload(monkeypatch, tmp_path):
+    """With more parts than upload threads, a failed part must raise from put_file, not leave it waiting on the pool."""
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_PART_BYTES", PART)
+    path = tmp_path / "model-00001.safetensors"
+    with path.open("wb") as f:
+        f.truncate(4 * cst.QUANT_DECODE_UPLOAD_PARALLEL * PART)  # sparse
+    s3 = FlakyS3(drops=10**6)  # every part fails
+    monkeypatch.setattr(upload, "_storage", s3.client(http_retries=0))
+    errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            upload.put_file(BUCKET, OBJECT, path)
+        except Exception as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    s3.server.shutdown()
+
+    assert not thread.is_alive(), "put_file is still blocked after a part failed"
+    assert len(errors) == 1 and upload.is_transient(errors[0])
