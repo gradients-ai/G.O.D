@@ -73,6 +73,10 @@ def _materialise(tmp_path, urls):
 
 
 class TestMaterialiseDecodedModel:
+    @pytest.fixture(autouse=True)
+    def no_retry_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr(quant_artifacts, "SHARD_RETRY_BACKOFF_SECONDS", 0.0)
+
     def test_writes_listed_shards_over_base_metadata(self, tmp_path, store, base_snapshot) -> None:
         urls = _urls(store, [_entry("model.safetensors", SHARD)], **{"model.safetensors": SHARD})
 
@@ -106,6 +110,46 @@ class TestMaterialiseDecodedModel:
 
         with pytest.raises(DecodedModelCorrupt):
             _materialise(tmp_path, urls)
+
+    def test_retries_shard_corrupt_on_first_download(self, tmp_path, store, base_snapshot, monkeypatch) -> None:
+        urls = _urls(store, [_entry("model.safetensors", SHARD)], **{"model.safetensors": SHARD})
+        real_stream = quant_artifacts._stream_to_file
+        shard_calls = []
+
+        def flaky_stream(url, dest, max_bytes):
+            if dest.name == "model.safetensors":
+                shard_calls.append(url)
+                if len(shard_calls) == 1:
+                    dest.write_bytes(b"x" * len(SHARD))
+                    return hashlib.sha256(b"x" * len(SHARD)).hexdigest()
+            return real_stream(url, dest, max_bytes)
+
+        monkeypatch.setattr(quant_artifacts, "_stream_to_file", flaky_stream)
+
+        dest = _materialise(tmp_path, urls)
+
+        assert len(shard_calls) == 2
+        assert (dest / "model.safetensors").read_bytes() == SHARD
+
+    def test_shard_corrupt_on_every_download_is_corrupt(self, tmp_path, store, base_snapshot, monkeypatch) -> None:
+        good = SHARD + b"-other"
+        files = [_entry("model.safetensors", SHARD), _entry("other.safetensors", good)]
+        urls = _urls(store, files, **{"model.safetensors": b"y" * len(SHARD), "other.safetensors": good})
+        real_stream = quant_artifacts._stream_to_file
+        calls = []
+
+        def counting_stream(url, dest, max_bytes):
+            calls.append(dest.name)
+            return real_stream(url, dest, max_bytes)
+
+        monkeypatch.setattr(quant_artifacts, "_stream_to_file", counting_stream)
+
+        with pytest.raises(DecodedModelCorrupt, match="model.safetensors does not match its index entry"):
+            _materialise(tmp_path, urls)
+
+        assert calls.count("model.safetensors") == quant_artifacts.SHARD_DOWNLOAD_ATTEMPTS
+        assert "other.safetensors" not in calls
+        assert not (tmp_path / "decoded" / "model.safetensors").exists()
 
     def test_ignores_url_not_in_index(self, tmp_path, store, base_snapshot) -> None:
         urls = _urls(store, [_entry("model.safetensors", SHARD)], **{"model.safetensors": SHARD, "payload.safetensors": b"x"})

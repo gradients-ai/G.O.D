@@ -11,6 +11,7 @@ Object-storage layout written by the trainer decode job, one prefix per (task, h
 """
 
 import hashlib
+import time
 import urllib.request
 from pathlib import Path
 
@@ -32,6 +33,9 @@ STALE_INDEX_PATTERN = "*.index.json"
 MAX_INDEX_BYTES = 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 DOWNLOAD_TIMEOUT_SECONDS = 60
+# A shard that fails verification is re-downloaded; only a mismatch on every attempt is corrupt.
+SHARD_DOWNLOAD_ATTEMPTS = 3
+SHARD_RETRY_BACKOFF_SECONDS = 2.0
 HUB_TIMEOUT_SECONDS = 30.0
 
 _DECODED_MODEL_URLS = TypeAdapter(dict[str, dict[str, str]])
@@ -160,7 +164,19 @@ def _download_listed_file(entry: DecodedFile, urls: dict[str, str], dest: Path) 
     if entry.name not in urls:
         raise DecodedModelCorrupt(f"index lists {entry.name} but no url was provided for it")
     path = dest / entry.name
-    sha256 = _stream_to_file(urls[entry.name], path, entry.bytes)
+    for attempt in range(1, SHARD_DOWNLOAD_ATTEMPTS + 1):
+        try:
+            _download_verified(entry, urls[entry.name], path)
+            return
+        except DecodedModelCorrupt:
+            path.unlink(missing_ok=True)
+            if attempt == SHARD_DOWNLOAD_ATTEMPTS:
+                raise
+            time.sleep(SHARD_RETRY_BACKOFF_SECONDS * attempt)
+
+
+def _download_verified(entry: DecodedFile, url: str, path: Path) -> None:
+    sha256 = _stream_to_file(url, path, entry.bytes)
     if path.stat().st_size != entry.bytes or sha256 != entry.sha256:
         raise DecodedModelCorrupt(f"{entry.name} does not match its index entry (bytes or sha256)")
 
