@@ -185,8 +185,7 @@ class TestAfterRoundThree:
 
         # The decoded publication only reads the final round's freeform tasks: with none it publishes nothing.
         cup.publication.assert_called_once()
-        tm.upload_participant_repository.assert_awaited_once()
-        assert tm.upload_participant_repository.await_args.args[2] == BOSS
+        tm.upload_participant_repository.assert_not_awaited()
 
     @pytest.mark.parametrize("outcomes", [[WIN, WIN, WIN], [SMALLER, LARGER, WIN], [WIN, WIN, LARGER]])
     async def test_a_possible_crown_creates_the_boss_round(self, cup, outcomes):
