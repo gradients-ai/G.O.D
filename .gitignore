@@ -11,6 +11,7 @@ sam_vit_l_0b3195.pth
 *.session.sql
 nohup.out
 task_history.json
+task_history.json.lock
 uv.lock
 tvenv/*
 axolotl/*

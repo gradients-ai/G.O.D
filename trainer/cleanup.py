@@ -14,12 +14,12 @@ from core.constants.quant import DECODE_TIMEOUT_SECONDS
 from core.logging import get_all_context_tags
 from core.logging import get_logger
 from core.logging import stream_container_logs
+from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
-from core.models.task_models import TaskStatus
 from trainer import constants as cst
 from trainer.image_builds import prune_build_leftovers
-from trainer.job_state import save_task_history
+from trainer.job_state import fail_overdue_jobs
 from trainer.job_state import task_history
 
 
@@ -80,32 +80,22 @@ def remove_stale_trainer_containers(client: docker.DockerClient) -> None:
     logger.info("Trainer container cleanup completed.")
 
 
+def _stale_timeout(job: TrainerJob) -> timedelta:
+    # Training jobs refresh started_at when the train container starts (see update_training_started_at), so this
+    # deadline tracks container.wait rather than download/image-build time. Status-only: does not kill the container.
+    if isinstance(job, TrainerTaskLog):
+        timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
+        if _decodes_after_upload(job):
+            timeout += timedelta(minutes=QUANT_DECODE_GRACE_MINUTES)
+        return timeout
+    return timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
+
+
 async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600):
     while True:
         if len(task_history) > 0:
-            now = datetime.utcnow()
-            for job in task_history:
-                if job.status != TaskStatus.TRAINING or not job.started_at:
-                    continue
-
-                # Training jobs refresh started_at when the train container starts (see
-                # update_training_started_at), so this deadline tracks container.wait rather than
-                # download/image-build time. Status-only: does not kill the container.
-                if isinstance(job, TrainerTaskLog):
-                    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(
-                        minutes=cst.STALE_TASK_GRACE_MINUTES
-                    )
-                    if _decodes_after_upload(job):
-                        timeout += timedelta(minutes=QUANT_DECODE_GRACE_MINUTES)
-                else:
-                    timeout = timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
-
-                deadline = job.started_at + timeout
-                if now > deadline:
-                    job.status = TaskStatus.FAILURE
-                    job.finished_at = now
-                    job.logs.append(f"[{now.isoformat()}] Job marked as FAILED due to timeout.")
-                    await save_task_history()
+            # Runs on this thread's own loop: the history lock it takes covers threads and processes alike.
+            fail_overdue_jobs(_stale_timeout)
 
             client = docker.from_env()
             abs_task_path = Path(cst.TASKS_FILE_PATH).resolve()

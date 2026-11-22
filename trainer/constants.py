@@ -20,6 +20,8 @@ IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_
 # Runtime state
 TEMP_REPO_PATH = "/tmp/trainer/repos/"
 TASKS_FILE_PATH = "trainer/task_history.json"
+# Side file next to TASKS_FILE_PATH that every task history writer flocks, in this process or another.
+TASK_HISTORY_LOCK_SUFFIX = ".lock"
 
 # Docker volumes and images
 CHECKPOINTS_VOLUME_NAME = "checkpoints"
