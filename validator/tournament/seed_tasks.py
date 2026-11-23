@@ -48,6 +48,7 @@ from validator.tasks.datasets.models import Dataset
 from validator.tasks.models import ChatRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import RawTask
+from validator.tasks.prep.yarn import without_yarn_suffix
 from validator.tasks.quant_input_repo import full_model_rejection
 from validator.tasks.quant_input_repo import is_adapter_repo
 from validator.tasks.quant_shapes import filter_quant_compatible
@@ -265,8 +266,9 @@ async def _excluded_datasets(tournament_id: str, extra: frozenset[str], config: 
 
 
 def model_identity(model_id: str) -> str:
-    """A model's name without its org, lower-cased: one checkpoint published under two orgs is one model."""
-    return model_id.rsplit("/", 1)[-1].strip().lower()
+    """A model's name without its org, lower-cased: one checkpoint published under two orgs is one model, and so is its
+    YaRN-extended copy (prep renames a task's model to it)."""
+    return without_yarn_suffix(model_id.rsplit("/", 1)[-1].strip()).lower()
 
 
 async def _avoided_models(role: SeedRole, live: dict[SeedRole, TournamentSeedTask], config: Config) -> frozenset[str]:
@@ -288,17 +290,21 @@ async def _without_models(
     models: AsyncGenerator[str, None], avoided: frozenset[str], label: str
 ) -> AsyncGenerator[str, None]:
     """The model generator minus the avoided models (model_identity). After TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS skips the
-    avoided ones are yielded too, with a warning, so a pool holding little else cannot stall the draw."""
+    avoided ones are yielded too, with one warning, so a pool holding little else cannot stall the draw."""
     skipped = 0
+    warned = False
     async for model_id in models:
         if model_identity(model_id) in avoided:
             if skipped < t_cst.TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS:
                 skipped += 1
-                logger.info(f"{label}: skipping {model_id}, the model of another seed")
+                logger.debug(f"{label}: skipping {model_id}, the model of another seed")
                 continue
-            logger.warning(
-                f"{label}: skipped {skipped} pool models that another seed already uses; taking {model_id} anyway"
-            )
+            if not warned:
+                warned = True
+                logger.warning(
+                    f"{label}: skipped {skipped} pool models that another seed already uses; no longer skipping them "
+                    f"(next: {model_id})"
+                )
         yield model_id
 
 
@@ -323,7 +329,8 @@ async def _draw_instruct(
         return await create_synthetic_instruct_text_task(
             config, models, datasets, enable_kl=False, allow_augmentation=False, carve_calibration=True
         )
-    # Input and text round seeds: quant-compatible band, augmentation rolled, calibration carved.
+    # Input and text round seeds: quant-compatible band, augmentation rolled, calibration carved. The avoided models (only
+    # TEXT_SEED_DISTINCT_MODEL_ROLES have any) are dropped before the compatibility check, so none of them is downloaded.
     label = f"Tournament {tournament_id}: seed {role.value}"
     pool = _without_models(_get_text_models(keypair, *_draw_band(role)), avoided_models, label)
     models = filter_quant_compatible(pool)

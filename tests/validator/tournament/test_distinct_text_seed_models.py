@@ -68,6 +68,12 @@ class TestModelIdentity:
         )
         assert seed_tasks.model_identity("Qwen2.5-1.5B-Instruct") == "qwen2.5-1.5b-instruct"
 
+    def test_a_yarn_extended_copy_is_the_model_it_was_made_from(self):
+        assert seed_tasks.model_identity("gradients-io/Qwen2.5-1.5B-Instruct-YaRN-extended-4") == seed_tasks.model_identity(
+            "Qwen/Qwen2.5-1.5B-Instruct"
+        )
+        assert seed_tasks.model_identity("org/YaRN-extended-4-notes") == "yarn-extended-4-notes"
+
     def test_variants_with_another_name_are_different_models(self):
         names = {"Qwen/Qwen2.5-1.5B", "Qwen/Qwen2.5-1.5B-Instruct", "Qwen/Qwen2.5-Math-1.5B"}
         assert len({seed_tasks.model_identity(name) for name in names}) == 3
@@ -138,3 +144,55 @@ class TestDistinctRoundSeedModels:
 
         assert _model(world, SeedRole.TEXT_R1) == "org/model-a"
         assert seed_tasks.model_identity(_model(world, SeedRole.TEXT_R2)) == "model-a"
+
+
+class TestOrderWithTheCompatibilityCheck:
+    """The other seed's model is dropped before the quant-compatibility stage, and only skipped pool models count towards
+    TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS (a model that stage rejects does not)."""
+
+    @pytest.fixture
+    def checked(self, monkeypatch) -> list[str]:
+        """Every model the compatibility stage was handed; it rejects the `incompatible-*` ones, like filter_quant_compatible."""
+        seen: list[str] = []
+
+        async def rejecting(models):
+            async for model_id in models:
+                seen.append(model_id)
+                if "incompatible" not in model_id:
+                    yield model_id
+
+        monkeypatch.setattr(seed_tasks, "filter_quant_compatible", rejecting)
+        return seen
+
+    R2_POOL = [
+        "mirror/MODEL-A",
+        "org/incompatible-1",
+        "mirror/MODEL-A",
+        "org/incompatible-2",
+        "mirror/MODEL-A",
+        "org/model-c",
+    ]
+
+    async def test_the_other_model_never_reaches_the_compatibility_check(self, world, pools, checked):
+        pools[R1_BAND] = ["org/model-a"]
+        pools[R2_BAND] = self.R2_POOL
+        await _create(world)
+        del checked[:]
+        await _replace(world, SeedRole.TEXT_R2)
+
+        assert checked == ["org/incompatible-1", "org/incompatible-2", "org/model-c"]
+        assert _model(world, SeedRole.TEXT_R2) == "org/model-c"
+
+    async def test_past_the_skip_limit_the_other_model_is_checked_and_taken(self, world, pools, checked, monkeypatch):
+        monkeypatch.setattr(t_cst, "TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS", 2)
+        pools[R1_BAND] = ["org/model-a"]
+        pools[R2_BAND] = ["org/model-b"]
+        await _create(world)
+        pools[R2_BAND] = self.R2_POOL
+        del checked[:]
+
+        await _replace(world, SeedRole.TEXT_R2)
+
+        # Two skips (the incompatible models in between are not counted), then the third occurrence goes through.
+        assert checked == ["org/incompatible-1", "org/incompatible-2", "mirror/MODEL-A"]
+        assert _model(world, SeedRole.TEXT_R2) == "mirror/MODEL-A"
