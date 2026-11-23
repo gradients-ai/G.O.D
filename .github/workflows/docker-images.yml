@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.changed-images.outputs.has_changes }}
+      quant_decoder: ${{ steps.changed-images.outputs.quant_decoder }}
       matrix: ${{ steps.changed-images.outputs.matrix }}
     steps:
       - name: Checkout
@@ -201,6 +202,14 @@ jobs:
               },
           ]
 
+          # The decoder build image is FROM the decoder run image, so the pair is built
+          # in order by one job instead of as independent matrix entries.
+          quant_decoder_patterns = [
+              "ops/docker/quant-decoder-run.dockerfile",
+              "ops/docker/quant-decoder-build.dockerfile",
+              ".dockerignore",
+          ]
+
           def is_match(path: str, pattern: str) -> bool:
               if pattern.endswith("/**"):
                   prefix = pattern[:-3]
@@ -220,10 +229,15 @@ jobs:
                       if key not in {"patterns", "exclude_patterns"}
                   })
 
+          quant_decoder = force_all or any(
+              is_match(path, pattern) for path in changed_files for pattern in quant_decoder_patterns
+          )
+
           matrix = {"include": selected}
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"has_changes={str(bool(selected)).lower()}\n")
               output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write(f"quant_decoder={str(quant_decoder).lower()}\n")
 
           if force_all:
               print("Force-all mode selected every configured image.")
@@ -235,6 +249,8 @@ jobs:
           print("Selected images:")
           for image in selected:
               print(f"  {image['id']}: {image['image']}:{image['channel_tag']}")
+          if quant_decoder:
+              print("  quant-decoder: gradientsio/quant-decoder-run:pinned, gradientsio/quant-decoder-build:pinned")
           PY
 
   build:
@@ -284,3 +300,73 @@ jobs:
             ${{ matrix.image }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.id }}
           cache-to: type=gha,mode=max,scope=${{ matrix.id }},ignore-error=true
+
+  quant-decoder:
+    name: Build quant-decoder
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.quant_decoder == 'true'
+    env:
+      PUSH_IMAGE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+      RUN_IMAGE: gradientsio/quant-decoder-run
+      BUILD_IMAGE: gradientsio/quant-decoder-build
+      LOCAL_RUN_IMAGE: localhost:5000/quant-decoder-run:pinned
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+
+      - name: Login to Docker Hub
+        if: env.PUSH_IMAGE == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The run image goes to a registry local to this job, so the build image below is
+      # always built on the run image from this commit and never on a published one.
+      - name: Build run image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/quant-decoder-run.dockerfile
+          push: true
+          tags: ${{ env.LOCAL_RUN_IMAGE }}
+          cache-from: type=gha,scope=quant-decoder-run
+          cache-to: type=gha,mode=max,scope=quant-decoder-run,ignore-error=true
+
+      - name: Build and optionally push build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/quant-decoder-build.dockerfile
+          build-contexts: |
+            ${{ env.RUN_IMAGE }}:pinned=docker-image://${{ env.LOCAL_RUN_IMAGE }}
+          push: ${{ env.PUSH_IMAGE == 'true' }}
+          tags: |
+            ${{ env.BUILD_IMAGE }}:pinned
+            ${{ env.BUILD_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=quant-decoder-build
+          cache-to: type=gha,mode=max,scope=quant-decoder-build,ignore-error=true
+
+      # Rebuilt from the builder's cache, so these are the layers the build image was built on.
+      - name: Push run image
+        if: env.PUSH_IMAGE == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/quant-decoder-run.dockerfile
+          push: true
+          tags: |
+            ${{ env.RUN_IMAGE }}:pinned
+            ${{ env.RUN_IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=quant-decoder-run
