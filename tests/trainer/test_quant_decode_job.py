@@ -479,10 +479,10 @@ async def test_index_json_is_owner_only_and_parses_in_the_evaluator_model(setup:
     index_modes: list[int] = []
     real_upload = job._upload
 
-    async def spy(bucket, object_name, path, report=job._no_report):
+    async def spy(bucket, object_name, path, report=job._no_report, slot_job=None):
         if path.name == "index.json":
             index_modes.append(stat.S_IMODE(path.stat().st_mode))
-        await real_upload(bucket, object_name, path, report)
+        await real_upload(bucket, object_name, path, report, slot_job)
 
     monkeypatch.setattr(job, "_upload", spy)
     result = await setup.decode(FakeContainers(write_output=write_good_shard))

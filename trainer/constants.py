@@ -70,6 +70,16 @@ DOCKER_BUILD_TIMEOUT_MINUTES = 30
 # none of its own image builds is in progress (trainer.image_builds). It also wipes every other build cache on the host.
 # On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
 PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
+
+# Heavy transfers share the box's network link, so only a few run at once and the rest queue (trainer/slots.py). Each
+# step's timeout starts once it holds its slot. Image builds pull base images and packages; uploads cover both model
+# uploads to Hugging Face and decoded files to object storage; a freeform decode downloads its artifact and uploads
+# the decoded model.
+MAX_CONCURRENT_IMAGE_BUILDS = int(os.getenv("TRAINER_MAX_CONCURRENT_IMAGE_BUILDS", "2"))
+MAX_CONCURRENT_UPLOADS = int(os.getenv("TRAINER_MAX_CONCURRENT_UPLOADS", "2"))
+MAX_CONCURRENT_QUANT_DECODES = int(os.getenv("TRAINER_MAX_CONCURRENT_QUANT_DECODES", "2"))
+# An upload container that never exits would keep its upload slot for good; this cap, counted from the slot, ends it.
+HF_UPLOAD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_HF_UPLOAD_TIMEOUT_MINUTES", "180"))
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
 

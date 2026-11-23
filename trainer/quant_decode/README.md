@@ -70,6 +70,8 @@ The index file is accepted and ignored. The job deletes it, so only checked shar
 
 Each stage and each uploaded file is appended to the job's log in `task_history.json`.
 
+A trainer runs `MAX_CONCURRENT_QUANT_DECODES` decodes at once, and each decoded file takes one of its upload slots. Further decodes queue, and their time limits start once they hold a slot. See [Transfer slots](../README.md#transfer-slots). `rerun.py` runs in its own process and does not queue behind the trainer's jobs.
+
 | Outcome | Field | Examples |
 | --- | --- | --- |
 | Miner's fault, scored | `quant_failure` | unsafe decoder archive, extraction past the cap, no `decode.py`, executable in the artifact, build or run exit or timeout, bad output |

@@ -36,6 +36,7 @@ from core.models.quant_artifact_models import QuantDecodedFile
 from core.models.quant_artifact_models import QuantDecodedIndex
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
+from trainer import slots
 from trainer.host_resources import ContainerResources
 from trainer.quant_decode.output_check import BF16_BYTES
 from trainer.quant_decode.output_check import SAFETENSORS_INDEX_NAME
@@ -382,37 +383,45 @@ def upload_timeout_seconds(size_bytes: int) -> float:
     return cst.QUANT_DECODE_UPLOAD_MIN_TIMEOUT_SECONDS + size_bytes / cst.QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND
 
 
-async def _upload(bucket: str, object_name: str, path: Path, report: ProgressReporter = _no_report) -> None:
+async def _upload(
+    bucket: str, object_name: str, path: Path, report: ProgressReporter = _no_report, job: slots.JobKey | None = None
+) -> None:
     """Multipart upload with large parts in parallel, retried as a whole file on transient storage errors (see
     upload.py). A failed or stalled upload is ours, so it ends as an infra_error.
 
-    The deadline covers every attempt and backoff. On timeout the executor thread is not killed (minio has no cancel);
+    Each file takes one of the trainer's upload slots, shared with model uploads. The deadline starts once the slot is
+    held and covers every attempt and backoff. On timeout the executor thread is not killed (minio has no cancel);
     it finishes or fails on its own while the job moves on. Shards upload before the index and a shard timeout stops
     the job, so a partial decode never gets an index; only a timed-out index upload itself can still land late.
     """
     size = path.stat().st_size
     timeout = upload_timeout_seconds(size)
-    started = time.monotonic()
-    try:
-        await asyncio.wait_for(upload_with_retry(bucket, object_name, path, report), timeout=timeout)
-    except asyncio.TimeoutError:
-        raise _InfraFault(f"upload of {object_name} timed out after {timeout:.0f}s") from None
-    except UploadFailed as e:
-        raise _InfraFault(str(e)) from None
-    elapsed = time.monotonic() - started
+    async with slots.uploads.slot(report, job):
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(upload_with_retry(bucket, object_name, path, report), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise _InfraFault(f"upload of {object_name} timed out after {timeout:.0f}s") from None
+        except UploadFailed as e:
+            raise _InfraFault(str(e)) from None
+        elapsed = time.monotonic() - started
     rate = size / BYTES_PER_MB / max(elapsed, 1e-3)
     await report(f"decode: uploaded {path.name} ({size} bytes) in {elapsed:.0f}s ({rate:.1f} MB/s)")
 
 
 async def _upload_shards(
-    request: QuantDecodeRequest, output_dir: Path, progress: _DecodeProgress, report: ProgressReporter = _no_report
+    request: QuantDecodeRequest,
+    output_dir: Path,
+    progress: _DecodeProgress,
+    report: ProgressReporter = _no_report,
+    job: slots.JobKey | None = None,
 ) -> list[QuantDecodedFile]:
     files: list[QuantDecodedFile] = []
     shards = sorted(output_dir.glob(f"*{SAFETENSORS_SUFFIX}"))
     total = sum(shard.stat().st_size for shard in shards)
     await report(f"decode: uploading {len(shards)} decoded shards ({total} bytes)")
     for shard in shards:
-        await _upload(request.bucket, f"{request.object_prefix}/{shard.name}", shard, report)
+        await _upload(request.bucket, f"{request.object_prefix}/{shard.name}", shard, report, job)
         sha256 = await asyncio.to_thread(_sha256_file, shard)
         record = QuantDecodedFile(name=shard.name, bytes=shard.stat().st_size, sha256=sha256)
         files.append(record)
@@ -427,12 +436,13 @@ async def _upload_index(
     index_path: Path,
     progress: _DecodeProgress,
     report: ProgressReporter = _no_report,
+    job: slots.JobKey | None = None,
 ) -> None:
     index_path.touch(mode=OWNER_RW)
     index_path.chmod(OWNER_RW)
     index_path.write_text(index.model_dump_json())
     object_name = f"{request.object_prefix}/{DECODED_INDEX_NAME}"
-    await _upload(request.bucket, object_name, index_path, report)
+    await _upload(request.bucket, object_name, index_path, report, job)
     progress.uploaded_files.append(DECODED_INDEX_NAME)
     progress.index_object = object_name
 
@@ -476,7 +486,7 @@ async def _decode(
     progress.n_tensors = await asyncio.to_thread(_check_output, work.output, expected)
     await report(f"decode: output checked ({progress.n_tensors} tensors)")
 
-    files = await _upload_shards(request, work.output, progress, report)
+    files = await _upload_shards(request, work.output, progress, report, (task_id, hotkey))
     index = QuantDecodedIndex(
         files=files,
         n_tensors=progress.n_tensors,
@@ -486,7 +496,7 @@ async def _decode(
         hotkey=hotkey,
         artifact_files=progress.artifact_files,
     )
-    await _upload_index(request, index, work.index, progress, report)
+    await _upload_index(request, index, work.index, progress, report, (task_id, hotkey))
 
 
 async def run_freeform_decode(
@@ -505,23 +515,27 @@ async def run_freeform_decode(
     """Decode one freeform submission end to end. Never raises for a miner's fault; the work dir is always removed.
 
     `report` gets one line per stage (and per uploaded shard) so a long decode is visible on the job log.
+
+    The whole decode runs inside one of the trainer's decode slots; every stage's time limit starts after the slot is
+    held. Within it, each decoded file also takes an upload slot.
     """
     work = _WorkDirs(root=work_root / f"{task_id}_{hotkey[:8]}")
     progress = _DecodeProgress()
     try:
-        await _decode(
-            request,
-            task_id=task_id,
-            hotkey=hotkey,
-            artifact_repo=artifact_repo,
-            base_model_dir=base_model_dir,
-            hf_token=hf_token,
-            work=work,
-            docker_client=docker_client,
-            progress=progress,
-            report=report,
-            cpu_share=cpu_share,
-        )
+        async with slots.quant_decodes.slot(report, (task_id, hotkey)):
+            await _decode(
+                request,
+                task_id=task_id,
+                hotkey=hotkey,
+                artifact_repo=artifact_repo,
+                base_model_dir=base_model_dir,
+                hf_token=hf_token,
+                work=work,
+                docker_client=docker_client,
+                progress=progress,
+                report=report,
+                cpu_share=cpu_share,
+            )
         return QuantDecodeResult(ok=True, **progress.model_dump())
     except _ScoredFail as e:
         return QuantDecodeResult(quant_failure=sanitize_failure(str(e)), **progress.model_dump())

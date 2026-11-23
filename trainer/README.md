@@ -24,6 +24,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `quant_decode/` | Sandbox that runs a freeform decoder, the decoded-output check and the re-run CLI. |
 | `quant_upload_check.py` | Checks a compression task's output against its `quant_manifest.json` before upload. |
 | `runtime.py` | Docker orchestration: download, model prep, image build, training, upload, decode. |
+| `slots.py` | Caps on concurrent image builds, uploads and freeform decodes. |
 | `telemetry.py` | Logging setup. |
 | `training_config.py` | Writes training config files and reward function files. |
 | `training_paths.py` | Paths used inside training containers. |
@@ -32,9 +33,26 @@ The service that takes jobs from the validator, clones miner repositories, build
 
 - Miner images are built with no cache, so one entrant's build never reuses another's layers.
 - A build whose step failed is detected by the missing image tag. The job fails at the build stage with `Docker image build failed: no image ...`.
+- A build that exceeds `DOCKER_BUILD_TIMEOUT_MINUTES`, or whose job is cancelled, is stopped on the daemon: the trainer kills the running step container, and any step the build starts afterwards. Layers of finished steps are not removed by this.
 - Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
 - After each job the image is removed. Dangling images are pruned after each job and by the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
 - The host-wide BuildKit cache prune runs while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
+
+## Transfer slots
+
+Jobs on one trainer share its network link, so `slots.py` lets only a few heavy transfers run at once. The rest queue in arrival order.
+
+| Pool | Default | Variable | Held for |
+| --- | --- | --- | --- |
+| Image builds | 2 | `TRAINER_MAX_CONCURRENT_IMAGE_BUILDS` | one miner image build |
+| Uploads | 2 | `TRAINER_MAX_CONCURRENT_UPLOADS` | one model upload to Hugging Face, or one decoded file to object storage |
+| Freeform decodes | 2 | `TRAINER_MAX_CONCURRENT_QUANT_DECODES` | one whole decode; each decoded file also takes an upload slot |
+
+- A step's time limit starts once it holds its slot: the build timeout, the per-file upload deadline and the decode phase caps never include queue time. A model upload is cut off `TRAINER_HF_UPLOAD_TIMEOUT_MINUTES` (default 180) after it gets its slot, so a stuck uploader cannot keep a slot.
+- A queued job stays `TRAINING`. Its job log gets `Waiting for <pool> slot ...` and then `Got <pool> slot after waiting Ns`.
+- The stale timeout skips a job while it is queued, and is extended by the time it has queued since its container started.
+- The pools live in the trainer process. The decode re-run CLI is a separate process and does not queue behind running jobs.
+- The limits are read at start, so a change needs a trainer restart.
 
 ## CPU and memory shares
 
