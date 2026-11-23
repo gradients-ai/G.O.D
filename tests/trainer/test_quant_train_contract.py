@@ -105,7 +105,7 @@ def _instruct_request() -> TrainerProxyRequest:
 
 
 def _write_quant_output(mountpoint: Path, track: str = "fixed") -> None:
-    output_dir = mountpoint / "task-1" / "repo-1"
+    output_dir = mountpoint / "task-1" / "hk" / "task-1" / "repo-1"
     output_dir.mkdir(parents=True)
     (output_dir / "model.safetensors").write_bytes(b"x" * 8)
     manifest = {"version": 1, "task_id": "task-1", "track": track, "files": [{"name": "model.safetensors", "bytes": 8}]}
@@ -466,7 +466,7 @@ def test_decode_base_model_dir_falls_back_to_anonymised_dir_without_baseline_sta
 
 
 async def test_quant_job_without_manifest_fails_without_upload_or_decode(recorder: Recorder, tmp_path: Path):
-    output_dir = tmp_path / "task-1" / "repo-1"
+    output_dir = tmp_path / "task-1" / "hk" / "task-1" / "repo-1"
     output_dir.mkdir(parents=True)
     (output_dir / "model.safetensors").write_bytes(b"x" * 8)
 
@@ -478,10 +478,11 @@ async def test_quant_job_without_manifest_fails_without_upload_or_decode(recorde
     assert "[ERROR] quant output rejected: quant_manifest.json missing: the pipeline did not finish" in recorder.logs
 
 
-async def test_quant_output_is_reclaimed_before_the_check(recorder: Recorder, quant_output):
+async def test_quant_output_is_reclaimed_before_the_check(recorder: Recorder, quant_output, tmp_path: Path):
     await runtime.start_training_task(_quant_request(TaskType.QUANTFIXEDTASK, quant_spec=SPEC), "/repo")
 
-    assert recorder.reclaims == [{"task_id": "task-1", "repo_name": "repo-1"}]
+    job_dir = str(tmp_path / "task-1" / "hk")
+    assert recorder.reclaims == [{"task_id": "task-1", "repo_name": "repo-1", "checkpoints_source": job_dir}]
     assert recorder.completed == [True]
 
 

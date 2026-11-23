@@ -53,6 +53,8 @@ from trainer.host_resources import container_resources
 from trainer.host_resources import pinned_helper_kwargs
 from trainer.image_builds import image_build_in_flight
 from trainer.image_builds import prune_build_leftovers
+from trainer.job_checkpoints import job_checkpoints_host_dir
+from trainer.job_checkpoints import job_checkpoints_volume
 from trainer.job_state import complete_task
 from trainer.job_state import is_gpu_throttle_failure
 from trainer.job_state import log_task
@@ -262,6 +264,12 @@ async def run_trainer_container_image(
             json.dump(baseline_stats.model_dump(), f)
         environment["BASELINE_STATS_PATH"] = os.path.join(cst.CACHE_ROOT_PATH, stats_filename)
 
+    # Only this job's directory of the checkpoints volume, and the shared cache read-only.
+    volumes = {
+        **job_checkpoints_volume(client, task_id, hotkey),
+        cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
+    }
+
     container_name = f"image-trainer-{uuid.uuid4().hex}"
 
     resources = container_resources(gpu_ids)
@@ -279,10 +287,7 @@ async def run_trainer_container_image(
                 client.containers.run,
                 image=tag,
                 command=command,
-                volumes={
-                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
-                },
+                volumes=volumes,
                 remove=False,
                 shm_size=shm_size,
                 name=container_name,
@@ -397,6 +402,12 @@ async def run_trainer_container_text(
         # Env only, never a flag: a miner's strict argparse would reject an unknown --quant-target and fail the job.
         environment[core_cst.QUANT_TARGET_ENV] = quant_target.model_dump_json()
 
+    # Only this job's directory of the checkpoints volume, and the shared cache read-only.
+    volumes = {
+        **job_checkpoints_volume(client, task_id, hotkey),
+        cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
+    }
+
     container_name = f"text-trainer-{uuid.uuid4().hex}"
 
     resources = container_resources(gpu_ids)
@@ -414,10 +425,7 @@ async def run_trainer_container_text(
                 client.containers.run,
                 image=tag,
                 command=command,
-                volumes={
-                    cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-                    cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
-                },
+                volumes=volumes,
                 remove=False,
                 shm_size=shm_size,
                 name=container_name,
@@ -690,8 +698,8 @@ async def upload_repo_to_hf(
             environment["UPLOAD_VERBATIM"] = "1"
 
         volumes = {
-            cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-            cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
+            **job_checkpoints_volume(client, task_id, hotkey),
+            cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "ro"},
         }
 
         container_name = f"hf-upload-{uuid.uuid4().hex}"
@@ -859,10 +867,12 @@ async def _quant_output_accepted(task: TrainerProxyRequest, training_data: Train
     then owns everything it must prune. A reclaim that cannot run raises: the caller fails the job without upload.
     """
     client = docker.from_env()
-    checkpoints_mountpoint = Path(client.volumes.get(cst.CHECKPOINTS_VOLUME_NAME).attrs["Mountpoint"])
+    job_dir = job_checkpoints_host_dir(client, training_data.task_id, task.hotkey)
     cache_mountpoint = Path(client.volumes.get(cst.CACHE_VOLUME_NAME).attrs["Mountpoint"])
-    output_dir = checkpoints_mountpoint / training_data.task_id / training_data.expected_repo_name
-    rejection = await reclaim_output_dir(client, task_id=training_data.task_id, repo_name=training_data.expected_repo_name)
+    output_dir = job_dir / training_data.task_id / training_data.expected_repo_name
+    rejection = await reclaim_output_dir(
+        client, task_id=training_data.task_id, repo_name=training_data.expected_repo_name, checkpoints_source=str(job_dir)
+    )
     if rejection is not None:
         verdict = QuantUploadVerdict(ok=False, failure=f"{cst.QUANT_OUTPUT_REJECTED_PREFIX}{rejection}")
     else:

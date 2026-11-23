@@ -113,7 +113,7 @@ The held-out split used for scoring is never given to your container.
 | Network | An internal Docker bridge with no internet access. |
 | Privileges | `no-new-privileges`, all Linux capabilities dropped. |
 | `/cache` | Read-only. |
-| `/app/checkpoints` | Read-write. |
+| `/app/checkpoints` | Read-write, and private to your job: no other job can read or change it. |
 
 ### Arguments and environment
 

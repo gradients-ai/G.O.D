@@ -15,6 +15,7 @@ from trainer.output_reclaim import reclaim_output_dir
 
 
 HANG = "hang"
+JOB_DIR = "/volumes/checkpoints/_data/task-1/hk"
 
 
 class FakeContainer:
@@ -58,6 +59,7 @@ class FakeClient:
 
 
 async def _reclaim(client: FakeClient, **kwargs) -> str | None:
+    kwargs.setdefault("checkpoints_source", JOB_DIR)
     return await reclaim_output_dir(client, task_id="task-1", repo_name="repo-1", **kwargs)
 
 
@@ -74,7 +76,7 @@ async def test_spec_is_a_fixed_chown_with_only_the_needed_capabilities():
     assert kwargs["security_opt"] == ["no-new-privileges"]
     assert kwargs["network_disabled"] is True
     assert kwargs["read_only"] is True
-    assert kwargs["volumes"] == {cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"}}
+    assert kwargs["volumes"] == {JOB_DIR: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"}}
     assert kwargs["entrypoint"][:2] == ["/bin/sh", "-c"]
     assert kwargs["command"] == ["/app/checkpoints/task-1/repo-1", f"{os.geteuid()}:{os.getegid()}"]
     assert kwargs["name"].startswith("output-reclaim-")

@@ -59,6 +59,8 @@ def load_task_history() -> list[dict]:
 
 
 def clean_checkpoints(task_history: list[dict]):
+    """Delete a task's directory on the checkpoints volume, which holds one directory per job of that task, once
+    every job for that task id finished over CUTOFF_HOURS ago."""
     task_id_to_times: dict[str, list[str | None]] = {}
 
     for task in task_history:

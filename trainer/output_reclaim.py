@@ -5,10 +5,11 @@ volume is root-owned: 0o755 dirs by default, or any mode the miner chose (0o000 
 most of it but can delete nothing in it, and the quant pre-upload check must delete every unlisted file.
 
 `reclaim_output_dir` runs one short container with a fixed command: `chown -R` the output dir to the trainer's
-uid:gid, then `chmod -R u+rwX`, so the trainer owns and can traverse, check and prune all of it. Only the
-checkpoints volume is mounted (by name, so no host path is ever resolved through a miner's symlink) and the root
-filesystem is read-only. Symlinks are never followed: the output dir and its task dir must not be symlinks, and the
-recursive chown/chmod change links themselves or skip them. chown also clears any setuid/setgid bit a miner set.
+uid:gid, then `chmod -R u+rwX`, so the trainer owns and can traverse, check and prune all of it. Only the job's own
+directory of the checkpoints volume is mounted (trainer/job_checkpoints.py: a host path the trainer chose, never one
+resolved through a miner's symlink) and the root filesystem is read-only. Symlinks are never followed: the output dir
+and its task dir must not be symlinks, and the recursive chown/chmod change links themselves or skip them. chown
+also clears any setuid/setgid bit a miner set.
 """
 
 import asyncio
@@ -64,10 +65,8 @@ class ReclaimContainerSpec(BaseModel):
         return self.model_dump()
 
 
-def reclaim_spec(
-    task_id: str, repo_name: str, owner: str, checkpoints_source: str = cst.CHECKPOINTS_VOLUME_NAME
-) -> ReclaimContainerSpec:
-    """checkpoints_source is the checkpoints volume name on a trainer; tests pass a host dir instead."""
+def reclaim_spec(task_id: str, repo_name: str, owner: str, checkpoints_source: str) -> ReclaimContainerSpec:
+    """checkpoints_source is the host path of the job's directory on the checkpoints volume."""
     output_path = str(Path(get_checkpoints_output_path(task_id, repo_name)))
     return ReclaimContainerSpec(
         entrypoint=["/bin/sh", "-c", RECLAIM_SCRIPT, "reclaim"],
@@ -104,10 +103,13 @@ async def reclaim_output_dir(
     *,
     task_id: str,
     repo_name: str,
+    checkpoints_source: str,
     owner: str | None = None,
-    checkpoints_source: str = cst.CHECKPOINTS_VOLUME_NAME,
 ) -> str | None:
     """chown a finished training job's output dir to the trainer (owner defaults to its uid:gid).
+
+    checkpoints_source is the host path of the job's directory on the checkpoints volume, mounted at
+    OUTPUT_CHECKPOINTS_PATH.
 
     Returns a rejection reason when the miner made the output dir or its task dir a symlink, else None.
     Raises OutputReclaimError when the container could not run or did not finish cleanly.

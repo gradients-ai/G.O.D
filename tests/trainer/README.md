@@ -18,6 +18,7 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_gpu_monitor_startup.py` | The GPU monitor starts with the trainer app. |
 | `test_gpu_throttle.py` | Clock-throttle rules and the fault marker in training logs. |
 | `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
+| `test_job_checkpoints_isolation.py` | Training, reclaim and upload containers mount only their job's checkpoints directory, and the cache read-only. |
 | `test_job_state_started_at.py` | `started_at` is refreshed when a training container starts. |
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |
 | `test_output_reclaim.py` | Output reclaim container spec and runner against a fake Docker client. |
