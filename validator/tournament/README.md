@@ -213,7 +213,7 @@ The comparison is computed once at completion and stored in `tournament_boss_ran
 
 ## Seeds
 
-A seed is a task the boss trains with its pinned repo and commit, created when the tournament's first round is created (`seed_tasks.py`, table `tournament_seed_tasks`). A round attaches its seed as the round's task, which adds the miners. The text boss trains its seeds upfront, because the compression tournament compresses their models. A compression seed is prepped ahead but trained only once its round attaches it, by the boss and the round's players together, so the compression boss trains in round order. A boss-round seed is never trained if the early stop skips the boss round.
+A seed is a task the boss trains with its pinned repo and commit, created when the tournament's first round is created (`seed_tasks.py`, table `tournament_seed_tasks`). A round attaches its seed as the round's task, which adds the miners. The text boss trains its seeds upfront, because the compression tournament compresses their models. Until they are trained (the boss's run on each live seed is over), no miner row of the tournament is dispatched, so they take the GPUs first. A compression seed is prepped ahead but trained only once its round attaches it, by the boss and the round's players together, so the compression boss trains in round order. A boss-round seed is never trained if the early stop skips the boss round.
 
 | Role | Tournament | Task | Attached by |
 | --- | --- | --- | --- |

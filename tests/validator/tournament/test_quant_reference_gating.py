@@ -299,6 +299,7 @@ class TestSchedulingWaitsForTheReference:
             set_status=AsyncMock(),
         )
         monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value="tourn"))
+        monkeypatch.setattr(orchestrator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[]))
         monkeypatch.setattr(
             orchestrator,
             "training_ranks",
