@@ -1,10 +1,11 @@
-"""Miner rows of a tournament are not dispatched while the boss's text seeds of that tournament are in training.
+"""Miner rows of a tournament are not dispatched until the boss is training every text seed of that tournament.
 
 The boss trains its text seeds upfront (the compression tournament compresses their models), so they take the GPUs before
 the round's miners. The boss's own rows, benchmark rows, other tournaments' rows and organic rows are never held. A seed
-stops holding once the boss's run on it is over (or failed with no replacement to come), it left `training`, it is past its
-time bound, or its tournament is decided. Held rows do not count towards the pending-queue thresholds, so the seed tasks
-they wait for still reach training.
+stops holding once the boss's row on it is training or finished (or failed with no replacement to come), it left
+`training`, it is past its time bound, or its tournament is decided; it holds again while a run a trainer gave back waits
+for its next attempt. Held rows do not count towards the pending-queue thresholds, so the seed tasks they wait for still
+reach training.
 """
 
 import uuid
@@ -137,47 +138,66 @@ def seeds(monkeypatch, scheduling) -> Seeds:
 
 
 class TestASeedInTraining:
-    @pytest.mark.parametrize("boss", [None, TrainingStatus.PENDING.value, TrainingStatus.TRAINING.value])
-    async def test_holds_while_the_boss_row_is_not_terminal(self, seeds, boss):
+    @pytest.mark.parametrize("boss", [None, TrainingStatus.PENDING.value])
+    async def test_holds_while_the_boss_row_is_absent_or_pending(self, seeds, boss):
         seed = seeds.add(boss=boss)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
+
+    @pytest.mark.parametrize("boss", [TrainingStatus.TRAINING.value, TrainingStatus.SUCCESS.value])
+    async def test_releases_once_the_boss_row_is_training_or_succeeded(self, seeds, boss):
+        seeds.add(boss=boss)
+
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
+
+    async def test_only_the_seeds_the_boss_is_not_training_yet_hold(self, seeds):
+        seeds.add(role=SeedRole.TEXT_R1, boss=TrainingStatus.TRAINING.value)
+        seeds.add(role=SeedRole.TEXT_R2, boss=TrainingStatus.SUCCESS.value)
+        waiting = seeds.add(role=SeedRole.TEXT_R3, boss=TrainingStatus.PENDING.value)
+        unprepped = seeds.add(role=SeedRole.TEXT_CONTINUOUS, boss=None)
+
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [waiting, unprepped]
+
+    async def test_holds_again_while_a_run_given_back_waits_for_its_next_attempt(self, seeds):
+        seed = seeds.add(boss=TrainingStatus.TRAINING.value)
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
+
+        seeds.boss_status[str(seed.task_id)] = TrainingStatus.PENDING.value
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
+
+        seeds.boss_status[str(seed.task_id)] = TrainingStatus.TRAINING.value
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("task_status", [TaskStatus.PENDING, TaskStatus.AWAITING_MODEL_PREP, TaskStatus.LOOKING_FOR_NODES])
     async def test_holds_before_its_task_reached_training(self, seeds, task_status):
         seed = seeds.add(boss=None)
         seeds.task_status[str(seed.task_id)] = task_status
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
 
     @pytest.mark.parametrize("role", sorted(orchestrator.TEXT_SEED_ROLES, key=lambda role: role.value))
     async def test_every_text_role_holds(self, seeds, role):
         seed = seeds.add(role=role)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
-
-    async def test_releases_once_the_boss_row_succeeded(self, seeds):
-        seeds.add(boss=TrainingStatus.SUCCESS.value)
-
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
 
     async def test_releases_once_its_task_succeeded(self, seeds):
         seed = seeds.add()
         seeds.task_status[str(seed.task_id)] = TaskStatus.SUCCESS
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("status", [SeedStatus.TRAINED, SeedStatus.READY, SeedStatus.REPLACED, SeedStatus.FAILED])
     async def test_releases_once_the_seed_left_training(self, seeds, status):
         seeds.add(status=status)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("role", [SeedRole.INPUT_SMALL, SeedRole.QUANT_R1, SeedRole.BOSS_R2_FREEFORM])
     async def test_a_seed_of_another_kind_never_holds(self, seeds, role):
         seeds.add(role=role)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
 
 class TestASeedWhoseRunEndedWithoutAResult:
@@ -192,7 +212,7 @@ class TestASeedWhoseRunEndedWithoutAResult:
         seed = seeds.add()
         self._end(seeds, seed, task_status, boss)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
 
     @pytest.mark.parametrize("task_status, boss", ENDED_WITHOUT_A_RESULT)
     async def test_releases_when_no_charged_replacement_is_left(self, seeds, task_status, boss):
@@ -200,7 +220,7 @@ class TestASeedWhoseRunEndedWithoutAResult:
         seeds.add_charged_replacements(seed, t_cst.SEED_MAX_REPLACEMENTS)
         self._end(seeds, seed, task_status, boss)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("task_status, boss", ENDED_WITHOUT_A_RESULT)
     @pytest.mark.parametrize("marker", ["attached_round_id", "tournament_tasks row"])
@@ -212,7 +232,7 @@ class TestASeedWhoseRunEndedWithoutAResult:
             seeds.in_a_round.add(str(seed.task_id))
         self._end(seeds, seed, task_status, boss)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("attached", [False, True])
     async def test_a_prep_failure_holds_attached_or_not_and_whatever_was_charged(self, seeds, attached):
@@ -221,14 +241,14 @@ class TestASeedWhoseRunEndedWithoutAResult:
         seed.attached_round_id = "round_1" if attached else None
         seeds.task_status[str(seed.task_id)] = TaskStatus.PREP_TASK_FAILURE
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
 
     async def test_a_prep_failure_of_the_continuous_seed_needs_a_charged_replacement(self, seeds):
         seed = seeds.add(role=SeedRole.TEXT_CONTINUOUS, boss=None)
         seeds.add_charged_replacements(seed, t_cst.SEED_MAX_REPLACEMENTS)
         seeds.task_status[str(seed.task_id)] = TaskStatus.PREP_TASK_FAILURE
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
 
 class TestTheTimeBound:
@@ -239,14 +259,14 @@ class TestTheTimeBound:
         seeds.add(role=SeedRole.TEXT_R1, status=SeedStatus.TRAINED)
         seed = seeds.add(age_hours=self.BOUND_HOURS - 0.5)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
         seeds.alert.assert_not_awaited()
 
     async def test_a_seed_past_its_bound_is_reported_and_holds_no_more(self, seeds):
         seeds.add(role=SeedRole.TEXT_R1, status=SeedStatus.TRAINED)
         seed = seeds.add(age_hours=self.BOUND_HOURS + 0.5)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
         key, message, _config = seeds.alert.await_args.args
         assert key == f"{TID}:{seed.role.value}:{seed.attempt}:miner-hold-expired"
         assert str(seed.task_id) in message and f"{self.BOUND_HOURS:.1f} hours" in message
@@ -255,7 +275,7 @@ class TestTheTimeBound:
         seeds.add(role=SeedRole.TEXT_R1, age_hours=self.BOUND_HOURS + 0.5)
         young = seeds.add(role=SeedRole.TEXT_R2)
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [young]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [young]
 
 
 class TestADecidedTournament:
@@ -264,20 +284,20 @@ class TestADecidedTournament:
         seeds.add()
         seeds.tournament.status = status
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     async def test_a_tournament_with_a_winner_holds_nothing(self, seeds):
         seeds.add()
         seeds.tournament.winner_hotkey = "5Winner"
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == []
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == []
 
     @pytest.mark.parametrize("status", [TournamentStatus.PENDING, TournamentStatus.ACTIVE])
     async def test_a_running_tournament_holds(self, seeds, status):
         seed = seeds.add()
         seeds.tournament.status = status
 
-        assert await orchestrator._text_seeds_in_training(TID, CONFIG) == [seed]
+        assert await orchestrator._text_seeds_awaiting_training(TID, CONFIG) == [seed]
 
 
 class TestScheduling:
@@ -341,9 +361,62 @@ class TestScheduling:
 
         assert scheduling.built == [benchmark.task.task_id]
 
-    async def test_miner_rows_are_dispatched_once_the_seeds_are_trained(self, scheduling, seeds):
-        seed = seeds.add()
-        seeds.boss_status[str(seed.task_id)] = TrainingStatus.SUCCESS.value
+    def _boss_rows_follow_dispatch(self, seeds):
+        """A dispatched boss row becomes TRAINING in the seeds' view, as the database row does."""
+
+        async def set_status(task_id, hotkey, status, *_args, **_kwargs):
+            if hotkey == EMISSION_BURN_HOTKEY:
+                seeds.boss_status[str(task_id)] = status.value
+
+        orchestrator.tournament_sql.update_tournament_task_training_status.side_effect = set_status
+
+    def _boss_row_on(self, seed: TournamentSeedTask) -> SimpleNamespace:
+        row = self._row_of(TID, EMISSION_BURN_HOTKEY)
+        row.task.task_id = seed.task_id
+        self.tournament_of[str(seed.task_id)] = TID
+        return row
+
+    async def test_the_miners_follow_the_last_boss_row_dispatched_in_the_same_cycle(self, scheduling, seeds):
+        self._boss_rows_follow_dispatch(seeds)
+        seeds.add(role=SeedRole.TEXT_R1, boss=TrainingStatus.TRAINING.value)
+        boss = self._boss_row_on(seeds.add(role=SeedRole.TEXT_R2))
+        miners = [self._row_of(TID, f"5Miner{i}") for i in range(2)]
+
+        all_held = await orchestrator.schedule_tasks_for_training([*miners, boss], CONFIG)  # the last row is taken first
+
+        assert not all_held
+        assert scheduling.built[0] == boss.task.task_id
+        assert sorted(scheduling.built[1:], key=str) == sorted((row.task.task_id for row in miners), key=str)
+
+    async def test_the_miners_wait_while_a_boss_row_finds_no_gpu(self, scheduling, seeds):
+        self._boss_rows_follow_dispatch(seeds)
+        boss = self._boss_row_on(seeds.add())
+        miner = self._row_of(TID)
+        orchestrator._check_suitable_gpus.return_value = None
+
+        await orchestrator.schedule_tasks_for_training([miner, boss], CONFIG)
+
+        assert scheduling.built == []
+
+    async def test_a_boss_row_given_back_is_dispatched_again_before_the_pending_miners(self, scheduling, seeds):
+        self._boss_rows_follow_dispatch(seeds)
+        seed = seeds.add(boss=TrainingStatus.TRAINING.value)
+        early, late = self._row_of(TID, "5Early"), self._row_of(TID, "5Late")
+        await orchestrator.schedule_tasks_for_training([early], CONFIG)
+        assert scheduling.built == [early.task.task_id]
+
+        seeds.boss_status[str(seed.task_id)] = TrainingStatus.PENDING.value  # the trainer gave the boss's run back
+        orchestrator._check_suitable_gpus.return_value = None
+        assert await orchestrator.schedule_tasks_for_training([late], CONFIG)  # held again, waits a cycle
+        assert scheduling.built == [early.task.task_id]
+
+        orchestrator._check_suitable_gpus.return_value = ("1.2.3.4", [0], "NVLINK")
+        await orchestrator.schedule_tasks_for_training([late, self._boss_row_on(seed)], CONFIG)
+        assert scheduling.built == [early.task.task_id, seed.task_id, late.task.task_id]
+
+    async def test_miner_rows_are_dispatched_once_the_boss_trains_or_trained_every_seed(self, scheduling, seeds):
+        seeds.add(role=SeedRole.TEXT_R1, boss=TrainingStatus.TRAINING.value)
+        seeds.add(role=SeedRole.TEXT_R2, boss=TrainingStatus.SUCCESS.value)
         seeds.add(role=SeedRole.TEXT_R3, status=SeedStatus.FAILED)
         miner = self._row_of(TID)
 
@@ -409,13 +482,13 @@ class TestTheFetchCycle:
         assert buckets["text"] == [seed_task]
         assert all_held and scheduling.built == []
 
-    async def test_the_miners_are_dispatched_once_that_seed_is_trained(self, scheduling, seeds, dispatch):
+    async def test_the_miners_are_dispatched_once_the_boss_trains_that_seed(self, scheduling, seeds, dispatch):
         rows = self._miner_rows(dispatch, 20)
         seed_task = self._seed_task_looking_for_nodes(dispatch, seeds)
         assert (await dispatch.run())["text"] == [seed_task]
 
         seeds.task_status[str(seed_task.task_id)] = TaskStatus.TRAINING
-        seeds.boss_status[str(seed_task.task_id)] = TrainingStatus.SUCCESS.value
+        seeds.boss_status[str(seed_task.task_id)] = TrainingStatus.TRAINING.value
         all_held = await orchestrator.schedule_tasks_for_training(list(dispatch.pending), CONFIG)
 
         assert not all_held

@@ -469,7 +469,7 @@ async def _fetch_tournament_tasks_ready_to_train(config: Config):
     logger.info(f"Current pending training assignments: {pending_count}")
 
     # Count pending tasks by type. A miner row held for the boss's text seeds is not counted: it cannot be dispatched until
-    # those seeds are trained, so counting it would keep the seed tasks themselves (and benchmark tasks) out of training.
+    # the boss is training those seeds, so counting it would keep the seed tasks themselves (and benchmark tasks) out of training.
     pending_text_count = 0
     pending_image_count = 0
     pending_quant_count = 0
@@ -749,16 +749,23 @@ async def process_pending_tournament_tasks(config: Config):
 # Seed task statuses after which the boss trains the seed no more.
 _SETTLED_SEED_TASK_STATUSES = frozenset({TaskStatus.SUCCESS, TaskStatus.FAILURE, TaskStatus.PREP_TASK_FAILURE})
 _BENCHMARK_TRAINING_PRIORITY = 3
+# Boss row statuses of a seed the boss is training or has trained: the seed no longer needs a GPU.
+_STARTED_TRAINING_STATUSES = frozenset({TrainingStatus.TRAINING.value, TrainingStatus.SUCCESS.value})
 
 
-async def _text_seeds_in_training(tournament_id: str, config: Config) -> list[TournamentSeedTask]:
-    """The text seeds of a running tournament the boss has still to train: the latest attempt of each text role still
-    `training` whose boss run is not over, or is over without a result while the seed is about to be replaced.
+async def _text_seeds_awaiting_training(tournament_id: str, config: Config) -> list[TournamentSeedTask]:
+    """The text seeds of a running tournament the boss is not training yet: the latest attempt of each text role still
+    `training` whose boss row is absent or pending, or whose run ended without a result while the seed is about to be
+    replaced.
 
     While any is listed, the tournament's miner rows are not dispatched (BossSeedHold): the boss trains its seeds upfront
-    and the compression tournament compresses their models, so they take the GPUs first. A seed is not listed once
+    and the compression tournament compresses their models, so they take the GPUs first. Once the boss is training every
+    one of them (or is done with it), the miners take the GPUs that are left. A seed is not listed once
+      * the boss's row on it is TRAINING or SUCCESS, or its task is SUCCESS. A row a trainer gave back (TRAINING to PENDING,
+        for its next attempt) lists the seed again until it is dispatched again: the rows already dispatched keep running
+        and only the miner rows still pending wait;
       * it left `training` (trained, ready, failed out of replacements, or replaced, its next attempt then being the latest
-        and holding in its place), the boss's row is SUCCESS or its task is SUCCESS;
+        and holding in its place);
       * its run ended without a result (the task is gone, FAILURE or PREP_TASK_FAILURE, or the boss's row is FAILURE) and
         no replacement will be drawn for it (seed_awaits_replacement), e.g. an attached seed whose task ended FAILURE;
       * it is past its time bound (_miner_hold_bound): it is reported once and holds no more, so a seed that cannot make
@@ -777,13 +784,13 @@ async def _text_seeds_in_training(tournament_id: str, config: Config) -> list[To
     tasks = {seed.task_id: await task_sql.get_task(seed.task_id, config.psql_db) for seed in seeds}
     bound = _miner_hold_bound([task for task in tasks.values() if task is not None])
     now = datetime.now(timezone.utc)
-    in_training = []
+    awaiting = []
     for seed in seeds:
         if seed.status != SeedStatus.TRAINING:
             continue
         task = tasks[seed.task_id]
         boss_status = await _training_status_of(seed.task_id, EMISSION_BURN_HOTKEY, config)
-        if boss_status == TrainingStatus.SUCCESS.value or (task is not None and task.status == TaskStatus.SUCCESS):
+        if boss_status in _STARTED_TRAINING_STATUSES or (task is not None and task.status == TaskStatus.SUCCESS):
             continue
         ended = task is None or task.status in _SETTLED_SEED_TASK_STATUSES or boss_status == TrainingStatus.FAILURE.value
         if ended and not await seed_awaits_replacement(seed, task, config):
@@ -792,13 +799,13 @@ async def _text_seeds_in_training(tournament_id: str, config: Config) -> list[To
             hours = bound.total_seconds() / 3600
             await alert_seed_issue(
                 f"{tournament_id}:{seed.role.value}:{seed.attempt}:miner-hold-expired",
-                f"Tournament {tournament_id}: the boss has not trained seed {seed.role.value} attempt {seed.attempt} "
+                f"Tournament {tournament_id}: the boss has not started training seed {seed.role.value} attempt {seed.attempt} "
                 f"(task {seed.task_id}) within {hours:.1f} hours of its creation; the tournament's miners no longer wait for it",
                 config,
             )
             continue
-        in_training.append(seed)
-    return in_training
+        awaiting.append(seed)
+    return awaiting
 
 
 def _miner_hold_bound(text_seed_tasks: list[AnyTypeRawTask]) -> timedelta:
@@ -811,8 +818,8 @@ def _miner_hold_bound(text_seed_tasks: list[AnyTypeRawTask]) -> timedelta:
 class BossSeedHold:
     """Which pending training rows wait for the boss's text seeds, as seen by one cycle (one seed lookup per tournament).
 
-    A miner row (any hotkey but the boss's) of a tournament is held while the boss has text seeds in training
-    (_text_seeds_in_training). The boss's rows, benchmark rows, organic rows and the rows of other tournaments never are.
+    A miner row (any hotkey but the boss's) of a tournament is held while the boss has a text seed it is not training yet
+    (_text_seeds_awaiting_training). The boss's rows, benchmark rows, organic rows and the rows of other tournaments never are.
     """
 
     def __init__(self, config: Config) -> None:
@@ -821,8 +828,8 @@ class BossSeedHold:
         self._seeds: dict[str, list[TournamentSeedTask]] = {}
 
     @property
-    def seeds_in_training(self) -> list[TournamentSeedTask]:
-        """The seeds found in training so far, over every tournament looked up."""
+    def seeds_awaiting_training(self) -> list[TournamentSeedTask]:
+        """The seeds found waiting to be trained so far, over every tournament looked up."""
         return [seed for seeds in self._seeds.values() for seed in seeds]
 
     async def holds(self, row: TournamentTaskTraining) -> bool:
@@ -838,7 +845,7 @@ class BossSeedHold:
         if not tournament_id or row.hotkey == EMISSION_BURN_HOTKEY or row.priority == _BENCHMARK_TRAINING_PRIORITY:
             return False
         if tournament_id not in self._seeds:
-            self._seeds[tournament_id] = await _text_seeds_in_training(tournament_id, self._config)
+            self._seeds[tournament_id] = await _text_seeds_awaiting_training(tournament_id, self._config)
         return bool(self._seeds[tournament_id])
 
 
@@ -853,11 +860,11 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     Process tasks from the list and schedule them for training.
     Only pop tasks when we're 100% sure GPUs are available.
 
-    A miner row (any hotkey but the boss's) of a tournament whose boss has text seeds in training is held until they are
-    trained (BossSeedHold); the boss's rows, benchmark rows and the rows of other tournaments and of organic tasks are not.
+    A miner row (any hotkey but the boss's) of a tournament is held until the boss is training every text seed of that
+    tournament (BossSeedHold); the boss's rows, benchmark rows and the rows of other tournaments and of organic tasks are not.
 
-    Returns True when every row was held (seeds in training, no calibration set, no reference yet, or raising while
-    checked), so the caller waits before fetching them again.
+    Returns True when every row was held (seeds waiting to be trained, no calibration set, no reference yet, or raising
+    while checked), so the caller waits before fetching them again.
     """
     n_rows = len(pending_training_tasks)
     # Track failed attempts for this scheduling session
@@ -1063,10 +1070,12 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             continue
 
     if held_for_boss_seeds:
-        training = ", ".join(f"{seed.tournament_id}/{seed.role.value} (task {seed.task_id})" for seed in hold.seeds_in_training)
+        awaiting = ", ".join(
+            f"{seed.tournament_id}/{seed.role.value} (task {seed.task_id})" for seed in hold.seeds_awaiting_training
+        )
         logger.info(
-            f"Held {len(held_for_boss_seeds)} miner training row(s) until the boss's seeds of their tournament are trained; "
-            f"still training: {training}. They are checked again in the next cycle."
+            f"Held {len(held_for_boss_seeds)} miner training row(s) until the boss is training every text seed of their "
+            f"tournament; not training yet: {awaiting}. They are checked again in the next cycle."
         )
 
     if failing_quant_rows:
@@ -3204,7 +3213,7 @@ async def _boss_round_seed_cycle(config: Config) -> None:
 
     Adds the miners' training rows (never the boss's) and, while a text seed's upfront boss row is not terminal, logs
     `boss entry <role> <task_id> still training` at WARNING; the round never waits on it (its miners' rows are not dispatched
-    until the boss's seeds are trained: schedule_tasks_for_training).
+    until the boss is training every text seed: schedule_tasks_for_training).
     """
     for tournament in await tournament_sql.get_tournaments_with_status(TournamentStatus.ACTIVE, config.psql_db):
         if tournament.tournament_type not in (TournamentType.QUANT, TournamentType.TEXT):
