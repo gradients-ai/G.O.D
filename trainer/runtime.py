@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import re
+import threading
+import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +15,7 @@ import docker
 from docker.errors import APIError
 from docker.errors import BuildError
 from docker.errors import ImageNotFound
+from docker.errors import NotFound
 from docker.models.containers import Container
 
 import core.constants as core_cst
@@ -51,7 +54,9 @@ from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
 from trainer.host_resources import container_resources
 from trainer.host_resources import pinned_helper_kwargs
+from trainer.image_builds import ReusedLayers
 from trainer.image_builds import image_build_in_flight
+from trainer.image_builds import layer_too_old
 from trainer.image_builds import prune_build_leftovers
 from trainer.job_checkpoints import job_checkpoints_host_dir
 from trainer.job_checkpoints import job_checkpoints_volume
@@ -101,13 +106,164 @@ def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
         client.networks.create(name, driver="bridge", internal=True)
 
 
+# The classic builder runs each RUN step in a container of its own. It names the container on the line after the
+# step's own line, before the step produces any output:
+#   Step 4/9 : RUN pip install ...
+#    ---> Running in 0123456789ab
+_BUILD_STEP_LINE = re.compile(r"^Step \d+/\d+ : ")
+_STEP_CONTAINER_LINE = re.compile(r"^\s*--->\s+Running in ([0-9a-f]{12,64})\s*$")
+_BUILD_STREAM_LINE_MAX_CHARS = 64 * 1024
+
+
+class BuildStepContainers:
+    """Follows one build's stream to know its running step container, so the build can be stopped.
+
+    Killing a step's container fails that step, which ends the build on the daemon. Once stopped, any step the build
+    still starts is killed as soon as the stream names it. Nothing is removed.
+
+    The stream also carries the steps' own output, so a container line counts only as the first one after a step line,
+    and a container under one of the trainer's own name prefixes is never killed.
+    """
+
+    def __init__(self, client: docker.DockerClient, log_labels: dict[str, str] | None = None):
+        self._client = client
+        self._log_labels = log_labels
+        self._current: str | None = None
+        self._stopped = False
+        self._buffer = ""
+        self._awaiting_step_container = False
+
+    def watch(self, build_output: Iterator[dict]) -> Iterator[dict]:
+        """Pass the stream through. `stop` is called from the code reading it, so there is no locking."""
+        for chunk in build_output:
+            text = chunk.get("stream") if isinstance(chunk, dict) else None
+            if isinstance(text, str):
+                self._feed(text)
+            yield chunk
+
+    def _feed(self, text: str) -> None:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._observe(line)
+        if len(self._buffer) > _BUILD_STREAM_LINE_MAX_CHARS:
+            self._buffer = ""
+
+    def _observe(self, line: str) -> None:
+        if _BUILD_STEP_LINE.match(line):
+            self._awaiting_step_container = True
+            return
+        named = _STEP_CONTAINER_LINE.match(line) if self._awaiting_step_container else None
+        if named is None:
+            return
+        self._awaiting_step_container = False
+        self._current = named.group(1)
+        if self._stopped:
+            self._kill(self._current)
+
+    def stop(self) -> None:
+        self._stopped = True
+        if self._current is not None:
+            self._kill(self._current)
+
+    def _kill(self, container_id: str) -> None:
+        """Kill one step container. The stream names it between create and start, and a container that has not
+        started cannot be killed (409), so that case is retried until the kill lands or the container is gone."""
+        deadline = time.monotonic() + cst.BUILD_STOP_KILL_TIMEOUT_SECONDS
+        while True:
+            try:
+                container = self._client.api.inspect_container(container_id)
+            except APIError:  # NotFound included: the step ended on its own
+                return
+            if container["Name"].lstrip("/").startswith(cst.TRAINER_CONTAINER_NAME_PREFIXES):
+                return
+            try:
+                self._client.api.kill(container_id)
+                logger.info(f"Stopped image build: killed step container {container_id[:12]}", extra=self._log_labels)
+                return
+            except NotFound:
+                return
+            except APIError as e:
+                not_started = e.status_code == 409 and container["State"]["Status"] == "created"
+                if not not_started or time.monotonic() >= deadline:
+                    logger.info(f"Image build step container {container_id[:12]} not killed: {e}", extra=self._log_labels)
+                    return
+            time.sleep(cst.BUILD_STOP_KILL_RETRY_SECONDS)
+
+
+class BuildStream:
+    """One build's stream. A build that takes a too-old layer from the cache is stopped and run again without the cache.
+
+    Every layer the build reuses is checked (image_builds.ReusedLayers). The first build is read to its end before the
+    second starts, so it can no longer tag the image, and a tag it did set is removed: the image must come from the
+    second build or not at all. Both builds run inside the caller's one time limit, and no second build starts once the
+    caller has set `abandoned`.
+
+    The stream is read by a thread that logs errors and carries on, so a build that could not be started or run again
+    leaves its reason in `error`.
+    """
+
+    def __init__(self, client: docker.DockerClient, log_labels: dict[str, str] | None, **build_kwargs):
+        self._client = client
+        self._log_labels = log_labels
+        self._build_kwargs = build_kwargs
+        self.abandoned = threading.Event()
+        self.error: str | None = None
+
+    def __iter__(self) -> Iterator[dict]:
+        stream = self._start(self._build_kwargs)
+        if stream is None:
+            return
+        if self._build_kwargs["nocache"]:
+            yield from stream
+            return
+        steps = BuildStepContainers(self._client, self._log_labels)
+        reused = ReusedLayers()
+        rebuild = False
+        for chunk in steps.watch(stream):
+            yield chunk
+            for layer_id in [] if rebuild else reused.feed(chunk):
+                if layer_too_old(self._client, layer_id):
+                    logger.info(
+                        f"Cached layer {layer_id} is over {cst.IMAGE_BUILD_CACHE_MAX_AGE_HOURS:g} h old: "
+                        "building again without cache",
+                        extra=self._log_labels,
+                    )
+                    rebuild = True
+                    steps.stop()
+                    break
+        if not rebuild:
+            return
+        tag = self._build_kwargs["tag"]
+        try:
+            self._client.images.remove(image=tag, force=True, noprune=True)
+        except ImageNotFound:
+            pass
+        except APIError as e:
+            self.error = f"Docker image build failed: could not remove the image built on a too-old cached layer: {e}"
+            logger.warning(self.error, extra=self._log_labels)
+            return
+        if self.abandoned.is_set():
+            return
+        stream = self._start({**self._build_kwargs, "nocache": True})
+        if stream is not None:
+            yield from stream
+
+    def _start(self, build_kwargs: dict) -> Iterator[dict] | None:
+        try:
+            return self._client.api.build(**build_kwargs)
+        except (BuildError, APIError) as e:
+            self.error = str(e)
+            return None
+
+
 def build_docker_image(
     dockerfile_path: str,
     log_labels: dict[str, str] | None = None,
     context_path: str = ".",
     is_image_task: bool = False,
     tag: str = None,
-    no_cache: bool = True,
+    no_cache: bool | None = None,
     timeout_seconds: int | None = None,
 ) -> tuple[str, str | None]:
     client: docker.DockerClient = docker.from_env()
@@ -127,11 +283,14 @@ def build_docker_image(
         build_output = None
         executor = None
         try:
-            build_output = client.api.build(
+            build_output = BuildStream(
+                client,
+                log_labels,
                 path=context_path,
                 dockerfile=dockerfile_path,
                 tag=tag,
-                nocache=no_cache,
+                nocache=cst.IMAGE_BUILD_NO_CACHE if no_cache is None else no_cache,
+                pull=cst.IMAGE_BUILD_PULL_BASE,
                 # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
                 # failure.
                 rm=True,
@@ -143,9 +302,13 @@ def build_docker_image(
             try:
                 future.result(timeout=timeout_seconds)
             except FuturesTimeoutError:
+                build_output.abandoned.set()
                 message = f"Docker image build exceeded {timeout_seconds} seconds"
                 logger.error(message, extra=log_labels)
                 return None, message
+            if build_output.error is not None:
+                logger.error(f"Docker build failed: {build_output.error}", extra=log_labels)
+                return None, build_output.error
 
             # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
             # ends normally with no image, and the job would only fail later on a missing tag at container start.
@@ -192,7 +355,9 @@ def flag_large_build_context_files(context_path: str, log_labels: dict[str, str]
 def delete_image_and_cleanup(tag: str):
     client = docker.from_env()
     try:
-        client.images.remove(image=tag, force=True)
+        # With the layer cache on, the image's layers stay behind as the cache for later builds until
+        # prune_build_leftovers empties it.
+        client.images.remove(image=tag, force=True, noprune=not cst.IMAGE_BUILD_NO_CACHE)
         logger.info(f"Deleted Docker image with tag: {tag}")
     except docker.errors.ImageNotFound:
         logger.error(f"No Docker image found with tag: {tag}")

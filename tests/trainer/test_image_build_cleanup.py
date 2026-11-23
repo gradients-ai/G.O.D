@@ -16,6 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 @pytest.fixture
 def docker_client(monkeypatch) -> MagicMock:
+    """A fake Docker client, with the layer cache off so every cleanup prunes (the cache is in test_image_build_cache.py)."""
+    monkeypatch.setattr(cst, "IMAGE_BUILD_NO_CACHE", True)
     client = MagicMock()
     client.api.build.return_value = iter([])
     monkeypatch.setattr(runtime.docker, "from_env", MagicMock(return_value=client))
@@ -28,7 +30,7 @@ def test_cleanup_prunes_host_build_cache_only_when_configured(monkeypatch, docke
 
     runtime.delete_image_and_cleanup("standalone-text-trainer:abc")
 
-    docker_client.images.remove.assert_called_once_with(image="standalone-text-trainer:abc", force=True)
+    docker_client.images.remove.assert_called_once_with(image="standalone-text-trainer:abc", force=True, noprune=False)
     docker_client.images.prune.assert_called_once_with(filters={"dangling": True})
     assert docker_client.api.prune_builds.called is prunes_builds
 
@@ -55,7 +57,7 @@ def test_failed_job_cleanup_leaves_a_build_in_progress_alone(monkeypatch, docker
     try:
         runtime.delete_image_and_cleanup("standalone-text-trainer:failed")
 
-        docker_client.images.remove.assert_called_once_with(image="standalone-text-trainer:failed", force=True)
+        docker_client.images.remove.assert_called_once_with(image="standalone-text-trainer:failed", force=True, noprune=False)
         docker_client.images.prune.assert_not_called()
         docker_client.api.prune_builds.assert_not_called()
     finally:
@@ -119,7 +121,7 @@ def test_build_waits_for_a_prune_in_progress(monkeypatch, docker_client):
     docker_client.api.build.assert_called_once()
 
 
-def test_build_keeps_no_cache_and_removes_its_intermediate_containers(docker_client):
+def test_build_with_the_cache_off_uses_no_cache_and_removes_its_intermediate_containers(docker_client):
     tag, error = runtime.build_docker_image("Dockerfile", context_path="/tmp/ctx", tag="t:1")
 
     assert (tag, error) == ("t:1", None)
