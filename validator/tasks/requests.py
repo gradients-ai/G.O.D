@@ -73,7 +73,7 @@ def _parse_model_size_from_name(model_id: str) -> int:
 
 def get_model_num_params(model_id: str) -> int:
     try:
-        model_info = hf_api.model_info(model_id)
+        model_info = hf_api.model_info(model_id, timeout=cst.HF_MODEL_INFO_TIMEOUT_SECONDS)
         size = model_info.safetensors.total
         if size:
             return int(size)
