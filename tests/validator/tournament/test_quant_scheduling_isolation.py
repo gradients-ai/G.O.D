@@ -59,6 +59,7 @@ def _row(task_type: TaskType, hotkey: str = "5Miner", calibrated: bool = True) -
         task=task,
         hotkey=hotkey,
         n_training_attempts=0,
+        priority=2,
         training_repo="https://github.com/x/repo",
         training_commit_hash="c" * 40,
         github_token=None,

@@ -124,6 +124,7 @@ from validator.tournament.seed_tasks import alert_seed_issue
 from validator.tournament.seed_tasks import boss_output_awaits_merge
 from validator.tournament.seed_tasks import live_seed_tasks
 from validator.tournament.seed_tasks import repoint_task_onto_seed
+from validator.tournament.seed_tasks import seed_awaits_replacement
 from validator.tournament.seed_tasks import training_ranks
 
 
@@ -467,21 +468,29 @@ async def _fetch_tournament_tasks_ready_to_train(config: Config):
     pending_count = len(pending_training_tasks)
     logger.info(f"Current pending training assignments: {pending_count}")
 
-    # Count pending tasks by type
+    # Count pending tasks by type. A miner row held for the boss's text seeds is not counted: it cannot be dispatched until
+    # those seeds are trained, so counting it would keep the seed tasks themselves (and benchmark tasks) out of training.
     pending_text_count = 0
     pending_image_count = 0
     pending_quant_count = 0
+    held_count = 0
+    hold = BossSeedHold(config)
     for training_task in pending_training_tasks:
         if training_task.task.task_type == TaskType.IMAGETASK:
             pending_image_count += 1
         elif await _belongs_to_quant_tournament(training_task.task, config):
             pending_quant_count += 1
+        elif await hold.holds(training_task):
+            held_count += 1
         else:
             pending_text_count += 1
+    pending_count -= held_count
 
     logger.info(f"Pending by type - Text: {pending_text_count}, Image: {pending_image_count}")
     if pending_quant_count:
         logger.info(f"Pending quant tournament assignments: {pending_quant_count}")
+    if held_count:
+        logger.info(f"Pending miner assignments held for the boss's text seeds (not counted): {held_count}")
 
     organic_tasks = await task_sql.get_tasks_with_status(
         TaskStatus.READY, config.psql_db, tournament_filter="exclude", benchmark_filter="exclude", backend=Backend.OBLIVUS.value
@@ -739,29 +748,98 @@ async def process_pending_tournament_tasks(config: Config):
 
 # Seed task statuses after which the boss trains the seed no more.
 _SETTLED_SEED_TASK_STATUSES = frozenset({TaskStatus.SUCCESS, TaskStatus.FAILURE, TaskStatus.PREP_TASK_FAILURE})
+_BENCHMARK_TRAINING_PRIORITY = 3
 
 
 async def _text_seeds_in_training(tournament_id: str, config: Config) -> list[TournamentSeedTask]:
-    """The text seeds of a tournament whose boss run is not over: the latest attempt of each text role still `training`,
-    with a live task and the boss's row on it not terminal (absent, pending or training).
+    """The text seeds of a running tournament the boss has still to train: the latest attempt of each text role still
+    `training` whose boss run is not over, or is over without a result while the seed is about to be replaced.
 
-    While any is listed, the tournament's miner rows are not dispatched (schedule_tasks_for_training): the boss trains its
-    seeds upfront and the compression tournament compresses their models, so they take the GPUs first. A seed stops
-    holding once the boss's row is SUCCESS or FAILURE, its task ended, or it left `training` (trained, ready, failed out
-    of replacements, or replaced, its next attempt then being the latest and holding in its place).
+    While any is listed, the tournament's miner rows are not dispatched (BossSeedHold): the boss trains its seeds upfront
+    and the compression tournament compresses their models, so they take the GPUs first. A seed is not listed once
+      * it left `training` (trained, ready, failed out of replacements, or replaced, its next attempt then being the latest
+        and holding in its place), the boss's row is SUCCESS or its task is SUCCESS;
+      * its run ended without a result (the task is gone, FAILURE or PREP_TASK_FAILURE, or the boss's row is FAILURE) and
+        no replacement will be drawn for it (seed_awaits_replacement), e.g. an attached seed whose task ended FAILURE;
+      * it is past its time bound (_miner_hold_bound): it is reported once and holds no more, so a seed that cannot make
+        progress never stalls its tournament;
+      * the tournament is decided (it has a winner, or is neither pending nor active).
     """
+    seeds = [
+        seed
+        for seed in await seeds_sql.get_latest_seed_tasks(tournament_id, config.psql_db)
+        if seed.role in TEXT_SEED_ROLES
+    ]
+    if not any(seed.status == SeedStatus.TRAINING for seed in seeds):
+        return []
+    if await seeds_sql.tournament_is_decided(tournament_id, config.psql_db):
+        return []
+    tasks = {seed.task_id: await task_sql.get_task(seed.task_id, config.psql_db) for seed in seeds}
+    bound = _miner_hold_bound([task for task in tasks.values() if task is not None])
+    now = datetime.now(timezone.utc)
     in_training = []
-    for seed in await seeds_sql.get_latest_seed_tasks(tournament_id, config.psql_db):
-        if seed.role not in TEXT_SEED_ROLES or seed.status != SeedStatus.TRAINING:
+    for seed in seeds:
+        if seed.status != SeedStatus.TRAINING:
             continue
-        task = await task_sql.get_task(seed.task_id, config.psql_db)
-        if task is None or task.status in _SETTLED_SEED_TASK_STATUSES:
-            continue
+        task = tasks[seed.task_id]
         boss_status = await _training_status_of(seed.task_id, EMISSION_BURN_HOTKEY, config)
-        if boss_status in (TrainingStatus.SUCCESS.value, TrainingStatus.FAILURE.value):
+        if boss_status == TrainingStatus.SUCCESS.value or (task is not None and task.status == TaskStatus.SUCCESS):
+            continue
+        ended = task is None or task.status in _SETTLED_SEED_TASK_STATUSES or boss_status == TrainingStatus.FAILURE.value
+        if ended and not await seed_awaits_replacement(seed, task, config):
+            continue
+        if seed.created_at is not None and now - seed.created_at > bound:
+            hours = bound.total_seconds() / 3600
+            await alert_seed_issue(
+                f"{tournament_id}:{seed.role.value}:{seed.attempt}:miner-hold-expired",
+                f"Tournament {tournament_id}: the boss has not trained seed {seed.role.value} attempt {seed.attempt} "
+                f"(task {seed.task_id}) within {hours:.1f} hours of its creation; the tournament's miners no longer wait for it",
+                config,
+            )
             continue
         in_training.append(seed)
     return in_training
+
+
+def _miner_hold_bound(text_seed_tasks: list[AnyTypeRawTask]) -> timedelta:
+    """How long after its creation a text seed may hold its tournament's miners: every text seed of the tournament trained
+    one after the other, each with all of its attempts, plus MINER_HOLD_MARGIN_HOURS for prep and waiting."""
+    training_hours = cst.MAX_TRAINING_ATTEMPTS * sum(task.hours_to_complete or 0 for task in text_seed_tasks)
+    return timedelta(hours=cst.MINER_HOLD_MARGIN_HOURS + training_hours)
+
+
+class BossSeedHold:
+    """Which pending training rows wait for the boss's text seeds, as seen by one cycle (one seed lookup per tournament).
+
+    A miner row (any hotkey but the boss's) of a tournament is held while the boss has text seeds in training
+    (_text_seeds_in_training). The boss's rows, benchmark rows, organic rows and the rows of other tournaments never are.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._tournament_ids: dict[str, str | None] = {}
+        self._seeds: dict[str, list[TournamentSeedTask]] = {}
+
+    @property
+    def seeds_in_training(self) -> list[TournamentSeedTask]:
+        """The seeds found in training so far, over every tournament looked up."""
+        return [seed for seeds in self._seeds.values() for seed in seeds]
+
+    async def holds(self, row: TournamentTaskTraining) -> bool:
+        if row.hotkey == EMISSION_BURN_HOTKEY or row.priority == _BENCHMARK_TRAINING_PRIORITY:
+            return False
+        task_id = str(row.task.task_id)
+        if task_id not in self._tournament_ids:
+            self._tournament_ids[task_id] = await get_tournament_id_by_task_id(row.task.task_id, self._config.psql_db)
+        return await self.holds_in(row, self._tournament_ids[task_id])
+
+    async def holds_in(self, row: TournamentTaskTraining, tournament_id: str | None) -> bool:
+        """holds(), for a caller that already knows the row's tournament."""
+        if not tournament_id or row.hotkey == EMISSION_BURN_HOTKEY or row.priority == _BENCHMARK_TRAINING_PRIORITY:
+            return False
+        if tournament_id not in self._seeds:
+            self._seeds[tournament_id] = await _text_seeds_in_training(tournament_id, self._config)
+        return bool(self._seeds[tournament_id])
 
 
 def _is_quant_tournament_row(row_rank: int, task: AnyTypeRawTask) -> bool:
@@ -776,7 +854,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     Only pop tasks when we're 100% sure GPUs are available.
 
     A miner row (any hotkey but the boss's) of a tournament whose boss has text seeds in training is held until they are
-    trained (_text_seeds_in_training); the boss's rows and the rows of other tournaments and of organic tasks are not.
+    trained (BossSeedHold); the boss's rows, benchmark rows and the rows of other tournaments and of organic tasks are not.
 
     Returns True when every row was held (seeds in training, no calibration set, no reference yet, or raising while
     checked), so the caller waits before fetching them again.
@@ -790,7 +868,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     missing_calibration = []
     failing_quant_rows = []
     held_for_boss_seeds = []
-    seeds_in_training: dict[str, list[TournamentSeedTask]] = {}
+    hold = BossSeedHold(config)
 
     # Rows are taken from the END of the list. Order them small input seed, large input seed, then every other row; the
     # rank is the task's, so every player's row on a task ties. The query returns newest first and the sort is stable, so
@@ -836,12 +914,9 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 pending_training_tasks.pop()
                 continue
 
-            if tournament_id and oldest_task_training.hotkey != EMISSION_BURN_HOTKEY:
-                if tournament_id not in seeds_in_training:
-                    seeds_in_training[tournament_id] = await _text_seeds_in_training(tournament_id, config)
-                if seeds_in_training[tournament_id]:
-                    held_for_boss_seeds.append(pending_training_tasks.pop())
-                    continue
+            if await hold.holds_in(oldest_task_training, tournament_id):
+                held_for_boss_seeds.append(pending_training_tasks.pop())
+                continue
 
             if task.task_type in QUANT_TASK_TYPES and not has_published_calibration(task):
                 await _alert_quant_inputs_missing(task, oldest_task_training.hotkey, config)
@@ -988,11 +1063,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             continue
 
     if held_for_boss_seeds:
-        training = ", ".join(
-            f"{seed.tournament_id}/{seed.role.value} (task {seed.task_id})"
-            for seeds in seeds_in_training.values()
-            for seed in seeds
-        )
+        training = ", ".join(f"{seed.tournament_id}/{seed.role.value} (task {seed.task_id})" for seed in hold.seeds_in_training)
         logger.info(
             f"Held {len(held_for_boss_seeds)} miner training row(s) until the boss's seeds of their tournament are trained; "
             f"still training: {training}. They are checked again in the next cycle."
@@ -3144,7 +3215,7 @@ async def _boss_round_seed_cycle(config: Config) -> None:
             with LogContext(task_id=str(seed.task_id), tournament_id=tournament.tournament_id):
                 try:
                     task = await task_sql.get_task(seed.task_id, config.psql_db)
-                    if task is None or task.status in (TaskStatus.FAILURE, TaskStatus.PREP_TASK_FAILURE, TaskStatus.SUCCESS):
+                    if task is None or task.status in _SETTLED_SEED_TASK_STATUSES:
                         continue
                     if role in TEXT_SEED_ROLES:
                         boss_status = await _training_status_of(seed.task_id, EMISSION_BURN_HOTKEY, config)

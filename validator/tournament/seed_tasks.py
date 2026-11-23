@@ -811,6 +811,22 @@ def is_prep_rejection(seed: TournamentSeedTask, task: RawTask | None) -> bool:
     return seed.role in DATASET_DRAWN_ROLES and task is not None and task.status == TaskStatus.PREP_TASK_FAILURE
 
 
+async def seed_awaits_replacement(seed: TournamentSeedTask, task: RawTask | None, config: Config) -> bool:
+    """Whether a text seed whose boss run ended without a result (its task is gone, FAILURE or PREP_TASK_FAILURE, or the
+    boss's row is FAILURE) is replaced by the next pass over the seeds, following _evaluate_text_seed and replace_seed.
+
+    A prep failure is replaced attached or not; any other failure only while no round attached the seed. A prep-stage
+    dataset rejection is uncharged (past its own cap the row is marked `failed`); every other replacement needs a charged
+    one left, else the row stays the boss's failed entry.
+    """
+    prep_failed = task is not None and task.status == TaskStatus.PREP_TASK_FAILURE
+    if not prep_failed and await _was_attached(seed, config.psql_db):
+        return False
+    if is_prep_rejection(seed, task):
+        return True
+    return await _charged_replacements_remain(seed, config)
+
+
 async def _swap_attached_seed(
     old_seed: TournamentSeedTask, new_seed: TournamentSeedTask, new_task: RawTask, config: Config
 ) -> None:

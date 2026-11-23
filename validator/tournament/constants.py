@@ -581,6 +581,10 @@ SEED_MAX_REPLACEMENTS = 2
 SEED_MAX_PREP_REJECTIONS = 20
 # Task-level model-prep failures of a seed before it is given up and redrawn as a prep rejection (prep otherwise retries forever).
 SEED_MAX_PREP_ATTEMPTS = 3
+# A text seed holds its tournament's miner rows for at most this long, on top of the training hours of the tournament's text
+# seeds (each with all of its attempts), counted from the seed's creation: the allowance for prep and for waiting on GPUs.
+# Past it the seed is reported and the miners are dispatched without it.
+MINER_HOLD_MARGIN_HOURS = 6
 
 # Rounds 1-3 of a seeded text tournament are one instruct task each, in one group: the task is trained by the boss at
 # tournament start and by the round's miners when the round is reached. Round 1 advances on its task; rounds 2 and 3 on
