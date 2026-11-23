@@ -200,7 +200,7 @@ class TestCandidateSelection:
         [missing] = await prepass.references_to_measure(CONFIG)
 
         assert (missing.task.task_id, missing.hotkey, missing.repo, missing.calibration) == (task.task_id, "", "org/model", False)
-        assert missing.key == (str(task.task_id), "")
+        assert missing.keys == [(str(task.task_id), "")]
 
     async def test_task_common_task_without_nodes_yet_is_still_measured(self, db):
         db.put(_task(training_start_point=TrainingStartPoint.DEFAULT), hotkeys=())
@@ -221,17 +221,19 @@ class TestCandidateSelection:
 
         assert await prepass.references_to_measure(CONFIG) == []
 
-    async def test_task_common_calibration_follows_the_common_test_row(self, db):
+    async def test_task_common_calibration_is_measured_with_or_after_the_common_test_row(self, db):
         task = _cal_task(training_start_point=TrainingStartPoint.DEFAULT)
         db.put(task)
-        assert not (await prepass.references_to_measure(CONFIG))[0].calibration
+        [both] = await prepass.references_to_measure(CONFIG)
+        assert both.test and both.calibration
+        assert both.keys == [(str(task.task_id), ""), (str(task.task_id), "", "calibration")]
         db.references[task.task_id] = {("", SKU): _reference(task.task_id, hotkey="", model="org/model")}
 
         [missing] = await prepass.references_to_measure(CONFIG)
-        assert missing.calibration and missing.key == (str(task.task_id), "", "calibration")
+        assert not missing.test and missing.keys == [(str(task.task_id), "", "calibration")]
 
-        prepass._CONSECUTIVE_FAILURES[missing.key] = 1000
-        assert [item.key for item in await prepass.references_to_measure(CONFIG)] == [missing.key]
+        prepass._CONSECUTIVE_FAILURES[missing.keys[0]] = 1000
+        assert [item.keys for item in await prepass.references_to_measure(CONFIG)] == [missing.keys]
 
     async def test_task_common_task_copies_the_sibling_slot_row_on_the_same_model_and_eval_set(self, db, evaluator):
         sibling = _task(QuantFixedRawTask, training_start_point=TrainingStartPoint.DEFAULT)
@@ -418,7 +420,7 @@ class TestMeasurement:
         await prepass.measure_missing_quant_references(CONFIG)
 
         kwargs = evaluator.call_args.kwargs
-        assert kwargs["psql_db"] is None
+        assert kwargs["psql_db"] is None and kwargs["calibration_dataset"] is None
         assert kwargs["models"] == [REPO] and kwargs["original_model"] == REPO
         assert kwargs["reference_models"] == {REPO: REPO} and kwargs["cached_references"] == {REPO: {}}
         assert kwargs["dataset"] == task.test_data and kwargs["file_format"] == FileFormat.JSON
@@ -551,30 +553,57 @@ def _cal_record(task_id, hotkey=HOTKEY, fingerprint=CAL_FINGERPRINT, model=REPO)
     )
 
 
-def _cal_result(fingerprint=CAL_FINGERPRINT) -> EvaluationResultText:
-    reference = QuantReferenceScore(
+def _cal_score(fingerprint=CAL_FINGERPRINT) -> QuantReferenceScore:
+    return QuantReferenceScore(
         model=REPO, eval_loss=1.5, per_example_losses=[1.5], eval_set_fingerprint=fingerprint, eval_gpu=GPU
     )
-    return EvaluationResultText(is_finetune=True, eval_loss=1.5, quant_reference=reference)
+
+
+def _cal_result(fingerprint=CAL_FINGERPRINT) -> EvaluationResultText:
+    """What a deployment given the calibration rows alone returns: its own result is the calibration reference."""
+    return EvaluationResultText(is_finetune=True, eval_loss=1.5, quant_reference=_cal_score(fingerprint))
+
+
+def _both_result(fingerprint=CAL_FINGERPRINT, **overrides) -> EvaluationResultText:
+    """What a deployment given both example sets returns: the test reference, with the calibration one next to it."""
+    return _result(**overrides).model_copy(update={"quant_calibration_reference": _cal_score(fingerprint)})
 
 
 class TestCalibrationReference:
-    async def test_freeform_with_calibration_data_needs_a_second_measurement_after_the_test_one(self, db):
+    async def test_only_the_calibration_reference_is_missing_once_the_test_one_is_stored(self, db):
         task = _cal_task()
         db.put(task)
         db.references[task.task_id] = {(HOTKEY, SKU): _reference(task.task_id)}
 
         [missing] = await prepass.references_to_measure(CONFIG)
 
-        assert missing.calibration and missing.dataset == CAL_URL and missing.key == (str(task.task_id), HOTKEY, "calibration")
+        assert (missing.test, missing.calibration) == (False, True)
+        assert missing.dataset == CAL_URL and missing.calibration_dataset is None
+        assert missing.keys == [(str(task.task_id), HOTKEY, "calibration")]
 
-    async def test_the_test_reference_comes_first(self, db):
+    async def test_both_references_missing_are_one_item_with_two_datasets(self, db):
         task = _cal_task()
         db.put(task)
 
         [missing] = await prepass.references_to_measure(CONFIG)
 
-        assert not missing.calibration and missing.dataset == task.test_data
+        assert (missing.test, missing.calibration) == (True, True)
+        assert missing.dataset == task.test_data and missing.calibration_dataset == CAL_URL
+        assert missing.keys == [(str(task.task_id), HOTKEY), (str(task.task_id), HOTKEY, "calibration")]
+
+    async def test_only_the_test_reference_is_missing_when_the_calibration_one_is_stored(self, db):
+        task = _cal_task()
+        db.put(task)
+        db.calibration[task.task_id] = {HOTKEY: _cal_record(task.task_id)}
+
+        [missing] = await prepass.references_to_measure(CONFIG)
+
+        assert (missing.test, missing.calibration) == (True, False)
+        assert missing.dataset == task.test_data and missing.calibration_dataset is None
+
+    def test_an_item_missing_nothing_is_refused(self):
+        with pytest.raises(ValueError):
+            prepass.ReferenceToMeasure(task=_cal_task(), hotkey=HOTKEY, repo=REPO, test=False, calibration=False)
 
     @pytest.mark.parametrize(
         "make",
@@ -596,7 +625,7 @@ class TestCalibrationReference:
 
         [missing] = await prepass.references_to_measure(CONFIG)
 
-        assert missing.calibration and missing.dataset == CAL_URL
+        assert missing.calibration and not missing.test and missing.dataset == CAL_URL
 
     async def test_a_stored_calibration_row_is_not_remeasured(self, db):
         task = _cal_task()
@@ -614,7 +643,9 @@ class TestCalibrationReference:
 
         await prepass.measure_missing_quant_references(CONFIG)
 
+        evaluator.assert_called_once()
         assert evaluator.call_args.kwargs["dataset"] == CAL_URL
+        assert evaluator.call_args.kwargs["calibration_dataset"] is None
         assert evaluator.call_args.kwargs["psql_db"] is None
         [record] = db.calibration_added
         assert (record.task_id, record.hotkey, record.model, record.loss, record.sku) == (task.task_id, HOTKEY, REPO, 1.5, SKU)
@@ -646,7 +677,8 @@ class TestCalibrationReference:
                 await prepass.measure_missing_quant_references(CONFIG)
 
         assert evaluator.call_count == runs
-        assert [item.key for item in await prepass.references_to_measure(CONFIG)] == [(str(task.task_id), HOTKEY, "calibration")]
+        [still_missing] = await prepass.references_to_measure(CONFIG)
+        assert still_missing.keys == [(str(task.task_id), HOTKEY, "calibration")]
         assert alert.await_count == 4
         assert "calibration reference pre-pass keeps failing" in alert.await_args.kwargs["context"]
         assert "proceeds without" not in caplog.text and "training waits for it" in caplog.text
@@ -661,7 +693,7 @@ class TestCalibrationReference:
         [missing] = await prepass.references_to_measure(CONFIG)
         await prepass.measure_missing_quant_references(CONFIG)
 
-        assert missing.calibration
+        assert missing.calibration and not missing.test
         [record] = db.calibration_added
         assert record.eval_set_fingerprint == CAL_FINGERPRINT
         assert db.calibration[task.task_id][HOTKEY].eval_set_fingerprint == CAL_FINGERPRINT
@@ -703,3 +735,170 @@ class TestCalibrationReference:
         await prepass.measure_missing_quant_references(CONFIG)
 
         evaluator.assert_called_once()
+
+
+class TestSharedDeployment:
+    """Both references missing: one deployment scores the test rows and the calibration rows."""
+
+    @pytest.fixture
+    def alert(self, monkeypatch):
+        notify = AsyncMock()
+        monkeypatch.setattr(prepass, "notify_evaluation_exception", notify)
+        return notify
+
+    async def test_one_deployment_gets_both_datasets_and_stores_both_references(self, db, evaluator):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: _both_result()})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_called_once()
+        kwargs = evaluator.call_args.kwargs
+        assert kwargs["dataset"] == task.test_data and kwargs["calibration_dataset"] == CAL_URL
+        assert kwargs["reference_only"] is True and kwargs["psql_db"] is None
+        [reference] = db.added
+        assert (reference.hotkey, reference.loss, reference.eval_set_fingerprint) == (HOTKEY, 2.0, "fp-measured")
+        [record] = db.calibration_added
+        assert (record.hotkey, record.model, record.loss, record.eval_set_fingerprint) == (HOTKEY, REPO, 1.5, CAL_FINGERPRINT)
+        assert await prepass.references_to_measure(CONFIG) == []
+        assert prepass._IN_PROGRESS == set() and prepass._CONSECUTIVE_FAILURES == {}
+
+    async def test_task_common_task_shares_one_deployment_too(self, db, evaluator):
+        task = _cal_task(QuantFixedRawTask, training_start_point=TrainingStartPoint.DEFAULT)
+        db.put(task, hotkeys=(HOTKEY, OTHER))
+        evaluator.return_value = SimpleNamespace(results={"org/model": _both_result()})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_called_once()
+        assert [r.hotkey for r in db.added] == [""] and [r.hotkey for r in db.calibration_added] == [""]
+
+    async def test_a_task_without_a_calibration_set_gets_no_second_dataset(self, db, evaluator):
+        db.put(_task())
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert evaluator.call_args.kwargs["calibration_dataset"] is None
+        assert len(db.added) == 1 and db.calibration_added == []
+
+    async def test_a_mismatched_calibration_fingerprint_stores_the_test_reference_only(self, db, evaluator, alert):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: _both_result(fingerprint="fp-other")})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert len(db.added) == 1 and db.calibration_added == []
+        assert prepass._CONSECUTIVE_FAILURES == {(str(task.task_id), HOTKEY, "calibration"): 1}
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            Exception("pod died"),
+            _both_result(quant_failure="did not load"),
+            _both_result().model_copy(update={"quant_reference": None}),
+        ],
+    )
+    async def test_a_failed_test_measurement_stores_neither_reference(self, db, evaluator, alert, outcome):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: outcome})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert db.added == [] and db.calibration_added == []
+        assert prepass._CONSECUTIVE_FAILURES == {(str(task.task_id), HOTKEY): 1}
+        [missing] = await prepass.references_to_measure(CONFIG)
+        assert missing.test and missing.calibration
+
+    async def test_a_deployment_returning_the_test_reference_alone_leaves_calibration_to_its_own_run(self, db, evaluator, alert):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: _result()})  # an image that scores one example set
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert len(db.added) == 1 and db.calibration_added == []
+        assert prepass._CONSECUTIVE_FAILURES == {}
+        evaluator.return_value = SimpleNamespace(results={REPO: _cal_result()})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert evaluator.call_count == 2
+        kwargs = evaluator.call_args.kwargs
+        assert kwargs["dataset"] == CAL_URL and kwargs["calibration_dataset"] is None
+        assert len(db.calibration_added) == 1 and await prepass.references_to_measure(CONFIG) == []
+
+    async def test_a_calibration_store_failure_keeps_the_test_reference_and_counts_against_calibration(
+        self, db, evaluator, alert, monkeypatch
+    ):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: _both_result()})
+        monkeypatch.setattr(prepass, "add_quant_calibration_reference", AsyncMock(side_effect=RuntimeError("db down")))
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert len(db.added) == 1
+        assert prepass._CONSECUTIVE_FAILURES == {(str(task.task_id), HOTKEY, "calibration"): 1}
+
+    async def test_a_test_store_failure_stores_no_calibration_reference(self, db, evaluator, alert, monkeypatch):
+        task = _cal_task()
+        db.put(task)
+        evaluator.return_value = SimpleNamespace(results={REPO: _both_result()})
+        monkeypatch.setattr(prepass, "add_quant_sku_reference", AsyncMock(side_effect=RuntimeError("db down")))
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        assert db.calibration_added == []
+        assert prepass._CONSECUTIVE_FAILURES == {(str(task.task_id), HOTKEY): 1}
+
+    async def test_a_running_shared_deployment_blocks_a_calibration_only_one(self, db, evaluator):
+        task = _cal_task()
+        db.put(task)
+        db.references[task.task_id] = {(HOTKEY, SKU): _reference(task.task_id)}
+        prepass._IN_PROGRESS.update({(str(task.task_id), HOTKEY), (str(task.task_id), HOTKEY, "calibration")})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_not_called()
+
+    async def test_a_copied_test_reference_leaves_a_calibration_only_deployment(self, db, evaluator, local_fingerprint):
+        previous, task = _cal_task(), _cal_task()
+        db.put(task)
+        db.round_before(previous.task_id, task)
+        db.references[previous.task_id] = {(HOTKEY, SKU): _reference(previous.task_id)}
+        evaluator.return_value = SimpleNamespace(results={REPO: _cal_result()})
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_called_once()
+        assert evaluator.call_args.kwargs["dataset"] == CAL_URL
+        assert evaluator.call_args.kwargs["calibration_dataset"] is None
+        assert [r.measured_at for r in db.added] == [None] and len(db.calibration_added) == 1
+
+    async def test_a_copied_calibration_reference_leaves_a_test_only_deployment(self, db, evaluator, local_fingerprint):
+        previous, task = _cal_task(), _cal_task()
+        db.put(task)
+        db.round_before(previous.task_id, task)
+        db.calibration[previous.task_id] = {HOTKEY: _cal_record(previous.task_id)}
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_called_once()
+        assert evaluator.call_args.kwargs["dataset"] == task.test_data
+        assert evaluator.call_args.kwargs["calibration_dataset"] is None
+        assert len(db.added) == 1 and [r.measured_at for r in db.calibration_added] == [None]
+
+    async def test_both_copied_from_the_previous_round_measures_nothing(self, db, evaluator, local_fingerprint):
+        previous, task = _cal_task(), _cal_task()
+        db.put(task)
+        db.round_before(previous.task_id, task)
+        db.references[previous.task_id] = {(HOTKEY, SKU): _reference(previous.task_id)}
+        db.calibration[previous.task_id] = {HOTKEY: _cal_record(previous.task_id)}
+
+        await prepass.measure_missing_quant_references(CONFIG)
+
+        evaluator.assert_not_called()
+        assert len(db.added) == 1 and len(db.calibration_added) == 1

@@ -333,6 +333,8 @@ class EvaluationResultText(BaseModel):
     eval_gpu: QuantEvalGpu | None = None
     # The bf16 reference scored in the same deployment, set when that deployment's SKU was not cached yet.
     quant_reference: QuantReferenceScore | None = None
+    # The same model's score on the task's calibration rows, set when a reference-only deployment was given them too.
+    quant_calibration_reference: QuantReferenceScore | None = None
 
     @model_validator(mode="after")
     def validate_missing_loss_is_quant_failure(self) -> "EvaluationResultText":

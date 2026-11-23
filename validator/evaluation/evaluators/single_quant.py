@@ -2,6 +2,7 @@ import logging
 import sys
 from pathlib import Path
 
+import validator.evaluation.constants as vcst
 from core.models.quant_models import QuantFixedSpec
 from validator.evaluation.errors import evaluation_error_result
 from validator.evaluation.evaluators.quant import FixedConfigCheck
@@ -10,6 +11,7 @@ from validator.evaluation.evaluators.quant import evaluate_repo
 from validator.evaluation.evaluators.quant import load_results
 from validator.evaluation.evaluators.quant import record_base_model_params
 from validator.evaluation.evaluators.quant import save_results
+from validator.evaluation.quant_loss import QuantEvalExample
 from validator.evaluation.quant_loss import load_examples
 from validator.evaluation.quant_vllm import VllmPromptLogprobEngine
 from validator.evaluation.quant_vllm import checked_kernel_classes
@@ -31,6 +33,16 @@ def _fixed_spec(evaluation_args: QuantEvaluationArgs) -> QuantFixedSpec | None:
     return quant_format.spec()
 
 
+def _calibration_examples(evaluation_args: QuantEvaluationArgs) -> list[QuantEvalExample]:
+    """The second example set of a bare reference run; empty when there is none."""
+    if evaluation_args.calibration_dataset is None:
+        return []
+    examples = load_examples(Path(evaluation_args.calibration_dataset))
+    if not examples:
+        raise ValueError(f"quant calibration set {evaluation_args.calibration_dataset} has no examples")
+    return examples
+
+
 def run(evaluation_args: QuantEvaluationArgs) -> None:
     """Evaluate a single repo in vLLM and save its result to the shared results file."""
     results = load_results()
@@ -48,8 +60,9 @@ def run(evaluation_args: QuantEvaluationArgs) -> None:
         examples = load_examples(Path(evaluation_args.dataset))
         if not examples:
             raise ValueError(f"quant test set {evaluation_args.dataset} has no examples")
-        max_prompt_len = max(len(example.input_ids) for example in examples)
-        results[key] = evaluate_repo(
+        calibration_examples = _calibration_examples(evaluation_args)
+        max_prompt_len = max(len(example.input_ids) for example in examples + calibration_examples)
+        result = evaluate_repo(
             repo=repo,
             examples=examples,
             engine_factory=lambda path: VllmPromptLogprobEngine(path, max_prompt_len, evaluation_args.original_model),
@@ -58,7 +71,11 @@ def run(evaluation_args: QuantEvaluationArgs) -> None:
             config_check=FixedConfigCheck(base_model=evaluation_args.original_model, resolve=resolved_model_config),
             model_path=evaluation_args.model_path,
             eval_gpu=evaluation_args.eval_gpu,
+            calibration_examples=calibration_examples,
         )
+        if vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY in result:
+            results[vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY] = result.pop(vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY)
+        results[key] = result
     except Exception as e:
         # evaluate_repo turns every fault of the submission into a quant_failure result, so whatever escapes it (the
         # hub unreachable, the Humming patch target missing, an empty test set) is an evaluation error, never the

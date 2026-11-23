@@ -32,6 +32,10 @@ QUANT_CACHED_REFERENCES_ENV = "QUANT_CACHED_REFERENCES"
 # QUANT_REFERENCE_ALLOWED_SKUS (adds 80 GB A100s). The evaluator refuses it unless MODELS is exactly the reference
 # model with no QUANT_SPEC and no DECODED_MODEL_URLS, so an entry can never be scored outside QUANT_EVAL_ALLOWED_SKUS.
 QUANT_REFERENCE_ONLY_ENV = "QUANT_REFERENCE_ONLY"
+# Optional, reference-only runs only: the url of the task's calibration rows (same tokenised JSONL as DATASET_URL). The
+# evaluator scores the reference on them too, with the model it already loaded, and writes that result under
+# QUANT_CALIBRATION_REFERENCE_RESULT_KEY. Set on any other run, the evaluator exits non-zero.
+QUANT_CALIBRATION_DATASET_URL_ENV = "QUANT_CALIBRATION_DATASET_URL"
 # Test boxes only, never set by the dispatcher: "1" lets the evaluator score on a GPU outside
 # QUANT_EVAL_ALLOWED_SKUS (logged loudly, recorded as eval_gpu.override). Unset, any other GPU fails the container.
 QUANT_EVAL_ALLOW_ANY_GPU_ENV = "QUANT_EVAL_ALLOW_ANY_GPU"

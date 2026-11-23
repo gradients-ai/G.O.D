@@ -181,6 +181,16 @@ A bare bf16 reference measurement may also run on an 80 GB A100. `QUANT_REFERENC
 
 The dispatcher passes `reference_only=True`. It requests `QUANT_REFERENCE_GPU_MODELS`, narrows Runpod offers to `QUANT_REFERENCE_RUNPOD_INSTANCE_TYPES` and sets `QUANT_REFERENCE_ONLY=1`. The evaluator accepts the flag only when `MODELS` is exactly `QUANT_REFERENCE_MODEL` with no `QUANT_SPEC` and no `DECODED_MODEL_URLS`. Any other run with the flag exits non-zero (`QuantReferenceOnlyMisuse`), so an entry is never scored off the H100 family.
 
+A reference-only run may score a second example set in the same deployment. `calibration_dataset` on the dispatcher sets `QUANT_CALIBRATION_DATASET_URL`, the url of the task's calibration rows:
+
+| Rule | Detail |
+| --- | --- |
+| Scoring | The evaluator loads the model once and scores the test set, then the calibration rows, with the same engine. |
+| Result | The calibration result is written under `QUANT_CALIBRATION_REFERENCE_RESULT_KEY` and returned as `EvaluationResultText.quant_calibration_reference`. |
+| Independence | The test-set result is the same with or without the calibration rows. A calibration result that errored is dropped and the test-set result stands. |
+| Misuse | `QUANT_CALIBRATION_DATASET_URL` without `QUANT_REFERENCE_ONLY=1` exits non-zero (`QuantReferenceOnlyMisuse`) before any model is loaded. |
+| Unset | The run scores `DATASET_URL` only. |
+
 A reference is stored under the SKU it ran on, and a score is only ever compared with the reference on the entry's SKU.
 
 ### Same-SKU bf16 reference

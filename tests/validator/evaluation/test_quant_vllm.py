@@ -278,6 +278,45 @@ def test_the_reference_run_saves_under_its_key_with_no_spec(single_quant, monkey
     assert quant.load_results() == {vcst.QUANT_REFERENCE_RESULT_KEY: {"is_finetune": True, "eval_loss": 1.0}}
 
 
+def test_a_reference_run_with_calibration_rows_saves_both_results_from_one_engine(single_quant, monkeypatch, tmp_path):
+    module, args = single_quant
+    calibration = tmp_path / "calibration.jsonl"
+    calibration.write_text(json.dumps({"input_ids": [4, 5, 6, 7, 8], "labels": [-100, 5, 6, 7, 8]}) + "\n")
+    reference_args = args.model_copy(update={"quant_format": None, "calibration_dataset": str(calibration)})
+    monkeypatch.setattr(module, "disable_humming_stream_k", lambda: None)
+    engines = []
+
+    def fake_evaluate_repo(**kwargs):
+        engines.append(kwargs["engine_factory"]("org/repo"))
+        assert [len(e.input_ids) for e in kwargs["examples"]] == [3]
+        assert [len(e.input_ids) for e in kwargs["calibration_examples"]] == [5]
+        return {"is_finetune": True, "eval_loss": 1.0, vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY: {"eval_loss": 2.0}}
+
+    monkeypatch.setattr(module, "evaluate_repo", fake_evaluate_repo)
+
+    module.run(reference_args)
+
+    assert quant.load_results() == {
+        "org/repo": {"is_finetune": True, "eval_loss": 1.0},
+        vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY: {"eval_loss": 2.0},
+    }
+    # One engine, sized for the longest prompt of either set (plus the generated token).
+    [engine] = engines
+    assert engine.llm.kwargs["max_model_len"] == 6
+
+
+def test_an_empty_calibration_set_is_an_evaluation_error(single_quant, monkeypatch, tmp_path):
+    module, args = single_quant
+    calibration = tmp_path / "calibration.jsonl"
+    calibration.write_text("")
+    monkeypatch.setattr(module, "disable_humming_stream_k", lambda: None)
+    monkeypatch.setattr(module, "evaluate_repo", lambda **_kwargs: pytest.fail("scored without calibration rows"))
+
+    module.run(args.model_copy(update={"calibration_dataset": str(calibration)}))
+
+    assert set(quant.load_results()["org/repo"]) == {EVALUATION_ERROR_RESULT_KEY}
+
+
 def test_the_engine_reads_only_weights_and_config_from_the_repo(quant_vllm):
     engine = quant_vllm.VllmPromptLogprobEngine("org/miner-repo", max_prompt_len=99, tokenizer="org/base")
 

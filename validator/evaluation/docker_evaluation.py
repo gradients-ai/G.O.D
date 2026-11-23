@@ -253,11 +253,16 @@ async def run_evaluation_basilica_quant(
     reference_models: dict[str, str] | None = None,
     cached_references: dict[str, dict[str, float]] | None = None,
     reference_only: bool = False,
+    calibration_dataset: str | None = None,
 ) -> DockerEvaluationResults:
     """Score quant submissions through vLLM on an allowed H100 SKU. quant_spec is None on the freeform track.
 
     reference_only (the bf16 reference pre-pass, where each model is its own reference and nothing is quantised or
     decoded) also allows the A100 SKUs of QUANT_REFERENCE_ALLOWED_SKUS; the evaluator refuses it on any other run.
+
+    calibration_dataset (reference_only runs only) is a second example set the same deployment scores with the model
+    it already loaded; it comes back as the repo's result.quant_calibration_reference, None when it did not score or
+    the image predates it.
 
     decoded_model_urls (freeform only) maps repo -> {filename: presigned url} of its decoded model;
     each deployment's env carries only its own repo's urls.
@@ -267,6 +272,8 @@ async def run_evaluation_basilica_quant(
     measured for that reference: a deployment whose SKU is missing scores its reference too, and it comes back
     as that repo's result.quant_reference.
     """
+    if calibration_dataset and not reference_only:
+        raise ValueError("a calibration dataset is only scored on a reference-only run")
     deployment_ids_by_repo, repo_to_hotkey = await _db_read_with_retry(
         lambda: load_eval_pair_state_for_models(task_id, psql_db, models),
         "load_eval_pair_state_for_models",
@@ -284,6 +291,8 @@ async def run_evaluation_basilica_quant(
     }
     if reference_only:
         base_env[docker_cst.QUANT_REFERENCE_ONLY_ENV] = "1"
+    if calibration_dataset:
+        base_env[docker_cst.QUANT_CALIBRATION_DATASET_URL_ENV] = calibration_dataset
     if quant_spec is not None:
         base_env[docker_cst.QUANT_SPEC_ENV] = quant_spec.model_dump_json()
     if quant_format is not None:
@@ -327,6 +336,10 @@ async def run_evaluation_basilica_quant(
     )
 
     references = {repo: _pop_quant_reference(repo, raw, reference_models.get(repo)) for repo, raw in repo_results.items()}
+    calibration_references = {
+        repo: _pop_quant_reference(repo, raw, reference_models.get(repo), vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY)
+        for repo, raw in repo_results.items()
+    }
     evaluation_results = _collect_quant_repo_evaluation_results(models, repo_results)
     processed = process_evaluation_results(evaluation_results, is_image=False)
     for repo, result in processed.results.items():
@@ -339,18 +352,25 @@ async def run_evaluation_basilica_quant(
         result = processed.results.get(repo)
         if reference is not None and isinstance(result, EvaluationResultText):
             processed.results[repo] = result.model_copy(update={"quant_reference": reference})
+    for repo, reference in calibration_references.items():
+        result = processed.results.get(repo)
+        if reference is not None and isinstance(result, EvaluationResultText):
+            processed.results[repo] = result.model_copy(update={"quant_calibration_reference": reference})
     return processed
 
 
-def _pop_quant_reference(repo: str, raw_result: dict | str, reference_model: str | None) -> QuantReferenceScore | None:
+def _pop_quant_reference(
+    repo: str, raw_result: dict | str, reference_model: str | None, key: str = vcst.QUANT_REFERENCE_RESULT_KEY
+) -> QuantReferenceScore | None:
     """Take the same-deployment bf16 reference out of a repo's raw results; None when none was scored.
 
+    key is the results-file entry to take: the reference on the test set, or the one on the calibration rows.
     A reference that did not score is logged, never fatal: the submission's own result stands, and finalize
     re-evaluates a row whose SKU still has no reference.
     """
-    if not isinstance(raw_result, dict) or vcst.QUANT_REFERENCE_RESULT_KEY not in raw_result:
+    if not isinstance(raw_result, dict) or key not in raw_result:
         return None
-    raw_reference = raw_result.pop(vcst.QUANT_REFERENCE_RESULT_KEY)
+    raw_reference = raw_result.pop(key)
     if reference_model is None:
         return None
     if not isinstance(raw_reference, dict) or is_evaluation_error_result(raw_reference):
