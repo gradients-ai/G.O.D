@@ -1,5 +1,6 @@
 """Whole-file retry of decoded uploads (trainer/quant_decode/upload.py): transient errors retry, others fail at once."""
 
+import asyncio
 import http.client
 import socket
 import ssl
@@ -563,3 +564,133 @@ async def test_upload_failed_says_whether_a_later_attempt_can_succeed(monkeypatc
 
     assert transient.value.transient is True
     assert permanent.value.transient is False
+
+
+# --- stopping an upload the caller gave up on
+
+
+class BlockingPut:
+    """put_file stand-in that sends until its upload's cancel event is set, like a body sender between slices."""
+
+    def __init__(self) -> None:
+        self.running = 0
+        self.peak = 0
+        self.finished = 0
+        self.lock = threading.Lock()
+
+    def put_file(self, bucket: str, object_name: str, path: Path, sha256: str | None = None) -> None:
+        with self.lock:
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+        try:
+            cancel = upload._cancel_events[object_name]
+            while not cancel.is_set():
+                time.sleep(0.01)
+            time.sleep(0.1)  # winding down: the request in flight failing, the multipart upload being aborted
+        finally:
+            with self.lock:
+                self.running -= 1
+                self.finished += 1
+
+
+async def wait_until(condition) -> None:
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
+
+
+async def test_an_upload_that_runs_out_of_time_stops_its_thread(monkeypatch, shard, report):
+    blocking = BlockingPut()
+    monkeypatch.setattr(upload, "put_file", blocking.put_file)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(upload_with_retry(BUCKET, OBJECT, shard, report, FAST), timeout=0.1)
+
+    await wait_until(lambda: blocking.finished == 1)
+    assert blocking.running == 0
+    assert OBJECT not in upload._cancel_events
+
+
+async def test_a_new_upload_of_an_object_waits_for_the_abandoned_one_to_leave(monkeypatch, shard, report):
+    blocking = BlockingPut()
+    monkeypatch.setattr(upload, "put_file", blocking.put_file)
+    monkeypatch.setattr(upload, "CANCEL_POLL_SECONDS", 0.01)
+
+    for _ in range(3):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(upload_with_retry(BUCKET, OBJECT, shard, report, FAST), timeout=0.05)
+
+    await wait_until(lambda: blocking.running == 0)
+    assert blocking.peak == 1  # never two threads sending the same object
+
+
+def test_a_cancelled_upload_stops_between_slices_and_refuses_new_parts(monkeypatch):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 16)
+    cancel = threading.Event()
+    monkeypatch.setitem(upload._cancel_events, "prefix/model.safetensors", cancel)
+    sent: list[object] = []
+    monkeypatch.setattr(
+        urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw.get("body"))
+    )
+    client = upload._SlicingPoolManager()
+    part_url = "http://storage.example/bucket/prefix/model.safetensors?partNumber=1&uploadId=u1"
+    headers = {"Content-Length": "64"}
+
+    client.urlopen("PUT", part_url, body=b"x" * 64, headers=headers)
+    slices = iter(sent[0])
+    next(slices)
+    cancel.set()
+
+    with pytest.raises(upload.UploadCancelled):
+        next(slices)
+    with pytest.raises(upload.UploadCancelled):
+        client.urlopen("PUT", part_url, body=b"x" * 64, headers=headers)
+    client.urlopen("DELETE", part_url)  # minio can still abort the multipart upload
+    client.urlopen("PUT", "http://storage.example/bucket/prefix/other.safetensors", body=b"x" * 64, headers=headers)
+    assert len(sent) == 3
+
+
+def test_a_cancelled_upload_is_never_retried():
+    assert not upload.is_transient(upload.UploadCancelled("upload cancelled"))
+
+
+# --- settings from the environment
+
+
+@pytest.mark.parametrize(
+    "raw, expected, warned",
+    [
+        (None, 16, False),
+        ("", 16, False),
+        ("32", 32, False),
+        (" 32 ", 32, False),
+        ("sixteen", 16, True),  # not a number: the default
+        ("1", 5, True),  # under the minimum: the minimum
+        ("-3", 5, True),
+    ],
+)
+def test_integer_settings_fall_back_instead_of_stopping_the_trainer(monkeypatch, caplog, raw, expected, warned):
+    if raw is None:
+        monkeypatch.delenv("TEST_QUANT_SETTING", raising=False)
+    else:
+        monkeypatch.setenv("TEST_QUANT_SETTING", raw)
+
+    with caplog.at_level("WARNING", logger=cst.__name__):
+        assert cst._env_int("TEST_QUANT_SETTING", 16, 5) == expected
+
+    assert bool(caplog.records) is warned
+
+
+@pytest.mark.parametrize("raw, expected", [("0.5", 1.0), ("nan", 1.0), ("2.5", 2.5), ("fast", 30.0)])
+def test_float_settings_fall_back_instead_of_stopping_the_trainer(monkeypatch, raw, expected):
+    monkeypatch.setenv("TEST_QUANT_SETTING", raw)
+
+    assert cst._env_float("TEST_QUANT_SETTING", 30.0, 1.0) == expected
+
+
+def test_upload_settings_respect_what_storage_accepts():
+    assert cst.QUANT_DECODE_UPLOAD_PART_BYTES >= cst.S3_MIN_PART_BYTES
+    assert cst.QUANT_DECODE_UPLOAD_PARALLEL >= 1
+    assert cst.QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS >= cst.QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS

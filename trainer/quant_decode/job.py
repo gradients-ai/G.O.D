@@ -46,6 +46,8 @@ from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
 from trainer import slots
 from trainer.host_resources import ContainerResources
+from trainer.quant_decode import job_lock
+from trainer.quant_decode.job_lock import JobLock
 from trainer.quant_decode.output_check import BF16_BYTES
 from trainer.quant_decode.output_check import SAFETENSORS_INDEX_NAME
 from trainer.quant_decode.output_check import SAFETENSORS_SUFFIX
@@ -76,6 +78,7 @@ EXEC_BITS = 0o111
 OWNER_RWX = 0o700
 OWNER_RW = 0o600
 BYTES_PER_MB = 1_000_000
+BYTES_PER_GB = 1_000_000_000
 # A work dir that survives removal is renamed to <name><STALE_WORK_DIR_MARKER><hex> so a re-run starts clean.
 STALE_WORK_DIR_MARKER = ".stale-"
 # Proves the work root was created (or adopted while empty) by the decode job, so prepare_work_root never chmods a
@@ -135,6 +138,8 @@ class PendingUpload(BaseModel):
     request: QuantDecodeRequest
     progress: _DecodeProgress
     retry_until: datetime
+    # When the last round, which starts at retry_until, has run out of time for every file it may still send.
+    settle_deadline: datetime
     last_error: str
 
 
@@ -583,32 +588,55 @@ def load_pending(work: _WorkDirs) -> PendingUpload | None:
 
 
 def owns_pending(work: _WorkDirs, token: str) -> bool:
-    """True while the work dir still holds the pending upload with this token."""
+    """True while the work dir still holds the pending upload with this token. Only settles the question for a
+    caller that holds the job's lock: nobody else may change the work dir meanwhile."""
     current = load_pending(work)
     return current is not None and current.token == token
 
 
 def pending_result(pending: PendingUpload) -> QuantDecodeResult:
-    return QuantDecodeResult(upload_pending=True, upload_retry_until=pending.retry_until, **pending.progress.model_dump())
+    return QuantDecodeResult(
+        upload_pending=True,
+        upload_retry_until=pending.retry_until,
+        upload_settle_deadline=pending.settle_deadline,
+        **pending.progress.model_dump(),
+    )
+
+
+def _last_round_seconds(work: _WorkDirs, progress: _DecodeProgress) -> float:
+    """The longest a round can spend sending: the deadline of every shard not uploaded yet, plus the index's."""
+    missing = [shard for shard in work.output.glob(f"*{SAFETENSORS_SUFFIX}") if shard.name not in progress.uploaded_files]
+    return sum(upload_timeout_seconds(shard.stat().st_size) for shard in missing) + upload_timeout_seconds(0)
 
 
 def _defer_upload(
     request: QuantDecodeRequest, work: _WorkDirs, progress: _DecodeProgress, task_id: str, hotkey: str, error: str
 ) -> PendingUpload:
-    """Keep the decoded output for the background retry and drop what the upload no longer needs."""
+    """Keep the decoded output for the background retry and drop what the upload no longer needs.
+
+    Raises OSError when the files cannot be kept, including when the disk would be left too full for other decodes.
+    """
+    work.decoder_xz.unlink(missing_ok=True)
+    for path in (work.decoder, work.build, work.artifact):
+        remove_work_tree(path)
+    free = shutil.disk_usage(work.root).free
+    if free < cst.QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_BYTES:
+        raise OSError(
+            f"{free // BYTES_PER_GB} GB free on the decode work root, under the "
+            f"{cst.QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_BYTES // BYTES_PER_GB} GB needed to keep decoded files"
+        )
+    retry_until = datetime.now(timezone.utc) + timedelta(seconds=cst.QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS)
     pending = PendingUpload(
         token=new_token(),
         task_id=task_id,
         hotkey=hotkey,
         request=request,
         progress=progress,
-        retry_until=datetime.now(timezone.utc) + timedelta(seconds=cst.QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS),
+        retry_until=retry_until,
+        settle_deadline=retry_until + timedelta(seconds=_last_round_seconds(work, progress)),
         last_error=error,
     )
     save_pending(work, pending)
-    work.decoder_xz.unlink(missing_ok=True)
-    for path in (work.decoder, work.build, work.artifact):
-        remove_work_tree(path)
     return pending
 
 
@@ -676,8 +704,49 @@ async def run_freeform_decode(
 
     The work dir is removed, except when the result is `upload_pending`: the decoded files and a PendingUpload state
     file stay for upload_retry.py, which removes the dir once the upload is settled.
+
+    The job's lock (job_lock.py) is held from before the work dir is emptied until the result is known, so this
+    decode and any other decode or upload retry of the same job, in this process or another, never share the dir.
     """
     work = work_dirs(work_root, task_id, hotkey)
+    lock = JobLock(work_root, work.root.name)
+    try:
+        prepare_work_root(work_root)
+        locked = await job_lock.acquire(lock, report)
+    except OSError as e:
+        return QuantDecodeResult(infra_error=sanitize_failure(f"decode work dir unusable: {e}"))
+    if not locked:
+        return QuantDecodeResult(infra_error="another decode or upload of this job did not finish in time")
+    try:
+        return await _run_locked(
+            request,
+            task_id=task_id,
+            hotkey=hotkey,
+            artifact_repo=artifact_repo,
+            base_model_dir=base_model_dir,
+            hf_token=hf_token,
+            work=work,
+            docker_client=docker_client,
+            report=report,
+            cpu_share=cpu_share,
+        )
+    finally:
+        lock.release()
+
+
+async def _run_locked(
+    request: QuantDecodeRequest,
+    *,
+    task_id: str,
+    hotkey: str,
+    artifact_repo: str,
+    base_model_dir: Path,
+    hf_token: str | None,
+    work: _WorkDirs,
+    docker_client: docker.DockerClient,
+    report: ProgressReporter,
+    cpu_share: ContainerResources | None,
+) -> QuantDecodeResult:
     progress = _DecodeProgress()
     keep_work = False
     try:
@@ -706,7 +775,8 @@ async def run_freeform_decode(
             pending = await asyncio.to_thread(_defer_upload, request, work, progress, task_id, hotkey, failure)
         except OSError as defer_error:
             logger.error(f"Could not keep the decoded files of task {task_id} for an upload retry: {defer_error}")
-            return QuantDecodeResult(infra_error=failure, **progress.model_dump())
+            not_retried = sanitize_failure(f"{failure}; not retried: {defer_error}")
+            return QuantDecodeResult(infra_error=not_retried, **progress.model_dump())
         keep_work = True
         return pending_result(pending)
     except _InfraFault as e:

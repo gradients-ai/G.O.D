@@ -9,6 +9,11 @@ an unreadable local file) fails at once.
 A part's body is sent in slices (`_SlicedBody`), so the socket timeout bounds a stall rather than the whole part: a
 slow link that keeps moving never times a part out. Each object carries its sha256 as metadata, which lets a later
 retry confirm a file that is already stored (`is_uploaded`) instead of sending it again.
+
+The storage client cannot cancel an upload. When the caller gives up on one (its deadline passed, or its task was
+cancelled) the upload's thread is told to stop through a cancel event that the body sender checks before every slice,
+so it ends within one slice instead of sending the rest of the file. A new upload of the same object waits for that
+thread to leave, so abandoned uploads never pile up on the link.
 """
 
 import asyncio
@@ -16,11 +21,14 @@ import http.client
 import os
 import random
 import ssl
+import threading
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
+from urllib.parse import urlsplit
 
 import certifi
 import urllib3
@@ -87,6 +95,29 @@ class UploadFailed(Exception):
         self.transient = transient
 
 
+class UploadCancelled(Exception):
+    """The caller gave up on this upload; its thread stops sending. Never retried."""
+
+
+# Uploads in flight, by object name: the event that stops one, and a lock that lets one thread at a time send an
+# object. One lock per object name ever uploaded by this process is kept; they are a few bytes each.
+_registry_lock = threading.Lock()
+_cancel_events: dict[str, threading.Event] = {}
+_object_locks: dict[str, threading.Lock] = {}
+CANCEL_POLL_SECONDS = 1.0
+PUT = "PUT"
+
+
+def _cancel_event_for(url: str) -> threading.Event | None:
+    """The cancel event of the upload this request belongs to: the one whose object name ends the URL path."""
+    path = unquote(urlsplit(url).path)
+    with _registry_lock:
+        for object_name, event in _cancel_events.items():
+            if path.endswith(f"/{object_name}"):
+                return event
+    return None
+
+
 class UploadRetryPolicy(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -109,9 +140,10 @@ class _SlicedBody:
     each slice. Iterating again starts from the first byte, so the client's own retries resend the full body.
     """
 
-    def __init__(self, data: bytes, slice_bytes: int) -> None:
+    def __init__(self, data: bytes, slice_bytes: int, cancel: threading.Event | None = None) -> None:
         self._data = data
         self._slice_bytes = slice_bytes
+        self._cancel = cancel
 
     def __len__(self) -> int:
         return len(self._data)
@@ -119,18 +151,26 @@ class _SlicedBody:
     def __iter__(self) -> Iterator[memoryview]:
         view = memoryview(self._data)
         for start in range(0, len(view), self._slice_bytes):
+            if self._cancel is not None and self._cancel.is_set():
+                raise UploadCancelled("upload cancelled")
             yield view[start : start + self._slice_bytes]
 
 
 class _SlicingPoolManager(urllib3.PoolManager):
     """Sends large bytes bodies as a `_SlicedBody`. Only when the request states its Content-Length: without it the
-    client would switch to chunked transfer encoding, which S3 request signing does not cover."""
+    client would switch to chunked transfer encoding, which S3 request signing does not cover.
+
+    A PUT that belongs to a cancelled upload is refused, and stops between slices when it is already under way. Other
+    requests of that upload still go out, so minio can abort the multipart upload it started."""
 
     def urlopen(self, method: str, url: str, redirect: bool = True, **kw: Any) -> urllib3.BaseHTTPResponse:
+        cancel = _cancel_event_for(url) if method.upper() == PUT else None
+        if cancel is not None and cancel.is_set():
+            raise UploadCancelled("upload cancelled")
         body = kw.get("body")
         slice_bytes = cst.QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES
         if isinstance(body, bytes) and 0 < slice_bytes < len(body) and CONTENT_LENGTH_HEADER in (kw.get("headers") or {}):
-            kw["body"] = _SlicedBody(body, slice_bytes)
+            kw["body"] = _SlicedBody(body, slice_bytes, cancel)
         return super().urlopen(method, url, redirect=redirect, **kw)
 
 
@@ -179,6 +219,28 @@ def put_file(bucket: str, object_name: str, path: Path, sha256: str | None = Non
         part_size=cst.QUANT_DECODE_UPLOAD_PART_BYTES,
         num_parallel_uploads=cst.QUANT_DECODE_UPLOAD_PARALLEL,
     )
+
+
+def _put_cancellable(bucket: str, object_name: str, path: Path, sha256: str | None, cancel: threading.Event) -> None:
+    """`put_file`, stoppable through `cancel`, and never alongside another upload of the same object: it first waits
+    for an earlier, abandoned upload of that object to leave."""
+    with _registry_lock:
+        object_lock = _object_locks.setdefault(object_name, threading.Lock())
+    while not object_lock.acquire(timeout=CANCEL_POLL_SECONDS):
+        if cancel.is_set():
+            raise UploadCancelled("upload cancelled")
+    try:
+        if cancel.is_set():
+            raise UploadCancelled("upload cancelled")
+        with _registry_lock:
+            _cancel_events[object_name] = cancel
+        try:
+            put_file(bucket, object_name, path, sha256)
+        finally:
+            with _registry_lock:
+                _cancel_events.pop(object_name, None)
+    finally:
+        object_lock.release()
 
 
 def is_uploaded(bucket: str, object_name: str, size_bytes: int, sha256: str) -> bool:
@@ -258,12 +320,17 @@ async def upload_with_retry(
 ) -> None:
     """Upload `path` to bucket/object_name, retrying the whole file on transient errors. Raises UploadFailed.
 
-    Bounded by attempts x (one upload + its backoff); the caller puts a deadline around the whole call.
+    Bounded by attempts x (one upload + its backoff); the caller puts a deadline around the whole call. When that
+    deadline passes, or the caller is cancelled, the upload thread is told to stop.
     """
     for attempt in range(1, policy.attempts + 1):
+        cancel = threading.Event()
         try:
-            await asyncio.to_thread(put_file, bucket, object_name, path, sha256)
+            await asyncio.to_thread(_put_cancellable, bucket, object_name, path, sha256, cancel)
             return
+        except asyncio.CancelledError:
+            cancel.set()
+            raise
         except Exception as e:
             detail = describe_error(e)
             if not is_transient(e):

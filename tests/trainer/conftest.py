@@ -24,3 +24,9 @@ def image_build_cache_state_in_tmp(monkeypatch: pytest.MonkeyPatch, tmp_path):
     """Trainer tests never read or write the real image build cache state file."""
     monkeypatch.setattr(cst, "IMAGE_BUILD_CACHE_STATE_PATH", str(tmp_path / "image_build_cache_state.json"))
     monkeypatch.setattr(image_builds, "_emptied_at_in_memory", None)
+
+
+@pytest.fixture(autouse=True)
+def decoded_files_are_kept_whatever_the_free_disk(monkeypatch: pytest.MonkeyPatch):
+    """Whether a pending upload keeps its decoded files must not depend on the disk the tests run on."""
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_BYTES", 0)

@@ -20,12 +20,14 @@ from trainer import job_state
 from trainer import runtime
 from trainer import slots
 from trainer.quant_decode import job
+from trainer.quant_decode import job_lock
 from trainer.quant_decode import rerun
 from trainer.quant_decode import upload
 from trainer.quant_decode import upload_retry
 from trainer.quant_decode.job import PendingUpload
 from trainer.quant_decode.job import _DecodeProgress
 from trainer.quant_decode.job import _WorkDirs
+from trainer.quant_decode.job_lock import JobLock
 from trainer.slots import SlotLimiter
 
 
@@ -116,8 +118,9 @@ def report(lines: list[str]):
 def work(tmp_path: Path) -> _WorkDirs:
     """A decode that passed its checks, uploaded its first shard and then lost the link."""
     work_root = tmp_path / "work_root"
+    job.prepare_work_root(work_root)
     work = job.work_dirs(work_root, TASK_ID, HOTKEY)
-    work.root.mkdir(parents=True)
+    work.root.mkdir()
     work.output.mkdir()
     for name in SHARDS:
         (work.output / name).write_bytes(name.encode() * 10)
@@ -137,6 +140,7 @@ def work(tmp_path: Path) -> _WorkDirs:
         request=DECODE,
         progress=progress,
         retry_until=START + timedelta(seconds=WINDOW_SECONDS),
+        settle_deadline=START + timedelta(seconds=WINDOW_SECONDS + 1200),
         last_error=FIRST_ERROR,
     )
     job.save_pending(work, pending)
@@ -398,3 +402,211 @@ async def test_the_job_starts_a_background_retry_only_for_a_pending_upload(monke
     assert stored_decode() == result
     assert started == ([(tmp_path, TASK_ID, HOTKEY)] if retried else [])
     assert ("upload not complete" in job_state.get_task(TASK_ID, HOTKEY).logs[-1]) is retried
+
+
+# --- ownership: the job's lock and the token
+
+
+def job_lock_of(work: _WorkDirs) -> JobLock:
+    return JobLock(work.root.parent, work.root.name)
+
+
+class Stored:
+    def __init__(self) -> None:
+        self.results: list[QuantDecodeResult] = []
+        self.work_existed: list[bool] = []
+        self.error: Exception | None = None
+
+    def into(self, work: _WorkDirs):
+        async def store(result: QuantDecodeResult) -> None:
+            self.work_existed.append(work.root.exists())
+            if self.error is not None:
+                raise self.error
+            self.results.append(result)
+
+        return store
+
+
+async def test_a_round_holds_the_job_lock_while_it_uploads_and_not_while_it_waits(work, clock, storage, report):
+    storage.errors = [dropped()]
+    held_during_put: list[bool] = []
+    free_during_pause: list[bool] = []
+
+    def another_process_tries_the_lock() -> bool:
+        other = job_lock_of(work)
+        taken = other.try_acquire()
+        other.release()
+        return taken
+
+    async def during_pause() -> None:
+        free_during_pause.append(another_process_tries_the_lock())
+
+    storage.during_put = lambda: held_during_put.append(not another_process_tries_the_lock())
+    clock.during_pause = during_pause
+
+    result = await retry(work, report)
+
+    assert result is not None and result.ok
+    assert held_during_put and all(held_during_put)
+    assert free_during_pause and all(free_during_pause)
+    assert another_process_tries_the_lock()  # released once settled
+
+
+async def test_a_retry_that_finds_the_job_locked_by_a_decode_stops_and_stores_nothing(work, clock, storage, report):
+    stored = Stored()
+    decode_in_another_process = job_lock_of(work)
+    assert decode_in_another_process.try_acquire()
+    try:
+        result = await upload_retry.retry_pending_upload(work.root.parent, TASK_ID, HOTKEY, report, stored.into(work))
+    finally:
+        decode_in_another_process.release()
+
+    assert result is None
+    assert storage.puts == [] and stored.results == []
+    assert job.load_pending(work).token == "token-1"  # untouched
+
+
+async def test_state_replaced_during_a_put_ends_the_retry_without_another_write(work, clock, storage, report):
+    """Something that ignores the lock replaces the pending upload while a file is being sent. The retry must not put
+    its own token back, send another file, publish the index, store a result or remove the directory."""
+    stored = Stored()
+
+    def replace_the_state() -> None:
+        job.save_pending(work, job.load_pending(work).model_copy(update={"token": "token-2"}))
+
+    storage.during_put = replace_the_state
+
+    result = await upload_retry.retry_pending_upload(work.root.parent, TASK_ID, HOTKEY, report, stored.into(work))
+
+    assert result is None
+    assert storage.puts == [SHARDS[1]]  # the put in flight, and nothing after it
+    assert INDEX not in storage.stored
+    assert stored.results == []
+    assert job.load_pending(work).token == "token-2"
+    assert job.load_pending(work).progress.uploaded_files == [SHARDS[0]]
+    assert sorted(p.name for p in work.output.iterdir()) == SHARDS
+
+
+async def test_the_result_is_stored_before_the_work_dir_is_removed(work, clock, storage, report):
+    stored = Stored()
+
+    result = await upload_retry.retry_pending_upload(work.root.parent, TASK_ID, HOTKEY, report, stored.into(work))
+
+    assert stored.results == [result] and result.ok
+    assert stored.work_existed == [True]
+    assert not work.root.exists()
+
+
+async def test_a_result_that_cannot_be_stored_keeps_the_decoded_files_for_the_next_start(work, clock, storage, history):
+    write_history(history, job.pending_result(job.load_pending(work)))
+    stored = Stored()
+    stored.error = OSError("disk full")
+
+    with pytest.raises(OSError):
+        await upload_retry.retry_pending_upload(work.root.parent, TASK_ID, HOTKEY, store=stored.into(work))
+
+    assert work.pending.exists()
+    assert job_lock_of(work).try_acquire()  # the lock is not left held
+
+
+async def test_a_background_retry_that_crashes_does_not_raise_and_leaves_its_state(work, clock, storage, history, monkeypatch):
+    write_history(history, job.pending_result(job.load_pending(work)))
+
+    async def broken_store(task_id, hotkey, result) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(upload_retry, "update_quant_decode_result", broken_store)
+
+    upload_retry.start(work.root.parent, TASK_ID, HOTKEY)
+    await upload_retry._retries[(TASK_ID, HOTKEY)]
+
+    assert stored_decode().upload_pending
+    assert work.pending.exists()
+
+
+async def test_progress_lines_that_cannot_be_written_do_not_end_the_retry(work, clock, storage):
+    storage.errors = [dropped()]
+
+    async def broken_report(message: str) -> None:
+        raise OSError("task history unwritable")
+
+    result = await upload_retry.retry_pending_upload(work.root.parent, TASK_ID, HOTKEY, broken_report)
+
+    assert result is not None and result.ok
+
+
+async def test_progress_that_cannot_be_saved_does_not_end_the_retry(work, clock, storage, report, monkeypatch):
+    def unwritable(work_dirs, pending) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(job, "save_pending", unwritable)
+
+    result = await retry(work, report)
+
+    assert result is not None and result.ok
+    assert result.uploaded_files == [*SHARDS, INDEX]
+
+
+# --- startup sweep
+
+
+async def test_restart_removes_work_dirs_with_nothing_to_resume_and_keeps_the_rest(work, clock, storage, history):
+    write_history(history, job.pending_result(job.load_pending(work)))
+    work_root = work.root.parent
+    cut_short = work_root / "task-9_hk"  # a decode the restart interrupted
+    (cut_short / "output").mkdir(parents=True)
+    (cut_short / "output" / "model.safetensors").write_bytes(b"x" * 100)
+    moved_aside = work_root / "task-9_hk.stale-abcd1234"
+    moved_aside.mkdir()
+    in_use = work_root / "task-8_hk"  # the re-run CLI is decoding in it
+    in_use.mkdir()
+    rerun_process = JobLock(work_root, in_use.name)
+    assert rerun_process.try_acquire()
+    unused_lock = JobLock(work_root, "task-7_hk")
+    assert unused_lock.try_acquire()
+    unused_lock.release()
+
+    try:
+        await upload_retry.resume_after_restart(work_root)
+        await upload_retry._retries[(TASK_ID, HOTKEY)]
+    finally:
+        rerun_process.release()
+
+    assert not cut_short.exists() and not moved_aside.exists()
+    assert in_use.exists()
+    assert (work_root / job.WORK_ROOT_MARKER).exists()
+    assert not unused_lock.path.exists() and rerun_process.path.exists()
+    assert stored_decode().ok
+
+
+async def test_restart_never_sweeps_a_directory_without_the_decode_marker(tmp_path, clock, storage, history):
+    write_history(history, QuantDecodeResult(ok=True))
+    shared = tmp_path / "shared"
+    (shared / "someone-elses-data").mkdir(parents=True)
+
+    await upload_retry.resume_after_restart(shared)
+
+    assert (shared / "someone-elses-data").exists()
+
+
+async def test_restart_leaves_a_pending_job_alone_while_a_rerun_holds_its_lock(work, clock, storage, history):
+    write_history(history, job.pending_result(job.load_pending(work)))
+    rerun_process = job_lock_of(work)
+    assert rerun_process.try_acquire()
+    try:
+        await upload_retry.resume_after_restart(work.root.parent)
+    finally:
+        rerun_process.release()
+
+    assert stored_decode().upload_pending  # not marked lost: the re-run stores its own result
+    assert upload_retry._retries == {}
+    assert job.load_pending(work).token == "token-1"
+
+
+def test_lock_dir_is_never_taken_for_a_work_dir(work):
+    lock = job_lock_of(work)
+    assert lock.try_acquire()
+    lock.release()
+
+    assert upload_retry._claim_work_dirs(work.root.parent)[0].task_id == TASK_ID
+    assert (work.root.parent / job_lock.LOCK_DIR_NAME).is_dir()

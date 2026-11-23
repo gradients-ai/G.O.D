@@ -148,6 +148,7 @@ def decode_sql(monkeypatch):
         notify=AsyncMock(),
     )
     monkeypatch.setattr(orchestrator, "_QUANT_DECODE_ALERTED", set())
+    monkeypatch.setattr(orchestrator, "_QUANT_DECODE_ALERT_REASON", {})
     monkeypatch.setattr(orchestrator, "_QUANT_DECODE_REPOLL_FAILURES", {})
     monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=TOURNAMENT_ID))
     monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_participant", mocks.participant)
@@ -292,6 +293,54 @@ class TestRecordQuantDecode:
         decode_sql.notify.assert_awaited_once()
         assert "pending past its deadline" in decode_sql.notify.await_args.args[2]
         decode_sql.persist.assert_not_awaited()
+
+    async def test_overdue_is_measured_from_the_end_of_the_trainers_last_round(self, decode_sql):
+        """The last round starts at upload_retry_until and may send large files for a long time after it."""
+        task = _freeform_task()
+        now = datetime.now(timezone.utc)
+        pending = QuantDecodeResult(
+            upload_pending=True, upload_retry_until=now - timedelta(hours=5), upload_settle_deadline=now + timedelta(minutes=5)
+        )
+
+        assert await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=pending), CONFIG) is False
+        decode_sql.notify.assert_not_awaited()
+
+        overdue = pending.model_copy(
+            update={"upload_settle_deadline": now - orchestrator.QUANT_DECODE_UPLOAD_PENDING_GRACE - timedelta(minutes=1)}
+        )
+        assert await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=overdue), CONFIG) is False
+        decode_sql.notify.assert_awaited_once()
+
+    async def test_a_hold_whose_reason_changes_alerts_again(self, decode_sql):
+        task = _freeform_task()
+
+        for detail in ["minio unreachable", "minio unreachable", "image missing", "image missing"]:
+            log = _task_log(task, decode=QuantDecodeResult(infra_error=detail))
+            await orchestrator._record_quant_decode(_training(task), log, CONFIG)
+
+        assert [call.args[2] for call in decode_sql.notify.await_args_list] == ["minio unreachable", "image missing"]
+
+    async def test_the_same_failure_after_a_pending_upload_alerts_again(self, decode_sql):
+        """A re-run after an alerted failure goes pending and then fails the same way: that is news."""
+        task = _freeform_task()
+        failed = _task_log(task, decode=QuantDecodeResult(infra_error="upload failed"))
+        deadline = datetime.now(timezone.utc) + timedelta(hours=1)
+        pending = _task_log(task, decode=QuantDecodeResult(upload_pending=True, upload_retry_until=deadline))
+
+        for log in [failed, pending, failed, failed]:
+            await orchestrator._record_quant_decode(_training(task), log, CONFIG)
+
+        assert decode_sql.notify.await_count == 2
+
+    async def test_a_settled_decode_forgets_its_alert(self, decode_sql):
+        task = _freeform_task()
+        failed = _task_log(task, decode=QuantDecodeResult(infra_error="minio unreachable"))
+
+        await orchestrator._record_quant_decode(_training(task), failed, CONFIG)
+        assert await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=_ok()), CONFIG) is True
+
+        assert (str(task.task_id), HOTKEY) not in orchestrator._QUANT_DECODE_ALERTED
+        assert (str(task.task_id), HOTKEY) not in orchestrator._QUANT_DECODE_ALERT_REASON
 
     async def test_upload_pending_just_past_its_deadline_still_waits(self, decode_sql):
         task = _freeform_task()

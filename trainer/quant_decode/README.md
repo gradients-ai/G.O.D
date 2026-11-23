@@ -10,7 +10,8 @@ The sandbox that runs a freeform submission's decoder on the trainer, and the ch
 | `output_check.py` | `check_decoded_output`: a numpy-only safetensors reader that checks the decoded tensors against the base model. |
 | `job.py` | `run_freeform_decode`, the end-to-end decode of one submission, and `check_artifact_files`. |
 | `upload.py` | The storage client for decoded files: multipart upload, whole-file retry, and the check that a file is already stored. |
-| `upload_retry.py` | Background retry of a decoded upload that the network keeps failing, and its resume after a trainer restart. |
+| `upload_retry.py` | Background retry of a decoded upload that the network keeps failing, its resume after a trainer restart, and the startup sweep of the work root. |
+| `job_lock.py` | The per-job lock that keeps decodes and upload retries of one job apart, across processes. |
 | `rerun.py` | CLI that re-runs one job's decode from task history. |
 
 ## Phases
@@ -85,17 +86,39 @@ A trainer runs `MAX_CONCURRENT_QUANT_DECODES` decodes at once, and each decoded 
 A decode whose output passed the check, but whose files cannot be uploaded because of a transient error (a dropped connection, a timeout, throttling, a 5xx), does not fail. The job finishes with `quant_decode.upload_pending` set and `upload_retry_until` at the end of the retry window. `upload_retry.py` then retries in the background.
 
 - The decoded files stay in the work directory, next to `pending_upload.json`. The decoder, its build output and the artifact are removed.
+- The files are kept only while the work root's disk has `QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_GB` (default 50) free after that. Below it the failed upload is an `infra_error` at once and the work directory is removed.
 - The retry runs in rounds until `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS` (default 2 hours) after the first failure. A round uploads only the files that are not in storage yet, one attempt per file, and stops at the first file that fails. The wait between rounds doubles from `QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS` to `QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS`, with jitter. The last round starts as the window closes.
 - A file counts as stored when an earlier attempt recorded it, or when storage holds an object of the same size whose `sha256` metadata matches. The second case covers an upload whose final response was lost.
 - Each attempt takes an upload slot. No slot is held between rounds.
-- When a round completes, the result becomes `ok`. When the window closes, or an error turns up that no retry can fix, it becomes `infra_error`. The work directory is removed in both cases, and each round is logged on the job.
+- When a round completes, the result becomes `ok`. When the window closes, or an error turns up that no retry can fix, it becomes `infra_error`. The result is stored on the job first and the work directory removed after it. Each round is logged on the job.
 - A restarted trainer resumes every pending upload it finds in the work root, up to its original deadline. A job stored as `upload_pending` whose files are gone becomes an `infra_error`.
-- A new decode of the same job, or a re-run, replaces the pending upload. The retry it replaces stops and stores nothing.
+- A new decode of the same job, or a re-run, replaces the pending upload. The retry it replaces stops and stores nothing. See [Job lock](#job-lock).
 - `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS=0` turns the background retry off: the failed upload is an `infra_error` at once.
 
-The validator treats `upload_pending` as unsettled. It polls the trainer again and does not alert, unless the trainer still reports the upload as pending two hours after `upload_retry_until`.
+`upload_retry_until` is when the last round starts. `upload_settle_deadline` adds the per-file deadline of every file that round may still send: by then the result is final.
+
+The validator treats `upload_pending` as unsettled. It polls the trainer again and does not alert, unless the trainer still reports the upload as pending 30 minutes after `upload_settle_deadline`.
+
+The task-details endpoint serves an `upload_pending` result only to a caller that sends `accepts_upload_pending=true`. Any other caller gets no decode result while the upload is pending, which a validator without this state reads as "not decoded yet".
 
 While an upload is pending, its bf16 output occupies the work root. Other decodes on the trainer need their own space on top of it.
+
+## Job lock
+
+A decode, a round of the upload retry and the startup sweep each change a job's work directory. Each first takes the job's lock: an exclusive `flock` on `$QUANT_DECODE_WORK_ROOT/.locks/<work dir name>.lock`. The trainer and the re-run CLI both take it, so they never work in the same directory at once. The kernel releases the lock when its holder exits, so a crash leaves nothing locked.
+
+- A decode waits up to `QUANT_DECODE_JOB_LOCK_WAIT_SECONDS` (1 hour) for the lock, then ends as an `infra_error` without touching the directory. It holds the lock until its result is known.
+- A retry round takes the lock without waiting. If the lock is taken, a decode of the job is running and replaces the retry, which stops. Between rounds the lock is free.
+- Under the lock, a round checks that `pending_upload.json` still carries its token: before it starts, after every uploaded file and before it stores a result. A different token means another decode or a restarted trainer owns the directory now, and the round stops without writing anything.
+
+## Startup sweep
+
+When the trainer starts, it goes through the work root (only if it carries the `.god-quant-decode-root` marker):
+
+- a work directory with a pending upload is resumed under a new token;
+- any other work directory is removed, including `<name>.stale-<hex>` leftovers and a decode the restart cut short;
+- a directory whose lock is held is left alone, because the re-run CLI is working in it;
+- lock files without a work directory are removed.
 
 <details>
 <summary>Work directory permissions</summary>
@@ -107,7 +130,7 @@ The trainer owns the work directories, and both phases run as the trainer's uid:
 - The root and every work subdirectory are `0o700`. Files the job writes and the downloaded artifact files are `0o600`.
 - A missing root is created with the marker file `.god-quant-decode-root`. An existing root is adopted only if it has the marker or is empty. A non-empty directory without the marker is never touched, and the decode ends as `infra_error`.
 - Everything the decoder writes is owned by the trainer. `remove_work_tree` restores owner permissions on directories before removing them, and never follows a symlink.
-- `_WorkDirs.create` clears what an earlier attempt left. A leftover it cannot remove is renamed to `<name>.stale-<hex>`. Stale directories are not swept automatically.
+- `_WorkDirs.create` clears what an earlier attempt left. A leftover it cannot remove is renamed to `<name>.stale-<hex>`. Stale directories are removed at the next trainer start.
 - Disk: the root holds the decoder, the artifact and the bf16 output at once. Keep about 3x the largest bf16 model free.
 
 </details>
@@ -118,6 +141,8 @@ The trainer owns the work directories, and both phases run as the trainer's uid:
 Decoded shards go to S3-compatible storage as multipart uploads: 16 MiB parts, 4 in flight. The HTTP client retries each part on connection errors and 429/5xx; when a part still fails on a transient error (dropped connection, TLS EOF, throttling, 5xx) the whole file is uploaded again to the same key, with exponential backoff and jitter, up to 4 attempts. Auth, permission and local-file errors fail at once. Each file has a deadline of 300 s plus its size at 2 MB/s, covering every attempt. A file that still fails on a transient error or runs out of time leaves the upload pending; any other failure is an `infra_error`. The upload uses the S3-compatible storage settings in `.trainer.env` (see [`docs/developer.md`](../../docs/developer.md#running-a-trainer)).
 
 Each object carries the file's sha256 as `sha256` user metadata.
+
+An upload that runs out of time is told to stop: its thread ends before the next slice instead of sending the rest of the file, and minio aborts the multipart upload. A new upload of the same object waits for that thread to leave, so abandoned uploads do not pile up on the link.
 
 The HTTP client keeps its connect timeout on the socket while a request body is sent, and that timeout covers one socket write. A part's body is therefore sent in slices of `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES` (1 MiB): the timeout then limits how long one slice may stall, not how long the whole part takes, so a slow link that keeps moving does not time a part out.
 
@@ -131,7 +156,7 @@ The HTTP client keeps its connect timeout on the socket while a request body is 
 | `QUANT_DECODE_UPLOAD_HTTP_RETRIES` | 5 | HTTP-level retries of one request. |
 | `QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND` | 2,000,000 | Slowest rate the per-file deadline allows for. |
 
-All of them, and the three retry-window settings above, are environment variables read from `.trainer.env` at start.
+All of them, and the retry settings above, are environment variables read from `.trainer.env` at start. A value that is not a number falls back to its default, and one below its minimum (5 MiB parts, 1 part in flight) is raised to it; both log a warning.
 
 </details>
 
@@ -141,7 +166,7 @@ All of them, and the three retry-window settings above, are environment variable
 python -m trainer.quant_decode.rerun <task_id> <hotkey>
 ```
 
-Run it on the trainer that ran the job. It needs the base model in the cache volume and the job in `task_history.json`. It runs the same decode as the training job, stores the result on the job and prints it as JSON. It replaces a pending upload of the same job. If its own upload ends up pending, the command keeps retrying in the foreground for the retry window before it exits.
+Run it on the trainer that ran the job. It needs the base model in the cache volume and the job in `task_history.json`. It runs the same decode as the training job, stores the result on the job and prints it as JSON. It replaces a pending upload of the same job. If the trainer is uploading for that job at that moment, the command waits for the attempt to end first. If its own upload ends up pending, the command keeps retrying in the foreground for the retry window before it exits.
 
 | Exit code | Meaning |
 | --- | --- |

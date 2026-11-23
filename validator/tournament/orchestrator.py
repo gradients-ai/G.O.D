@@ -134,16 +134,19 @@ logger = get_logger(__name__)
 # The seeds only the boss trains and a chained task is released on: the two round inputs and the boss round's input.
 _INPUT_SEED_ROLES = INPUT_SEED_ROLES | frozenset({SeedRole.BOSS_INSTRUCT})
 
-# A trainer that still reports a decoded upload as pending this long after its own retry deadline has
-# most likely stopped retrying: the hold is alerted instead of waiting on. The margin covers the last
-# round, which starts at the deadline and may still be sending large files.
-QUANT_DECODE_UPLOAD_PENDING_GRACE = timedelta(hours=2)
+# The trainer says when its last upload round has run out of time (upload_settle_deadline). A trainer that
+# still reports the upload as pending this long after that has stopped retrying: the hold is alerted instead
+# of waiting on. The margin covers clock skew and a last round that queued for an upload slot.
+QUANT_DECODE_UPLOAD_PENDING_GRACE = timedelta(minutes=30)
 # Persisted as quant_failure for a freeform entrant registered without a decoder snapshot: every
 # repo must carry a decoder/, so this is a scored fail and evaluation never spends a GPU on it.
 NO_DECODER_SNAPSHOT_FAILURE = "no decoder/ snapshot at registration"
 # (task_id, hotkey) pairs already pinged for a held freeform decode. Process-local like
 # tournament_manager's alert sets: the hold re-checks every cycle and would otherwise spam the webhook.
+# A pair is pinged again when the reason for its hold changes, and forgotten once its decode settles or
+# goes back to pending, so a later failure of the same decode is heard too.
 _QUANT_DECODE_ALERTED: set[tuple[str, str]] = set()
+_QUANT_DECODE_ALERT_REASON: dict[tuple[str, str], str] = {}
 # A trainer that keeps failing the decode re-poll has likely vanished; after this many consecutive
 # HTTP failures for one (task_id, hotkey) the hold is alerted instead of retried silently forever.
 QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT = 3
@@ -439,7 +442,8 @@ async def get_training_task_details(trainer_ip: str, task_id: str, hotkey: str) 
         url = f"http://{trainer_ip_with_port}{TASK_DETAILS_ENDPOINT.format(task_id=task_id)}"
         logger.debug(f"Getting task details from trainer at {url} for task {task_id}")
 
-        response = await client.get(url, params={"hotkey": hotkey})
+        # The flag tells the trainer this caller understands a decode result in the upload_pending state.
+        response = await client.get(url, params={"hotkey": hotkey, "accepts_upload_pending": "true"})
         response.raise_for_status()
 
         return TrainerTaskLog.model_validate(response.json())
@@ -1956,13 +1960,25 @@ async def _move_completed_tasks_to_preevaluation(config: Config):
     logger.info(f"Successfully moved {moved} tasks to preevaluation status")
 
 
-async def _hold_quant_decode(task_id: str, hotkey: str, detail: str, config: Config) -> None:
-    """Infra trouble on a freeform decode: never scored, so the task is held and a human pinged once."""
+async def _hold_quant_decode(task_id: str, hotkey: str, detail: str, config: Config, *, reason: str | None = None) -> None:
+    """Infra trouble on a freeform decode: never scored, so the task is held and a human pinged once per reason.
+
+    `reason` identifies the trouble for that dedup; it defaults to `detail`, and is given when the detail
+    changes from poll to poll (a failure count) without the trouble changing.
+    """
     logger.error(f"Holding freeform decode for task {task_id} hotkey {hotkey} (infra, not scored): {detail}")
-    if (task_id, hotkey) in _QUANT_DECODE_ALERTED:
+    key = (task_id, hotkey)
+    reason = detail if reason is None else reason
+    if key in _QUANT_DECODE_ALERTED and _QUANT_DECODE_ALERT_REASON.get(key, reason) == reason:
         return
-    _QUANT_DECODE_ALERTED.add((task_id, hotkey))
+    _QUANT_DECODE_ALERTED.add(key)
+    _QUANT_DECODE_ALERT_REASON[key] = reason
     await notify_quant_decode_infra_error(task_id, hotkey, detail, config.discord_url)
+
+
+def _forget_quant_decode_alert(task_id: str, hotkey: str) -> None:
+    _QUANT_DECODE_ALERTED.discard((task_id, hotkey))
+    _QUANT_DECODE_ALERT_REASON.pop((task_id, hotkey), None)
 
 
 async def _persist_quant_decode(
@@ -1992,6 +2008,7 @@ async def _persist_quant_decode(
         artifact_files=artifact_files,
         decoded_files=decoded_files,
     )
+    _forget_quant_decode_alert(str(task_id), hotkey)
 
 
 async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: TrainerTaskLog, config: Config) -> bool:
@@ -2029,13 +2046,15 @@ async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: 
         await _hold_quant_decode(task_id, hotkey, decode.infra_error, config)
         return False
     if decode.upload_pending:
-        if _upload_pending_overdue(decode):
-            detail = f"the trainer still reports the decoded upload as pending past its deadline {decode.upload_retry_until}"
+        deadline = _upload_pending_deadline(decode)
+        if deadline is not None and datetime.now(timezone.utc) > deadline + QUANT_DECODE_UPLOAD_PENDING_GRACE:
+            detail = f"the trainer still reports the decoded upload as pending past its deadline {deadline}"
             await _hold_quant_decode(task_id, hotkey, detail, config)
         else:
+            _forget_quant_decode_alert(task_id, hotkey)
             logger.info(
                 f"Freeform decode for task {task_id} hotkey {hotkey}: the trainer is still retrying the decoded upload "
-                f"(until {decode.upload_retry_until}); not settled yet"
+                f"(settles by {deadline}); not settled yet"
             )
         return False
     if decode.quant_failure is not None:
@@ -2076,13 +2095,12 @@ async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: 
     return True
 
 
-def _upload_pending_overdue(decode: QuantDecodeResult) -> bool:
-    deadline = decode.upload_retry_until
-    if deadline is None:
-        return False
-    if deadline.tzinfo is None:
+def _upload_pending_deadline(decode: QuantDecodeResult) -> datetime | None:
+    """When the trainer's last upload round has run out of time, in UTC; None when it did not say."""
+    deadline = decode.upload_settle_deadline or decode.upload_retry_until
+    if deadline is not None and deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) > deadline + QUANT_DECODE_UPLOAD_PENDING_GRACE
+    return deadline
 
 
 async def _poll_quant_decode(training_task: TournamentTaskTraining | None, task_id: str, hotkey: str, config: Config) -> bool:
@@ -2098,7 +2116,7 @@ async def _poll_quant_decode(training_task: TournamentTaskTraining | None, task_
         _QUANT_DECODE_REPOLL_FAILURES[key] = failures
         detail = f"could not re-poll the decode from {training_task.trainer_ip} ({failures} consecutive failures): {e}"
         if failures >= QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT:
-            await _hold_quant_decode(task_id, hotkey, detail, config)
+            await _hold_quant_decode(task_id, hotkey, detail, config, reason=f"re-poll of {training_task.trainer_ip} failing")
         else:
             logger.warning(f"Task {task_id} hotkey {hotkey}: {detail}")
         return False

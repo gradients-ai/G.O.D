@@ -82,8 +82,9 @@ class QuantDecodeResult(BaseModel):
 
     quant_failure is the miner's fault and is a scored fail; infra_error is ours (image missing,
     MinIO/HF unreachable, snapshot sha mismatch) and must never be scored. upload_pending is not final: the
-    decode passed its checks and the trainer is still retrying the upload of the decoded files, until about
-    upload_retry_until. It then becomes ok or infra_error.
+    decode passed its checks and the trainer is still retrying the upload of the decoded files. Its last
+    attempt starts at upload_retry_until and has ended by upload_settle_deadline; the result then becomes ok
+    or infra_error.
     """
 
     ok: bool = False
@@ -91,6 +92,7 @@ class QuantDecodeResult(BaseModel):
     infra_error: str | None = None
     upload_pending: bool = False
     upload_retry_until: datetime | None = None
+    upload_settle_deadline: datetime | None = None
     artifact_bytes: int | None = None
     decoder_bytes: int | None = None
     decoder_sha256: str | None = None

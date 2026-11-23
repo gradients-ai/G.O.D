@@ -32,6 +32,7 @@ DECODE = QuantDecodeRequest(
 )
 OK = QuantDecodeResult(ok=True, n_tensors=3, uploaded_files=["model.safetensors", "index.json"])
 INFRA = QuantDecodeResult(infra_error="artifact download failed: hf down")
+PENDING = QuantDecodeResult(upload_pending=True, n_tensors=3, uploaded_files=["model.safetensors"])
 
 
 def _job(decode: QuantDecodeRequest | None) -> TrainerTaskLog:
@@ -119,6 +120,35 @@ async def test_task_details_serves_a_result_written_by_another_process(history, 
     assert (await endpoints.get_task_details("task-1", "hk")).quant_decode == OK
 
 
+async def test_task_details_hides_a_pending_upload_from_a_caller_that_does_not_ask_for_it(history, decode):
+    """A validator that predates the upload_pending state cannot parse it: it gets "no decode result yet"."""
+    history(_job(DECODE).model_copy(update={"quant_decode": PENDING}))
+
+    plain = await endpoints.get_task_details("task-1", "hk")
+    asked = await endpoints.get_task_details("task-1", "hk", accepts_upload_pending=True)
+
+    assert plain.quant_decode is None
+    assert plain.status == TaskStatus.SUCCESS and plain.hotkey == "hk"
+    assert asked.quant_decode == PENDING
+    assert _stored_decode() == PENDING  # only the response is changed
+
+
+async def test_task_details_serves_a_final_result_to_every_caller(history, decode):
+    history(_job(DECODE).model_copy(update={"quant_decode": INFRA}))
+
+    assert (await endpoints.get_task_details("task-1", "hk")).quant_decode == INFRA
+    assert (await endpoints.get_task_details("task-1", "hk", accepts_upload_pending=True)).quant_decode == INFRA
+
+
+async def test_recent_tasks_hides_a_pending_upload(history, decode, monkeypatch):
+    pending_job = _job(DECODE).model_copy(update={"quant_decode": PENDING})
+    monkeypatch.setattr(endpoints, "get_recent_tasks", lambda hours: [pending_job])
+
+    listed = await endpoints.get_recent_tasks_list(1)
+
+    assert [job.quant_decode for job in listed] == [None]
+
+
 async def test_infra_error_is_stored_and_exits_one(history, decode):
     history(_job(DECODE))
     decode.result = INFRA
@@ -128,17 +158,15 @@ async def test_infra_error_is_stored_and_exits_one(history, decode):
     assert _stored_decode() == INFRA
 
 
-PENDING = QuantDecodeResult(upload_pending=True, n_tensors=3, uploaded_files=["model.safetensors"])
-
-
 async def test_pending_upload_is_retried_in_the_foreground_and_its_result_stored(history, decode, monkeypatch, capsys):
     history(_job(DECODE))
     decode.result = PENDING
     stored_while_retrying: list[QuantDecodeResult | None] = []
 
-    async def retry(work_root, task_id, hotkey, report):
+    async def retry(work_root, task_id, hotkey, report, store):
         stored_while_retrying.append(_stored_decode())
         await report("decode: upload not complete")
+        await store(OK)
         return OK
 
     monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
@@ -156,7 +184,8 @@ async def test_pending_upload_that_runs_out_of_window_exits_one(history, decode,
     history(_job(DECODE))
     decode.result = PENDING
 
-    async def retry(work_root, task_id, hotkey, report):
+    async def retry(work_root, task_id, hotkey, report, store):
+        await store(INFRA)
         return INFRA
 
     monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
@@ -169,7 +198,7 @@ async def test_upload_retry_taken_over_by_the_trainer_exits_three(history, decod
     history(_job(DECODE))
     decode.result = PENDING
 
-    async def retry(work_root, task_id, hotkey, report):
+    async def retry(work_root, task_id, hotkey, report, store):
         return None
 
     monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
