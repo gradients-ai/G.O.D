@@ -12,13 +12,18 @@ on:
         required: false
         default: true
         type: boolean
+      only_quant_decoder:
+        description: Build only the quant decoder images (overrides force_all)
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
   group: docker-images-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   detect:
@@ -26,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.changed-images.outputs.has_changes }}
+      quant_decoder: ${{ steps.changed-images.outputs.quant_decoder }}
       matrix: ${{ steps.changed-images.outputs.matrix }}
     steps:
       - name: Checkout
@@ -41,11 +47,12 @@ jobs:
           BEFORE_SHA: ${{ github.event.before }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.sha }}
-          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}
+          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && !inputs.only_quant_decoder }}
+          ONLY_QUANT_DECODER: ${{ github.event_name == 'workflow_dispatch' && inputs.only_quant_decoder }}
         run: |
           set -euo pipefail
 
-          if [[ "${FORCE_ALL}" == "true" ]]; then
+          if [[ "${FORCE_ALL}" == "true" || "${ONLY_QUANT_DECODER}" == "true" ]]; then
             : > changed-files.txt
           elif [[ "${EVENT_NAME}" == "pull_request" ]]; then
             git diff --name-only "${BASE_SHA}" "${HEAD_SHA}" > changed-files.txt
@@ -62,6 +69,7 @@ jobs:
           from pathlib import Path
 
           force_all = os.environ["FORCE_ALL"] == "true"
+          only_quant_decoder = os.environ["ONLY_QUANT_DECODER"] == "true"
           changed_files = [
               line.strip()
               for line in Path("changed-files.txt").read_text().splitlines()
@@ -201,6 +209,13 @@ jobs:
               },
           ]
 
+          # The decoder build image is FROM the decoder run image, so the pair is built
+          # in order by one job instead of as independent matrix entries.
+          quant_decoder_patterns = [
+              "ops/docker/quant-decoder-run.dockerfile",
+              "ops/docker/quant-decoder-build.dockerfile",
+          ]
+
           def is_match(path: str, pattern: str) -> bool:
               if pattern.endswith("/**"):
                   prefix = pattern[:-3]
@@ -220,13 +235,20 @@ jobs:
                       if key not in {"patterns", "exclude_patterns"}
                   })
 
+          quant_decoder = force_all or only_quant_decoder or any(
+              is_match(path, pattern) for path in changed_files for pattern in quant_decoder_patterns
+          )
+
           matrix = {"include": selected}
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"has_changes={str(bool(selected)).lower()}\n")
               output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write(f"quant_decoder={str(quant_decoder).lower()}\n")
 
           if force_all:
               print("Force-all mode selected every configured image.")
+          elif only_quant_decoder:
+              print("Only the quant decoder images were requested.")
           else:
               print("Changed files:")
               for path in changed_files:
@@ -235,6 +257,8 @@ jobs:
           print("Selected images:")
           for image in selected:
               print(f"  {image['id']}: {image['image']}:{image['channel_tag']}")
+          if quant_decoder:
+              print("  quant-decoder: gradientsio/quant-decoder-run:pinned, gradientsio/quant-decoder-build:pinned")
           PY
 
   build:
@@ -284,3 +308,92 @@ jobs:
             ${{ matrix.image }}:sha-${{ github.sha }}
           cache-from: type=gha,scope=${{ matrix.id }}
           cache-to: type=gha,mode=max,scope=${{ matrix.id }},ignore-error=true
+
+  quant-decoder:
+    name: Build quant-decoder
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.quant_decoder == 'true'
+    env:
+      PUSH_IMAGE: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch' }}
+      RUN_IMAGE: gradientsio/quant-decoder-run
+      BUILD_IMAGE: gradientsio/quant-decoder-build
+      LOCAL_RUN_IMAGE: localhost:5000/quant-decoder-run:pinned
+      LOCAL_BUILD_IMAGE: localhost:5000/quant-decoder-build:pinned
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
+          buildkitd-config-inline: |
+            [registry."localhost:5000"]
+              http = true
+
+      - name: Login to Docker Hub
+        if: env.PUSH_IMAGE == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Both images go to a registry local to this job first, so the build image is always
+      # built on the run image from this commit and never on a published one.
+      - name: Build run image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/quant-decoder-run.dockerfile
+          push: true
+          tags: ${{ env.LOCAL_RUN_IMAGE }}
+          cache-from: type=gha,scope=quant-decoder-run
+          cache-to: type=gha,mode=max,scope=quant-decoder-run,ignore-error=true
+
+      - name: Build build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ops/docker/quant-decoder-build.dockerfile
+          build-contexts: |
+            ${{ env.RUN_IMAGE }}:pinned=docker-image://${{ env.LOCAL_RUN_IMAGE }}
+          push: true
+          tags: ${{ env.LOCAL_BUILD_IMAGE }}
+          cache-from: type=gha,scope=quant-decoder-build
+          cache-to: type=gha,mode=max,scope=quant-decoder-build,ignore-error=true
+
+      # Copies the exact images built above, run image first, so a published build image
+      # always has its run image published. Without push rights the copy stays in the local registry.
+      - name: Publish images
+        shell: bash
+        env:
+          SHA_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          prefix=""
+          if [[ "${PUSH_IMAGE}" != "true" ]]; then
+            prefix="localhost:5000/unpublished/"
+          fi
+
+          publish() {
+            local source="$1" target="${prefix}$2"
+            docker buildx imagetools create -t "${target}:pinned" -t "${target}:${SHA_TAG}" "${source}"
+            local source_digest target_digest
+            source_digest="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "${source}")"
+            target_digest="$(docker buildx imagetools inspect --format '{{json .Manifest.Digest}}' "${target}:pinned")"
+            echo "${target}:pinned ${target_digest}"
+            if [[ "${source_digest}" != "${target_digest}" ]]; then
+              echo "::error::${target}:pinned does not match the image built in this run (${source_digest})"
+              exit 1
+            fi
+          }
+
+          publish "${LOCAL_RUN_IMAGE}" "${RUN_IMAGE}"
+          publish "${LOCAL_BUILD_IMAGE}" "${BUILD_IMAGE}"
