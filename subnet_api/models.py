@@ -291,6 +291,7 @@ class ActiveTournamentsResponse(PublicModel):
     text: ActiveTournamentPublic | None = None
     image: ActiveTournamentPublic | None = None
     environment: ActiveTournamentPublic | None = None
+    quant: ActiveTournamentPublic | None = None
 
 
 class NextTournamentInfoPublic(PublicModel):
@@ -309,6 +310,7 @@ class NextTournamentDatesResponse(PublicModel):
     text: NextTournamentInfoPublic | None = None
     image: NextTournamentInfoPublic | None = None
     environment: NextTournamentInfoPublic | None = None
+    quant: NextTournamentInfoPublic | None = None
 
 
 class TournamentHistoryEntryPublic(PublicModel):
