@@ -44,6 +44,7 @@ class Dispatch:
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_training_tasks", AsyncMock(side_effect=self._pending))
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_type_for_task", AsyncMock(side_effect=self._type))
         monkeypatch.setattr(orchestrator.task_sql, "get_tasks_with_status", tasks_with_status)
+        monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=None))
         monkeypatch.setattr(orchestrator, "_process_tasks_for_training", process)
 
     async def _pending(self, psql_db, status):
@@ -59,7 +60,7 @@ class Dispatch:
 
     def add_pending(self, count: int, task_type: TaskType, tournament_type: TournamentType | None) -> None:
         for _ in range(count):
-            self.pending.append(SimpleNamespace(task=self.task(task_type, tournament_type)))
+            self.pending.append(SimpleNamespace(task=self.task(task_type, tournament_type), hotkey="5Miner", priority=2))
 
     async def run(self) -> dict[str, list]:
         """Run one fetch cycle; the tournament tasks handed to training, by bucket."""
