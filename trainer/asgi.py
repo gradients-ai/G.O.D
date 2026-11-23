@@ -17,7 +17,6 @@ load_dotenv(TRAINER_ENV_FILE)
 from core.logging import get_logger
 from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
-from trainer import constants as trainer_cst
 from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
 from trainer.job_state import complete_model_prep
@@ -25,7 +24,6 @@ from trainer.job_state import complete_task
 from trainer.job_state import get_running_jobs
 from trainer.job_state import log_task
 from trainer.monitoring.monitor import start_in_thread as start_gpu_monitor_in_thread
-from trainer.quant_decode import upload_retry
 
 
 logger = get_logger(__name__)
@@ -91,10 +89,6 @@ def factory() -> FastAPI:
     @app.on_event("startup")
     async def startup():
         await cleanup_orphaned_trainer_state()
-        try:
-            await upload_retry.resume_after_restart(trainer_cst.QUANT_DECODE_WORK_ROOT)
-        except Exception:
-            logger.exception("Could not resume pending decoded uploads")
         logger.info("Starting async cleanup loop in a background thread")
         start_cleanup_loop_in_thread()
         logger.info("Starting GPU throttle monitor")

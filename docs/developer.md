@@ -139,15 +139,6 @@ Added by hand:
 | `MODEL_HASH_SALT` | `trainer/model_artifacts.py` | Salt for the anonymous model cache directory names. Keep it secret and stable. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Same value as on the validator. |
 | `TRAINER_PRUNE_BUILD_CACHE` | `trainer/constants.py` | Default `true`. Set `false` to keep the host Docker build cache. |
-| `TRAINER_IMAGE_BUILD_NO_CACHE` | `trainer/constants.py` | Default `false`. Set `true` to build every miner image from scratch. |
-| `TRAINER_IMAGE_BUILD_PULL` | `trainer/constants.py` | Default `false`. Set `true` to check the registry for a newer base image on every build. |
-| `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` | `trainer/constants.py` | Default `24`. A build does not reuse a layer older than this, and the image layer cache is emptied this often. |
-| `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` | `trainer/constants.py` | Default `80`. The image layer cache is emptied when Docker's disk is this full. |
-| `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` | `trainer/constants.py` | Default `45`. Time limit of one miner image build. |
-| `TRAINER_MAX_CONCURRENT_IMAGE_BUILDS`, `TRAINER_MAX_CONCURRENT_UPLOADS`, `TRAINER_MAX_CONCURRENT_QUANT_DECODES` | `trainer/constants.py` | Optional. How many image builds, uploads and freeform decodes run at once. Default `2` each. See [Transfer slots](../trainer/README.md#transfer-slots). |
-| `TRAINER_HF_UPLOAD_TIMEOUT_MINUTES` | `trainer/constants.py` | Optional. Time limit for one model upload. Default `180`. |
-| `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS` | `trainer/constants.py` | Optional. How long a decoded upload that fails on network errors is retried in the background before it counts as an infra error. Default `7200`; `0` turns the retry off. See [Pending uploads](../trainer/quant_decode/README.md#pending-uploads). |
-| `QUANT_DECODE_UPLOAD_PART_BYTES`, `QUANT_DECODE_UPLOAD_PARALLEL`, `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES`, `QUANT_DECODE_UPLOAD_HTTP_*`, `QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND` | `trainer/constants.py` | Optional. Tuning of decoded-file uploads for a slow or lossy link. Defaults and meaning: [`trainer/quant_decode/README.md`](../trainer/quant_decode/README.md#decode-job). |
 | `LOKI_ENDPOINT`, `LOKI_USERNAME`, `LOKI_PASSWORD` | `task deploy-trainer-logs` | Log shipping. See [Observability](#observability). |
 | `DISCORD_WEBHOOK` | `trainer/monitoring/monitor.py` | Optional. Where the GPU monitor posts alerts. See [GPU monitor](#gpu-monitor). |
 

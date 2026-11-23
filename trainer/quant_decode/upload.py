@@ -5,10 +5,6 @@ When a part still fails, minio aborts the multipart upload and raises; if the er
 connection, a TLS EOF, a throttle or a 5xx) the whole file is uploaded again after an exponential backoff with jitter.
 Re-uploading writes the same key, so a retry overwrites and is safe. Anything else (bad credentials, a missing bucket,
 an unreadable local file) fails at once.
-
-A part's body is sent in slices (`_SlicedBody`), so the socket timeout bounds a stall rather than the whole part: a
-slow link that keeps moving never times a part out. Each object carries its sha256 as metadata, which lets a later
-retry confirm a file that is already stored (`is_uploaded`) instead of sending it again.
 """
 
 import asyncio
@@ -18,9 +14,7 @@ import random
 import ssl
 from collections.abc import Awaitable
 from collections.abc import Callable
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import certifi
 import urllib3
@@ -71,20 +65,10 @@ TRANSIENT_NETWORK_ERRORS = (
 )
 
 RetryReporter = Callable[[str], Awaitable[None]]
-SHA256_METADATA_KEY = "sha256"
-SHA256_METADATA_HEADER = f"x-amz-meta-{SHA256_METADATA_KEY}"
-CONTENT_LENGTH_HEADER = "Content-Length"
 
 
 class UploadFailed(Exception):
-    """The file could not be uploaded: a non-transient error, or transient ones on every attempt.
-
-    `transient` is True when the last error was one a later attempt can fix.
-    """
-
-    def __init__(self, message: str, transient: bool = False) -> None:
-        super().__init__(message)
-        self.transient = transient
+    """The file could not be uploaded: a non-transient error, or transient ones on every attempt."""
 
 
 class UploadRetryPolicy(BaseModel):
@@ -101,43 +85,10 @@ class UploadRetryPolicy(BaseModel):
         return ceiling / 2 + random.uniform(0, ceiling / 2)
 
 
-class _SlicedBody:
-    """A request body handed to the socket in slices instead of one write.
-
-    The HTTP client sends a bytes body with a single socket write, and the socket timeout covers that whole write, so
-    a part has to leave within the timeout however steadily it is moving. Sent slice by slice, the timeout applies to
-    each slice. Iterating again starts from the first byte, so the client's own retries resend the full body.
-    """
-
-    def __init__(self, data: bytes, slice_bytes: int) -> None:
-        self._data = data
-        self._slice_bytes = slice_bytes
-
-    def __len__(self) -> int:
-        return len(self._data)
-
-    def __iter__(self) -> Iterator[memoryview]:
-        view = memoryview(self._data)
-        for start in range(0, len(view), self._slice_bytes):
-            yield view[start : start + self._slice_bytes]
-
-
-class _SlicingPoolManager(urllib3.PoolManager):
-    """Sends large bytes bodies as a `_SlicedBody`. Only when the request states its Content-Length: without it the
-    client would switch to chunked transfer encoding, which S3 request signing does not cover."""
-
-    def urlopen(self, method: str, url: str, redirect: bool = True, **kw: Any) -> urllib3.BaseHTTPResponse:
-        body = kw.get("body")
-        slice_bytes = cst.QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES
-        if isinstance(body, bytes) and 0 < slice_bytes < len(body) and CONTENT_LENGTH_HEADER in (kw.get("headers") or {}):
-            kw["body"] = _SlicedBody(body, slice_bytes)
-        return super().urlopen(method, url, redirect=redirect, **kw)
-
-
 def _http_client() -> urllib3.PoolManager:
     """minio's default client with a longer backoff: its own (5 retries, 0.2 s factor) gives up within ~3 s, shorter
     than a typical blip on a long-haul link. Same CA handling as minio's default."""
-    return _SlicingPoolManager(
+    return urllib3.PoolManager(
         timeout=urllib3.Timeout(
             connect=cst.QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS,
             read=cst.QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS,
@@ -166,34 +117,15 @@ _storage = Minio(
 )
 
 
-def put_file(bucket: str, object_name: str, path: Path, sha256: str | None = None) -> None:
-    """One multipart upload of the whole file; raises on any failure (minio aborts the multipart upload first).
-
-    `sha256` is stored as object metadata for `is_uploaded`.
-    """
+def put_file(bucket: str, object_name: str, path: Path) -> None:
+    """One multipart upload of the whole file; raises on any failure (minio aborts the multipart upload first)."""
     _storage.fput_object(
         bucket,
         object_name,
         str(path),
-        metadata=None if sha256 is None else {SHA256_METADATA_KEY: sha256},
         part_size=cst.QUANT_DECODE_UPLOAD_PART_BYTES,
         num_parallel_uploads=cst.QUANT_DECODE_UPLOAD_PARALLEL,
     )
-
-
-def is_uploaded(bucket: str, object_name: str, size_bytes: int, sha256: str) -> bool:
-    """True when the object is stored with this size and this sha256 in its metadata.
-
-    A multipart object exists only once it is complete, so a match means the whole file landed, including when the
-    response to its last request was lost. Any error, or storage that does not return the metadata, reads as False
-    and the file is uploaded again.
-    """
-    try:
-        stat = _storage.stat_object(bucket, object_name)
-    except Exception as e:
-        logger.info(f"decode: could not confirm {object_name} in storage ({describe_error(e)})")
-        return False
-    return stat.size == size_bytes and (stat.metadata or {}).get(SHA256_METADATA_HEADER) == sha256
 
 
 def is_transient(error: Exception) -> bool:
@@ -254,7 +186,6 @@ async def upload_with_retry(
     path: Path,
     report: RetryReporter = _no_report,
     policy: UploadRetryPolicy = UploadRetryPolicy(),
-    sha256: str | None = None,
 ) -> None:
     """Upload `path` to bucket/object_name, retrying the whole file on transient errors. Raises UploadFailed.
 
@@ -262,15 +193,14 @@ async def upload_with_retry(
     """
     for attempt in range(1, policy.attempts + 1):
         try:
-            await asyncio.to_thread(put_file, bucket, object_name, path, sha256)
+            await asyncio.to_thread(put_file, bucket, object_name, path)
             return
         except Exception as e:
             detail = describe_error(e)
             if not is_transient(e):
                 raise UploadFailed(f"upload of {object_name} failed ({detail})") from None
             if attempt == policy.attempts:
-                attempts = f"after {attempt} attempts " if attempt > 1 else ""
-                raise UploadFailed(f"upload of {object_name} failed {attempts}({detail})", transient=True) from None
+                raise UploadFailed(f"upload of {object_name} failed after {attempt} attempts ({detail})") from None
             delay = policy.delay_seconds(attempt)
             message = (
                 f"decode: upload of {path.name} attempt {attempt}/{policy.attempts} failed ({detail}); retrying in {delay:.0f}s"

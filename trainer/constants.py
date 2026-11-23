@@ -60,49 +60,16 @@ QUANT_DECODE_MIN_MEMORY_GB = 8  # memory floor for both decoder sandbox phases
 
 # Timing and retries
 CACHE_CLEANUP_CUTOFF_HOURS = 72
+STALE_TASK_GRACE_MINUTES = 10
 STALE_CONTAINER_MAX_AGE_HOURS = 1  # a created/exited trainer container older than this is removed by cleanup.py
 MODEL_PREP_TIMEOUT_MINUTES = 60
-DOCKER_BUILD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES", "45"))
-# Added to a job's hours for its stale deadline (cleanup.stale_deadline). The clock starts when the job is accepted and
-# restarts when its training container starts, so for a job of well under an hour the grace is what covers the image
-# build. It applies after the restart as well, so a job that hangs after training is noticed that much later.
-STALE_TASK_GRACE_MINUTES = 10 + DOCKER_BUILD_TIMEOUT_MINUTES
-# A build waits this long for a host build cleanup in progress (trainer.image_builds) before it fails as not started.
-BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS = 600
-# Stopping a build (runtime.BuildStepContainers): a step container the daemon has created but not started yet cannot
-# be killed, so the kill is retried until it lands.
-BUILD_STOP_KILL_RETRY_SECONDS = 0.5
-BUILD_STOP_KILL_TIMEOUT_SECONDS = 10
-BUILD_STEP_CONTAINERS_TRACKED = 1000  # most recent step containers remembered per build
+DOCKER_BUILD_TIMEOUT_MINUTES = 30
 
-# Miner images are built with the Docker layer cache, so a retry or a build that starts with the same steps does not
-# download them again. TRAINER_IMAGE_BUILD_NO_CACHE=true builds every image from scratch and empties the cache after
-# every job.
-IMAGE_BUILD_NO_CACHE = os.getenv("TRAINER_IMAGE_BUILD_NO_CACHE", "false").lower() == "true"
-# Ask the registry for a newer base image on every build. Off: a base tag stays at the copy first pulled on this host.
-IMAGE_BUILD_PULL_BASE = os.getenv("TRAINER_IMAGE_BUILD_PULL", "false").lower() == "true"
-# A build never keeps a cached layer made longer ago than this, and the layer cache is emptied (trainer.image_builds)
-# once it has gone this long without being emptied, and whenever the disk under Docker's data directory is at least
-# this full. That disk may hold more than images: if it stays over the limit, the cache is emptied on every cleanup.
-IMAGE_BUILD_CACHE_MAX_AGE_HOURS = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS", "24"))
-IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT", "80"))
-IMAGE_BUILD_CACHE_STATE_PATH = "trainer/image_build_cache_state.json"
-# When the layer cache is emptied, the trainer also runs a host-wide `docker builder prune`, which wipes every other
-# build cache on the host. On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
+# Miner images are always built with no cache (runtime.build_docker_image), so a build never reuses layers from another
+# entrant's build. After each job, and periodically, the trainer also runs a host-wide `docker builder prune`, only while
+# none of its own image builds is in progress (trainer.image_builds). It also wipes every other build cache on the host.
+# On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
 PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
-
-# Heavy transfers share the box's network link, so only a few run at once and the rest queue (trainer/slots.py). Each
-# step's timeout starts once it holds its slot. Image builds pull base images and packages; uploads cover both model
-# uploads to Hugging Face and decoded files to object storage; a freeform decode downloads its artifact and uploads
-# the decoded model.
-MAX_CONCURRENT_IMAGE_BUILDS = int(os.getenv("TRAINER_MAX_CONCURRENT_IMAGE_BUILDS", "2"))
-MAX_CONCURRENT_UPLOADS = int(os.getenv("TRAINER_MAX_CONCURRENT_UPLOADS", "2"))
-MAX_CONCURRENT_QUANT_DECODES = int(os.getenv("TRAINER_MAX_CONCURRENT_QUANT_DECODES", "2"))
-# An upload container that never exits would keep its upload slot for good; this cap, counted from the slot, ends it.
-HF_UPLOAD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_HF_UPLOAD_TIMEOUT_MINUTES", "180"))
-# A queued job is kept clear of the stale-job deadline (cleanup.py), but only for this long: one unbroken wait past it,
-# or more queue time in total, means the queue is stuck and the job is overdue like any other.
-SLOT_WAIT_STALE_EXEMPT_MAX_HOURS = 6
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
 
@@ -144,8 +111,6 @@ QUANT_DECODE_WORK_ROOT = Path(
 )
 QUANT_DECODER_FETCH_SLACK_BYTES = 1024 * 1024  # snapshot download cap = DECODER_MAX_XZ_BYTES + this slack
 QUANT_DECODER_FETCH_TIMEOUT_SECONDS = 60
-# Whole artifact download in the decode job. It runs inside a decode slot, so a stalled one must end.
-QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS = 3600
 # Freeform calibration set (trainer/quant_calibration.py): fetched on the host and handed to the miner as a file.
 QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS = 60
 QUANT_CALIBRATION_FETCH_ATTEMPTS = 3  # fetch, check and write attempts before the job fails without a calibration file
@@ -153,40 +118,26 @@ QUANT_CALIBRATION_RETRY_SLEEP_SECONDS = 5
 QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS = 30  # per attempt, on top of the fetch timeout: parse, fingerprint, write
 QUANT_CALIBRATION_MAX_BYTES = 256 * 1024 * 1024  # the file is ~1,000 tokenised rows; anything larger is not ours
 # Decoded bf16 shards go to S3-compatible storage as multipart uploads; memory in flight is part size x parallel =
-# 64 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
-# connection, which fails the whole file. A part that fails is sent again in full, so smaller parts lose less. S3
-# allows 10,000 parts per object: 16 MiB parts carry files up to ~156 GiB.
-QUANT_DECODE_UPLOAD_PART_BYTES = int(os.getenv("QUANT_DECODE_UPLOAD_PART_BYTES", str(16 * 1024 * 1024)))
-QUANT_DECODE_UPLOAD_PARALLEL = int(os.getenv("QUANT_DECODE_UPLOAD_PARALLEL", "4"))
-# A part's body goes to the socket in slices of this size, so the socket timeout bounds one slice, not the whole part.
-# 0 sends each part in one write, which must then finish within the connect timeout.
-QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES = int(os.getenv("QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", str(1024 * 1024)))
+# 128 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
+# connection, which fails the whole file.
+QUANT_DECODE_UPLOAD_PART_BYTES = 32 * 1024 * 1024
+QUANT_DECODE_UPLOAD_PARALLEL = 4
 # Each request (one part) is retried by the HTTP client on connection errors and 429/5xx, with backoff and jitter.
-QUANT_DECODE_UPLOAD_HTTP_RETRIES = int(os.getenv("QUANT_DECODE_UPLOAD_HTTP_RETRIES", "5"))
+QUANT_DECODE_UPLOAD_HTTP_RETRIES = 5
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_FACTOR = 1.0  # urllib3: sleeps 0, 2, 4, 8, 16 s between retries
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_MAX_SECONDS = 30
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_JITTER_SECONDS = 1.0
-# Connecting, and each socket write while the request body is sent (the HTTP client keeps this timeout on the socket
-# until the body is out).
-QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS", "30"))
+QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = 30
 # Waiting for a response once the body is sent: seconds for a part; the complete call is the slow one. Kept short so
 # a stalled request leaves room in the file deadline for a whole-file retry.
-QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS", "90"))
+QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = 90
 # When a file still fails on a transient error, the whole file is uploaded again (same key, so it overwrites) after
 # an exponential backoff with jitter, up to this many attempts and always within the file's deadline below.
 QUANT_DECODE_UPLOAD_ATTEMPTS = 4
 QUANT_DECODE_UPLOAD_RETRY_BASE_SECONDS = 10
 QUANT_DECODE_UPLOAD_RETRY_MAX_SECONDS = 60
 QUANT_DECODE_UPLOAD_MIN_TIMEOUT_SECONDS = 300  # per-file deadline floor
-# Per-file deadline: floor + size at this rate.
-QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = int(os.getenv("QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND", str(2 * 1000 * 1000)))
-# When the decoded files still cannot be uploaded for a transient reason, the job finishes and the upload is retried
-# in the background (trainer/quant_decode/upload_retry.py): one attempt per missing file per round, rounds spaced by
-# an exponential backoff with jitter between the base and the cap, until this long after the first failure. Only then
-# is the decode an infra_error. The decoded files stay on disk meanwhile. 0 turns the background retry off.
-QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", str(2 * 60 * 60)))
-QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS", "60"))
-QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS", "900"))
+QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = 2 * 1000 * 1000  # per-file deadline: floor + size at this rate
 QUANT_ARTIFACT_FORBIDDEN_SUFFIXES = (
     ".py",
     ".pyc",

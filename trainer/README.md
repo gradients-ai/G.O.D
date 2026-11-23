@@ -24,44 +24,17 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `quant_decode/` | Sandbox that runs a freeform decoder, the decoded-output check and the re-run CLI. |
 | `quant_upload_check.py` | Checks a compression task's output against its `quant_manifest.json` before upload. |
 | `runtime.py` | Docker orchestration: download, model prep, image build, training, upload, decode. |
-| `slots.py` | Caps on concurrent image builds, uploads and freeform decodes. |
 | `telemetry.py` | Logging setup. |
 | `training_config.py` | Writes training config files and reward function files. |
 | `training_paths.py` | Paths used inside training containers. |
 
 ## Image builds
 
-- Miner images are built with the Docker layer cache. A build reuses a layer only where it has the same parent layer and the same instruction, and for `COPY` and `ADD` the same file contents. A retry resumes after its last finished step, and a build that starts with the same steps as an earlier one skips them.
-- A build never keeps a layer made more than `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` ago (default 24), so a step whose result changes over time, such as an install without pinned versions, is not reused for longer. A build that takes such a layer from the cache is stopped and run again without the cache, inside the same time limit. Later builds reuse the new layers.
-- `TRAINER_IMAGE_BUILD_NO_CACHE=true` builds every image from scratch and empties the cache after every job.
-- A base image tag stays at the copy first pulled on the host. `TRAINER_IMAGE_BUILD_PULL=true` asks the registry for a newer one on every build.
-- A build has `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` (default 45). The stale-job grace is 10 minutes more than that.
+- Miner images are built with no cache, so one entrant's build never reuses another's layers.
 - A build whose step failed is detected by the missing image tag. The job fails at the build stage with `Docker image build failed: no image ...`.
-- A build that exceeds `DOCKER_BUILD_TIMEOUT_MINUTES`, or whose job is cancelled, is stopped on the daemon: the trainer kills the build's running step container, and any step the build starts afterwards. A step container that is created but not yet started is retried for `BUILD_STOP_KILL_TIMEOUT_SECONDS`.
-- A build waits at most `BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS` for a host build cleanup in progress, then fails as not started.
 - Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
-- After each job the image's tag and top layer are removed. The layers under it stay as dangling images: they are the layer cache, together with the finished steps of failed and timed-out builds.
-- The cache is emptied all at once to give its disk back, by removing every dangling image. This happens when it has not been emptied for `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS`, or when the disk under Docker's data directory is at least `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` full (default 80). Layers under the image of a running job stay until that job ends. The time it was last emptied is kept in `trainer/image_build_cache_state.json`, so a restart does not extend it.
-- The disk limit counts everything on that disk, not only images. If the disk is still over the limit after the cache was emptied, the trainer logs a warning: the cache is then emptied on every cleanup and builds reuse little. Free the disk or raise the limit.
-- The check runs after each job and in the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
-- Emptying the cache also runs the host-wide BuildKit cache prune while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
-
-## Transfer slots
-
-Jobs on one trainer share its network link, so `slots.py` lets only a few heavy transfers run at once. The rest queue in arrival order.
-
-| Pool | Default | Variable | Held for |
-| --- | --- | --- | --- |
-| Image builds | 2 | `TRAINER_MAX_CONCURRENT_IMAGE_BUILDS` | one miner image build |
-| Uploads | 2 | `TRAINER_MAX_CONCURRENT_UPLOADS` | one model upload to Hugging Face, or one decoded file to object storage |
-| Freeform decodes | 2 | `TRAINER_MAX_CONCURRENT_QUANT_DECODES` | one whole decode; each decoded file also takes an upload slot |
-
-- A step's time limit starts once it holds its slot: the build timeout, the per-file upload deadline and the decode phase caps never include queue time. A model upload is cut off `TRAINER_HF_UPLOAD_TIMEOUT_MINUTES` (default 180) after it gets its slot, so a stuck uploader cannot keep a slot.
-- A queued job stays `TRAINING`. Its job log gets `Waiting for <pool> slot ...` and then `Got <pool> slot after waiting Ns`.
-- The stale timeout skips a job while it is queued, and is extended by the time it has queued since its container started. Both stop at `SLOT_WAIT_STALE_EXEMPT_MAX_HOURS`.
-- A decoded-file upload that times out gives its slot back while its thread is still sending, until the request in flight ends.
-- The pools live in the trainer process. The decode re-run CLI is a separate process and does not queue behind running jobs.
-- The limits are read at start, so a change needs a trainer restart.
+- After each job the image is removed. Dangling images are pruned after each job and by the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
+- The host-wide BuildKit cache prune runs while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
 
 ## CPU and memory shares
 
@@ -97,7 +70,7 @@ A compression job runs a `QuantFixedTask` or a `QuantFreeformTask`. Its uploaded
 
 Any rejection by the check (`quant output rejected: ...`) is a training failure with no upload and no decode. The size cap is `QUANT_ARTIFACT_MAX_BYTES_MULTIPLIER` x the base model's bf16 bytes. It is skipped, with a warning, when the base model is unreadable.
 
-The decode outcome is stored on `TrainerTaskLog.quant_decode` and never changes training success. When the network keeps failing the upload of the decoded files, the job still finishes: the outcome is `upload_pending` and the trainer retries the upload in the background, also across a restart. `cleanup.py` extends the stale deadline of such jobs by `QUANT_DECODE_GRACE_MINUTES`. See [`quant_decode/README.md`](quant_decode/README.md).
+The decode outcome is stored on `TrainerTaskLog.quant_decode` and never changes training success. `cleanup.py` extends the stale deadline of such jobs by `QUANT_DECODE_GRACE_MINUTES`. See [`quant_decode/README.md`](quant_decode/README.md).
 
 <details>
 <summary>Output ownership</summary>
