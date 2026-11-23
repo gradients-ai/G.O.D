@@ -5,6 +5,9 @@ from core.models.task_models import TaskType
 TRAIN_TEST_SPLIT_PERCENTAGE = 0.1
 MAX_TEST_DATA_POINTS = 1000
 
+# Hub metadata lookups (model_info) must not hang a caller on a stalled connection.
+HF_MODEL_INFO_TIMEOUT_SECONDS = 10
+
 # Calibration set carved from the train side of a compression (fixed or freeform) task's split (see calibration.py).
 QUANT_CALIBRATION_MIN_ROWS = 250
 QUANT_CALIBRATION_TARGET_TOKENS = 50_000  # supervised (completion) tokens

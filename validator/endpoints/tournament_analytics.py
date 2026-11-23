@@ -403,7 +403,8 @@ async def get_tournament_gpu_requirements(
         gpu_requirements: Dict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0, "total_hours": 0.0})
 
         for task in unfinished_tasks:
-            gpu_req = get_task_gpu_requirement(task)
+            # May look the model up on the Hub (blocking I/O); keep it off the event loop.
+            gpu_req = await asyncio.to_thread(get_task_gpu_requirement, task)
             gpu_type = gpu_req.value
 
             hours = float(task.hours_to_complete) if task.hours_to_complete else 1.0
