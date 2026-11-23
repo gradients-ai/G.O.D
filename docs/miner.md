@@ -104,7 +104,7 @@ The held-out split used for scoring is never given to your container.
 
 | Limit | Value |
 | --- | --- |
-| Image build | 45 minute limit. Layers are cached on the trainer for up to a day: a step is reused when the layer below it and the instruction (for `COPY` and `ADD`, the file contents) are unchanged. Pin versions if a step must not reuse an earlier result. The build context is a fresh clone of your repository, and its `.git` directory differs between clones: `COPY . .` and every step after it are not reused unless `.git` is in your `.dockerignore`, so put the heavy installs before it. |
+| Image build | No layer cache, 30 minute limit. |
 | GPUs | H100s, and only those assigned to the task. Counts are in the guides. |
 | Memory | An equal share of the host's RAM per GPU, after a reserve for the host (10%, at least 16 GB). |
 | CPU | An equal share of the host's physical cores per GPU, pinned (`cpuset`), local to the GPU where the host reports it. A small reserve stays with the host. No other job runs on these cores. |

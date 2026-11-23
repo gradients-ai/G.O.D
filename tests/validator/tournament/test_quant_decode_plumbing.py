@@ -7,8 +7,6 @@ trouble and a snapshot mismatch hold the task and alert once per (task, hotkey),
 
 import uuid
 from datetime import datetime
-from datetime import timedelta
-from datetime import timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import MagicMock
@@ -242,64 +240,6 @@ class TestRecordQuantDecode:
         assert first is False and second is False
         decode_sql.persist.assert_not_awaited()
         decode_sql.notify.assert_awaited_once_with(str(task.task_id), HOTKEY, "minio unreachable", CONFIG.discord_url)
-
-    async def test_upload_pending_is_unsettled_and_never_alerted_or_persisted(self, decode_sql):
-        task = _freeform_task()
-        deadline = datetime.now(timezone.utc) + timedelta(hours=1)
-        pending = QuantDecodeResult(upload_pending=True, upload_retry_until=deadline, decoder_sha256=DECODER_SHA)
-        log = _task_log(task, decode=pending)
-
-        first = await orchestrator._record_quant_decode(_training(task), log, CONFIG)
-        second = await orchestrator._record_quant_decode(_training(task), log, CONFIG)
-
-        assert first is False and second is False
-        decode_sql.notify.assert_not_awaited()
-        decode_sql.persist.assert_not_awaited()
-
-    async def test_upload_pending_then_ok_settles_on_a_later_poll(self, decode_sql):
-        task = _freeform_task()
-        pending = QuantDecodeResult(upload_pending=True, upload_retry_until=datetime.now(timezone.utc) + timedelta(hours=1))
-
-        assert await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=pending), CONFIG) is False
-        assert await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=_ok()), CONFIG) is True
-
-        decode_sql.persist.assert_awaited_once()
-        decode_sql.notify.assert_not_awaited()
-
-    async def test_upload_pending_then_infra_error_alerts(self, decode_sql):
-        task = _freeform_task()
-        pending = QuantDecodeResult(upload_pending=True, upload_retry_until=datetime.now(timezone.utc) + timedelta(hours=1))
-        failed = QuantDecodeResult(infra_error="upload failed; gave up after retrying for 120 min")
-
-        await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=pending), CONFIG)
-        settled = await orchestrator._record_quant_decode(_training(task), _task_log(task, decode=failed), CONFIG)
-
-        assert settled is False
-        decode_sql.notify.assert_awaited_once()
-        assert "gave up" in decode_sql.notify.await_args.args[2]
-
-    @pytest.mark.parametrize("naive", [False, True])
-    async def test_upload_pending_long_past_its_deadline_alerts(self, decode_sql, naive):
-        task = _freeform_task()
-        deadline = datetime.now(timezone.utc) - orchestrator.QUANT_DECODE_UPLOAD_PENDING_GRACE - timedelta(minutes=1)
-        if naive:
-            deadline = deadline.replace(tzinfo=None)
-        log = _task_log(task, decode=QuantDecodeResult(upload_pending=True, upload_retry_until=deadline))
-
-        settled = await orchestrator._record_quant_decode(_training(task), log, CONFIG)
-
-        assert settled is False
-        decode_sql.notify.assert_awaited_once()
-        assert "pending past its deadline" in decode_sql.notify.await_args.args[2]
-        decode_sql.persist.assert_not_awaited()
-
-    async def test_upload_pending_just_past_its_deadline_still_waits(self, decode_sql):
-        task = _freeform_task()
-        deadline = datetime.now(timezone.utc) - timedelta(minutes=1)
-        log = _task_log(task, decode=QuantDecodeResult(upload_pending=True, upload_retry_until=deadline))
-
-        assert await orchestrator._record_quant_decode(_training(task), log, CONFIG) is False
-        decode_sql.notify.assert_not_awaited()
 
     async def test_no_result_without_snapshot_is_scored_fail(self, decode_sql):
         decode_sql.participant.return_value = _participant(with_snapshot=False)

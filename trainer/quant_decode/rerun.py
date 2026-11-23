@@ -8,41 +8,26 @@ Runs the same decode as the training job (`trainer.runtime.freeform_decode_resul
 presigned decoder snapshot URL in the stored request expires 7 days after the task was dispatched; past that the
 re-run itself ends in an infra_error.
 
-The re-run is its own process, so it does not take one of the running trainer's decode or upload slots
-(trainer/slots.py): it starts at once and shares the network link with whatever the trainer is transferring.
-
-A re-run replaces a pending upload of the same job: the trainer's background retry for it stops. When the re-run's
-own upload fails for a transient reason, the command keeps retrying it in the foreground for the retry window
-(trainer/quant_decode/upload_retry.py) before it exits. If the trainer restarts meanwhile, the trainer takes the
-retry over and the command exits 3.
-
 Exit codes: 0 when the decode produced ok or quant_failure, 1 on infra_error, 2 when the job is unknown or has no
-decode request, 3 when a restarted trainer took over the upload retry.
+decode request.
 """
 
 import argparse
 import asyncio
 import sys
 
-import trainer.constants as cst
 from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
 from trainer.job_state import get_task
 from trainer.job_state import load_task_history
 from trainer.job_state import update_quant_decode_result
-from trainer.quant_decode import upload_retry
 from trainer.runtime import freeform_decode_result
 
 
 EXIT_DECODED = 0
 EXIT_INFRA_ERROR = 1
 EXIT_NOT_RERUNNABLE = 2
-EXIT_UPLOAD_TAKEN_OVER = 3
-
-
-async def _print_progress(message: str) -> None:
-    print(message, file=sys.stderr)
 
 
 def _proxy_request(job: TrainerTaskLog) -> TrainerProxyRequest:
@@ -69,13 +54,6 @@ async def rerun_decode(task_id: str, hotkey: str) -> int:
 
     result = await freeform_decode_result(_proxy_request(job))
     await update_quant_decode_result(task_id, hotkey, result)
-    if result.upload_pending:
-        print(upload_retry.result_message(result), file=sys.stderr)
-        result = await upload_retry.retry_pending_upload(cst.QUANT_DECODE_WORK_ROOT, task_id, hotkey, _print_progress)
-        if result is None:
-            print("the trainer took over the upload retry; its result will be stored on the job", file=sys.stderr)
-            return EXIT_UPLOAD_TAKEN_OVER
-        await update_quant_decode_result(task_id, hotkey, result)
     print(result.model_dump_json(indent=2))
     return EXIT_INFRA_ERROR if result.infra_error is not None else EXIT_DECODED
 
