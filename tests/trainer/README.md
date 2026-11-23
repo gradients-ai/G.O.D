@@ -17,7 +17,8 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_gpu_health.py` | NVML fallback checks: ECC, NVLink and Xid. |
 | `test_gpu_monitor_startup.py` | The GPU monitor starts with the trainer app. |
 | `test_gpu_throttle.py` | Clock-throttle rules and the fault marker in training logs. |
-| `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
+| `test_image_build_cache.py` | Miner image builds reuse the layer cache unless `TRAINER_IMAGE_BUILD_NO_CACHE` is set. A build on a too-old layer is stopped and run again without the cache. The cache is kept between jobs and emptied by age or disk use. The build timeout default and override. |
+| `test_image_build_cleanup.py` | With the cache off, builds use no cache and leave no intermediate containers. Cleanup waits for builds in progress. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
 | `test_job_state_started_at.py` | `started_at` is refreshed when a training container starts. |
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |
 | `test_output_reclaim.py` | Output reclaim container spec and runner against a fake Docker client. |
