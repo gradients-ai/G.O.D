@@ -569,6 +569,11 @@ SEED_INPUT_LARGE_SIZE_B = (4.0, 8.0)
 # Model-size bands in B params of text rounds 1 and 2, inside QUANT_MODEL_SIZE_B; round 3 uses SEED_INPUT_LARGE_SIZE_B.
 TEXT_R1_SIZE_B = (1.0, 2.0)
 TEXT_R2_SIZE_B = (1.5, 4.0)
+# Text seed roles that never share a model: a draw for one skips the model of every other live one. Models are compared by
+# name without the org, case-insensitively, so one checkpoint published under two orgs is the same model.
+TEXT_SEED_DISTINCT_MODEL_ROLES = frozenset({SeedRole.TEXT_R1, SeedRole.TEXT_R2})
+# Pool models such a draw skips before it takes the next one anyway (a pool holding little else), with a warning.
+TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS = 50
 # The one switch for the 7-8B case: when True the large input seed draws from the small band instead.
 SEED_INPUT_LARGE_FALLS_BACK_TO_SMALL = False
 # Replacements per role after a seed fails in training (the boss's row failed, a FAILURE status, a non-full-model output, an
