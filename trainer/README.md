@@ -79,7 +79,7 @@ A compression job runs a `QuantFixedTask` or a `QuantFreeformTask`. Its uploaded
 
 Any rejection by the check (`quant output rejected: ...`) is a training failure with no upload and no decode. The size cap is `QUANT_ARTIFACT_MAX_BYTES_MULTIPLIER` x the base model's bf16 bytes. It is skipped, with a warning, when the base model is unreadable.
 
-The decode outcome is stored on `TrainerTaskLog.quant_decode` and never changes training success. `cleanup.py` extends the stale deadline of such jobs by `QUANT_DECODE_GRACE_MINUTES`. See [`quant_decode/README.md`](quant_decode/README.md).
+The decode outcome is stored on `TrainerTaskLog.quant_decode` and never changes training success. When the network keeps failing the upload of the decoded files, the job still finishes: the outcome is `upload_pending` and the trainer retries the upload in the background, also across a restart. `cleanup.py` extends the stale deadline of such jobs by `QUANT_DECODE_GRACE_MINUTES`. See [`quant_decode/README.md`](quant_decode/README.md).
 
 <details>
 <summary>Output ownership</summary>
