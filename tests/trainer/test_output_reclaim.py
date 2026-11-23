@@ -11,6 +11,7 @@ import trainer.constants as cst
 from trainer import output_reclaim
 from trainer.output_reclaim import SYMLINKED_OUTPUT_FAILURE
 from trainer.output_reclaim import OutputReclaimError
+from trainer.output_reclaim import clear_job_checkpoints
 from trainer.output_reclaim import reclaim_output_dir
 
 
@@ -123,3 +124,39 @@ async def test_timeout_kills_and_raises(monkeypatch):
         await _reclaim(client)
     assert client.container.killed.is_set() and client.container.removed
     await asyncio.sleep(0)
+
+
+async def test_clear_empties_only_the_jobs_own_directory(tmp_path):
+    client = FakeClient()
+
+    await clear_job_checkpoints(client, tmp_path)
+
+    kwargs = client.kwargs
+    assert kwargs["volumes"] == {str(tmp_path): {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"}}
+    assert kwargs["entrypoint"] == ["/bin/sh", "-c", output_reclaim.CLEAR_SCRIPT, "clear"]
+    assert kwargs["command"] == [cst.OUTPUT_CHECKPOINTS_PATH]
+    assert "-mindepth 1 -delete" in output_reclaim.CLEAR_SCRIPT
+    assert kwargs["user"] == "0"
+    assert kwargs["cap_drop"] == ["ALL"]
+    assert kwargs["cap_add"] == ["DAC_OVERRIDE", "FOWNER"]
+    assert kwargs["security_opt"] == ["no-new-privileges"]
+    assert kwargs["network_disabled"] is True
+    assert kwargs["read_only"] is True
+    assert kwargs["name"].startswith(cst.TRAINER_CONTAINER_NAME_PREFIXES)
+    assert client.container.removed
+
+
+async def test_clear_of_a_directory_that_does_not_exist_starts_no_container(tmp_path):
+    client = FakeClient()
+
+    await clear_job_checkpoints(client, tmp_path / "task-1" / "hk")
+
+    assert client.kwargs is None
+
+
+async def test_failed_clear_raises_with_the_log_tail(tmp_path):
+    client = FakeClient(exit_code=1, logs=b"find: cannot delete 'x': Operation not permitted\n")
+
+    with pytest.raises(OutputReclaimError, match="job directory clear exited 1: find: cannot delete"):
+        await clear_job_checkpoints(client, tmp_path)
+    assert client.container.removed

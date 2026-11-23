@@ -63,6 +63,7 @@ from trainer.job_state import update_quant_decode_result
 from trainer.job_state import update_training_started_at
 from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
+from trainer.output_reclaim import clear_job_checkpoints
 from trainer.output_reclaim import reclaim_output_dir
 from trainer.quant_calibration import write_quant_calibration_file
 from trainer.quant_decode.job import run_freeform_decode
@@ -981,6 +982,12 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             raise RuntimeError(f"Image build failed: {exc}")
 
         await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
+
+        # A new attempt starts from an empty directory of its own, whatever an earlier attempt left there.
+        docker_client = docker.from_env()
+        await clear_job_checkpoints(
+            docker_client, job_checkpoints_host_dir(docker_client, training_data.task_id, task.hotkey)
+        )
 
         env_server_url_str = None
         if task_type == TaskType.ENVIRONMENTTASK:

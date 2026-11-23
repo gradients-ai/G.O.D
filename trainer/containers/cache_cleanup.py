@@ -9,6 +9,7 @@ from pathlib import Path
 
 from trainer import constants as cst
 from trainer.model_artifacts import get_anonymous_model_dir
+from trainer.path_names import is_plain_path_component
 
 
 TASK_HISTORY_FILE = Path(cst.TASKS_FILE_PATH)
@@ -60,20 +61,30 @@ def load_task_history() -> list[dict]:
 
 def clean_checkpoints(task_history: list[dict]):
     """Delete a task's directory on the checkpoints volume, which holds one directory per job of that task, once
-    every job for that task id finished over CUTOFF_HOURS ago."""
+    every job for that task id finished over CUTOFF_HOURS ago.
+
+    A task id that is not one plain directory name is skipped, so nothing outside the volume is ever named. A directory
+    written within CUTOFF_HOURS is kept too: it may belong to a job accepted after this run read the task history.
+    """
     task_id_to_times: dict[str, list[str | None]] = {}
 
     for task in task_history:
         task_id = task.get("training_data", {}).get("task_id")
-        if not task_id:
+        if not is_plain_path_component(task_id):
             continue
         finished_at = task.get("finished_at")
         task_id_to_times.setdefault(task_id, []).append(finished_at)
 
+    dir_cutoff = time.time() - CUTOFF_HOURS * 3600
     for task_id, finished_list in task_id_to_times.items():
 
         if all(is_older_than(finished_at, CUTOFF_HOURS) for finished_at in finished_list):
             target = Path(CHECKPOINTS_DIR, task_id)
+            try:
+                if _last_write_time(target) > dir_cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
             print(f"Deleting checkpoints for task {task_id} at {target}")
             shutil.rmtree(target, ignore_errors=True)
 

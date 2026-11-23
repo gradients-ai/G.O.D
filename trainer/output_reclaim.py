@@ -13,6 +13,7 @@ also clears any setuid/setgid bit a miner set.
 """
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 
@@ -39,6 +40,11 @@ RECLAIM_SCRIPT = (
     'chown -R -P "$owner" "$out"; '
     'chmod -R u+rwX "$out"'
 )
+
+
+# $1 = the job's directory (container path). Removes everything in it and keeps the directory, which is the mount.
+# find -delete never follows a symlink.
+CLEAR_SCRIPT = 'set -eu; find "$1" -mindepth 1 -delete'
 
 
 class OutputReclaimError(Exception):
@@ -72,6 +78,16 @@ def reclaim_spec(task_id: str, repo_name: str, owner: str, checkpoints_source: s
         entrypoint=["/bin/sh", "-c", RECLAIM_SCRIPT, "reclaim"],
         command=[output_path, owner],
         volumes={checkpoints_source: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"}},
+    )
+
+
+def clear_spec(checkpoints_source: str) -> ReclaimContainerSpec:
+    """checkpoints_source is the host path of the job's directory on the checkpoints volume, the only thing mounted."""
+    return ReclaimContainerSpec(
+        entrypoint=["/bin/sh", "-c", CLEAR_SCRIPT, "clear"],
+        command=[cst.OUTPUT_CHECKPOINTS_PATH],
+        volumes={checkpoints_source: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"}},
+        cap_add=cst.JOB_DIR_CLEAR_CAPS,
     )
 
 
@@ -127,5 +143,28 @@ async def reclaim_output_dir(
             detail = sanitize_failure(logs.decode("utf-8", errors="ignore"))
             raise OutputReclaimError(f"output reclaim exited {exit_code}: {detail}")
         return None
+    finally:
+        await _remove(container)
+
+
+async def clear_job_checkpoints(client: docker.DockerClient, job_dir: Path) -> None:
+    """Empty a job's directory on the checkpoints volume before the job's training container starts.
+
+    An earlier attempt of the same job leaves root-owned files, and after a reclaim an output dir owned by the trainer
+    that the next training container (root, no capabilities) could not write to. The trainer cannot delete the root-owned
+    part itself, so one short container does. A directory that does not exist yet needs nothing.
+    Raises OutputReclaimError when the container could not run or did not finish cleanly.
+    """
+    if not os.path.lexists(job_dir):
+        return
+    try:
+        exit_code, container = await _run(client, clear_spec(str(job_dir)))
+    except DockerException as e:
+        raise OutputReclaimError(f"job directory clear container error: {sanitize_failure(str(e))}") from None
+    try:
+        if exit_code != 0:
+            logs = await asyncio.to_thread(container.logs, stdout=True, stderr=True, tail=cst.OUTPUT_RECLAIM_LOG_TAIL_LINES)
+            detail = sanitize_failure(logs.decode("utf-8", errors="ignore"))
+            raise OutputReclaimError(f"job directory clear exited {exit_code}: {detail}")
     finally:
         await _remove(container)

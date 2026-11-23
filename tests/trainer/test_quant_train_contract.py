@@ -174,6 +174,7 @@ class Recorder:
         self.train_container: FakeTrainContainer = FakeTrainContainer()
         self.docker_client: FakeDockerClient | None = None
         self.reclaims: list[dict] = []
+        self.cleared: list[Path] = []
         self.reclaim_outcome: str | Exception | None = None
         self.calibration_calls: list[tuple] = []
         self.calibration_failure: Exception | None = None
@@ -214,6 +215,9 @@ def recorder(monkeypatch, tmp_path: Path) -> Recorder:
             raise rec.reclaim_outcome
         return rec.reclaim_outcome
 
+    async def clear(client, job_dir):
+        rec.cleared.append(job_dir)
+
     async def write_calibration(task_id, hotkey, request, volume_dir):
         rec.calibration_calls.append((task_id, hotkey, request, volume_dir))
         if rec.calibration_failure:
@@ -237,6 +241,7 @@ def recorder(monkeypatch, tmp_path: Path) -> Recorder:
     monkeypatch.setattr(runtime, "update_training_started_at", _noop)
     monkeypatch.setattr(runtime, "upload_repo_to_hf", upload)
     monkeypatch.setattr(runtime, "reclaim_output_dir", reclaim)
+    monkeypatch.setattr(runtime, "clear_job_checkpoints", clear)
     monkeypatch.setattr(runtime, "log_task", log)
     monkeypatch.setattr(runtime, "complete_task", complete)
     monkeypatch.setattr(runtime, "run_freeform_decode", decode)
@@ -484,6 +489,20 @@ async def test_quant_output_is_reclaimed_before_the_check(recorder: Recorder, qu
     job_dir = str(tmp_path / "task-1" / "hk")
     assert recorder.reclaims == [{"task_id": "task-1", "repo_name": "repo-1", "checkpoints_source": job_dir}]
     assert recorder.completed == [True]
+
+
+async def test_job_dir_is_cleared_before_the_training_container_starts(recorder: Recorder, monkeypatch, tmp_path: Path):
+    cleared_at_start: list[list[Path]] = []
+
+    async def run_text(**kwargs):
+        cleared_at_start.append(list(recorder.cleared))
+        return recorder.train_container
+
+    monkeypatch.setattr(runtime, "run_trainer_container_text", run_text)
+
+    await runtime.start_training_task(_instruct_request(), "/repo")
+
+    assert cleared_at_start == [[tmp_path / "task-1" / "hk"]]
 
 
 async def test_instruct_job_is_never_reclaimed(recorder: Recorder):

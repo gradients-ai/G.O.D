@@ -1,23 +1,29 @@
 """A job's containers mount only that job's directory of the checkpoints volume, and the shared cache read-only."""
 
 import asyncio
+import os
+import time
 from datetime import datetime
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 import trainer.constants as cst
 from core.models.dataset_models import FileFormat
 from core.models.dataset_models import InstructTextDatasetType
 from core.models.task_models import TaskType
 from trainer import cleanup
+from trainer import endpoints
 from trainer import runtime
 from trainer.containers import cache_cleanup
 from trainer.job_checkpoints import JobCheckpointsError
 from trainer.job_checkpoints import job_checkpoints_host_dir
 from trainer.job_checkpoints import job_checkpoints_subdir
 from trainer.job_checkpoints import job_checkpoints_volume
+from trainer.job_checkpoints import mounts_whole_checkpoints_volume
 from trainer.training_paths import get_checkpoints_output_path
 
 
@@ -207,6 +213,60 @@ def test_symlinked_job_or_task_dir_is_refused(client: FakeDockerClient, tmp_path
         job_checkpoints_volume(client, TASK_ID, HOTKEY_A)
 
 
+def test_task_dir_that_is_a_file_is_refused(client: FakeDockerClient):
+    _job_dir(client, HOTKEY_A).parent.write_text("not a directory")
+
+    with pytest.raises(JobCheckpointsError, match="the task directory .* is not a directory"):
+        job_checkpoints_volume(client, TASK_ID, HOTKEY_A)
+
+
+def test_task_dir_that_cannot_be_inspected_is_refused_with_a_clear_error(client: FakeDockerClient, monkeypatch):
+    def denied(path):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "lstat", denied)
+
+    with pytest.raises(JobCheckpointsError, match="the task directory .* cannot be inspected \\(PermissionError\\)"):
+        job_checkpoints_volume(client, TASK_ID, HOTKEY_A)
+
+
+def test_volume_without_an_absolute_host_path_is_refused():
+    relative = FakeDockerClient(Path("volumes"))
+
+    with pytest.raises(JobCheckpointsError, match="absolute"):
+        job_checkpoints_volume(relative, TASK_ID, HOTKEY_A)
+
+
+def _inspected(mounts: list[dict]) -> MagicMock:
+    return MagicMock(attrs={"Mounts": mounts})
+
+
+def test_only_a_mount_of_the_checkpoints_volume_itself_counts_as_the_whole_volume(client: FakeDockerClient):
+    cache = {"Type": "volume", "Name": cst.CACHE_VOLUME_NAME, "Destination": cst.CACHE_ROOT_PATH}
+    whole = {"Type": "volume", "Name": cst.CHECKPOINTS_VOLUME_NAME, "Destination": "/app/checkpoints"}
+    own = {"Type": "bind", "Source": str(_job_dir(client, HOTKEY_A)), "Destination": "/app/checkpoints"}
+
+    assert mounts_whole_checkpoints_volume(_inspected([whole, cache]))
+    assert not mounts_whole_checkpoints_volume(_inspected([own, cache]))
+    assert not mounts_whole_checkpoints_volume(_inspected([cache]))
+    assert not mounts_whole_checkpoints_volume(MagicMock(attrs={}))
+
+
+@pytest.mark.parametrize(("task_id", "hotkey"), [("../cache", HOTKEY_A), (TASK_ID, "a/b"), ("", HOTKEY_A), (TASK_ID, "..")])
+async def test_training_request_with_a_path_like_name_is_refused(monkeypatch, task_id: str, hotkey: str):
+    async def unexpected(req) -> None:
+        raise AssertionError("job accepted")
+
+    monkeypatch.setattr(endpoints, "_start_task_unlocked", unexpected)
+    request = MagicMock(hotkey=hotkey)
+    request.training_data.task_id = task_id
+
+    with pytest.raises(HTTPException) as refused:
+        await endpoints.start_training(request)
+
+    assert refused.value.status_code == 400
+
+
 def test_job_dir_need_not_exist_yet(client: FakeDockerClient):
     job_dir = job_checkpoints_host_dir(client, TASK_ID, HOTKEY_A)
 
@@ -214,13 +274,23 @@ def test_job_dir_need_not_exist_yet(client: FakeDockerClient):
     assert not job_dir.exists()
 
 
+def _age_tree(root: Path, hours: float) -> None:
+    stamp = time.time() - hours * 3600
+    for path in [root, *root.rglob("*")]:
+        os.utime(path, (stamp, stamp))
+
+
 def test_checkpoints_cleanup_removes_every_job_dir_of_a_finished_task(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(cache_cleanup, "CHECKPOINTS_DIR", tmp_path)
     old = (datetime.utcnow() - timedelta(hours=cache_cleanup.CUTOFF_HOURS + 1)).isoformat()
-    for task_id in ("old-task", "live-task"):
+    for task_id in ("old-task", "live-task", "rewritten-task"):
         for hotkey in (HOTKEY_A, HOTKEY_B):
             (tmp_path / job_checkpoints_subdir(task_id, hotkey) / task_id / REPO).mkdir(parents=True)
+        _age_tree(tmp_path / task_id, cache_cleanup.CUTOFF_HOURS + 1)
+    # Written after the history was read: a job accepted since.
+    (tmp_path / job_checkpoints_subdir("rewritten-task", HOTKEY_A) / "new-file").write_text("x")
     history = [
+        {"training_data": {"task_id": "rewritten-task"}, "hotkey": HOTKEY_A, "finished_at": old},
         {"training_data": {"task_id": "old-task"}, "hotkey": HOTKEY_A, "finished_at": old},
         {"training_data": {"task_id": "old-task"}, "hotkey": HOTKEY_B, "finished_at": old},
         {"training_data": {"task_id": "live-task"}, "hotkey": HOTKEY_A, "finished_at": old},
@@ -230,8 +300,26 @@ def test_checkpoints_cleanup_removes_every_job_dir_of_a_finished_task(monkeypatc
     cache_cleanup.clean_checkpoints(history)
 
     assert not (tmp_path / "old-task").exists()
+    assert (tmp_path / "rewritten-task" / HOTKEY_A / "new-file").exists()
     assert (tmp_path / job_checkpoints_subdir("live-task", HOTKEY_A)).is_dir()
     assert (tmp_path / job_checkpoints_subdir("live-task", HOTKEY_B)).is_dir()
+
+
+@pytest.mark.parametrize("task_id", ["../outside", "..", ".", "", "/abs", "a/../../outside", None, 7])
+def test_checkpoints_cleanup_never_deletes_for_a_task_id_that_is_not_a_plain_name(monkeypatch, tmp_path: Path, task_id):
+    checkpoints = tmp_path / "checkpoints"
+    outside = tmp_path / "outside"
+    for directory in (checkpoints, outside):
+        directory.mkdir()
+        (directory / "keep").write_text("x")
+        _age_tree(directory, cache_cleanup.CUTOFF_HOURS + 1)
+    monkeypatch.setattr(cache_cleanup, "CHECKPOINTS_DIR", checkpoints)
+    old = (datetime.utcnow() - timedelta(hours=cache_cleanup.CUTOFF_HOURS + 1)).isoformat()
+
+    cache_cleanup.clean_checkpoints([{"training_data": {"task_id": task_id}, "hotkey": HOTKEY_A, "finished_at": old}])
+
+    assert (checkpoints / "keep").exists()
+    assert (outside / "keep").exists()
 
 
 async def test_cleanup_container_mounts_the_volumes_where_the_cleaner_deletes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
