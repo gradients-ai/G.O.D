@@ -60,10 +60,13 @@ QUANT_DECODE_MIN_MEMORY_GB = 8  # memory floor for both decoder sandbox phases
 
 # Timing and retries
 CACHE_CLEANUP_CUTOFF_HOURS = 72
-STALE_TASK_GRACE_MINUTES = 10
 STALE_CONTAINER_MAX_AGE_HOURS = 1  # a created/exited trainer container older than this is removed by cleanup.py
 MODEL_PREP_TIMEOUT_MINUTES = 60
-DOCKER_BUILD_TIMEOUT_MINUTES = 30
+DOCKER_BUILD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES", "45"))
+# Added to a job's hours for its stale deadline (cleanup.stale_deadline). The clock starts when the job is accepted and
+# restarts when its training container starts, so for a job of well under an hour the grace is what covers the image
+# build. It applies after the restart as well, so a job that hangs after training is noticed that much later.
+STALE_TASK_GRACE_MINUTES = 10 + DOCKER_BUILD_TIMEOUT_MINUTES
 # A build waits this long for a host build cleanup in progress (trainer.image_builds) before it fails as not started.
 BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS = 600
 # Stopping a build (runtime.BuildStepContainers): a step container the daemon has created but not started yet cannot
@@ -72,10 +75,20 @@ BUILD_STOP_KILL_RETRY_SECONDS = 0.5
 BUILD_STOP_KILL_TIMEOUT_SECONDS = 10
 BUILD_STEP_CONTAINERS_TRACKED = 1000  # most recent step containers remembered per build
 
-# Miner images are always built with no cache (runtime.build_docker_image), so a build never reuses layers from another
-# entrant's build. After each job, and periodically, the trainer also runs a host-wide `docker builder prune`, only while
-# none of its own image builds is in progress (trainer.image_builds). It also wipes every other build cache on the host.
-# On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
+# Miner images are built with the Docker layer cache, so a retry or a build that starts with the same steps does not
+# download them again. TRAINER_IMAGE_BUILD_NO_CACHE=true builds every image from scratch and empties the cache after
+# every job.
+IMAGE_BUILD_NO_CACHE = os.getenv("TRAINER_IMAGE_BUILD_NO_CACHE", "false").lower() == "true"
+# Ask the registry for a newer base image on every build. Off: a base tag stays at the copy first pulled on this host.
+IMAGE_BUILD_PULL_BASE = os.getenv("TRAINER_IMAGE_BUILD_PULL", "false").lower() == "true"
+# A build never keeps a cached layer made longer ago than this, and the layer cache is emptied (trainer.image_builds)
+# once it has gone this long without being emptied, and whenever the disk under Docker's data directory is at least
+# this full. That disk may hold more than images: if it stays over the limit, the cache is emptied on every cleanup.
+IMAGE_BUILD_CACHE_MAX_AGE_HOURS = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS", "24"))
+IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT = float(os.getenv("TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT", "80"))
+IMAGE_BUILD_CACHE_STATE_PATH = "trainer/image_build_cache_state.json"
+# When the layer cache is emptied, the trainer also runs a host-wide `docker builder prune`, which wipes every other
+# build cache on the host. On by default; TRAINER_PRUNE_BUILD_CACHE=false skips it on a shared box.
 PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
 
 # Heavy transfers share the box's network link, so only a few run at once and the rest queue (trainer/slots.py). Each

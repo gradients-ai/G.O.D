@@ -139,6 +139,11 @@ Added by hand:
 | `MODEL_HASH_SALT` | `trainer/model_artifacts.py` | Salt for the anonymous model cache directory names. Keep it secret and stable. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Same value as on the validator. |
 | `TRAINER_PRUNE_BUILD_CACHE` | `trainer/constants.py` | Default `true`. Set `false` to keep the host Docker build cache. |
+| `TRAINER_IMAGE_BUILD_NO_CACHE` | `trainer/constants.py` | Default `false`. Set `true` to build every miner image from scratch. |
+| `TRAINER_IMAGE_BUILD_PULL` | `trainer/constants.py` | Default `false`. Set `true` to check the registry for a newer base image on every build. |
+| `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` | `trainer/constants.py` | Default `24`. A build does not reuse a layer older than this, and the image layer cache is emptied this often. |
+| `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` | `trainer/constants.py` | Default `80`. The image layer cache is emptied when Docker's disk is this full. |
+| `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` | `trainer/constants.py` | Default `45`. Time limit of one miner image build. |
 | `TRAINER_MAX_CONCURRENT_IMAGE_BUILDS`, `TRAINER_MAX_CONCURRENT_UPLOADS`, `TRAINER_MAX_CONCURRENT_QUANT_DECODES` | `trainer/constants.py` | Optional. How many image builds, uploads and freeform decodes run at once. Default `2` each. See [Transfer slots](../trainer/README.md#transfer-slots). |
 | `TRAINER_HF_UPLOAD_TIMEOUT_MINUTES` | `trainer/constants.py` | Optional. Time limit for one model upload. Default `180`. |
 | `LOKI_ENDPOINT`, `LOKI_USERNAME`, `LOKI_PASSWORD` | `task deploy-trainer-logs` | Log shipping. See [Observability](#observability). |
