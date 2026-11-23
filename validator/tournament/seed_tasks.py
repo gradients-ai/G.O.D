@@ -264,7 +264,51 @@ async def _excluded_datasets(tournament_id: str, extra: frozenset[str], config: 
     return _rejected_datasets(history, tasks) | extra
 
 
-async def _draw_instruct(role: SeedRole, tournament_id: str, config: Config, rejected: frozenset[str] = frozenset()) -> RawTask:
+def model_identity(model_id: str) -> str:
+    """A model's name without its org, lower-cased: one checkpoint published under two orgs is one model."""
+    return model_id.rsplit("/", 1)[-1].strip().lower()
+
+
+async def _avoided_models(role: SeedRole, live: dict[SeedRole, TournamentSeedTask], config: Config) -> frozenset[str]:
+    """The models (model_identity) a draw for the role skips: those of the other live TEXT_SEED_DISTINCT_MODEL_ROLES. The
+    role's own row is never among them (replace_seed drops the row being replaced from live)."""
+    if role not in t_cst.TEXT_SEED_DISTINCT_MODEL_ROLES:
+        return frozenset()
+    avoided = set()
+    for other_role, seed in live.items():
+        if other_role == role or other_role not in t_cst.TEXT_SEED_DISTINCT_MODEL_ROLES:
+            continue
+        task = await task_sql.get_task(seed.task_id, config.psql_db)
+        if task is not None:
+            avoided.add(model_identity(task.model_id))
+    return frozenset(avoided)
+
+
+async def _without_models(
+    models: AsyncGenerator[str, None], avoided: frozenset[str], label: str
+) -> AsyncGenerator[str, None]:
+    """The model generator minus the avoided models (model_identity). After TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS skips the
+    avoided ones are yielded too, with a warning, so a pool holding little else cannot stall the draw."""
+    skipped = 0
+    async for model_id in models:
+        if model_identity(model_id) in avoided:
+            if skipped < t_cst.TEXT_SEED_DISTINCT_MODEL_MAX_SKIPS:
+                skipped += 1
+                logger.info(f"{label}: skipping {model_id}, the model of another seed")
+                continue
+            logger.warning(
+                f"{label}: skipped {skipped} pool models that another seed already uses; taking {model_id} anyway"
+            )
+        yield model_id
+
+
+async def _draw_instruct(
+    role: SeedRole,
+    tournament_id: str,
+    config: Config,
+    rejected: frozenset[str] = frozenset(),
+    avoided_models: frozenset[str] = frozenset(),
+) -> RawTask:
     keypair = config.keypair
     # create_synthetic_instruct_text_task -> get_dataset also applies prod's known-bad history (degenerate loss, persisted
     # near-duplicate rate) and column validation to whatever this generator yields.
@@ -279,8 +323,10 @@ async def _draw_instruct(role: SeedRole, tournament_id: str, config: Config, rej
         return await create_synthetic_instruct_text_task(
             config, models, datasets, enable_kl=False, allow_augmentation=False, carve_calibration=True
         )
-    # Input seeds: quant-compatible band, augmentation rolled, calibration carved.
-    models = filter_quant_compatible(_get_text_models(keypair, *_draw_band(role)))
+    # Input and text round seeds: quant-compatible band, augmentation rolled, calibration carved.
+    label = f"Tournament {tournament_id}: seed {role.value}"
+    pool = _without_models(_get_text_models(keypair, *_draw_band(role)), avoided_models, label)
+    models = filter_quant_compatible(pool)
     return await create_synthetic_instruct_text_task(
         config, models, datasets, enable_kl=False, allow_augmentation=True, carve_calibration=True
     )
@@ -314,7 +360,7 @@ async def _draw_seed_task(
 ) -> RawTask | None:
     """A fresh task for the role, or None when it cannot be drawn yet (a compression role without its instruct)."""
     if role in INSTRUCT_INPUT_SEED_ROLES or role in TEXT_ROUND_SEED_ROLES:
-        return await _draw_instruct(role, tournament_id, config, rejected)
+        return await _draw_instruct(role, tournament_id, config, rejected, await _avoided_models(role, live, config))
     if role == SeedRole.TEXT_CONTINUOUS:
         return await _draw_text_continuous(config)
     upstream_role = COMPRESSION_UPSTREAM_ROLE[role]
