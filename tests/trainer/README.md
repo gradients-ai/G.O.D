@@ -18,9 +18,10 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_gpu_monitor_startup.py` | The GPU monitor starts with the trainer app. |
 | `test_gpu_throttle.py` | Clock-throttle rules and the fault marker in training logs. |
 | `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
+| `test_job_checkpoints_isolation.py` | Training, reclaim and upload containers mount only their job's checkpoints directory, and the cache read-only. Path-like task ids and hotkeys are refused. Checkpoints cleanup keeps live and recently written task directories. |
 | `test_job_state_started_at.py` | `started_at` is refreshed when a training container starts. |
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |
-| `test_output_reclaim.py` | Output reclaim container spec and runner against a fake Docker client. |
+| `test_output_reclaim.py` | Output reclaim and job-directory clear container specs and runner against a fake Docker client. |
 | `test_output_reclaim_docker.py` | Output reclaim against real containers. Skipped without Docker or the images. |
 | `test_quant_calibration.py` | The calibration file is written for the miner, and a job that cannot write it fails without starting a container. |
 | `test_quant_decode_job.py` | Freeform decode job against fake snapshot, Hugging Face, Docker and storage backends. |
@@ -30,6 +31,7 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_quant_decode_workdir_docker.py` | Sandbox phases against real containers: ownership, mounts and cleanup. Skipped without Docker or the images. |
 | `test_quant_train_contract.py` | Compression inputs reach the miner container, and the check, upload and decode sequence holds. |
 | `test_quant_upload_check.py` | Pre-upload manifest check: identity, sizes, symlinks, size cap and pruning. |
+| `test_startup_whole_volume_containers.py` | On startup, training containers that mount the whole checkpoints volume are removed and their jobs failed. |
 | `test_telemetry_vector_handler.py` | The Vector log handler never raises when its sink is absent. |
 | `test_trainer_cleanup_scope.py` | Stale-container cleanup removes only the trainer's prefixed containers. |
 | `test_trainer_env_load_order.py` | `.trainer.env` is loaded before settings are read, and the process environment wins. |

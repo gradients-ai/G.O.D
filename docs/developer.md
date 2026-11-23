@@ -276,7 +276,7 @@ The validator then reads the trainer's GPUs from port `8001` (or from `<ip>:<por
 | `GET /v1/tournament_orchestrator/trainers` | Lists the registered trainers. |
 | `DELETE /v1/tournament_orchestrator/remove_trainer/<ip>` | Removes a trainer. |
 
-The trainer builds each miner's Dockerfile, runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face.
+The trainer builds each miner's Dockerfile, runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face. A training container mounts only its own job's directory of the `checkpoints` volume (`<task_id>/<hotkey>`), and the `cache` volume read-only.
 
 Endpoint paths are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`.
 

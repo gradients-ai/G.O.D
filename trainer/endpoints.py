@@ -30,6 +30,7 @@ from trainer.job_state import get_task
 from trainer.job_state import load_task_history
 from trainer.job_state import log_task
 from trainer.monitoring.blacklist import blacklisted_gpu_ids
+from trainer.path_names import is_plain_path_component
 from trainer.runtime import run_model_prep_container
 from trainer.runtime import start_training_task
 from trainer.telemetry import logger
@@ -119,6 +120,9 @@ async def verify_orchestrator_ip(request: Request):
 
 
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:
+    # Both name directories on the trainer's volumes.
+    if not is_plain_path_component(req.training_data.task_id) or not is_plain_path_component(req.hotkey):
+        raise HTTPException(status_code=400, detail="task_id and hotkey must be plain names without path separators.")
     task_key = (req.training_data.task_id, req.hotkey)
     bg_task = None
     async with _task_lock:
