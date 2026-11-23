@@ -3,6 +3,8 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 
+from pydantic import ValidationError
+
 import validator.db.constants as cst
 from core.constants.network import NETUID
 from core.logging import get_logger
@@ -11,6 +13,7 @@ from core.models.pvp_models import PvPIndividualScoreDbRow
 from core.models.pvp_models import PvPPairDbRow
 from core.models.pvp_models import PvPPairResult
 from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.trainer_contract_models import GPUInfo
 from core.models.trainer_contract_models import GPUInterconnect
@@ -1339,10 +1342,90 @@ async def add_tournament_task_hotkey_pairs_for_training(assignments: list[TaskTr
             logger.info(f"Added {len(assignments)} task training assignments - priorities: {priority_counts}")
 
 
+_TRAINING_ROW_COLUMNS = (
+    cst.TASK_ID,
+    cst.HOTKEY,
+    cst.TRAINING_STATUS,
+    cst.N_TRAINING_ATTEMPTS,
+    cst.CREATED_AT,
+    cst.UPDATED_AT,
+    cst.PRIORITY,
+    cst.TRAINING_REPO,
+    cst.TRAINING_COMMIT_HASH,
+    cst.GITHUB_TOKEN,
+    cst.REQUESTED_DATASETS,
+    cst.TRAINER_IP,
+)
+
+
+# A task whose entries can still be evaluated: a decode that settles now still matters to it.
+_UNFINISHED_TASK_STATUSES = [TaskStatus.TRAINING.value, TaskStatus.PREEVALUATION.value, TaskStatus.EVALUATING.value]
+
+
+def _training_row_columns(alias: str | None = None) -> str:
+    prefix = f"{alias}." if alias else ""
+    return ", ".join(f"{prefix}{column}" for column in _TRAINING_ROW_COLUMNS)
+
+
+async def _load_tasks_skipping_unparsable(task_ids: list, psql_db: PSQLDB, connection) -> list:
+    """Batch-load tasks; when a stored task fails validation, load them one by one and skip that task."""
+    try:
+        return await task_sql.get_tasks_by_ids(task_ids, psql_db, connection)
+    except ValidationError as e:
+        logger.error(f"A task in a batch of {len(task_ids)} failed validation; loading them one by one: {e}")
+    tasks = []
+    for task_id in task_ids:
+        try:
+            tasks.extend(await task_sql.get_tasks_by_ids([task_id], psql_db, connection))
+        except ValidationError as e:
+            logger.error(f"Skipping task {task_id}: its stored row failed validation: {e}")
+    return tasks
+
+
+async def _trainings_from_rows(results: list, psql_db: PSQLDB, connection) -> list[TournamentTaskTraining]:
+    """Training rows joined to their task models, in row order; a row whose task cannot be loaded is dropped."""
+    if not results:
+        return []
+
+    unique_task_ids = list({row[cst.TASK_ID] for row in results})
+    tasks = await _load_tasks_skipping_unparsable(unique_task_ids, psql_db, connection)
+    tasks_dict = {task.task_id: task for task in tasks}
+
+    tournament_tasks = []
+    missing_tasks = []
+    for row in results:
+        task = tasks_dict.get(row[cst.TASK_ID])
+        if task is None:
+            missing_tasks.append(row[cst.TASK_ID])
+            continue
+        tournament_tasks.append(
+            TournamentTaskTraining(
+                task=task,
+                hotkey=row[cst.HOTKEY],
+                training_status=row[cst.TRAINING_STATUS],
+                n_training_attempts=row[cst.N_TRAINING_ATTEMPTS],
+                created_at=row[cst.CREATED_AT],
+                updated_at=row[cst.UPDATED_AT],
+                training_repo=row[cst.TRAINING_REPO],
+                training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
+                github_token=row[cst.GITHUB_TOKEN],
+                requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
+                priority=row[cst.PRIORITY],
+                trainer_ip=row[cst.TRAINER_IP],
+            )
+        )
+
+    if missing_tasks:
+        logger.warning(f"Tasks not found in batch load: {missing_tasks}")
+
+    return tournament_tasks
+
+
 async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus) -> list[TournamentTaskTraining]:
     """
     Fetch tournament tasks with specific training status ordered by priority and creation time.
     Priority 1 tasks (regular tournament tasks) are processed before Priority 2 tasks (benchmark tasks).
+    A task whose stored row fails validation is logged and skipped.
 
     Args:
         psql_db: Database connection
@@ -1353,55 +1436,55 @@ async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus)
     """
     async with await psql_db.connection() as connection:
         query = f"""
-            SELECT {cst.TASK_ID}, {cst.HOTKEY}, {cst.TRAINING_STATUS}, {cst.N_TRAINING_ATTEMPTS},
-                   {cst.CREATED_AT}, {cst.UPDATED_AT}, {cst.PRIORITY},
-                   {cst.TRAINING_REPO}, {cst.TRAINING_COMMIT_HASH}, {cst.GITHUB_TOKEN},
-                   {cst.REQUESTED_DATASETS}, {cst.TRAINER_IP}
+            SELECT {_training_row_columns()}
             FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
             WHERE {cst.TRAINING_STATUS} = $1
             ORDER BY {cst.PRIORITY} ASC, {cst.CREATED_AT} DESC, {cst.TASK_ID}
         """
         results = await connection.fetch(query, status)
+        return await _trainings_from_rows(results, psql_db, connection)
 
-        if not results:
-            return []
 
-        unique_task_ids = list({row[cst.TASK_ID] for row in results})
-        tasks = await task_sql.get_tasks_by_ids(unique_task_ids, psql_db, connection)
+async def get_training_rows_for_task(task_id: str, status: TrainingStatus, psql_db: PSQLDB) -> list[TournamentTaskTraining]:
+    """One task's training rows in the given status. Only that task is loaded."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT {_training_row_columns()}
+            FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.TRAINING_STATUS} = $2
+            ORDER BY {cst.HOTKEY}
+        """
+        results = await connection.fetch(query, task_id, status)
+        return await _trainings_from_rows(results, psql_db, connection)
 
-        # Create a mapping for quick lookup
-        tasks_dict = {task.task_id: task for task in tasks}
 
-        tournament_tasks = []
-        missing_tasks = []
+async def get_unsettled_freeform_decode_trainings(psql_db: PSQLDB) -> list[TournamentTaskTraining]:
+    """Successful freeform training rows of unfinished tasks whose decode outcome is not persisted yet.
 
-        for row in results:
-            task = tasks_dict.get(row[cst.TASK_ID])
-            if task:
-                tournament_tasks.append(
-                    TournamentTaskTraining(
-                        task=task,
-                        hotkey=row[cst.HOTKEY],
-                        training_status=row[cst.TRAINING_STATUS],
-                        n_training_attempts=row[cst.N_TRAINING_ATTEMPTS],
-                        created_at=row[cst.CREATED_AT],
-                        updated_at=row[cst.UPDATED_AT],
-                        training_repo=row[cst.TRAINING_REPO],
-                        training_commit_hash=row[cst.TRAINING_COMMIT_HASH],
-                        github_token=row[cst.GITHUB_TOKEN],
-                        requested_datasets=_parse_requested_datasets(row[cst.REQUESTED_DATASETS]),
-                        priority=row[cst.PRIORITY],
-                        trainer_ip=row[cst.TRAINER_IP],
-                    )
-                )
-
-            else:
-                missing_tasks.append(row[cst.TASK_ID])
-
-        if missing_tasks:
-            logger.warning(f"Tasks not found in batch load: {missing_tasks}")
-
-        return tournament_tasks
+    Mirrors QuantDecodeRow.settled: a task_nodes row with a decoder_sha256 or a quant_failure is settled.
+    """
+    async with await psql_db.connection() as connection:
+        query = f"""
+            SELECT {_training_row_columns("tr")}
+            FROM {cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE} tr
+            JOIN {cst.TASKS_TABLE} t ON t.{cst.TASK_ID} = tr.{cst.TASK_ID}
+            WHERE tr.{cst.TRAINING_STATUS} = $1
+              AND t.{cst.TASK_TYPE} = $2
+              AND t.{cst.STATUS} = ANY($3)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM {cst.TASK_NODES_TABLE} tn
+                  WHERE tn.{cst.TASK_ID} = tr.{cst.TASK_ID}
+                    AND tn.{cst.HOTKEY} = tr.{cst.HOTKEY}
+                    AND tn.{cst.NETUID} = $4
+                    AND (tn.{cst.DECODER_SHA256} IS NOT NULL OR tn.{cst.QUANT_FAILURE} IS NOT NULL)
+              )
+            ORDER BY tr.{cst.TASK_ID}, tr.{cst.HOTKEY}
+        """
+        results = await connection.fetch(
+            query, TrainingStatus.SUCCESS, TaskType.QUANTFREEFORMTASK.value, _UNFINISHED_TASK_STATUSES, NETUID
+        )
+        return await _trainings_from_rows(results, psql_db, connection)
 
 
 async def update_tournament_task_training_status(
