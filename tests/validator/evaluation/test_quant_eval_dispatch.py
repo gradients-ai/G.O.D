@@ -910,7 +910,9 @@ def _reference_dict(loss=1.4, **overrides) -> dict:
     }
 
 
-async def _dispatch_with_reference(monkeypatch, raw_reference, reference_models=None, cached=None):
+async def _dispatch_with_reference(
+    monkeypatch, raw_reference, reference_models=None, cached=None, raw_calibration=None, **dispatch_kwargs
+):
     reference_models = {REPO: REFERENCE_MODEL} if reference_models is None else reference_models
     captured = {}
 
@@ -922,6 +924,8 @@ async def _dispatch_with_reference(monkeypatch, raw_reference, reference_models=
         raw = {REPO: {"is_finetune": True, "eval_loss": 1.5, "eval_gpu": SXM_CHECKED.model_dump()}, "model_params_count": 7}
         if raw_reference is not None:
             raw[vcst.QUANT_REFERENCE_RESULT_KEY] = raw_reference
+        if raw_calibration is not None:
+            raw[vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY] = raw_calibration
         return {REPO: raw}
 
     monkeypatch.setattr(docker_evaluation, "load_eval_pair_state_for_models", fake_load_eval_pair_state_for_models)
@@ -939,6 +943,7 @@ async def _dispatch_with_reference(monkeypatch, raw_reference, reference_models=
         psql_db=object(),
         reference_models=reference_models,
         cached_references=cached,
+        **dispatch_kwargs,
     )
     return captured, results
 
@@ -1059,3 +1064,193 @@ def test_a_malformed_config_stays_a_scored_fail(error):
 
     assert result["eval_loss"] is None
     assert result["quant_failure"].startswith("config.json unreadable: ")
+
+
+CALIBRATION_URL = "https://bucket.example/calibration.jsonl"
+CALIBRATION_EXAMPLES = [QuantEvalExample(input_ids=[8, 9, 10, 11, 12], labels=[-100, 9, 10, 11, 12])]
+
+
+def _evaluate_reference_with_calibration(engine, calibration_examples=CALIBRATION_EXAMPLES) -> dict:
+    return quant.evaluate_repo(
+        repo=REPO,
+        examples=EXAMPLES,
+        engine_factory=lambda _repo: engine,
+        layer_check=_layer_check(kernel_classes={}),
+        eval_gpu=SXM_CHECKED,
+        calibration_examples=calibration_examples,
+    )
+
+
+def test_a_reference_scores_its_calibration_rows_with_the_engine_it_loaded():
+    loaded = []
+
+    result = quant.evaluate_repo(
+        repo=REPO,
+        examples=EXAMPLES,
+        engine_factory=lambda repo: loaded.append(repo) or FakeEngine(),
+        layer_check=_layer_check(kernel_classes={}),
+        eval_gpu=SXM_CHECKED,
+        calibration_examples=CALIBRATION_EXAMPLES,
+    )
+
+    calibration = result.pop(vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY)
+    assert loaded == [REPO]
+    assert result["eval_loss"] == pytest.approx(0.5) and len(result["per_example_losses"]) == len(EXAMPLES)
+    assert calibration["eval_loss"] == pytest.approx(0.5) and len(calibration["per_example_losses"]) == 1
+    assert calibration["eval_set_fingerprint"] != result["eval_set_fingerprint"]
+    assert calibration["eval_gpu"] == result["eval_gpu"] == SXM_CHECKED.model_dump()
+
+
+def test_the_test_set_result_is_the_same_with_and_without_calibration_rows():
+    with_calibration = _evaluate_reference_with_calibration(FakeEngine())
+    with_calibration.pop(vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY)
+
+    assert with_calibration == _evaluate_reference_with_calibration(FakeEngine(), calibration_examples=None)
+
+
+def test_no_calibration_entry_without_calibration_rows():
+    assert vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY not in _evaluate_reference_with_calibration(FakeEngine(), None)
+
+
+def test_no_calibration_entry_when_the_test_set_did_not_score():
+    result = _evaluate_reference_with_calibration(FakeEngine(logprob=float("nan")))
+
+    assert result["eval_loss"] is None
+    assert vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY not in result
+
+
+class _FailsOnCalibration(FakeEngine):
+    """Scores the test rows; raises on the (longer) calibration row."""
+
+    def __init__(self, error: Exception):
+        super().__init__()
+        self.error = error
+
+    def prompt_logprobs(self, token_ids: list[int]) -> list[float | None]:
+        if token_ids == CALIBRATION_EXAMPLES[0].input_ids:
+            raise self.error
+        return super().prompt_logprobs(token_ids)
+
+
+def test_a_calibration_error_leaves_the_test_set_result_standing():
+    result = _evaluate_reference_with_calibration(_FailsOnCalibration(RuntimeError("engine died")))
+
+    assert result["eval_loss"] == pytest.approx(0.5)
+    assert set(result[vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY]) == {"evaluation_error"}
+
+
+def test_a_calibration_set_on_an_entry_run_fails_closed():
+    with pytest.raises(quant.QuantReferenceOnlyMisuse):
+        quant.allowed_skus_for_run(False, [REPO], REPO, None, {}, CALIBRATION_URL)
+    assert quant.allowed_skus_for_run(True, [REPO], REPO, None, {}, CALIBRATION_URL) == vcst.QUANT_REFERENCE_ALLOWED_SKUS
+
+
+def test_a_calibration_set_does_not_excuse_a_misused_reference_only_flag():
+    with pytest.raises(quant.QuantReferenceOnlyMisuse):
+        quant.allowed_skus_for_run(True, [REPO], OTHER_REPO, None, {}, CALIBRATION_URL)
+
+
+def test_main_hands_a_bare_reference_its_calibration_set(monkeypatch, quant_main_env):
+    calls, _ = quant_main_env
+    monkeypatch.setenv("MODELS", REPO)
+    monkeypatch.delenv(docker_cst.DECODED_MODEL_URLS_ENV)
+    monkeypatch.setenv(docker_cst.QUANT_REFERENCE_MODEL_ENV, REPO)
+    monkeypatch.setenv(docker_cst.QUANT_REFERENCE_ONLY_ENV, "1")
+    monkeypatch.setenv(docker_cst.QUANT_CALIBRATION_DATASET_URL_ENV, CALIBRATION_URL)
+    downloads = []
+    monkeypatch.setattr(quant, "_download_dataset", lambda url, directory=None: downloads.append(url) or f"{directory}/c.jsonl")
+
+    quant.main()
+
+    [args] = [quant.QuantEvaluationArgs.model_validate_json(c[-1]) for c in calls]
+    assert downloads == [CALIBRATION_URL]
+    assert args.repo == REPO and args.calibration_dataset.endswith("/c.jsonl")
+    assert "calibration-" in args.calibration_dataset
+
+
+def test_main_without_a_calibration_set_passes_none(monkeypatch, quant_main_env):
+    calls, _ = quant_main_env
+    monkeypatch.setattr(quant, "materialise_decoded_model", lambda _model, _urls, dest, _token: dest)
+
+    quant.main()
+
+    assert [quant.QuantEvaluationArgs.model_validate_json(c[-1]).calibration_dataset for c in calls] == [None, None]
+
+
+def test_main_refuses_a_calibration_set_on_an_entry_before_loading(monkeypatch, quant_main_env):
+    calls, results_path = quant_main_env
+    monkeypatch.setenv(docker_cst.QUANT_CALIBRATION_DATASET_URL_ENV, CALIBRATION_URL)
+    monkeypatch.setattr(quant, "_download_dataset", lambda *_args: pytest.fail("downloaded the calibration set"))
+    monkeypatch.setattr(quant, "materialise_decoded_model", lambda *_args: pytest.fail("loaded a model"))
+
+    with pytest.raises(quant.QuantReferenceOnlyMisuse):
+        quant.main()
+
+    assert calls == [] and not results_path.exists()
+
+
+def test_datasets_with_the_same_file_name_download_to_separate_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(quant.urllib.request, "urlretrieve", lambda _url, _path: None)
+
+    test_set = quant._download_dataset("https://s3/a/data.jsonl?sig=1")
+    calibration_set = quant._download_dataset("https://s3/b/data.jsonl?sig=2", str(tmp_path))
+
+    assert test_set != calibration_set and calibration_set == str(tmp_path / "data.jsonl")
+
+
+@pytest.mark.asyncio
+async def test_reference_only_dispatch_passes_the_calibration_set_and_returns_its_reference(monkeypatch):
+    captured, results = await _dispatch_with_reference(
+        monkeypatch,
+        _reference_dict(),
+        raw_calibration=_reference_dict(loss=1.1, eval_set_fingerprint="fp-calibration"),
+        reference_only=True,
+        calibration_dataset=CALIBRATION_URL,
+    )
+
+    env = captured["build_env_for_repo"](REPO)
+    assert env[docker_cst.QUANT_CALIBRATION_DATASET_URL_ENV] == CALIBRATION_URL
+    assert env["DATASET_URL"] == "https://bucket.example/test_data.jsonl"
+    result = results.results[REPO]
+    assert result.eval_loss == 1.5 and result.quant_reference.eval_set_fingerprint == "fp"
+    calibration = result.quant_calibration_reference
+    assert (calibration.model, calibration.eval_loss) == (REFERENCE_MODEL, 1.1)
+    assert calibration.eval_set_fingerprint == "fp-calibration"
+
+
+@pytest.mark.asyncio
+async def test_a_deployment_without_a_calibration_entry_returns_the_test_reference_alone(monkeypatch):
+    captured, results = await _dispatch_with_reference(
+        monkeypatch, _reference_dict(), reference_only=True, calibration_dataset=CALIBRATION_URL
+    )
+
+    result = results.results[REPO]
+    assert result.quant_reference is not None and result.quant_calibration_reference is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "raw_calibration", [{"evaluation_error": "engine died"}, {"is_finetune": True, "eval_loss": None, "quant_failure": "nan"}]
+)
+async def test_a_calibration_reference_that_did_not_score_is_dropped_and_the_test_reference_stands(
+    monkeypatch, raw_calibration
+):
+    _, results = await _dispatch_with_reference(
+        monkeypatch, _reference_dict(), raw_calibration=raw_calibration, reference_only=True, calibration_dataset=CALIBRATION_URL
+    )
+
+    result = results.results[REPO]
+    assert result.quant_reference is not None and result.quant_calibration_reference is None
+
+
+@pytest.mark.asyncio
+async def test_dispatch_without_a_calibration_set_leaves_the_env_var_unset(monkeypatch):
+    captured, _ = await _dispatch_with_reference(monkeypatch, None, reference_only=True)
+
+    assert docker_cst.QUANT_CALIBRATION_DATASET_URL_ENV not in captured["build_env_for_repo"](REPO)
+
+
+@pytest.mark.asyncio
+async def test_dispatch_refuses_a_calibration_set_on_an_entry_run(monkeypatch):
+    with pytest.raises(ValueError, match="reference-only"):
+        await _dispatch_with_reference(monkeypatch, None, calibration_dataset=CALIBRATION_URL)

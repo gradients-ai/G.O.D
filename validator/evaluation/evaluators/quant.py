@@ -19,6 +19,9 @@ boxes only) admits any GPU with a loud warning. Every result records the GPU and
 QUANT_REFERENCE_ONLY=1 (set by the dispatcher for a bare bf16 reference measurement) widens the list to
 QUANT_REFERENCE_ALLOWED_SKUS (adds 80 GB A100s), and only when MODELS is exactly QUANT_REFERENCE_MODEL with no
 QUANT_SPEC and no DECODED_MODEL_URLS; otherwise the container exits non-zero (QuantReferenceOnlyMisuse).
+QUANT_CALIBRATION_DATASET_URL (optional, reference-only runs only; set on any other run the container exits the same
+way) names a second example set: the reference is scored on it too, with the engine it already loaded, and that
+result is written under QUANT_CALIBRATION_REFERENCE_RESULT_KEY. It never changes the result on the test set.
 
 Every quant loss is compared as a multiple of the bf16 reference scored on the same SKU. When this
 container's SKU is not in QUANT_CACHED_REFERENCES, it scores QUANT_REFERENCE_MODEL first, on the same GPU
@@ -89,6 +92,8 @@ class QuantEvaluationArgs(BaseModel):
     eval_gpu: QuantEvalGpu | None = None
     # Results-file key the result is saved under; the repo itself unless this is the reference run.
     result_key: str | None = None
+    # A bare reference only: a second example set scored with the same engine, saved under its own results-file key.
+    calibration_dataset: str | None = None
 
     @property
     def saved_as(self) -> str:
@@ -218,8 +223,13 @@ def evaluate_repo(
     config_check: FixedConfigCheck | None = None,
     model_path: str | None = None,
     eval_gpu: QuantEvalGpu | None = None,
+    calibration_examples: list[QuantEvalExample] | None = None,
 ) -> dict:
     """Score one repo, loading model_path when given; eval_gpu is recorded in the result.
+
+    calibration_examples (a bare bf16 reference only) are scored with the same engine once the repo has scored on
+    examples; that result rides in the returned dict under QUANT_CALIBRATION_REFERENCE_RESULT_KEY and never changes
+    the repo's own.
 
     layer_check returns the kernel class per quantised layer and raises QuantKernelMismatch when the
     loaded layers break the fixed-track spec. quant_spec is None on the freeform track, which skips
@@ -264,6 +274,39 @@ def evaluate_repo(
     if reason is not None:
         return _scored_fail(repo, reason, eval_gpu)
     logger.info(f"{repo}: eval_loss {score.eval_loss:.6f} over {score.n_examples} examples")
+    result = QuantEvalSuccess(
+        eval_loss=score.eval_loss,
+        per_example_losses=score.per_example_losses,
+        eval_set_fingerprint=score.eval_set_fingerprint,
+        kernel_classes=kernel_classes,
+        eval_gpu=eval_gpu,
+    ).model_dump()
+    if calibration_examples:
+        result[vcst.QUANT_CALIBRATION_REFERENCE_RESULT_KEY] = _score_calibration(
+            repo, engine, calibration_examples, kernel_classes, eval_gpu
+        )
+    return result
+
+
+def _score_calibration(
+    repo: str,
+    engine: PromptLogprobEngine,
+    examples: list[QuantEvalExample],
+    kernel_classes: dict[str, str],
+    eval_gpu: QuantEvalGpu | None,
+) -> dict:
+    """The loaded model's result on the calibration rows. Whatever goes wrong here is reported in this result only."""
+    try:
+        score = score_examples(engine, examples)
+    except QuantScoringError as e:
+        return _scored_fail(repo, f"calibration rows: {e}", eval_gpu)
+    except Exception as e:
+        logger.error(f"Scoring {repo} on the calibration rows failed: {e}", exc_info=True)
+        return evaluation_error_result(e)
+    reason = is_scored_fail(score)
+    if reason is not None:
+        return _scored_fail(repo, f"calibration rows: {reason}", eval_gpu)
+    logger.info(f"{repo}: calibration eval_loss {score.eval_loss:.6f} over {score.n_examples} examples")
     return QuantEvalSuccess(
         eval_loss=score.eval_loss,
         per_example_losses=score.per_example_losses,
@@ -273,10 +316,12 @@ def evaluate_repo(
     ).model_dump()
 
 
-def _download_dataset(dataset_url: str) -> str:
-    dataset = os.path.join(tempfile.gettempdir(), os.path.basename(dataset_url.split("?")[0]) or "dataset.jsonl")
+def _download_dataset(dataset_url: str, directory: str | None = None) -> str:
+    """Download into directory (the temp dir by default); two sets with the same file name need separate directories."""
+    name = os.path.basename(dataset_url.split("?")[0]) or "dataset.jsonl"
+    dataset = os.path.join(directory or tempfile.gettempdir(), name)
     urllib.request.urlretrieve(dataset_url, dataset)
-    logger.info(f"Downloaded dataset from DATASET_URL to {dataset}")
+    logger.info(f"Downloaded dataset to {dataset}")
     return dataset
 
 
@@ -354,14 +399,20 @@ def allowed_skus_for_run(
     reference_model: str | None,
     quant_spec: QuantFixedSpec | None,
     decoded_model_urls: dict,
+    calibration_dataset_url: str | None = None,
 ) -> tuple[QuantEvalSku, ...]:
     """The SKUs this container may run on: entries always get QUANT_EVAL_ALLOWED_SKUS.
 
     A reference-only run (one bf16 model that is its own reference, nothing quantised or decoded) may also use
     QUANT_REFERENCE_ALLOWED_SKUS; reference-only on anything else raises, so the flag can never move an entry's score
-    onto another GPU class.
+    onto another GPU class. A calibration set is scored on a reference-only run alone, so it raises on any other.
     """
     if not reference_only:
+        if calibration_dataset_url:
+            raise QuantReferenceOnlyMisuse(
+                f"{core_cst.QUANT_CALIBRATION_DATASET_URL_ENV} is only for a bare bf16 reference "
+                f"({core_cst.QUANT_REFERENCE_ONLY_ENV}=1): got MODELS={repos}"
+            )
         return vcst.QUANT_EVAL_ALLOWED_SKUS
     if reference_model is None or repos != [reference_model] or quant_spec is not None or decoded_model_urls:
         raise QuantReferenceOnlyMisuse(
@@ -435,9 +486,17 @@ def main():
     decoded_model_urls = parse_decoded_model_urls(os.environ.get(core_cst.DECODED_MODEL_URLS_ENV))
     reference_model = os.environ.get(core_cst.QUANT_REFERENCE_MODEL_ENV, "").strip() or None
     cached_references = parse_cached_references(os.environ.get(core_cst.QUANT_CACHED_REFERENCES_ENV))
+    calibration_dataset_url = os.environ.get(core_cst.QUANT_CALIBRATION_DATASET_URL_ENV, "").strip() or None
     # Uncaught on a mismatch or a misused reference-only flag: the container exits non-zero before any model is loaded.
-    allowed = allowed_skus_for_run(_reference_only(), repos, reference_model, quant_spec, decoded_model_urls)
+    allowed = allowed_skus_for_run(
+        _reference_only(), repos, reference_model, quant_spec, decoded_model_urls, calibration_dataset_url
+    )
     eval_gpu = _checked_gpu(allowed)
+    calibration_dataset = (
+        _download_dataset(calibration_dataset_url, tempfile.mkdtemp(prefix="calibration-"))
+        if calibration_dataset_url
+        else None
+    )
 
     measure_reference = _reference_needed(reference_model, cached_references, eval_gpu)
     if measure_reference and reference_model not in repos:
@@ -467,6 +526,8 @@ def main():
             quant_format=quant_format,
             model_path=model_path,
             eval_gpu=eval_gpu,
+            # Only ever set on a reference-only run, whose single repo is the bf16 reference itself.
+            calibration_dataset=calibration_dataset,
         )
         _run_single(evaluation_args)
 

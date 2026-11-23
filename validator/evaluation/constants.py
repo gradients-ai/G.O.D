@@ -86,6 +86,8 @@ QUANT_VLLM_ENV = {
 }
 # Results-file key the quant evaluator writes the same-deployment bf16 reference under, next to the repo's result.
 QUANT_REFERENCE_RESULT_KEY = "quant_reference"
+# Results-file key a reference-only run writes the reference's result on the calibration rows under, when it was given them.
+QUANT_CALIBRATION_REFERENCE_RESULT_KEY = "quant_calibration_reference"
 # Reported quant_failure reasons are cut to this length.
 QUANT_FAILURE_REASON_MAX_CHARS = 350
 # A repo's config.json over this size is not parsed (an honest one is a few KB; a huge one is a memory and disk

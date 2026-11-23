@@ -20,6 +20,10 @@ rows, published to the miner with them (never used to score). It is keyed separa
 calibration reference measured on another example set than the task's current calibration set counts as missing and is
 replaced by the re-measurement.
 
+When both are missing, one deployment loads the model once and scores both example sets; when one is missing, a deployment
+measures that one alone. The calibration reference of a shared deployment is stored only after its test reference, and a
+deployment that returns the test reference alone leaves the calibration one to a measurement of its own next cycle.
+
 Every measurement is retried every cycle for as long as it is missing; a measurement that keeps failing pings a human at every
 QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT-th consecutive failure. A miner is never trained without them.
 """
@@ -31,6 +35,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 from pydantic import ConfigDict
+from pydantic import model_validator
 
 import validator.db.constants as db_cst
 import validator.tournament.constants as cst
@@ -38,6 +43,7 @@ from core.downloads import download_s3_file
 from core.logging import get_logger
 from core.models.dataset_models import FileFormat
 from core.models.payload_models import EvaluationResultText
+from core.models.quant_models import QuantReferenceScore
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskStatus
 from validator.app.config import Config
@@ -80,28 +86,49 @@ _EVAL_SET_FINGERPRINTS: dict[str, str] = {}
 
 
 class ReferenceToMeasure(BaseModel):
-    """A (task, reference hotkey) with a usable model and no stored bf16 reference yet; hotkey '' is the task-common one."""
+    """A (task, reference hotkey) with a usable model and a missing bf16 reference; hotkey '' is the task-common one.
+
+    test and calibration say which of the two is missing: the one on the task's test rows, the one on its calibration
+    rows, or both (measured in one deployment).
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     task: AnyQuantRawTask
     hotkey: str
     repo: str
-    calibration: bool = False  # the measurement on the task's calibration rows, not on its test rows
+    test: bool = True
+    calibration: bool = False
+
+    @model_validator(mode="after")
+    def validate_something_is_missing(self) -> "ReferenceToMeasure":
+        if not (self.test or self.calibration):
+            raise ValueError("a reference to measure is missing on the test rows, the calibration rows or both")
+        return self
+
+    def key_of(self, calibration: bool) -> tuple[str, ...]:
+        """(task, hotkey), plus a marker for the calibration measurement so the two are counted separately."""
+        base = (str(self.task.task_id), self.hotkey)
+        return base + (_CALIBRATION,) if calibration else base
 
     @property
-    def key(self) -> tuple[str, ...]:
-        """(task, hotkey), plus a marker for the calibration measurement so the two are counted and run separately."""
-        base = (str(self.task.task_id), self.hotkey)
-        return base + (_CALIBRATION,) if self.calibration else base
+    def keys(self) -> list[tuple[str, ...]]:
+        """The key of every measurement this item covers."""
+        return [self.key_of(calibration) for calibration, missing in ((False, self.test), (True, self.calibration)) if missing]
 
     @property
     def dataset(self) -> str:
-        return self.task.calibration_data if self.calibration else self.task.test_data
+        """The example set the deployment's own result is scored on: the test rows unless only calibration is missing."""
+        return self.task.test_data if self.test else self.task.calibration_data
 
     @property
-    def label(self) -> str:
-        return "calibration bf16 reference" if self.calibration else "bf16 reference"
+    def calibration_dataset(self) -> str | None:
+        """The calibration rows as a second example set of the same deployment, when both references are missing."""
+        return self.task.calibration_data if self.test and self.calibration else None
+
+
+def _label(calibration: bool) -> str:
+    return "calibration bf16 reference" if calibration else "bf16 reference"
 
 
 def has_calibration_set(task: AnyQuantRawTask) -> bool:
@@ -148,13 +175,15 @@ async def _missing_for_task(task: AnyQuantRawTask, config: Config) -> list[Refer
     missing = []
     for hotkey in reference_hotkeys:
         needs_test = hotkey not in measured
-        # The calibration pass follows a scored test reference; a record on another example set is not a measurement.
-        needs_calibration = has_calibration_set(task) and not needs_test and hotkey not in calibrated
+        # A record on another example set is not a measurement.
+        needs_calibration = has_calibration_set(task) and hotkey not in calibrated
         if not (needs_test or needs_calibration):
             continue
         repo = await quant_reference_model(task, hotkey, config.psql_db)
         if repo:
-            missing.append(ReferenceToMeasure(task=task, hotkey=hotkey, repo=repo, calibration=needs_calibration))
+            missing.append(
+                ReferenceToMeasure(task=task, hotkey=hotkey, repo=repo, test=needs_test, calibration=needs_calibration)
+            )
     return missing
 
 
@@ -266,7 +295,7 @@ async def _start_cost_run(run_key: str, item: ReferenceToMeasure, num_gpus: int,
             metadata={
                 "hotkey": item.hotkey,
                 "repo": item.repo,
-                "purpose": "quant_calibration_reference_prepass" if item.calibration else "quant_reference_prepass",
+                "purpose": "quant_reference_prepass" if item.test else "quant_calibration_reference_prepass",
             },
         )
     except Exception as e:
@@ -282,6 +311,9 @@ async def _finish_cost_run(run_key: str, success: bool, config: Config) -> None:
 
 async def _evaluate_reference(item: ReferenceToMeasure, num_gpus: int) -> EvaluationResultText | Exception:
     """Score the miner's own bf16 repo as both submission and reference in one deployment.
+
+    When both references are missing the deployment also gets the calibration rows, and scores them with the model it
+    loaded for the test rows (result.quant_calibration_reference).
 
     psql_db=None is deliberate. basilica.py reads and writes task_nodes (deployment ids, scores), the
     GPU reservations and the evaluation cost runs only when a psql_db is given (load_eval_pair_state_for_models,
@@ -305,6 +337,7 @@ async def _evaluate_reference(item: ReferenceToMeasure, num_gpus: int) -> Evalua
         # A bare bf16 measurement may run on an A100 too: it is stored under its own SKU and only ever sets the
         # published target; scoring normalises by the reference on the entry's own SKU (reference_on).
         reference_only=True,
+        calibration_dataset=item.calibration_dataset,
     )
     return results.results.get(item.repo, Exception("evaluation returned no result"))
 
@@ -320,21 +353,24 @@ def _problem_with(result: EvaluationResultText | Exception) -> str | None:
     return None
 
 
-def _calibration_mismatch(item: ReferenceToMeasure, result: EvaluationResultText) -> str | None:
+def _calibration_mismatch(item: ReferenceToMeasure, reference: QuantReferenceScore) -> str | None:
     """A calibration reference measured on other examples than the ones published would mislead the miner."""
     expected = item.task.calibration_fingerprint
-    if item.calibration and expected and result.quant_reference.eval_set_fingerprint != expected:
+    if expected and reference.eval_set_fingerprint != expected:
         return "the reference was measured on a different calibration set than the one published"
     return None
 
 
-async def _record_failure(item: ReferenceToMeasure, detail: str, config: Config) -> None:
+async def _record_failure(item: ReferenceToMeasure, calibration: bool, detail: str, config: Config) -> None:
     """Infra trouble, never the miner's fault: retried next cycle for as long as it takes (the miner's training waits for it), and
-    a human is pinged at every QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT-th consecutive failure."""
-    count = _CONSECUTIVE_FAILURES.get(item.key, 0) + 1
-    _CONSECUTIVE_FAILURES[item.key] = count
+    a human is pinged at every QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT-th consecutive failure.
+
+    calibration says which measurement failed; the two are counted separately."""
+    key, label = item.key_of(calibration), _label(calibration)
+    count = _CONSECUTIVE_FAILURES.get(key, 0) + 1
+    _CONSECUTIVE_FAILURES[key] = count
     logger.error(
-        f"Task {item.task.task_id} hotkey {item.hotkey}: {item.label} measurement failed ({count} in a row, infra, "
+        f"Task {item.task.task_id} hotkey {item.hotkey}: {label} measurement failed ({count} in a row, infra, "
         f"will retry; training waits for it): {detail}"
     )
     if count % cst.QUANT_REFERENCE_PREPASS_FAILURES_BEFORE_ALERT == 0:
@@ -342,15 +378,14 @@ async def _record_failure(item: ReferenceToMeasure, detail: str, config: Config)
             config,
             task_id=str(item.task.task_id),
             task_type=item.task.task_type,
-            context=f"Quant {'calibration ' if item.calibration else ''}reference pre-pass keeps failing",
-            error=f"{count} consecutive failures measuring the {item.label} of {item.repo}: {detail}",
+            context=f"Quant {'calibration ' if calibration else ''}reference pre-pass keeps failing",
+            error=f"{count} consecutive failures measuring the {label} of {item.repo}: {detail}",
             hotkeys=[item.hotkey] if item.hotkey else [],
             repos=[item.repo],
         )
 
 
-async def _store_calibration_reference(item: ReferenceToMeasure, result: EvaluationResultText, config: Config) -> None:
-    reference = result.quant_reference
+async def _store_calibration_reference(item: ReferenceToMeasure, reference: QuantReferenceScore, config: Config) -> None:
     measured = QuantCalibrationReferenceRecord(
         task_id=item.task.task_id,
         hotkey=item.hotkey,
@@ -367,11 +402,33 @@ async def _store_calibration_reference(item: ReferenceToMeasure, result: Evaluat
     )
 
 
-async def _store_reference(item: ReferenceToMeasure, result: EvaluationResultText, config: Config) -> None:
-    if item.calibration:
-        await _store_calibration_reference(item, result, config)
+async def _store_shared_calibration_reference(item: ReferenceToMeasure, result: EvaluationResultText, config: Config) -> None:
+    """Store the calibration reference a deployment scored next to its test reference (already stored).
+
+    A deployment that returned none (the calibration rows did not score, or its image scores one example set) is not a
+    failure of its own: the calibration reference is still missing, so the next cycle measures it alone, and that
+    measurement counts its failures.
+    """
+    reference = result.quant_calibration_reference
+    if reference is None:
+        logger.warning(
+            f"Task {item.task.task_id} hotkey {item.hotkey}: the deployment returned no {_label(True)} with the test "
+            "reference; it is measured on its own next cycle"
+        )
         return
-    reference = result.quant_reference
+    problem = _calibration_mismatch(item, reference)
+    if problem is not None:
+        await _record_failure(item, True, problem, config)
+        return
+    try:
+        await _store_calibration_reference(item, reference, config)
+    except Exception as e:
+        await _record_failure(item, True, describe_error(e), config)
+        return
+    _CONSECUTIVE_FAILURES.pop(item.key_of(True), None)
+
+
+async def _store_reference(item: ReferenceToMeasure, reference: QuantReferenceScore, config: Config) -> None:
     measured = QuantSkuReference(
         task_id=item.task.task_id,
         hotkey=item.hotkey,
@@ -389,47 +446,62 @@ async def _store_reference(item: ReferenceToMeasure, result: EvaluationResultTex
 
 
 async def _measure(item: ReferenceToMeasure, config: Config) -> None:
+    """One deployment for whatever the item is missing. Its own result is the test reference, or the calibration one
+    when only that is missing; a failure there stores nothing. With both missing, the calibration reference comes back
+    next to the test one and is stored after it."""
+    calibration_only = not item.test
+    label = _label(calibration_only)
     num_gpus = await asyncio.to_thread(compute_required_gpus, item.task)
-    run_key = f"evaluation:{item.task.task_id}:prepass{'-calibration' if item.calibration else ''}:{item.hotkey}"
+    run_key = f"evaluation:{item.task.task_id}:prepass{'-calibration' if calibration_only else ''}:{item.hotkey}"
     await _start_cost_run(run_key, item, num_gpus, config)
     try:
         result = await _evaluate_reference(item, num_gpus)
     except (EvaluationCapacityUnavailable, DeploymentNotReadyError) as e:
         # Waiting for a GPU is the queue, not a failure: it does not count towards the failure alert.
-        logger.info(f"Task {item.task.task_id} hotkey {item.hotkey}: {item.label} waits for capacity: {describe_error(e)}")
+        logger.info(f"Task {item.task.task_id} hotkey {item.hotkey}: {label} waits for capacity: {describe_error(e)}")
         await _finish_cost_run(run_key, False, config)
         return
     except Exception as e:
         result = e
     problem = _problem_with(result)
-    if problem is None:
-        problem = _calibration_mismatch(item, result)
+    if problem is None and calibration_only:
+        problem = _calibration_mismatch(item, result.quant_reference)
     await _finish_cost_run(run_key, problem is None, config)
     if problem is not None:
-        await _record_failure(item, problem, config)
+        await _record_failure(item, calibration_only, problem, config)
         return
-    _CONSECUTIVE_FAILURES.pop(item.key, None)
-    await _store_reference(item, result, config)
+    _CONSECUTIVE_FAILURES.pop(item.key_of(calibration_only), None)
+    if calibration_only:
+        await _store_calibration_reference(item, result.quant_reference, config)
+        return
+    await _store_reference(item, result.quant_reference, config)
+    if item.calibration:
+        await _store_shared_calibration_reference(item, result, config)
+
+
+async def _still_missing(item: ReferenceToMeasure, config: Config) -> ReferenceToMeasure | None:
+    """The item less whatever the previous round's rows covered; None when nothing is left to measure."""
+    test = item.test and not await _copy_previous_round_references(item, config)
+    calibration = item.calibration and not await _copy_previous_round_calibration_reference(item, config)
+    if not (test or calibration):
+        return None
+    return ReferenceToMeasure(task=item.task, hotkey=item.hotkey, repo=item.repo, test=test, calibration=calibration)
 
 
 async def _fill_reference(item: ReferenceToMeasure, semaphore: asyncio.Semaphore, config: Config) -> None:
-    if item.key in _IN_PROGRESS:
+    keys = item.keys
+    if any(key in _IN_PROGRESS for key in keys):
         return
-    _IN_PROGRESS.add(item.key)
+    _IN_PROGRESS.update(keys)
     try:
         async with semaphore:
-            copied = (
-                await _copy_previous_round_calibration_reference(item, config)
-                if item.calibration
-                else await _copy_previous_round_references(item, config)
-            )
-            if copied:
-                return
-            await _measure(item, config)
+            remaining = await _still_missing(item, config)
+            if remaining is not None:
+                await _measure(remaining, config)
     except Exception as e:
-        await _record_failure(item, describe_error(e), config)
+        await _record_failure(item, not item.test, describe_error(e), config)
     finally:
-        _IN_PROGRESS.discard(item.key)
+        _IN_PROGRESS.difference_update(keys)
 
 
 async def measure_missing_quant_references(config: Config) -> None:
