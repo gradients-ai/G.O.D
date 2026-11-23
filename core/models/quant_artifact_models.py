@@ -1,3 +1,4 @@
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -77,15 +78,19 @@ class QuantDecodedFile(BaseModel):
 
 
 class QuantDecodeResult(BaseModel):
-    """Outcome of one trainer-side freeform decode. Exactly one of ok, quant_failure, infra_error is set.
+    """Outcome of one trainer-side freeform decode. Exactly one of ok, quant_failure, infra_error, upload_pending is set.
 
     quant_failure is the miner's fault and is a scored fail; infra_error is ours (image missing,
-    MinIO/HF unreachable, snapshot sha mismatch) and must never be scored.
+    MinIO/HF unreachable, snapshot sha mismatch) and must never be scored. upload_pending is not final: the
+    decode passed its checks and the trainer is still retrying the upload of the decoded files, until about
+    upload_retry_until. It then becomes ok or infra_error.
     """
 
     ok: bool = False
     quant_failure: str | None = None
     infra_error: str | None = None
+    upload_pending: bool = False
+    upload_retry_until: datetime | None = None
     artifact_bytes: int | None = None
     decoder_bytes: int | None = None
     decoder_sha256: str | None = None
@@ -104,9 +109,9 @@ class QuantDecodeResult(BaseModel):
 
     @model_validator(mode="after")
     def validate_single_outcome(self) -> "QuantDecodeResult":
-        outcomes = [self.ok, self.quant_failure is not None, self.infra_error is not None]
+        outcomes = [self.ok, self.quant_failure is not None, self.infra_error is not None, self.upload_pending]
         if sum(outcomes) != 1:
-            raise ValueError("exactly one of ok, quant_failure, infra_error must be set")
+            raise ValueError("exactly one of ok, quant_failure, infra_error, upload_pending must be set")
         return self
 
 

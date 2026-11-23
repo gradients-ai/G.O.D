@@ -266,7 +266,7 @@ class FakeMinio:
         self.objects[object_name] = Path(file_path).read_bytes()
         return True
 
-    def put_file(self, bucket, object_name, path):
+    def put_file(self, bucket, object_name, path, sha256=None):
         """The trainer decode's upload (trainer/quant_decode/upload.put_file)."""
         self.objects[object_name] = Path(path).read_bytes()
 

@@ -9,6 +9,8 @@ The sandbox that runs a freeform submission's decoder on the trainer, and the ch
 | `sandbox.py` | Container specs for the build and run phases, and `run_phase`, which runs one phase under a wall-clock cap and removes the container. |
 | `output_check.py` | `check_decoded_output`: a numpy-only safetensors reader that checks the decoded tensors against the base model. |
 | `job.py` | `run_freeform_decode`, the end-to-end decode of one submission, and `check_artifact_files`. |
+| `upload.py` | The storage client for decoded files: multipart upload, whole-file retry, and the check that a file is already stored. |
+| `upload_retry.py` | Background retry of a decoded upload that the network keeps failing, and its resume after a trainer restart. |
 | `rerun.py` | CLI that re-runs one job's decode from task history. |
 
 ## Phases
@@ -60,20 +62,40 @@ The index file is accepted and ignored. The job deletes it, so only checked shar
 
 ## Decode job
 
-`run_freeform_decode` works in `$QUANT_DECODE_WORK_ROOT/<task_id>_<hotkey[:8]>` and removes that directory afterwards.
+`run_freeform_decode` works in `$QUANT_DECODE_WORK_ROOT/<task_id>_<hotkey[:8]>` and removes that directory afterwards, unless the upload is still pending (see [Pending uploads](#pending-uploads)).
 
 1. Fetch the decoder snapshot from its presigned URL, capped at `DECODER_MAX_XZ_BYTES` plus 1 MiB, and check its sha256.
 2. Extract it. Members must sit under `decoder/`, with no symlinks or hardlinks, at most `DECODER_MAX_EXTRACTED_BYTES` in total, and `decode.py` must exist.
-3. Download the artifact repo. Reject symlinks, exec bits and `QUANT_ARTIFACT_FORBIDDEN_SUFFIXES`. Count every file, `.gitattributes` included, as `artifact_bytes`.
+3. Download the artifact repo, within `QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS`. Reject symlinks, exec bits and `QUANT_ARTIFACT_FORBIDDEN_SUFFIXES`. Count every file, `.gitattributes` included, as `artifact_bytes`.
 4. Run the build and run phases, then `check_decoded_output` against the base model the training job used.
 5. Upload each checked shard to `<bucket>/<object_prefix>/`, then `index.json` (`QuantDecodedIndex`) last. Its presence marks the upload complete.
 
 Each stage and each uploaded file is appended to the job's log in `task_history.json`.
 
+A trainer runs `MAX_CONCURRENT_QUANT_DECODES` decodes at once, and each decoded file takes one of its upload slots. Further decodes queue, and their time limits start once they hold a slot. See [Transfer slots](../README.md#transfer-slots). `rerun.py` runs in its own process and does not queue behind the trainer's jobs.
+
 | Outcome | Field | Examples |
 | --- | --- | --- |
 | Miner's fault, scored | `quant_failure` | unsafe decoder archive, extraction past the cap, no `decode.py`, executable in the artifact, build or run exit or timeout, bad output |
-| Trainer-side, never scored | `infra_error` | snapshot unreachable or sha mismatch, artifact download failure, base model unreadable, `container error:`, upload failure or timeout, unusable work root |
+| Trainer-side, never scored | `infra_error` | snapshot unreachable or sha mismatch, artifact download failure or timeout, base model unreadable, `container error:`, an upload error no retry can fix, an upload still failing when its retry window closes, unusable work root |
+| Not final | `upload_pending` | the decode passed its checks and the upload of the decoded files is being retried |
+
+## Pending uploads
+
+A decode whose output passed the check, but whose files cannot be uploaded because of a transient error (a dropped connection, a timeout, throttling, a 5xx), does not fail. The job finishes with `quant_decode.upload_pending` set and `upload_retry_until` at the end of the retry window. `upload_retry.py` then retries in the background.
+
+- The decoded files stay in the work directory, next to `pending_upload.json`. The decoder, its build output and the artifact are removed.
+- The retry runs in rounds until `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS` (default 2 hours) after the first failure. A round uploads only the files that are not in storage yet, one attempt per file, and stops at the first file that fails. The wait between rounds doubles from `QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS` to `QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS`, with jitter. The last round starts as the window closes.
+- A file counts as stored when an earlier attempt recorded it, or when storage holds an object of the same size whose `sha256` metadata matches. The second case covers an upload whose final response was lost.
+- Each attempt takes an upload slot. No slot is held between rounds.
+- When a round completes, the result becomes `ok`. When the window closes, or an error turns up that no retry can fix, it becomes `infra_error`. The work directory is removed in both cases, and each round is logged on the job.
+- A restarted trainer resumes every pending upload it finds in the work root, up to its original deadline. A job stored as `upload_pending` whose files are gone becomes an `infra_error`.
+- A new decode of the same job, or a re-run, replaces the pending upload. The retry it replaces stops and stores nothing.
+- `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS=0` turns the background retry off: the failed upload is an `infra_error` at once.
+
+The validator treats `upload_pending` as unsettled. It polls the trainer again and does not alert, unless the trainer still reports the upload as pending two hours after `upload_retry_until`.
+
+While an upload is pending, its bf16 output occupies the work root. Other decodes on the trainer need their own space on top of it.
 
 <details>
 <summary>Work directory permissions</summary>
@@ -93,7 +115,23 @@ The trainer owns the work directories, and both phases run as the trainer's uid:
 <details>
 <summary>Uploads</summary>
 
-Decoded shards go to S3-compatible storage as multipart uploads: 32 MiB parts, 4 in flight. The HTTP client retries each part on connection errors and 429/5xx; when a part still fails on a transient error (dropped connection, TLS EOF, throttling, 5xx) the whole file is uploaded again to the same key, with exponential backoff and jitter, up to 4 attempts. Auth, permission and local-file errors fail at once. Each file has a deadline of 300 s plus its size at 2 MB/s, covering every attempt. A failed or stalled upload is an `infra_error`. The upload uses the S3-compatible storage settings in `.trainer.env` (see [`docs/developer.md`](../../docs/developer.md#running-a-trainer)).
+Decoded shards go to S3-compatible storage as multipart uploads: 16 MiB parts, 4 in flight. The HTTP client retries each part on connection errors and 429/5xx; when a part still fails on a transient error (dropped connection, TLS EOF, throttling, 5xx) the whole file is uploaded again to the same key, with exponential backoff and jitter, up to 4 attempts. Auth, permission and local-file errors fail at once. Each file has a deadline of 300 s plus its size at 2 MB/s, covering every attempt. A file that still fails on a transient error or runs out of time leaves the upload pending; any other failure is an `infra_error`. The upload uses the S3-compatible storage settings in `.trainer.env` (see [`docs/developer.md`](../../docs/developer.md#running-a-trainer)).
+
+Each object carries the file's sha256 as `sha256` user metadata.
+
+The HTTP client keeps its connect timeout on the socket while a request body is sent, and that timeout covers one socket write. A part's body is therefore sent in slices of `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES` (1 MiB): the timeout then limits how long one slice may stall, not how long the whole part takes, so a slow link that keeps moving does not time a part out.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `QUANT_DECODE_UPLOAD_PART_BYTES` | 16 MiB | Multipart part size. A failed part is sent again in full. |
+| `QUANT_DECODE_UPLOAD_PARALLEL` | 4 | Parts in flight per file. |
+| `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES` | 1 MiB | Slice size of a part's body. `0` sends each part in one write, which must then finish within the connect timeout. |
+| `QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS` | 30 | Connecting, and each socket write of a request body. |
+| `QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS` | 90 | Waiting for the response to one request. |
+| `QUANT_DECODE_UPLOAD_HTTP_RETRIES` | 5 | HTTP-level retries of one request. |
+| `QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND` | 2,000,000 | Slowest rate the per-file deadline allows for. |
+
+All of them, and the three retry-window settings above, are environment variables read from `.trainer.env` at start.
 
 </details>
 
@@ -103,15 +141,16 @@ Decoded shards go to S3-compatible storage as multipart uploads: 32 MiB parts, 4
 python -m trainer.quant_decode.rerun <task_id> <hotkey>
 ```
 
-Run it on the trainer that ran the job. It needs the base model in the cache volume and the job in `task_history.json`. It runs the same decode as the training job, stores the result on the job and prints it as JSON.
+Run it on the trainer that ran the job. It needs the base model in the cache volume and the job in `task_history.json`. It runs the same decode as the training job, stores the result on the job and prints it as JSON. It replaces a pending upload of the same job. If its own upload ends up pending, the command keeps retrying in the foreground for the retry window before it exits.
 
 | Exit code | Meaning |
 | --- | --- |
 | 0 | `ok` or `quant_failure` |
 | 1 | `infra_error` |
 | 2 | the job is unknown or has no decode request |
+| 3 | the trainer restarted during the command's upload retry and took it over |
 
-The validator holds a freeform task until every successful hotkey has a decode outcome, and re-polls the trainer. After an `infra_error`, this re-run is the whole fix. The presigned snapshot URL in the stored request expires 7 days after dispatch.
+The validator holds a freeform task until every successful hotkey has a decode outcome, and re-polls the trainer. A pending upload needs no action. After an `infra_error`, this re-run is the whole fix. The presigned snapshot URL in the stored request expires 7 days after dispatch.
 
 ## See also
 

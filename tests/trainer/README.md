@@ -17,15 +17,18 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_gpu_health.py` | NVML fallback checks: ECC, NVLink and Xid. |
 | `test_gpu_monitor_startup.py` | The GPU monitor starts with the trainer app. |
 | `test_gpu_throttle.py` | Clock-throttle rules and the fault marker in training logs. |
-| `test_image_build_cleanup.py` | Miner image builds use no cache and leave no intermediate containers. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. |
+| `test_image_build_cache.py` | Miner image builds reuse the layer cache unless `TRAINER_IMAGE_BUILD_NO_CACHE` is set. The cache is kept between jobs and emptied by age or disk use. The build timeout default and override. |
+| `test_image_build_cleanup.py` | With the cache off, builds use no cache and leave no intermediate containers. Cleanup waits for builds in progress. The build-cache prune follows `TRAINER_PRUNE_BUILD_CACHE`. A build that times out or whose job is cancelled is stopped on the daemon. |
 | `test_job_state_started_at.py` | `started_at` is refreshed when a training container starts. |
 | `test_model_prep_quant_extractor.py` | Model-prep extractor choice for compression tasks. Marked `gpu`. |
 | `test_output_reclaim.py` | Output reclaim container spec and runner against a fake Docker client. |
 | `test_output_reclaim_docker.py` | Output reclaim against real containers. Skipped without Docker or the images. |
 | `test_quant_calibration.py` | The calibration file is written for the miner, and a job that cannot write it fails without starting a container. |
+| `test_transfer_slots.py` | Image builds, uploads and freeform decodes beyond their caps queue, and queue time is outside each step's time limit and the stale timeout. |
 | `test_quant_decode_job.py` | Freeform decode job against fake snapshot, Hugging Face, Docker and storage backends. |
 | `test_quant_decode_output_check.py` | Decoded-output check on hand-built safetensors files. |
 | `test_quant_decode_rerun.py` | Decode re-run CLI: stored outcome and exit codes. |
+| `test_quant_decode_upload_retry.py` | Background retry of a decoded upload: resume, retry window, slots, takeover and restart. |
 | `test_quant_decode_sandbox.py` | Decoder sandbox container specs and phase runner against a fake Docker client. |
 | `test_quant_decode_workdir_docker.py` | Sandbox phases against real containers: ownership, mounts and cleanup. Skipped without Docker or the images. |
 | `test_quant_train_contract.py` | Compression inputs reach the miner container, and the check, upload and decode sequence holds. |

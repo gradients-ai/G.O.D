@@ -27,6 +27,7 @@ from core.models.quant_artifact_models import QuantDecodeResult
 from trainer.quant_decode import job
 from trainer.quant_decode import sandbox
 from trainer.quant_decode import upload
+from trainer.quant_decode import upload_retry
 from trainer.quant_decode.job import _WorkDirs
 from trainer.quant_decode.job import check_artifact_files
 from trainer.quant_decode.job import run_freeform_decode
@@ -196,7 +197,7 @@ def artifact_repo(monkeypatch) -> FakeArtifactRepo:
 def uploads(monkeypatch) -> list[tuple[str, str, bytes]]:
     calls: list[tuple[str, str, bytes]] = []
 
-    def fake_put_file(bucket, object_name, path):
+    def fake_put_file(bucket, object_name, path, sha256=None):
         calls.append((bucket, object_name, Path(path).read_bytes()))
 
     monkeypatch.setattr(upload, "put_file", fake_put_file)
@@ -479,10 +480,10 @@ async def test_index_json_is_owner_only_and_parses_in_the_evaluator_model(setup:
     index_modes: list[int] = []
     real_upload = job._upload
 
-    async def spy(bucket, object_name, path, report=job._no_report):
+    async def spy(bucket, object_name, path, report=job._no_report, slot_job=None, **options):
         if path.name == "index.json":
             index_modes.append(stat.S_IMODE(path.stat().st_mode))
-        await real_upload(bucket, object_name, path, report)
+        await real_upload(bucket, object_name, path, report, slot_job, **options)
 
     monkeypatch.setattr(job, "_upload", spy)
     result = await setup.decode(FakeContainers(write_output=write_good_shard))
@@ -502,7 +503,7 @@ async def test_failures_carry_the_known_artifact_and_decoded_files(setup: Setup,
     assert [f.model_dump() for f in scored.artifact_files] == expected_artifact_files(artifact_repo)
     assert scored.decoded_files == []
 
-    def fail_index(bucket, object_name, path):
+    def fail_index(bucket, object_name, path, sha256=None):
         if object_name.endswith("index.json"):
             raise access_denied()
 
@@ -800,7 +801,7 @@ def access_denied() -> S3Error:
 
 
 async def test_failed_upload_is_infra_error(setup: Setup, monkeypatch):
-    def failing_upload(bucket, object_name, path):
+    def failing_upload(bucket, object_name, path, sha256=None):
         raise access_denied()
 
     monkeypatch.setattr(upload, "put_file", failing_upload)
@@ -823,13 +824,14 @@ def test_result_rejects_no_outcome():
 
 
 async def test_stalled_upload_is_infra_error_not_a_hang(setup: Setup, monkeypatch):
-    """A stalled multipart upload ends as an infra_error rather than hanging."""
+    """A stalled multipart upload ends as an infra_error rather than hanging (with the background retry off)."""
 
-    async def stalled_upload(bucket, object_name, path, report):
+    async def stalled_upload(bucket, object_name, path, report, policy, sha256):
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(job, "upload_with_retry", stalled_upload)
     monkeypatch.setattr(job, "upload_timeout_seconds", lambda size_bytes: 0.05)
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", 0)
 
     result = await asyncio.wait_for(setup.decode(FakeContainers(write_output=write_good_shard)), timeout=10)
 
@@ -843,7 +845,7 @@ async def test_transient_upload_error_is_retried_and_logged(setup: Setup, upload
     real_put_file = upload.put_file
     failures = [ConnectionResetError("Connection aborted")]
 
-    def flaky_put_file(bucket, object_name, path):
+    def flaky_put_file(bucket, object_name, path, sha256=None):
         if object_name.endswith(SHARD) and failures:
             raise failures.pop()
         real_put_file(bucket, object_name, path)
@@ -889,3 +891,86 @@ async def test_every_stage_is_reported_to_the_job_log(setup: Setup, uploads):
         f"decode: uploaded {SHARD}",
         "decode: uploaded index.json",
     ]
+
+
+def dropped_connection(bucket, object_name, path, sha256=None):
+    raise ConnectionResetError("connection reset by peer")
+
+
+async def no_pause(seconds: float) -> None:
+    return None
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    monkeypatch.setattr(upload.UploadRetryPolicy, "delay_seconds", lambda self, failed_attempt: 0.0)
+    monkeypatch.setattr(upload_retry, "_pause", no_pause)
+
+
+async def test_upload_that_keeps_failing_on_the_network_is_pending_and_keeps_the_decoded_files(
+    setup: Setup, monkeypatch, fast_retries
+):
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.upload_pending and not result.ok and result.infra_error is None
+    assert result.upload_retry_until is not None
+    assert result.uploaded_files == [] and result.n_tensors == len(BASE_TENSORS)
+    work = job.work_dirs(setup.work_root, TASK_ID, HOTKEY)
+    assert sorted(p.name for p in work.root.iterdir()) == ["output", job.PENDING_UPLOAD_NAME]  # the rest is freed
+    assert [p.name for p in work.output.iterdir()] == [SHARD]
+    assert stat.S_IMODE(work.pending.stat().st_mode) == 0o600
+    pending = job.load_pending(work)
+    assert (pending.task_id, pending.hotkey, pending.request) == (TASK_ID, HOTKEY, setup.request())
+    assert "ConnectionResetError" in pending.last_error
+
+
+async def test_pending_upload_that_lands_later_gives_the_same_result_as_a_clean_decode(
+    setup: Setup, uploads, monkeypatch, fast_retries
+):
+    timings = {"build_seconds", "run_seconds"}
+    clean = await setup.decode(FakeContainers(write_output=write_good_shard))
+    clean_objects = {object_name: content for _, object_name, content in uploads}
+    uploads.clear()
+    working_put_file = upload.put_file
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+    monkeypatch.setattr(job, "is_uploaded", lambda bucket, object_name, size_bytes, sha256: False)
+
+    pending = await setup.decode(FakeContainers(write_output=write_good_shard))
+    assert pending.upload_pending
+    monkeypatch.setattr(upload, "put_file", working_put_file)
+    final = await upload_retry.retry_pending_upload(setup.work_root, TASK_ID, HOTKEY)
+
+    assert final.ok, final
+    assert final.model_dump(exclude=timings) == clean.model_dump(exclude=timings)
+    assert {object_name: content for _, object_name, content in uploads} == clean_objects
+    setup.assert_work_removed()
+
+
+async def test_a_new_decode_replaces_a_pending_upload(setup: Setup, uploads, monkeypatch, fast_retries):
+    working_put_file = upload.put_file
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+    assert (await setup.decode(FakeContainers(write_output=write_good_shard))).upload_pending
+    monkeypatch.setattr(upload, "put_file", working_put_file)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.ok, result
+    setup.assert_work_removed()
+    assert await upload_retry.retry_pending_upload(setup.work_root, TASK_ID, HOTKEY) is None
+
+
+async def test_background_retry_turned_off_is_an_infra_error(setup: Setup, monkeypatch, fast_retries):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", 0)
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.infra_error == f"upload of {PREFIX}/{SHARD} failed after 4 attempts (ConnectionResetError)"
+    setup.assert_work_removed()
+
+
+def test_result_rejects_pending_with_another_outcome():
+    with pytest.raises(ValidationError):
+        QuantDecodeResult(ok=True, upload_pending=True)

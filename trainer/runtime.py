@@ -2,10 +2,11 @@ import asyncio
 import json
 import os
 import re
+import threading
+import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FuturesTimeoutError
 from functools import partial
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import docker
 from docker.errors import APIError
 from docker.errors import BuildError
 from docker.errors import ImageNotFound
+from docker.errors import NotFound
 from docker.models.containers import Container
 
 import core.constants as core_cst
@@ -47,11 +49,15 @@ from core.models.quant_models import QuantTarget
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from trainer import constants as cst
+from trainer import slots
 from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
 from trainer.host_resources import container_resources
 from trainer.host_resources import pinned_helper_kwargs
+from trainer.image_builds import BuildCleanupBusy
+from trainer.image_builds import ReusedLayers
 from trainer.image_builds import image_build_in_flight
+from trainer.image_builds import layer_too_old
 from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import complete_task
 from trainer.job_state import is_gpu_throttle_failure
@@ -63,6 +69,7 @@ from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.output_reclaim import reclaim_output_dir
 from trainer.quant_calibration import write_quant_calibration_file
+from trainer.quant_decode import upload_retry
 from trainer.quant_decode.job import run_freeform_decode
 from trainer.quant_decode.sandbox import sanitize_failure
 from trainer.quant_upload_check import QuantUploadVerdict
@@ -98,15 +105,136 @@ def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
         client.networks.create(name, driver="bridge", internal=True)
 
 
+# The classic builder runs each RUN step in a container of its own. It names the container on the line after the
+# step's own line, before the step produces any output:
+#   Step 4/9 : RUN pip install ...
+#    ---> Running in 0123456789ab
+_BUILD_STEP_LINE = re.compile(r"^Step \d+/\d+ : ")
+_STEP_CONTAINER_LINE = re.compile(r"^\s*--->\s+Running in ([0-9a-f]{12,64})\s*$")
+_BUILD_STREAM_LINE_MAX_CHARS = 64 * 1024
+
+
+class BuildStepContainers:
+    """Follows one build's stream to know its step containers, so the build can be stopped.
+
+    The daemon keeps building after the trainer stops waiting, and a step can go on downloading for as long as it
+    likes. Killing the step's container fails that step, which ends the build on the daemon. Once stopped, any step the
+    build still starts (after a base image pull, say) is killed as soon as the stream names it. Nothing is removed.
+
+    The stream also carries the steps' own output, so it is only trusted for candidates. A container line counts only
+    as the first one after a step line. Lines saying a container was removed are ignored: a step can print one about
+    itself. Which candidates are still alive is asked of the daemon when the build is stopped, and a container under
+    one of the trainer's own name prefixes is never killed.
+    """
+
+    def __init__(self, client: docker.DockerClient, log_labels: dict[str, str] | None = None):
+        self._client = client
+        self._log_labels = log_labels
+        self._lock = threading.Lock()
+        self._candidates: dict[str, None] = {}  # insertion-ordered set
+        self._stopped = False
+        self._buffer = ""
+        self._awaiting_step_container = False
+
+    def watch(self, build_output: Iterator[dict]) -> Iterator[dict]:
+        for chunk in build_output:
+            text = chunk.get("stream") if isinstance(chunk, dict) else None
+            if isinstance(text, str):
+                self._feed(text)
+            yield chunk
+
+    def _feed(self, text: str) -> None:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._observe(line)
+        if len(self._buffer) > _BUILD_STREAM_LINE_MAX_CHARS:
+            self._buffer = ""
+
+    def _observe(self, line: str) -> None:
+        if _BUILD_STEP_LINE.match(line):
+            self._awaiting_step_container = True
+            return
+        named = _STEP_CONTAINER_LINE.match(line) if self._awaiting_step_container else None
+        if named is None:
+            return
+        self._awaiting_step_container = False
+        container_id = named.group(1)
+        with self._lock:
+            self._candidates.pop(container_id, None)
+            self._candidates[container_id] = None
+            while len(self._candidates) > cst.BUILD_STEP_CONTAINERS_TRACKED:
+                del self._candidates[next(iter(self._candidates))]
+            stopped = self._stopped
+        if stopped:
+            self._kill_live([container_id])
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped = True
+            candidates = list(self._candidates)
+        self._kill_live(candidates)
+
+    def _kill_live(self, candidates: list[str]) -> None:
+        if not candidates:
+            return
+        try:
+            containers = self._client.api.containers(all=True)
+        except APIError as e:
+            logger.warning(f"Could not list containers to stop an image build: {e}", extra=self._log_labels)
+            return
+        for container in containers:
+            names = [name.lstrip("/") for name in container.get("Names") or []]
+            if any(name.startswith(cst.TRAINER_CONTAINER_NAME_PREFIXES) for name in names):
+                continue
+            if any(container["Id"].startswith(candidate) for candidate in candidates):
+                self._kill(container["Id"])
+
+    def _kill(self, container_id: str) -> None:
+        """Kill one step container. The stream names it between create and start, and a container that has not
+        started cannot be killed (409), so that case is retried until the kill lands or the container is gone."""
+        deadline = time.monotonic() + cst.BUILD_STOP_KILL_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._client.api.kill(container_id)
+                logger.info(f"Stopped image build: killed step container {container_id[:12]}", extra=self._log_labels)
+                return
+            except NotFound:
+                return
+            except APIError as e:
+                if e.status_code != 409 or not self._created_not_started(container_id):
+                    logger.info(f"Image build step container {container_id[:12]} not killed: {e}", extra=self._log_labels)
+                    return
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        f"Image build step container {container_id[:12]} never started; not killed", extra=self._log_labels
+                    )
+                    return
+            time.sleep(cst.BUILD_STOP_KILL_RETRY_SECONDS)
+
+    def _created_not_started(self, container_id: str) -> bool:
+        try:
+            return self._client.api.inspect_container(container_id)["State"]["Status"] == "created"
+        except APIError:
+            return False
+
+
 def build_docker_image(
     dockerfile_path: str,
     log_labels: dict[str, str] | None = None,
     context_path: str = ".",
     is_image_task: bool = False,
     tag: str = None,
-    no_cache: bool = True,
+    no_cache: bool | None = None,
     timeout_seconds: int | None = None,
+    cancelled: threading.Event | None = None,
 ) -> tuple[str, str | None]:
+    """Build an image and wait for it, at most `timeout_seconds`.
+
+    A build that runs out of time, or whose job sets `cancelled`, is stopped on the daemon too (BuildStepContainers).
+    Before the build and its timer start, it waits for a host build cleanup in progress, at most
+    BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS.
+    """
     client: docker.DockerClient = docker.from_env()
 
     if tag is None:
@@ -120,47 +248,147 @@ def build_docker_image(
         extra=log_labels,
     )
 
-    with image_build_in_flight():
-        build_output = None
-        executor = None
+    try:
+        with image_build_in_flight(cleanup_wait_seconds=cst.BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS):
+            build_output = None
+            executor = None
+            try:
+                build_output = BuildStream(
+                    client,
+                    log_labels,
+                    path=context_path,
+                    dockerfile=dockerfile_path,
+                    tag=tag,
+                    nocache=cst.IMAGE_BUILD_NO_CACHE if no_cache is None else no_cache,
+                    pull=cst.IMAGE_BUILD_PULL_BASE,
+                    # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
+                    # failure.
+                    rm=True,
+                    forcerm=True,
+                    decode=True,
+                )
+                steps = BuildStepContainers(client, log_labels)
+                # Set when the stream ends or the job gives up, whichever comes first; never set means out of time.
+                wake = cancelled if cancelled is not None else threading.Event()
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(_stream_build_logs, steps.watch(build_output), log_labels)
+                future.add_done_callback(lambda _: wake.set())
+                woken = wake.wait(timeout=timeout_seconds)
+                if not future.done():
+                    build_output.abandoned.set()
+                    steps.stop()
+                    message = f"Docker image build exceeded {timeout_seconds} seconds"
+                    if woken:
+                        message = "Docker image build cancelled"
+                    logger.error(message, extra=log_labels)
+                    return None, message
+                future.result()
+                if build_output.error is not None:
+                    logger.error(f"Docker build failed: {build_output.error}", extra=log_labels)
+                    return None, build_output.error
+
+                # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
+                # ends normally with no image, and the job would only fail later on a missing tag at container start.
+                try:
+                    client.images.get(tag)
+                except ImageNotFound:
+                    message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
+                    logger.error(message, extra=log_labels)
+                    return None, message
+
+                logger.info("Docker image built successfully.", extra=log_labels)
+                return tag, None
+            except (BuildError, APIError) as e:
+                logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
+                return None, str(e)
+            finally:
+                if executor is not None:
+                    executor.shutdown(wait=False, cancel_futures=True)
+    except BuildCleanupBusy as e:  # raised before the build or its timer started
+        message = f"Docker image build not started: {e}"
+        logger.error(message, extra=log_labels)
+        return None, message
+
+
+class BuildStream:
+    """One build's stream. A build that takes a too-old layer from the cache is stopped and run again without the cache.
+
+    Every layer the build reuses is checked (image_builds.ReusedLayers). The first build is read to its end before the
+    second starts, so it can no longer tag the image, and a tag it did set is removed: the image must come from the
+    second build or not at all. Both builds run inside the caller's one time limit, and no second build starts once the
+    caller has set `abandoned`.
+
+    The stream is read by a thread that logs errors and carries on, so a build that could not be started or run again
+    leaves its reason in `error`.
+    """
+
+    def __init__(self, client: docker.DockerClient, log_labels: dict[str, str] | None, **build_kwargs):
+        self._client = client
+        self._log_labels = log_labels
+        self._build_kwargs = build_kwargs
+        self.abandoned = threading.Event()
+        self.error: str | None = None
+
+    def __iter__(self) -> Iterator[dict]:
+        stream = self._start(self._build_kwargs)
+        if stream is None:
+            return
+        if self._build_kwargs["nocache"]:
+            yield from stream
+            return
+        steps = BuildStepContainers(self._client, self._log_labels)
+        reused = ReusedLayers()
+        rebuild = False
+        for chunk in steps.watch(stream):
+            yield chunk
+            for layer_id in [] if rebuild else reused.feed(chunk):
+                if layer_too_old(self._client, layer_id):
+                    logger.info(
+                        f"Cached layer {layer_id} is over {cst.IMAGE_BUILD_CACHE_MAX_AGE_HOURS:g} h old: "
+                        "building again without cache",
+                        extra=self._log_labels,
+                    )
+                    rebuild = True
+                    steps.stop()
+                    break
+        if not rebuild:
+            return
+        tag = self._build_kwargs["tag"]
         try:
-            build_output = client.api.build(
-                path=context_path,
-                dockerfile=dockerfile_path,
-                tag=tag,
-                nocache=no_cache,
-                # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
-                # failure.
-                rm=True,
-                forcerm=True,
-                decode=True,
-            )
-            executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(_stream_build_logs, build_output, log_labels)
-            try:
-                future.result(timeout=timeout_seconds)
-            except FuturesTimeoutError:
-                message = f"Docker image build exceeded {timeout_seconds} seconds"
-                logger.error(message, extra=log_labels)
-                return None, message
+            self._client.images.remove(image=tag, force=True, noprune=True)
+        except ImageNotFound:
+            pass
+        except APIError as e:
+            self.error = f"Docker image build failed: could not remove the image built on a too-old cached layer: {e}"
+            logger.warning(self.error, extra=self._log_labels)
+            return
+        if self.abandoned.is_set():
+            return
+        stream = self._start({**self._build_kwargs, "nocache": True})
+        if stream is not None:
+            yield from stream
 
-            # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
-            # ends normally with no image, and the job would only fail later on a missing tag at container start.
-            try:
-                client.images.get(tag)
-            except ImageNotFound:
-                message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
-                logger.error(message, extra=log_labels)
-                return None, message
-
-            logger.info("Docker image built successfully.", extra=log_labels)
-            return tag, None
+    def _start(self, build_kwargs: dict) -> Iterator[dict] | None:
+        try:
+            return self._client.api.build(**build_kwargs)
         except (BuildError, APIError) as e:
-            logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
-            return None, str(e)
+            self.error = str(e)
+            return None
+
+
+async def build_job_image(task_id: str, hotkey: str, **build_kwargs) -> tuple[str | None, str | None]:
+    """Build a job's image inside one of the trainer's build slots; `build_kwargs` go to build_docker_image.
+
+    The build timeout starts inside build_docker_image, so only once the job holds a slot. A wait for one is written
+    to the job log, and the job stays TRAINING throughout. A build that times out, or whose job is cancelled, is
+    stopped on the daemon as well.
+    """
+    async with slots.image_builds.slot(report=partial(log_task, task_id, hotkey), job=(task_id, hotkey)):
+        cancelled = threading.Event()
+        try:
+            return await asyncio.to_thread(build_docker_image, cancelled=cancelled, **build_kwargs)
         finally:
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
+            cancelled.set()  # a job cancelled mid-build leaves its build thread behind: tell it to stop the build
 
 
 def _stream_build_logs(build_output: Iterator[dict], log_labels: dict[str, str] | None) -> None:
@@ -189,7 +417,9 @@ def flag_large_build_context_files(context_path: str, log_labels: dict[str, str]
 def delete_image_and_cleanup(tag: str):
     client = docker.from_env()
     try:
-        client.images.remove(image=tag, force=True)
+        # With the layer cache on, the image's layers stay behind as the cache for later builds until
+        # prune_build_leftovers empties it.
+        client.images.remove(image=tag, force=True, noprune=not cst.IMAGE_BUILD_NO_CACHE)
         logger.info(f"Deleted Docker image with tag: {tag}")
     except docker.errors.ImageNotFound:
         logger.error(f"No Docker image found with tag: {tag}")
@@ -670,79 +900,88 @@ async def upload_repo_to_hf(
     verbatim: bool = False,
     gpu_ids: list[int] | None = None,
 ):
-    container = None
-    try:
-        client = docker.from_env()
-        local_container_folder = train_paths.get_checkpoints_output_path(task_id, expected_repo_name)
+    """Upload a job's output folder with the uploader container, inside one of the trainer's upload slots.
 
-        environment = {
-            "HUGGINGFACE_TOKEN": huggingface_token,
-            "HUGGINGFACE_USERNAME": huggingface_username,
-            "WANDB_TOKEN": wandb_token or None,
-            "WANDB_LOGS_PATH": f"{cst.WANDB_LOGS_DIR}/{task_id}_{hotkey}",
-            "LOCAL_FOLDER": local_container_folder,
-            "MODEL": model,
-            "TASK_ID": task_id,
-            "EXPECTED_REPO_NAME": expected_repo_name,
-            "HF_REPO_SUBFOLDER": path_in_repo,
-        }
-        if verbatim:
-            environment["UPLOAD_VERBATIM"] = "1"
+    The container's time limit starts once the slot is held, so time queued behind other uploads is not counted.
+    """
+    timeout_seconds = cst.HF_UPLOAD_TIMEOUT_MINUTES * 60
+    async with slots.uploads.slot(report=partial(log_task, task_id, hotkey), job=(task_id, hotkey)):
+        container = None
+        try:
+            client = docker.from_env()
+            local_container_folder = train_paths.get_checkpoints_output_path(task_id, expected_repo_name)
 
-        volumes = {
-            cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
-            cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
-        }
+            environment = {
+                "HUGGINGFACE_TOKEN": huggingface_token,
+                "HUGGINGFACE_USERNAME": huggingface_username,
+                "WANDB_TOKEN": wandb_token or None,
+                "WANDB_LOGS_PATH": f"{cst.WANDB_LOGS_DIR}/{task_id}_{hotkey}",
+                "LOCAL_FOLDER": local_container_folder,
+                "MODEL": model,
+                "TASK_ID": task_id,
+                "EXPECTED_REPO_NAME": expected_repo_name,
+                "HF_REPO_SUBFOLDER": path_in_repo,
+            }
+            if verbatim:
+                environment["UPLOAD_VERBATIM"] = "1"
 
-        container_name = f"hf-upload-{uuid.uuid4().hex}"
+            volumes = {
+                cst.CHECKPOINTS_VOLUME_NAME: {"bind": cst.OUTPUT_CHECKPOINTS_PATH, "mode": "rw"},
+                cst.CACHE_VOLUME_NAME: {"bind": cst.CACHE_ROOT_PATH, "mode": "rw"},
+            }
 
-        logger.info(f"Starting upload container {container_name} for task {task_id}...", extra=docker_labels)
+            container_name = f"hf-upload-{uuid.uuid4().hex}"
 
-        container = await asyncio.to_thread(
-            client.containers.run,
-            image=cst.HF_UPLOAD_DOCKER_IMAGE,
-            environment=environment,
-            volumes=volumes,
-            labels=docker_labels,
-            detach=True,
-            remove=False,
-            name=container_name,
-            **pinned_helper_kwargs(gpu_ids),
-        )
+            logger.info(f"Starting upload container {container_name} for task {task_id}...", extra=docker_labels)
 
-        _log_streaming_task = asyncio.create_task(
-            asyncio.to_thread(stream_container_logs, container, get_all_context_tags())
-        )
+            container = await asyncio.to_thread(
+                client.containers.run,
+                image=cst.HF_UPLOAD_DOCKER_IMAGE,
+                environment=environment,
+                volumes=volumes,
+                labels=docker_labels,
+                detach=True,
+                remove=False,
+                name=container_name,
+                **pinned_helper_kwargs(gpu_ids),
+            )
 
-        result = await asyncio.to_thread(container.wait)
-        logs = (await asyncio.to_thread(container.logs)).decode("utf-8", errors="ignore")
-        exit_code = result.get("StatusCode", -1)
-        wandb_url = None
-        if wandb_token:
-            m = re.search(r"https://wandb\.ai/\S+", logs)
-            wandb_url = m.group(0) if m else None
-            if wandb_url:
-                await update_wandb_url(task_id, hotkey, wandb_url)
+            _log_streaming_task = asyncio.create_task(
+                asyncio.to_thread(stream_container_logs, container, get_all_context_tags())
+            )
 
-        if exit_code != 0:
-            last_err = extract_container_error(logs) or "unknown error"
-            msg = f"HF upload failed | exit_code={exit_code} | container={container_name} | last_error={last_err}"
-            await log_task(task_id, hotkey, f"[ERROR] {msg}")
-            raise RuntimeError(msg)
-
-    except Exception as e:
-        logger.exception(f"Unexpected error during upload_repo_to_hf for task {task_id}: {e}", extra=docker_labels)
-        raise
-
-    finally:
-        if container and isinstance(container, Container):
             try:
-                await asyncio.to_thread(container.reload)
-                if container.status == "running":
-                    await asyncio.to_thread(container.kill)
-                await asyncio.to_thread(container.remove, force=True, v=True)
-            except Exception as cleanup_err:
-                logger.warning(f"Failed to remove upload container {container.name}: {cleanup_err}")
+                result = await asyncio.wait_for(asyncio.to_thread(container.wait), timeout=timeout_seconds)
+            except asyncio.TimeoutError:
+                raise RuntimeError(f"HF upload exceeded {timeout_seconds}s | container={container_name}") from None
+            logs = (await asyncio.to_thread(container.logs)).decode("utf-8", errors="ignore")
+            exit_code = result.get("StatusCode", -1)
+            wandb_url = None
+            if wandb_token:
+                m = re.search(r"https://wandb\.ai/\S+", logs)
+                wandb_url = m.group(0) if m else None
+                if wandb_url:
+                    await update_wandb_url(task_id, hotkey, wandb_url)
+
+            if exit_code != 0:
+                last_err = extract_container_error(logs) or "unknown error"
+                msg = f"HF upload failed | exit_code={exit_code} | container={container_name} | last_error={last_err}"
+                await log_task(task_id, hotkey, f"[ERROR] {msg}")
+                raise RuntimeError(msg)
+
+        except Exception as e:
+            logger.exception(f"Unexpected error during upload_repo_to_hf for task {task_id}: {e}", extra=docker_labels)
+            raise
+
+        finally:
+            if container and isinstance(container, Container):
+                try:
+                    await asyncio.to_thread(container.reload)
+                    if container.status == "running":
+                        await asyncio.to_thread(container.kill)
+                    await asyncio.to_thread(container.remove, force=True, v=True)
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to remove upload container {container.name}: {cleanup_err}")
 
 
 def get_task_type(request: TrainerProxyRequest) -> TaskType:
@@ -833,21 +1072,23 @@ async def freeform_decode_result(task: TrainerProxyRequest) -> QuantDecodeResult
 
 
 async def _run_freeform_decode_step(task: TrainerProxyRequest, log_labels: dict[str, str]) -> None:
-    """Decode a freeform artifact after its upload and store the outcome on the job log for the validator."""
+    """Decode a freeform artifact after its upload and store the outcome on the job log for the validator.
+
+    When the decoded files could not be uploaded yet, the job still finishes here: the stored outcome is
+    `upload_pending` and upload_retry replaces it once the upload lands or its retry window closes.
+    """
     training_data = task.training_data
     if not isinstance(training_data, TrainRequestQuant) or training_data.decode is None:
         await log_task(training_data.task_id, task.hotkey, "freeform decode skipped: no decode request")
         return
 
     await log_task(training_data.task_id, task.hotkey, "Running freeform decode...")
+    upload_retry.cancel((training_data.task_id, task.hotkey))  # this decode replaces an earlier one's pending upload
     result = await freeform_decode_result(task)
     await update_quant_decode_result(training_data.task_id, task.hotkey, result)
-    if result.ok:
-        message = f"freeform decode ok: {result.n_tensors} tensors, {len(result.uploaded_files)} files uploaded"
-    elif result.quant_failure is not None:
-        message = f"freeform decode scored fail: {result.quant_failure}"
-    else:
-        message = f"[ERROR] freeform decode infra error: {result.infra_error}"
+    if result.upload_pending:
+        upload_retry.start(cst.QUANT_DECODE_WORK_ROOT, training_data.task_id, task.hotkey)
+    message = upload_retry.result_message(result)
     logger.info(message, extra=log_labels)
     await log_task(training_data.task_id, task.hotkey, message)
 
@@ -890,6 +1131,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
 
     try:
         training_data = task.training_data
+        job_key = (training_data.task_id, task.hotkey)
+        slots.forget_waits(job_key)
         success = False
         container = None
         env_server_containers = []
@@ -955,8 +1198,9 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             if review_message:
                 await log_task(training_data.task_id, task.hotkey, review_message)
 
-        tag, exc = await asyncio.to_thread(
-            build_docker_image,
+        tag, exc = await build_job_image(
+            training_data.task_id,
+            task.hotkey,
             dockerfile_path=dockerfile_path,
             log_labels=log_labels,
             is_image_task=(task_type == TaskType.IMAGETASK),
@@ -1038,6 +1282,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         await update_container_name(training_data.task_id, task.hotkey, container.name)
         # Align cleanup's stale-timeout clock with container.wait (not job-accept time).
         await update_training_started_at(training_data.task_id, task.hotkey)
+        slots.forget_waits(job_key)  # the refreshed clock already leaves the wait for a build slot behind
         await log_task(training_data.task_id, task.hotkey, f"Container started: {container.name}")
         await log_task(training_data.task_id, task.hotkey, f"Waiting for container to finish (timeout={timeout_seconds})...")
         wait_task = asyncio.create_task(asyncio.to_thread(container.wait))
@@ -1152,6 +1397,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                 await _run_freeform_decode_step(task, log_labels)
 
             await complete_task(training_data.task_id, task.hotkey, success=success)
+            slots.forget_waits(job_key)
 
         try:
             await asyncio.shield(_final_cleanup())
