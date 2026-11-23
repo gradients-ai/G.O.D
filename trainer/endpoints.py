@@ -193,19 +193,29 @@ async def get_available_gpus() -> list[GPUInfo]:
     return gpu_info
 
 
-async def get_task_details(task_id: str, hotkey: str) -> TrainerTaskLog:
+def _without_pending_decode(job: TrainerJob) -> TrainerJob:
+    """The job as a caller that does not know the `upload_pending` decode state must see it: with no decode result
+    yet. Such a caller cannot parse the state, and "no result yet" is what it means to it."""
+    if isinstance(job, TrainerTaskLog) and job.quant_decode is not None and job.quant_decode.upload_pending:
+        return job.model_copy(update={"quant_decode": None})
+    return job
+
+
+async def get_task_details(task_id: str, hotkey: str, accepts_upload_pending: bool = False) -> TrainerTaskLog:
+    """`accepts_upload_pending=true` is sent by callers that understand a decode result in the `upload_pending` state;
+    everyone else gets no decode result while the upload is pending."""
     load_task_history()  # serve results written by another process, e.g. trainer/quant_decode/rerun.py
     task = get_task(task_id, hotkey)
     if task is None:
         raise HTTPException(status_code=404, detail=f"Task with ID '{task_id}' and hotkey '{hotkey}' not found.")
-    return task
+    return task if accepts_upload_pending else _without_pending_decode(task)
 
 
 async def get_recent_tasks_list(hours: int) -> list[TrainerJob]:
     tasks = get_recent_tasks(hours)
     if not tasks:
         raise HTTPException(status_code=404, detail=f"Tasks not found in the last {hours} hours.")
-    return tasks
+    return [_without_pending_decode(task) for task in tasks]
 
 
 def factory_router() -> APIRouter:

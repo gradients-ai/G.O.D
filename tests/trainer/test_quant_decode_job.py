@@ -25,8 +25,10 @@ from core.models.quant_artifact_models import QuantDecodedIndex
 from core.models.quant_artifact_models import QuantDecodeRequest
 from core.models.quant_artifact_models import QuantDecodeResult
 from trainer.quant_decode import job
+from trainer.quant_decode import job_lock
 from trainer.quant_decode import sandbox
 from trainer.quant_decode import upload
+from trainer.quant_decode import upload_retry
 from trainer.quant_decode.job import _WorkDirs
 from trainer.quant_decode.job import check_artifact_files
 from trainer.quant_decode.job import run_freeform_decode
@@ -196,7 +198,7 @@ def artifact_repo(monkeypatch) -> FakeArtifactRepo:
 def uploads(monkeypatch) -> list[tuple[str, str, bytes]]:
     calls: list[tuple[str, str, bytes]] = []
 
-    def fake_put_file(bucket, object_name, path):
+    def fake_put_file(bucket, object_name, path, sha256=None):
         calls.append((bucket, object_name, Path(path).read_bytes()))
 
     monkeypatch.setattr(upload, "put_file", fake_put_file)
@@ -252,7 +254,7 @@ class Setup:
         )
 
     def assert_work_removed(self) -> None:
-        assert [p.name for p in self.work_root.iterdir()] == [job.WORK_ROOT_MARKER]
+        assert sorted(p.name for p in self.work_root.iterdir()) == [job.WORK_ROOT_MARKER, job_lock.LOCK_DIR_NAME]
 
 
 @pytest.fixture
@@ -479,10 +481,10 @@ async def test_index_json_is_owner_only_and_parses_in_the_evaluator_model(setup:
     index_modes: list[int] = []
     real_upload = job._upload
 
-    async def spy(bucket, object_name, path, report=job._no_report):
+    async def spy(bucket, object_name, path, report=job._no_report, **options):
         if path.name == "index.json":
             index_modes.append(stat.S_IMODE(path.stat().st_mode))
-        await real_upload(bucket, object_name, path, report)
+        await real_upload(bucket, object_name, path, report, **options)
 
     monkeypatch.setattr(job, "_upload", spy)
     result = await setup.decode(FakeContainers(write_output=write_good_shard))
@@ -502,7 +504,7 @@ async def test_failures_carry_the_known_artifact_and_decoded_files(setup: Setup,
     assert [f.model_dump() for f in scored.artifact_files] == expected_artifact_files(artifact_repo)
     assert scored.decoded_files == []
 
-    def fail_index(bucket, object_name, path):
+    def fail_index(bucket, object_name, path, sha256=None):
         if object_name.endswith("index.json"):
             raise access_denied()
 
@@ -800,7 +802,7 @@ def access_denied() -> S3Error:
 
 
 async def test_failed_upload_is_infra_error(setup: Setup, monkeypatch):
-    def failing_upload(bucket, object_name, path):
+    def failing_upload(bucket, object_name, path, sha256=None):
         raise access_denied()
 
     monkeypatch.setattr(upload, "put_file", failing_upload)
@@ -823,13 +825,14 @@ def test_result_rejects_no_outcome():
 
 
 async def test_stalled_upload_is_infra_error_not_a_hang(setup: Setup, monkeypatch):
-    """A stalled multipart upload ends as an infra_error rather than hanging."""
+    """A stalled multipart upload ends as an infra_error rather than hanging (with the background retry off)."""
 
-    async def stalled_upload(bucket, object_name, path, report):
+    async def stalled_upload(bucket, object_name, path, report, policy, sha256):
         await asyncio.sleep(3600)
 
     monkeypatch.setattr(job, "upload_with_retry", stalled_upload)
     monkeypatch.setattr(job, "upload_timeout_seconds", lambda size_bytes: 0.05)
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", 0)
 
     result = await asyncio.wait_for(setup.decode(FakeContainers(write_output=write_good_shard)), timeout=10)
 
@@ -843,7 +846,7 @@ async def test_transient_upload_error_is_retried_and_logged(setup: Setup, upload
     real_put_file = upload.put_file
     failures = [ConnectionResetError("Connection aborted")]
 
-    def flaky_put_file(bucket, object_name, path):
+    def flaky_put_file(bucket, object_name, path, sha256=None):
         if object_name.endswith(SHARD) and failures:
             raise failures.pop()
         real_put_file(bucket, object_name, path)
@@ -889,3 +892,230 @@ async def test_every_stage_is_reported_to_the_job_log(setup: Setup, uploads):
         f"decode: uploaded {SHARD}",
         "decode: uploaded index.json",
     ]
+
+
+def dropped_connection(bucket, object_name, path, sha256=None):
+    raise ConnectionResetError("connection reset by peer")
+
+
+async def no_pause(seconds: float) -> None:
+    return None
+
+
+@pytest.fixture
+def fast_retries(monkeypatch):
+    monkeypatch.setattr(upload.UploadRetryPolicy, "delay_seconds", lambda self, failed_attempt: 0.0)
+    monkeypatch.setattr(upload_retry, "_pause", no_pause)
+
+
+async def test_upload_that_keeps_failing_on_the_network_is_pending_and_keeps_the_decoded_files(
+    setup: Setup, monkeypatch, fast_retries
+):
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.upload_pending and not result.ok and result.infra_error is None
+    assert result.upload_retry_until is not None
+    assert result.uploaded_files == [] and result.n_tensors == len(BASE_TENSORS)
+    work = job.work_dirs(setup.work_root, TASK_ID, HOTKEY)
+    assert sorted(p.name for p in work.root.iterdir()) == ["output", job.PENDING_UPLOAD_NAME]  # the rest is freed
+    assert [p.name for p in work.output.iterdir()] == [SHARD]
+    assert stat.S_IMODE(work.pending.stat().st_mode) == 0o600
+    pending = job.load_pending(work)
+    assert (pending.task_id, pending.hotkey, pending.request) == (TASK_ID, HOTKEY, setup.request())
+    assert "ConnectionResetError" in pending.last_error
+
+
+async def test_pending_upload_that_lands_later_gives_the_same_result_as_a_clean_decode(
+    setup: Setup, uploads, monkeypatch, fast_retries
+):
+    timings = {"build_seconds", "run_seconds"}
+    clean = await setup.decode(FakeContainers(write_output=write_good_shard))
+    clean_objects = {object_name: content for _, object_name, content in uploads}
+    uploads.clear()
+    working_put_file = upload.put_file
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+    monkeypatch.setattr(job, "is_uploaded", lambda bucket, object_name, size_bytes, sha256: False)
+
+    pending = await setup.decode(FakeContainers(write_output=write_good_shard))
+    assert pending.upload_pending
+    monkeypatch.setattr(upload, "put_file", working_put_file)
+    final = await upload_retry.retry_pending_upload(setup.work_root, TASK_ID, HOTKEY)
+
+    assert final.ok, final
+    assert final.model_dump(exclude=timings) == clean.model_dump(exclude=timings)
+    assert {object_name: content for _, object_name, content in uploads} == clean_objects
+    setup.assert_work_removed()
+
+
+async def test_a_new_decode_replaces_a_pending_upload(setup: Setup, uploads, monkeypatch, fast_retries):
+    working_put_file = upload.put_file
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+    assert (await setup.decode(FakeContainers(write_output=write_good_shard))).upload_pending
+    monkeypatch.setattr(upload, "put_file", working_put_file)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.ok, result
+    setup.assert_work_removed()
+    assert await upload_retry.retry_pending_upload(setup.work_root, TASK_ID, HOTKEY) is None
+
+
+async def test_background_retry_turned_off_is_an_infra_error(setup: Setup, monkeypatch, fast_retries):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", 0)
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert result.infra_error == f"upload of {PREFIX}/{SHARD} failed after 4 attempts (ConnectionResetError)"
+    setup.assert_work_removed()
+
+
+def test_result_rejects_pending_with_another_outcome():
+    with pytest.raises(ValidationError):
+        QuantDecodeResult(ok=True, upload_pending=True)
+
+
+async def test_decoded_files_are_not_kept_when_the_disk_is_too_full(setup: Setup, monkeypatch, fast_retries):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_BYTES", 10**18)
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    assert not result.upload_pending
+    assert result.infra_error.startswith(
+        f"upload of {PREFIX}/{SHARD} failed after 4 attempts (ConnectionResetError); not retried: "
+    )
+    assert "GB free on the decode work root" in result.infra_error
+    setup.assert_work_removed()
+
+
+async def test_pending_result_says_when_the_last_round_has_run_out_of_time(setup: Setup, monkeypatch, fast_retries):
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+
+    result = await setup.decode(FakeContainers(write_output=write_good_shard))
+
+    shard_bytes = (job.work_dirs(setup.work_root, TASK_ID, HOTKEY).output / SHARD).stat().st_size
+    last_round = job.upload_timeout_seconds(shard_bytes) + job.upload_timeout_seconds(0)  # the shard, then the index
+    assert (result.upload_settle_deadline - result.upload_retry_until).total_seconds() == pytest.approx(last_round)
+
+
+async def test_a_decode_waits_for_the_job_lock_and_holds_it_until_it_is_done(setup: Setup, uploads, monkeypatch):
+    monkeypatch.setattr(job_lock, "LOCK_POLL_SECONDS", 0.01)
+    job.prepare_work_root(setup.work_root)
+    work = job.work_dirs(setup.work_root, TASK_ID, HOTKEY)
+    upload_in_another_process = job_lock.JobLock(setup.work_root, work.root.name)
+    assert upload_in_another_process.try_acquire()
+    lines: list[str] = []
+    locked_during_upload: list[bool] = []
+    real_put_file = upload.put_file
+
+    async def record(message: str) -> None:
+        lines.append(message)
+
+    def put_file(bucket, object_name, path, sha256=None):
+        probe = job_lock.JobLock(setup.work_root, work.root.name)
+        locked_during_upload.append(not probe.try_acquire())
+        probe.release()
+        real_put_file(bucket, object_name, path, sha256)
+
+    monkeypatch.setattr(upload, "put_file", put_file)
+
+    decode = asyncio.create_task(setup.decode(FakeContainers(write_output=write_good_shard), report=record))
+    await asyncio.sleep(0.2)
+    assert not decode.done() and not work.root.exists()  # nothing touched while the other holder works
+    upload_in_another_process.release()
+    result = await decode
+
+    assert result.ok, result
+    assert lines[0] == "decode: waiting for another decode or upload of this job to finish"
+    assert locked_during_upload == [True, True]
+    assert upload_in_another_process.try_acquire()  # released after the decode
+
+
+async def test_a_decode_that_never_gets_the_job_lock_is_an_infra_error_and_touches_nothing(setup: Setup, monkeypatch):
+    monkeypatch.setattr(job_lock, "LOCK_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(cst, "QUANT_DECODE_JOB_LOCK_WAIT_SECONDS", 0.05)
+    job.prepare_work_root(setup.work_root)
+    work = job.work_dirs(setup.work_root, TASK_ID, HOTKEY)
+    work.root.mkdir()
+    (work.root / "kept").write_text("another process is working here")
+    holder = job_lock.JobLock(setup.work_root, work.root.name)
+    assert holder.try_acquire()
+    try:
+        result = await setup.decode(FakeContainers(write_output=write_good_shard))
+    finally:
+        holder.release()
+
+    assert result.infra_error == "another decode or upload of this job did not finish in time"
+    assert (work.root / "kept").exists()
+
+
+async def test_decodes_of_different_jobs_starting_together_share_a_fresh_work_root(setup: Setup, uploads):
+    async def decode(hotkey: str) -> QuantDecodeResult:
+        return await run_freeform_decode(
+            setup.request(),
+            task_id=TASK_ID,
+            hotkey=hotkey,
+            artifact_repo="user/artifact",
+            base_model_dir=setup.base_model_dir,
+            hf_token=None,
+            work_root=setup.work_root,
+            docker_client=FakeDocker(FakeContainers(write_output=write_good_shard)),
+        )
+
+    results = await asyncio.gather(*(decode(f"hotkey-{n}") for n in range(4)))
+
+    assert all(result.ok for result in results), results
+
+
+async def test_a_decode_started_during_an_upload_round_waits_for_it_and_then_replaces_the_retry(
+    setup: Setup, uploads, monkeypatch, fast_retries
+):
+    """The re-run CLI starts while the trainer's retry is in the middle of a put. It must not touch the work dir until
+    that round is over, and the retry it replaces must store nothing afterwards."""
+    monkeypatch.setattr(job_lock, "LOCK_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(job, "is_uploaded", lambda bucket, object_name, size_bytes, sha256: False)
+    working_put_file = upload.put_file
+    monkeypatch.setattr(upload, "put_file", dropped_connection)
+    assert (await setup.decode(FakeContainers(write_output=write_good_shard))).upload_pending
+    work = job.work_dirs(setup.work_root, TASK_ID, HOTKEY)
+    token = job.load_pending(work).token
+    in_put, let_go = threading.Event(), threading.Event()
+    next_round = asyncio.Event()
+    pauses: list[float] = []
+    stored: list[QuantDecodeResult] = []
+
+    def slow_then_dropped(bucket, object_name, path, sha256=None):
+        in_put.set()
+        let_go.wait(timeout=10)
+        raise ConnectionResetError("connection reset by peer")
+
+    async def pause(seconds: float) -> None:
+        pauses.append(seconds)
+        if len(pauses) > 1:
+            await next_round.wait()
+
+    async def store(result: QuantDecodeResult) -> None:
+        stored.append(result)
+
+    monkeypatch.setattr(upload, "put_file", slow_then_dropped)
+    monkeypatch.setattr(upload_retry, "_pause", pause)
+    retrying = asyncio.create_task(upload_retry.retry_pending_upload(setup.work_root, TASK_ID, HOTKEY, store=store))
+    assert await asyncio.to_thread(in_put.wait, 10)
+    monkeypatch.setattr(upload, "put_file", working_put_file)
+
+    decoding = asyncio.create_task(setup.decode(FakeContainers(write_output=write_good_shard)))
+    await asyncio.sleep(0.2)
+    assert not decoding.done()
+    assert job.load_pending(work).token == token and [p.name for p in work.output.iterdir()] == [SHARD]
+    let_go.set()
+    result = await decoding
+    next_round.set()
+
+    assert result.ok, result
+    assert await retrying is None
+    assert stored == []
+    assert [object_name for _, object_name, _ in uploads] == [f"{PREFIX}/{SHARD}", f"{PREFIX}/index.json"]
+    setup.assert_work_removed()

@@ -1,8 +1,11 @@
 """Whole-file retry of decoded uploads (trainer/quant_decode/upload.py): transient errors retry, others fail at once."""
 
+import asyncio
 import http.client
+import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -43,7 +46,7 @@ class FakeStorage:
         self.errors = list(errors)
         self.calls: list[tuple[str, str, Path]] = []
 
-    def put_file(self, bucket: str, object_name: str, path: Path) -> None:
+    def put_file(self, bucket: str, object_name: str, path: Path, sha256: str | None = None) -> None:
         self.calls.append((bucket, object_name, path))
         if self.errors:
             raise self.errors.pop(0)
@@ -216,7 +219,11 @@ def test_put_file_uses_the_decode_part_size_and_parallelism(monkeypatch, shard):
     assert calls == [
         (
             (BUCKET, OBJECT, str(shard)),
-            {"part_size": cst.QUANT_DECODE_UPLOAD_PART_BYTES, "num_parallel_uploads": cst.QUANT_DECODE_UPLOAD_PARALLEL},
+            {
+                "metadata": None,
+                "part_size": cst.QUANT_DECODE_UPLOAD_PART_BYTES,
+                "num_parallel_uploads": cst.QUANT_DECODE_UPLOAD_PARALLEL,
+            },
         )
     ]
 
@@ -336,8 +343,8 @@ class FlakyS3:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
-    def client(self, http_retries: int) -> Minio:
-        http_client = urllib3.PoolManager(retries=Retry(total=http_retries, backoff_factor=0))
+    def client(self, http_retries: int, pool_manager: type[urllib3.PoolManager] = urllib3.PoolManager) -> Minio:
+        http_client = pool_manager(retries=Retry(total=http_retries, backoff_factor=0))
         endpoint = f"127.0.0.1:{self.server.server_port}"
         return Minio(endpoint, access_key="a", secret_key="b", secure=False, region="us-east-1", http_client=http_client)
 
@@ -398,3 +405,294 @@ def test_failed_part_surfaces_instead_of_blocking_the_upload(monkeypatch, tmp_pa
 
     assert not thread.is_alive(), "put_file is still blocked after a part failed"
     assert len(errors) == 1 and upload.is_transient(errors[0])
+
+
+async def test_sliced_part_bodies_arrive_intact_and_are_resent_whole_on_a_retry(monkeypatch, big_shard, report, reports):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 64 * 1024)
+    s3 = FlakyS3(drops=1)
+    monkeypatch.setattr(upload, "_storage", s3.client(http_retries=2, pool_manager=upload._SlicingPoolManager))
+    try:
+        await upload_with_retry(BUCKET, OBJECT, big_shard, report, FAST, "f" * 64)
+    finally:
+        s3.server.shutdown()
+
+    assert s3.objects[OBJECT] == big_shard.read_bytes()
+    assert reports == []
+
+
+def test_storage_client_slices_part_bodies():
+    assert isinstance(upload._storage._http, upload._SlicingPoolManager)
+
+
+@pytest.mark.parametrize(
+    "body, headers, sliced",
+    [
+        (b"x" * 100, {"Content-Length": "100"}, True),
+        (b"x" * 100, {"content-length": "100"}, False),  # a plain dict is case-sensitive; minio sends an HTTPHeaderDict
+        (b"x" * 100, urllib3.HTTPHeaderDict({"content-length": "100"}), True),
+        (b"x" * 100, {}, False),  # no Content-Length: slicing would turn the request into chunked encoding
+        (b"x" * 10, {"Content-Length": "10"}, False),  # one slice or less
+        (None, {}, False),
+    ],
+)
+def test_only_large_bodies_with_a_content_length_are_sliced(monkeypatch, body, headers, sliced):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 16)
+    sent: list[object] = []
+    monkeypatch.setattr(urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw["body"]))
+
+    upload._SlicingPoolManager().urlopen("PUT", "http://storage.example/key", body=body, headers=headers)
+
+    assert isinstance(sent[0], upload._SlicedBody) is sliced
+    if sliced:
+        slices = [bytes(part) for part in sent[0]]
+        assert b"".join(slices) == body and max(map(len, slices)) == 16
+        assert [bytes(part) for part in sent[0]] == slices  # a retry iterates again from the start
+
+
+def test_slicing_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 0)
+    sent: list[object] = []
+    monkeypatch.setattr(urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw["body"]))
+
+    upload._SlicingPoolManager().urlopen("PUT", "http://storage.example/key", body=b"x" * 100, headers={"Content-Length": "100"})
+
+    assert sent == [b"x" * 100]
+
+
+class SlowReader:
+    """An HTTP endpoint that reads a request body steadily but slowly, then answers 200."""
+
+    def __init__(self, bytes_per_second: int) -> None:
+        chunk = 16 * 1024
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_PUT(self):  # noqa: N802
+                remaining = int(self.headers["Content-Length"])
+                while remaining > 0:
+                    data = self.rfile.read(min(chunk, remaining))
+                    if not data:
+                        return
+                    remaining -= len(data)
+                    time.sleep(chunk / bytes_per_second)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        class Server(ThreadingHTTPServer):
+            def server_bind(self) -> None:
+                # Small buffers, so the sender is held to the reader's pace instead of filling the kernel's queue.
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)
+                super().server_bind()
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+
+    def put(self, pool_manager: type[urllib3.PoolManager], body: bytes, send_timeout: float) -> int:
+        client = pool_manager(
+            timeout=urllib3.Timeout(connect=send_timeout, read=30),
+            retries=False,
+            socket_options=[(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)],
+        )
+        url = f"http://127.0.0.1:{self.server.server_port}/part"
+        return client.urlopen("PUT", url, body=body, headers={"Content-Length": str(len(body))}).status
+
+
+def test_a_slow_but_moving_part_times_out_in_one_write_and_survives_when_sliced(monkeypatch):
+    """The socket timeout while a body is sent is the connect timeout and covers one write. A whole part in one write
+    must leave within it; sliced, only each slice must."""
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 64 * 1024)
+    body = b"x" * (4 * 1024 * 1024)  # ~4 s at the reader's pace
+    slow = SlowReader(bytes_per_second=1024 * 1024)
+    try:
+        with pytest.raises(urllib3.exceptions.ProtocolError, match="timed out"):
+            slow.put(urllib3.PoolManager, body, send_timeout=1.0)
+        assert slow.put(upload._SlicingPoolManager, body, send_timeout=1.0) == 200  # sent after the whole body is read
+    finally:
+        slow.server.shutdown()
+
+
+class FakeStat:
+    def __init__(self, size: int, metadata: dict[str, str]) -> None:
+        self.size = size
+        self.metadata = urllib3.HTTPHeaderDict(metadata)
+
+
+@pytest.mark.parametrize(
+    "stat, uploaded",
+    [
+        (FakeStat(64, {"X-Amz-Meta-Sha256": "a" * 64}), True),
+        (FakeStat(63, {"x-amz-meta-sha256": "a" * 64}), False),  # another size
+        (FakeStat(64, {"x-amz-meta-sha256": "b" * 64}), False),  # other content, e.g. an earlier decode of the job
+        (FakeStat(64, {}), False),  # no metadata: cannot be confirmed
+        (s3_error("NoSuchKey"), False),
+        (ConnectionResetError("reset"), False),
+    ],
+)
+def test_is_uploaded_needs_the_same_size_and_sha256(monkeypatch, stat, uploaded):
+    def stat_object(bucket, object_name):
+        if isinstance(stat, Exception):
+            raise stat
+        return stat
+
+    monkeypatch.setattr(upload._storage, "stat_object", stat_object)
+
+    assert upload.is_uploaded(BUCKET, OBJECT, 64, "a" * 64) is uploaded
+
+
+def test_put_file_stores_the_sha256_as_object_metadata(monkeypatch, shard):
+    calls: list[dict] = []
+    monkeypatch.setattr(upload._storage, "fput_object", lambda *args, **kwargs: calls.append(kwargs))
+
+    upload.put_file(BUCKET, OBJECT, shard, "a" * 64)
+
+    assert calls[0]["metadata"] == {"sha256": "a" * 64}
+    assert upload.SHA256_METADATA_HEADER == "x-amz-meta-sha256"  # how minio sends that key and how stat returns it
+
+
+async def test_upload_failed_says_whether_a_later_attempt_can_succeed(monkeypatch, shard, report):
+    install(monkeypatch, [ConnectionResetError("reset")] * 4)
+    with pytest.raises(UploadFailed) as transient:
+        await upload_with_retry(BUCKET, OBJECT, shard, report, FAST)
+    install(monkeypatch, [s3_error("AccessDenied")])
+    with pytest.raises(UploadFailed) as permanent:
+        await upload_with_retry(BUCKET, OBJECT, shard, report, FAST)
+
+    assert transient.value.transient is True
+    assert permanent.value.transient is False
+
+
+# --- stopping an upload the caller gave up on
+
+
+class BlockingPut:
+    """put_file stand-in that sends until its upload's cancel event is set, like a body sender between slices."""
+
+    def __init__(self) -> None:
+        self.running = 0
+        self.peak = 0
+        self.finished = 0
+        self.lock = threading.Lock()
+
+    def put_file(self, bucket: str, object_name: str, path: Path, sha256: str | None = None) -> None:
+        with self.lock:
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+        try:
+            cancel = upload._cancel_events[object_name]
+            while not cancel.is_set():
+                time.sleep(0.01)
+            time.sleep(0.1)  # winding down: the request in flight failing, the multipart upload being aborted
+        finally:
+            with self.lock:
+                self.running -= 1
+                self.finished += 1
+
+
+async def wait_until(condition) -> None:
+    for _ in range(500):
+        if condition():
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError("condition not reached")
+
+
+async def test_an_upload_that_runs_out_of_time_stops_its_thread(monkeypatch, shard, report):
+    blocking = BlockingPut()
+    monkeypatch.setattr(upload, "put_file", blocking.put_file)
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(upload_with_retry(BUCKET, OBJECT, shard, report, FAST), timeout=0.1)
+
+    await wait_until(lambda: blocking.finished == 1)
+    assert blocking.running == 0
+    assert OBJECT not in upload._cancel_events
+
+
+async def test_a_new_upload_of_an_object_waits_for_the_abandoned_one_to_leave(monkeypatch, shard, report):
+    blocking = BlockingPut()
+    monkeypatch.setattr(upload, "put_file", blocking.put_file)
+    monkeypatch.setattr(upload, "CANCEL_POLL_SECONDS", 0.01)
+
+    for _ in range(3):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(upload_with_retry(BUCKET, OBJECT, shard, report, FAST), timeout=0.05)
+
+    await wait_until(lambda: blocking.running == 0)
+    assert blocking.peak == 1  # never two threads sending the same object
+
+
+def test_a_cancelled_upload_stops_between_slices_and_refuses_new_parts(monkeypatch):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 16)
+    cancel = threading.Event()
+    monkeypatch.setitem(upload._cancel_events, "prefix/model.safetensors", cancel)
+    sent: list[object] = []
+    monkeypatch.setattr(
+        urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw.get("body"))
+    )
+    client = upload._SlicingPoolManager()
+    part_url = "http://storage.example/bucket/prefix/model.safetensors?partNumber=1&uploadId=u1"
+    headers = {"Content-Length": "64"}
+
+    client.urlopen("PUT", part_url, body=b"x" * 64, headers=headers)
+    slices = iter(sent[0])
+    next(slices)
+    cancel.set()
+
+    with pytest.raises(upload.UploadCancelled):
+        next(slices)
+    with pytest.raises(upload.UploadCancelled):
+        client.urlopen("PUT", part_url, body=b"x" * 64, headers=headers)
+    with pytest.raises(upload.UploadCancelled):  # the request that would complete, and so publish, the object
+        client.urlopen("POST", "http://storage.example/bucket/prefix/model.safetensors?uploadId=u1", body=b"<xml/>")
+    client.urlopen("DELETE", part_url)  # minio can still abort the multipart upload
+    client.urlopen("PUT", "http://storage.example/bucket/prefix/other.safetensors", body=b"x" * 64, headers=headers)
+    assert len(sent) == 3
+
+
+def test_a_cancelled_upload_is_never_retried():
+    assert not upload.is_transient(upload.UploadCancelled("upload cancelled"))
+
+
+# --- settings from the environment
+
+
+@pytest.mark.parametrize(
+    "raw, expected, warned",
+    [
+        (None, 16, False),
+        ("", 16, False),
+        ("32", 32, False),
+        (" 32 ", 32, False),
+        ("sixteen", 16, True),  # not a number: the default
+        ("1", 5, True),  # under the minimum: the minimum
+        ("-3", 5, True),
+    ],
+)
+def test_integer_settings_fall_back_instead_of_stopping_the_trainer(monkeypatch, caplog, raw, expected, warned):
+    if raw is None:
+        monkeypatch.delenv("TEST_QUANT_SETTING", raising=False)
+    else:
+        monkeypatch.setenv("TEST_QUANT_SETTING", raw)
+
+    with caplog.at_level("WARNING", logger=cst.__name__):
+        assert cst._env_int("TEST_QUANT_SETTING", 16, 5) == expected
+
+    assert bool(caplog.records) is warned
+
+
+@pytest.mark.parametrize("raw, expected", [("0.5", 1.0), ("nan", 1.0), ("2.5", 2.5), ("fast", 30.0)])
+def test_float_settings_fall_back_instead_of_stopping_the_trainer(monkeypatch, raw, expected):
+    monkeypatch.setenv("TEST_QUANT_SETTING", raw)
+
+    assert cst._env_float("TEST_QUANT_SETTING", 30.0, 1.0) == expected
+
+
+def test_upload_settings_respect_what_storage_accepts():
+    assert cst.QUANT_DECODE_UPLOAD_PART_BYTES >= cst.S3_MIN_PART_BYTES
+    assert cst.QUANT_DECODE_UPLOAD_PARALLEL >= 1
+    assert cst.QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS >= cst.QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS

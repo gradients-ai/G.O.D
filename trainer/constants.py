@@ -1,9 +1,38 @@
+import logging
 import os
 from pathlib import Path
 
 from core.constants.docker import DEFAULT_TEXT_DOCKERFILE_PATH as DEFAULT_TEXT_DOCKERFILE_PATH
 from core.constants.docker import LEGACY_TEXT_DOCKERFILE_PATH as LEGACY_TEXT_DOCKERFILE_PATH
 from core.constants.docker import TEXT_DOCKERFILE_PATHS as TEXT_DOCKERFILE_PATHS
+
+
+_logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, minimum: int) -> int:
+    """An integer setting from the environment. A value that does not parse falls back to the default and one below
+    `minimum` is raised to it, each with a warning: a typo in the env file must not stop the trainer or break uploads."""
+    return int(_env_number(name, default, minimum, int))
+
+
+def _env_float(name: str, default: float, minimum: float) -> float:
+    return float(_env_number(name, default, minimum, float))
+
+
+def _env_number(name: str, default: float, minimum: float, parse: type) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = parse(raw.strip())
+    except ValueError:
+        _logger.warning(f"{name}={raw!r} is not a number; using the default {default}")
+        return default
+    if value != value or value < minimum:  # NaN compares unequal to itself
+        _logger.warning(f"{name}={raw!r} is below the minimum {minimum}; using {minimum}")
+        return minimum
+    return value
 
 
 # Training repository Dockerfiles (the text ones are defined once in core.constants.docker, shared with the validator lint)
@@ -135,26 +164,50 @@ QUANT_CALIBRATION_RETRY_SLEEP_SECONDS = 5
 QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS = 30  # per attempt, on top of the fetch timeout: parse, fingerprint, write
 QUANT_CALIBRATION_MAX_BYTES = 256 * 1024 * 1024  # the file is ~1,000 tokenised rows; anything larger is not ours
 # Decoded bf16 shards go to S3-compatible storage as multipart uploads; memory in flight is part size x parallel =
-# 128 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
-# connection, which fails the whole file.
-QUANT_DECODE_UPLOAD_PART_BYTES = 32 * 1024 * 1024
-QUANT_DECODE_UPLOAD_PARALLEL = 4
+# 64 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
+# connection, which fails the whole file. A part that fails is sent again in full, so smaller parts lose less. S3
+# allows 10,000 parts per object (16 MiB parts carry files up to ~156 GiB) and no part under 5 MiB.
+S3_MIN_PART_BYTES = 5 * 1024 * 1024
+QUANT_DECODE_UPLOAD_PART_BYTES = _env_int("QUANT_DECODE_UPLOAD_PART_BYTES", 16 * 1024 * 1024, S3_MIN_PART_BYTES)
+QUANT_DECODE_UPLOAD_PARALLEL = _env_int("QUANT_DECODE_UPLOAD_PARALLEL", 4, 1)
+# A part's body goes to the socket in slices of this size, so the socket timeout bounds one slice, not the whole part.
+# 0 sends each part in one write, which must then finish within the connect timeout.
+QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES = _env_int("QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 1024 * 1024, 0)
 # Each request (one part) is retried by the HTTP client on connection errors and 429/5xx, with backoff and jitter.
-QUANT_DECODE_UPLOAD_HTTP_RETRIES = 5
+QUANT_DECODE_UPLOAD_HTTP_RETRIES = _env_int("QUANT_DECODE_UPLOAD_HTTP_RETRIES", 5, 0)
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_FACTOR = 1.0  # urllib3: sleeps 0, 2, 4, 8, 16 s between retries
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_MAX_SECONDS = 30
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_JITTER_SECONDS = 1.0
-QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = 30
+# Connecting, and each socket write while the request body is sent (the HTTP client keeps this timeout on the socket
+# until the body is out).
+QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = _env_float("QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS", 30, 1)
 # Waiting for a response once the body is sent: seconds for a part; the complete call is the slow one. Kept short so
 # a stalled request leaves room in the file deadline for a whole-file retry.
-QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = 90
+QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = _env_float("QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS", 90, 1)
 # When a file still fails on a transient error, the whole file is uploaded again (same key, so it overwrites) after
 # an exponential backoff with jitter, up to this many attempts and always within the file's deadline below.
 QUANT_DECODE_UPLOAD_ATTEMPTS = 4
 QUANT_DECODE_UPLOAD_RETRY_BASE_SECONDS = 10
 QUANT_DECODE_UPLOAD_RETRY_MAX_SECONDS = 60
 QUANT_DECODE_UPLOAD_MIN_TIMEOUT_SECONDS = 300  # per-file deadline floor
-QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = 2 * 1000 * 1000  # per-file deadline: floor + size at this rate
+# Per-file deadline: floor + size at this rate.
+QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = _env_int("QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND", 2 * 1000 * 1000, 1)
+# When the decoded files still cannot be uploaded for a transient reason, the job finishes and the upload is retried
+# in the background (trainer/quant_decode/upload_retry.py): one attempt per missing file per round, rounds spaced by
+# an exponential backoff with jitter between the base and the cap, until this long after the first failure. Only then
+# is the decode an infra_error. The decoded files stay on disk meanwhile. 0 turns the background retry off.
+QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS = _env_float("QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", 2 * 60 * 60, 0)
+QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS = _env_float("QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS", 60, 1)
+QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS = _env_float(
+    "QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS", 900, QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS
+)
+# Decoded files are kept for a retry only while the work root's disk has at least this much free after the decoder and
+# the artifact are removed; below it the failed upload is an infra_error at once, so kept files never starve the next
+# decodes of space.
+QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_BYTES = _env_int("QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_GB", 50, 0) * 1000**3
+# A decode, or a round of the upload retry, holds its job's lock (trainer/quant_decode/job_lock.py). A decode that
+# finds the lock taken waits this long for it, then ends as an infra_error.
+QUANT_DECODE_JOB_LOCK_WAIT_SECONDS = 60 * 60
 QUANT_ARTIFACT_FORBIDDEN_SUFFIXES = (
     ".py",
     ".pyc",

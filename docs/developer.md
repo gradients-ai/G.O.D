@@ -144,6 +144,9 @@ Added by hand:
 | `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` | `trainer/constants.py` | Default `24`. A build does not reuse a layer older than this, and the image layer cache is emptied this often. |
 | `TRAINER_IMAGE_BUILD_CACHE_MAX_DISK_USED_PERCENT` | `trainer/constants.py` | Default `80`. The image layer cache is emptied when Docker's disk is this full. |
 | `TRAINER_DOCKER_BUILD_TIMEOUT_MINUTES` | `trainer/constants.py` | Default `45`. Time limit of one miner image build. |
+| `QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS` | `trainer/constants.py` | Optional. How long a decoded upload that fails on network errors is retried in the background before it counts as an infra error. Default `7200`; `0` turns the retry off. See [Pending uploads](../trainer/quant_decode/README.md#pending-uploads). |
+| `QUANT_DECODE_UPLOAD_RETRY_MIN_FREE_DISK_GB` | `trainer/constants.py` | Optional. Decoded files are kept for an upload retry only while the decode work root has this much disk free. Default `50`. |
+| `QUANT_DECODE_UPLOAD_PART_BYTES`, `QUANT_DECODE_UPLOAD_PARALLEL`, `QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES`, `QUANT_DECODE_UPLOAD_HTTP_*`, `QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND` | `trainer/constants.py` | Optional. Tuning of decoded-file uploads for a slow or lossy link. Defaults and meaning: [`trainer/quant_decode/README.md`](../trainer/quant_decode/README.md#decode-job). |
 | `LOKI_ENDPOINT`, `LOKI_USERNAME`, `LOKI_PASSWORD` | `task deploy-trainer-logs` | Log shipping. See [Observability](#observability). |
 | `DISCORD_WEBHOOK` | `trainer/monitoring/monitor.py` | Optional. Where the GPU monitor posts alerts. See [GPU monitor](#gpu-monitor). |
 

@@ -266,7 +266,7 @@ class FakeMinio:
         self.objects[object_name] = Path(file_path).read_bytes()
         return True
 
-    def put_file(self, bucket, object_name, path):
+    def put_file(self, bucket, object_name, path, sha256=None):
         """The trainer decode's upload (trainer/quant_decode/upload.put_file)."""
         self.objects[object_name] = Path(path).read_bytes()
 
@@ -784,7 +784,8 @@ async def test_freeform_exposure_end_to_end(world: World, tmp_path: Path) -> Non
     assert run_obs["artifact_files"] and set(run_obs["artifact_files"].values()) == {0o600}
     assert not world.work_root.is_relative_to(world.cache_volume)
     assert list(world.cache_volume.iterdir()) == []  # nothing decode-related was ever put on the shared volume
-    assert [p.name for p in world.work_root.iterdir()] == [job.WORK_ROOT_MARKER]  # work tree removed afterwards
+    # work tree removed afterwards: only the root's marker and its lock dir are left
+    assert sorted(p.name for p in world.work_root.iterdir()) == [job.WORK_ROOT_MARKER, ".locks"]
     runs = world.repos[CHAMPION]["docker_runs"]
     assert [r["image"] for r in runs] == [trainer_cst.QUANT_DECODER_BUILD_IMAGE, trainer_cst.QUANT_DECODER_RUN_IMAGE]
     assert all(
