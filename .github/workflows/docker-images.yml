@@ -89,6 +89,27 @@ jobs:
                   ],
               },
               {
+                  "id": "quant-evaluator",
+                  "image": "gradientsio/quant-evaluator",
+                  "channel_tag": "basilica",
+                  "dockerfile": "ops/docker/quant-evaluator.dockerfile",
+                  "patterns": [
+                      "validator/evaluation/**",
+                      "core/**",
+                      "pyproject.toml",
+                      "ops/docker/quant-evaluator.dockerfile",
+                      "ops/docker/requirements/quant-evaluator.txt",
+                      ".dockerignore",
+                  ],
+                  "exclude_patterns": [
+                      "validator/evaluation/basilica.py",
+                      "validator/evaluation/db_utils.py",
+                      "validator/evaluation/docker_evaluation.py",
+                      "validator/scoring/tasks.py",
+                      "validator/scoring/tournaments.py",
+                  ],
+              },
+              {
                   "id": "image-evaluator",
                   "image": "gradientsio/image-evaluator",
                   "channel_tag": "basilica",
