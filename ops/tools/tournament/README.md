@@ -17,7 +17,7 @@ Manual tournament control and inspection. Each tool states its usage in its modu
 | `restamp_adapter_base.py` | Rewrites `base_model_name_or_path` in a LoRA adapter's `adapter_config.json`. |
 | `reverse_tournament_round.py` | Deletes a round and reactivates the one before it. |
 | `start_tournament.py` | Creates a tournament: `python -m ops.tools.tournament.start_tournament <text\|image\|quant>`. |
-| `tournament_status_summary.py` | Prints a status summary of the active text and image tournaments (`--text`, `--image`). It has no compression option. |
+| `tournament_status_summary.py` | Prints a status summary of the active text, image and compression tournaments (`--text`, `--image`, `--quant`). |
 
 ## Reversing a round
 
