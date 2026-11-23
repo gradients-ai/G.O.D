@@ -180,6 +180,9 @@ OUTPUT_RECLAIM_DOCKER_IMAGE = HF_UPLOAD_DOCKER_IMAGE
 # chown any file, read/search any dir (miners can chmod 0 their own dirs), chmod files it no longer owns. Nothing else:
 # no DAC_OVERRIDE, so it can write nothing it has not just been handed.
 OUTPUT_RECLAIM_CAPS = ["CHOWN", "DAC_READ_SEARCH", "FOWNER"]
+# Emptying a job's directory before a new attempt (output_reclaim.clear_job_checkpoints): delete entries of any owner
+# and mode, in sticky directories too. Only that job's directory is mounted.
+JOB_DIR_CLEAR_CAPS = ["DAC_OVERRIDE", "FOWNER"]
 OUTPUT_RECLAIM_TIMEOUT_SECONDS = 300
 OUTPUT_RECLAIM_MEM_LIMIT = "512m"
 OUTPUT_RECLAIM_PIDS_LIMIT = 64

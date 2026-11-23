@@ -19,6 +19,7 @@ from core.models.payload_models import ModelPrepJob
 from core.models.payload_models import TrainerTaskLog
 from trainer.cleanup import start_cleanup_loop_in_thread
 from trainer.endpoints import factory_router
+from trainer.job_checkpoints import mounts_whole_checkpoints_volume
 from trainer.job_state import complete_model_prep
 from trainer.job_state import complete_task
 from trainer.job_state import get_running_jobs
@@ -49,7 +50,11 @@ async def cleanup_orphaned_trainer_state():
     running_containers = await asyncio.to_thread(_list_running_trainer_containers)
     running_container_names = {c.name for c in running_containers}
 
-    orphan_containers = [c for c in running_containers if c.name not in tracked_container_names]
+    # A container that mounts the whole checkpoints volume can reach every job's directory. Its job is failed below
+    # like any other job whose container is gone.
+    orphan_containers = [
+        c for c in running_containers if c.name not in tracked_container_names or mounts_whole_checkpoints_volume(c)
+    ]
     for container in orphan_containers:
         try:
             await asyncio.to_thread(_remove_container, container)

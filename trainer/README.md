@@ -20,6 +20,8 @@ The service that takes jobs from the validator, clones miner repositories, build
 | `model_prep/` | Model preparation and baseline statistics. |
 | `monitoring/` | GPU monitor started with the trainer. `monitor.py` posts Discord alerts, fails trainings on the bad GPU and withdraws that GPU. `blacklist.py` keeps withdrawn GPUs out for the life of the process. `fault.py` stops their containers. `health.py` is the NVML ECC, NVLink and Xid fallback. `dcgm.py` parses `dcgmi health` after `ops/trainer_ops/install_dcgm.sh` installs DCGM. `throttle.py` holds the clock-throttle rules. |
 | `output_reclaim.py` | Gives a finished job's output directory to the trainer user before it is checked. |
+| `job_checkpoints.py` | Each job's own directory on the checkpoints volume, the only part of it the job's containers mount. |
+| `path_names.py` | The check that a task id or hotkey is one plain directory name. |
 | `quant_calibration.py` | Fetches a task's calibration set and writes it into the cache volume for the miner. |
 | `quant_decode/` | Sandbox that runs a freeform decoder, the decoded-output check and the re-run CLI. |
 | `quant_upload_check.py` | Checks a compression task's output against its `quant_manifest.json` before upload. |
@@ -86,7 +88,9 @@ The miner's container runs as root with every capability dropped, so its output 
 
 - `reclaim_output_dir` runs one container from the uploader image as root, with only `CHOWN`, `DAC_READ_SEARCH` and `FOWNER`, no network and a read-only root.
 - Its fixed command is `chown -R -P` to the trainer's uid:gid, then `chmod -R u+rwX`. Symlinks are never followed, and chown clears setuid and setgid bits.
-- The checkpoints volume is mounted by name. An output or task directory that is a symlink is rejected.
+- Only the job's own directory of the checkpoints volume is mounted. An output or task directory that is a symlink is rejected.
+- Before a job's training container starts, `clear_job_checkpoints` empties that directory with one container of the same kind (`DAC_OVERRIDE` and `FOWNER` only), so a new attempt never meets files of an earlier one.
+- On startup the trainer removes any training container that mounts the whole checkpoints volume and fails its job.
 - A reclaim that cannot run (image missing, or a timeout after `OUTPUT_RECLAIM_TIMEOUT_SECONDS`) fails the job without upload.
 - A file the trainer cannot reach after the reclaim makes the check reject the output (`output not accessible to the trainer`).
 
