@@ -143,6 +143,10 @@ _QUANT_DECODE_ALERTED: set[tuple[str, str]] = set()
 # HTTP failures for one (task_id, hotkey) the hold is alerted instead of retried silently forever.
 QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT = 3
 _QUANT_DECODE_REPOLL_FAILURES: dict[tuple[str, str], int] = {}
+# Unsettled decodes re-polled per cycle; the rest wait for a later cycle, taken in rotation.
+QUANT_DECODE_REPOLLS_PER_CYCLE = 20
+# The (task_id, hotkey) last re-polled: the next cycle resumes after it, so no unsettled row is starved.
+_quant_decode_repoll_cursor: tuple[str, str] | None = None
 # A quant row is held, never dispatched, while its task cannot hand the miner all of its inputs: the calibration set, the
 # target and the bf16 reference losses on the calibration rows. Every held row logs the ERROR; the webhook hears about a task
 # on its first held row check and again on every QUANT_INPUTS_MISSING_REALERT_HELD_ROWS-th one after it (the counter counts
@@ -1746,7 +1750,7 @@ async def _monitor_training_tasks(config: Config):
                         count_attempt=True,
                     )
                     if training_task.task.task_type == TaskType.QUANTFREEFORMTASK:
-                        # Result ignored: an unsettled decode is caught up by the PREEVALUATION hold.
+                        # Result ignored: an unsettled decode is re-polled every cycle until it settles.
                         await _record_quant_decode(training_task, successful_log, config)
                 elif all(s == TaskStatus.FAILURE for s in statuses):
                     any_completed = True
@@ -2080,6 +2084,45 @@ async def _poll_quant_decode(training_task: TournamentTaskTraining | None, task_
     return await _record_quant_decode(training_task, task_log, config)
 
 
+async def repoll_unsettled_quant_decodes_cycle(config: Config):
+    """Its own cycle, so a trainer that is slow to answer never delays training monitoring."""
+    while True:
+        try:
+            await _repoll_unsettled_quant_decodes(config)
+        except Exception as e:
+            logger.error(f"Error in repoll_unsettled_quant_decodes cycle: {str(e)}", exc_info=True)
+        finally:
+            await asyncio.sleep(cst.QUANT_DECODE_REPOLL_CYCLE_INTERVAL)
+
+
+async def _repoll_unsettled_quant_decodes(config: Config) -> None:
+    """Re-poll successful freeform trainings whose decode is not settled, without waiting for the rest of the task.
+
+    An entry is evaluated only once its decode is settled, so a decode that settles on its trainer after
+    the training succeeded is recorded here. At most QUANT_DECODE_REPOLLS_PER_CYCLE entries are polled
+    per cycle, resuming after the last one polled.
+    """
+    global _quant_decode_repoll_cursor
+    trainings = await tournament_sql.get_unsettled_freeform_decode_trainings(config.psql_db)
+    if not trainings:
+        _quant_decode_repoll_cursor = None
+        return
+    unsettled = sorted(trainings, key=lambda training: (str(training.task.task_id), training.hotkey))
+    start = 0
+    if _quant_decode_repoll_cursor is not None:
+        cursor = _quant_decode_repoll_cursor
+        start = sum((str(t.task.task_id), t.hotkey) <= cursor for t in unsettled) % len(unsettled)
+    batch = (unsettled[start:] + unsettled[:start])[:QUANT_DECODE_REPOLLS_PER_CYCLE]
+    logger.info(f"Re-polling {len(batch)} of {len(unsettled)} unsettled freeform decodes")
+    for training in batch:
+        task_id = str(training.task.task_id)
+        _quant_decode_repoll_cursor = (task_id, training.hotkey)
+        try:
+            await _poll_quant_decode(training, task_id, training.hotkey, config)
+        except Exception as e:
+            logger.error(f"Error re-polling the decode of task {task_id} hotkey {training.hotkey}: {e}", exc_info=True)
+
+
 async def _freeform_decodes_settled(task: AnyTypeRawTask, config: Config) -> bool:
     """True once every successful entrant of a freeform task has a settled decode.
 
@@ -2093,8 +2136,8 @@ async def _freeform_decodes_settled(task: AnyTypeRawTask, config: Config) -> boo
     if not unsettled:
         return True
 
-    successful = await tournament_sql.get_tournament_training_tasks(config.psql_db, TrainingStatus.SUCCESS)
-    trainings = {training.hotkey: training for training in successful if str(training.task.task_id) == task_id}
+    successful = await tournament_sql.get_training_rows_for_task(task_id, TrainingStatus.SUCCESS, config.psql_db)
+    trainings = {training.hotkey: training for training in successful}
     held = [hotkey for hotkey in unsettled if not await _poll_quant_decode(trainings.get(hotkey), task_id, hotkey, config)]
     if held:
         logger.info(f"Holding freeform task {task_id} before PREEVALUATION: decode unsettled for {held}")
@@ -3519,6 +3562,7 @@ async def run_tournament_orchestrator_cycles():
         fetch_tournament_tasks_ready_to_train(config),
         process_pending_tournament_tasks(config),
         monitor_training_tasks(config),
+        repoll_unsettled_quant_decodes_cycle(config),
         seed_tournament_evaluations_from_training(config),
         update_all_trainers_gpu_availability_cycle(config),
         process_awaiting_model_prep_tasks(config),

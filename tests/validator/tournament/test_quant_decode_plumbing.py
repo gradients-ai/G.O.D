@@ -1,5 +1,5 @@
-"""Freeform decode plumbing in the orchestrator: decode-result persistence and the PREEVALUATION hold for
-unsettled decodes.
+"""Freeform decode plumbing in the orchestrator: decode-result persistence, the per-entry re-poll of
+unsettled decodes and the PREEVALUATION hold for them.
 
 Only the miner's fault is scored (no decoder at registration, or the trainer's quant_failure); infra
 trouble and a snapshot mismatch hold the task and alert once per (task, hotkey), never zeroing anyone.
@@ -277,6 +277,115 @@ class TestRecordQuantDecode:
 
 
 @pytest.fixture
+def repoll(monkeypatch, decode_sql):
+    mocks = SimpleNamespace(unsettled=AsyncMock(return_value=[]), task_details=AsyncMock())
+    monkeypatch.setattr(orchestrator, "_quant_decode_repoll_cursor", None)
+    monkeypatch.setattr(orchestrator.tournament_sql, "get_unsettled_freeform_decode_trainings", mocks.unsettled)
+    monkeypatch.setattr(orchestrator, "get_training_task_details", mocks.task_details)
+    # The re-poll is per entry: it never asks whether the rest of the task has finished training.
+    monkeypatch.setattr(
+        orchestrator.tournament_sql,
+        "get_tasks_with_all_training_completed",
+        AsyncMock(side_effect=AssertionError("the re-poll must not wait for the whole task")),
+    )
+    return mocks
+
+
+class TestPerEntryRepoll:
+    async def test_held_decode_is_recorded_once_the_trainer_settles_it(self, repoll, decode_sql):
+        task = _freeform_task()
+        training = _training(task)
+        held = _task_log(task, decode=QuantDecodeResult(infra_error="image missing"))
+        assert await orchestrator._record_quant_decode(training, held, CONFIG) is False
+        repoll.unsettled.return_value = [training]
+
+        repoll.task_details.return_value = held
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+        decode_sql.persist.assert_not_awaited()
+
+        repoll.task_details.return_value = _task_log(task, decode=_ok())
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        repoll.task_details.assert_awaited_with(TRAINER_IP, str(task.task_id), HOTKEY)
+        decode_sql.persist.assert_awaited_once()
+        assert decode_sql.persist.await_args.kwargs["decoder_sha256"] == DECODER_SHA
+        assert decode_sql.persist.await_args.kwargs["quant_failure"] is None
+        # One alert for the hold, however many cycles re-check it.
+        decode_sql.notify.assert_awaited_once()
+
+    async def test_infra_error_is_never_persisted(self, repoll, decode_sql):
+        task = _freeform_task()
+        repoll.unsettled.return_value = [_training(task)]
+        repoll.task_details.return_value = _task_log(task, decode=QuantDecodeResult(infra_error="disk full"))
+
+        for _ in range(3):
+            await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        decode_sql.persist.assert_not_awaited()
+        decode_sql.notify.assert_awaited_once()
+
+    async def test_quant_failure_is_persisted_as_the_scored_fail(self, repoll, decode_sql):
+        task = _freeform_task()
+        repoll.unsettled.return_value = [_training(task)]
+        repoll.task_details.return_value = _task_log(
+            task,
+            decode=QuantDecodeResult(quant_failure="bad decoder output", decoder_bytes=DECODER_BYTES, decoder_sha256=DECODER_SHA),
+        )
+
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        assert decode_sql.persist.await_args.kwargs["quant_failure"] == "bad decoder output"
+        decode_sql.notify.assert_not_awaited()
+
+    async def test_nothing_unsettled_polls_no_trainer(self, repoll, decode_sql):
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        repoll.task_details.assert_not_awaited()
+        decode_sql.persist.assert_not_awaited()
+
+    async def test_http_failures_alert_after_the_threshold(self, repoll, decode_sql):
+        task = _freeform_task()
+        repoll.unsettled.return_value = [_training(task)]
+        repoll.task_details.side_effect = httpx.ConnectError("trainer gone")
+
+        for _ in range(orchestrator.QUANT_DECODE_REPOLL_FAILURES_BEFORE_ALERT - 1):
+            await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+        decode_sql.notify.assert_not_awaited()
+
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        decode_sql.notify.assert_awaited_once()
+        assert "trainer gone" in decode_sql.notify.await_args.args[2]
+
+    async def test_polls_are_bounded_per_cycle_and_rotate(self, monkeypatch, repoll):
+        task = _freeform_task()
+        hotkeys = [f"5Miner{i}" for i in range(5)]
+        repoll.unsettled.return_value = [_training(task, hotkey=hotkey) for hotkey in hotkeys]
+        repoll.task_details.side_effect = lambda _ip, _task_id, hotkey: _task_log(
+            task, hotkey=hotkey, decode=QuantDecodeResult(infra_error="image missing")
+        )
+        monkeypatch.setattr(orchestrator, "QUANT_DECODE_REPOLLS_PER_CYCLE", 2)
+
+        polled = []
+        for _ in range(3):
+            repoll.task_details.reset_mock()
+            await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+            polled.append([call.args[2] for call in repoll.task_details.await_args_list])
+
+        assert polled == [hotkeys[0:2], hotkeys[2:4], [hotkeys[4], hotkeys[0]]]
+
+    async def test_one_failing_entry_does_not_stop_the_others(self, repoll, decode_sql):
+        task = _freeform_task()
+        repoll.unsettled.return_value = [_training(task, hotkey="5Broken"), _training(task, hotkey=HOTKEY)]
+        repoll.task_details.side_effect = [RuntimeError("unexpected"), _task_log(task, decode=_ok())]
+
+        await orchestrator._repoll_unsettled_quant_decodes(CONFIG)
+
+        decode_sql.persist.assert_awaited_once()
+        assert decode_sql.persist.await_args.args[1] == HOTKEY
+
+
+@pytest.fixture
 def preevaluation(monkeypatch, decode_sql):
     mocks = SimpleNamespace(
         decode_rows=AsyncMock(return_value={}),
@@ -289,7 +398,12 @@ def preevaluation(monkeypatch, decode_sql):
     )
     monkeypatch.setattr(orchestrator.task_sql, "update_task", mocks.update_task)
     monkeypatch.setattr(orchestrator.tournament_sql, "get_training_status_for_task", mocks.statuses)
-    monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_training_tasks", mocks.successful)
+    monkeypatch.setattr(orchestrator.tournament_sql, "get_training_rows_for_task", mocks.successful)
+    monkeypatch.setattr(
+        orchestrator.tournament_sql,
+        "get_tournament_training_tasks",
+        AsyncMock(side_effect=AssertionError("the hold must not load other tasks' training rows")),
+    )
     monkeypatch.setattr(orchestrator.submissions_and_scoring_sql, "get_quant_decode_rows", mocks.decode_rows)
     monkeypatch.setattr(orchestrator, "get_training_task_details", mocks.task_details)
     monkeypatch.setattr(orchestrator.seeds_sql, "boss_round_seed_ready_to_finalise", AsyncMock(return_value=True))
@@ -311,11 +425,12 @@ class TestPreevaluationHold:
             HOTKEY: _row(HOTKEY),
             OTHER_HOTKEY: _row(OTHER_HOTKEY, decoder_sha256=DECODER_SHA),
         }
-        preevaluation.successful.return_value = [_training(task), _training(_fixed_task(), hotkey=HOTKEY)]
+        preevaluation.successful.return_value = [_training(task)]
         preevaluation.task_details.return_value = _task_log(task, decode=QuantDecodeResult(infra_error="image missing"))
 
         await orchestrator._move_completed_tasks_to_preevaluation(CONFIG)
 
+        preevaluation.successful.assert_awaited_once_with(str(task.task_id), TrainingStatus.SUCCESS, None)
         preevaluation.task_details.assert_awaited_once_with(TRAINER_IP, str(task.task_id), HOTKEY)
         preevaluation.update_task.assert_not_awaited()
 
