@@ -97,6 +97,7 @@ class Scheduling:
 
         monkeypatch.setattr(orchestrator, "training_ranks", training_ranks)
         monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value="tourn"))
+        monkeypatch.setattr(orchestrator.seeds_sql, "get_latest_seed_tasks", AsyncMock(return_value=[]))
         monkeypatch.setattr(orchestrator, "_reference_ready", reference_ready)
         monkeypatch.setattr(orchestrator, "get_task_gpu_requirement", lambda task: SimpleNamespace(value="h100"))
         monkeypatch.setattr(orchestrator, "_update_all_trainers_gpu_availability", AsyncMock())
