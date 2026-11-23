@@ -128,6 +128,57 @@ async def test_infra_error_is_stored_and_exits_one(history, decode):
     assert _stored_decode() == INFRA
 
 
+PENDING = QuantDecodeResult(upload_pending=True, n_tensors=3, uploaded_files=["model.safetensors"])
+
+
+async def test_pending_upload_is_retried_in_the_foreground_and_its_result_stored(history, decode, monkeypatch, capsys):
+    history(_job(DECODE))
+    decode.result = PENDING
+    stored_while_retrying: list[QuantDecodeResult | None] = []
+
+    async def retry(work_root, task_id, hotkey, report):
+        stored_while_retrying.append(_stored_decode())
+        await report("decode: upload not complete")
+        return OK
+
+    monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
+
+    assert await rerun.rerun_decode("task-1", "hk") == 0
+
+    assert stored_while_retrying == [PENDING]
+    assert _stored_decode() == OK
+    captured = capsys.readouterr()
+    assert QuantDecodeResult.model_validate_json(captured.out) == OK
+    assert "decode: upload not complete" in captured.err
+
+
+async def test_pending_upload_that_runs_out_of_window_exits_one(history, decode, monkeypatch):
+    history(_job(DECODE))
+    decode.result = PENDING
+
+    async def retry(work_root, task_id, hotkey, report):
+        return INFRA
+
+    monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
+
+    assert await rerun.rerun_decode("task-1", "hk") == 1
+    assert _stored_decode() == INFRA
+
+
+async def test_upload_retry_taken_over_by_the_trainer_exits_three(history, decode, monkeypatch, capsys):
+    history(_job(DECODE))
+    decode.result = PENDING
+
+    async def retry(work_root, task_id, hotkey, report):
+        return None
+
+    monkeypatch.setattr(rerun.upload_retry, "retry_pending_upload", retry)
+
+    assert await rerun.rerun_decode("task-1", "hk") == 3
+    assert _stored_decode() == PENDING
+    assert "took over" in capsys.readouterr().err
+
+
 async def test_job_without_decode_request_exits_two(history, decode, capsys):
     history(_job(None))
 

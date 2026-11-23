@@ -28,6 +28,7 @@ Tests for the trainer service: job runtime, containers, cleanup, model prep and 
 | `test_quant_decode_job.py` | Freeform decode job against fake snapshot, Hugging Face, Docker and storage backends. |
 | `test_quant_decode_output_check.py` | Decoded-output check on hand-built safetensors files. |
 | `test_quant_decode_rerun.py` | Decode re-run CLI: stored outcome and exit codes. |
+| `test_quant_decode_upload_retry.py` | Background retry of a decoded upload: resume, retry window, slots, takeover and restart. |
 | `test_quant_decode_sandbox.py` | Decoder sandbox container specs and phase runner against a fake Docker client. |
 | `test_quant_decode_workdir_docker.py` | Sandbox phases against real containers: ownership, mounts and cleanup. Skipped without Docker or the images. |
 | `test_quant_train_contract.py` | Compression inputs reach the miner container, and the check, upload and decode sequence holds. |

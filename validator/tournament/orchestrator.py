@@ -36,6 +36,7 @@ from core.models.payload_models import TrainRequestQuant
 from core.models.payload_models import TrainRequestText
 from core.models.quant_artifact_models import QuantDecodedFile
 from core.models.quant_artifact_models import QuantDecodeRequest
+from core.models.quant_artifact_models import QuantDecodeResult
 from core.models.quant_models import QuantCalibrationReference
 from core.models.quant_models import QuantCalibrationRequest
 from core.models.quant_models import QuantTarget
@@ -133,6 +134,10 @@ logger = get_logger(__name__)
 # The seeds only the boss trains and a chained task is released on: the two round inputs and the boss round's input.
 _INPUT_SEED_ROLES = INPUT_SEED_ROLES | frozenset({SeedRole.BOSS_INSTRUCT})
 
+# A trainer that still reports a decoded upload as pending this long after its own retry deadline has
+# most likely stopped retrying: the hold is alerted instead of waiting on. The margin covers the last
+# round, which starts at the deadline and may still be sending large files.
+QUANT_DECODE_UPLOAD_PENDING_GRACE = timedelta(hours=2)
 # Persisted as quant_failure for a freeform entrant registered without a decoder snapshot: every
 # repo must carry a decoder/, so this is a scored fail and evaluation never spends a GPU on it.
 NO_DECODER_SNAPSHOT_FAILURE = "no decoder/ snapshot at registration"
@@ -1993,7 +1998,9 @@ async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: 
     """Persist a successful freeform training's decode outcome; True once it is settled.
 
     Only a miner's fault (no decoder at registration, or the trainer's quant_failure) is scored. A
-    trainer without a decode result never zeroes a miner: it holds the task and alerts. A sha/byte
+    trainer without a decode result never zeroes a miner: it holds the task and alerts. A decode whose
+    upload the trainer is still retrying (upload_pending) is unsettled and not alerted; the next poll
+    reads it again. A sha/byte
     mismatch between the registration snapshot and what the trainer fetched is treated as our fault
     (or tampering) and is never scored either. A task without a tournament (organic) has no
     participant to fault, so nothing is persisted for it.
@@ -2020,6 +2027,16 @@ async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: 
         return False
     if decode.infra_error is not None:
         await _hold_quant_decode(task_id, hotkey, decode.infra_error, config)
+        return False
+    if decode.upload_pending:
+        if _upload_pending_overdue(decode):
+            detail = f"the trainer still reports the decoded upload as pending past its deadline {decode.upload_retry_until}"
+            await _hold_quant_decode(task_id, hotkey, detail, config)
+        else:
+            logger.info(
+                f"Freeform decode for task {task_id} hotkey {hotkey}: the trainer is still retrying the decoded upload "
+                f"(until {decode.upload_retry_until}); not settled yet"
+            )
         return False
     if decode.quant_failure is not None:
         await _persist_quant_decode(
@@ -2057,6 +2074,15 @@ async def _record_quant_decode(training_task: TournamentTaskTraining, task_log: 
         decoded_files=decode.decoded_files,
     )
     return True
+
+
+def _upload_pending_overdue(decode: QuantDecodeResult) -> bool:
+    deadline = decode.upload_retry_until
+    if deadline is None:
+        return False
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) > deadline + QUANT_DECODE_UPLOAD_PENDING_GRACE
 
 
 async def _poll_quant_decode(training_task: TournamentTaskTraining | None, task_id: str, hotkey: str, config: Config) -> bool:

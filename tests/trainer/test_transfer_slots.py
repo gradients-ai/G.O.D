@@ -287,7 +287,7 @@ async def test_hf_and_decode_uploads_share_one_pool_and_the_wait_is_not_counted_
     sent: list[str] = []
     reports: list[str] = []
 
-    async def put(bucket, object_name, path, report):
+    async def put(bucket, object_name, path, report, policy, sha256):
         assert hf_uploads.gauge.current == 0, "decoded file sent while a model upload held the only slot"
         sent.append(object_name)
 

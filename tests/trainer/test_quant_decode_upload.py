@@ -1,8 +1,10 @@
 """Whole-file retry of decoded uploads (trainer/quant_decode/upload.py): transient errors retry, others fail at once."""
 
 import http.client
+import socket
 import ssl
 import threading
+import time
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -43,7 +45,7 @@ class FakeStorage:
         self.errors = list(errors)
         self.calls: list[tuple[str, str, Path]] = []
 
-    def put_file(self, bucket: str, object_name: str, path: Path) -> None:
+    def put_file(self, bucket: str, object_name: str, path: Path, sha256: str | None = None) -> None:
         self.calls.append((bucket, object_name, path))
         if self.errors:
             raise self.errors.pop(0)
@@ -216,7 +218,11 @@ def test_put_file_uses_the_decode_part_size_and_parallelism(monkeypatch, shard):
     assert calls == [
         (
             (BUCKET, OBJECT, str(shard)),
-            {"part_size": cst.QUANT_DECODE_UPLOAD_PART_BYTES, "num_parallel_uploads": cst.QUANT_DECODE_UPLOAD_PARALLEL},
+            {
+                "metadata": None,
+                "part_size": cst.QUANT_DECODE_UPLOAD_PART_BYTES,
+                "num_parallel_uploads": cst.QUANT_DECODE_UPLOAD_PARALLEL,
+            },
         )
     ]
 
@@ -336,8 +342,8 @@ class FlakyS3:
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
 
-    def client(self, http_retries: int) -> Minio:
-        http_client = urllib3.PoolManager(retries=Retry(total=http_retries, backoff_factor=0))
+    def client(self, http_retries: int, pool_manager: type[urllib3.PoolManager] = urllib3.PoolManager) -> Minio:
+        http_client = pool_manager(retries=Retry(total=http_retries, backoff_factor=0))
         endpoint = f"127.0.0.1:{self.server.server_port}"
         return Minio(endpoint, access_key="a", secret_key="b", secure=False, region="us-east-1", http_client=http_client)
 
@@ -398,3 +404,162 @@ def test_failed_part_surfaces_instead_of_blocking_the_upload(monkeypatch, tmp_pa
 
     assert not thread.is_alive(), "put_file is still blocked after a part failed"
     assert len(errors) == 1 and upload.is_transient(errors[0])
+
+
+async def test_sliced_part_bodies_arrive_intact_and_are_resent_whole_on_a_retry(monkeypatch, big_shard, report, reports):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 64 * 1024)
+    s3 = FlakyS3(drops=1)
+    monkeypatch.setattr(upload, "_storage", s3.client(http_retries=2, pool_manager=upload._SlicingPoolManager))
+    try:
+        await upload_with_retry(BUCKET, OBJECT, big_shard, report, FAST, "f" * 64)
+    finally:
+        s3.server.shutdown()
+
+    assert s3.objects[OBJECT] == big_shard.read_bytes()
+    assert reports == []
+
+
+def test_storage_client_slices_part_bodies():
+    assert isinstance(upload._storage._http, upload._SlicingPoolManager)
+
+
+@pytest.mark.parametrize(
+    "body, headers, sliced",
+    [
+        (b"x" * 100, {"Content-Length": "100"}, True),
+        (b"x" * 100, {"content-length": "100"}, False),  # a plain dict is case-sensitive; minio sends an HTTPHeaderDict
+        (b"x" * 100, urllib3.HTTPHeaderDict({"content-length": "100"}), True),
+        (b"x" * 100, {}, False),  # no Content-Length: slicing would turn the request into chunked encoding
+        (b"x" * 10, {"Content-Length": "10"}, False),  # one slice or less
+        (None, {}, False),
+    ],
+)
+def test_only_large_bodies_with_a_content_length_are_sliced(monkeypatch, body, headers, sliced):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 16)
+    sent: list[object] = []
+    monkeypatch.setattr(urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw["body"]))
+
+    upload._SlicingPoolManager().urlopen("PUT", "http://storage.example/key", body=body, headers=headers)
+
+    assert isinstance(sent[0], upload._SlicedBody) is sliced
+    if sliced:
+        slices = [bytes(part) for part in sent[0]]
+        assert b"".join(slices) == body and max(map(len, slices)) == 16
+        assert [bytes(part) for part in sent[0]] == slices  # a retry iterates again from the start
+
+
+def test_slicing_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 0)
+    sent: list[object] = []
+    monkeypatch.setattr(urllib3.PoolManager, "urlopen", lambda self, method, url, redirect=True, **kw: sent.append(kw["body"]))
+
+    upload._SlicingPoolManager().urlopen("PUT", "http://storage.example/key", body=b"x" * 100, headers={"Content-Length": "100"})
+
+    assert sent == [b"x" * 100]
+
+
+class SlowReader:
+    """An HTTP endpoint that reads a request body steadily but slowly, then answers 200."""
+
+    def __init__(self, bytes_per_second: int) -> None:
+        chunk = 16 * 1024
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def do_PUT(self):  # noqa: N802
+                remaining = int(self.headers["Content-Length"])
+                while remaining > 0:
+                    data = self.rfile.read(min(chunk, remaining))
+                    if not data:
+                        return
+                    remaining -= len(data)
+                    time.sleep(chunk / bytes_per_second)
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *_args):
+                pass
+
+        class Server(ThreadingHTTPServer):
+            def server_bind(self) -> None:
+                # Small buffers, so the sender is held to the reader's pace instead of filling the kernel's queue.
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)
+                super().server_bind()
+
+        self.server = Server(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True).start()
+
+    def put(self, pool_manager: type[urllib3.PoolManager], body: bytes, send_timeout: float) -> int:
+        client = pool_manager(
+            timeout=urllib3.Timeout(connect=send_timeout, read=30),
+            retries=False,
+            socket_options=[(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)],
+        )
+        url = f"http://127.0.0.1:{self.server.server_port}/part"
+        return client.urlopen("PUT", url, body=body, headers={"Content-Length": str(len(body))}).status
+
+
+def test_a_slow_but_moving_part_times_out_in_one_write_and_survives_when_sliced(monkeypatch):
+    """The socket timeout while a body is sent is the connect timeout and covers one write. A whole part in one write
+    must leave within it; sliced, only each slice must."""
+    monkeypatch.setattr(cst, "QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", 64 * 1024)
+    body = b"x" * (4 * 1024 * 1024)  # ~4 s at the reader's pace
+    slow = SlowReader(bytes_per_second=1024 * 1024)
+    try:
+        with pytest.raises(urllib3.exceptions.ProtocolError, match="timed out"):
+            slow.put(urllib3.PoolManager, body, send_timeout=1.0)
+        assert slow.put(upload._SlicingPoolManager, body, send_timeout=1.0) == 200  # sent after the whole body is read
+    finally:
+        slow.server.shutdown()
+
+
+class FakeStat:
+    def __init__(self, size: int, metadata: dict[str, str]) -> None:
+        self.size = size
+        self.metadata = urllib3.HTTPHeaderDict(metadata)
+
+
+@pytest.mark.parametrize(
+    "stat, uploaded",
+    [
+        (FakeStat(64, {"X-Amz-Meta-Sha256": "a" * 64}), True),
+        (FakeStat(63, {"x-amz-meta-sha256": "a" * 64}), False),  # another size
+        (FakeStat(64, {"x-amz-meta-sha256": "b" * 64}), False),  # other content, e.g. an earlier decode of the job
+        (FakeStat(64, {}), False),  # no metadata: cannot be confirmed
+        (s3_error("NoSuchKey"), False),
+        (ConnectionResetError("reset"), False),
+    ],
+)
+def test_is_uploaded_needs_the_same_size_and_sha256(monkeypatch, stat, uploaded):
+    def stat_object(bucket, object_name):
+        if isinstance(stat, Exception):
+            raise stat
+        return stat
+
+    monkeypatch.setattr(upload._storage, "stat_object", stat_object)
+
+    assert upload.is_uploaded(BUCKET, OBJECT, 64, "a" * 64) is uploaded
+
+
+def test_put_file_stores_the_sha256_as_object_metadata(monkeypatch, shard):
+    calls: list[dict] = []
+    monkeypatch.setattr(upload._storage, "fput_object", lambda *args, **kwargs: calls.append(kwargs))
+
+    upload.put_file(BUCKET, OBJECT, shard, "a" * 64)
+
+    assert calls[0]["metadata"] == {"sha256": "a" * 64}
+    assert upload.SHA256_METADATA_HEADER == "x-amz-meta-sha256"  # how minio sends that key and how stat returns it
+
+
+async def test_upload_failed_says_whether_a_later_attempt_can_succeed(monkeypatch, shard, report):
+    install(monkeypatch, [ConnectionResetError("reset")] * 4)
+    with pytest.raises(UploadFailed) as transient:
+        await upload_with_retry(BUCKET, OBJECT, shard, report, FAST)
+    install(monkeypatch, [s3_error("AccessDenied")])
+    with pytest.raises(UploadFailed) as permanent:
+        await upload_with_retry(BUCKET, OBJECT, shard, report, FAST)
+
+    assert transient.value.transient is True
+    assert permanent.value.transient is False

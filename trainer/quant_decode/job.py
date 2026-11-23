@@ -6,6 +6,10 @@ the checked bf16 shards plus index.json (last, as the completion marker) to MinI
 
 A miner's fault ends in `quant_failure` (a scored fail); ours (image missing, MinIO/HF down, snapshot sha mismatch)
 ends in `infra_error`, which is never scored. Neither ever fails the training job.
+
+A decode whose output passed the check but whose upload keeps failing for a transient reason (the network) ends in
+neither: the result is `upload_pending`, the decoded files stay in the work dir next to a `PendingUpload` state file,
+and upload_retry.py keeps uploading what is missing.
 """
 
 import asyncio
@@ -20,11 +24,15 @@ import uuid
 from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Iterator
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from pathlib import Path
 
 import docker
 from huggingface_hub import snapshot_download
 from pydantic import BaseModel
+from pydantic import ValidationError
 
 import trainer.constants as cst
 from core.constants.quant import DECODE_TIMEOUT_SECONDS
@@ -50,12 +58,15 @@ from trainer.quant_decode.sandbox import run_phase
 from trainer.quant_decode.sandbox import run_phase_spec
 from trainer.quant_decode.sandbox import sanitize_failure
 from trainer.quant_decode.upload import UploadFailed
+from trainer.quant_decode.upload import UploadRetryPolicy
+from trainer.quant_decode.upload import is_uploaded
 from trainer.quant_decode.upload import upload_with_retry
 from trainer.telemetry import logger
 
 
 DECODER_XZ_NAME = "decoder.tar.xz"
 DECODED_INDEX_NAME = "index.json"
+PENDING_UPLOAD_NAME = "pending_upload.json"
 HF_LOCAL_CACHE_DIR = ".cache"
 CONTAINER_ERROR_PREFIX = "container error:"
 TIMEOUT_FAILURE = "timeout"
@@ -88,6 +99,15 @@ class _InfraFault(Exception):
     """Ours: becomes infra_error, which the orchestrator retries or alerts on and never scores."""
 
 
+class UploadFault(_InfraFault):
+    """A decoded file could not be uploaded. `transient` is True when a later attempt can succeed (a network error,
+    throttling, a timeout); only those are retried in the background."""
+
+    def __init__(self, message: str, transient: bool) -> None:
+        super().__init__(message)
+        self.transient = transient
+
+
 class _DecodeProgress(BaseModel):
     """Everything measured so far; carried into the result whatever the outcome."""
 
@@ -102,6 +122,28 @@ class _DecodeProgress(BaseModel):
     build_warning: str | None = None
     artifact_files: list[QuantDecodedFile] = []
     decoded_files: list[QuantDecodedFile] = []
+
+
+class PendingUpload(BaseModel):
+    """A checked decode whose upload is still being retried. Stored in its work dir, so a restarted trainer resumes
+    it. `progress.uploaded_files` is the set of files already in storage; `token` names the one retry that owns the
+    work dir, so a retry that was replaced (a new decode, a re-run, a restart) stops without storing a result."""
+
+    token: str
+    task_id: str
+    hotkey: str
+    request: QuantDecodeRequest
+    progress: _DecodeProgress
+    retry_until: datetime
+    last_error: str
+
+
+class UploadOptions(BaseModel):
+    """How one pass over the decoded files uploads them. The job's own pass retries each file a few times; a
+    background round makes one attempt per file and first asks storage whether the file is already there."""
+
+    policy: UploadRetryPolicy = UploadRetryPolicy()
+    confirm_stored: bool = False
 
 
 class _WorkDirs(BaseModel):
@@ -130,6 +172,10 @@ class _WorkDirs(BaseModel):
     @property
     def index(self) -> Path:
         return self.root / DECODED_INDEX_NAME
+
+    @property
+    def pending(self) -> Path:
+        return self.root / PENDING_UPLOAD_NAME
 
     def create(self) -> None:
         """Fresh, empty, owner-only work dirs, whatever an earlier attempt for the same task and hotkey left behind.
@@ -396,10 +442,17 @@ def upload_timeout_seconds(size_bytes: int) -> float:
 
 
 async def _upload(
-    bucket: str, object_name: str, path: Path, report: ProgressReporter = _no_report, job: slots.JobKey | None = None
+    bucket: str,
+    object_name: str,
+    path: Path,
+    report: ProgressReporter = _no_report,
+    job: slots.JobKey | None = None,
+    *,
+    sha256: str | None = None,
+    options: UploadOptions = UploadOptions(),
 ) -> None:
     """Multipart upload with large parts in parallel, retried as a whole file on transient storage errors (see
-    upload.py). A failed or stalled upload is ours, so it ends as an infra_error.
+    upload.py). A failed or stalled upload is ours, so it raises UploadFault and never scores.
 
     Each file takes one of the trainer's upload slots, shared with model uploads. The deadline starts once the slot is
     held and covers every attempt and backoff. On timeout the executor thread is not killed (minio has no cancel);
@@ -407,15 +460,19 @@ async def _upload(
     the job, so a partial decode never gets an index; only a timed-out index upload itself can still land late.
     """
     size = path.stat().st_size
+    if options.confirm_stored and sha256 is not None:
+        if await asyncio.to_thread(is_uploaded, bucket, object_name, size, sha256):
+            await report(f"decode: {path.name} ({size} bytes) is already in storage; not uploading it again")
+            return
     timeout = upload_timeout_seconds(size)
     async with slots.uploads.slot(report, job):
         started = time.monotonic()
         try:
-            await asyncio.wait_for(upload_with_retry(bucket, object_name, path, report), timeout=timeout)
+            await asyncio.wait_for(upload_with_retry(bucket, object_name, path, report, options.policy, sha256), timeout=timeout)
         except asyncio.TimeoutError:
-            raise _InfraFault(f"upload of {object_name} timed out after {timeout:.0f}s") from None
+            raise UploadFault(f"upload of {object_name} timed out after {timeout:.0f}s", transient=True) from None
         except UploadFailed as e:
-            raise _InfraFault(str(e)) from None
+            raise UploadFault(str(e), transient=e.transient) from None
         elapsed = time.monotonic() - started
     rate = size / BYTES_PER_MB / max(elapsed, 1e-3)
     await report(f"decode: uploaded {path.name} ({size} bytes) in {elapsed:.0f}s ({rate:.1f} MB/s)")
@@ -427,19 +484,24 @@ async def _upload_shards(
     progress: _DecodeProgress,
     report: ProgressReporter = _no_report,
     job: slots.JobKey | None = None,
-) -> list[QuantDecodedFile]:
-    files: list[QuantDecodedFile] = []
+    *,
+    options: UploadOptions = UploadOptions(),
+    file_done: Callable[[], None] | None = None,
+) -> None:
+    """Upload every shard not yet in `progress.uploaded_files`, in name order, recording each in `progress` as it
+    lands; `file_done` is called after each one."""
     shards = sorted(output_dir.glob(f"*{SAFETENSORS_SUFFIX}"))
-    total = sum(shard.stat().st_size for shard in shards)
-    await report(f"decode: uploading {len(shards)} decoded shards ({total} bytes)")
-    for shard in shards:
-        await _upload(request.bucket, f"{request.object_prefix}/{shard.name}", shard, report, job)
+    missing = [shard for shard in shards if shard.name not in progress.uploaded_files]
+    total = sum(shard.stat().st_size for shard in missing)
+    count = f"{len(missing)}" if len(missing) == len(shards) else f"{len(missing)} of {len(shards)}"
+    await report(f"decode: uploading {count} decoded shards ({total} bytes)")
+    for shard in missing:
         sha256 = await asyncio.to_thread(_sha256_file, shard)
-        record = QuantDecodedFile(name=shard.name, bytes=shard.stat().st_size, sha256=sha256)
-        files.append(record)
-        progress.decoded_files.append(record)
+        await _upload(request.bucket, f"{request.object_prefix}/{shard.name}", shard, report, job, sha256=sha256, options=options)
+        progress.decoded_files.append(QuantDecodedFile(name=shard.name, bytes=shard.stat().st_size, sha256=sha256))
         progress.uploaded_files.append(shard.name)
-    return files
+        if file_done is not None:
+            await asyncio.to_thread(file_done)
 
 
 async def _upload_index(
@@ -449,14 +511,105 @@ async def _upload_index(
     progress: _DecodeProgress,
     report: ProgressReporter = _no_report,
     job: slots.JobKey | None = None,
+    *,
+    options: UploadOptions = UploadOptions(),
 ) -> None:
+    content = index.model_dump_json().encode()
     index_path.touch(mode=OWNER_RW)
     index_path.chmod(OWNER_RW)
-    index_path.write_text(index.model_dump_json())
+    index_path.write_bytes(content)
     object_name = f"{request.object_prefix}/{DECODED_INDEX_NAME}"
-    await _upload(request.bucket, object_name, index_path, report, job)
+    sha256 = hashlib.sha256(content).hexdigest()
+    await _upload(request.bucket, object_name, index_path, report, job, sha256=sha256, options=options)
     progress.uploaded_files.append(DECODED_INDEX_NAME)
     progress.index_object = object_name
+
+
+async def upload_decoded(
+    request: QuantDecodeRequest,
+    work: _WorkDirs,
+    progress: _DecodeProgress,
+    *,
+    task_id: str,
+    hotkey: str,
+    report: ProgressReporter = _no_report,
+    job: slots.JobKey | None = None,
+    options: UploadOptions = UploadOptions(),
+    file_done: Callable[[], None] | None = None,
+) -> None:
+    """Upload the checked shards that are not in storage yet, then index.json. Raises UploadFault.
+
+    Safe to call again after a failure: `progress` remembers what landed, so only the rest is sent.
+    """
+    await _upload_shards(request, work.output, progress, report, job, options=options, file_done=file_done)
+    index = QuantDecodedIndex(
+        files=progress.decoded_files,
+        n_tensors=progress.n_tensors,
+        decoder_sha256=request.decoder_sha256,
+        artifact_bytes=progress.artifact_bytes,
+        task_id=task_id,
+        hotkey=hotkey,
+        artifact_files=progress.artifact_files,
+    )
+    await _upload_index(request, index, work.index, progress, report, job, options=options)
+
+
+def work_dirs(work_root: Path, task_id: str, hotkey: str) -> _WorkDirs:
+    return _WorkDirs(root=work_root / f"{task_id}_{hotkey[:8]}")
+
+
+def new_token() -> str:
+    return uuid.uuid4().hex
+
+
+def save_pending(work: _WorkDirs, pending: PendingUpload) -> None:
+    """Write the state file atomically, owner-only: it holds the presigned decoder URL."""
+    temp = work.pending.with_name(f"{PENDING_UPLOAD_NAME}.tmp")
+    temp.touch(mode=OWNER_RW)
+    temp.chmod(OWNER_RW)
+    temp.write_text(pending.model_dump_json())
+    os.replace(temp, work.pending)
+
+
+def load_pending(work: _WorkDirs) -> PendingUpload | None:
+    """The work dir's pending upload; None when there is none or its state file is unreadable."""
+    try:
+        return PendingUpload.model_validate_json(work.pending.read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, ValidationError) as e:
+        logger.warning(f"Unreadable pending upload state {work.pending}: {type(e).__name__}")
+        return None
+
+
+def owns_pending(work: _WorkDirs, token: str) -> bool:
+    """True while the work dir still holds the pending upload with this token."""
+    current = load_pending(work)
+    return current is not None and current.token == token
+
+
+def pending_result(pending: PendingUpload) -> QuantDecodeResult:
+    return QuantDecodeResult(upload_pending=True, upload_retry_until=pending.retry_until, **pending.progress.model_dump())
+
+
+def _defer_upload(
+    request: QuantDecodeRequest, work: _WorkDirs, progress: _DecodeProgress, task_id: str, hotkey: str, error: str
+) -> PendingUpload:
+    """Keep the decoded output for the background retry and drop what the upload no longer needs."""
+    pending = PendingUpload(
+        token=new_token(),
+        task_id=task_id,
+        hotkey=hotkey,
+        request=request,
+        progress=progress,
+        retry_until=datetime.now(timezone.utc) + timedelta(seconds=cst.QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS),
+        last_error=error,
+    )
+    save_pending(work, pending)
+    work.decoder_xz.unlink(missing_ok=True)
+    for path in (work.decoder, work.build, work.artifact):
+        remove_work_tree(path)
+    return pending
 
 
 async def _decode(
@@ -498,17 +651,7 @@ async def _decode(
     progress.n_tensors = await asyncio.to_thread(_check_output, work.output, expected)
     await report(f"decode: output checked ({progress.n_tensors} tensors)")
 
-    files = await _upload_shards(request, work.output, progress, report, (task_id, hotkey))
-    index = QuantDecodedIndex(
-        files=files,
-        n_tensors=progress.n_tensors,
-        decoder_sha256=request.decoder_sha256,
-        artifact_bytes=progress.artifact_bytes,
-        task_id=task_id,
-        hotkey=hotkey,
-        artifact_files=progress.artifact_files,
-    )
-    await _upload_index(request, index, work.index, progress, report, (task_id, hotkey))
+    await upload_decoded(request, work, progress, task_id=task_id, hotkey=hotkey, report=report, job=(task_id, hotkey))
 
 
 async def run_freeform_decode(
@@ -524,15 +667,19 @@ async def run_freeform_decode(
     report: ProgressReporter = _no_report,
     cpu_share: ContainerResources | None = None,
 ) -> QuantDecodeResult:
-    """Decode one freeform submission end to end. Never raises for a miner's fault; the work dir is always removed.
+    """Decode one freeform submission end to end. Never raises for a miner's fault.
 
     `report` gets one line per stage (and per uploaded shard) so a long decode is visible on the job log.
 
     The whole decode runs inside one of the trainer's decode slots; every stage's time limit starts after the slot is
     held. Within it, each decoded file also takes an upload slot.
+
+    The work dir is removed, except when the result is `upload_pending`: the decoded files and a PendingUpload state
+    file stay for upload_retry.py, which removes the dir once the upload is settled.
     """
-    work = _WorkDirs(root=work_root / f"{task_id}_{hotkey[:8]}")
+    work = work_dirs(work_root, task_id, hotkey)
     progress = _DecodeProgress()
+    keep_work = False
     try:
         async with slots.quant_decodes.slot(report, (task_id, hotkey)):
             await _decode(
@@ -551,7 +698,19 @@ async def run_freeform_decode(
         return QuantDecodeResult(ok=True, **progress.model_dump())
     except _ScoredFail as e:
         return QuantDecodeResult(quant_failure=sanitize_failure(str(e)), **progress.model_dump())
+    except UploadFault as e:
+        failure = sanitize_failure(str(e))
+        if not e.transient or cst.QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS <= 0:
+            return QuantDecodeResult(infra_error=failure, **progress.model_dump())
+        try:
+            pending = await asyncio.to_thread(_defer_upload, request, work, progress, task_id, hotkey, failure)
+        except OSError as defer_error:
+            logger.error(f"Could not keep the decoded files of task {task_id} for an upload retry: {defer_error}")
+            return QuantDecodeResult(infra_error=failure, **progress.model_dump())
+        keep_work = True
+        return pending_result(pending)
     except _InfraFault as e:
         return QuantDecodeResult(infra_error=sanitize_failure(str(e)), **progress.model_dump())
     finally:
-        await asyncio.to_thread(remove_work_tree, work.root)
+        if not keep_work:
+            await asyncio.to_thread(remove_work_tree, work.root)

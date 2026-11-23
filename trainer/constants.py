@@ -153,26 +153,40 @@ QUANT_CALIBRATION_RETRY_SLEEP_SECONDS = 5
 QUANT_CALIBRATION_ATTEMPT_SLACK_SECONDS = 30  # per attempt, on top of the fetch timeout: parse, fingerprint, write
 QUANT_CALIBRATION_MAX_BYTES = 256 * 1024 * 1024  # the file is ~1,000 tokenised rows; anything larger is not ours
 # Decoded bf16 shards go to S3-compatible storage as multipart uploads; memory in flight is part size x parallel =
-# 128 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
-# connection, which fails the whole file.
-QUANT_DECODE_UPLOAD_PART_BYTES = 32 * 1024 * 1024
-QUANT_DECODE_UPLOAD_PARALLEL = 4
+# 64 MiB. A few parts in flight keep a link busy; more only multiply the chance that one of them hits a dropped
+# connection, which fails the whole file. A part that fails is sent again in full, so smaller parts lose less. S3
+# allows 10,000 parts per object: 16 MiB parts carry files up to ~156 GiB.
+QUANT_DECODE_UPLOAD_PART_BYTES = int(os.getenv("QUANT_DECODE_UPLOAD_PART_BYTES", str(16 * 1024 * 1024)))
+QUANT_DECODE_UPLOAD_PARALLEL = int(os.getenv("QUANT_DECODE_UPLOAD_PARALLEL", "4"))
+# A part's body goes to the socket in slices of this size, so the socket timeout bounds one slice, not the whole part.
+# 0 sends each part in one write, which must then finish within the connect timeout.
+QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES = int(os.getenv("QUANT_DECODE_UPLOAD_SEND_SLICE_BYTES", str(1024 * 1024)))
 # Each request (one part) is retried by the HTTP client on connection errors and 429/5xx, with backoff and jitter.
-QUANT_DECODE_UPLOAD_HTTP_RETRIES = 5
+QUANT_DECODE_UPLOAD_HTTP_RETRIES = int(os.getenv("QUANT_DECODE_UPLOAD_HTTP_RETRIES", "5"))
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_FACTOR = 1.0  # urllib3: sleeps 0, 2, 4, 8, 16 s between retries
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_MAX_SECONDS = 30
 QUANT_DECODE_UPLOAD_HTTP_BACKOFF_JITTER_SECONDS = 1.0
-QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = 30
+# Connecting, and each socket write while the request body is sent (the HTTP client keeps this timeout on the socket
+# until the body is out).
+QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_HTTP_CONNECT_TIMEOUT_SECONDS", "30"))
 # Waiting for a response once the body is sent: seconds for a part; the complete call is the slow one. Kept short so
 # a stalled request leaves room in the file deadline for a whole-file retry.
-QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = 90
+QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_HTTP_READ_TIMEOUT_SECONDS", "90"))
 # When a file still fails on a transient error, the whole file is uploaded again (same key, so it overwrites) after
 # an exponential backoff with jitter, up to this many attempts and always within the file's deadline below.
 QUANT_DECODE_UPLOAD_ATTEMPTS = 4
 QUANT_DECODE_UPLOAD_RETRY_BASE_SECONDS = 10
 QUANT_DECODE_UPLOAD_RETRY_MAX_SECONDS = 60
 QUANT_DECODE_UPLOAD_MIN_TIMEOUT_SECONDS = 300  # per-file deadline floor
-QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = 2 * 1000 * 1000  # per-file deadline: floor + size at this rate
+# Per-file deadline: floor + size at this rate.
+QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND = int(os.getenv("QUANT_DECODE_UPLOAD_MIN_BYTES_PER_SECOND", str(2 * 1000 * 1000)))
+# When the decoded files still cannot be uploaded for a transient reason, the job finishes and the upload is retried
+# in the background (trainer/quant_decode/upload_retry.py): one attempt per missing file per round, rounds spaced by
+# an exponential backoff with jitter between the base and the cap, until this long after the first failure. Only then
+# is the decode an infra_error. The decoded files stay on disk meanwhile. 0 turns the background retry off.
+QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_WINDOW_SECONDS", str(2 * 60 * 60)))
+QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_ROUND_BASE_SECONDS", "60"))
+QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS = float(os.getenv("QUANT_DECODE_UPLOAD_RETRY_ROUND_MAX_SECONDS", "900"))
 QUANT_ARTIFACT_FORBIDDEN_SUFFIXES = (
     ".py",
     ".pyc",

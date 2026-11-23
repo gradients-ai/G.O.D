@@ -69,6 +69,7 @@ from trainer.job_state import update_wandb_url
 from trainer.model_artifacts import get_anonymous_model_dir
 from trainer.output_reclaim import reclaim_output_dir
 from trainer.quant_calibration import write_quant_calibration_file
+from trainer.quant_decode import upload_retry
 from trainer.quant_decode.job import run_freeform_decode
 from trainer.quant_decode.sandbox import sanitize_failure
 from trainer.quant_upload_check import QuantUploadVerdict
@@ -1071,21 +1072,23 @@ async def freeform_decode_result(task: TrainerProxyRequest) -> QuantDecodeResult
 
 
 async def _run_freeform_decode_step(task: TrainerProxyRequest, log_labels: dict[str, str]) -> None:
-    """Decode a freeform artifact after its upload and store the outcome on the job log for the validator."""
+    """Decode a freeform artifact after its upload and store the outcome on the job log for the validator.
+
+    When the decoded files could not be uploaded yet, the job still finishes here: the stored outcome is
+    `upload_pending` and upload_retry replaces it once the upload lands or its retry window closes.
+    """
     training_data = task.training_data
     if not isinstance(training_data, TrainRequestQuant) or training_data.decode is None:
         await log_task(training_data.task_id, task.hotkey, "freeform decode skipped: no decode request")
         return
 
     await log_task(training_data.task_id, task.hotkey, "Running freeform decode...")
+    upload_retry.cancel((training_data.task_id, task.hotkey))  # this decode replaces an earlier one's pending upload
     result = await freeform_decode_result(task)
     await update_quant_decode_result(training_data.task_id, task.hotkey, result)
-    if result.ok:
-        message = f"freeform decode ok: {result.n_tensors} tensors, {len(result.uploaded_files)} files uploaded"
-    elif result.quant_failure is not None:
-        message = f"freeform decode scored fail: {result.quant_failure}"
-    else:
-        message = f"[ERROR] freeform decode infra error: {result.infra_error}"
+    if result.upload_pending:
+        upload_retry.start(cst.QUANT_DECODE_WORK_ROOT, training_data.task_id, task.hotkey)
+    message = upload_retry.result_message(result)
     logger.info(message, extra=log_labels)
     await log_task(training_data.task_id, task.hotkey, message)
 
