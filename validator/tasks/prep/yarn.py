@@ -3,6 +3,7 @@ YaRN (Yet another RoPE extensioN) extension utilities for extending context leng
 """
 
 import json
+import re
 import tempfile
 import uuid
 
@@ -19,6 +20,15 @@ from validator.tasks.prep.constants import MODEL_COPY_ENDPOINT
 
 
 logger = get_logger(__name__)
+
+# What prepare_yarn_extended_model appends to a model's name, before the factor.
+YARN_MODEL_NAME_SUFFIX = "-YaRN-extended-"
+_YARN_MODEL_NAME_SUFFIX_PATTERN = re.compile(rf"{re.escape(YARN_MODEL_NAME_SUFFIX)}\d+$", re.IGNORECASE)
+
+
+def without_yarn_suffix(model_name: str) -> str:
+    """The name of the model a YaRN-extended copy was made from (any other name is returned unchanged)."""
+    return _YARN_MODEL_NAME_SUFFIX_PATTERN.sub("", model_name)
 
 
 def duplicate_model_to_yarn_repo(source_repo: str, dst_repo: str) -> str | None:
@@ -81,7 +91,7 @@ async def prepare_yarn_extended_model(original_model_id: str, yarn_factor: int) 
         The YaRN extended model ID to use for training
     """
     model_name = original_model_id.split("/")[-1]
-    yarn_model_id = f"{YARN_HUGGINGFACE_USERNAME}/{model_name}-YaRN-extended-{yarn_factor}"
+    yarn_model_id = f"{YARN_HUGGINGFACE_USERNAME}/{model_name}{YARN_MODEL_NAME_SUFFIX}{yarn_factor}"
 
     if repo_exists(yarn_model_id, token=YARN_HUGGINGFACE_TOKEN):
         logger.info(f"YaRN extended model {yarn_model_id} already exists, skipping duplication")
