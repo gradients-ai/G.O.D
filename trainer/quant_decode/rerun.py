@@ -8,6 +8,9 @@ Runs the same decode as the training job (`trainer.runtime.freeform_decode_resul
 presigned decoder snapshot URL in the stored request expires 7 days after the task was dispatched; past that the
 re-run itself ends in an infra_error.
 
+The re-run is its own process, so it does not take one of the running trainer's decode or upload slots
+(trainer/slots.py): it starts at once and shares the network link with whatever the trainer is transferring.
+
 Exit codes: 0 when the decode produced ok or quant_failure, 1 on infra_error, 2 when the job is unknown or has no
 decode request.
 """

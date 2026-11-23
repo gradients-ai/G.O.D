@@ -14,10 +14,12 @@ from core.constants.quant import DECODE_TIMEOUT_SECONDS
 from core.logging import get_all_context_tags
 from core.logging import get_logger
 from core.logging import stream_container_logs
+from core.models.payload_models import TrainerJob
 from core.models.payload_models import TrainerTaskLog
 from core.models.payload_models import TrainRequestQuant
 from core.models.task_models import TaskStatus
 from trainer import constants as cst
+from trainer import slots
 from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import save_task_history
 from trainer.job_state import task_history
@@ -41,6 +43,28 @@ def start_cleanup_loop_in_thread():
 def _decodes_after_upload(job: TrainerTaskLog) -> bool:
     """A freeform job with a decode request keeps TRAINING through the sandbox run after its upload."""
     return isinstance(job.training_data, TrainRequestQuant) and job.training_data.decode is not None
+
+
+def stale_deadline(job: TrainerJob) -> datetime | None:
+    """When a running job counts as overdue. None while it is queued for a transfer slot (trainer/slots.py).
+
+    Training jobs refresh started_at when the train container starts (see update_training_started_at), so the deadline
+    tracks container.wait rather than download/image-build time. Time the job has since spent queued for upload or
+    decode slots is added on top: that wait is the trainer's doing.
+
+    Both allowances stop at SLOT_WAIT_STALE_EXEMPT_MAX_HOURS, so a queue that never moves cannot keep a job TRAINING
+    for good.
+    """
+    if not isinstance(job, TrainerTaskLog):
+        return job.started_at + timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
+    job_key = (job.training_data.task_id, job.hotkey)
+    max_wait_seconds = cst.SLOT_WAIT_STALE_EXEMPT_MAX_HOURS * 3600
+    if slots.is_waiting(job_key) and slots.waiting_seconds(job_key) <= max_wait_seconds:
+        return None
+    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
+    if _decodes_after_upload(job):
+        timeout += timedelta(minutes=QUANT_DECODE_GRACE_MINUTES)
+    return job.started_at + timeout + timedelta(seconds=min(slots.waited_seconds(job_key), max_wait_seconds))
 
 
 def _is_trainer_container(container: Container) -> bool:
@@ -88,20 +112,9 @@ async def periodically_cleanup_tasks_and_cache(poll_interval_seconds: int = 600)
                 if job.status != TaskStatus.TRAINING or not job.started_at:
                     continue
 
-                # Training jobs refresh started_at when the train container starts (see
-                # update_training_started_at), so this deadline tracks container.wait rather than
-                # download/image-build time. Status-only: does not kill the container.
-                if isinstance(job, TrainerTaskLog):
-                    timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(
-                        minutes=cst.STALE_TASK_GRACE_MINUTES
-                    )
-                    if _decodes_after_upload(job):
-                        timeout += timedelta(minutes=QUANT_DECODE_GRACE_MINUTES)
-                else:
-                    timeout = timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
-
-                deadline = job.started_at + timeout
-                if now > deadline:
+                # Status-only: does not kill the container.
+                deadline = stale_deadline(job)
+                if deadline is not None and now > deadline:
                     job.status = TaskStatus.FAILURE
                     job.finished_at = now
                     job.logs.append(f"[{now.isoformat()}] Job marked as FAILED due to timeout.")
