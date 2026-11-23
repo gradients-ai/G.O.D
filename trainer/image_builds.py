@@ -19,11 +19,20 @@ _lock = threading.Lock()
 _builds_in_flight = 0
 
 
+class BuildCleanupBusy(Exception):
+    """A host build cleanup kept a build waiting for longer than it was willing to wait."""
+
+
 @contextmanager
-def image_build_in_flight() -> Iterator[None]:
+def image_build_in_flight(cleanup_wait_seconds: float | None = None) -> Iterator[None]:
+    """Count one build as in flight. Waits for a cleanup in progress: `cleanup_wait_seconds` at most, else for good."""
     global _builds_in_flight
-    with _lock:
+    if not _lock.acquire(timeout=-1 if cleanup_wait_seconds is None else cleanup_wait_seconds):
+        raise BuildCleanupBusy(f"host build cleanup still running after {cleanup_wait_seconds:.0f}s")
+    try:
         _builds_in_flight += 1
+    finally:
+        _lock.release()
     try:
         yield
     finally:

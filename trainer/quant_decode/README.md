@@ -64,7 +64,7 @@ The index file is accepted and ignored. The job deletes it, so only checked shar
 
 1. Fetch the decoder snapshot from its presigned URL, capped at `DECODER_MAX_XZ_BYTES` plus 1 MiB, and check its sha256.
 2. Extract it. Members must sit under `decoder/`, with no symlinks or hardlinks, at most `DECODER_MAX_EXTRACTED_BYTES` in total, and `decode.py` must exist.
-3. Download the artifact repo. Reject symlinks, exec bits and `QUANT_ARTIFACT_FORBIDDEN_SUFFIXES`. Count every file, `.gitattributes` included, as `artifact_bytes`.
+3. Download the artifact repo, within `QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS`. Reject symlinks, exec bits and `QUANT_ARTIFACT_FORBIDDEN_SUFFIXES`. Count every file, `.gitattributes` included, as `artifact_bytes`.
 4. Run the build and run phases, then `check_decoded_output` against the base model the training job used.
 5. Upload each checked shard to `<bucket>/<object_prefix>/`, then `index.json` (`QuantDecodedIndex`) last. Its presence marks the upload complete.
 
@@ -75,7 +75,7 @@ A trainer runs `MAX_CONCURRENT_QUANT_DECODES` decodes at once, and each decoded 
 | Outcome | Field | Examples |
 | --- | --- | --- |
 | Miner's fault, scored | `quant_failure` | unsafe decoder archive, extraction past the cap, no `decode.py`, executable in the artifact, build or run exit or timeout, bad output |
-| Trainer-side, never scored | `infra_error` | snapshot unreachable or sha mismatch, artifact download failure, base model unreadable, `container error:`, upload failure or timeout, unusable work root |
+| Trainer-side, never scored | `infra_error` | snapshot unreachable or sha mismatch, artifact download failure or timeout, base model unreadable, `container error:`, upload failure or timeout, unusable work root |
 
 <details>
 <summary>Work directory permissions</summary>

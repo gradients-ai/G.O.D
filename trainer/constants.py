@@ -64,6 +64,13 @@ STALE_TASK_GRACE_MINUTES = 10
 STALE_CONTAINER_MAX_AGE_HOURS = 1  # a created/exited trainer container older than this is removed by cleanup.py
 MODEL_PREP_TIMEOUT_MINUTES = 60
 DOCKER_BUILD_TIMEOUT_MINUTES = 30
+# A build waits this long for a host build cleanup in progress (trainer.image_builds) before it fails as not started.
+BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS = 600
+# Stopping a build (runtime.BuildStepContainers): a step container the daemon has created but not started yet cannot
+# be killed, so the kill is retried until it lands.
+BUILD_STOP_KILL_RETRY_SECONDS = 0.5
+BUILD_STOP_KILL_TIMEOUT_SECONDS = 10
+BUILD_STEP_CONTAINERS_TRACKED = 1000  # most recent step containers remembered per build
 
 # Miner images are always built with no cache (runtime.build_docker_image), so a build never reuses layers from another
 # entrant's build. After each job, and periodically, the trainer also runs a host-wide `docker builder prune`, only while
@@ -80,6 +87,9 @@ MAX_CONCURRENT_UPLOADS = int(os.getenv("TRAINER_MAX_CONCURRENT_UPLOADS", "2"))
 MAX_CONCURRENT_QUANT_DECODES = int(os.getenv("TRAINER_MAX_CONCURRENT_QUANT_DECODES", "2"))
 # An upload container that never exits would keep its upload slot for good; this cap, counted from the slot, ends it.
 HF_UPLOAD_TIMEOUT_MINUTES = int(os.getenv("TRAINER_HF_UPLOAD_TIMEOUT_MINUTES", "180"))
+# A queued job is kept clear of the stale-job deadline (cleanup.py), but only for this long: one unbroken wait past it,
+# or more queue time in total, means the queue is stuck and the job is overdue like any other.
+SLOT_WAIT_STALE_EXEMPT_MAX_HOURS = 6
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
 
@@ -121,6 +131,8 @@ QUANT_DECODE_WORK_ROOT = Path(
 )
 QUANT_DECODER_FETCH_SLACK_BYTES = 1024 * 1024  # snapshot download cap = DECODER_MAX_XZ_BYTES + this slack
 QUANT_DECODER_FETCH_TIMEOUT_SECONDS = 60
+# Whole artifact download in the decode job. It runs inside a decode slot, so a stalled one must end.
+QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS = 3600
 # Freeform calibration set (trainer/quant_calibration.py): fetched on the host and handed to the miner as a file.
 QUANT_CALIBRATION_FETCH_TIMEOUT_SECONDS = 60
 QUANT_CALIBRATION_FETCH_ATTEMPTS = 3  # fetch, check and write attempts before the job fails without a calibration file

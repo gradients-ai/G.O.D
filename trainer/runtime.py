@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import time
 import uuid
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
@@ -13,6 +14,7 @@ import docker
 from docker.errors import APIError
 from docker.errors import BuildError
 from docker.errors import ImageNotFound
+from docker.errors import NotFound
 from docker.models.containers import Container
 
 import core.constants as core_cst
@@ -52,6 +54,7 @@ from trainer.host import build_wandb_env
 from trainer.host import extract_container_error
 from trainer.host_resources import container_resources
 from trainer.host_resources import pinned_helper_kwargs
+from trainer.image_builds import BuildCleanupBusy
 from trainer.image_builds import image_build_in_flight
 from trainer.image_builds import prune_build_leftovers
 from trainer.job_state import complete_task
@@ -99,59 +102,118 @@ def ensure_internal_network(name: str = cst.INTERNAL_BRIDGE_NAME):
         client.networks.create(name, driver="bridge", internal=True)
 
 
-# The classic builder runs each RUN step in a container of its own and names it in the build stream.
-_STEP_CONTAINER_STARTED = re.compile(r"--->\s+Running in ([0-9a-f]{12,64})")
-_STEP_CONTAINER_REMOVED = re.compile(r"Removing intermediate container ([0-9a-f]{12,64})")
+# The classic builder runs each RUN step in a container of its own. It names the container on the line after the
+# step's own line, before the step produces any output:
+#   Step 4/9 : RUN pip install ...
+#    ---> Running in 0123456789ab
+_BUILD_STEP_LINE = re.compile(r"^Step \d+/\d+ : ")
+_STEP_CONTAINER_LINE = re.compile(r"^\s*--->\s+Running in ([0-9a-f]{12,64})\s*$")
+_BUILD_STREAM_LINE_MAX_CHARS = 64 * 1024
 
 
 class BuildStepContainers:
-    """Follows one build's stream to know its running step container, so the build can be stopped.
+    """Follows one build's stream to know its step containers, so the build can be stopped.
 
     The daemon keeps building after the trainer stops waiting, and a step can go on downloading for as long as it
     likes. Killing the step's container fails that step, which ends the build on the daemon. Once stopped, any step the
-    build still starts (after a base image pull, say) is killed as soon as the stream names it. Layers of the steps
-    that finished are left as they are.
+    build still starts (after a base image pull, say) is killed as soon as the stream names it. Nothing is removed.
+
+    The stream also carries the steps' own output, so it is only trusted for candidates. A container line counts only
+    as the first one after a step line. Lines saying a container was removed are ignored: a step can print one about
+    itself. Which candidates are still alive is asked of the daemon when the build is stopped, and a container under
+    one of the trainer's own name prefixes is never killed.
     """
 
     def __init__(self, client: docker.DockerClient, log_labels: dict[str, str] | None = None):
         self._client = client
         self._log_labels = log_labels
         self._lock = threading.Lock()
-        self._current: str | None = None
+        self._candidates: dict[str, None] = {}  # insertion-ordered set
         self._stopped = False
+        self._buffer = ""
+        self._awaiting_step_container = False
 
     def watch(self, build_output: Iterator[dict]) -> Iterator[dict]:
         for chunk in build_output:
             text = chunk.get("stream") if isinstance(chunk, dict) else None
             if isinstance(text, str):
-                self._observe(text)
+                self._feed(text)
             yield chunk
 
-    def _observe(self, text: str) -> None:
-        started = _STEP_CONTAINER_STARTED.search(text)
-        removed = _STEP_CONTAINER_REMOVED.search(text)
-        if started is None and removed is None:
+    def _feed(self, text: str) -> None:
+        self._buffer += text
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._observe(line)
+        if len(self._buffer) > _BUILD_STREAM_LINE_MAX_CHARS:
+            self._buffer = ""
+
+    def _observe(self, line: str) -> None:
+        if _BUILD_STEP_LINE.match(line):
+            self._awaiting_step_container = True
             return
+        named = _STEP_CONTAINER_LINE.match(line) if self._awaiting_step_container else None
+        if named is None:
+            return
+        self._awaiting_step_container = False
+        container_id = named.group(1)
         with self._lock:
-            if started is not None:
-                self._current = started.group(1)
-                if self._stopped:
-                    self._kill(self._current)
-            elif self._current == removed.group(1):
-                self._current = None
+            self._candidates.pop(container_id, None)
+            self._candidates[container_id] = None
+            while len(self._candidates) > cst.BUILD_STEP_CONTAINERS_TRACKED:
+                del self._candidates[next(iter(self._candidates))]
+            stopped = self._stopped
+        if stopped:
+            self._kill_live([container_id])
 
     def stop(self) -> None:
         with self._lock:
             self._stopped = True
-            if self._current is not None:
-                self._kill(self._current)
+            candidates = list(self._candidates)
+        self._kill_live(candidates)
+
+    def _kill_live(self, candidates: list[str]) -> None:
+        if not candidates:
+            return
+        try:
+            containers = self._client.api.containers(all=True)
+        except APIError as e:
+            logger.warning(f"Could not list containers to stop an image build: {e}", extra=self._log_labels)
+            return
+        for container in containers:
+            names = [name.lstrip("/") for name in container.get("Names") or []]
+            if any(name.startswith(cst.TRAINER_CONTAINER_NAME_PREFIXES) for name in names):
+                continue
+            if any(container["Id"].startswith(candidate) for candidate in candidates):
+                self._kill(container["Id"])
 
     def _kill(self, container_id: str) -> None:
+        """Kill one step container. The stream names it between create and start, and a container that has not
+        started cannot be killed (409), so that case is retried until the kill lands or the container is gone."""
+        deadline = time.monotonic() + cst.BUILD_STOP_KILL_TIMEOUT_SECONDS
+        while True:
+            try:
+                self._client.api.kill(container_id)
+                logger.info(f"Stopped image build: killed step container {container_id[:12]}", extra=self._log_labels)
+                return
+            except NotFound:
+                return
+            except APIError as e:
+                if e.status_code != 409 or not self._created_not_started(container_id):
+                    logger.info(f"Image build step container {container_id[:12]} not killed: {e}", extra=self._log_labels)
+                    return
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        f"Image build step container {container_id[:12]} never started; not killed", extra=self._log_labels
+                    )
+                    return
+            time.sleep(cst.BUILD_STOP_KILL_RETRY_SECONDS)
+
+    def _created_not_started(self, container_id: str) -> bool:
         try:
-            self._client.api.kill(container_id)
-            logger.info(f"Stopped image build: killed step container {container_id}", extra=self._log_labels)
-        except APIError as e:  # NotFound included: the step ended on its own
-            logger.info(f"Image build step container {container_id} not killed: {e}", extra=self._log_labels)
+            return self._client.api.inspect_container(container_id)["State"]["Status"] == "created"
+        except APIError:
+            return False
 
 
 def build_docker_image(
@@ -167,6 +229,8 @@ def build_docker_image(
     """Build an image and wait for it, at most `timeout_seconds`.
 
     A build that runs out of time, or whose job sets `cancelled`, is stopped on the daemon too (BuildStepContainers).
+    Before the build and its timer start, it waits for a host build cleanup in progress, at most
+    BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS.
     """
     client: docker.DockerClient = docker.from_env()
 
@@ -181,52 +245,59 @@ def build_docker_image(
         extra=log_labels,
     )
 
-    with image_build_in_flight():
-        build_output = None
-        executor = None
-        try:
-            build_output = client.api.build(
-                path=context_path,
-                dockerfile=dockerfile_path,
-                tag=tag,
-                nocache=no_cache,
-                # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
-                # failure.
-                rm=True,
-                forcerm=True,
-                decode=True,
-            )
-            steps = BuildStepContainers(client, log_labels)
-            # Set when the stream ends or the job gives up, whichever comes first; never set means out of time.
-            wake = cancelled if cancelled is not None else threading.Event()
-            executor = ThreadPoolExecutor(max_workers=1)
-            future = executor.submit(_stream_build_logs, steps.watch(build_output), log_labels)
-            future.add_done_callback(lambda _: wake.set())
-            woken = wake.wait(timeout=timeout_seconds)
-            if not future.done():
-                steps.stop()
-                message = "Docker image build cancelled" if woken else f"Docker image build exceeded {timeout_seconds} seconds"
-                logger.error(message, extra=log_labels)
-                return None, message
-            future.result()
-
-            # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
-            # ends normally with no image, and the job would only fail later on a missing tag at container start.
+    try:
+        with image_build_in_flight(cleanup_wait_seconds=cst.BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS):
+            build_output = None
+            executor = None
             try:
-                client.images.get(tag)
-            except ImageNotFound:
-                message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
-                logger.error(message, extra=log_labels)
-                return None, message
+                build_output = client.api.build(
+                    path=context_path,
+                    dockerfile=dockerfile_path,
+                    tag=tag,
+                    nocache=no_cache,
+                    # docker-py sends rm=False by default, which leaves intermediate containers behind; remove them even on
+                    # failure.
+                    rm=True,
+                    forcerm=True,
+                    decode=True,
+                )
+                steps = BuildStepContainers(client, log_labels)
+                # Set when the stream ends or the job gives up, whichever comes first; never set means out of time.
+                wake = cancelled if cancelled is not None else threading.Event()
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(_stream_build_logs, steps.watch(build_output), log_labels)
+                future.add_done_callback(lambda _: wake.set())
+                woken = wake.wait(timeout=timeout_seconds)
+                if not future.done():
+                    steps.stop()
+                    message = f"Docker image build exceeded {timeout_seconds} seconds"
+                    if woken:
+                        message = "Docker image build cancelled"
+                    logger.error(message, extra=log_labels)
+                    return None, message
+                future.result()
 
-            logger.info("Docker image built successfully.", extra=log_labels)
-            return tag, None
-        except (BuildError, APIError) as e:
-            logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
-            return None, str(e)
-        finally:
-            if executor is not None:
-                executor.shutdown(wait=False, cancel_futures=True)
+                # A failed build step reaches the low-level build stream as an {"error": ...} chunk, not an exception: the stream
+                # ends normally with no image, and the job would only fail later on a missing tag at container start.
+                try:
+                    client.images.get(tag)
+                except ImageNotFound:
+                    message = f"Docker image build failed: no image '{tag}' was produced (a build step failed; see the build log)"
+                    logger.error(message, extra=log_labels)
+                    return None, message
+
+                logger.info("Docker image built successfully.", extra=log_labels)
+                return tag, None
+            except (BuildError, APIError) as e:
+                logger.error(f"Docker build failed: {str(e)}", extra=log_labels)
+                return None, str(e)
+            finally:
+                if executor is not None:
+                    executor.shutdown(wait=False, cancel_futures=True)
+    except BuildCleanupBusy as e:  # raised before the build or its timer started
+        message = f"Docker image build not started: {e}"
+        logger.error(message, extra=log_labels)
+        return None, message
 
 
 async def build_job_image(task_id: str, hotkey: str, **build_kwargs) -> tuple[str | None, str | None]:

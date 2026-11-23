@@ -171,16 +171,19 @@ def test_default_limits():
 
 @pytest.fixture
 def slow_builds(monkeypatch) -> Gauge:
-    """A Docker client whose every build stream takes HOLD_SECONDS."""
+    """A Docker client whose every build takes HOLD_SECONDS inside its stream, the part the build timeout covers."""
     gauge = Gauge()
 
-    def build(**kwargs):
+    def stream():
         gauge.enter()
         try:
             time.sleep(HOLD_SECONDS)
         finally:
             gauge.leave()
-        return iter([])
+        yield {"stream": "Successfully built\n"}
+
+    def build(**kwargs):
+        return stream()
 
     client = MagicMock()
     client.api.build.side_effect = build
@@ -419,3 +422,36 @@ async def test_a_queued_job_has_no_stale_deadline_and_its_wait_extends_the_deadl
     waited = slots.waited_seconds(JOB)
     assert waited >= 0.05
     assert cleanup.stale_deadline(running) == base_deadline + timedelta(seconds=waited)
+
+
+async def test_a_job_queued_for_too_long_is_overdue_again(monkeypatch):
+    started_at = datetime.utcnow()
+    running = _running_job(started_at)
+    base_deadline = started_at + timedelta(hours=1, minutes=cst.STALE_TASK_GRACE_MINUTES)
+    max_wait_seconds = 0.1
+    monkeypatch.setattr(cst, "SLOT_WAIT_STALE_EXEMPT_MAX_HOURS", max_wait_seconds / 3600)
+
+    limiter = SlotLimiter("upload", 1)
+    async with limiter.slot():
+        queued = asyncio.create_task(_take(limiter, slots._no_report))
+        await _until(lambda: slots.is_waiting(JOB))
+        assert cleanup.stale_deadline(running) is None
+        await _until(lambda: slots.waiting_seconds(JOB) > max_wait_seconds)
+        assert cleanup.stale_deadline(running) == base_deadline  # one unbroken wait past the cap
+    await queued
+
+    assert slots.waiting_seconds(JOB) == 0.0
+    assert slots.waited_seconds(JOB) > max_wait_seconds
+    assert cleanup.stale_deadline(running) == base_deadline + timedelta(seconds=max_wait_seconds)  # credit is capped too
+
+
+async def test_a_stalled_artifact_download_times_out_as_an_infra_error(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(cst, "QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS", 0.1)
+    released = threading.Event()
+    monkeypatch.setattr(job, "snapshot_download", lambda **kwargs: released.wait(timeout=10))
+
+    try:
+        with pytest.raises(job._InfraFault, match="artifact download timed out after 0s"):
+            await job._fetch_artifact("user/artifact", tmp_path, None)
+    finally:
+        released.set()

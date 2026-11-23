@@ -5,8 +5,8 @@ each take a slot from a small pool, so a few run at full speed while the rest qu
 into their timeouts. Slots are handed out in arrival order.
 
 A step's own timeout must start inside its slot: time spent queued is the trainer's, never the miner's. A job that
-is queued, or has been, is also kept clear of the stale-job deadline in cleanup.py through `is_waiting` and
-`waited_seconds`.
+is queued, or has been, is also kept clear of the stale-job deadline in cleanup.py through `is_waiting`,
+`waiting_seconds` and `waited_seconds`, up to a cap.
 
 The pools belong to one trainer process and one event loop. A separate process, such as the decode re-run CLI, has
 pools of its own and does not queue behind the running trainer.
@@ -31,6 +31,7 @@ JobKey = tuple[str, str]  # (task_id, hotkey)
 # Read by the cleanup loop from its own thread.
 _waits_lock = threading.Lock()
 _waiting_jobs: Counter[JobKey] = Counter()
+_waiting_since: dict[JobKey, float] = {}
 _waited_seconds: dict[JobKey, float] = {}
 
 
@@ -44,8 +45,15 @@ def is_waiting(job: JobKey) -> bool:
         return _waiting_jobs[job] > 0
 
 
+def waiting_seconds(job: JobKey) -> float:
+    """Length of the job's current unbroken wait; 0 when it is not queued."""
+    with _waits_lock:
+        since = _waiting_since.get(job)
+    return 0.0 if since is None else time.monotonic() - since
+
+
 def waited_seconds(job: JobKey) -> float:
-    """Time the job has spent queued for slots since the last `forget_waits`."""
+    """Time the job has spent in finished waits for slots since the last `forget_waits`."""
     with _waits_lock:
         return _waited_seconds.get(job, 0.0)
 
@@ -59,6 +67,7 @@ def _wait_started(job: JobKey | None) -> None:
     if job is not None:
         with _waits_lock:
             _waiting_jobs[job] += 1
+            _waiting_since.setdefault(job, time.monotonic())
 
 
 def _wait_ended(job: JobKey | None, seconds: float) -> None:
@@ -67,6 +76,7 @@ def _wait_ended(job: JobKey | None, seconds: float) -> None:
             _waiting_jobs[job] -= 1
             if _waiting_jobs[job] <= 0:
                 del _waiting_jobs[job]
+                _waiting_since.pop(job, None)
             _waited_seconds[job] = _waited_seconds.get(job, 0.0) + seconds
 
 
@@ -112,5 +122,8 @@ class SlotLimiter:
 
 image_builds = SlotLimiter("image build", cst.MAX_CONCURRENT_IMAGE_BUILDS)
 # One pool for everything the trainer sends out: model uploads to Hugging Face and decoded files to object storage.
+# A decoded-file upload that runs out of time gives its slot back while its thread is still sending (the storage client
+# has no cancel), until the request in flight fails or returns. For that short while one more transfer than the limit
+# can be on the link.
 uploads = SlotLimiter("upload", cst.MAX_CONCURRENT_UPLOADS)
 quant_decodes = SlotLimiter("freeform decode", cst.MAX_CONCURRENT_QUANT_DECODES)

@@ -33,7 +33,8 @@ The service that takes jobs from the validator, clones miner repositories, build
 
 - Miner images are built with no cache, so one entrant's build never reuses another's layers.
 - A build whose step failed is detected by the missing image tag. The job fails at the build stage with `Docker image build failed: no image ...`.
-- A build that exceeds `DOCKER_BUILD_TIMEOUT_MINUTES`, or whose job is cancelled, is stopped on the daemon: the trainer kills the running step container, and any step the build starts afterwards. Layers of finished steps are not removed by this.
+- A build that exceeds `DOCKER_BUILD_TIMEOUT_MINUTES`, or whose job is cancelled, is stopped on the daemon: the trainer kills the build's running step container, and any step the build starts afterwards. A step container that is created but not yet started is retried for `BUILD_STOP_KILL_TIMEOUT_SECONDS`.
+- A build waits at most `BUILD_CLEANUP_WAIT_TIMEOUT_SECONDS` for a host build cleanup in progress, then fails as not started.
 - Before every compression-task build, files over `QUANT_LARGE_FILE_REVIEW_BYTES` in the checkout are logged as `[REVIEW] ...`. This never fails the job.
 - After each job the image is removed. Dangling images are pruned after each job and by the periodic cleanup, but only while no image build is in progress on the trainer (a build abandoned on timeout counts until the daemon ends it).
 - The host-wide BuildKit cache prune runs while `TRAINER_PRUNE_BUILD_CACHE` is `true`, the default. Set it to `false` on a host that shares Docker with other builds.
@@ -50,7 +51,8 @@ Jobs on one trainer share its network link, so `slots.py` lets only a few heavy 
 
 - A step's time limit starts once it holds its slot: the build timeout, the per-file upload deadline and the decode phase caps never include queue time. A model upload is cut off `TRAINER_HF_UPLOAD_TIMEOUT_MINUTES` (default 180) after it gets its slot, so a stuck uploader cannot keep a slot.
 - A queued job stays `TRAINING`. Its job log gets `Waiting for <pool> slot ...` and then `Got <pool> slot after waiting Ns`.
-- The stale timeout skips a job while it is queued, and is extended by the time it has queued since its container started.
+- The stale timeout skips a job while it is queued, and is extended by the time it has queued since its container started. Both stop at `SLOT_WAIT_STALE_EXEMPT_MAX_HOURS`.
+- A decoded-file upload that times out gives its slot back while its thread is still sending, until the request in flight ends.
 - The pools live in the trainer process. The decode re-run CLI is a separate process and does not queue behind running jobs.
 - The limits are read at start, so a change needs a trainer restart.
 

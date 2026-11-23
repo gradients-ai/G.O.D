@@ -51,16 +51,20 @@ def stale_deadline(job: TrainerJob) -> datetime | None:
     Training jobs refresh started_at when the train container starts (see update_training_started_at), so the deadline
     tracks container.wait rather than download/image-build time. Time the job has since spent queued for upload or
     decode slots is added on top: that wait is the trainer's doing.
+
+    Both allowances stop at SLOT_WAIT_STALE_EXEMPT_MAX_HOURS, so a queue that never moves cannot keep a job TRAINING
+    for good.
     """
     if not isinstance(job, TrainerTaskLog):
         return job.started_at + timedelta(minutes=cst.MODEL_PREP_TIMEOUT_MINUTES)
     job_key = (job.training_data.task_id, job.hotkey)
-    if slots.is_waiting(job_key):
+    max_wait_seconds = cst.SLOT_WAIT_STALE_EXEMPT_MAX_HOURS * 3600
+    if slots.is_waiting(job_key) and slots.waiting_seconds(job_key) <= max_wait_seconds:
         return None
     timeout = timedelta(hours=job.training_data.hours_to_complete) + timedelta(minutes=cst.STALE_TASK_GRACE_MINUTES)
     if _decodes_after_upload(job):
         timeout += timedelta(minutes=QUANT_DECODE_GRACE_MINUTES)
-    return job.started_at + timeout + timedelta(seconds=slots.waited_seconds(job_key))
+    return job.started_at + timeout + timedelta(seconds=min(slots.waited_seconds(job_key), max_wait_seconds))
 
 
 def _is_trainer_container(container: Container) -> bool:

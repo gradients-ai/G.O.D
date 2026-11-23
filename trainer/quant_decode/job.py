@@ -271,8 +271,20 @@ def _extract_decoder(xz_path: Path, decoder_dir: Path) -> None:
 
 
 async def _fetch_artifact(artifact_repo: str, artifact_dir: Path, hf_token: str | None) -> None:
+    """Download the artifact repo, within QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS: the decode holds a decode slot.
+
+    On timeout the download thread is not killed (the hub client has no cancel); the job moves on and the thread ends
+    on the client's own socket timeouts. It can leave files behind in the removed work dir.
+    """
+    timeout = cst.QUANT_ARTIFACT_FETCH_TIMEOUT_SECONDS
+    download = asyncio.ensure_future(
+        asyncio.to_thread(snapshot_download, repo_id=artifact_repo, local_dir=artifact_dir, token=hf_token)
+    )
+    done, _ = await asyncio.wait({download}, timeout=timeout)
+    if not done:
+        raise _InfraFault(f"artifact download timed out after {timeout:.0f}s")
     try:
-        await asyncio.to_thread(snapshot_download, repo_id=artifact_repo, local_dir=artifact_dir, token=hf_token)
+        download.result()
     except Exception as e:  # HF raises many unrelated types; every one of them is an outage on our side
         raise _InfraFault(f"artifact download failed: {e}") from None
     shutil.rmtree(artifact_dir / HF_LOCAL_CACHE_DIR, ignore_errors=True)
