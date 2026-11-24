@@ -1073,6 +1073,30 @@ async def retire_unattached_quant_seeds(tournament_id: str, config: Config) -> l
     return retired
 
 
+async def stop_unfinished_boss_round_tasks(task_ids: list[str], config: Config) -> list[str]:
+    """Stop the work still to come on the given boss-round tasks once the crown is out of reach, without touching a run.
+
+    Every training row of a task still PENDING is marked FAILURE, so the scheduler never dispatches it. A task that has not
+    started (_UNSTARTED_TASK_STATUSES) also has its task status set to FAILURE, as retire_unattached_quant_seeds retires a
+    held seed, so nothing prepares or releases it. A training already running is left to finish: the trainers have no cancel
+    path, and its result is not read. A task in any other state keeps its status, so an evaluation in flight is not
+    interrupted. Returns the tasks whose status was set to FAILURE.
+    """
+    stopped: list[str] = []
+    for task_id in task_ids:
+        for row in await tournament_sql.get_training_rows_for_task(task_id, TrainingStatus.PENDING, config.psql_db):
+            await tournament_sql.update_tournament_task_training_status(
+                task_id, row.hotkey, TrainingStatus.FAILURE, config.psql_db
+            )
+        task = await task_sql.get_task(task_id, config.psql_db)
+        if task is not None and task.status in _UNSTARTED_TASK_STATUSES:
+            task.status = TaskStatus.FAILURE
+            await task_sql.update_task(task, config.psql_db)
+            stopped.append(task_id)
+            logger.warning(f"Boss round task {task_id} stopped before it started: the crown is out of reach")
+    return stopped
+
+
 async def process_tournament_seed_tasks(tournament_id: str, config: Config) -> None:
     """Advance the status of one tournament's seeds, replacing the ones that failed. Once a quant tournament is decided, its
     seeds no round attached are retired first (retire_unattached_quant_seeds).

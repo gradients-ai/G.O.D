@@ -15,6 +15,7 @@ import validator.tournament.round_results as rr
 import validator.tournament.tournament_manager as tm
 from core.models.image_models import ImageModelType
 from core.models.image_models import ImageTrainingMode
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsImage
@@ -93,6 +94,7 @@ class Cup:
         self.deciders = AsyncMock()
         self.back_to_assignment = AsyncMock()
         self.upload = AsyncMock(return_value="uploaded/repo")
+        self.stopped = AsyncMock(return_value=[])
         self._wire()
 
     # ----- building the tournament -------------------------------------------------------------------------------------
@@ -103,7 +105,11 @@ class Cup:
         task_id = str(UUID(int=len(self.tasks) + 1))
         model_type, training_mode = slot
         self.tasks[task_id] = SimpleNamespace(
-            task_id=task_id, task_type=TaskType.IMAGETASK, model_type=model_type, training_mode=training_mode
+            task_id=task_id,
+            task_type=TaskType.IMAGETASK,
+            model_type=model_type,
+            training_mode=training_mode,
+            status=TaskStatus.SUCCESS.value,
         )
         self.losses[task_id] = {BOSS: boss, CONTENDER: contender}
         return task_id
@@ -237,6 +243,8 @@ class Cup:
         mp.setattr(tm, "update_tournament_winner_hotkey", set_winner)
         mp.setattr(tm, "update_round_status", status)
         mp.setattr(tm, "get_tournament_tasks", tasks_of_round)
+        mp.setattr(tm, "get_tournament_rounds", rounds)
+        mp.setattr(tm, "stop_unfinished_boss_round_tasks", self.stopped)
         mp.setattr(tm, "create_next_round", self.create_next_round)
         mp.setattr(tm, "notify_tournament_completed", AsyncMock())
         mp.setattr(tm, "upload_participant_repository", self.upload)
@@ -569,3 +577,83 @@ class TestRouting:
 
         with pytest.raises(RuntimeError, match="never adds deciders"):
             await ADD_BOSS_ROUND_DECIDERS(cup.tournament, cup.boss_round, RoundOutcome(deferred_reason="draw"), cup.config, None)
+
+
+class TestBossRoundEarlyStop:
+    """Once finished boss-round tasks put the crown out of reach, the tournament ends with the boss retained and the
+    tasks still to come are stopped."""
+
+    def start(self, cup, scores, unfinished: list[int]):
+        """A boss round in progress: the tasks at ``unfinished`` (indices into the boss-round tasks) have not finished."""
+        _round_ids, boss_ids = cup.play(scores)
+        cup.boss_round.status = RoundStatus.ACTIVE
+        for index in unfinished:
+            cup.tasks[boss_ids[index]].status = TaskStatus.TRAINING.value
+            cup.losses[boss_ids[index]] = {BOSS: None, CONTENDER: None}
+        return boss_ids
+
+    async def stop(self, cup) -> bool:
+        return await tm.stop_unreachable_boss_round(cup.tournament, cup.boss_round, cup.config, None)
+
+    async def test_a_third_non_win_ends_the_tournament_with_the_boss_retained_and_stops_the_rest(self, cup):
+        # Two non-wins in rounds 1-3 (one smaller, one larger), then a non-win on boss task 1: out of reach.
+        boss_ids = self.start(cup, [SMALLER, LIMIT, CLEAR_WIN, LEVEL, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN], unfinished=[1, 2, 3])
+
+        assert await self.stop(cup) is True
+
+        cup.stopped.assert_awaited_once()
+        assert cup.stopped.await_args.args[0] == boss_ids[1:]
+        assert (cup.boss_round.round_id, RoundStatus.COMPLETED) in cup.status_updates
+        assert cup.winners_set == [BOSS]
+        assert cup.placements == [(TID, BOSS, CONTENDER, RUNNER_UP)]
+        assert cup.eliminated == [(cup.boss_round.round_id, [CONTENDER])]
+        assert [kwargs["task_id"] for kwargs in cup.persisted] == [boss_ids[0]]
+        cup.create_next_round.assert_not_awaited()
+
+    async def test_a_reachable_crown_changes_nothing(self, cup):
+        self.start(cup, [SMALLER, CLEAR_WIN, CLEAR_WIN, LEVEL, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN], unfinished=[1, 2, 3])
+
+        assert await self.stop(cup) is False
+
+        cup.stopped.assert_not_awaited()
+        cup.assert_nothing_changed()
+
+    async def test_a_finished_round_is_left_to_resolve_normally(self, cup):
+        self.start(cup, [BEYOND] + [CLEAR_WIN] * 6, unfinished=[])
+
+        assert await self.stop(cup) is False
+
+        cup.assert_nothing_changed()
+
+    async def test_a_task_that_errored_is_not_a_decided_non_win(self, cup):
+        # Three non-wins would end it, but the third boss task errored for infrastructure reasons: it is not decided.
+        boss_ids = self.start(cup, [SMALLER, LIMIT, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN], unfinished=[1, 2, 3])
+        cup.tasks[boss_ids[0]].status = TaskStatus.FAILURE.value
+
+        assert await self.stop(cup) is False
+
+        cup.assert_nothing_changed()
+
+    async def test_a_finished_task_with_no_contender_score_is_not_decided(self, cup):
+        boss_ids = self.start(cup, [SMALLER, LIMIT, CLEAR_WIN, NO_RESULT, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN], unfinished=[1, 2, 3])
+        assert boss_ids
+
+        assert await self.stop(cup) is False
+
+        cup.assert_nothing_changed()
+
+    async def test_an_evaluation_fault_is_left_to_the_ordinary_path(self, cup):
+        boss_ids = self.start(cup, [CLEAR_WIN] * 7, unfinished=[1, 2, 3])
+        cup.losses[boss_ids[0]] = {BOSS: None, CONTENDER: None}
+
+        assert await self.stop(cup) is False
+
+        cup.assert_nothing_changed()
+
+    async def test_a_tournament_with_a_winner_or_a_pending_round_is_not_touched(self, cup):
+        self.start(cup, [BEYOND] + [CLEAR_WIN] * 6, unfinished=[1, 2, 3])
+        cup.boss_round.status = RoundStatus.PENDING
+
+        assert await self.stop(cup) is False
+
+        cup.assert_nothing_changed()

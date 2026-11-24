@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from core.logging import get_logger
 from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from core.models.task_models import higher_is_better
 from validator.app.config import Config
@@ -39,6 +40,7 @@ from validator.scoring.models import MinerResultsText
 from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.tasks import calculate_miner_ranking_and_scores
 from validator.tournament import constants as t_cst
+from validator.tournament.crown import BossRoundProgress
 from validator.tournament.crown import HeadToHead
 from validator.tournament.crown import HeadToHeadOutcome
 from validator.tournament.crown import crown_verdict
@@ -787,15 +789,13 @@ async def _get_quant_boss_round_outcome(
         f"Quant crown, boss round {completed_round.round_id}: "
         f"{'challenger crowned' if crowned else 'boss retains'}{incomplete} - {verdict.reason}"
     )
-    for head_to_head in boss_round:
-        await update_threshold_adjusted_quality_scores_for_task(
-            task_id=head_to_head.task_id,
-            winner_hotkey=challenger if head_to_head.is_win else boss_hotkey,
-            threshold_percentage=t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT,
-            compared_hotkeys=[boss_hotkey, challenger],
-            psql_db=psql_db,
-            basis=f"the quant crown rule ({head_to_head.describe()})",
-        )
+    await _persist_boss_round_winners(
+        [(head_to_head.task_id, head_to_head) for head_to_head in boss_round],
+        challenger,
+        t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT,
+        "quant",
+        psql_db,
+    )
     return RoundOutcome(winners=[challenger] if crowned else [boss_hotkey])
 
 
@@ -1315,6 +1315,66 @@ async def _get_image_boss_round_outcome(
 
     await _persist_boss_round_winners(boss_round, challenger, t_cst.IMAGE_CROWN_WIN_MARGIN, "image", psql_db)
     return RoundOutcome(winners=[challenger] if verdict.crowned else [boss_hotkey])
+
+
+async def boss_round_progress(
+    tournament: TournamentData, boss_round: TournamentRoundData, psql_db: PSQLDB
+) -> BossRoundProgress | None:
+    """The crown rule on a planned image or compression boss round that has not finished, from the tasks that have.
+
+    A task counts as decided only when it finished and both sides have a valid score on it: a task that errored, whose
+    evaluation is missing, or on which a side has no score is left undecided (it counts as a win), so only results can put the
+    crown out of reach. None when the round has no challenger or a finished task has an evaluation fault (both sides trained
+    and neither has a result); the round then takes its ordinary course.
+    """
+    round_tasks = await get_tournament_tasks(boss_round.round_id, psql_db)
+    challenger = await _boss_round_challenger(boss_round, round_tasks, psql_db)
+    if challenger is None:
+        return None
+    is_quant = tournament.tournament_type == TournamentType.QUANT
+    try:
+        earlier_rounds = (
+            await quant_round_head_to_heads(tournament.tournament_id, challenger, psql_db)
+            if is_quant
+            else await round_head_to_heads(tournament, challenger, psql_db)
+        )
+        decided: list[tuple[str, HeadToHead]] = []
+        unfinished: list[str] = []
+        for task in round_tasks:
+            task_object = await get_task(task.task_id, psql_db)
+            if task_object is None or task_object.status != TaskStatus.SUCCESS.value:
+                unfinished.append(str(task.task_id))
+                continue
+            if is_quant:
+                label = await _quant_boss_round_label(task.task_id, task_object, psql_db)
+                head_to_head = await quant_task_head_to_head(task.task_id, label, task_object, challenger, psql_db)
+            else:
+                head_to_head = await _task_head_to_head(
+                    tournament.tournament_type,
+                    task.task_id,
+                    _image_boss_round_label(task_object),
+                    task_object.task_type,
+                    challenger,
+                    psql_db,
+                )
+            if is_valid_score(head_to_head.boss_score) and is_valid_score(head_to_head.challenger_score):
+                decided.append((str(task.task_id), head_to_head))
+    except CrownEvaluationFault as fault:
+        logger.warning(f"Boss round {boss_round.round_id}: evaluation fault on {fault.task_ids}; no early stop check")
+        return None
+    verdict = crown_verdict(earlier_rounds + [head_to_head for _, head_to_head in decided])
+    return BossRoundProgress(challenger=challenger, verdict=verdict, decided=decided, unfinished_task_ids=unfinished)
+
+
+async def persist_decided_boss_round_winners(
+    tournament: TournamentData, progress: BossRoundProgress, psql_db: PSQLDB
+) -> None:
+    """Store the winner of every boss-round task decided so far, as the round's own resolution does."""
+    if tournament.tournament_type == TournamentType.QUANT:
+        margin, rule = t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT, "quant"
+    else:
+        margin, rule = t_cst.IMAGE_CROWN_WIN_MARGIN, "image"
+    await _persist_boss_round_winners(progress.decided, progress.challenger, margin, rule, psql_db)
 
 
 async def get_knockout_winners(

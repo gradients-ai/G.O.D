@@ -159,6 +159,8 @@ For a fixed compression task scored on two GPU SKUs, the challenger's per-exampl
 
 Every one of rounds 1-3 runs in full. The rounds decide second and third place, and each round's task is one of the crown's head-to-heads, so a round is played even with one miner left. The crown is checked once the round-3 cut leaves the challenger. The rule is applied to its three head-to-heads, with the four boss-round tasks counted as wins. If the crown is out of reach, no boss round is created and the tournament ends with the boss retained.
 
+In an image or compression boss round all four tasks are created together. After each task finishes, the crown rule is applied to rounds 1-3 and the boss-round tasks finished so far, with the tasks still to come counted as wins. A task counts as finished only when both the boss and the challenger have a valid score on it; a task that errored, has no evaluation or has no score on a side is not counted as a non-win. Once the crown is out of reach, the tournament ends with the boss retained and the work still to come is stopped: trainings not yet dispatched are never dispatched, and a task that has not started is failed. A training that is already running is left to finish and its result is not read, since the trainers have no cancel path. The decided tasks keep their stored winners, and the placements are the same as for the early stop after round 3.
+
 In the text boss round the big task runs last. It is created only if the crown is in reach after the continuous, GRPO and DPO tasks.
 
 ### Placements

@@ -61,6 +61,8 @@ The challenger and the boss both train four tasks: two edit and two text-to-imag
 
 Source: [`FINAL_ROUND_IMAGE_TASK_SPECS`, `IMAGE_BOSS_ROUND_TASKS_PER_MODE`](../validator/tournament/constants.py).
 
+The round ends as soon as the crown is out of reach: after each task finishes, the [crown rule](miner.md#the-boss-and-the-crown) is applied to rounds 1-3 and the finished boss-round tasks, with the tasks still to come counted as wins. If the challenger can no longer be crowned, the boss keeps the crown and the remaining tasks are not run.
+
 All four tasks are created with the round. Each task draws a base model of its family and a data set.
 
 ## What your code receives
