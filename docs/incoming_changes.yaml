@@ -21,30 +21,31 @@
 
 changes:
   - id: threshold-recalibration
-    title: Threshold recalibration
+    title: Threshold review and reward split
     summary: >-
-      A challenger currently has to beat the boss by 1% in text and image tournaments and by 3% in freeform
-      compression tournaments, and a freeform compression submission must stay within 1.04 times the reference
-      model's loss. These thresholds are being re-measured. The investigation covers three things:
-      how much scores vary between runs of the boss's own code with different seeds, for each task type; the
-      score gap at which people can see a difference between two models' outputs; and whether boss changes
-      under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
-      repository comparisons of past submissions where they are still available. Results are due by
-      30 November 2026, and any new thresholds take effect on this date. One option being considered is a
-      higher threshold together with a smaller share of emissions for the boss and a larger share for second
-      and third place.
+      From this date the emissions for each tournament are split 60% to first place, 30% to second and
+      10% to third, instead of roughly 76%, 19% and 5%, and the crown is decided on the 5-of-7 rule
+      alone: no single task, including the continuous-SFT task, has to be won. In text and image
+      tournaments a challenger has to beat the boss by 1%, and a 1% difference is already too small to
+      notice in the models' outputs, so we will not lower these thresholds. Text's threshold has gone
+      from 4% to 3% to 1%, and the text boss has only recently been beaten at 1%. Rather than lowering
+      the thresholds, we will be pushing on task variation. That means updating the GRPO tasks, which
+      currently handicap the text boss (see the GRPO task revamp entry), and widening the range of image
+      tasks: the edit task converged very quickly, which points to little variance between its tasks.
+      We are also looking at whether image can be evaluated in a better way. Work in progress is on the
+      review-thresholds-and-response branch:
+      https://github.com/gradients-ai/G.O.D/tree/review-thresholds-and-response
     why: >-
-      A boss should change only when a challenger is meaningfully better. A threshold inside run-to-run noise
-      lets the boss change hands with little or no real improvement, while one set too high leaves real progress
-      unrewarded. Calibrating against measured noise and visible differences in output quality aims to reward
-      real progress and keep participation high without rewarding noise.
+      A boss should change only when a challenger is meaningfully better. A larger share for second and
+      third rewards close competition without lowering the bar to dethrone, and thresholds already at the
+      edge of what is visible in output quality cannot be reduced without rewarding noise.
     areas: [text, image, compression]
     status: in_progress
     date: 2026-12-07
     miner_action: >-
-      Nothing beyond adjusting to the new thresholds and reward split once they are published.
+      Nothing. Second and third place earn a larger share from this date.
     prs: []
-    docs: []
+    docs: [docs/miner.md]
     shipped_on: null
 
   - id: compression-nats-budget
@@ -96,4 +97,30 @@ changes:
       requested format scores as a failure for that task.
     prs: []
     docs: []
+    shipped_on: null
+
+  - id: grpo-revamp
+    title: GRPO task revamp
+    summary: >-
+      We are revamping the GRPO task type to bring it up to date. Today each GRPO task samples two to four
+      reward functions from a fixed set of surface-level checks (length, readability, word and sentence
+      structure, vocabulary, sentiment and fluency, and simple format patterns) with random weights, and
+      gives miners prompts only, so every rollout has to be generated during training. From this date GRPO
+      tasks use new, up-to-date reward functions, and they accept input rollout datasets, so miners can
+      train on supplied rollouts instead of having to generate them. The task format and reward functions
+      will be published in the docs before this date. We are also looking at making round 3 of text
+      tournaments a GRPO task, so that the miner who goes on to the boss round is decided on GRPO as well
+      as instruct.
+    why: >-
+      The current reward functions measure surface properties of the text rather than whether a completion
+      is good, and generating every rollout during training spends most of the time budget on generation.
+      Up-to-date rewards and supplied rollouts make GRPO a better test of training skill.
+    areas: [text]
+    status: planned
+    date: 2026-12-14
+    miner_action: >-
+      Update your GRPO training to handle the new reward functions and input rollout datasets once the task
+      format is published.
+    prs: []
+    docs: [docs/miner_text.md]
     shipped_on: null
