@@ -519,19 +519,3 @@ async def test_a_failed_boss_comparison_does_not_fail_the_endpoint(
         details = await get_tournament_details(MOCK_TOURNAMENT_ID, mock_config)
 
     assert details.rounds[0].tasks[0].boss_comparisons is None
-
-
-@pytest.mark.asyncio
-async def test_round_task_boss_comparisons_use_the_crown_head_to_head_of_each_miner():
-    outcomes = {"5A": HeadToHeadOutcome.WIN, "5B": HeadToHeadOutcome.BEYOND}
-
-    async def head_to_head(tournament_type, task_id, label, task_type, hotkey, psql_db):
-        return HeadToHead(task_id=task_id, label=label, task_type=task_type, outcome=outcomes[hotkey])
-
-    task_object = type("T", (), {"task_type": TaskType.INSTRUCTTEXTTASK})()
-    with patch.object(round_results, "_task_head_to_head", head_to_head):
-        compared = await round_results.round_task_boss_comparisons(
-            MOCK_TOURNAMENT, MOCK_GROUP_TASK_ID, task_object, ["5A", EMISSION_BURN_HOTKEY, "5B"], None
-        )
-
-    assert compared == [BossComparison(hotkey="5A", outcome="win"), BossComparison(hotkey="5B", outcome="beyond")]

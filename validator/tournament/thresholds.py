@@ -5,6 +5,7 @@ import numpy as np
 import validator.tournament.constants as t_cst
 from core.constants.environments import TrainingStartPoint
 from core.logging import get_logger
+from core.models.quant_models import QuantEvalGpu
 from core.models.task_models import QUANT_TASK_TYPES
 from core.models.task_models import TaskType
 from validator.db.database import PSQLDB
@@ -14,6 +15,7 @@ from validator.db.sql.submissions_and_scoring import get_task_node_eval_gpus
 from validator.db.sql.submissions_and_scoring import update_task_node_quality_score_only
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
+from validator.scoring.models import QuantSkuReferences
 from validator.scoring.quant_ranking import QuantReferenceUnavailable
 from validator.scoring.quant_ranking import reference_on
 from validator.tournament.models import BossRoundTaskVerdict
@@ -187,8 +189,13 @@ async def sku_aligned_losses(
     other_losses: list[float],
     psql_db: PSQLDB,
     start_point: TrainingStartPoint | None = None,
+    eval_gpus: dict[str, QuantEvalGpu | None] | None = None,
+    references: QuantSkuReferences | None = None,
 ) -> list[float]:
     """other_hotkey's per-example losses on anchor_hotkey's SKU scale, for a paired quant comparison.
+
+    ``eval_gpus`` and ``references`` are the task's rows when the caller already read them (a bulk comparison of many
+    miners on one task); they are read here when None.
 
     Non-quant vectors, and two quant rows scored on the same SKU of a task-common task (whose references
     cancel exactly), come back unchanged. On an own-model task (start_point, see is_own_model_start_point) each
@@ -199,7 +206,7 @@ async def sku_aligned_losses(
     """
     if task_type not in QUANT_TASK_TYPES:
         return other_losses
-    gpus = await get_task_node_eval_gpus(task_id, [anchor_hotkey, other_hotkey], psql_db)
+    gpus = eval_gpus if eval_gpus is not None else await get_task_node_eval_gpus(task_id, [anchor_hotkey, other_hotkey], psql_db)
     anchor_gpu, other_gpu = gpus.get(anchor_hotkey), gpus.get(other_hotkey)
     if anchor_gpu is None or other_gpu is None:
         raise QuantReferenceUnavailable(f"Task {task_id}: no recorded eval GPU for {anchor_hotkey} or {other_hotkey}")
@@ -207,7 +214,8 @@ async def sku_aligned_losses(
     if not own_model and anchor_gpu.reference_key == other_gpu.reference_key:
         return other_losses
 
-    references = await get_quant_sku_references(task_id, psql_db)
+    if references is None:
+        references = await get_quant_sku_references(task_id, psql_db)
     if own_model:
         anchor_reference = references.get((anchor_hotkey, anchor_gpu.reference_key))
         other_reference = references.get((other_hotkey, other_gpu.reference_key))

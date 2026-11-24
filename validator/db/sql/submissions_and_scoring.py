@@ -2,6 +2,7 @@ import math
 from uuid import UUID
 
 from asyncpg.connection import Connection
+from pydantic import BaseModel
 
 import validator.db.constants as cst
 from core.constants.network import NETUID
@@ -164,6 +165,34 @@ async def get_per_example_losses(task_id: UUID, hotkey: str, psql_db: PSQLDB) ->
             return None, None
 
         return losses_from_column(row[cst.PER_EXAMPLE_LOSSES]), row[cst.EVAL_SET_FINGERPRINT]
+
+
+class StoredLosses(BaseModel):
+    """A node's per-example loss vector and the fingerprint of the set it was scored on."""
+
+    losses: list[float]
+    fingerprint: str | None
+
+
+async def get_per_example_losses_for_task(task_id: UUID, psql_db: PSQLDB) -> dict[str, StoredLosses]:
+    """Every node's stored per-example loss vector on a task, in one query; nodes with none are left out."""
+    async with await psql_db.connection() as connection:
+        connection: Connection
+        rows = await connection.fetch(
+            f"""
+            SELECT {cst.HOTKEY}, {cst.PER_EXAMPLE_LOSSES}, {cst.EVAL_SET_FINGERPRINT}
+            FROM {cst.TASK_NODES_TABLE}
+            WHERE {cst.TASK_ID} = $1 AND {cst.NETUID} = $2 AND {cst.PER_EXAMPLE_LOSSES} IS NOT NULL
+            """,
+            task_id,
+            NETUID,
+        )
+    return {
+        row[cst.HOTKEY]: StoredLosses(
+            losses=losses_from_column(row[cst.PER_EXAMPLE_LOSSES]), fingerprint=row[cst.EVAL_SET_FINGERPRINT]
+        )
+        for row in rows
+    }
 
 
 async def update_task_node_quality_score_only(

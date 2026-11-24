@@ -234,6 +234,8 @@ class TournamentTaskScorePublic(PublicModel):
     environment_names: list[str] | None = None
     pvp_pair_results: list[TournamentPvPPairResult] | None = None
     pvp_individual_scores: list[TournamentPvPIndividualScore] | None = None
+    paired_example_wins: dict[str, Any] | None = None
+    boss_comparisons: list[dict[str, Any]] | None = None
 
 
 class TournamentRoundPublic(PublicModel):
