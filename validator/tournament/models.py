@@ -404,39 +404,12 @@ class PairedExampleWins(BaseModel):
     deadzone_nats: float
 
 
-class BossComparison(BaseModel):
-    """How one miner's result on a round 1-3 task stands against the boss, as the crown rule reads a head-to-head.
-
-    ``outcome`` is a ``crown.HeadToHeadOutcome`` value: ``win``, ``within_smaller``, ``within_larger`` or ``beyond``. It is
-    the verdict the crown uses for that task type, the paired per-example test included, computed for every miner that was
-    scored on the task and not only for the last contender. Reporting only.
-    """
-
-    hotkey: str
-    outcome: Literal["win", "within_smaller", "within_larger", "beyond"]
-
-
-class DetailedTournamentTaskScore(TournamentTaskScore):
-    task_type: TaskType | None = None
-    environment_names: list[str] | None = None
-    pvp_pair_results: list[PvPPairEnvResult] | None = None
-    pvp_individual_scores: list[PvPIndividualEnvScore] | None = None
-    paired_example_wins: PairedExampleWins | None = None
-    boss_comparisons: list[BossComparison] | None = None
-
-
 class TournamentRoundResult(BaseModel):
     round_id: str
     round_number: int
     round_type: str
     is_final_round: bool
     tasks: list[TournamentTaskScore]
-
-
-class DetailedTournamentRoundResult(TournamentRoundResult):
-    status: str
-    participants: list[str]
-    tasks: list[DetailedTournamentTaskScore]
 
 
 class TournamentResults(BaseModel):
@@ -506,6 +479,34 @@ class PairedLossComparison(BaseModel):
     # which constants were in force when the round ran.
     required_win_rate: float
     required_mean_gap_nats: float
+
+
+class BossComparison(BaseModel):
+    """How one miner's result on a round 1-3 task stands against the boss, as the crown rule reads a head-to-head.
+
+    ``outcome`` is a ``crown.HeadToHeadOutcome`` value: ``win``, ``within_smaller``, ``within_larger`` or ``beyond``. It is
+    the verdict the crown uses for that task type, the paired per-example test included, computed for every miner that was
+    scored on the task and not only for the last contender. Reporting only.
+    """
+
+    hotkey: str
+    outcome: Literal["win", "within_smaller", "within_larger", "beyond"]
+    paired: PairedLossComparison | None = None
+
+
+class DetailedTournamentTaskScore(TournamentTaskScore):
+    task_type: TaskType | None = None
+    environment_names: list[str] | None = None
+    pvp_pair_results: list[PvPPairEnvResult] | None = None
+    pvp_individual_scores: list[PvPIndividualEnvScore] | None = None
+    paired_example_wins: PairedExampleWins | None = None
+    boss_comparisons: list[BossComparison] | None = None
+
+
+class DetailedTournamentRoundResult(TournamentRoundResult):
+    status: str
+    participants: list[str]
+    tasks: list[DetailedTournamentTaskScore]
 
 
 class BossRoundTaskVerdict(BaseModel):

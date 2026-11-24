@@ -69,6 +69,8 @@ from validator.tournament.models import TournamentRoundRanks
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
 from validator.tournament.models import TrainingStatus
+from validator.tournament.task_reads import TaskReads
+from validator.tournament.task_reads import load_task_reads
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import challenger_takes_paired_task
@@ -807,13 +809,23 @@ def _log_head_to_heads(prefix: str, head_to_heads: list[HeadToHead]) -> None:
         )
 
 
+async def _stored_losses(
+    task_id: str, hotkey: str, psql_db: PSQLDB, reads: TaskReads | None
+) -> tuple[list[float] | None, str | None]:
+    """A node's stored per-example vector and its eval-set fingerprint, from the preloaded task rows when given."""
+    if reads is None:
+        return await get_per_example_losses(task_id, hotkey, psql_db)
+    stored = reads.losses.get(hotkey)
+    return (stored.losses, stored.fingerprint) if stored is not None else (None, None)
+
+
 async def _pairable_losses(
-    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB
+    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
 ) -> tuple[list[float], list[float]] | None:
     """The two stored per-example vectors of a task when they pair (both present, same length, same eval-set fingerprint
     when both carry one), else None with the reason logged."""
-    boss_losses, boss_fingerprint = await get_per_example_losses(task_id, boss_hotkey, psql_db)
-    challenger_losses, challenger_fingerprint = await get_per_example_losses(task_id, challenger_hotkey, psql_db)
+    boss_losses, boss_fingerprint = await _stored_losses(task_id, boss_hotkey, psql_db, reads)
+    challenger_losses, challenger_fingerprint = await _stored_losses(task_id, challenger_hotkey, psql_db, reads)
     if boss_losses is None or challenger_losses is None:
         missing = "boss" if boss_losses is None else "challenger"
         logger.warning(f"Task {task_id}: no per-example losses for the {missing}; the boss keeps the task")
@@ -832,18 +844,19 @@ async def _pairable_losses(
 
 
 async def _pair_results(
-    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB
+    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
 ) -> tuple[MinerResultsText | None, MinerResultsText | None]:
     """The boss's and the challenger's ranked results on a task, ranked between the two of them only; None for a side with
     no result or whose training failed."""
-    miner_results = [
-        result
-        for result in await get_task_results_for_ranking(task_id, psql_db)
-        if result.hotkey in (boss_hotkey, challenger_hotkey)
-    ]
+    results = reads.fresh_results() if reads is not None else await get_task_results_for_ranking(task_id, psql_db)
+    miner_results = [result for result in results if result.hotkey in (boss_hotkey, challenger_hotkey)]
     ranked = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
     by_hotkey = {result.hotkey: result for result in ranked}
-    statuses = await get_training_status_for_task_and_hotkeys(task_id, [boss_hotkey, challenger_hotkey], psql_db)
+    statuses = (
+        reads.statuses
+        if reads is not None
+        else await get_training_status_for_task_and_hotkeys(task_id, [boss_hotkey, challenger_hotkey], psql_db)
+    )
 
     def side(hotkey: str) -> MinerResultsText | None:
         return None if statuses.get(hotkey) == TrainingStatus.FAILURE else by_hotkey.get(hotkey)
@@ -858,7 +871,7 @@ def _fixed_loss(result: MinerResultsText | None) -> float | None:
 
 
 async def quant_task_head_to_head(
-    task_id: str, label: str, task_object, challenger_hotkey: str, psql_db: PSQLDB
+    task_id: str, label: str, task_object, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
 ) -> HeadToHead:
     """The challenger against the boss on one quant task (freeform_head_to_head or fixed_head_to_head), from stored results.
 
@@ -869,7 +882,7 @@ async def quant_task_head_to_head(
     a scored fail or absent is the exception: the challenger wins it with or without vectors.
     """
     boss_hotkey = EMISSION_BURN_HOTKEY
-    boss_result, challenger_result = await _pair_results(task_id, boss_hotkey, challenger_hotkey, psql_db)
+    boss_result, challenger_result = await _pair_results(task_id, boss_hotkey, challenger_hotkey, psql_db, reads)
     if task_object.task_type == TaskType.QUANTFREEFORMTASK:
         return freeform_head_to_head(task_id, label, boss_result, challenger_result)
 
@@ -877,7 +890,7 @@ async def quant_task_head_to_head(
     paired = None
     boss_takes = False
     if boss_loss is not None and challenger_loss is not None:
-        pair = await _pairable_losses(task_id, boss_hotkey, challenger_hotkey, psql_db)
+        pair = await _pairable_losses(task_id, boss_hotkey, challenger_hotkey, psql_db, reads)
         if pair is not None:
             boss_losses, challenger_losses = pair
             try:
@@ -889,11 +902,12 @@ async def quant_task_head_to_head(
                     challenger_losses,
                     psql_db,
                     task_object.training_start_point,
+                    **({} if reads is None else {"eval_gpus": reads.eval_gpus, "references": reads.references}),
                 )
             except QuantReferenceUnavailable as e:
                 logger.error(f"Task {task_id}: {e}; the boss keeps the task")
             else:
-                paired = compare_paired_losses(boss_losses, challenger_losses)
+                paired = await asyncio.to_thread(compare_paired_losses, boss_losses, challenger_losses)
                 _log_paired_comparison(task_id, task_object.task_type, paired)
                 if not paired.challenger_won and not paired.is_draw:
                     within, _ = challenger_within_paired_allowed_loss(
@@ -948,13 +962,19 @@ class CrownEvaluationFault(Exception):
         self.task_ids = task_ids
 
 
-async def _task_scores(task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB) -> TaskScores:
+async def _task_scores(
+    task_id: str, boss_hotkey: str, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
+) -> TaskScores:
     """The boss's and the challenger's adjusted loss on one task, as the unseeded boss round reads them; None for a side with
     no valid result or whose training failed."""
-    miner_results = await get_task_results_for_ranking(task_id, psql_db)
+    miner_results = reads.fresh_results() if reads is not None else await get_task_results_for_ranking(task_id, psql_db)
     ranked = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
     scores = {result.hotkey: result.adjusted_loss for result in ranked}
-    statuses = await get_training_status_for_task_and_hotkeys(task_id, [boss_hotkey, challenger_hotkey], psql_db)
+    statuses = (
+        reads.statuses
+        if reads is not None
+        else await get_training_status_for_task_and_hotkeys(task_id, [boss_hotkey, challenger_hotkey], psql_db)
+    )
     boss_failed = statuses.get(boss_hotkey) == TrainingStatus.FAILURE
     challenger_failed = statuses.get(challenger_hotkey) == TrainingStatus.FAILURE
     return TaskScores(
@@ -966,40 +986,48 @@ async def _task_scores(task_id: str, boss_hotkey: str, challenger_hotkey: str, p
 
 
 async def text_task_head_to_head(
-    task_id: str, label: str, task_type: TaskType, challenger_hotkey: str, psql_db: PSQLDB
+    task_id: str, label: str, task_type: TaskType, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
 ) -> HeadToHead:
     """The challenger against the boss on one text task (text_head_to_head), from stored results. For a type with per-example
     losses, the two stored vectors are compared with the paired test when both sides have a valid score and they pair."""
-    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
+    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db, reads)
     paired = None
     if text_needs_paired_test(task_type) and is_valid_score(scores.boss) and is_valid_score(scores.challenger):
-        pair = await _pairable_losses(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
+        pair = await _pairable_losses(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db, reads)
         if pair is not None:
-            paired = compare_paired_losses(*pair)
+            paired = await asyncio.to_thread(compare_paired_losses, *pair)
             _log_paired_comparison(task_id, task_type, paired)
     return text_head_to_head(task_id, label, task_type, scores.boss, scores.challenger, paired)
 
 
-async def image_task_head_to_head(task_id: str, label: str, challenger_hotkey: str, psql_db: PSQLDB) -> HeadToHead:
+async def image_task_head_to_head(
+    task_id: str, label: str, challenger_hotkey: str, psql_db: PSQLDB, reads: TaskReads | None = None
+) -> HeadToHead:
     """The challenger against the boss on one image task (image_head_to_head), from stored results.
 
     Raises CrownEvaluationFault when both sides trained and neither has a valid result: that is missing evaluation data, not
     a loss. When either training failed the head-to-head is decided as usual (no challenger result is beyond; a failed boss
     entry against a valid challenger is a win).
     """
-    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db)
+    scores = await _task_scores(task_id, EMISSION_BURN_HOTKEY, challenger_hotkey, psql_db, reads)
     if not (scores.boss_failed or scores.challenger_failed or is_valid_score(scores.boss) or is_valid_score(scores.challenger)):
         raise CrownEvaluationFault([str(task_id)])
     return image_head_to_head(task_id, label, scores.boss, scores.challenger)
 
 
 async def _task_head_to_head(
-    tournament_type: TournamentType, task_id: str, label: str, task_type: TaskType, challenger_hotkey: str, psql_db: PSQLDB
+    tournament_type: TournamentType,
+    task_id: str,
+    label: str,
+    task_type: TaskType,
+    challenger_hotkey: str,
+    psql_db: PSQLDB,
+    reads: TaskReads | None = None,
 ) -> HeadToHead:
     """The challenger against the boss on one task of a text or an image tournament."""
     if tournament_type == TournamentType.IMAGE:
-        return await image_task_head_to_head(task_id, label, challenger_hotkey, psql_db)
-    return await text_task_head_to_head(task_id, label, task_type, challenger_hotkey, psql_db)
+        return await image_task_head_to_head(task_id, label, challenger_hotkey, psql_db, reads)
+    return await text_task_head_to_head(task_id, label, task_type, challenger_hotkey, psql_db, reads)
 
 
 async def round_task_boss_comparisons(
@@ -1007,26 +1035,34 @@ async def round_task_boss_comparisons(
 ) -> list[BossComparison]:
     """Each miner's head-to-head against the boss on the one task of a round 1-3, read from stored results.
 
+    The task's rows are read once (``load_task_reads``) and every head-to-head runs in memory, one miner after the other,
+    so the database cost is a fixed handful of queries however many miners there are.
+
     The same functions the crown reads for the last contender (quant_task_head_to_head, text_task_head_to_head,
     image_task_head_to_head), run for every given miner. A miner whose task cannot be decided (an image task with missing
     evaluation data) is left out.
     """
 
-    async def compare(hotkey: str) -> BossComparison | None:
+    reads = await load_task_reads(task_id, task_object.task_type, psql_db)
+    comparisons: list[BossComparison] = []
+    for hotkey in hotkeys:
+        if hotkey == EMISSION_BURN_HOTKEY:
+            continue
         label = f"round task of {hotkey}"
         try:
             if tournament.tournament_type == TournamentType.QUANT:
-                head_to_head = await quant_task_head_to_head(task_id, label, task_object, hotkey, psql_db)
+                head_to_head = await quant_task_head_to_head(task_id, label, task_object, hotkey, psql_db, reads)
             else:
                 head_to_head = await _task_head_to_head(
-                    tournament.tournament_type, task_id, label, task_object.task_type, hotkey, psql_db
+                    tournament.tournament_type, task_id, label, task_object.task_type, hotkey, psql_db, reads
                 )
         except CrownEvaluationFault:
-            return None
-        return BossComparison(hotkey=hotkey, outcome=head_to_head.outcome.value)
-
-    compared = await asyncio.gather(*[compare(hotkey) for hotkey in hotkeys if hotkey != EMISSION_BURN_HOTKEY])
-    return [comparison for comparison in compared if comparison is not None]
+            continue
+        except Exception:
+            logger.warning(f"Task {task_id}: no boss comparison for {hotkey}", exc_info=True)
+            continue
+        comparisons.append(BossComparison(hotkey=hotkey, outcome=head_to_head.outcome.value, paired=head_to_head.paired))
+    return comparisons
 
 
 async def round_head_to_heads(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> list[HeadToHead]:

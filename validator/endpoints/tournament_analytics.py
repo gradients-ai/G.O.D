@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from collections import defaultdict
 from datetime import datetime
 from datetime import timedelta
@@ -120,8 +121,57 @@ async def _get_paired_example_wins(
     return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db)
 
 
+# A finished round's results do not change, so its comparisons are computed once and kept for a while.
+BOSS_COMPARISONS_TTL_SECONDS = 600
+# Kept in Redis for every process: a finished round never changes (the paired test's resampling seed is fixed).
+BOSS_COMPARISONS_REDIS_PREFIX = "boss_comparisons"
+BOSS_COMPARISONS_REDIS_TTL_SECONDS = 24 * 60 * 60
+_boss_comparisons_cache: dict[tuple[str, str], tuple[float, list[BossComparison]]] = {}
+_boss_comparisons_lock = asyncio.Lock()
+
+
+def _cached_boss_comparisons(key: tuple[str, str]) -> list[BossComparison] | None:
+    entry = _boss_comparisons_cache.get(key)
+    if entry is None or entry[0] < time.monotonic():
+        return None
+    return entry[1]
+
+
+def _store_boss_comparisons(key: tuple[str, str], comparisons: list[BossComparison]) -> None:
+    now = time.monotonic()
+    for stale in [k for k, (expires, _) in _boss_comparisons_cache.items() if expires < now]:
+        del _boss_comparisons_cache[stale]
+    _boss_comparisons_cache[key] = (now + BOSS_COMPARISONS_TTL_SECONDS, comparisons)
+
+
+def _boss_comparisons_redis_key(key: tuple[str, str]) -> str:
+    return f"{BOSS_COMPARISONS_REDIS_PREFIX}:{key[0]}:{key[1]}"
+
+
+async def _redis_boss_comparisons(redis_db, key: tuple[str, str]) -> list[BossComparison] | None:
+    """A finished round's comparisons as another process (or an earlier request) stored them; None when there are none."""
+    if redis_db is None:
+        return None
+    try:
+        raw = await redis_db.get(_boss_comparisons_redis_key(key))
+        return None if not raw else [BossComparison.model_validate(item) for item in json.loads(raw)]
+    except Exception:
+        logger.warning("Failed to read cached boss comparisons", exc_info=True)
+        return None
+
+
+async def _store_redis_boss_comparisons(redis_db, key: tuple[str, str], comparisons: list[BossComparison]) -> None:
+    if redis_db is None:
+        return
+    try:
+        payload = json.dumps([comparison.model_dump(mode="json") for comparison in comparisons])
+        await redis_db.set(_boss_comparisons_redis_key(key), payload, ex=BOSS_COMPARISONS_REDIS_TTL_SECONDS)
+    except Exception:
+        logger.warning("Failed to cache boss comparisons", exc_info=True)
+
+
 async def _get_boss_comparisons(
-    tournament, round_data, tasks, task_details, participant_scores: list[dict], psql_db
+    tournament, round_data, tasks, task_details, participant_scores: list[dict], psql_db, redis_db=None
 ) -> list[BossComparison] | None:
     """Each scored miner's head-to-head against the boss on the one task of a finished round 1-3 of a tournament that plays
     the round plan (the verdict the crown uses), or None anywhere else or when it cannot be read.
@@ -134,13 +184,27 @@ async def _get_boss_comparisons(
         return None
     if round_data.round_number not in {spec.round_number for spec in tourn_cst.round_plan(tournament.tournament_type)}:
         return None
+    key = (str(tournament.tournament_id), str(tasks[0].task_id))
+    cached = _cached_boss_comparisons(key)
+    if cached is not None:
+        return cached or None
     try:
-        if not await plays_round_plan(tournament, psql_db):
-            return None
-        hotkeys = [score[db_cst.HOTKEY] for score in participant_scores]
-        return await round_task_boss_comparisons(tournament, str(tasks[0].task_id), task_details, hotkeys, psql_db) or None
-    except Exception as e:
-        logger.warning(f"Failed to get boss comparisons for round {round_data.round_id}: {e}")
+        # One computation at a time: it holds one connection however many requests ask, and a request that waited finds
+        # the answer of the one before it.
+        async with _boss_comparisons_lock:
+            cached = _cached_boss_comparisons(key)
+            if cached is None:
+                cached = await _redis_boss_comparisons(redis_db, key)
+            if cached is None:
+                if not await plays_round_plan(tournament, psql_db):
+                    return None
+                hotkeys = [score[db_cst.HOTKEY] for score in participant_scores]
+                cached = await round_task_boss_comparisons(tournament, key[1], task_details, hotkeys, psql_db)
+                await _store_redis_boss_comparisons(redis_db, key, cached)
+            _store_boss_comparisons(key, cached)
+        return cached or None
+    except Exception:
+        logger.warning(f"Failed to get boss comparisons for round {round_data.round_id}", exc_info=True)
         return None
 
 
@@ -235,7 +299,13 @@ async def get_tournament_details(
                     )
 
                 boss_comparisons = await _get_boss_comparisons(
-                    tournament, round_data, tasks, task_details_results[0], scores_results[0], config.psql_db
+                    tournament,
+                    round_data,
+                    tasks,
+                    task_details_results[0],
+                    scores_results[0],
+                    config.psql_db,
+                    getattr(config, "redis_db", None),
                 )
 
                 for i, task in enumerate(tasks):
@@ -317,7 +387,8 @@ async def get_tournament_details(
         boss_round_performance = None
         sync_performance = None
 
-        if tournament.status == TournamentStatus.COMPLETED:
+        # The validator records the winner when it has decided, which can be before the status is set to completed.
+        if tournament.status == TournamentStatus.COMPLETED or tournament.winner_hotkey:
             final_round = next((r for r in detailed_rounds if r.is_final_round), None)
             if final_round:
                 try:
@@ -327,6 +398,7 @@ async def get_tournament_details(
                 except Exception as e:
                     logger.warning(f"Failed to get boss round performance data: {e}")
 
+        if tournament.status == TournamentStatus.COMPLETED:
             try:
                 sync_performance = await get_tournament_performance_data(tournament.tournament_id, config.psql_db)
             except Exception as e:

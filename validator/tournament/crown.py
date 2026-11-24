@@ -37,6 +37,9 @@ class HeadToHeadOutcome(str, Enum):
 class HeadToHead(BaseModel):
     """One task of the crown rule, decided.
 
+    ``paired`` is the paired per-example comparison the decision used, None where the task type has none or it could not be
+    made.
+
     ``boss_score`` and ``challenger_score`` are the compared scalars: the adjusted loss (higher is better for GRPO) on a text
     or fixed task, the weighted loss on an image task, the effective bytes on a freeform task; None for a side with no valid
     result. ``deficit`` is how far the challenger trails the boss relative to the boss's value (0.0 when level, ahead or a
@@ -56,6 +59,7 @@ class HeadToHead(BaseModel):
     deficit: float | None = None
     improvement: float | None = None
     reason: str = ""
+    paired: PairedLossComparison | None = None
 
     @property
     def is_win(self) -> bool:
@@ -209,10 +213,13 @@ def scalar_head_to_head(
         is_win = margin_met
         reason = f"score at least {margin} better" if is_win else f"score not {margin} better"
 
+    used = paired if text_needs_paired_test(task_type) else None
     if is_win:
-        return HeadToHead(**fields, outcome=HeadToHeadOutcome.WIN, deficit=0.0, improvement=improvement, reason=reason)
+        return HeadToHead(
+            **fields, outcome=HeadToHeadOutcome.WIN, deficit=0.0, improvement=improvement, reason=reason, paired=used
+        )
     outcome = non_win_outcome(deficit, strictly_better)
-    return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason)
+    return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason, paired=used)
 
 
 def text_head_to_head(
@@ -342,6 +349,7 @@ def fixed_head_to_head(
                 deficit=0.0,
                 improvement=improvement,
                 reason=f"paired test passed and the scalar loss is at least {minimum * 100:g}% better",
+                paired=paired,
             )
         reason = f"paired test passed but the scalar loss is not {minimum * 100:g}% better"
     elif boss_takes_paired_test:
@@ -352,7 +360,7 @@ def fixed_head_to_head(
         reason = f"paired test not passed ({paired.reason})"
     deficit = _relative_deficit(boss_loss, challenger_loss, False)
     outcome = non_win_outcome(deficit, challenger_loss < boss_loss)
-    return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason)
+    return HeadToHead(**fields, outcome=outcome, deficit=deficit, improvement=improvement, reason=reason, paired=paired)
 
 
 def crown_verdict(results: list[HeadToHead]) -> CrownVerdict:
