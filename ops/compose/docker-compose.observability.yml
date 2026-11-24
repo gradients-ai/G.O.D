@@ -16,6 +16,7 @@ services:
       - ../observability/grafana-validator-general.json:/var/lib/grafana/dashboards/grafana-validator-general.json
       - ../observability/grafana-validator-errors.json:/var/lib/grafana/dashboards/grafana-validator-errors.json
       - ../observability/grafana-tournament.json:/var/lib/grafana/dashboards/grafana-tournament.json
+      - ../observability/grafana-tournament-costs.json:/var/lib/grafana/dashboards/grafana-tournament-costs.json
     ports:
       - ${GRAFANA_PORT:-3000}:3000
 
