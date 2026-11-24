@@ -228,6 +228,7 @@ class Cup:
         ]:
             mp.setattr(rr, name, fake)
         mp.setattr(rr, "planned_round_ordered_hotkeys", AsyncMock(side_effect=lambda *_: list(self.ordering)))
+        mp.setattr(rr, "_round_two_advance_set_ordered_hotkeys", AsyncMock(side_effect=lambda *_: list(self.ordering)))
 
         mp.setattr(tm, "find_groups_with_no_valid_scores", AsyncMock(return_value=[]))
         mp.setattr(tm, "get_tournament_participants", participants)
