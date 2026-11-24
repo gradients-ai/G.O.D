@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from core.models.task_models import TaskType
+from validator.endpoints import tournament_analytics
 from validator.endpoints.tournament_analytics import get_tournament_details
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.tournament import round_results
@@ -237,6 +238,13 @@ def get_mock_task_details(task_id, psql_db):
 def get_mock_tasks_for_round(round_id, psql_db):
     """Return appropriate tasks for round"""
     return [task for task in MOCK_TASKS if task.round_id == round_id]
+
+
+@pytest.fixture(autouse=True)
+def fresh_boss_comparisons_cache():
+    tournament_analytics._boss_comparisons_cache.clear()
+    yield
+    tournament_analytics._boss_comparisons_cache.clear()
 
 
 @pytest.fixture
