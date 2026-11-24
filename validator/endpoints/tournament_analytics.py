@@ -4,6 +4,7 @@ import json
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone
 from typing import NamedTuple
 
@@ -19,6 +20,7 @@ from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db import constants as db_cst
+from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.scoring.emission_balance import get_dynamic_base_weights
@@ -27,6 +29,8 @@ from validator.scoring.weights import get_tournament_burn_details
 from validator.scoring.weights import stored_boss_rank_comparisons
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_TTL
+from validator.tournament.cost_calculator import calculate_weekly_costs
+from validator.tournament.cost_calculator import get_week_window
 from validator.tournament.models import ActiveTournamentInfo
 from validator.tournament.models import ActiveTournamentParticipant
 from validator.tournament.models import ActiveTournamentsResponse
@@ -47,6 +51,7 @@ from validator.tournament.models import TournamentResultsWithWinners
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentType
+from validator.tournament.models import WeeklyTournamentGpuCostsResponse
 from validator.tournament.performance_calculator import calculate_boss_round_performance_differences
 from validator.tournament.performance_calculator import get_tournament_performance_data
 from validator.tournament.round_results import plays_round_plan
@@ -55,6 +60,7 @@ from validator.tournament.thresholds import summarise_paired_examples
 from validator.tournament.tournament_manager import _calculate_next_tournament_start_time
 from validator.tournament.tournament_manager import _get_tournament_schedule
 from validator.tournament.tournament_manager import get_tournament_completion_time
+from validator.transfers.tao_price import get_tao_price_usd
 
 
 logger = get_logger(__name__)
@@ -263,6 +269,7 @@ async def _get_boss_comparisons(
 
 GET_TOURNAMENT_DETAILS_ENDPOINT = "/v1/tournaments/{tournament_id}/details"
 GET_LATEST_TOURNAMENTS_DETAILS_ENDPOINT = "/v1/tournaments/latest/details"
+GET_TOURNAMENT_COSTS_ENDPOINT = "/v1/tournaments/costs"
 GET_NEXT_TOURNAMENT_DATES_ENDPOINT = "/v1/tournaments/next-dates"
 GET_ACTIVE_TOURNAMENTS_ENDPOINT = "/v1/tournaments/active"
 GET_TOURNAMENT_HISTORY_ENDPOINT = "/v1/tournaments/history"
@@ -723,10 +730,61 @@ async def get_tournament_history(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+async def get_tournament_costs(
+    week_offset: int = 0,
+    week_start: datetime | None = None,
+    config: Config = Depends(get_config),
+) -> WeeklyTournamentGpuCostsResponse:
+    """Return accumulated GPU costs for a Monday 09:00 UTC reporting week."""
+    try:
+        now = datetime.now(timezone.utc)
+        window_start, default_end = get_week_window(
+            now=now,
+            week_offset=week_offset,
+            explicit_start=week_start,
+        )
+        tournament_window_end = window_start + timedelta(days=7)
+        is_current_window = window_start <= now < tournament_window_end
+        window_end = now if is_current_window else default_end
+        rows = await gpu_costs.get_weekly_cost_rows(
+            window_start=window_start,
+            window_end=window_end,
+            tournament_window_end=tournament_window_end,
+            psql_db=config.psql_db,
+        )
+        if not is_current_window and rows["tournaments"]:
+            completed = [row for row in rows["tournaments"] if str(row["status"]) == "completed"]
+            if len(completed) == len(rows["tournaments"]):
+                completion_end = max(row["updated_at"] for row in completed)
+                if completion_end != window_end:
+                    window_end = completion_end
+                    rows = await gpu_costs.get_weekly_cost_rows(
+                        window_start=window_start,
+                        window_end=window_end,
+                        tournament_window_end=tournament_window_end,
+                        psql_db=config.psql_db,
+                    )
+        tao_price_usd = await get_tao_price_usd()
+        return calculate_weekly_costs(
+            rows=rows,
+            window_start=window_start,
+            window_end=window_end,
+            week_offset=week_offset,
+            is_current_window=is_current_window,
+            tao_price_usd=tao_price_usd,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error calculating tournament GPU costs: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to calculate tournament GPU costs")
+
+
 def factory_router() -> APIRouter:
     router = APIRouter(tags=["Tournament Analytics"], dependencies=[Depends(get_api_key)])
     router.add_api_route(GET_LATEST_TOURNAMENTS_DETAILS_ENDPOINT, get_latest_tournaments_details, methods=["GET"])
     router.add_api_route(GET_TOURNAMENT_DETAILS_ENDPOINT, get_tournament_details, methods=["GET"])
+    router.add_api_route(GET_TOURNAMENT_COSTS_ENDPOINT, get_tournament_costs, methods=["GET"])
     router.add_api_route(GET_NEXT_TOURNAMENT_DATES_ENDPOINT, get_next_tournament_dates, methods=["GET"])
     router.add_api_route(GET_ACTIVE_TOURNAMENTS_ENDPOINT, get_active_tournaments, methods=["GET"])
     router.add_api_route(GET_TOURNAMENT_HISTORY_ENDPOINT, get_tournament_history, methods=["GET"])
