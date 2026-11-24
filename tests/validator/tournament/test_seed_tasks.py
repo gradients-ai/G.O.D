@@ -514,7 +514,7 @@ class TestTrainerPriority:
         monkeypatch.setattr(orchestrator, "_create_training_request", create_request)
         monkeypatch.setattr(orchestrator, "start_training_task", AsyncMock(return_value=True))
         monkeypatch.setattr(orchestrator.tournament_sql, "update_tournament_task_training_status", AsyncMock())
-        monkeypatch.setattr(orchestrator.tournament_sql, "update_gpu_availability", AsyncMock())
+        monkeypatch.setattr(orchestrator.tournament_sql, "reserve_gpus", AsyncMock())
         monkeypatch.setattr(orchestrator.gpu_cost_sql, "start_cost_run", AsyncMock())
         monkeypatch.setattr(orchestrator.asyncio, "sleep", AsyncMock())
         ns.env = env

@@ -92,6 +92,8 @@ from validator.tasks.synthetics.scheduler import quant_training_hours
 from validator.tournament import chaining
 from validator.tournament import quant_sources
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
+from validator.tournament.gpu_reservations import prep_job_key
+from validator.tournament.gpu_reservations import training_job_key
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
@@ -163,15 +165,6 @@ _quant_decode_repoll_cursor: tuple[str, str] | None = None
 QUANT_INPUTS_MISSING_REALERT_HELD_ROWS = 60
 _QUANT_INPUTS_MISSING_HELD_ROWS: dict[str, int] = {}
 _BASELINE_STATS_ADAPTER: TypeAdapter = TypeAdapter(BaselineStats)
-
-
-def _training_cost_run_key(task_id: str, hotkey: str) -> str:
-    return f"training:{task_id}:{hotkey}"
-
-
-def _prep_cost_run_key(task_id: str, hotkey: str | None = None) -> str:
-    identity = f"miner:{hotkey}" if hotkey is not None else "task"
-    return f"prep:{task_id}:{identity}"
 
 
 async def _max_training_hours_for_task(task, config: Config) -> float | None:
@@ -259,7 +252,7 @@ async def _finish_training_cost_run(
     config: Config,
     ended_at: datetime | None = None,
 ) -> None:
-    run_key = _training_cost_run_key(str(training_task.task.task_id), training_task.hotkey)
+    run_key = training_job_key(str(training_task.task.task_id), training_task.hotkey)
     try:
         await gpu_cost_sql.finish_cost_run(
             run_key=run_key,
@@ -998,6 +991,12 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     pending_training_tasks.pop()
                     continue
                 elif training_result:
+                    run_key = training_job_key(str(training_task.task.task_id), training_task.hotkey)
+                    # Reserved before the row reads as training, so the monitor never sees the run end before it is
+                    # reserved; the run's end releases the reservation (update_tournament_task_training_status).
+                    await tournament_sql.reserve_gpus(
+                        trainer_ip, gpu_ids, training_task.task.hours_to_complete, run_key, config.psql_db
+                    )
                     await tournament_sql.update_tournament_task_training_status(
                         training_task.task.task_id,
                         training_task.hotkey,
@@ -1007,7 +1006,6 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                         count_attempt=False,
                     )
                     attempt = training_task.n_training_attempts + 1
-                    run_key = _training_cost_run_key(str(training_task.task.task_id), training_task.hotkey)
                     try:
                         await gpu_cost_sql.start_cost_run(
                             run_key=run_key,
@@ -1027,9 +1025,6 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                         )
                     except Exception as e:
                         logger.error(f"Failed to start GPU cost run {run_key}: {e}", exc_info=True)
-                    await tournament_sql.update_gpu_availability(
-                        trainer_ip, gpu_ids, training_task.task.hours_to_complete, config.psql_db
-                    )
 
                     pending_training_tasks.pop()
                     logger.info(
@@ -1802,56 +1797,37 @@ async def _monitor_training_tasks(config: Config):
 
 async def _update_all_trainers_gpu_availability(config: Config):
     """
-    Update GPU availability for all trainers by fetching current status and syncing with database.
+    Reconcile the GPU reservations with what each trainer reports.
+
+    A GPU the trainer reports idle is freed (a job's reservation only after GPU_RESERVATION_GRACE_PERIOD_SECONDS, see
+    free_gpus_reported_idle). A GPU it reports busy that no live reservation covers is held. Every GPU of a trainer that
+    cannot be asked stays reserved. This is the backstop: a job's own end releases its GPUs directly.
     """
     try:
-        # Get all trainers from database
         trainers = await tournament_sql.get_trainers(config.psql_db)
 
         for trainer in trainers:
             try:
-                # Fetch current GPU availability from trainer
                 current_gpus = await fetch_trainer_gpus(trainer.trainer_ip)
+                idle_ids = [gpu.gpu_id for gpu in current_gpus if gpu.available]
+                busy_ids = [gpu.gpu_id for gpu in current_gpus if not gpu.available]
 
-                # Find GPUs that are free according to trainer but marked as used in DB
-                gpus_to_reset = []
-                gpus_to_mark_unavailable = []
-                grace_period = timedelta(seconds=cst.GPU_RESERVATION_GRACE_PERIOD_SECONDS)
-                now = datetime.now(timezone.utc)
-
-                for current_gpu in current_gpus:
-                    if current_gpu.available:
-                        # Check if this GPU is marked as used in our database
-                        for db_gpu in trainer.gpus:
-                            if db_gpu.gpu_id == current_gpu.gpu_id and not db_gpu.available:
-                                # Skip reset if reservation was made recently — the task is likely
-                                # still in its build phase (clone, docker build) and hasn't started
-                                # a container yet, so the trainer incorrectly reports "available".
-                                if db_gpu.updated_at and (now - db_gpu.updated_at) < grace_period:
-                                    logger.debug(
-                                        f"Skipping reset for GPU {db_gpu.gpu_id} on {trainer.trainer_ip}: "
-                                        f"reservation is {(now - db_gpu.updated_at).seconds}s old (grace period: {grace_period})"
-                                    )
-                                    break
-                                gpus_to_reset.append(current_gpu.gpu_id)
-                                break
-                    else:
-                        for db_gpu in trainer.gpus:
-                            if db_gpu.gpu_id == current_gpu.gpu_id and db_gpu.available:
-                                gpus_to_mark_unavailable.append(current_gpu.gpu_id)
-                                break
-
-                # Reset GPU availability in database if needed
-                if gpus_to_reset:
-                    await tournament_sql.update_gpu_availability(trainer.trainer_ip, gpus_to_reset, 0, config.psql_db)
-                    logger.info(f"Reset {len(gpus_to_reset)} GPUs for trainer {trainer.trainer_ip}: {gpus_to_reset}")
-
-                if gpus_to_mark_unavailable:
-                    await tournament_sql.update_gpu_availability(trainer.trainer_ip, gpus_to_mark_unavailable, 2, config.psql_db)
-                    logger.info(
-                        f"Marked {len(gpus_to_mark_unavailable)} GPUs as unavailable for trainer "
-                        f"{trainer.trainer_ip}: {gpus_to_mark_unavailable}"
+                if idle_ids:
+                    freed = await tournament_sql.free_gpus_reported_idle(
+                        trainer.trainer_ip, idle_ids, cst.GPU_RESERVATION_GRACE_PERIOD_SECONDS, config.psql_db
                     )
+                    if freed:
+                        logger.info(f"Reset {len(freed)} GPUs for trainer {trainer.trainer_ip}: {freed}")
+
+                if busy_ids:
+                    held = await tournament_sql.hold_gpus_reported_busy(
+                        trainer.trainer_ip, busy_ids, cst.UNTRACKED_GPU_HOLD_HOURS, config.psql_db
+                    )
+                    if held:
+                        logger.info(
+                            f"Marked {len(held)} GPUs as unavailable for trainer {trainer.trainer_ip}: {held} "
+                            f"(busy on the trainer without a live reservation)"
+                        )
 
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as e:
                 # Handle both server errors and unreachable trainers
@@ -1866,11 +1842,12 @@ async def _update_all_trainers_gpu_availability(config: Config):
                     # ConnectError or TimeoutException
                     error_msg = f"is unreachable ({type(e).__name__})"
 
-                # Common handling for unreachable trainers - set all GPUs to be available in 2 hours
-                all_gpu_ids = [gpu.gpu_id for gpu in trainer.gpus]
-                await tournament_sql.update_gpu_availability(trainer.trainer_ip, all_gpu_ids, 2, config.psql_db)
+                await tournament_sql.hold_unreachable_trainer_gpus(
+                    trainer.trainer_ip, cst.UNTRACKED_GPU_HOLD_HOURS, config.psql_db
+                )
                 logger.warning(
-                    f"Trainer {trainer.trainer_ip} {error_msg}, setting {len(all_gpu_ids)} GPUs to be available in 2 hours"
+                    f"Trainer {trainer.trainer_ip} {error_msg}, keeping its {len(trainer.gpus)} GPUs reserved for at "
+                    f"least {cst.UNTRACKED_GPU_HOLD_HOURS} hours"
                 )
                 continue
             except Exception as e:
@@ -2333,9 +2310,13 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
         except Exception:
             continue
 
+        if job.status != TaskStatus.TRAINING:
+            # The prep ended, possibly while another orchestrator process held its reservation: release it.
+            await tournament_sql.release_gpus(prep_job_key(task_id_str), config.psql_db, trainer.trainer_ip)
+
         if job.status == TaskStatus.SUCCESS and job.result is not None:
             await _finish_prep_cost_run(
-                _prep_cost_run_key(task_id_str),
+                prep_job_key(task_id_str),
                 True,
                 config,
                 ended_at=job.finished_at,
@@ -2372,7 +2353,7 @@ async def _recover_model_prep_from_trainer(task, config: Config) -> bool:
 
         if job.status == TaskStatus.FAILURE:
             await _finish_prep_cost_run(
-                _prep_cost_run_key(task_id_str),
+                prep_job_key(task_id_str),
                 False,
                 config,
                 ended_at=job.finished_at,
@@ -2416,9 +2397,12 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
                 handled.add(hotkey)
                 continue
 
+            # The prep ended, possibly while another orchestrator process held its reservation: release it.
+            await tournament_sql.release_gpus(prep_job_key(task_id_str, hotkey), config.psql_db, trainer.trainer_ip)
+
             if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.baseline_stats:
                 await _finish_prep_cost_run(
-                    _prep_cost_run_key(task_id_str, hotkey),
+                    prep_job_key(task_id_str, hotkey),
                     True,
                     config,
                     ended_at=job.finished_at,
@@ -2434,7 +2418,7 @@ async def _recover_miner_preps_from_trainers(task, miners_needing: list[tuple[st
 
             elif job.status == TaskStatus.FAILURE:
                 await _finish_prep_cost_run(
-                    _prep_cost_run_key(task_id_str, hotkey),
+                    prep_job_key(task_id_str, hotkey),
                     False,
                     config,
                     ended_at=job.finished_at,
@@ -2543,7 +2527,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
         """Run model prep for a single miner's starting model. Releases GPUs when done."""
         task_id_str = str(task.task_id)
         prep_key = f"{task_id_str}:{hotkey}"
-        cost_run_key = _prep_cost_run_key(task_id_str, hotkey)
+        cost_run_key = prep_job_key(task_id_str, hotkey)
         prep_success = False
         try:
             logger.info(
@@ -2593,11 +2577,9 @@ async def process_awaiting_model_prep_tasks(config: Config):
             await _finish_prep_cost_run(cost_run_key, prep_success, config)
             _miner_prep_in_progress.discard(prep_key)
             try:
-                await tournament_sql.update_gpu_availability(
-                    trainer_ip, gpu_ids, 0, config.psql_db
-                )
-            except Exception:
-                pass
+                await tournament_sql.release_gpus(cost_run_key, config.psql_db)
+            except Exception as e:
+                logger.error(f"Failed to release the GPUs of {cost_run_key}: {e}")
 
     async def _run_single_prep(task_id_str, model_id, task, trainer_ip, gpu_ids):
         """Run one model prep for a given model_id and return the result."""
@@ -2619,7 +2601,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
     async def _run_task_prep(task, trainer_ip, gpu_ids, interconnect=None):
         """Standard task-level model prep (text tasks, env round-1)."""
         task_id_str = str(task.task_id)
-        cost_run_key = _prep_cost_run_key(task_id_str)
+        cost_run_key = prep_job_key(task_id_str)
         prep_success = False
         try:
             await _start_prep_cost_run(
@@ -2671,11 +2653,9 @@ async def process_awaiting_model_prep_tasks(config: Config):
             await _finish_prep_cost_run(cost_run_key, prep_success, config)
             _model_prep_in_progress.discard(task_id_str)
             try:
-                await tournament_sql.update_gpu_availability(
-                    trainer_ip, gpu_ids, 0, config.psql_db
-                )
-            except Exception:
-                pass
+                await tournament_sql.release_gpus(cost_run_key, config.psql_db)
+            except Exception as e:
+                logger.error(f"Failed to release the GPUs of {cost_run_key}: {e}")
 
     while True:
         try:
@@ -2719,8 +2699,12 @@ async def process_awaiting_model_prep_tasks(config: Config):
                                 if suitable is None:
                                     continue
                                 trainer_ip, gpu_ids, interconnect = suitable
-                                await tournament_sql.update_gpu_availability(
-                                    trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
+                                await tournament_sql.reserve_gpus(
+                                    trainer_ip,
+                                    gpu_ids,
+                                    cst.MODEL_PREP_GPU_RESERVE_HOURS,
+                                    prep_job_key(task_id_str, hotkey),
+                                    config.psql_db,
                                 )
                                 _miner_prep_in_progress.add(prep_key)
                                 asyncio.create_task(
@@ -2761,8 +2745,9 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         continue
 
                     trainer_ip, gpu_ids, interconnect = suitable
-                    await tournament_sql.update_gpu_availability(
-                        trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db
+                    prep_key = prep_job_key(task_id_str)
+                    await tournament_sql.reserve_gpus(
+                        trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, prep_key, config.psql_db
                     )
 
                     _model_prep_in_progress.add(task_id_str)
@@ -2770,9 +2755,7 @@ async def process_awaiting_model_prep_tasks(config: Config):
                         asyncio.create_task(_run_task_prep(task, trainer_ip, gpu_ids, interconnect))
                     except Exception:
                         _model_prep_in_progress.discard(task_id_str)
-                        await tournament_sql.update_gpu_availability(
-                            trainer_ip, gpu_ids, 0, config.psql_db
-                        )
+                        await tournament_sql.release_gpus(prep_key, config.psql_db)
                         raise
         except Exception as e:
             logger.error(f"Error in process_awaiting_model_prep_tasks cycle: {e}", exc_info=True)
@@ -3344,6 +3327,7 @@ class SeedMergeLookup(BaseModel):
     """What the trainers said about a seed's merge job: the job if one has it, and how many trainers could not be asked."""
 
     job: ModelPrepJob | None = None
+    trainer_ip: str | None = None
     unreachable_trainers: int = 0
 
 
@@ -3356,6 +3340,7 @@ async def _find_seed_merge_job(job_id: str, config: Config) -> SeedMergeLookup:
     """A finished (with its result) or running merge job of the given id on any trainer. Finished wins. A trainer that
     errors (anything but 404) is counted: with no job found, the job may be running there."""
     running: ModelPrepJob | None = None
+    running_on: str | None = None
     unreachable = 0
     for trainer in await tournament_sql.get_trainers(config.psql_db):
         trainer_ip = trainer.trainer_ip if ":" in trainer.trainer_ip else f"{trainer.trainer_ip}:8001"
@@ -3372,10 +3357,11 @@ async def _find_seed_merge_job(job_id: str, config: Config) -> SeedMergeLookup:
             logger.warning(f"Could not ask trainer {trainer_ip} about merge job {job_id}: {e}")
             continue
         if job.status == TaskStatus.SUCCESS and job.result is not None and job.result.augmented_model_id:
-            return SeedMergeLookup(job=job, unreachable_trainers=unreachable)
+            return SeedMergeLookup(job=job, trainer_ip=trainer.trainer_ip, unreachable_trainers=unreachable)
         if job.status == TaskStatus.TRAINING:
             running = job
-    return SeedMergeLookup(job=running, unreachable_trainers=unreachable)
+            running_on = trainer.trainer_ip
+    return SeedMergeLookup(job=running, trainer_ip=running_on, unreachable_trainers=unreachable)
 
 
 async def _seed_merge_failed(seed: TournamentSeedTask, reason: str, config: Config) -> None:
@@ -3459,7 +3445,7 @@ async def _run_seed_merge(
     """Merge the boss's adapter output into its base on a trainer (a model-prep job without augmentation) and record the
     result. Releases the GPUs on every exit path."""
     job_id = _seed_merge_job_id(seed)
-    cost_run_key = _prep_cost_run_key(job_id)
+    cost_run_key = prep_job_key(job_id)
     success = False
     try:
         await _start_prep_cost_run(
@@ -3485,9 +3471,9 @@ async def _run_seed_merge(
         await _finish_prep_cost_run(cost_run_key, success, config)
         _seed_merge_in_progress.discard(str(seed.task_id))
         try:
-            await tournament_sql.update_gpu_availability(trainer_ip, gpu_ids, 0, config.psql_db)
-        except Exception:
-            pass
+            await tournament_sql.release_gpus(cost_run_key, config.psql_db)
+        except Exception as e:
+            logger.error(f"Failed to release the GPUs of {cost_run_key}: {e}")
 
 
 async def _remember_if_full_model(seed: TournamentSeedTask, config: Config) -> None:
@@ -3524,6 +3510,9 @@ async def _merge_seed_adapter(seed: TournamentSeedTask, config: Config) -> None:
     if job is not None and job.status == TaskStatus.TRAINING:
         logger.info(f"Seed {seed.role.value} task {seed.task_id}: the adapter merge is still running on a trainer")
         return
+    if job is not None:
+        # Finished on the trainer, possibly while another orchestrator process held the reservation.
+        await tournament_sql.release_gpus(prep_job_key(_seed_merge_job_id(seed)), config.psql_db, lookup.trainer_ip)
     if job is not None and job.result is not None:
         # Verified (and counted as a failure, with its cooldown, when it is not usable): either way no dispatch this cycle.
         await _persist_seed_merge(seed, job.result.augmented_model_id, raw_repo, task.model_id, config)
@@ -3550,13 +3539,14 @@ async def _merge_seed_adapter(seed: TournamentSeedTask, config: Config) -> None:
         logger.info(f"No GPUs available to merge the adapter output of seed task {seed.task_id}, will retry next cycle")
         return
     trainer_ip, gpu_ids, interconnect = suitable
-    await tournament_sql.update_gpu_availability(trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, config.psql_db)
+    merge_key = prep_job_key(_seed_merge_job_id(seed))
+    await tournament_sql.reserve_gpus(trainer_ip, gpu_ids, cst.MODEL_PREP_GPU_RESERVE_HOURS, merge_key, config.psql_db)
     _seed_merge_in_progress.add(str(seed.task_id))
     try:
         asyncio.create_task(_run_seed_merge(seed, task, raw_repo, trainer_ip, gpu_ids, interconnect, config))
     except Exception:
         _seed_merge_in_progress.discard(str(seed.task_id))
-        await tournament_sql.update_gpu_availability(trainer_ip, gpu_ids, 0, config.psql_db)
+        await tournament_sql.release_gpus(merge_key, config.psql_db)
         raise
 
 

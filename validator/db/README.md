@@ -27,7 +27,7 @@ Postgres access for the validator: the connection pool, the schema migrations, t
 | `quant_sku_references` | The uncompressed reference loss per task, hotkey and evaluation GPU type. |
 | `continuous_sft_state`, `continuous_sft_task_chunks` | The position of each continuous-SFT lineage and the position each task was created with. |
 | `tournament_boss_rank_comparisons` | The rank comparison between the boss and each paid contender, written when a text or compression tournament completes with the boss keeping the crown. |
-| `trainers_gpus` | The GPUs each trainer reports. |
+| `trainers_gpus` | The GPUs each trainer reports, and their reservations: `used_until`, the job key holding it (`reserved_by`, NULL for a hold from the trainer's report) and `reserved_at`. |
 | `transfers`, `coldkey_balances`, `balance_events` | Entry-fee transfers and balances. |
 
 <details>

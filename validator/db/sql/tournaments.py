@@ -24,6 +24,7 @@ from validator.db.sql.submissions_and_scoring import get_all_scores_and_losses_f
 from validator.db.sql.submissions_and_scoring import get_task_winners
 from validator.tasks.details import normalise_float
 from validator.tournament import constants as t_cst
+from validator.tournament.gpu_reservations import training_job_key
 from validator.tournament.models import BossRankComparison
 from validator.tournament.models import GroupRound
 from validator.tournament.models import HotkeyTaskParticipation
@@ -1198,12 +1199,16 @@ async def add_trainer_gpus(trainer_ip: str, gpu_infos: list[GPUInfo], psql_db: P
             insert_query = f"""
                 INSERT INTO {cst.TRAINERS_GPUS_TABLE}
                 ({cst.TRAINER_IP}, {cst.GPU_ID}, {cst.GPU_TYPE}, {cst.VRAM_GB}, {cst.USED_UNTIL},
-                 {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}, {cst.NVLINK_PEERS})
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 {cst.PRODUCT_NAME}, {cst.INTERCONNECT}, {cst.NVLINK}, {cst.NVLINK_PEERS},
+                 {cst.RESERVED_BY}, {cst.RESERVED_AT})
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL,
+                        CASE WHEN $5::timestamptz IS NULL THEN NULL ELSE CURRENT_TIMESTAMP END)
                 ON CONFLICT ({cst.TRAINER_IP}, {cst.GPU_ID}) DO UPDATE SET
                     {cst.GPU_TYPE} = EXCLUDED.{cst.GPU_TYPE},
                     {cst.VRAM_GB} = EXCLUDED.{cst.VRAM_GB},
                     {cst.USED_UNTIL} = EXCLUDED.{cst.USED_UNTIL},
+                    {cst.RESERVED_BY} = EXCLUDED.{cst.RESERVED_BY},
+                    {cst.RESERVED_AT} = EXCLUDED.{cst.RESERVED_AT},
                     {cst.PRODUCT_NAME} = EXCLUDED.{cst.PRODUCT_NAME},
                     {cst.INTERCONNECT} = EXCLUDED.{cst.INTERCONNECT},
                     {cst.NVLINK} = EXCLUDED.{cst.NVLINK},
@@ -1516,8 +1521,15 @@ async def update_tournament_task_training_status(
         params = [task_id, hotkey, status]
         if trainer_ip:
             params.append(trainer_ip)
-        await connection.execute(query, *params)
+        async with connection.transaction():
+            await connection.execute(query, *params)
+            # A run that is no longer training holds no GPU: release what it reserved in the same transaction.
+            released = [] if status == TrainingStatus.TRAINING else await _release_gpus(
+                connection, training_job_key(str(task_id), hotkey)
+            )
         logger.info(f"Marked task-hotkey pair ({task_id}, {hotkey}) as {status}")
+        if released:
+            logger.info(f"Released GPUs {released} held by the run of ({task_id}, {hotkey})")
 
 
 async def update_dstack_runname(task_id: str, hotkey: str, runname: str, psql_db: PSQLDB):
@@ -1635,28 +1647,102 @@ async def get_tournament_training_stats(psql_db: PSQLDB) -> dict:
         return stats
 
 
-async def update_gpu_availability(trainer_ip: str, gpu_ids: list[int], hours_to_complete: float, psql_db: PSQLDB):
-    """Update GPU availability by setting used_until based on hours_to_complete"""
+async def reserve_gpus(trainer_ip: str, gpu_ids: list[int], hours: float, job_key: str, psql_db: PSQLDB) -> None:
+    """Reserve GPUs on a trainer for a job (see validator/tournament/gpu_reservations.py) for `hours` from now.
+
+    The job takes the GPUs over from whatever held them: the caller has just picked them as free or the trainer has just
+    accepted the job on them."""
     async with await psql_db.connection() as connection:
-        if hours_to_complete == 0:
-            # Reset GPU availability by setting used_until to NULL
-            query = f"""
-                UPDATE {cst.TRAINERS_GPUS_TABLE}
-                SET {cst.USED_UNTIL} = NULL, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-                WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
-            """
-            await connection.execute(query, trainer_ip, gpu_ids)
-        else:
-            # Set GPU as used for specified hours (fractional hours supported)
-            query = f"""
-                UPDATE {cst.TRAINERS_GPUS_TABLE}
-                SET {cst.USED_UNTIL} = CURRENT_TIMESTAMP + ($3::double precision * INTERVAL '1 hour'),
-                    {cst.UPDATED_AT} = CURRENT_TIMESTAMP
-                WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
-            """
-            await connection.execute(query, trainer_ip, gpu_ids, float(hours_to_complete))
-        action = "reset" if hours_to_complete == 0 else f"used for {hours_to_complete} hours"
-        logger.info(f"Updated GPU availability for trainer {trainer_ip}, GPUs {gpu_ids} - {action}")
+        query = f"""
+            UPDATE {cst.TRAINERS_GPUS_TABLE}
+            SET {cst.USED_UNTIL} = CURRENT_TIMESTAMP + ($3::double precision * INTERVAL '1 hour'),
+                {cst.RESERVED_BY} = $4,
+                {cst.RESERVED_AT} = CURRENT_TIMESTAMP,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
+        """
+        await connection.execute(query, trainer_ip, gpu_ids, float(hours), job_key)
+    logger.info(f"Reserved GPUs {gpu_ids} on trainer {trainer_ip} for {hours} hours for {job_key}")
+
+
+async def _release_gpus(connection, job_key: str, trainer_ip: str | None = None) -> list[int]:
+    query = f"""
+        UPDATE {cst.TRAINERS_GPUS_TABLE}
+        SET {cst.USED_UNTIL} = NULL, {cst.RESERVED_BY} = NULL, {cst.RESERVED_AT} = NULL,
+            {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+        WHERE {cst.RESERVED_BY} = $1 AND ($2::text IS NULL OR {cst.TRAINER_IP} = $2)
+        RETURNING {cst.GPU_ID}
+    """
+    rows = await connection.fetch(query, job_key, trainer_ip)
+    return sorted(row[cst.GPU_ID] for row in rows)
+
+
+async def release_gpus(job_key: str, psql_db: PSQLDB, trainer_ip: str | None = None) -> list[int]:
+    """Release the GPUs the job still holds, on `trainer_ip` only when given (a job seen ended on one trainer may run
+    again on another). A GPU another job has reserved since is not touched. Returns the GPU ids released."""
+    async with await psql_db.connection() as connection:
+        released = await _release_gpus(connection, job_key, trainer_ip)
+    if released:
+        logger.info(f"Released GPUs {released} held by {job_key}" + (f" on trainer {trainer_ip}" if trainer_ip else ""))
+    return released
+
+
+async def free_gpus_reported_idle(trainer_ip: str, gpu_ids: list[int], grace_seconds: int, psql_db: PSQLDB) -> list[int]:
+    """Free the reservations on GPUs the trainer reports idle. Returns the GPU ids freed.
+
+    A hold taken from the trainer's own report (no job key) is freed at once. A job's reservation is freed only once it
+    is older than `grace_seconds`: a model-prep job is reserved before the trainer has it. The check runs in the UPDATE,
+    so a reservation taken after the trainer was asked is never freed by a report that predates it."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TRAINERS_GPUS_TABLE}
+            SET {cst.USED_UNTIL} = NULL, {cst.RESERVED_BY} = NULL, {cst.RESERVED_AT} = NULL,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
+              AND {cst.USED_UNTIL} > CURRENT_TIMESTAMP
+              AND ({cst.RESERVED_BY} IS NULL
+                   OR {cst.RESERVED_AT} IS NULL
+                   OR {cst.RESERVED_AT} < CURRENT_TIMESTAMP - ($3::double precision * INTERVAL '1 second'))
+            RETURNING {cst.GPU_ID}
+        """
+        rows = await connection.fetch(query, trainer_ip, gpu_ids, float(grace_seconds))
+    return sorted(row[cst.GPU_ID] for row in rows)
+
+
+async def hold_gpus_reported_busy(trainer_ip: str, gpu_ids: list[int], hours: float, psql_db: PSQLDB) -> list[int]:
+    """Hold, for `hours`, the GPUs the trainer reports busy that no live reservation covers. Returns the GPU ids held.
+
+    The hold has no job key, so the trainer reporting the GPU idle frees it. A live reservation is left as it is."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TRAINERS_GPUS_TABLE}
+            SET {cst.USED_UNTIL} = CURRENT_TIMESTAMP + ($3::double precision * INTERVAL '1 hour'),
+                {cst.RESERVED_BY} = NULL,
+                {cst.RESERVED_AT} = CURRENT_TIMESTAMP,
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINER_IP} = $1 AND {cst.GPU_ID} = ANY($2)
+              AND ({cst.USED_UNTIL} IS NULL OR {cst.USED_UNTIL} <= CURRENT_TIMESTAMP)
+            RETURNING {cst.GPU_ID}
+        """
+        rows = await connection.fetch(query, trainer_ip, gpu_ids, float(hours))
+    return sorted(row[cst.GPU_ID] for row in rows)
+
+
+async def hold_unreachable_trainer_gpus(trainer_ip: str, hours: float, psql_db: PSQLDB) -> None:
+    """Keep every GPU of a trainer that cannot be asked reserved for at least `hours`. Job keys are kept, so a job that
+    ends meanwhile still releases its own GPUs."""
+    async with await psql_db.connection() as connection:
+        query = f"""
+            UPDATE {cst.TRAINERS_GPUS_TABLE}
+            SET {cst.USED_UNTIL} = GREATEST(
+                    COALESCE({cst.USED_UNTIL}, CURRENT_TIMESTAMP),
+                    CURRENT_TIMESTAMP + ($2::double precision * INTERVAL '1 hour')
+                ),
+                {cst.RESERVED_AT} = COALESCE({cst.RESERVED_AT}, CURRENT_TIMESTAMP),
+                {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINER_IP} = $1
+        """
+        await connection.execute(query, trainer_ip, float(hours))
 
 
 async def get_tasks_with_all_training_completed(psql_db: PSQLDB) -> list[str]:
