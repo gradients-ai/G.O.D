@@ -128,6 +128,10 @@ DEFAULT_PARTICIPANT_COMMIT = "8631451156e2915070f77e5547ca0d5ed3d0eb8a"
 
 LATEST_TOURNAMENTS_CACHE_TTL = 3600
 LATEST_TOURNAMENTS_CACHE_KEY = "latest_tournaments_details"
+# Per-miner boss comparisons of a finished round, cached in Redis. Bump the version whenever the stored shape changes so
+# entries of the old shape are never served.
+BOSS_COMPARISONS_REDIS_PREFIX = "boss_comparisons"
+BOSS_COMPARISONS_SCHEMA_VERSION = 2
 
 CLAUDE_REPO_DIFF_MODEL = "claude-sonnet-4-5"
 CLAUDE_REPO_DIFF_MAX_TURNS = 30

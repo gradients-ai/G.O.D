@@ -46,6 +46,7 @@ from validator.tournament.crown import fixed_head_to_head
 from validator.tournament.crown import freeform_head_to_head
 from validator.tournament.crown import image_head_to_head
 from validator.tournament.crown import is_text_big_task
+from validator.tournament.crown import is_unpairable
 from validator.tournament.crown import is_valid_score
 from validator.tournament.crown import text_head_to_head
 from validator.tournament.crown import text_needs_paired_test
@@ -352,7 +353,9 @@ async def _resolve_quant_boss_round_task_winner(
             challenger_won, verdict_reason = quant_challenger_takes_fixed_boss_task(comparison, boss_loss, opponent_loss)
             within = False
             if not challenger_won and not comparison.is_draw:
-                within, swapped = challenger_within_paired_allowed_loss(boss_losses, opponent_losses, boss_loss, opponent_loss)
+                within, swapped = await asyncio.to_thread(
+                    challenger_within_paired_allowed_loss, boss_losses, opponent_losses, boss_loss, opponent_loss
+                )
                 logger.info(
                     f"BOSS_ROUND_ALLOWED_LOSS task={task_id} within={within} boss_example_wins_swapped="
                     f"{swapped.challenger_example_wins} win_rate_lb={swapped.win_rate_lower_bound:.4f} "
@@ -910,8 +913,8 @@ async def quant_task_head_to_head(
                 paired = await asyncio.to_thread(compare_paired_losses, boss_losses, challenger_losses)
                 _log_paired_comparison(task_id, task_object.task_type, paired)
                 if not paired.challenger_won and not paired.is_draw:
-                    within, _ = challenger_within_paired_allowed_loss(
-                        boss_losses, challenger_losses, boss_loss, challenger_loss
+                    within, _ = await asyncio.to_thread(
+                        challenger_within_paired_allowed_loss, boss_losses, challenger_losses, boss_loss, challenger_loss
                     )
                     boss_takes = not within
     return fixed_head_to_head(task_id, label, boss_loss, challenger_loss, paired, boss_takes)
@@ -1061,7 +1064,9 @@ async def round_task_boss_comparisons(
         except Exception:
             logger.warning(f"Task {task_id}: no boss comparison for {hotkey}", exc_info=True)
             continue
-        comparisons.append(BossComparison(hotkey=hotkey, outcome=head_to_head.outcome.value, paired=head_to_head.paired))
+        # A comparison with no example scored by both sides says nothing about the pair: report it as absent.
+        paired = None if is_unpairable(head_to_head.paired) else head_to_head.paired
+        comparisons.append(BossComparison(hotkey=hotkey, outcome=head_to_head.outcome.value, paired=paired))
     return comparisons
 
 

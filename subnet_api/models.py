@@ -224,6 +224,39 @@ class TournamentPvPIndividualScore(PublicModel):
     score: float
 
 
+class PairedExampleWinsPublic(PublicModel):
+    hotkey_a: str
+    hotkey_b: str
+    hotkey_a_wins: int
+    hotkey_b_wins: int
+    ties: int
+    n_examples: int
+    deadzone_nats: float
+
+
+class PairedLossComparisonPublic(PublicModel):
+    n_examples: int
+    n_decided: int
+    challenger_example_wins: int
+    boss_example_wins: int
+    win_rate: float
+    win_rate_lower_bound: float
+    mean_gap_nats: float
+    mean_gap_lower_bound: float
+    challenger_won: bool
+    is_draw: bool = False
+    reason: str
+    required_win_rate: float
+    required_mean_gap_nats: float
+    deadzone_nats: float | None = None
+
+
+class BossComparisonPublic(PublicModel):
+    hotkey: str
+    outcome: str
+    paired: PairedLossComparisonPublic | None = None
+
+
 class TournamentTaskScorePublic(PublicModel):
     task_id: str
     group_id: str | None = None
@@ -234,8 +267,8 @@ class TournamentTaskScorePublic(PublicModel):
     environment_names: list[str] | None = None
     pvp_pair_results: list[TournamentPvPPairResult] | None = None
     pvp_individual_scores: list[TournamentPvPIndividualScore] | None = None
-    paired_example_wins: dict[str, Any] | None = None
-    boss_comparisons: list[dict[str, Any]] | None = None
+    paired_example_wins: PairedExampleWinsPublic | None = None
+    boss_comparisons: list[BossComparisonPublic] | None = None
 
 
 class TournamentRoundPublic(PublicModel):
@@ -266,7 +299,7 @@ class TournamentDetailsPublicResponse(PublicModel):
     image_tournament_weight: float | None = None
     environment_tournament_weight: float | None = None
     quant_tournament_weight: float | None = None
-    boss_round_performance: list[dict[str, Any]] | None = None
+    boss_round_performance: list["TaskPerformanceDifference"] | None = None
     sync_performance: list[dict[str, Any]] | None = None
 
 
@@ -391,7 +424,7 @@ class TaskPerformanceDifference(PublicModel):
     threshold_used: float
     performance_difference: float | None = None
     challenger_won: bool
-    paired_comparison: dict[str, Any] | None = None
+    paired_comparison: PairedLossComparisonPublic | None = None
     decision_reason: str | None = None
     within_allowed_loss: bool | None = None
 

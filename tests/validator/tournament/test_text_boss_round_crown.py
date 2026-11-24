@@ -71,7 +71,7 @@ def _paired(challenger_won: bool = True, is_draw: bool = False) -> PairedLossCom
         boss_example_wins=10 if challenger_won else 90, win_rate=0.9 if challenger_won else 0.1,
         win_rate_lower_bound=0.8 if challenger_won else 0.05, mean_gap_nats=0.1 if challenger_won else -0.1,
         mean_gap_lower_bound=0.05 if challenger_won else -0.2, challenger_won=challenger_won, is_draw=is_draw,
-        reason="won" if challenger_won else "lost", required_win_rate=0.6, required_mean_gap_nats=0.01,
+        reason="won" if challenger_won else "lost", required_win_rate=0.6, required_mean_gap_nats=0.01, deadzone_nats=0.01,
     )  # fmt: skip
 
 
@@ -157,7 +157,7 @@ class TestExactDecimalBoundaries:
         return PairedLossComparison(
             n_examples=100, n_decided=100, challenger_example_wins=90, boss_example_wins=10, win_rate=0.9,
             win_rate_lower_bound=0.8, mean_gap_nats=0.1, mean_gap_lower_bound=0.05, challenger_won=True, reason="won",
-            required_win_rate=0.6, required_mean_gap_nats=0.01,
+            required_win_rate=0.6, required_mean_gap_nats=0.01, deadzone_nats=0.01,
         )  # fmt: skip
 
     @pytest.mark.parametrize("boss, challenger", [(1.15, 1.1385), (2.3, 2.277)])

@@ -1,11 +1,14 @@
 import asyncio
+import hashlib
 import json
 import time
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
 from typing import Dict
+from typing import NamedTuple
 
 import httpx
 from fastapi import APIRouter
@@ -123,33 +126,82 @@ async def _get_paired_example_wins(
 
 # A finished round's results do not change, so its comparisons are computed once and kept for a while.
 BOSS_COMPARISONS_TTL_SECONDS = 600
-# Kept in Redis for every process: a finished round never changes (the paired test's resampling seed is fixed).
-BOSS_COMPARISONS_REDIS_PREFIX = "boss_comparisons"
+# Kept in Redis for every process. The key carries a schema version and a fingerprint of the scores the verdicts were
+# computed from, so a replayed round or a changed shape never reads an earlier answer.
 BOSS_COMPARISONS_REDIS_TTL_SECONDS = 24 * 60 * 60
-_boss_comparisons_cache: dict[tuple[str, str], tuple[float, list[BossComparison]]] = {}
-_boss_comparisons_lock = asyncio.Lock()
+# "No comparisons" (a tournament that does not play the round plan, a failed or timed-out computation) is remembered
+# briefly so such a request does not recompute every time.
+BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS = 60
+BOSS_COMPARISONS_COMPUTE_TIMEOUT_SECONDS = 60
 
 
-def _cached_boss_comparisons(key: tuple[str, str]) -> list[BossComparison] | None:
+class BossComparisonsKey(NamedTuple):
+    tournament_id: str
+    task_id: str
+    scores_fingerprint: str
+
+
+_boss_comparisons_cache: dict[BossComparisonsKey, tuple[float, list[BossComparison]]] = {}
+
+
+class _KeyedLocks:
+    """One lock per key, dropped again once nobody holds or awaits it."""
+
+    def __init__(self) -> None:
+        self._locks: dict[BossComparisonsKey, tuple[asyncio.Lock, int]] = {}
+
+    @asynccontextmanager
+    async def hold(self, key: BossComparisonsKey):
+        lock, users = self._locks.get(key) or (asyncio.Lock(), 0)
+        self._locks[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            lock, users = self._locks[key]
+            if users <= 1:
+                del self._locks[key]
+            else:
+                self._locks[key] = (lock, users - 1)
+
+
+_boss_comparisons_locks = _KeyedLocks()
+
+
+def _scores_fingerprint(participant_scores: list[dict]) -> str:
+    """A short hash of what the verdicts are computed from: each miner's score and test loss on the task."""
+    rows = sorted(
+        (str(score[db_cst.HOTKEY]), score.get(db_cst.TASK_NODE_QUALITY_SCORE), score.get(db_cst.TEST_LOSS))
+        for score in participant_scores
+    )
+    return hashlib.sha256(json.dumps(rows).encode()).hexdigest()[:16]
+
+
+def _cached_boss_comparisons(key: BossComparisonsKey) -> list[BossComparison] | None:
     entry = _boss_comparisons_cache.get(key)
     if entry is None or entry[0] < time.monotonic():
         return None
     return entry[1]
 
 
-def _store_boss_comparisons(key: tuple[str, str], comparisons: list[BossComparison]) -> None:
+def _store_boss_comparisons(
+    key: BossComparisonsKey, comparisons: list[BossComparison], ttl: float = BOSS_COMPARISONS_TTL_SECONDS
+) -> None:
     now = time.monotonic()
     for stale in [k for k, (expires, _) in _boss_comparisons_cache.items() if expires < now]:
         del _boss_comparisons_cache[stale]
-    _boss_comparisons_cache[key] = (now + BOSS_COMPARISONS_TTL_SECONDS, comparisons)
+    _boss_comparisons_cache[key] = (now + ttl, comparisons)
 
 
-def _boss_comparisons_redis_key(key: tuple[str, str]) -> str:
-    return f"{BOSS_COMPARISONS_REDIS_PREFIX}:{key[0]}:{key[1]}"
+def _boss_comparisons_redis_key(key: BossComparisonsKey) -> str:
+    return (
+        f"{tourn_cst.BOSS_COMPARISONS_REDIS_PREFIX}:v{tourn_cst.BOSS_COMPARISONS_SCHEMA_VERSION}:"
+        f"{key.tournament_id}:{key.task_id}:{key.scores_fingerprint}"
+    )
 
 
-async def _redis_boss_comparisons(redis_db, key: tuple[str, str]) -> list[BossComparison] | None:
-    """A finished round's comparisons as another process (or an earlier request) stored them; None when there are none."""
+async def _redis_boss_comparisons(redis_db, key: BossComparisonsKey) -> list[BossComparison] | None:
+    """A finished round's comparisons as another process (or an earlier request) stored them; None when none are stored."""
     if redis_db is None:
         return None
     try:
@@ -160,12 +212,14 @@ async def _redis_boss_comparisons(redis_db, key: tuple[str, str]) -> list[BossCo
         return None
 
 
-async def _store_redis_boss_comparisons(redis_db, key: tuple[str, str], comparisons: list[BossComparison]) -> None:
+async def _store_redis_boss_comparisons(
+    redis_db, key: BossComparisonsKey, comparisons: list[BossComparison], ttl: int = BOSS_COMPARISONS_REDIS_TTL_SECONDS
+) -> None:
     if redis_db is None:
         return
     try:
         payload = json.dumps([comparison.model_dump(mode="json") for comparison in comparisons])
-        await redis_db.set(_boss_comparisons_redis_key(key), payload, ex=BOSS_COMPARISONS_REDIS_TTL_SECONDS)
+        await redis_db.set(_boss_comparisons_redis_key(key), payload, ex=ttl)
     except Exception:
         logger.warning("Failed to cache boss comparisons", exc_info=True)
 
@@ -184,24 +238,39 @@ async def _get_boss_comparisons(
         return None
     if round_data.round_number not in {spec.round_number for spec in tourn_cst.round_plan(tournament.tournament_type)}:
         return None
-    key = (str(tournament.tournament_id), str(tasks[0].task_id))
+    key = BossComparisonsKey(
+        str(tournament.tournament_id), str(tasks[0].task_id), _scores_fingerprint(participant_scores)
+    )
     cached = _cached_boss_comparisons(key)
     if cached is not None:
         return cached or None
     try:
-        # One computation at a time: it holds one connection however many requests ask, and a request that waited finds
-        # the answer of the one before it.
-        async with _boss_comparisons_lock:
+        # One computation per round task at a time: a request that waited finds the answer of the one before it.
+        async with _boss_comparisons_locks.hold(key):
             cached = _cached_boss_comparisons(key)
             if cached is None:
                 cached = await _redis_boss_comparisons(redis_db, key)
             if cached is None:
                 if not await plays_round_plan(tournament, psql_db):
+                    _store_boss_comparisons(key, [], BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS)
+                    await _store_redis_boss_comparisons(redis_db, key, [], BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS)
                     return None
                 hotkeys = [score[db_cst.HOTKEY] for score in participant_scores]
-                cached = await round_task_boss_comparisons(tournament, key[1], task_details, hotkeys, psql_db)
-                await _store_redis_boss_comparisons(redis_db, key, cached)
-            _store_boss_comparisons(key, cached)
+                try:
+                    cached = await asyncio.wait_for(
+                        round_task_boss_comparisons(tournament, key.task_id, task_details, hotkeys, psql_db),
+                        timeout=BOSS_COMPARISONS_COMPUTE_TIMEOUT_SECONDS,
+                    )
+                except Exception:
+                    _store_boss_comparisons(key, [], BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS)
+                    raise
+                if cached:
+                    await _store_redis_boss_comparisons(redis_db, key, cached)
+                else:
+                    await _store_redis_boss_comparisons(redis_db, key, cached, BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS)
+            _store_boss_comparisons(
+                key, cached, BOSS_COMPARISONS_TTL_SECONDS if cached else BOSS_COMPARISONS_NEGATIVE_TTL_SECONDS
+            )
         return cached or None
     except Exception:
         logger.warning(f"Failed to get boss comparisons for round {round_data.round_id}", exc_info=True)

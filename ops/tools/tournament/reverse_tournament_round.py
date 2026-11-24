@@ -42,8 +42,10 @@ from uuid import UUID
 
 from asyncpg.connection import Connection
 from pydantic import BaseModel
+from redis.asyncio import Redis
 
 import validator.db.constants as cst
+import validator.tournament.constants as tourn_cst
 from core.constants.network import NETUID
 from core.logging import get_logger
 from core.models.task_models import TaskStatus
@@ -213,7 +215,19 @@ async def _detach_seed_task(connection: Connection, round_id: str, plan: SeedTas
         )
 
 
-async def reverse_tournament_round(tournament_id: str, round_id_to_delete: str, psql_db: PSQLDB) -> bool:
+async def clear_cached_boss_comparisons(tournament_id: str, redis_db: Redis) -> int:
+    """Delete the cached per-miner boss comparisons of a tournament, so a replayed round never reads the reversed one's."""
+    pattern = f"{tourn_cst.BOSS_COMPARISONS_REDIS_PREFIX}:*:{tournament_id}:*"
+    keys = [key async for key in redis_db.scan_iter(match=pattern)]
+    if keys:
+        await redis_db.delete(*keys)
+    logger.info(f"Deleted {len(keys)} cached boss comparison key(s) of tournament {tournament_id}")
+    return len(keys)
+
+
+async def reverse_tournament_round(
+    tournament_id: str, round_id_to_delete: str, psql_db: PSQLDB, redis_db: Redis | None = None
+) -> bool:
     """
     Reverse a tournament round by deleting it and resetting the previous round.
 
@@ -356,6 +370,11 @@ async def reverse_tournament_round(tournament_id: str, round_id_to_delete: str, 
                     )
 
         logger.info(f"Successfully reversed round {round_id_to_delete}")
+        if redis_db is not None:
+            try:
+                await clear_cached_boss_comparisons(tournament_id, redis_db)
+            except Exception as e:
+                logger.warning(f"Could not clear the cached boss comparisons of {tournament_id}: {e}")
         return True
 
     except Exception as e:
@@ -390,7 +409,8 @@ async def main():
         # Establish database connection
         await psql_db.connect()
 
-        success = await reverse_tournament_round(tournament_id, round_id_to_delete, psql_db)
+        redis_db = Redis(host=os.getenv("REDIS_HOST", "localhost"))
+        success = await reverse_tournament_round(tournament_id, round_id_to_delete, psql_db, redis_db)
         if success:
             print(f"✅ Successfully reversed round {round_id_to_delete} in tournament {tournament_id}")
             print("🔄 The tournament cycle will now re-run the advancement logic")
@@ -408,6 +428,8 @@ async def main():
         print(f"❌ Unexpected error: {e}")
         sys.exit(1)
     finally:
+        if "redis_db" in locals():
+            await redis_db.aclose()
         if "psql_db" in locals():
             await psql_db.close()
 

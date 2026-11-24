@@ -344,3 +344,43 @@ async def test_every_write_goes_through_the_transaction_connection(db, log) -> N
     # The previous round's reactivation is a write too, and it is on the one connection of the one transaction.
     assert any(sql.startswith("UPDATE tournament_rounds") for sql in db.writes())
     assert db.opened == 1 and db.transactions == 1
+
+
+class FakeRedis:
+    def __init__(self, keys: list[str]) -> None:
+        self.keys = set(keys)
+
+    async def scan_iter(self, match: str):
+        prefix = match.split("*")[0]
+        suffix = match.rsplit("*", 1)[1]
+        for key in sorted(self.keys):
+            if key.startswith(prefix) and f":{TOURNAMENT_ID}:" in key and key.endswith(suffix):
+                yield key
+
+    async def delete(self, *keys: str) -> None:
+        self.keys -= set(keys)
+
+
+async def test_the_cached_boss_comparisons_of_the_tournament_are_deleted(db, log) -> None:
+    db.add_round_task(uuid4())
+    redis = FakeRedis(
+        [
+            f"boss_comparisons:v2:{TOURNAMENT_ID}:task1:abc",
+            f"boss_comparisons:{TOURNAMENT_ID}:task1",
+            "boss_comparisons:v2:tourn_other:task1:abc",
+        ]
+    )
+
+    assert await tool.reverse_tournament_round(TOURNAMENT_ID, ROUND_ID, db, redis) is True
+
+    assert redis.keys == {"boss_comparisons:v2:tourn_other:task1:abc"}
+
+
+async def test_a_redis_failure_does_not_undo_the_reversal(db, log) -> None:
+    db.add_round_task(uuid4())
+
+    class Broken:
+        def scan_iter(self, match: str):
+            raise ConnectionError("down")
+
+    assert await tool.reverse_tournament_round(TOURNAMENT_ID, ROUND_ID, db, Broken()) is True
