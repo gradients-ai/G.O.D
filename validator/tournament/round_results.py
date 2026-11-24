@@ -1586,10 +1586,11 @@ async def find_groups_with_no_valid_scores(
     silent `continue` in the winner functions below would just drop the group and advance a
     smaller field. Callers use this to refuse advancement instead.
 
-    A group whose every challenger's own training failed is not flagged: a failed training is a result (the miner lost),
-    not lost data, so the round resolves with no winner from it. This is what lets a lone round-3 survivor whose training
-    fails end the tournament with the boss retained. A group with any challenger whose training did not fail and that has
-    no usable score is flagged: its evaluation is missing.
+    A group whose every challenger's own training failed is not flagged when the boss has a valid score on the same task:
+    that score shows the task and the trainers worked, so a failed training is a result (the miner lost), not lost data.
+    This is what lets a lone round-3 survivor whose training fails end the tournament with the boss retained. Without the
+    boss's score, or with any challenger whose training did not fail, a group with no usable challenger score is flagged:
+    its evaluation is missing, or the failure may be the infrastructure's.
 
     Knockout rounds are decided per-pair rather than per-group, so they are not covered here.
     """
@@ -1612,12 +1613,14 @@ async def find_groups_with_no_valid_scores(
         challengers = {participant.hotkey for participant in participants} - {EMISSION_BURN_HOTKEY}
         miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
         ranked_results = calculate_miner_ranking_and_scores(miner_results) if miner_results else []
-        has_valid_score = any(
-            result.hotkey in challengers and result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+        scored = {
+            result.hotkey
             for result in ranked_results
-        )
+            if result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
+        }
+        has_valid_score = bool(challengers & scored)
 
-        if not has_valid_score and challengers:
+        if not has_valid_score and challengers and EMISSION_BURN_HOTKEY in scored:
             statuses = await get_training_status_for_task_and_hotkeys(task.task_id, sorted(challengers), psql_db)
             if all(statuses.get(hotkey) == TrainingStatus.FAILURE for hotkey in challengers):
                 continue
@@ -2188,8 +2191,9 @@ async def get_planned_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], tournament_type: TournamentType, psql_db: PSQLDB
 ) -> list[str]:
     """Winners of a seeded text or planned image tournament's single-group round: the top advance of the tournament's round
-    plan among its members by planned_round_ordered_hotkeys. After round 2 of a text or image tournament the round-3 viability cut then drops every
-    miner that can no longer finish top or joint top (round3_viable_winners), as in compression."""
+    plan among its members by planned_round_ordered_hotkeys. After round 2 of a text or image tournament the round-3
+    viability cut then drops every miner that can no longer finish top or joint top (round3_viable_winners), as in
+    compression."""
     advance = next(
         spec.advance for spec in t_cst.round_plan(tournament_type) if spec.round_number == completed_round.round_number
     )

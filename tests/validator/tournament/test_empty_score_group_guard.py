@@ -160,9 +160,38 @@ class TestFindGroupsWithNoValidScores:
 
 
 class TestFailedTrainingIsAResult:
-    """A challenger whose own training failed has a result (it lost); only missing evaluation data is refused."""
+    """A challenger whose own training failed has a result (it lost) only when the boss scored on the same task, which shows
+    the task and trainers worked; otherwise the failure may be the infrastructure's and the round is refused."""
 
-    async def test_a_lone_challenger_whose_training_failed_is_not_flagged(self, patched, statuses):
+    async def test_every_challenger_failed_and_the_boss_scored_is_not_flagged(self, patched, statuses):
+        tasks, _members, results, ranked = patched
+        tasks.return_value = [_task("group_001", "task-1")]
+        results.return_value = [object()]
+        ranked.return_value = [_result(EMISSION_BURN_HOTKEY, 0.4), _result("5A", None), _result("5B", np.nan)]
+        statuses.return_value = {"5A": TrainingStatus.FAILURE, "5B": TrainingStatus.FAILURE}
+
+        assert await find_groups_with_no_valid_scores(_round(), AsyncMock()) == []
+
+    async def test_every_challenger_failed_and_the_boss_has_no_score_is_flagged(self, patched, statuses):
+        tasks, _members, results, ranked = patched
+        tasks.return_value = [_task("group_001", "task-1")]
+        results.return_value = []
+        ranked.return_value = []
+        statuses.return_value = {"5A": TrainingStatus.FAILURE, "5B": TrainingStatus.FAILURE}
+
+        assert [group.group_id for group in await find_groups_with_no_valid_scores(_round(), AsyncMock())] == ["group_001"]
+
+    async def test_a_lone_failed_challenger_with_a_boss_score_is_not_flagged(self, patched, statuses):
+        tasks, members, results, ranked = patched
+        tasks.return_value = [_task("group_001", "task-1")]
+        members.return_value = [_member("5A")]
+        results.return_value = [object()]
+        ranked.return_value = [_result(EMISSION_BURN_HOTKEY, 0.4)]
+        statuses.return_value = {"5A": TrainingStatus.FAILURE}
+
+        assert await find_groups_with_no_valid_scores(_round(), AsyncMock()) == []
+
+    async def test_a_lone_failed_challenger_with_no_boss_score_is_flagged(self, patched, statuses):
         tasks, members, results, ranked = patched
         tasks.return_value = [_task("group_001", "task-1")]
         members.return_value = [_member("5A")]
@@ -170,14 +199,14 @@ class TestFailedTrainingIsAResult:
         ranked.return_value = []
         statuses.return_value = {"5A": TrainingStatus.FAILURE}
 
-        assert await find_groups_with_no_valid_scores(_round(), AsyncMock()) == []
+        assert [group.group_id for group in await find_groups_with_no_valid_scores(_round(), AsyncMock())] == ["group_001"]
 
     async def test_a_lone_challenger_that_trained_but_has_no_score_is_flagged(self, patched, statuses):
         tasks, members, results, ranked = patched
         tasks.return_value = [_task("group_001", "task-1")]
         members.return_value = [_member("5A")]
-        results.return_value = []
-        ranked.return_value = []
+        results.return_value = [object()]
+        ranked.return_value = [_result(EMISSION_BURN_HOTKEY, 0.4)]
         statuses.return_value = {"5A": TrainingStatus.SUCCESS}
 
         assert [group.group_id for group in await find_groups_with_no_valid_scores(_round(), AsyncMock())] == ["group_001"]
@@ -185,8 +214,8 @@ class TestFailedTrainingIsAResult:
     async def test_one_failed_and_one_trained_challenger_without_scores_is_flagged(self, patched, statuses):
         tasks, _members, results, ranked = patched
         tasks.return_value = [_task("group_001", "task-1")]
-        results.return_value = []
-        ranked.return_value = []
+        results.return_value = [object()]
+        ranked.return_value = [_result(EMISSION_BURN_HOTKEY, 0.4)]
         statuses.return_value = {"5A": TrainingStatus.FAILURE, "5B": TrainingStatus.SUCCESS}
 
         assert [group.group_id for group in await find_groups_with_no_valid_scores(_round(), AsyncMock())] == ["group_001"]
