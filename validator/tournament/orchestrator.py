@@ -474,6 +474,9 @@ async def _fetch_tournament_tasks_ready_to_train(config: Config):
     Process in priority order: organic (1), tournament (2), benchmark (3).
     Smart prioritization: fetch lower priority tasks when pending queue is low (per task type).
     """
+    failed_rows = await tournament_sql.fail_pending_rows_of_decided_final_rounds(config.psql_db)
+    if failed_rows:
+        logger.info(f"Failed {failed_rows} pending training row(s) of boss rounds that ended early")
     pending_training_tasks = await tournament_sql.get_tournament_training_tasks(
         config.psql_db,
         TrainingStatus.PENDING,
@@ -619,8 +622,10 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
             continue
 
         if priority == 2 and await tournament_sql.is_task_of_decided_final_round(str(task.task_id), config.psql_db):
-            # A boss round that ended early: its unfinished tasks are not trained, whatever state prep left them in.
+            # A boss round that ended early: its unfinished tasks are not trained, whatever state prep left them in. The
+            # task ends here, so it is not listed again every cycle.
             logger.info(f"Skipping task {task.task_id}: its boss round ended early")
+            await task_sql.fail_task_if_status(str(task.task_id), [TaskStatus.LOOKING_FOR_NODES], config.psql_db)
             continue
 
         if priority == 2 and await seeds_sql.is_unattached_quant_seed(task.task_id, config.psql_db):

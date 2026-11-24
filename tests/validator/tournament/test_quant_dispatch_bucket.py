@@ -42,6 +42,7 @@ class Dispatch:
                 self.processed.append((list(tasks), priority))
 
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_training_tasks", AsyncMock(side_effect=self._pending))
+        monkeypatch.setattr(orchestrator.tournament_sql, "fail_pending_rows_of_decided_final_rounds", AsyncMock(return_value=0))
         monkeypatch.setattr(orchestrator.tournament_sql, "get_tournament_type_for_task", AsyncMock(side_effect=self._type))
         monkeypatch.setattr(orchestrator.task_sql, "get_tasks_with_status", tasks_with_status)
         monkeypatch.setattr(orchestrator, "get_tournament_id_by_task_id", AsyncMock(return_value=None))

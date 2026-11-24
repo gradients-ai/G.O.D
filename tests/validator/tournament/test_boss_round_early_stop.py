@@ -11,6 +11,7 @@ import validator.tournament.seed_tasks as seeds
 import validator.tournament.tournament_manager as tm
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
+from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
 from validator.tournament.crown import BossRoundProgress
 from validator.tournament.crown import CrownVerdict
@@ -204,9 +205,26 @@ class TestSchedulerNeverStartsAStoppedRound:
         nodes = AsyncMock(return_value=[])
         monkeypatch.setattr(orchestrator.tournament_sql, "is_task_of_decided_final_round", decided)
         monkeypatch.setattr(orchestrator.task_sql, "get_nodes_assigned_to_task", nodes)
+        failed_task = AsyncMock(return_value=True)
+        monkeypatch.setattr(orchestrator.task_sql, "fail_task_if_status", failed_task)
         task = SimpleNamespace(task_id="t", task_type=TaskType.IMAGETASK)
 
         await orchestrator._process_tasks_for_training([task], SimpleNamespace(psql_db=None), priority=2)
 
         decided.assert_awaited_once()
         nodes.assert_not_awaited()
+        failed_task.assert_awaited_once_with("t", [TaskStatus.LOOKING_FOR_NODES], None)
+
+    async def test_pending_rows_of_a_decided_final_round_are_failed_on_the_cycle(self):
+        db = _Db()
+
+        assert await tournament_sql.fail_pending_rows_of_decided_final_rounds(db) == 1
+
+        assert "training_status = $2" in db.queries[0] and "winner_hotkey IS NOT NULL" in db.queries[0]
+
+    async def test_a_task_is_failed_only_from_the_given_statuses(self):
+        db = _Db()
+
+        assert await task_sql.fail_task_if_status("t", [TaskStatus.LOOKING_FOR_NODES], db) is True
+
+        assert "status = ANY($3)" in db.queries[0]

@@ -1474,6 +1474,23 @@ async def fail_pending_training_row(task_id: str, hotkey: str, psql_db: PSQLDB) 
     return result.endswith(" 1")
 
 
+async def fail_pending_rows_of_decided_final_rounds(psql_db: PSQLDB) -> int:
+    """Mark every PENDING row of a completed final round of a tournament that has a winner FAILURE, so a run that failed and
+    went back to PENDING after the round ended does not keep its task in TRAINING. Returns the number of rows changed."""
+    table = cst.TOURNAMENT_TASK_HOTKEY_TRAININGS_TABLE
+    async with await psql_db.connection() as connection:
+        result = await connection.execute(
+            f"""
+            UPDATE {table}
+            SET {cst.TRAINING_STATUS} = $1, {cst.UPDATED_AT} = CURRENT_TIMESTAMP
+            WHERE {cst.TRAINING_STATUS} = $2 AND {_task_of_decided_final_round(table)}
+            """,
+            TrainingStatus.FAILURE,
+            TrainingStatus.PENDING,
+        )
+    return int(result.rsplit(" ", 1)[-1])
+
+
 async def get_tournament_training_tasks(psql_db: PSQLDB, status: TrainingStatus) -> list[TournamentTaskTraining]:
     """
     Fetch tournament tasks with specific training status ordered by priority and creation time.

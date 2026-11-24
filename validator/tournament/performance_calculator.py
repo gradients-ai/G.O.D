@@ -14,6 +14,7 @@ from validator.db.sql.tournament_performance import get_task_scores_batch
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
+from validator.db.sql.tournaments import get_training_rows_for_task
 from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
@@ -192,6 +193,12 @@ def calculate_env_perf_diff_from_win_pct(win_pct: float) -> float:
     return cts.PVP_PERF_DIFF_AT_THRESHOLD + (win_pct - cts.PVP_WIN_PCT_THRESHOLD) * cts.PVP_PERF_DIFF_SLOPE
 
 
+async def _boss_never_started(task_id: str, psql_db) -> bool:
+    """Whether the boss's training row on the task is FAILURE without a run ever having started (no attempt, no trainer)."""
+    failed = await get_training_rows_for_task(task_id, TrainingStatus.FAILURE, psql_db)
+    return any(row.hotkey == EMISSION_BURN_HOTKEY and row.n_training_attempts == 0 and row.trainer_ip is None for row in failed)
+
+
 async def calculate_boss_round_performance_differences(tournament_id: str, psql_db) -> list[TaskPerformanceDifference]:
     """Calculate performance differences for all tasks in a boss round."""
 
@@ -279,6 +286,12 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
 
         if boss_score is None and challenger_score is None:
             logger.warning(f"Both boss and challenger missing scores for task {task.task_id}")
+            continue
+
+        if boss_score is None and await _boss_never_started(task.task_id, psql_db):
+            # The boss's row was failed while still pending: the round ended early before it ran, so the crown never decided
+            # this task, even if it finished afterwards with only the challenger scored.
+            logger.info(f"Task {task.task_id}: the boss never started it (the round ended early); not reported")
             continue
 
         if boss_score is None and task_obj.status != TaskStatus.SUCCESS.value:
