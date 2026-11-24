@@ -31,7 +31,6 @@ from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from tests.validator.tournament.quant_source_fakes import FakeQuantSourceStore
 from validator.db.sql import tournament_seeds as seeds_sql
-from validator.endpoints import tasks as tasks_endpoint
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.tasks.details import hide_sensitive_data_till_finished
@@ -855,27 +854,6 @@ async def test_a_tournament_without_round_three_releases_input_large_only_with_t
         assert await _hidden(connection, [i4]) == set()
     finally:
         await connection.close()
-
-
-async def test_the_task_endpoints_apply_the_hiding_rule(monkeypatch):
-    task = _hide_input(TaskStatus.SUCCESS)
-    helper = AsyncMock(return_value={str(task.task_id)})
-    monkeypatch.setattr(tasks_endpoint.seeds_sql, "get_hidden_seed_task_ids", helper)
-    monkeypatch.setattr(tasks_endpoint.task_sql, "get_task_by_id", AsyncMock(return_value=task))
-    monkeypatch.setattr(tasks_endpoint.task_sql, "get_tasks_by_account_id", AsyncMock(return_value=[task.model_copy()]))
-    config = SimpleNamespace(psql_db=MagicMock())
-
-    details = await tasks_endpoint.get_task_details(task.task_id, config)
-    listed = await tasks_endpoint.get_task_details_by_account(uuid4(), 100, 1, config)
-
-    assert details.ds_repo == "Hidden" and listed[0].ds_repo == "Hidden"
-    assert helper.await_args_list[0].args[0] == [str(task.task_id)]  # one batched call per request
-
-    helper.return_value = set()
-    task = _hide_input(TaskStatus.SUCCESS)
-    monkeypatch.setattr(tasks_endpoint.task_sql, "get_task_by_id", AsyncMock(return_value=task))
-    shown = await tasks_endpoint.get_task_details(task.task_id, config)
-    assert shown.ds_repo == "org/ds"
 
 
 # --------------------------------------------------------------------------------------------- the boss in the rounds

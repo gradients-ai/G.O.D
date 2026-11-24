@@ -11,7 +11,7 @@ Grafana, Loki, Prometheus, Tempo, Vector and nginx configuration for validator a
 | `grafana-dashboards.yaml`, `grafana-datasource.yaml` | Grafana provisioning for the validator stack. |
 | `grafana-training-dashboards.yaml`, `grafana-training-datasource.yaml` | Grafana provisioning for the training stack. |
 | `grafana-validator-general.json`, `grafana-validator-errors.json` | Validator dashboards. |
-| `grafana-tournament.json`, `grafana-tournament-costs.json` | Tournament and tournament cost dashboards. |
+| `grafana-tournament.json` | Tournament dashboard. |
 | `grafana-training-dashboard.json` | Training log dashboard. |
 | `loki-config.yaml`, `loki-training-config.yaml` | Loki configuration for validator and trainer logs. |
 | `prometheus-config.yaml`, `prometheus-training-config.yaml` | Prometheus configuration for validator and training metrics. |

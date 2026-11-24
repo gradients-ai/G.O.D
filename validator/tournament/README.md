@@ -19,7 +19,6 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 | `crown.py` | The crown rule as pure functions: one head-to-head, and the verdict over them. |
 | `decoder_snapshot.py` | Canonical snapshot of a miner's `decoder/` at its pinned commit. |
 | `dedup_gate.py` | Duplicate-submission gates before round 1 training and before round 2. |
-| `dstack_orchestrator.py` | dstack-backed training orchestration. |
 | `freeform_release.py` | Public release of the champion's decoder and the boss-round decoded models. |
 | `github_validation.py` | Repository, licence, commit and obfuscation checks at enrolment. |
 | `gpu_requirements.py` | GPU requirement calculation for tournament tasks. |

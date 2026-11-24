@@ -253,12 +253,6 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
     preevaluation_tasks = await tasks_sql.get_tasks_with_status(
         TaskStatus.PREEVALUATION, psql_db=config.psql_db, tournament_filter="all", benchmark_filter="include"
     )
-    organic_training_tasks = await tasks_sql.get_tasks_with_status(
-        TaskStatus.TRAINING,
-        psql_db=config.psql_db,
-        tournament_filter="exclude",
-        benchmark_filter="exclude",
-    )
 
     for task in preevaluation_tasks:
         try:
@@ -270,21 +264,6 @@ async def _seed_task_evaluations_for_evaluation(config: Config) -> None:
             logger.info(f"Task {task.task_id} moved to EVALUATING and evaluation rows seeded")
         except Exception as e:
             logger.error(f"Failed to seed evaluations for task {task.task_id}: {e}", exc_info=True)
-
-    for task in organic_training_tasks:
-        try:
-            assert task.task_id is not None
-            training_statuses = await tournament_sql.get_training_status_for_task(str(task.task_id), config.psql_db)
-            if training_statuses and any(status not in ("success", "failure") for status in training_statuses.values()):
-                continue
-
-            await tasks_sql.add_task_evaluation_pairs(task.task_id, config.psql_db)
-            task.status = TaskStatus.EVALUATING
-            add_context_tag("status", task.status.value)
-            await tasks_sql.update_task(task, config.psql_db)
-            logger.info(f"Organic task {task.task_id} moved from TRAINING to EVALUATING and evaluation rows seeded")
-        except Exception as e:
-            logger.error(f"Failed to seed evaluations for organic task {task.task_id}: {e}", exc_info=True)
 
 
 async def _held_boss_round_seed(task: AnyTypeRawTask, config: Config) -> bool:

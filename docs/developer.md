@@ -207,7 +207,6 @@ A validator needs the services in [Runtime topology](#runtime-topology): provisi
 | `weight_setter` | Weight setting (`validator.scoring.weights`). |
 | `tournament_orchestrator` | Training dispatch for tournaments (`validator.tournament.orchestrator`). |
 | `tournament_cycle` | Tournament creation and advancement (`validator.tournament.runner`). |
-| `dstack_orchestrator` | Training dispatch through dstack (`validator.tournament.dstack_orchestrator`). |
 | `subnet_api` | The public API, only when `SUBNET_API_PORT` is set. |
 
 To update automatically under pm2:

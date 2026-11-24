@@ -213,12 +213,3 @@ async def notify_challenger_code_review(
         logger.error(f"Failed to send Discord challenger code review: {e}")
 
 
-async def notify_organic_task_created(task_id: str, task_type: str, discord_url: str, is_benchmark: bool = False):
-    try:
-        if is_benchmark:
-            message = f"New Benchmark Task Created!\nTask ID: {task_id}\nType: {task_type}"
-        else:
-            message = f"New Organic Task Created!\nTask ID: {task_id}\nType: {task_type}"
-        await send_to_discord(discord_url, message)
-    except Exception as e:
-        logger.error(f"Failed to send Discord notification for task creation: {e}")
