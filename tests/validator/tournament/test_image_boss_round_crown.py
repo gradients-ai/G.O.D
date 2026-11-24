@@ -177,6 +177,7 @@ class Cup:
 
     def _wire(self) -> None:
         mp = self.mp
+        rr._BOSS_ROUND_PROGRESS.clear()
 
         async def results(task_id, _db):
             return [_result(hotkey, loss) for hotkey, loss in self.losses[str(task_id)].items() if loss is not None]
@@ -657,3 +658,34 @@ class TestBossRoundEarlyStop:
         assert await self.stop(cup) is False
 
         cup.assert_nothing_changed()
+
+    async def test_the_progress_is_computed_again_only_when_another_task_finishes(self, cup):
+        boss_ids = self.start(cup, [SMALLER] + [CLEAR_WIN] * 6, unfinished=[1, 2, 3])
+        real = rr._task_head_to_head
+        calls: list[str] = []
+
+        async def spy(tournament_type, task_id, *args, **kwargs):
+            if task_id in boss_ids:
+                calls.append(task_id)
+            return await real(tournament_type, task_id, *args, **kwargs)
+
+        cup.mp.setattr(rr, "_task_head_to_head", spy)
+
+        await self.stop(cup)
+        await self.stop(cup)
+        assert calls == [boss_ids[0]]
+
+        cup.tasks[boss_ids[1]].status = TaskStatus.SUCCESS.value
+        cup.losses[boss_ids[1]] = {BOSS: BOSS_LOSS, CONTENDER: CLEAR_WIN}
+        await self.stop(cup)
+        assert calls == [boss_ids[0], boss_ids[0], boss_ids[1]]
+
+    async def test_a_task_the_contender_won_by_default_is_stored_with_the_decided_ones(self, cup):
+        # Boss task 2 finished with no valid boss entry: a win for the contender, stored though not counted as decided.
+        boss_ids = self.start(cup, [SMALLER, LIMIT, CLEAR_WIN, LEVEL, CLEAR_WIN, CLEAR_WIN, CLEAR_WIN], unfinished=[2, 3])
+        cup.losses[boss_ids[1]] = {BOSS: None, CONTENDER: CLEAR_WIN}
+        cup.failed.add((boss_ids[1], BOSS))
+
+        assert await self.stop(cup) is True
+
+        assert sorted(kwargs["task_id"] for kwargs in cup.persisted) == sorted([boss_ids[0], boss_ids[1]])

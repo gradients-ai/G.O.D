@@ -74,7 +74,7 @@ The challenger and the boss meet on four tasks. Both compress the same input mod
 Source: [`FINAL_ROUND_QUANT_TASK_DISTRIBUTION`, `QUANT_BOSS_ROUND_FIXED_FORMATS`](../validator/tournament/constants.py), [`seed_tasks.py`](../validator/tournament/seed_tasks.py).
 
 - The boss trains its four entries in the boss round, alongside the challenger.
-- The round ends as soon as the crown is out of reach: after each task finishes, the [crown rule](miner.md#the-boss-and-the-crown) is applied to rounds 1-3 and the finished boss-round tasks, with the tasks still to come counted as wins. If the challenger can no longer be crowned, the boss keeps the crown and the remaining tasks are not run.
+- The round ends as soon as the crown is out of reach: after each task finishes, the [crown rule](miner.md#the-boss-and-the-crown) is applied to rounds 1-3 and the finished boss-round tasks, with the tasks still to come counted as wins. If the challenger can no longer be crowned, the boss keeps the crown and no further training is started. A task counts only when both the boss and the challenger have a valid score on it.
 - Each fixed task draws one of the two formats. Both players get the same format on a task. The two fixed tasks may differ.
 
 ## What your code receives

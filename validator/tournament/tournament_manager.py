@@ -711,7 +711,8 @@ async def _complete_without_boss_round(
     steps as a retained boss run. _complete_with_defending_champion only sets the winner and uploads the boss's
     repository, so it leaves the placements as they are.
     """
-    logger.warning(f"Tournament {tournament.tournament_id} ends after round {completed_round.round_number}: {reason}")
+    where = f"in boss round {boss_round.round_number}" if boss_round else f"after round {completed_round.round_number}"
+    logger.warning(f"Tournament {tournament.tournament_id} ends {where}: {reason}")
     if tournament.tournament_type == TournamentType.QUANT:
         retired = await retire_unattached_quant_seeds(tournament.tournament_id, config)
         logger.info(f"Tournament {tournament.tournament_id}: quant seeds retired: {[role.value for role in retired]}")
@@ -758,8 +759,9 @@ async def stop_unreachable_boss_round(
     if progress is None or not progress.unfinished_task_ids or progress.verdict.can_still_be_crowned:
         return False
     rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
-    last_miner_round = next((r for r in rounds if r.round_number == boss_round.round_number - 1), None)
-    if last_miner_round is None:
+    last_miner_round_number = _last_miner_round_number(tournament, True)
+    last_miner_round = next((r for r in rounds if r.round_number == last_miner_round_number), None)
+    if last_miner_round is None or boss_round.round_number != last_miner_round_number + 1:
         return False
     reason = (
         f"{progress.challenger} cannot be crowned after {progress.verdict.decided} of the {t_cst.CROWN_TASKS} tasks: "
@@ -2039,8 +2041,15 @@ async def process_active_tournaments(config: Config):
                         else:
                             current_round = rounds[-1]
                             if current_round.status == RoundStatus.ACTIVE:
-                                if await stop_unreachable_boss_round(tournament, current_round, config, config.psql_db):
-                                    continue
+                                try:
+                                    if await stop_unreachable_boss_round(tournament, current_round, config, config.psql_db):
+                                        continue
+                                except Exception as e:
+                                    # The early stop is an optimisation: whatever goes wrong in it, the round completes the
+                                    # ordinary way.
+                                    logger.error(
+                                        f"Boss round early-stop check failed for {tournament.tournament_id}: {e}", exc_info=True
+                                    )
                                 if await check_if_round_is_completed(current_round, config):
                                     await update_round_status(current_round.round_id, RoundStatus.COMPLETED, config.psql_db)
                                     logger.info(

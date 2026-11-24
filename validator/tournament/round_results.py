@@ -1317,6 +1317,11 @@ async def _get_image_boss_round_outcome(
     return RoundOutcome(winners=[challenger] if verdict.crowned else [boss_hotkey])
 
 
+# The progress of a boss round by the set of its finished tasks, so the pass every cycle does not redo the paired tests
+# until another task finishes. A finished task's results do not change.
+_BOSS_ROUND_PROGRESS: dict[tuple[str, tuple[str, ...]], BossRoundProgress] = {}
+
+
 async def boss_round_progress(
     tournament: TournamentData, boss_round: TournamentRoundData, psql_db: PSQLDB
 ) -> BossRoundProgress | None:
@@ -1331,6 +1336,17 @@ async def boss_round_progress(
     challenger = await _boss_round_challenger(boss_round, round_tasks, psql_db)
     if challenger is None:
         return None
+    task_objects = {task.task_id: await get_task(task.task_id, psql_db) for task in round_tasks}
+    finished = tuple(
+        sorted(
+            str(task_id)
+            for task_id, task_object in task_objects.items()
+            if task_object is not None and task_object.status == TaskStatus.SUCCESS.value
+        )
+    )
+    cache_key = (boss_round.round_id, finished)
+    if cache_key in _BOSS_ROUND_PROGRESS:
+        return _BOSS_ROUND_PROGRESS[cache_key]
     is_quant = tournament.tournament_type == TournamentType.QUANT
     try:
         earlier_rounds = (
@@ -1339,9 +1355,10 @@ async def boss_round_progress(
             else await round_head_to_heads(tournament, challenger, psql_db)
         )
         decided: list[tuple[str, HeadToHead]] = []
+        settled: list[tuple[str, HeadToHead]] = []
         unfinished: list[str] = []
         for task in round_tasks:
-            task_object = await get_task(task.task_id, psql_db)
+            task_object = task_objects[task.task_id]
             if task_object is None or task_object.status != TaskStatus.SUCCESS.value:
                 unfinished.append(str(task.task_id))
                 continue
@@ -1359,11 +1376,18 @@ async def boss_round_progress(
                 )
             if is_valid_score(head_to_head.boss_score) and is_valid_score(head_to_head.challenger_score):
                 decided.append((str(task.task_id), head_to_head))
+                settled.append((str(task.task_id), head_to_head))
+            elif head_to_head.is_win:
+                settled.append((str(task.task_id), head_to_head))
     except CrownEvaluationFault as fault:
         logger.warning(f"Boss round {boss_round.round_id}: evaluation fault on {fault.task_ids}; no early stop check")
         return None
     verdict = crown_verdict(earlier_rounds + [head_to_head for _, head_to_head in decided])
-    return BossRoundProgress(challenger=challenger, verdict=verdict, decided=decided, unfinished_task_ids=unfinished)
+    progress = BossRoundProgress(
+        challenger=challenger, verdict=verdict, decided=decided, settled=settled, unfinished_task_ids=unfinished
+    )
+    _BOSS_ROUND_PROGRESS[cache_key] = progress
+    return progress
 
 
 async def persist_decided_boss_round_winners(
@@ -1374,7 +1398,7 @@ async def persist_decided_boss_round_winners(
         margin, rule = t_cst.QUANT_FIXED_BOSS_MIN_IMPROVEMENT, "quant"
     else:
         margin, rule = t_cst.IMAGE_CROWN_WIN_MARGIN, "image"
-    await _persist_boss_round_winners(progress.decided, progress.challenger, margin, rule, psql_db)
+    await _persist_boss_round_winners(progress.settled, progress.challenger, margin, rule, psql_db)
 
 
 async def get_knockout_winners(

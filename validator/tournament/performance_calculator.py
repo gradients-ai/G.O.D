@@ -5,6 +5,7 @@ import numpy as np
 import validator.scoring.constants as cts
 from core.logging import get_logger
 from core.models.task_models import QUANT_TASK_TYPES
+from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
 from validator.db.sql.submissions_and_scoring import get_per_example_losses
 from validator.db.sql.tasks import get_task
@@ -13,6 +14,7 @@ from validator.db.sql.tournament_performance import get_task_scores_batch
 from validator.db.sql.tournaments import get_final_round_id
 from validator.db.sql.tournaments import get_tournament
 from validator.db.sql.tournaments import get_tournament_tasks
+from validator.db.sql.tournaments import get_training_status_for_task_and_hotkeys
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.scoring.quant_ranking import QuantReferenceUnavailable
@@ -22,6 +24,7 @@ from validator.tournament.models import BossTaskAnalytics
 from validator.tournament.models import PairedLossComparison
 from validator.tournament.models import TaskPerformanceDifference
 from validator.tournament.models import TournamentPerformanceData
+from validator.tournament.models import TrainingStatus
 from validator.tournament.task_results import get_task_results_for_ranking
 from validator.tournament.thresholds import challenger_beats_boss
 from validator.tournament.thresholds import challenger_takes_paired_task
@@ -277,6 +280,14 @@ async def calculate_boss_round_performance_differences(tournament_id: str, psql_
         if boss_score is None and challenger_score is None:
             logger.warning(f"Both boss and challenger missing scores for task {task.task_id}")
             continue
+
+        if boss_score is None and task_obj.status != TaskStatus.SUCCESS.value:
+            # An unfinished task of a boss round that ended early has no boss entry because it was never run: it is not a
+            # result. A task the boss's own failure ended is the challenger's only when the challenger's training succeeded.
+            training = await get_training_status_for_task_and_hotkeys(task.task_id, [challenger_hotkey], psql_db)
+            if training.get(challenger_hotkey) != TrainingStatus.SUCCESS:
+                logger.info(f"Task {task.task_id} did not finish and the challenger has no finished training; not reported")
+                continue
 
         if boss_score is None:
             logger.warning(f"Boss failed evaluation for task {task.task_id} - challenger wins by default")

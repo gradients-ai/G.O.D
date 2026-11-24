@@ -73,7 +73,8 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | `test_crown.py` | The crown rule and each task kind's win and non-win bands, as pure functions. |
 | `test_text_boss_round_crown.py` | The text boss round: its tasks, the crown, the early stop and the flow around them. |
 | `test_image_boss_round_crown.py` | The planned image boss round: the crown, the early stop after round 3 and inside the boss round, the evaluation-fault hold and third place. |
-| `test_boss_round_early_stop.py` | Stopping the work still to come in an image or compression boss round once the crown is out of reach. |
+| `test_boss_round_early_stop.py` | Stopping an image or compression boss round once the crown is out of reach: no further training is started, the seed row, the scheduler. |
+| `test_boss_round_performance_early_stop.py` | Boss-round analytics skip the tasks an early-stopped round never ran. |
 | `test_quant_boss_crown_rule.py` | The compression crown over seven head-to-heads. |
 | `test_quant_early_stop.py` | The compression early stop, and retirement of unattached seeds. |
 | `test_paired_boss_round.py` | The paired per-example test. |

@@ -618,6 +618,11 @@ async def _process_tasks_for_training(tasks: list[AnyTypeRawTask], config: Confi
             logger.info(f"Skipping environment task {task.task_id} for training; environment tournaments are retired")
             continue
 
+        if priority == 2 and await tournament_sql.is_task_of_decided_final_round(str(task.task_id), config.psql_db):
+            # A boss round that ended early: its unfinished tasks are not trained, whatever state prep left them in.
+            logger.info(f"Skipping task {task.task_id}: its boss round ended early")
+            continue
+
         if priority == 2 and await seeds_sql.is_unattached_quant_seed(task.task_id, config.psql_db):
             # A compression seed is prepped ahead but trains only once its round attaches it: the boss's row is created
             # here together with the round's miners'.

@@ -105,7 +105,8 @@ class BossRoundProgress(BaseModel):
     """Where a planned image or compression boss round stands on the crown rule while some of its tasks are still to finish.
 
     ``verdict`` counts every task not yet decided as a win. ``decided`` holds the finished tasks on which both sides have a
-    valid score, each with its head-to-head; ``unfinished_task_ids`` are the round's tasks that have not finished.
+    valid score, each with its head-to-head. ``settled`` holds those and the finished tasks the challenger won by default (the
+    boss has no valid entry), whose winners are stored. ``unfinished_task_ids`` are the round's tasks that have not finished.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -113,6 +114,7 @@ class BossRoundProgress(BaseModel):
     challenger: str
     verdict: CrownVerdict
     decided: list[tuple[str, HeadToHead]] = Field(default_factory=list)
+    settled: list[tuple[str, HeadToHead]] = Field(default_factory=list)
     unfinished_task_ids: list[str] = Field(default_factory=list)
 
 

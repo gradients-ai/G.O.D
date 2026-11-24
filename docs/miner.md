@@ -314,7 +314,7 @@ The challenger takes the crown with one of these results over the seven:
 
 Any other result leaves the crown with the boss: three or more head-to-heads not won, one beyond both allowances, or two that are both level with the boss or worse.
 
-Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown. In an image or compression boss round the rule is also applied as each task finishes, with the tasks still to come counted as wins: once the crown is out of reach, the boss keeps it and the remaining tasks are not run.
+Early stop: the rule is checked after round 3, with the four boss-round tasks counted as wins. If the three round tasks already rule the crown out, no boss round is played and the boss keeps the crown. In an image or compression boss round the rule is also applied as each task finishes, with the tasks still to come counted as wins: once the crown is out of reach, the boss keeps it and no further training is started. A task counts only when both the boss and the challenger have a valid score on it.
 
 Source: [`CROWN_TASKS`, `CROWN_MAX_NON_WINS`, `CROWN_LARGER_ALLOWANCE`](../validator/tournament/constants.py), [`crown.py: crown_verdict`](../validator/tournament/crown.py).
 
