@@ -1109,13 +1109,24 @@ async def round_head_to_heads(tournament: TournamentData, challenger_hotkey: str
 
 async def get_planned_runner_up(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> str | None:
     """Third place of a seeded text or planned image tournament: the next miner after the challenger in the cumulative
-    standings after round 3, the order that picked the round's winner. None when round 3 or another ranked miner is missing."""
+    standings after round 3, the order that picked the round's winner; in text, when round 3's viability cut left the challenger
+    alone, the best other miner of the round-2 advance set. None when round 3 or another ranked miner is missing."""
     final_miner_round = t_cst.round_plan(tournament.tournament_type)[-1].round_number
     rounds = await get_tournament_rounds(tournament.tournament_id, psql_db)
     played = next((round_data for round_data in rounds if round_data.round_number == final_miner_round), None)
     if played is None:
         return None
     ordered = await planned_round_ordered_hotkeys(played, await get_tournament_tasks(played.round_id, psql_db), psql_db)
+    third = next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
+    if third is not None or tournament.tournament_type != TournamentType.TEXT:
+        return third
+    # The round-3 viability cut left the challenger alone in round 3: third place comes from the R1+R2 standings among the
+    # miners that advanced from round 2, re-ranked within them (as in compression).
+    round_two = next((round_data for round_data in rounds if round_data.round_number == 2), None)
+    if round_two is None:
+        return None
+    advance = next(spec.advance for spec in t_cst.TEXT_ROUND_PLAN if spec.round_number == 2)
+    ordered = await _round_two_advance_set_ordered_hotkeys(tournament.tournament_id, round_two, advance, psql_db)
     return next((hotkey for hotkey in ordered if hotkey not in (challenger_hotkey, EMISSION_BURN_HOTKEY)), None)
 
 
@@ -2056,12 +2067,12 @@ async def quant_cumulative_winners(
 
 
 async def _round_two_advance_set_ordered_hotkeys(
-    tournament_id: str, round_two: TournamentRoundData, psql_db: PSQLDB
+    tournament_id: str, round_two: TournamentRoundData, round_two_advance: int, psql_db: PSQLDB
 ) -> list[str]:
-    """R1+R2 standings among the miners that advanced from round 2 (its top QUANT_ROUND_TWO_ADVANCE, including any the round-3
+    """R1+R2 standings among the miners that advanced from round 2 (its top ``round_two_advance``, including any the round-3
     viability cut then dropped), re-ranked within that cohort."""
     ordered = await _quant_cumulative_ordered_hotkeys(tournament_id, round_two, psql_db)
-    advanced = set(ordered[: t_cst.QUANT_ROUND_TWO_ADVANCE])
+    advanced = set(ordered[:round_two_advance])
     standings = await _cumulative_standings(tournament_id, round_two, psql_db, advanced)
     return [standing.hotkey for standing in standings]
 
@@ -2111,7 +2122,9 @@ async def get_quant_round_runner_up(
             f"Tournament {tournament_id}: round {pre_boss.round_number} names no miner after {challenger_hotkey}; third place "
             f"comes from the R1+R2 standings of the miners that advanced from round 2"
         )
-    return runner_up(await _round_two_advance_set_ordered_hotkeys(tournament_id, round_two, psql_db))
+    return runner_up(
+        await _round_two_advance_set_ordered_hotkeys(tournament_id, round_two, t_cst.QUANT_ROUND_TWO_ADVANCE, psql_db)
+    )
 
 
 async def _get_quant_group_winners(
@@ -2161,7 +2174,8 @@ async def get_planned_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], tournament_type: TournamentType, psql_db: PSQLDB
 ) -> list[str]:
     """Winners of a seeded text or planned image tournament's single-group round: the top advance of the tournament's round
-    plan among its members by planned_round_ordered_hotkeys."""
+    plan among its members by planned_round_ordered_hotkeys. After text round 2 the round-3 viability cut then drops every
+    miner that can no longer finish top or joint top (round3_viable_winners), as in compression; image has no such cut."""
     advance = next(
         spec.advance for spec in t_cst.round_plan(tournament_type) if spec.round_number == completed_round.round_number
     )
@@ -2170,6 +2184,8 @@ async def get_planned_group_winners(
     logger.info(
         f"advancing top {len(winners)} of {tournament_type.value} round {completed_round.round_number}: {winners}"
     )
+    if tournament_type == TournamentType.TEXT and completed_round.round_number == 2:
+        return await round3_viable_winners(completed_round.tournament_id, completed_round, winners, psql_db)
     return winners
 
 

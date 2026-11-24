@@ -52,8 +52,8 @@ Some tests skip without their tools on `PATH`: `test_decoder_snapshot.py` and `t
 | --- | --- |
 | `test_compression_rounds.py` | Compression rounds 1-3 on the text boss's models: tasks, release, cuts, the boss's rank, third place. |
 | `test_quant_round_shape.py` | Group sizes through rounds 1-3 and into the boss round. |
-| `test_round3_viability.py` | The viability cut after round 2, and third place when one miner survives. |
-| `test_text_cumulative_advancement.py` | Advancement by mean rank over the rounds played, within the surviving miners. |
+| `test_round3_viability.py` | The viability cut after round 2 of compression, and third place when one miner survives. |
+| `test_text_cumulative_advancement.py` | Text advancement by mean rank over the rounds played, within the surviving miners, the viability cut after round 2, and third place when one miner survives. |
 | `test_group_standings_tiebreak.py` | Standings tie-breaks: average rank, summed gap, seeded shuffle. |
 | `test_image_round_plan.py` | The image round plan, the boss-round mix, `round_plan`, and telling a planned image tournament from one with a three-task round 1. |
 | `test_image_rounds.py` | Image rounds 1-3: the boss assigned to each round's task, standings without the boss, advancement 8 / 4 / 1 on average rank, the boss's rank, third place and the empty-score check. |

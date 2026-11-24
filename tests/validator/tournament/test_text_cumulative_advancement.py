@@ -108,11 +108,13 @@ async def test_round_two_cuts_by_average_rank_not_by_the_round_two_task(tourname
     round_two_alone = await rr._quant_ordered_hotkeys(await rr.get_tournament_tasks("r2", None), None, cohort=set(miners))
     assert round_two_alone[:4] == ["E", "F", "A", "B"]
 
-    winners = await _winners(2)
+    ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
 
     # Ties on average rank go to the smaller summed gap to the best (R1 best 1.0, R2 best 1.0), not to the round-2 winner:
     # B (0.1+0.3)=0.4 beats E (1.0+0.0)=1.0 at rank 3, and C (0.2+0.4)=0.6 beats F (1.1+0.1)=1.2 at rank 4.
-    assert winners == ["A", "B", "E", "C"]
+    assert ordered[:4] == ["A", "B", "E", "C"]
+    # C cannot catch the leader over a third round, so the round-3 viability cut drops it from those four.
+    assert await _winners(2) == ["A", "B", "E"]
 
 
 @pytest.mark.asyncio
@@ -145,7 +147,7 @@ async def test_a_miner_with_no_result_in_a_round_ranks_last_on_it(tournament):
     # B has no R2 result: it ranks 3 there, so (1+3)/2=2.0 trails A's (2+1)/2=1.5 although B led R1.
     tournament({1: ["B", "A"], 2: ["A"]}, {1: ["A", "B"], 2: ["A", "B"]})
 
-    assert await _winners(2) == ["A", "B"]
+    assert sorted(await _winners(2)) == ["A", "B"]
     ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
     assert ordered == ["A", "B"]
 
@@ -158,7 +160,8 @@ async def test_the_boss_is_never_ranked_into_a_slot_or_into_the_miners_ranks(tou
 
     winners = await _winners(2)
 
-    assert winners == ["A", "B", "C", "D"]
+    # Same order in both rounds: after the top-4 cut only the leader can still finish top.
+    assert winners == ["A"]
     assert EMISSION_BURN_HOTKEY not in winners
     assert await _winners(1) == miners
 
@@ -176,5 +179,45 @@ async def test_third_place_is_the_runner_up_of_the_cumulative_standings(tourname
     cohort = ["A", "B", "C"]
     # Round 3's task alone ranks C, B, A; cumulative: A (1+1+3)/3, B (2+2+2)/3, C (3+3+1)/3. Challenger A, third B.
     tournament({1: cohort, 2: cohort, 3: ["C", "B", "A"]}, {1: cohort, 2: cohort, 3: cohort})
+
+    assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"
+
+
+@pytest.mark.asyncio
+async def test_round_two_drops_advancing_miners_that_can_no_longer_finish_top(tournament):
+    miners = list("ABCDE")
+    # R1 ranks A1 B2 C3 D4 E5, R2 ranks A1 C2 E3 D4 B5: sums A2 C5 B7 D8 E8. D and E tie on 8 for the fourth slot; after the top-4 cut
+    # only A can still finish top or joint top over three rounds.
+    tournament({1: miners, 2: ["A", "C", "E", "D", "B"]}, {1: miners, 2: miners})
+    ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
+    assert ordered[:3] == ["A", "C", "B"]
+
+    assert await _winners(2) == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_round_two_keeps_every_miner_that_can_still_finish_top(tournament):
+    miners = list("ABCDEF")
+    # R1 ranks A1 B2 C3 D4, R2 ranks B1 A2 D3 C4: sums A3 B3 C7 D7. Only A and B can still finish top or joint top.
+    tournament({1: miners, 2: ["B", "A", "D", "C", "E", "F"]}, {1: miners, 2: miners})
+
+    assert sorted(await _winners(2)) == ["A", "B"]
+
+
+@pytest.mark.asyncio
+async def test_round_one_and_three_are_not_viability_filtered(tournament):
+    miners = list("ABCDEFGHI")
+    tournament({1: miners, 2: miners, 3: miners}, {1: miners, 2: miners, 3: miners})
+
+    assert await _winners(1) == miners[:8]
+    assert await _winners(3) == ["A"]
+
+
+@pytest.mark.asyncio
+async def test_third_place_after_a_lone_round_three_survivor_is_the_best_of_the_round_two_advance_set(tournament):
+    miners = list("ABCDE")
+    # Round 2 keeps A alone, so round 3 is played by A only; third place is then B, the best other miner of the top four of
+    # round 2 on the round 1 and 2 standings.
+    tournament({1: miners, 2: miners, 3: ["A"]}, {1: miners, 2: miners, 3: ["A"]})
 
     assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"

@@ -60,7 +60,7 @@ Each tournament is entered on its endpoint and charges one fee per entry. Enteri
 
 ### Advancing
 
-Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in.
+Each tournament plays three rounds of one task each. Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, among the miners still in. In text and compression tournaments, the miners that advance from round 2 are then checked against every possible round-3 ranking, and a miner that no ranking could place first or joint first on average rank is dropped.
 
 A tie on average rank goes to the smaller summed gap. On each task, a miner's gap is how far its value is behind the task's best entry, relative to that best; the gaps are added over the rounds played. A tie left after that is settled by a seeded draw.
 

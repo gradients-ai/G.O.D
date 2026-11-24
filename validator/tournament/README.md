@@ -54,13 +54,13 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 1. **Seeds.** When the first round is created, the four text seeds are created and the boss trains them with its pinned code ([Seeds](#seeds)).
 2. **Round 1.** The round attaches `text_r1`, so miners train it in parallel with the boss.
 3. **Entry gates.** Before round 2 is built, the advancing miners pass the duplicate-submission gate and a code review. A disqualified miner is replaced by the next miner in the round-1 standings, who is checked too. A duplicate flag, or a review that needs an operator, holds the tournament until it is resolved.
-4. **Rounds 2 and 3.** Each attaches its seed task and is played by one group.
+4. **Rounds 2 and 3.** Each attaches its seed task and is played by one group. After the round-2 cut, the viability cut drops any miner that cannot finish top or joint top after round 3.
 5. **Early stop.** The check after round 3 can end the tournament ([Early stop](#early-stop)).
 6. **Boss round, stage one.** The continuous seed is attached and one GRPO and one DPO task are drawn. Who trains each task is in the [text guide](../../docs/miner_text.md#the-boss-round).
 7. **Boss round, stage two.** The big instruct task is created last, under the same early-stop check.
 8. **Crown and placements.** See [Crown, early stop and placements](#crown-early-stop-and-placements).
 
-Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks as compression. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
+Round 1 advances on its task. Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners, with the same tie-breaks and the same round-3 viability cut as compression. Model sizes and how many miners advance are in the [text guide](../../docs/miner_text.md#rounds) (`TEXT_ROUND_PLAN`).
 
 ## Image tournament flow
 
@@ -176,7 +176,7 @@ The placements are the same whether the boss round was played and lost or skippe
 | Image | The next miner after the challenger in the cumulative standings after round 3. |
 | Compression | The next miner after the challenger in the cumulative standings after round 3. |
 
-When the compression viability cut left the challenger alone in round 3, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
+When the viability cut left the challenger alone in round 3 of a text or compression tournament, the round-2 advance set is used. Third is its best other miner on the round 1 and 2 standings, re-ranked within that set.
 
 How the paid places split a tournament's emission is in [Payouts](../../docs/miner.md#payouts).
 
