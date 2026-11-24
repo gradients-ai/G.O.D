@@ -129,8 +129,8 @@ async def test_grpo_never_uses_the_paired_gate(stub_vectors):
 
 @pytest.mark.asyncio
 async def test_continuous_sft_chat_tasks_use_the_paired_gate(stub_vectors):
-    """Continuous-SFT boss tasks are ChatRawTask and carry the win-them-all dethrone gate, so they
-    must not be left on the relative margin."""
+    """Continuous-SFT boss tasks are ChatRawTask and loss-based, so they must be judged on the paired
+    test rather than the relative margin."""
     rng = np.random.default_rng(11)
     boss = rng.uniform(0.02, 0.03, 1000)
     challenger = boss - 0.002
@@ -146,7 +146,7 @@ async def test_continuous_sft_chat_tasks_use_the_paired_gate(stub_vectors):
 async def test_all_in_dead_zone_is_reported_as_a_draw(stub_vectors):
     """The defender holds the score row, but the verdict is flagged a draw rather than a win.
 
-    is_draw is what takes the task out of the dethrone tally and earns the round a decider, so it
+    is_draw is what takes the task out of the boss-round tally and earns the round a decider, so it
     has to be set structurally - not just mentioned in the reason text.
     """
     boss = np.random.default_rng(30).uniform(0.02, 0.03, 1000)

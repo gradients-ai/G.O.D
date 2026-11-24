@@ -1,4 +1,4 @@
-"""Boss-round draws leave the dethrone tally and earn the round a replacement task.
+"""Boss-round draws leave the boss-round tally and earn the round a replacement task.
 
 A draw is zero decided examples: every held-out example landed inside the tie dead zone, so nothing
 separated the two models. That is a property of the randomly drawn dataset, not of the challenger,
@@ -19,13 +19,11 @@ from validator.tournament import constants as t_cst
 from validator.tournament import round_results
 from validator.tournament.models import BossRoundDrawResolution
 from validator.tournament.models import BossRoundTaskVerdict
-from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
-from validator.tournament.models import TrainingStatus
 from validator.tournament.round_results import _resolve_boss_round_draws
 from validator.tournament.round_results import determine_boss_round_winner
 from validator.tournament.thresholds import compare_paired_losses
@@ -81,7 +79,6 @@ def test_chris_scenario_challenger_takes_the_crown_after_winning_the_decider():
         decided_winners,
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
     )
 
     assert len(decided_winners) == TEXT_BOSS_ROUND_SIZE
@@ -99,7 +96,6 @@ def test_a_dead_task_never_lowers_the_dethrone_bar():
         [BOSS, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert three_of_four == BOSS
@@ -108,7 +104,6 @@ def test_a_dead_task_never_lowers_the_dethrone_bar():
         [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert swept_all_four == CHALLENGER
@@ -145,8 +140,7 @@ def test_draws_earn_one_decider_each_mirroring_the_type_that_drew():
 def test_continuous_sft_draw_is_stood_in_for_by_an_instruct_task():
     """A drawn lineage gets a plain instruct task, not a second chunk of itself.
 
-    The lineage has already cleared its own dethrone gate by drawing, so a second continuous-SFT
-    task would buy nothing - while putting two tasks on one sequential train_index and leaving the
+    A second continuous-SFT task would put two tasks on one sequential train_index and leave the
     chain's carry-forward to pick between them. The stand-in only tops the tally back up.
     """
     resolution = _resolve_boss_round_draws(
@@ -158,45 +152,6 @@ def test_continuous_sft_draw_is_stood_in_for_by_an_instruct_task():
 
     assert resolution.needs_deciders is True
     assert resolution.decider_task_types == [TaskType.INSTRUCTTEXTTASK]
-
-
-def test_a_drawn_lineage_satisfies_its_own_gate():
-    """A draw is the task failing to separate the models, not the challenger failing to beat them.
-
-    So it clears the lineage gate. The challenger still has to win the rest of the round - this only
-    stops an undecidable continuous-SFT task costing them the crown on its own.
-    """
-    winner = determine_boss_round_winner(
-        [BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
-        BOSS,
-        TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],
-        expected_task_count=TEXT_BOSS_ROUND_SIZE,
-    )
-    assert winner == CHALLENGER
-
-    # But a draw is not a free pass on the rest: still only 4 of 6 decided won.
-    short_elsewhere = determine_boss_round_winner(
-        [BOSS, BOSS, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
-        BOSS,
-        TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", is_draw=True)],
-        expected_task_count=TEXT_BOSS_ROUND_SIZE,
-    )
-    assert short_elsewhere == BOSS
-
-
-def test_a_lineage_the_boss_won_still_blocks():
-    """A loss is not a draw: the boss demonstrably held that lineage, so the gate blocks."""
-    winner = determine_boss_round_winner(
-        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
-        BOSS,
-        TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=BOSS)],
-        expected_task_count=TEXT_BOSS_ROUND_SIZE,
-    )
-
-    assert winner == BOSS
 
 
 def test_deciders_are_capped_at_one_round_of_them():
@@ -240,7 +195,6 @@ def test_bar_is_clamped_so_it_can_never_be_unreachable():
         [CHALLENGER, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert winner == CHALLENGER
@@ -250,42 +204,9 @@ def test_bar_is_clamped_so_it_can_never_be_unreachable():
         [BOSS, CHALLENGER, CHALLENGER],
         BOSS,
         TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
         expected_task_count=TEXT_BOSS_ROUND_SIZE,
     )
     assert lost_one == BOSS
-
-
-def test_a_lineage_that_never_decides_blocks_the_dethrone():
-    """A lineage whose task AND decider both drew must not remove itself from its own gate.
-
-    Counting per task and subtracting the drawn ones took the total to zero, which switched the
-    strictest rule in the tournament off exactly when it had the least evidence - the challenger was
-    crowned having won no continuous-SFT task at all. Counted per lineage, an undecided lineage is a
-    None entry that fails the "won every lineage" check.
-    """
-    winner = determine_boss_round_winner(
-        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
-        BOSS,
-        TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen")],  # no result at all
-        expected_task_count=TEXT_BOSS_ROUND_SIZE,
-    )
-
-    assert winner == BOSS
-
-
-def test_a_decider_settles_the_lineage_its_predecessor_drew():
-    """The flip side: winning the lineage's decider does satisfy the gate."""
-    winner = determine_boss_round_winner(
-        [CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER, CHALLENGER],
-        BOSS,
-        TournamentType.TEXT,
-        continuous_sft_outcomes=[ContinuousSftLineageOutcome(lineage="qwen", winner_hotkey=CHALLENGER)],
-        expected_task_count=TEXT_BOSS_ROUND_SIZE,
-    )
-
-    assert winner == CHALLENGER
 
 
 def test_draw_resolution_rejects_unknown_fields():
@@ -372,97 +293,12 @@ async def test_orphaned_task_defers_the_round_instead_of_scoring_it(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_a_skipped_continuous_task_still_blocks_the_dethrone(monkeypatch):
-    """A continuous-SFT task that produced no comparison must stay in its own gate.
-
-    Registration used to ride on the award path, but several branches bail out with a bare
-    `continue` - "both evaluation failed or both succeeded but missing results" among them - so the
-    lineage never entered the outcomes dict, the gate's count fell to zero, and the strictest rule in
-    the tournament switched itself off. Driven through get_knockout_winners rather than
-    determine_boss_round_winner directly, because the defect was in what the caller collected, not
-    in the arithmetic over it - which is exactly why unit-testing the arithmetic alone missed it.
-    """
-    csft_task, instruct_task = _round_tasks(2)
-
-    def _result(hotkey, adjusted_loss):
-        return SimpleNamespace(hotkey=hotkey, adjusted_loss=adjusted_loss)
-
-    # Neither side has a usable loss on the continuous-SFT task, and both trained successfully, so
-    # it lands in the "both evaluation failed" branch and is skipped without ever being awarded.
-    results = {
-        csft_task.task_id: [_result(BOSS, None), _result(CHALLENGER, None)],
-        instruct_task.task_id: [_result(BOSS, 0.5), _result(CHALLENGER, 0.4)],
-    }
-    tasks = {
-        csft_task.task_id: SimpleNamespace(
-            task_id=csft_task.task_id,
-            task_type=TaskType.CHATTASK,
-            training_start_point=TrainingStartPoint.CONTINUOUS_SFT,
-            ds="continuous-sft:qwen:chunk",
-        ),
-        instruct_task.task_id: SimpleNamespace(
-            task_id=instruct_task.task_id,
-            task_type=TaskType.INSTRUCTTEXTTASK,
-            training_start_point=None,
-            ds="some/dataset",
-        ),
-    }
-    captured: dict = {}
-
-    async def _tournament(_tournament_id, _psql_db):
-        return TournamentData(tournament_id="tourn_1", tournament_type=TournamentType.TEXT)
-
-    async def _assigned(_task_id, _psql_db):
-        return 2
-
-    async def _resolve(task_id, **_kwargs):
-        assert task_id != csft_task.task_id, "the continuous-SFT task should have been skipped"
-        return BossRoundTaskVerdict(winner_hotkey=CHALLENGER)
-
-    async def _training_status(_task_id, _hotkeys, _psql_db):
-        return {BOSS: TrainingStatus.SUCCESS, CHALLENGER: TrainingStatus.SUCCESS}
-
-    def _winner(_task_winners, boss_hotkey, _tournament_type, outcomes=None, **_kwargs):
-        captured["outcomes"] = outcomes
-        return boss_hotkey
-
-    monkeypatch.setattr(round_results, "EMISSION_BURN_HOTKEY", BOSS)
-    monkeypatch.setattr(round_results, "get_tournament", _tournament)
-    monkeypatch.setattr(round_results, "is_seeded_text_tournament", lambda _tournament_id, _db: _async(False))
-    monkeypatch.setattr(round_results, "count_hotkeys_assigned_to_task", _assigned)
-    monkeypatch.setattr(round_results, "get_task", lambda task_id, _psql_db: _async(tasks[task_id]))
-    monkeypatch.setattr(round_results, "get_task_results_for_ranking", lambda tid, _db: _async(results[tid]))
-    monkeypatch.setattr(round_results, "calculate_miner_ranking_and_scores", lambda ranked: ranked)
-    monkeypatch.setattr(round_results, "get_training_status_for_task_and_hotkeys", _training_status)
-    monkeypatch.setattr(round_results, "_resolve_boss_round_task_winner", _resolve)
-    monkeypatch.setattr(round_results, "update_threshold_adjusted_quality_scores_for_task", _async_none)
-    monkeypatch.setattr(round_results, "determine_boss_round_winner", _winner)
-
-    completed_round = TournamentRoundData(
-        round_id="tourn_1_round_004",
-        tournament_id="tourn_1",
-        round_number=4,
-        round_type=RoundType.KNOCKOUT,
-        is_final_round=True,
-        status=RoundStatus.PENDING,
-    )
-
-    await round_results.get_knockout_winners(completed_round, [csft_task, instruct_task], psql_db=None, config=None)
-
-    outcomes = captured["outcomes"]
-    assert [outcome.lineage for outcome in outcomes] == ["qwen"], "the skipped lineage must stay in the gate"
-    assert outcomes[0].satisfied_by(CHALLENGER) is False
-    assert outcomes[0].is_draw is False
-
-
-@pytest.mark.asyncio
 async def test_a_drawn_continuous_sft_task_with_an_unparseable_lineage_gets_a_buildable_decider(monkeypatch):
     """The decider type must follow what the task IS, not whether its lineage parsed.
 
-    _lineage_outcome returns None both for "not continuous-SFT" and for "continuous-SFT whose
-    lineage no longer parses" - the latter reachable by editing CONTINUOUS_SFT_LINEAGES between
-    rounds, which is why warn_orphaned_continuous_sft_state exists. Branching on it queued a
-    CHATTASK decider, and _create_single_new_text_task has no route for CHATTASK, so the round
+    A continuous-SFT task whose lineage no longer parses is reachable by editing
+    CONTINUOUS_SFT_LINEAGES between rounds, which is why warn_orphaned_continuous_sft_state exists.
+    Branching on the lineage queued a CHATTASK decider, and _create_single_new_text_task has no route for CHATTASK, so the round
     retried a task it could never build every 60 seconds forever.
     """
     (csft_task,) = _round_tasks(1)

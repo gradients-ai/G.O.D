@@ -190,6 +190,7 @@ The crown rule is in [The boss and the crown](miner.md#the-boss-and-the-crown). 
 | Instruct, continuous, DPO | the [task score](#scoring) | a score at least 1% better, and a pass on the [paired per-example test](../validator/tournament/README.md#the-paired-per-example-test) against the boss |
 | GRPO | the [task score](#scoring) | a score at least 1% better |
 
+- The crown is decided on the seven-task rule alone. No single task, the continuous task included, has to be won.
 - The paired test only decides whether a result is a win. A result that is not a win is placed on the score alone, whether the test was failed or the per-example losses could not be paired.
 
 Source: [`TEXT_CROWN_WIN_MARGIN`](../validator/tournament/constants.py), [`crown.py: text_head_to_head`](../validator/tournament/crown.py).

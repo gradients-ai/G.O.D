@@ -21,7 +21,6 @@ from core.models.task_models import TaskType
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
 from validator.scoring.models import MinerResultsText
 from validator.tournament import constants as t_cst
-from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import RoundType
 from validator.tournament.models import SeedRole
 from validator.tournament.models import TournamentData
@@ -286,7 +285,7 @@ async def test_seven_tasks_of_another_shape_never_crown(monkeypatch):
 # --- TEXT and IMAGE keep their existing rule -----------------------------------------------------------------
 
 
-def _main_rule(task_winners, boss, outcomes, expected_task_count):
+def _main_rule(task_winners, boss, expected_task_count):
     """The text and image boss-round rule, restated as an oracle."""
     if not task_winners:
         return boss
@@ -295,24 +294,16 @@ def _main_rule(task_winners, boss, outcomes, expected_task_count):
     opponent = next((hotkey for hotkey in wins if hotkey != boss), None)
     opponent_wins = wins.get(opponent, 0) if opponent else 0
     required = min(max(1, max(total, expected_task_count or 0) - 1), total)
-    continuous_ok = all(outcome.satisfied_by(opponent) for outcome in outcomes)
-    return opponent if opponent and opponent_wins >= required and continuous_ok else boss
+    return opponent if opponent and opponent_wins >= required else boss
 
 
 @pytest.mark.parametrize("tournament_type", [TournamentType.TEXT, TournamentType.IMAGE])
 def test_text_and_image_follow_mains_rule_exactly(tournament_type):
-    won = ContinuousSftLineageOutcome(lineage="a", winner_hotkey=CHALLENGER)
-    lost_lineage = ContinuousSftLineageOutcome(lineage="b", winner_hotkey=BOSS)
-    drawn = ContinuousSftLineageOutcome(lineage="c", is_draw=True)
-    outcome_sets = [[], [won], [won, lost_lineage], [drawn, won], [ContinuousSftLineageOutcome(lineage="d")]]
     checked = 0
     for size in range(0, 7):
         for winners in itertools.product([BOSS, CHALLENGER], repeat=size):
-            for outcomes in outcome_sets:
-                for expected in (None, 2, 4, 6):
-                    actual = determine_boss_round_winner(
-                        list(winners), BOSS, tournament_type, outcomes, expected_task_count=expected
-                    )
-                    assert actual == _main_rule(list(winners), BOSS, outcomes, expected), (winners, outcomes, expected)
-                    checked += 1
-    assert checked > 1000
+            for expected in (None, 2, 4, 6):
+                actual = determine_boss_round_winner(list(winners), BOSS, tournament_type, expected_task_count=expected)
+                assert actual == _main_rule(list(winners), BOSS, expected), (winners, expected)
+                checked += 1
+    assert checked > 200

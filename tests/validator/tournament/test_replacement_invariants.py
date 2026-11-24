@@ -42,8 +42,7 @@ async def test_round_one_replacement_keeps_small_pool(monkeypatch):
 
 async def test_continuous_sft_replacement_recreates_the_same_lineage(monkeypatch):
     """Same lineage, same carried base; only the chunk is re-materialized. Falling through to
-    create_new_task_of_same_type would drop the lineage (no CHATTASK route there) and weaken the
-    win-all-continuous-SFT dethrone gate."""
+    create_new_task_of_same_type would drop the lineage (no CHATTASK route there)."""
     original = SimpleNamespace(
         task_id="orig-task",
         task_type=TaskType.CHATTASK,

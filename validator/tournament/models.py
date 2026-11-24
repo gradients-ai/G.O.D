@@ -517,29 +517,6 @@ class BossRoundTaskVerdict(BaseModel):
     challenger_within_allowed_loss: bool = False
 
 
-class ContinuousSftLineageOutcome(BaseModel):
-    """How one continuous-SFT lineage went in a boss round, for the dethrone gate.
-
-    The gate asks the challenger to win every lineage, with one deliberate exception: a draw counts
-    as satisfying it. Nothing separated the two models on that task, which is not the challenger
-    failing to beat the boss - it is the task failing to tell them apart, and the challenger should
-    not lose the crown to it. A loss is different: the boss demonstrably held that lineage.
-
-    ``is_draw`` and a ``winner_hotkey`` of None are also different. A draw means both sides were
-    scored and came out level; None means the task produced no comparison at all (failed, skipped,
-    unpairable vectors), which is absence of evidence and keeps blocking as it always has.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    lineage: str
-    winner_hotkey: str | None = None
-    is_draw: bool = False
-
-    def satisfied_by(self, challenger_hotkey: str | None) -> bool:
-        return self.is_draw or (challenger_hotkey is not None and self.winner_hotkey == challenger_hotkey)
-
-
 class BossRoundDrawResolution(BaseModel):
     """What the draws in a completed boss round mean for advancing it.
 

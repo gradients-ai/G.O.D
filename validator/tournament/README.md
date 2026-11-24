@@ -122,7 +122,7 @@ So a crown is one of three results:
 | 6 | one, within either allowance |
 | 5 | two, each within an allowance, at least one of them within the smaller |
 
-Any other set of head-to-heads leaves the boss in place.
+Any other set of head-to-heads leaves the boss in place. The crown is decided on this rule alone: no single task, the continuous task included, has to be won.
 
 What a win is depends on the task. A non-win is banded the same way on every task, on the compared value alone (score, scalar loss or effective bytes): the paired test and the reason the task was not won do not move it. The constants that hold each tournament's numbers, all in `constants.py`:
 

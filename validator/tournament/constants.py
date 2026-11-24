@@ -218,7 +218,7 @@ CONTINUOUS_SFT_LINEAGES: dict[str, str] = {
 FINAL_ROUND_CONTINUOUS_SFT_TASKS = len(CONTINUOUS_SFT_LINEAGES)
 
 # Derived so the boss-round completeness gate (task_creator) matches the real mix: a content-service
-# failure dropping one lineage would otherwise weaken the "win all continuous-SFT tasks" dethrone rule.
+# failure dropping one lineage would otherwise leave the boss round short of its full task mix.
 FINAL_ROUND_TEXT_TASKS = sum(FINAL_ROUND_TEXT_TASK_DISTRIBUTION.values()) + FINAL_ROUND_CONTINUOUS_SFT_TASKS
 
 # ds field is encoded as "{prefix}:{lineage}:{label}" so the completion hook can recover lineage.
@@ -334,8 +334,8 @@ BOSS_ROUND_BOOTSTRAP_SEED = 20260808
 # Task types whose loss is a log-likelihood, and so eligible for the paired gate. GRPO rewards and
 # env scores are on an arbitrary scale where a relative margin is not obviously wrong, and keep it.
 # CHATTASK is here because the continuous-SFT boss tasks are ChatRawTask and route to the instruct
-# evaluator - and they carry the "challenger must win EVERY continuous-SFT task" dethrone gate, so
-# leaving them on the relative margin would leave the strictest rule resting on the weakest test.
+# evaluator - and the continuous task is one of the boss round's loss-based tasks, so it is judged
+# on the same paired test as the instruct and DPO tasks rather than the weaker relative margin.
 PAIRED_BOSS_ROUND_TASK_TYPES = (TaskType.INSTRUCTTEXTTASK, TaskType.DPOTASK, TaskType.CHATTASK)
 
 def expected_boss_round_task_count(tournament_type: TournamentType) -> int:

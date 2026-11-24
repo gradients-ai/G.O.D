@@ -1125,8 +1125,8 @@ async def _create_continuous_sft_boss_task(
     """Create + register one lineage's continuous-SFT boss task. Kept out of
     _create_single_new_text_task because it uses no random model/dataset pool.
 
-    Raises on failure rather than swallowing: a dropped lineage silently weakens the boss-round
-    dethrone gate (challenger must win ALL continuous-SFT tasks). Propagating keeps the round PENDING
+    Raises on failure rather than swallowing: a dropped lineage silently leaves the boss round
+    short of its task mix. Propagating keeps the round PENDING
     so the next cycle retries, and boss-round creation is idempotent (already-created lineages skip).
     create_continuous_sft_task already retries transient content-service failures via retry_with_backoff.
     """

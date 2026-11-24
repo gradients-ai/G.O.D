@@ -50,7 +50,6 @@ from validator.tournament.crown import text_head_to_head
 from validator.tournament.crown import text_needs_paired_test
 from validator.tournament.models import BossRoundDrawResolution
 from validator.tournament.models import BossRoundTaskVerdict
-from validator.tournament.models import ContinuousSftLineageOutcome
 from validator.tournament.models import EmptyScoreGroup
 from validator.tournament.models import FirstTwoRoundRanks
 from validator.tournament.models import GroupMatchStanding
@@ -375,7 +374,6 @@ def determine_boss_round_winner(
     task_winners: list[str],
     boss_hotkey: str,
     tournament_type: TournamentType,
-    continuous_sft_outcomes: list[ContinuousSftLineageOutcome] | None = None,
     expected_task_count: int | None = None,
 ) -> str:
     """
@@ -386,11 +384,6 @@ def determine_boss_round_winner(
             here - nothing separated the two models on them, so they carry no result.
         boss_hotkey: The defending champion's hotkey
         tournament_type: Type of tournament (TEXT or IMAGE; a quant boss round is decided by the crown rule)
-        continuous_sft_outcomes: How each continuous-SFT lineage in the round went. When non-empty
-            (text boss round) the challenger must satisfy EVERY one to dethrone, on top of the
-            overall threshold. Satisfied means won it *or* drew it — a draw is the task failing to
-            separate the two models rather than the challenger failing to beat the boss, and should
-            not cost the crown. A loss, or no result at all, blocks. Empty (image) leaves it off.
         expected_task_count: The size the boss round was built to. Sets the bar when draws left
             fewer decided tasks than that, so an undecidable task never *lowers* what it takes to
             dethrone — a challenger with two dead tasks must sweep the four that worked rather than
@@ -436,41 +429,15 @@ def determine_boss_round_winner(
             f"whether the tie dead zone is too wide for the datasets being drawn."
         )
 
-    # Continuous-SFT gate: challenger must satisfy EVERY lineage; only enforced when there are any.
-    # Held per lineage rather than counted per task so that dropping a drawn lineage can never take
-    # the total to zero and switch the strictest rule in the tournament off - a lineage stays in its
-    # own gate whatever happened to it, and what varies is only whether it is satisfied.
-    outcomes = continuous_sft_outcomes or []
-    num_continuous_sft_tasks = len(outcomes)
-    challenger_continuous_wins = sum(1 for outcome in outcomes if outcome.satisfied_by(opponent_hotkey))
-    continuous_sft_ok = challenger_continuous_wins == num_continuous_sft_tasks
-    for outcome in outcomes:
-        if not outcome.satisfied_by(opponent_hotkey):
-            logger.info(
-                f"Continuous-SFT lineage {outcome.lineage} not satisfied: "
-                f"winner={outcome.winner_hotkey} is_draw={outcome.is_draw}"
-            )
-
-    if opponent_hotkey and opponent_wins >= required_wins and continuous_sft_ok:
+    if opponent_hotkey and opponent_wins >= required_wins:
         logger.info(
             f"{tournament_type.value} tournament: Challenger wins boss round comprehensively: "
             f"{opponent_wins}/{total_tasks} tasks won (required {required_wins})"
-            + (
-                f", won all {num_continuous_sft_tasks} continuous-SFT tasks"
-                if num_continuous_sft_tasks > 0
-                else ""
-            )
         )
         return opponent_hotkey
     else:
         boss_wins = win_counts.get(boss_hotkey, 0)
-        if opponent_hotkey and opponent_wins >= required_wins and not continuous_sft_ok:
-            logger.info(
-                f"{tournament_type.value} tournament: Boss retains title - challenger won "
-                f"{opponent_wins}/{total_tasks} tasks but only {challenger_continuous_wins}/"
-                f"{num_continuous_sft_tasks} continuous-SFT tasks (must win ALL to dethrone)"
-            )
-        elif opponent_hotkey:
+        if opponent_hotkey:
             logger.info(
                 f"{tournament_type.value} tournament: Boss retains title - challenger won "
                 f"{opponent_wins}/{total_tasks} tasks (requires {required_wins}/{total_tasks} to dethrone), "
@@ -1257,10 +1224,6 @@ async def get_knockout_winners(
         boss_hotkey = EMISSION_BURN_HOTKEY
         opponent_hotkey = None
         task_winners = []
-        # How each continuous-SFT lineage went, feeding determine_boss_round_winner's dethrone gate.
-        # Keyed by lineage so a lineage can never drop out of its own gate: what varies is whether
-        # it ends up satisfied, not whether it is counted.
-        continuous_sft_outcomes: dict[str, ContinuousSftLineageOutcome] = {}
         # Tasks that separated nothing. Excluded from every tally below and handed to the caller,
         # which adds one replacement task per draw so the round still resolves on a full set of
         # decided results. See BossRoundDrawResolution.
@@ -1270,24 +1233,8 @@ async def get_knockout_winners(
         def _is_continuous_sft(task_obj) -> bool:
             return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
 
-        def _lineage_outcome(task_obj) -> ContinuousSftLineageOutcome | None:
-            """Register this lineage as present in the round, defaulting it to no result.
-
-            Idempotent, so it is safe to call unconditionally per task and again when the task is
-            awarded or recorded as a draw.
-            """
-            if not _is_continuous_sft(task_obj):
-                return None
-            lineage = t_cst.continuous_sft_lineage_from_ds(task_obj.ds)
-            if lineage is None:
-                return None
-            return continuous_sft_outcomes.setdefault(lineage, ContinuousSftLineageOutcome(lineage=lineage))
-
         def _award(winner: str | None, task_obj) -> None:
             task_winners.append(winner)
-            outcome = _lineage_outcome(task_obj)
-            if outcome is not None and winner is not None:
-                outcome.winner_hotkey = winner
 
         def _record_draw(task_id: str, task_obj) -> None:
             """Take a drawn task out of the tally and queue a stand-in for it.
@@ -1296,19 +1243,13 @@ async def get_knockout_winners(
             with, with one exception: a drawn continuous-SFT task is stood in for by a plain instruct
             task on a fresh dataset pull, not by another chunk of the same lineage. Two tasks on one
             lineage would share a single sequential train_index and leave the chain's carry-forward
-            picking between them, and the lineage does not need a second attempt anyway - a draw
-            already satisfies its dethrone gate. The stand-in is only there to top the tally back up.
+            picking between them. The stand-in is only there to top the tally back up.
             """
             drawn_task_ids.append(task_id)
-            outcome = _lineage_outcome(task_obj)
-            if outcome is not None:
-                outcome.is_draw = True
-            # Branch on what the task IS, not on whether its lineage parsed. _lineage_outcome
-            # returns None for both "not continuous-SFT" and "continuous-SFT whose lineage is no
-            # longer recognised" - a state warn_orphaned_continuous_sft_state exists to flag, and
-            # one an edit to CONTINUOUS_SFT_LINEAGES between rounds produces. Treating the second as
-            # the first queues a CHATTASK decider, which has no creation route, so the round retries
-            # a task it can never build every 60 seconds forever.
+            # Branch on what the task IS, not on whether its lineage parses: a continuous-SFT task whose
+            # lineage is no longer recognised (an edit to CONTINUOUS_SFT_LINEAGES between rounds) must
+            # still not queue a CHATTASK decider, which has no creation route, or the round retries a
+            # task it can never build every 60 seconds forever.
             if _is_continuous_sft(task_obj):
                 decider_task_types.append(TaskType.INSTRUCTTEXTTASK)
             else:
@@ -1367,14 +1308,6 @@ async def get_knockout_winners(
             logger.info(f"Processing boss round task {task.task_id}")
 
             task_object = await get_task(task.task_id, psql_db)
-
-            # Register the lineage before anything can skip the task. Several branches below bail
-            # out with a bare `continue` - notably "both evaluation failed" - and if registration
-            # rode on the award path those would leave the lineage out of continuous_sft_outcomes
-            # entirely, taking the gate's count to zero and switching the strictest rule in the
-            # tournament off. A lineage is in its own gate the moment its task exists; all that
-            # varies afterwards is whether it ends up satisfied.
-            _lineage_outcome(task_object)
 
             miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
             if not miner_results:
@@ -1485,7 +1418,6 @@ async def get_knockout_winners(
             task_winners,
             boss_hotkey,
             tournament.tournament_type,
-            list(continuous_sft_outcomes.values()),
             expected_task_count=expected_task_count,
         )
 
