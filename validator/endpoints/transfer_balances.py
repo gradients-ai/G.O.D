@@ -211,6 +211,8 @@ def factory_router() -> APIRouter:
         summary="Get balance events for coldkey",
         description="Get all balance events for a specific coldkey address",
         tags=["balance-events"],
+        dependencies=[Depends(get_api_key)],
+        include_in_schema=False,
     )
 
     router.add_api_route(
@@ -221,6 +223,8 @@ def factory_router() -> APIRouter:
         summary="Get balance events for tournament",
         description="Get all balance events for a specific tournament",
         tags=["balance-events"],
+        dependencies=[Depends(get_api_key)],
+        include_in_schema=False,
     )
 
     router.add_api_route(

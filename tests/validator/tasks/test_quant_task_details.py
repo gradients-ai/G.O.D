@@ -1,9 +1,6 @@
-"""convert_task_to_task_details for quant tasks, and the by-account listing with one quant task among text tasks."""
+"""convert_task_to_task_details for quant tasks."""
 
 from datetime import datetime
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
-from unittest.mock import MagicMock
 from uuid import uuid4
 
 from core.models.dataset_models import InstructTextDatasetType
@@ -13,7 +10,6 @@ from core.models.payload_models import QuantFreeformTaskDetails
 from core.models.quant_models import QuantFormat
 from core.models.task_models import TaskStatus
 from core.models.task_models import TaskType
-from validator.endpoints import tasks as tasks_endpoint
 from validator.tasks.details import convert_task_to_task_details
 from validator.tasks.models import InstructTextTask
 from validator.tasks.models import QuantFixedTask
@@ -88,18 +84,3 @@ def test_text_task_is_unchanged():
     assert isinstance(details, InstructTextTaskDetails) and details.ds_repo == "secret/ds"
 
 
-async def test_listing_with_one_quant_task_among_text_tasks(monkeypatch):
-    tasks = [_text(), _fixed(), _text(), _freeform()]
-    monkeypatch.setattr(tasks_endpoint.task_sql, "get_tasks_by_account_id", AsyncMock(return_value=tasks))
-    hidden = AsyncMock(return_value={str(tasks[1].task_id)})
-    monkeypatch.setattr(tasks_endpoint.seeds_sql, "get_hidden_seed_task_ids", hidden)
-
-    listed = await tasks_endpoint.get_task_details_by_account(uuid4(), 100, 1, SimpleNamespace(psql_db=MagicMock()))
-
-    assert [type(item) for item in listed] == [
-        InstructTextTaskDetails,
-        QuantFixedTaskDetails,
-        InstructTextTaskDetails,
-        QuantFreeformTaskDetails,
-    ]
-    assert hidden.await_args.args[0] == [str(task.task_id) for task in tasks]

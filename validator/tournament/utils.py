@@ -7,7 +7,6 @@ from validator.tournament.github_validation import parse_github_owner_repo
 from validator.tournament.github_validation import validate_github_tokens
 from validator.tournament.github_validation import validate_repo_license
 from validator.tournament.github_validation import validate_repo_obfuscation
-from validator.tournament.notifications import notify_organic_task_created
 from validator.tournament.notifications import notify_tournament_completed
 from validator.tournament.notifications import notify_tournament_dedup_autoremoved
 from validator.tournament.notifications import notify_tournament_dedup_error
@@ -58,7 +57,6 @@ __all__ = [
     "get_real_winner_hotkey",
     "get_round_winners",
     "get_task_results_for_ranking",
-    "notify_organic_task_created",
     "notify_tournament_completed",
     "notify_tournament_dedup_autoremoved",
     "notify_tournament_dedup_error",

@@ -505,12 +505,6 @@ async def _fetch_tournament_tasks_ready_to_train(config: Config):
     if held_count:
         logger.info(f"Pending miner assignments held for the boss's text seeds (not counted): {held_count}")
 
-    organic_tasks = await task_sql.get_tasks_with_status(
-        TaskStatus.READY, config.psql_db, tournament_filter="exclude", benchmark_filter="exclude", backend=Backend.OBLIVUS.value
-    )
-    logger.info(f"Found {len(organic_tasks)} organic (non-tournament, non-benchmark) tasks ready for training")
-    await _process_tasks_for_training(organic_tasks, config, priority=1)
-
     # Fetch tournament tasks by type
     all_tournament_tasks = await task_sql.get_tasks_with_status(
         TaskStatus.LOOKING_FOR_NODES, config.psql_db, tournament_filter="only", benchmark_filter="exclude"

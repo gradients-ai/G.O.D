@@ -2,15 +2,12 @@ import asyncio
 import hashlib
 import json
 import time
-from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from datetime import timedelta
 from datetime import timezone
-from typing import Dict
 from typing import NamedTuple
 
-import httpx
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
@@ -18,19 +15,14 @@ from fastapi import HTTPException
 import validator.scoring.constants as cts
 import validator.tournament.constants as tourn_cst
 from core.logging import get_logger
-from core.models.payload_models import GpuRequirementSummary
-from core.models.payload_models import TournamentGpuRequirementsResponse
 from core.models.task_models import QUANT_TASK_TYPES
-from core.models.task_models import TaskStatus
 from validator.app.config import Config
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db import constants as db_cst
-from validator.db.sql import benchmark_tasks
 from validator.db.sql import gpu_costs
 from validator.db.sql import tasks as task_sql
 from validator.db.sql import tournaments as tournament_sql
-from validator.infrastructure.service_constants import TASK_DETAILS_ENDPOINT
 from validator.scoring.emission_balance import get_dynamic_base_weights
 from validator.scoring.tournaments import calculate_tournament_type_scores_from_data
 from validator.scoring.weights import get_tournament_burn_details
@@ -39,11 +31,9 @@ from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_KEY
 from validator.tournament.constants import LATEST_TOURNAMENTS_CACHE_TTL
 from validator.tournament.cost_calculator import calculate_weekly_costs
 from validator.tournament.cost_calculator import get_week_window
-from validator.tournament.gpu_requirements import get_task_gpu_requirement
 from validator.tournament.models import ActiveTournamentInfo
 from validator.tournament.models import ActiveTournamentParticipant
 from validator.tournament.models import ActiveTournamentsResponse
-from validator.tournament.models import BenchmarkTimelineResponse
 from validator.tournament.models import BossComparison
 from validator.tournament.models import DetailedTournamentRoundResult
 from validator.tournament.models import DetailedTournamentTaskScore
@@ -279,14 +269,10 @@ async def _get_boss_comparisons(
 
 GET_TOURNAMENT_DETAILS_ENDPOINT = "/v1/tournaments/{tournament_id}/details"
 GET_LATEST_TOURNAMENTS_DETAILS_ENDPOINT = "/v1/tournaments/latest/details"
-GET_TOURNAMENT_GPU_REQUIREMENTS_ENDPOINT = "/v1/tournaments/gpu-requirements"
 GET_TOURNAMENT_COSTS_ENDPOINT = "/v1/tournaments/costs"
 GET_NEXT_TOURNAMENT_DATES_ENDPOINT = "/v1/tournaments/next-dates"
 GET_ACTIVE_TOURNAMENTS_ENDPOINT = "/v1/tournaments/active"
 GET_TOURNAMENT_HISTORY_ENDPOINT = "/v1/tournaments/history"
-GET_WANDB_URL_ENDPOINT = "/v1/tournaments/wandb-logs/{task_id}"
-GET_BENCHMARK_TIMELINE_ENDPOINT = "/v1/benchmarks/timeline"
-GET_BENCHMARK_TIMELINE_BY_TOURNAMENT_ENDPOINT = "/v1/benchmarks/timeline/{tournament_id}"
 
 
 async def get_tournament_details(
@@ -554,68 +540,6 @@ async def get_latest_tournaments_details(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-async def get_tournament_gpu_requirements(
-    config: Config = Depends(get_config),
-) -> TournamentGpuRequirementsResponse:
-    try:
-        unfinished_statuses = [
-            TaskStatus.PENDING,
-            TaskStatus.PREPARING_DATA,
-            TaskStatus.AWAITING_MODEL_PREP,
-            TaskStatus.LOOKING_FOR_NODES,
-            TaskStatus.READY,
-            TaskStatus.TRAINING,
-        ]
-
-        unfinished_tasks = []
-        for status in unfinished_statuses:
-            tasks = await task_sql.get_tasks_with_status(status=status, psql_db=config.psql_db, tournament_filter="only")
-            unfinished_tasks.extend(tasks)
-
-        logger.info(f"Found {len(unfinished_tasks)} unfinished tournament tasks")
-
-        gpu_requirements: Dict[str, Dict[str, float]] = defaultdict(lambda: {"count": 0, "total_hours": 0.0})
-
-        for task in unfinished_tasks:
-            # May look the model up on the Hub (blocking I/O); keep it off the event loop.
-            gpu_req = await asyncio.to_thread(get_task_gpu_requirement, task)
-            gpu_type = gpu_req.value
-
-            hours = float(task.hours_to_complete) if task.hours_to_complete else 1.0
-
-            gpu_requirements[gpu_type]["count"] += 1
-            gpu_requirements[gpu_type]["total_hours"] += hours
-
-        gpu_summaries = []
-        total_tasks = 0
-        total_hours = 0.0
-
-        for gpu_type, data in gpu_requirements.items():
-            count = data["count"]
-            hours = data["total_hours"]
-
-            gpu_summaries.append(GpuRequirementSummary(gpu_type=gpu_type, count=count, total_hours=hours))
-
-            total_tasks += count
-            total_hours += hours
-
-        gpu_summaries.sort(key=lambda x: x.gpu_type)
-
-        response = TournamentGpuRequirementsResponse(
-            gpu_requirements=gpu_summaries, total_tasks=total_tasks, total_hours=total_hours
-        )
-
-        logger.info(
-            f"Retrieved GPU requirements: {len(gpu_summaries)} GPU types, "
-            f"{total_tasks} total tasks, {total_hours:.0f} total hours"
-        )
-        return response
-
-    except Exception as e:
-        logger.error(f"Error retrieving tournament GPU requirements: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
 async def get_next_tournament_dates(
     config: Config = Depends(get_config),
 ) -> NextTournamentDates:
@@ -806,73 +730,6 @@ async def get_tournament_history(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
-async def get_wandb_url(
-    task_id: str,
-    hotkey: str,
-    config: Config = Depends(get_config),
-) -> str:
-    """
-    Get the Weights & Biases URL for a specific task.
-    """
-    trainers = await tournament_sql.get_trainers(config.psql_db)
-    url_template = TASK_DETAILS_ENDPOINT.format(task_id=task_id)
-
-    async def query_trainer(trainer):
-        trainer_ip = trainer.trainer_ip
-        trainer_ip_with_port = f"{trainer_ip}:8001" if ":" not in trainer_ip else trainer_ip
-        url = f"http://{trainer_ip_with_port}{url_template}"
-        try:
-            async with httpx.AsyncClient(timeout=tourn_cst.TRAINER_HTTP_TIMEOUT) as client:
-                response = await client.get(url, params={"hotkey": hotkey})
-                if response.status_code == 404:
-                    return None
-                response.raise_for_status()
-                task_details = response.json()
-                wandb_url = task_details.get("wandb_url")
-                if wandb_url:
-                    logger.info(f"Found Weights & Biases URL for task {task_id} on trainer {trainer_ip}")
-                    return wandb_url
-        except Exception as e:
-            logger.warning(f"Error querying trainer {trainer_ip}: {e}")
-        return None
-
-    results = await asyncio.gather(*(query_trainer(tr) for tr in trainers))
-
-    for url in results:
-        if url:
-            return url
-
-    raise HTTPException(status_code=404, detail=f"Weights & Biases URL not found for task {task_id}")
-
-
-async def get_benchmark_timeline(
-    config: Config = Depends(get_config),
-) -> BenchmarkTimelineResponse:
-    """
-    Get benchmark timeline data for all tasks.
-    Shows how benchmark tasks perform over time across tournaments.
-    """
-    try:
-        return await benchmark_tasks.get_benchmark_timeline(config.psql_db)
-    except Exception as e:
-        logger.error(f"Error fetching benchmark timeline: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch benchmark timeline")
-
-
-async def get_benchmark_timeline_by_tournament(
-    tournament_id: str,
-    config: Config = Depends(get_config),
-) -> BenchmarkTimelineResponse:
-    """
-    Get benchmark timeline data filtered by tournament ID.
-    """
-    try:
-        return await benchmark_tasks.get_benchmark_timeline_by_tournament(tournament_id, config.psql_db)
-    except Exception as e:
-        logger.error(f"Error fetching benchmark timeline for tournament {tournament_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to fetch benchmark timeline")
-
-
 async def get_tournament_costs(
     week_offset: int = 0,
     week_start: datetime | None = None,
@@ -927,19 +784,8 @@ def factory_router() -> APIRouter:
     router = APIRouter(tags=["Tournament Analytics"], dependencies=[Depends(get_api_key)])
     router.add_api_route(GET_LATEST_TOURNAMENTS_DETAILS_ENDPOINT, get_latest_tournaments_details, methods=["GET"])
     router.add_api_route(GET_TOURNAMENT_DETAILS_ENDPOINT, get_tournament_details, methods=["GET"])
-    router.add_api_route(GET_TOURNAMENT_GPU_REQUIREMENTS_ENDPOINT, get_tournament_gpu_requirements, methods=["GET"])
     router.add_api_route(GET_TOURNAMENT_COSTS_ENDPOINT, get_tournament_costs, methods=["GET"])
     router.add_api_route(GET_NEXT_TOURNAMENT_DATES_ENDPOINT, get_next_tournament_dates, methods=["GET"])
     router.add_api_route(GET_ACTIVE_TOURNAMENTS_ENDPOINT, get_active_tournaments, methods=["GET"])
     router.add_api_route(GET_TOURNAMENT_HISTORY_ENDPOINT, get_tournament_history, methods=["GET"])
-    router.add_api_route(GET_BENCHMARK_TIMELINE_ENDPOINT, get_benchmark_timeline, methods=["GET"])
-    router.add_api_route(GET_BENCHMARK_TIMELINE_BY_TOURNAMENT_ENDPOINT, get_benchmark_timeline_by_tournament, methods=["GET"])
-
-    public_router = APIRouter(tags=["Tournament Analytics"])
-    public_router.add_api_route(GET_WANDB_URL_ENDPOINT, get_wandb_url, methods=["GET"])
-
-    master_router = APIRouter()
-    master_router.include_router(router)
-    master_router.include_router(public_router)
-
-    return master_router
+    return router

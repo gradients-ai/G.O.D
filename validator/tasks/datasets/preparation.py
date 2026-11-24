@@ -36,7 +36,6 @@ from core.near_duplicate import near_duplicate_sample_indices
 from validator.db.sql.calibration import get_calibration_row_hashes
 from validator.db.sql.calibration import record_calibration_rows
 from validator.db.sql.continuous_sft import get_continuous_sft_task_chunk
-from validator.db.sql.tasks import update_task
 from validator.evaluation.dataset_configs import get_default_dataset_config
 from validator.infrastructure.cache import delete_dataset_from_cache
 from validator.tasks.datasets.calibration import ROW_HASH_COLUMN
@@ -58,7 +57,6 @@ from validator.tasks.models import EnvRawTask
 from validator.tasks.models import GrpoRawTask
 from validator.tasks.models import InstructTextRawTask
 from validator.tasks.models import QuantRawTask
-from validator.tasks.rewards.functions import validate_reward_function
 
 
 logger = get_logger(__name__)
@@ -439,8 +437,6 @@ async def _process_and_upload_datasets(
         if should_reupload_train:
             train_data_json = change_to_json_format(train_dataset, columns_to_sample, task)
 
-            await _validate_and_filter_grpo_reward_functions(task, train_data_json, psql_db)
-
             train_json_path, train_json_size = await save_json_to_temp_file(train_data_json, prefix="train_data_")
             files_to_delete.append(train_json_path)
             await _check_file_size(train_json_size, "train_data")
@@ -491,43 +487,6 @@ async def _process_and_upload_datasets(
         train_url=train_json_url.strip('"'),
         calibration_url=calibration_json_url.strip('"') if calibration_json_url else None,
     )
-
-
-async def _validate_and_filter_grpo_reward_functions(task: GrpoRawTask, json_data: list[dict], psql_db) -> bool:
-    """
-    Validate GRPO reward functions with real dataset sample and update database if needed.
-    Returns True if any functions were filtered out.
-    """
-    if not isinstance(task, GrpoRawTask) or not task.reward_functions:
-        return False
-
-    sample_size = min(5, len(json_data))
-    json_sample = json_data[:sample_size]
-
-    valid_reward_functions = []
-    for rf in task.reward_functions:
-        is_valid, error_msg, func = validate_reward_function(rf.reward_func, json_sample)
-        if is_valid:
-            valid_reward_functions.append(rf)
-        else:
-            logger.warning(f"Removing invalid reward function: {error_msg}")
-
-    if not valid_reward_functions:
-        raise ValueError("No valid reward functions remain after dataset validation")
-
-    # Update database if any functions were filtered out
-    if len(valid_reward_functions) != len(task.reward_functions):
-        logger.info(f"Filtering reward functions: {len(task.reward_functions)} -> {len(valid_reward_functions)}")
-
-        # Update task object
-        task.reward_functions = valid_reward_functions
-
-        # Update database with filtered reward functions
-        await update_task(task, psql_db)
-
-        return True
-
-    return False
 
 
 def extract_grpo_extra_columns(task: GrpoRawTask) -> list[str]:

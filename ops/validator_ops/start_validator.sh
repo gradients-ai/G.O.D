@@ -83,20 +83,6 @@ pm2 start \
     python -u -m validator.tournament.runner" \
     --name tournament_cycle
 
-# start the dstack orchestrator (separate from tournament_cycle for easier log viewing)
-OTEL_EXPORTER_OTLP_PROTOCOL="http/protobuf" \
-OTEL_EXPORTER_OTLP_ENDPOINT="http://127.0.0.1:4317" \
-OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED="true" \
-OTEL_PYTHON_LOG_CORRELATION="true" \
-pm2 start \
-    "opentelemetry-instrument \
-    --logs_exporter otlp \
-    --traces_exporter none \
-    --metrics_exporter otlp \
-    --service_name dstack_orchestrator \
-    python -u -m validator.tournament.dstack_orchestrator" \
-    --name dstack_orchestrator
-
 # Public subnet API (sn56.io), only where SUBNET_API_PORT is set. See subnet_api/README.md.
 if [ -n "${SUBNET_API_PORT:-}" ]; then
     VALIDATOR_URL="http://127.0.0.1:${VALIDATOR_PORT}" \

@@ -6,7 +6,6 @@ Manual evaluation runs and reward function management.
 
 | Path | Purpose |
 | --- | --- |
-| `add_affine_reward_functions.py` | Adds the affine reward functions through the validator API. |
 | `instruct_eval_container.py` | Runs an instruct evaluation of one model in the evaluation container. |
 | `manual_grpo_eval.py` | Evaluates one model repo on a GRPO task by task id, in the evaluation container. |
 | `manually_add_grpo_rewards.py` | Stores reward functions in the database and marks them as manual. |
