@@ -293,8 +293,12 @@ def calculate_tournament_type_scores_from_data(
     )
 
 
-def exponential_decline_mapping(total_participants: int, rank: float) -> float:
-    """Exponential weight decay based on rank, paying only configured top ranks."""
+def place_weight(total_participants: int, rank: int) -> float:
+    """Share of the tournament emission paid to a place.
+
+    Paid places take their TOURNAMENT_PLACE_SHARES entry, renormalised over the
+    min(total_participants, TOURNAMENT_PAID_RANKS) places that exist. Ties go through tied_place_weight.
+    """
     if total_participants <= 1:
         return 1.0
 
@@ -302,11 +306,14 @@ def exponential_decline_mapping(total_participants: int, rank: float) -> float:
     if rank > paid_ranks:
         return 0.0
 
-    all_weights = [cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (r - 1) for r in range(1, paid_ranks + 1)]
-    total_sum = sum(all_weights)
+    return cts.TOURNAMENT_PLACE_SHARES[rank - 1] / sum(cts.TOURNAMENT_PLACE_SHARES[:paid_ranks])
 
-    raw_weight = cts.TOURNAMENT_SIMPLE_DECAY_BASE ** (rank - 1)
-    return raw_weight / total_sum
+
+def tied_place_weight(total_participants: int, first_rank: int, tied_count: int) -> float:
+    """Weight of each of `tied_count` participants sharing places first_rank..first_rank+tied_count-1:
+    the mean of those places' shares (places beyond the paid ranks count as 0)."""
+    places = range(first_rank, first_rank + tied_count)
+    return sum(place_weight(total_participants, place) for place in places) / tied_count
 
 
 def tournament_scores_to_weights(
@@ -362,15 +369,8 @@ def tournament_scores_to_weights(
     for score in sorted_scores:
         hotkeys_with_score = score_groups[score]
 
-        # Calculate average rank for tied participants
-        if len(hotkeys_with_score) == 1:
-            avg_rank = current_rank
-        else:
-            avg_rank = current_rank + (len(hotkeys_with_score) - 1) / 2
-
-        weight = exponential_decline_mapping(total_participants, avg_rank)
-
-        # Assign same weight to all tied participants
+        # Tied participants split the shares of the places they jointly occupy equally
+        weight = tied_place_weight(total_participants, current_rank, len(hotkeys_with_score))
         for hotkey in hotkeys_with_score:
             weights[hotkey] = weight
 
@@ -455,12 +455,12 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
             resolved = champion if position in shares_to_boss else _resolve_burn_placeholder(hotkey, base_winner)
             if not resolved:
                 continue
-            weights[resolved] = weights.get(resolved, 0.0) + exponential_decline_mapping(total_participants, position)
+            weights[resolved] = weights.get(resolved, 0.0) + place_weight(total_participants, position)
         return weights
 
     final_round = next((round_result for round_result in tournament_data.rounds if round_result.is_final_round), None)
     if final_round is None:
-        return {champion: exponential_decline_mapping(1, 1)} if champion else {}
+        return {champion: place_weight(1, 1)} if champion else {}
 
     finalists: list[str] = []
     for task in final_round.tasks:
@@ -481,7 +481,7 @@ def get_boss_round_pair_weights(tournament_data: TournamentResultsWithWinners | 
         )
 
     total = min(len(paid), _NO_POSITIONS_FALLBACK_MAX_PAID_RANKS)
-    return {hotkey: exponential_decline_mapping(total, rank) for rank, hotkey in enumerate(paid, start=1)}
+    return {hotkey: place_weight(total, rank) for rank, hotkey in enumerate(paid, start=1)}
 
 
 def _compute_weights(tournament_type: TournamentType, data: TournamentResultsWithWinners | None) -> dict[str, float]:

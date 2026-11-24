@@ -22,7 +22,7 @@ from validator.scoring.weights import get_node_weights_from_tournament_audit_dat
 from validator.scoring.weights import get_tournament_burn_details
 from validator.tournament import constants as t_cst
 from validator.tournament import cost_constants
-from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.tournaments import place_weight
 from validator.tournament.models import TournamentAuditData
 from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentParticipant
@@ -151,16 +151,16 @@ def test_quant_pool_pays_the_top_three_final_positions_once_completed():
     node_weights = [0.0] * 4
 
     undistributed = apply_quant_tournament_weights(
-        quant_tournament_weights={"a": 0.76190476, "b": 0.19047619, "c": 0.04761905},
+        quant_tournament_weights={"a": 0.60, "b": 0.30, "c": 0.10},
         hotkey_to_node_id=node_ids,
         all_node_weights=node_weights,
         scaled_quant_tournament_weight=0.35,
     )
 
     assert node_weights[3] == 0.0
-    assert node_weights[0] == pytest.approx(0.76190476 * 0.35)
-    assert node_weights[1] == pytest.approx(0.19047619 * 0.35)
-    assert node_weights[2] == pytest.approx(0.04761905 * 0.35)
+    assert node_weights[0] == pytest.approx(0.60 * 0.35)
+    assert node_weights[1] == pytest.approx(0.30 * 0.35)
+    assert node_weights[2] == pytest.approx(0.10 * 0.35)
     assert undistributed == pytest.approx(0.35 - sum(node_weights), abs=1e-6)
 
 
@@ -285,12 +285,12 @@ async def test_quant_pool_pays_text_placements_until_a_quant_tournament_complete
     weights = await _node_weights(audit, hotkeys)
 
     text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
-    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
-    assert weights["t2"] == pytest.approx(exponential_decline_mapping(3, 2) * text_and_quant)
-    assert weights["t3"] == pytest.approx(exponential_decline_mapping(3, 3) * text_and_quant)
+    assert weights["champ"] == pytest.approx(place_weight(3, 1) * text_and_quant)
+    assert weights["t2"] == pytest.approx(place_weight(3, 2) * text_and_quant)
+    assert weights["t3"] == pytest.approx(place_weight(3, 3) * text_and_quant)
     assert weights["t4"] == 0.0
-    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
-    assert weights["i2"] == pytest.approx(exponential_decline_mapping(2, 2) * audit.image_tournament_weight)
+    assert weights["i1"] == pytest.approx(place_weight(2, 1) * audit.image_tournament_weight)
+    assert weights["i2"] == pytest.approx(place_weight(2, 2) * audit.image_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
@@ -310,8 +310,8 @@ async def test_text_placements_get_only_the_phased_quant_pool_before_a_quant_tou
     weights = await _node_weights(audit, ["champ", "t2", "t3", "t4", "i1", "i2", BURN])
 
     text_and_quant = audit.text_tournament_weight + audit.quant_tournament_weight
-    assert weights["champ"] == pytest.approx(exponential_decline_mapping(3, 1) * text_and_quant)
-    assert weights["i1"] == pytest.approx(exponential_decline_mapping(2, 1) * audit.image_tournament_weight)
+    assert weights["champ"] == pytest.approx(place_weight(3, 1) * text_and_quant)
+    assert weights["i1"] == pytest.approx(place_weight(2, 1) * audit.image_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 
@@ -326,9 +326,9 @@ async def test_quant_pool_pays_its_own_placements_once_a_quant_tournament_comple
     weights = await _node_weights(audit, hotkeys)
 
     for hotkey, position in (("champ", 1), ("t2", 2), ("t3", 3)):
-        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.text_tournament_weight)
+        assert weights[hotkey] == pytest.approx(place_weight(3, position) * audit.text_tournament_weight)
     for hotkey, position in (("q1", 1), ("q2", 2), ("q3", 3)):
-        assert weights[hotkey] == pytest.approx(exponential_decline_mapping(3, position) * audit.quant_tournament_weight)
+        assert weights[hotkey] == pytest.approx(place_weight(3, position) * audit.quant_tournament_weight)
     assert sum(weights.values()) == pytest.approx(1.0)
 
 

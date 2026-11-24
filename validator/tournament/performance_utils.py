@@ -3,7 +3,7 @@ from validator.db.sql.tournaments import get_active_tournament_participants
 from validator.db.sql.tournaments import get_latest_completed_tournament
 from validator.db.sql.tournaments import get_tournament_participants
 from validator.scoring.constants import EMISSION_BURN_HOTKEY
-from validator.scoring.tournaments import exponential_decline_mapping
+from validator.scoring.tournaments import place_weight
 from validator.tournament import constants as t_cst
 from validator.tournament.models import MinerEmissionWeight
 from validator.tournament.models import TournamentAuditData
@@ -110,7 +110,7 @@ async def calculate_tournament_projection(
     if latest_tournament:
         participants = await get_tournament_participants(latest_tournament.tournament_id, psql_db)
         num_participants = len(participants)
-    winner_share = exponential_decline_mapping(max(num_participants, 1), 1)
+    winner_share = place_weight(max(num_participants, 1), 1)
 
     active_participants = await get_active_tournament_participants(psql_db)
     participation_total = len(active_participants) * cts.TOURNAMENT_PARTICIPATION_WEIGHT
@@ -137,7 +137,7 @@ async def calculate_tournament_projection(
         # Below the dethrone threshold the boss defends; the challenger places 2nd
         # and earns the runner-up share of the base pool only
         # until the next tournament's results replace the standings.
-        runner_up_share = exponential_decline_mapping(max(num_participants, 1), 2)
+        runner_up_share = place_weight(max(num_participants, 1), 2)
         runner_up_weight = runner_up_share * base_weight * scale_factor
         initial_weight = runner_up_weight
 

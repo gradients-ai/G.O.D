@@ -30,7 +30,7 @@ SECOND = "5Second"
 THIRD = "5Third"
 BASE = {TEXT: 0.3, QUANT: 0.4, IMAGE: 0.3}
 # Rank-weight ladder over three paid places.
-FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 16 / 21, 4 / 21, 1 / 21
+FIRST_SHARE, SECOND_SHARE, THIRD_SHARE = 0.60, 0.30, 0.10
 
 
 def _completed(tournament_type: TournamentType, winner: str, base_winner: str | None) -> TournamentData:

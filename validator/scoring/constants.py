@@ -41,8 +41,9 @@ PVP_PERF_DIFF_AT_THRESHOLD = 0.10
 
 # Tournament score and weight distribution
 TOURNAMENT_PARTICIPATION_WEIGHT = 0.0001
-TOURNAMENT_PAID_RANKS = 3
-TOURNAMENT_SIMPLE_DECAY_BASE = 0.25
+# Share of a tournament type's emission paid to each place (1st, 2nd, 3rd); sums to 1.
+TOURNAMENT_PLACE_SHARES = (0.60, 0.30, 0.10)
+TOURNAMENT_PAID_RANKS = len(TOURNAMENT_PLACE_SHARES)
 # Guaranteed minimum share per tournament type (text / quant / image). Each type always receives at
 # least this much of the emission pie; the remainder (EMISSION_FLEX_POOL) is split between the
 # types by participation. Also the fallback split's floor when a type has no completed history.
