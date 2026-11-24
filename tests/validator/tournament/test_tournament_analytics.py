@@ -8,6 +8,11 @@ import pytest
 
 from core.models.task_models import TaskType
 from validator.endpoints.tournament_analytics import get_tournament_details
+from validator.scoring.constants import EMISSION_BURN_HOTKEY
+from validator.tournament import round_results
+from validator.tournament.crown import HeadToHead
+from validator.tournament.crown import HeadToHeadOutcome
+from validator.tournament.models import BossComparison
 from validator.tournament.models import BossRankComparison
 from validator.tournament.models import RoundStatus
 from validator.tournament.models import RoundType
@@ -469,3 +474,64 @@ async def test_the_displayed_scores_use_the_stored_boss_rank_comparisons(
     stored.assert_awaited_once_with(MOCK_TOURNAMENT_ID, mock_config.psql_db)
     results_with_winners = mock_tournament_scoring.call_args.args[1]
     assert results_with_winners.boss_rank_comparisons == [comparison]
+
+
+@pytest.mark.asyncio
+async def test_boss_comparisons_are_left_out_where_the_round_plan_is_not_played(
+    mock_config, mock_tournament_sql, mock_task_sql, mock_tournament_scoring, mock_constants
+):
+    with patch("validator.endpoints.tournament_analytics.plays_round_plan", AsyncMock(return_value=False)):
+        details = await get_tournament_details(MOCK_TOURNAMENT_ID, mock_config)
+
+    assert all(task.boss_comparisons is None for round_ in details.rounds for task in round_.tasks)
+
+
+@pytest.mark.asyncio
+async def test_boss_comparisons_report_the_crown_verdict_of_each_miner(
+    mock_config, mock_tournament_sql, mock_task_sql, mock_tournament_scoring, mock_constants
+):
+    """Every scored miner of a finished round 1-3 gets the outcome the crown reads for it."""
+    rounds = [r.model_copy(update={"round_number": 1, "status": RoundStatus.COMPLETED, "is_final_round": False}) for r in MOCK_ROUNDS[:1]]
+    mock_tournament_sql.get_tournament_rounds = AsyncMock(return_value=rounds)
+    mock_tournament_sql.get_tournament_tasks = AsyncMock(
+        return_value=[TournamentTask(tournament_id=MOCK_TOURNAMENT_ID, round_id=rounds[0].round_id, task_id=MOCK_GROUP_TASK_ID)]
+    )
+    comparison = AsyncMock(return_value=[BossComparison(hotkey="5Fqe", outcome="within_larger")])
+    with patch("validator.endpoints.tournament_analytics.plays_round_plan", AsyncMock(return_value=True)), patch(
+        "validator.endpoints.tournament_analytics.round_task_boss_comparisons", comparison
+    ):
+        details = await get_tournament_details(MOCK_TOURNAMENT_ID, mock_config)
+
+    assert details.rounds[0].tasks[0].boss_comparisons == [BossComparison(hotkey="5Fqe", outcome="within_larger")]
+    comparison.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_boss_comparison_does_not_fail_the_endpoint(
+    mock_config, mock_tournament_sql, mock_task_sql, mock_tournament_scoring, mock_constants
+):
+    rounds = [r.model_copy(update={"round_number": 1, "status": RoundStatus.COMPLETED, "is_final_round": False}) for r in MOCK_ROUNDS[:1]]
+    mock_tournament_sql.get_tournament_rounds = AsyncMock(return_value=rounds)
+    mock_tournament_sql.get_tournament_tasks = AsyncMock(
+        return_value=[TournamentTask(tournament_id=MOCK_TOURNAMENT_ID, round_id=rounds[0].round_id, task_id=MOCK_GROUP_TASK_ID)]
+    )
+    with patch("validator.endpoints.tournament_analytics.plays_round_plan", AsyncMock(side_effect=RuntimeError("db"))):
+        details = await get_tournament_details(MOCK_TOURNAMENT_ID, mock_config)
+
+    assert details.rounds[0].tasks[0].boss_comparisons is None
+
+
+@pytest.mark.asyncio
+async def test_round_task_boss_comparisons_use_the_crown_head_to_head_of_each_miner():
+    outcomes = {"5A": HeadToHeadOutcome.WIN, "5B": HeadToHeadOutcome.BEYOND}
+
+    async def head_to_head(tournament_type, task_id, label, task_type, hotkey, psql_db):
+        return HeadToHead(task_id=task_id, label=label, task_type=task_type, outcome=outcomes[hotkey])
+
+    task_object = type("T", (), {"task_type": TaskType.INSTRUCTTEXTTASK})()
+    with patch.object(round_results, "_task_head_to_head", head_to_head):
+        compared = await round_results.round_task_boss_comparisons(
+            MOCK_TOURNAMENT, MOCK_GROUP_TASK_ID, task_object, ["5A", EMISSION_BURN_HOTKEY, "5B"], None
+        )
+
+    assert compared == [BossComparison(hotkey="5A", outcome="win"), BossComparison(hotkey="5B", outcome="beyond")]

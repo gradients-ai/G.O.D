@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import math
 import random
@@ -48,6 +49,7 @@ from validator.tournament.crown import is_text_big_task
 from validator.tournament.crown import is_valid_score
 from validator.tournament.crown import text_head_to_head
 from validator.tournament.crown import text_needs_paired_test
+from validator.tournament.models import BossComparison
 from validator.tournament.models import BossRoundDrawResolution
 from validator.tournament.models import BossRoundTaskVerdict
 from validator.tournament.models import ContinuousSftLineageOutcome
@@ -998,6 +1000,33 @@ async def _task_head_to_head(
     if tournament_type == TournamentType.IMAGE:
         return await image_task_head_to_head(task_id, label, challenger_hotkey, psql_db)
     return await text_task_head_to_head(task_id, label, task_type, challenger_hotkey, psql_db)
+
+
+async def round_task_boss_comparisons(
+    tournament: TournamentData, task_id: str, task_object, hotkeys: list[str], psql_db: PSQLDB
+) -> list[BossComparison]:
+    """Each miner's head-to-head against the boss on the one task of a round 1-3, read from stored results.
+
+    The same functions the crown reads for the last contender (quant_task_head_to_head, text_task_head_to_head,
+    image_task_head_to_head), run for every given miner. A miner whose task cannot be decided (an image task with missing
+    evaluation data) is left out.
+    """
+
+    async def compare(hotkey: str) -> BossComparison | None:
+        label = f"round task of {hotkey}"
+        try:
+            if tournament.tournament_type == TournamentType.QUANT:
+                head_to_head = await quant_task_head_to_head(task_id, label, task_object, hotkey, psql_db)
+            else:
+                head_to_head = await _task_head_to_head(
+                    tournament.tournament_type, task_id, label, task_object.task_type, hotkey, psql_db
+                )
+        except CrownEvaluationFault:
+            return None
+        return BossComparison(hotkey=hotkey, outcome=head_to_head.outcome.value)
+
+    compared = await asyncio.gather(*[compare(hotkey) for hotkey in hotkeys if hotkey != EMISSION_BURN_HOTKEY])
+    return [comparison for comparison in compared if comparison is not None]
 
 
 async def round_head_to_heads(tournament: TournamentData, challenger_hotkey: str, psql_db: PSQLDB) -> list[HeadToHead]:
