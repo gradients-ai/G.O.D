@@ -40,6 +40,7 @@ from validator.tournament.models import ActiveTournamentInfo
 from validator.tournament.models import ActiveTournamentParticipant
 from validator.tournament.models import ActiveTournamentsResponse
 from validator.tournament.models import BenchmarkTimelineResponse
+from validator.tournament.models import BossComparison
 from validator.tournament.models import DetailedTournamentRoundResult
 from validator.tournament.models import DetailedTournamentTaskScore
 from validator.tournament.models import LatestTournamentsDetailsResponse
@@ -53,11 +54,14 @@ from validator.tournament.models import TournamentHistoryEntry
 from validator.tournament.models import TournamentHistoryResponse
 from validator.tournament.models import TournamentParticipant
 from validator.tournament.models import TournamentResultsWithWinners
+from validator.tournament.models import RoundStatus
 from validator.tournament.models import TournamentStatus
 from validator.tournament.models import TournamentType
 from validator.tournament.models import WeeklyTournamentGpuCostsResponse
 from validator.tournament.performance_calculator import calculate_boss_round_performance_differences
 from validator.tournament.performance_calculator import get_tournament_performance_data
+from validator.tournament.round_results import plays_round_plan
+from validator.tournament.round_results import round_task_boss_comparisons
 from validator.tournament.thresholds import summarise_paired_examples
 from validator.tournament.tournament_manager import _calculate_next_tournament_start_time
 from validator.tournament.tournament_manager import _get_tournament_schedule
@@ -114,6 +118,30 @@ async def _get_paired_example_wins(
     if task_details.task_type in QUANT_TASK_TYPES:
         return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db, task_type=task_details.task_type)
     return await summarise_paired_examples(task_id, eligible[0], eligible[1], psql_db)
+
+
+async def _get_boss_comparisons(
+    tournament, round_data, tasks, task_details, participant_scores: list[dict], psql_db
+) -> list[BossComparison] | None:
+    """Each scored miner's head-to-head against the boss on the one task of a finished round 1-3 of a tournament that plays
+    the round plan (the verdict the crown uses), or None anywhere else or when it cannot be read.
+
+    Reporting only: a failure here leaves the field out and never fails the endpoint.
+    """
+    if tournament.tournament_type == TournamentType.ENVIRONMENT:
+        return None
+    if round_data.status != RoundStatus.COMPLETED or round_data.is_final_round or len(tasks) != 1 or task_details is None:
+        return None
+    if round_data.round_number not in {spec.round_number for spec in tourn_cst.round_plan(tournament.tournament_type)}:
+        return None
+    try:
+        if not await plays_round_plan(tournament, psql_db):
+            return None
+        hotkeys = [score[db_cst.HOTKEY] for score in participant_scores]
+        return await round_task_boss_comparisons(tournament, str(tasks[0].task_id), task_details, hotkeys, psql_db) or None
+    except Exception as e:
+        logger.warning(f"Failed to get boss comparisons for round {round_data.round_id}: {e}")
+        return None
 
 
 GET_TOURNAMENT_DETAILS_ENDPOINT = "/v1/tournaments/{tournament_id}/details"
@@ -206,6 +234,10 @@ async def get_tournament_details(
                         ]
                     )
 
+                boss_comparisons = await _get_boss_comparisons(
+                    tournament, round_data, tasks, task_details_results[0], scores_results[0], config.psql_db
+                )
+
                 for i, task in enumerate(tasks):
                     task_details = task_details_results[i]
                     participant_scores = scores_results[i]
@@ -250,6 +282,7 @@ async def get_tournament_details(
                         pvp_pair_results=pvp_pair_results,
                         pvp_individual_scores=pvp_individual_scores,
                         paired_example_wins=paired_wins_results[i],
+                        boss_comparisons=boss_comparisons,
                     )
                     detailed_tasks.append(detailed_task)
 

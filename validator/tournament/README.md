@@ -124,6 +124,8 @@ So a crown is one of three results:
 
 Any other set of head-to-heads leaves the boss in place.
 
+The tournament details endpoint also reports, for every miner scored on the task of a finished round 1-3, its head-to-head outcome against the boss (`boss_comparisons`, a `crown.HeadToHeadOutcome` value), read the same way as the challenger's.
+
 What a win is depends on the task. A non-win is banded the same way on every task, on the compared value alone (score, scalar loss or effective bytes): the paired test and the reason the task was not won do not move it. The constants that hold each tournament's numbers, all in `constants.py`:
 
 | Tournament | Task | Win | Non-win bands |
