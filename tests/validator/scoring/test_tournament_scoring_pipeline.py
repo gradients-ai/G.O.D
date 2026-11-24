@@ -335,6 +335,13 @@ class TestPlaceWeight:
         assert place_weight(2, 2) == pytest.approx(1 / 3)
         assert place_weight(2, 3) == 0.0
 
+    @pytest.mark.parametrize("rank", [0, -1, 1.5])
+    def test_invalid_rank_raises(self, rank):
+        with pytest.raises(ValueError):
+            place_weight(3, rank)
+        with pytest.raises(ValueError):
+            place_weight(1, rank)
+
     def test_tied_places_share_the_mean(self):
         assert tied_place_weight(5, 1, 2) == pytest.approx(0.45)
         assert tied_place_weight(5, 3, 3) == pytest.approx(0.10 / 3)

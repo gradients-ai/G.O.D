@@ -1233,7 +1233,7 @@ async def get_knockout_winners(
         def _is_continuous_sft(task_obj) -> bool:
             return task_obj is not None and t_cst.is_continuous_sft_task(task_obj)
 
-        def _award(winner: str | None, task_obj) -> None:
+        def _award(winner: str | None) -> None:
             task_winners.append(winner)
 
         def _record_draw(task_id: str, task_obj) -> None:
@@ -1312,7 +1312,7 @@ async def get_knockout_winners(
             miner_results = await get_task_results_for_ranking(task.task_id, psql_db)
             if not miner_results:
                 logger.warning(f"No valid results for boss round task {task.task_id}. Winner is base contestant.")
-                _award(boss_hotkey, task_object)
+                _award(boss_hotkey)
                 continue
 
             ranked_results = calculate_miner_ranking_and_scores(miner_results)
@@ -1341,13 +1341,13 @@ async def get_knockout_winners(
 
                 if opponent_training_success and not boss_training_success:
                     logger.info(f"Boss training failed, opponent succeeded - opponent wins task {task.task_id}")
-                    _award(opponent_hotkey, task_object)
+                    _award(opponent_hotkey)
                 elif boss_training_success and not opponent_training_success:
                     logger.info(f"Opponent training failed, boss succeeded - boss wins task {task.task_id}")
-                    _award(boss_hotkey, task_object)
+                    _award(boss_hotkey)
                 elif not boss_training_success and not opponent_training_success:
                     logger.info(f"Both training failed - boss wins by default for task {task.task_id}")
-                    _award(boss_hotkey, task_object)
+                    _award(boss_hotkey)
                 else:
                     # Both training succeeded but at least one has missing/invalid evaluation results
                     # Check who has valid evaluation results and award to them
@@ -1356,10 +1356,10 @@ async def get_knockout_winners(
 
                     if opponent_has_valid_eval and not boss_has_valid_eval:
                         logger.info(f"Boss evaluation failed, opponent succeeded - opponent wins task {task.task_id}")
-                        _award(opponent_hotkey, task_object)
+                        _award(opponent_hotkey)
                     elif boss_has_valid_eval and not opponent_has_valid_eval:
                         logger.info(f"Opponent evaluation failed, boss succeeded - boss wins task {task.task_id}")
-                        _award(boss_hotkey, task_object)
+                        _award(boss_hotkey)
                     else:
                         logger.warning(
                             f"Both evaluation failed or both succeeded but missing results - skipping task {task.task_id}"
@@ -1381,7 +1381,7 @@ async def get_knockout_winners(
             if verdict.is_draw:
                 _record_draw(task.task_id, task_object)
             else:
-                _award(verdict.winner_hotkey, task_object)
+                _award(verdict.winner_hotkey)
 
             # Persisted even for a draw: the score row still needs a holder, and the reason says it
             # was a draw. Only the dethrone tally ignores it.

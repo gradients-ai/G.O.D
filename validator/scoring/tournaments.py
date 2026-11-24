@@ -299,6 +299,8 @@ def place_weight(total_participants: int, rank: int) -> float:
     Paid places take their TOURNAMENT_PLACE_SHARES entry, renormalised over the
     min(total_participants, TOURNAMENT_PAID_RANKS) places that exist. Ties go through tied_place_weight.
     """
+    if not isinstance(rank, int) or rank < 1:
+        raise ValueError(f"rank must be an int >= 1, got {rank!r}")
     if total_participants <= 1:
         return 1.0
 

@@ -380,7 +380,7 @@ Compression always gets its 0.35 minimum. Its part of the floating 0.25 phases i
 | Three | 60% | 30% | 10% |
 | Two | 66.7% | 33.3% | |
 
-The shares are 60%, 30% and 10%. When the tournament has no third-place miner, the two paid places split the total in the ratio 60:30. Miners tied on a place share the mean of the places they jointly occupy.
+The shares are 60%, 30% and 10%. When the tournament has no third-place miner, the two paid places split the total in the ratio 60:30.
 
 ### Other rules
 

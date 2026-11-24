@@ -1067,8 +1067,8 @@ async def create_boss_round_decider_tasks(
 
     Each decider mirrors the type that drew, so the boss round keeps the mix it was built with -
     except a drawn continuous-SFT task, which the caller maps to a plain instruct task on a fresh
-    dataset pull. A drawn lineage has already cleared its own dethrone gate, so a second chunk of it
-    would buy nothing while putting two tasks on one sequential train_index.
+    dataset pull, because a second chunk of the lineage would put two tasks on one sequential
+    train_index and leave the chain's carry-forward ambiguous.
 
     Nodes are deliberately not copied from the drawn task: the round returns to PENDING and
     assign_nodes_to_tournament_tasks assigns both sides afresh, which gives each decider its own
@@ -1321,7 +1321,7 @@ async def replace_tournament_task(
             # Same lineage, same carried base model; the content service re-materializes the chunk
             # at fresh S3 URLs. Without this branch, create_new_task_of_same_type has no CHATTASK
             # route and would fall through to a random-model instruct task, dropping the lineage
-            # from the boss round and weakening the win-all-continuous-SFT dethrone gate.
+            # from the boss round and its carry-forward chain.
             lineage = t_cst.continuous_sft_lineage_from_ds(original_task_obj.ds)
             seed_model = t_cst.continuous_sft_seed_repo(lineage)
             if not lineage or not seed_model:

@@ -532,10 +532,9 @@ class BossRoundDrawResolution(BaseModel):
 
     drawn_task_ids: list[str] = Field(default_factory=list)
     # Task types to add, one per drawn task, mirroring what drew - except continuous-SFT, which is
-    # stood in for by a plain instruct task on a fresh dataset pull. A drawn lineage has already
-    # cleared its own dethrone gate (a draw satisfies it), so its decider exists only to top the
-    # tally back up; adding a second continuous-SFT task on that lineage would instead put two
-    # tasks on one sequential train_index and leave the chain's carry-forward ambiguous.
+    # stood in for by a plain instruct task on a fresh dataset pull. The decider exists only to top
+    # the tally back up; adding a second continuous-SFT task on that lineage would put two tasks
+    # on one sequential train_index and leave the chain's carry-forward ambiguous.
     decider_task_types: list[TaskType] = Field(default_factory=list)
     # False once deciders have already been added for this round, which caps them at one per drawn
     # task. A decider that itself draws is simply excluded and the round resolves on what is left.
