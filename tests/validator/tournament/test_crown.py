@@ -48,7 +48,7 @@ def _paired(challenger_won: bool = True, is_draw: bool = False) -> PairedLossCom
         boss_example_wins=10 if challenger_won else 90, win_rate=0.9 if challenger_won else 0.1,
         win_rate_lower_bound=0.8 if challenger_won else 0.05, mean_gap_nats=0.1, mean_gap_lower_bound=0.05,
         challenger_won=challenger_won and not is_draw, is_draw=is_draw, reason="scripted", required_win_rate=0.6,
-        required_mean_gap_nats=0.01,
+        required_mean_gap_nats=0.01, deadzone_nats=0.01,
     )  # fmt: skip
 
 

@@ -319,3 +319,57 @@ def test_optional_settings_are_namespaced(monkeypatch: pytest.MonkeyPatch) -> No
     settings = Settings.from_env()
     assert settings.cache_seconds == 5
     assert settings.cors_origins == ("https://sn56.io", "https://gradients.io")
+
+
+PAIRED = {
+    "n_examples": 100,
+    "n_decided": 80,
+    "challenger_example_wins": 50,
+    "boss_example_wins": 30,
+    "win_rate": 0.625,
+    "win_rate_lower_bound": 0.55,
+    "mean_gap_nats": 0.02,
+    "mean_gap_lower_bound": 0.01,
+    "challenger_won": True,
+    "is_draw": False,
+    "reason": "won",
+    "required_win_rate": 0.6,
+    "required_mean_gap_nats": 0.01,
+    "deadzone_nats": 0.005,
+}
+
+
+@pytest.mark.asyncio
+async def test_tournament_details_pass_the_paired_detail_through() -> None:
+    task = {
+        "task_id": TASK_ID,
+        "participant_scores": [],
+        "paired_example_wins": {
+            "hotkey_a": "a", "hotkey_b": "b", "hotkey_a_wins": 3, "hotkey_b_wins": 2, "ties": 1, "n_examples": 6,
+            "deadzone_nats": 0.005, "internal": "dropped",
+        },  # fmt: skip
+        "boss_comparisons": [
+            {"hotkey": "a", "outcome": "win", "paired": PAIRED},
+            {"hotkey": "b", "outcome": "beyond", "paired": None},
+        ],
+    }
+    round_ = {"round_id": "r1", "round_number": 1, "round_type": "knockout", "is_final_round": False, "status": "completed", "tasks": [task]}
+    details = DETAILS | {
+        "rounds": [round_],
+        "boss_round_performance": [
+            {
+                "task_id": TASK_ID, "task_type": "InstructTextTask", "threshold_used": 0.01, "challenger_won": True,
+                "paired_comparison": PAIRED,
+            }
+        ],
+    }  # fmt: skip
+    validator = FakeValidator()
+    validator.respond("/v1/tournaments/tourn_abc/details", json=details)
+    async with client(validator) as api:
+        body = (await api.get("/tournament/tourn_abc/details")).json()
+
+    served = body["rounds"][0]["tasks"][0]
+    assert served["paired_example_wins"]["deadzone_nats"] == 0.005 and "internal" not in served["paired_example_wins"]
+    assert served["boss_comparisons"][0]["paired"] == PAIRED
+    assert served["boss_comparisons"][1]["paired"] is None
+    assert body["boss_round_performance"][0]["paired_comparison"] == PAIRED

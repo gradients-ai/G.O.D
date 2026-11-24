@@ -479,6 +479,8 @@ class PairedLossComparison(BaseModel):
     # which constants were in force when the round ran.
     required_win_rate: float
     required_mean_gap_nats: float
+    # The per-example tie dead zone the verdict was judged with.
+    deadzone_nats: float
 
 
 class BossComparison(BaseModel):
