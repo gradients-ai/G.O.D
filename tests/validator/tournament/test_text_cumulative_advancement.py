@@ -180,13 +180,15 @@ async def test_third_place_is_the_runner_up_of_the_cumulative_standings(tourname
     # Round 3's task alone ranks C, B, A; cumulative: A (1+1+3)/3, B (2+2+2)/3, C (3+3+1)/3. Challenger A, third B.
     tournament({1: cohort, 2: cohort, 3: ["C", "B", "A"]}, {1: cohort, 2: cohort, 3: cohort})
 
-    assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"
+    text = TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT)
+    assert await rr.get_planned_runner_up(text, "A", None) == "B"
 
 
 @pytest.mark.asyncio
 async def test_round_two_drops_advancing_miners_that_can_no_longer_finish_top(tournament):
     miners = list("ABCDE")
-    # R1 ranks A1 B2 C3 D4 E5, R2 ranks A1 C2 E3 D4 B5: sums A2 C5 B7 D8 E8. D and E tie on 8 for the fourth slot; after the top-4 cut
+    # R1 ranks A1 B2 C3 D4 E5, R2 ranks A1 C2 E3 D4 B5: sums A2 C5 B7 D8 E8.
+    # D and E tie on 8 for the fourth slot; after the top-4 cut
     # only A can still finish top or joint top over three rounds.
     tournament({1: miners, 2: ["A", "C", "E", "D", "B"]}, {1: miners, 2: miners})
     ordered = await rr.planned_round_ordered_hotkeys(_round(2), await rr.get_tournament_tasks("r2", None), None)
@@ -220,4 +222,5 @@ async def test_third_place_after_a_lone_round_three_survivor_is_the_best_of_the_
     # round 2 on the round 1 and 2 standings.
     tournament({1: miners, 2: miners, 3: ["A"]}, {1: miners, 2: miners, 3: ["A"]})
 
-    assert await rr.get_planned_runner_up(TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT), "A", None) == "B"
+    text = TournamentData(tournament_id=TID, tournament_type=TournamentType.TEXT)
+    assert await rr.get_planned_runner_up(text, "A", None) == "B"
