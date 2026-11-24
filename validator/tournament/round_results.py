@@ -1586,6 +1586,11 @@ async def find_groups_with_no_valid_scores(
     silent `continue` in the winner functions below would just drop the group and advance a
     smaller field. Callers use this to refuse advancement instead.
 
+    A group whose every challenger's own training failed is not flagged: a failed training is a result (the miner lost),
+    not lost data, so the round resolves with no winner from it. This is what lets a lone round-3 survivor whose training
+    fails end the tournament with the boss retained. A group with any challenger whose training did not fail and that has
+    no usable score is flagged: its evaluation is missing.
+
     Knockout rounds are decided per-pair rather than per-group, so they are not covered here.
     """
     if completed_round.round_type != RoundType.GROUP:
@@ -1611,6 +1616,11 @@ async def find_groups_with_no_valid_scores(
             result.hotkey in challengers and result.adjusted_loss is not None and not np.isnan(result.adjusted_loss)
             for result in ranked_results
         )
+
+        if not has_valid_score and challengers:
+            statuses = await get_training_status_for_task_and_hotkeys(task.task_id, sorted(challengers), psql_db)
+            if all(statuses.get(hotkey) == TrainingStatus.FAILURE for hotkey in challengers):
+                continue
 
         if not has_valid_score:
             empty_groups.append(
@@ -1980,6 +1990,10 @@ def _best_margin(sums: dict[str, int], hotkey: str) -> int:
 
     Zero or below means the member can finish top or joint top. R1+R2 rank sums are ``sums``; every
     permutation of R3 ranks is tried, so the best case is exact whatever the tie-break.
+
+    Only rank sums are compared. The real standings also sort a miner with a missing result behind every clean miner, so a
+    member with a missing result can be kept although it cannot finish top unless every clean miner also fails. That errs
+    towards keeping a miner, never towards dropping one that could still win.
     """
     others = [other for other in sums if other != hotkey]
     members = [hotkey, *others]
@@ -2174,7 +2188,7 @@ async def get_planned_group_winners(
     completed_round: TournamentRoundData, round_tasks: list[TournamentTask], tournament_type: TournamentType, psql_db: PSQLDB
 ) -> list[str]:
     """Winners of a seeded text or planned image tournament's single-group round: the top advance of the tournament's round
-    plan among its members by planned_round_ordered_hotkeys. After text round 2 the round-3 viability cut then drops every
+    plan among its members by planned_round_ordered_hotkeys. After round 2 of a text or image tournament the round-3 viability cut then drops every
     miner that can no longer finish top or joint top (round3_viable_winners), as in compression."""
     advance = next(
         spec.advance for spec in t_cst.round_plan(tournament_type) if spec.round_number == completed_round.round_number

@@ -24,6 +24,7 @@ from validator.tournament.models import TournamentData
 from validator.tournament.models import TournamentRoundData
 from validator.tournament.models import TournamentTask
 from validator.tournament.models import TournamentType
+from validator.tournament.models import TrainingStatus
 
 
 TID = "imgtourn"
@@ -73,6 +74,7 @@ class ImageWorld:
         monkeypatch.setattr(rr, "get_tournament_tasks", fake_tasks)
         monkeypatch.setattr(rr, "get_tournament_group_members", fake_members)
         monkeypatch.setattr(rr, "get_tournament", AsyncMock(return_value=tournament))
+        monkeypatch.setattr(rr, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={}))
         monkeypatch.setattr(rr, "is_planned_image_tournament", AsyncMock(side_effect=lambda *_: self.planned))
         self.tournament = tournament
 
@@ -214,13 +216,58 @@ class TestAdvancement:
 
         assert sorted(await world.winners(2)) == ["A", "B"]
 
-    async def test_rounds_one_and_three_are_not_viability_filtered(self, world):
+    async def test_rounds_one_and_three_are_not_viability_filtered(self, world, monkeypatch):
         miners = MINERS[:9]
         for number in (1, 2, 3):
             world.play_in_order(number, miners)
+        cut = AsyncMock(side_effect=lambda *args: args[2])
+        monkeypatch.setattr(rr, "round3_viable_winners", cut)
 
         assert await world.winners(1) == miners[:8]
         assert await world.winners(3) == miners[:1]
+        cut.assert_not_awaited()
+        await world.winners(2)
+        cut.assert_awaited_once()
+
+    async def test_round_two_cuts_to_the_top_four_before_viability(self, world):
+        miners = list("ABCDE")
+        # Every miner sums 6 over R1+R2, so all five are level and all stay viable; the top-4 cut alone removes one.
+        world.play_in_order(1, miners)
+        world.play_in_order(2, list(reversed(miners)), members=miners)
+
+        winners = await world.winners(2)
+
+        assert len(winners) == 4 and set(winners) < set(miners)
+
+    async def test_a_round_two_field_smaller_than_four_all_advance_when_all_are_viable(self, world):
+        miners = list("ABC")
+        world.play_in_order(1, miners)
+        world.play_in_order(2, list(reversed(miners)), members=miners)
+
+        assert sorted(await world.winners(2)) == miners
+
+    async def test_a_lone_round_three_survivor_whose_training_failed_still_advances_and_the_round_is_not_refused(
+        self, world, monkeypatch
+    ):
+        world.play_in_order(1, list("ABCD"))
+        world.play_in_order(2, list("ABCD"))
+        world.play(3, ["A"], {BOSS: BEST, "A": None})
+        monkeypatch.setattr(
+            rr, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={"A": TrainingStatus.FAILURE})
+        )
+
+        assert await world.winners(3) == ["A"]
+        assert await rr.find_groups_with_no_valid_scores(_round(3), None) == []
+
+    async def test_a_lone_round_three_survivor_with_no_evaluation_is_still_refused(self, world, monkeypatch):
+        world.play_in_order(1, list("ABCD"))
+        world.play_in_order(2, list("ABCD"))
+        world.play(3, ["A"], {BOSS: BEST, "A": None})
+        monkeypatch.setattr(
+            rr, "get_training_status_for_task_and_hotkeys", AsyncMock(return_value={"A": TrainingStatus.SUCCESS})
+        )
+
+        assert [group.group_id for group in await rr.find_groups_with_no_valid_scores(_round(3), None)] == ["g3"]
 
     async def test_a_trained_miner_with_no_valid_result_ranks_last_and_is_dropped(self, world):
         miners = list("ABCDE")
@@ -309,6 +356,18 @@ class TestRunnerUp:
         world.play_in_order(3, ["A"])
 
         assert await rr.get_planned_runner_up(world.tournament, "A", None) == "B"
+
+    async def test_the_third_place_fallback_uses_the_round_two_advance_count(self, world, monkeypatch):
+        miners = list("ABCDE")
+        for number in (1, 2):
+            world.play_in_order(number, miners)
+        world.play_in_order(3, ["A"])
+        advance_set = AsyncMock(return_value=["A", "B"])
+        monkeypatch.setattr(rr, "_round_two_advance_set_ordered_hotkeys", advance_set)
+
+        await rr.get_planned_runner_up(world.tournament, "A", None)
+
+        assert advance_set.await_args.args[2] == next(s.advance for s in t_cst.IMAGE_ROUND_PLAN if s.round_number == 2) == 4
 
     async def test_there_is_none_when_round_three_was_not_played(self, world):
         world.play_in_order(1, ["A", "B", "C"])

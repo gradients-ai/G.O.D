@@ -41,7 +41,7 @@ Source: [`TEXT_ROUND_PLAN`](../validator/tournament/constants.py).
 
 - Models are drawn from the standard pool, the validator's list of supported language models, within the round's size band, among models that can also be compressed.
 - Round 1 advances on its task, ordered by [task score](#scoring). Rounds 2 and 3 advance on average rank over every round played so far, ranked among the surviving miners.
-- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. Round 3 can therefore have fewer miners than advanced from round 2, down to one.
+- Viability cut: the miners that advance from round 2 are checked against every possible round-3 ranking. A miner that no ranking could place first or joint first on average rank is dropped. The check repeats among the remaining miners, with ranks retaken within them, until it no longer drops anyone. Round 3 can therefore have fewer miners than advanced from round 2, down to one.
 - With fewer miners than slots, all advance.
 - A miner with no valid result on a task ranks behind every miner with one on it. A miner missing a result in any round sorts below every miner with a result in all rounds.
 - Ties on average rank are broken as in [Advancing](miner.md#advancing).
