@@ -102,7 +102,9 @@ Written by `task config`:
 | `TRAINER_API_KEY` | `validator/infrastructure/trainer_auth.py` | Shared key sent as the `X-Trainer-Auth` header on every request to a trainer. Every trainer must have the same value in its `.trainer.env`. Generated for you. |
 | `REFRESH_NODES` | `validator/app/config.py` | Whether to refresh nodes from the metagraph. |
 | `DISCORD_WEBHOOK` | `validator/app/config.py` | Optional webhook for alerts. |
-| `IMAGE_BUILD_WOODPECKER_URL`, `IMAGE_BUILD_WOODPECKER_TOKEN`, `IMAGE_BUILD_WOODPECKER_REPO_ID`, `IMAGE_BUILD_SNAPSHOT_REPO`, `IMAGE_BUILD_SNAPSHOT_TOKEN`, `IMAGE_BUILD_REGISTRY`, `IMAGE_BUILD_REGISTRY_USERNAME`, `IMAGE_BUILD_REGISTRY_PASSWORD` | `validator/tournament/image_builds.py` | Optional. Build tournament images once on the image build box. All must be set; otherwise trainers build each job's image. See [ops/image_builder/README.md](../ops/image_builder/README.md#validator-settings). |
+| `IMAGE_BUILD_WOODPECKER_URL`, `IMAGE_BUILD_WOODPECKER_TOKEN`, `IMAGE_BUILD_WOODPECKER_REPO_ID` | `validator/tournament/image_builds.py` | Optional, with the five below: build tournament images once on the [image build box](../ops/image_builder/README.md). All eight must be set; otherwise trainers build each job's image. `https://<box>`, its Woodpecker API token, and the repo id `setup.sh configure-repo` prints. |
+| `IMAGE_BUILD_SNAPSHOT_REPO`, `IMAGE_BUILD_SNAPSHOT_TOKEN` | `validator/tournament/image_builds.py` | The private snapshot repo (`https://github.com/<owner>/<repo>.git`) and a token with read and write on it. |
+| `IMAGE_BUILD_REGISTRY`, `IMAGE_BUILD_REGISTRY_USERNAME`, `IMAGE_BUILD_REGISTRY_PASSWORD` | `validator/tournament/image_builds.py` | `<box>:5000`, and the read-only `trainer` login (`state/trainer.pass` on the box), to read image digests. |
 
 Added by hand:
 
