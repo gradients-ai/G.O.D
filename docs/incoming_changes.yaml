@@ -21,28 +21,56 @@
 
 changes:
   - id: threshold-recalibration
-    title: Threshold recalibration
+    title: Threshold recalibration and reward split
     summary: >-
-      A challenger currently has to beat the boss by 1% in text and image tournaments and by 3% in freeform
-      compression tournaments, and a freeform compression submission must stay within 1.04 times the reference
-      model's loss. These thresholds are being re-measured. The investigation covers three things:
-      how much scores vary between runs of the boss's own code with different seeds, for each task type; the
-      score gap at which people can see a difference between two models' outputs; and whether boss changes
-      under past text thresholds (4%, then 3%, now 1%) show steady progress or wins by noise, using
-      repository comparisons of past submissions where they are still available. Results are due by
-      30 November 2026, and any new thresholds take effect on this date. One option being considered is a
-      higher threshold together with a smaller share of emissions for the boss and a larger share for second
-      and third place.
+      A challenger has to beat the boss by 1% in text and image tournaments. We re-measured whether that
+      threshold is right, looking at three things: how much scores vary between runs of the boss's own code
+      with different seeds, for each task type; the score gap at which people can see a difference between two
+      models' outputs; and whether boss changes under past text thresholds (5%, then 4%, 3% and now 1%) show
+      steady progress or wins by noise. The experiments found that a 1% difference in text and image is already
+      below the point where people can see a change in the outputs, so lowering the threshold further would
+      crown bosses without meaningfully improving the model customers receive. The 1% threshold will
+      therefore stay. Instead, a larger share of each track's emissions will go to second and third place, and
+      emissions will be redistributed between the text, image and compression tracks through an increase in dynamic
+      allocation. We will also reduce the bar to beating the text boss by revamping the GRPO task (see "GRPO
+      task revamp") and by no longer requiring a challenger to win the continuous training task to be crowned,
+      only 5 of the 7 boss-round tasks.
     why: >-
       A boss should change only when a challenger is meaningfully better. A threshold inside run-to-run noise
       lets the boss change hands with little or no real improvement, while one set too high leaves real progress
-      unrewarded. Calibrating against measured noise and visible differences in output quality aims to reward
-      real progress and keep participation high without rewarding noise.
+      unrewarded. With the threshold already at the limit of what people can see, the way to keep participation
+      high is to reward close competition directly, by paying second and third place more and by lowering
+      the bar to beating the text boss.
     areas: [text, image, compression]
     status: in_progress
     date: 2026-12-07
     miner_action: >-
-      Nothing beyond adjusting to the new thresholds and reward split once they are published.
+      Nothing. Expect larger rewards for second and third place, shifted emissions between tracks, and text boss
+      rounds decided by 5 of the 7 tasks with the continuous training task no longer required.
+    prs: []
+    docs: []
+    shipped_on: null
+
+  - id: grpo-revamp
+    title: GRPO task revamp
+    summary: >-
+      The GRPO task in text tournaments will be restructured. Tasks will be able to include pre-generated
+      rollouts with their rewards as training input, alongside the prompts. Reward functions will vary more from
+      task to task and will be chosen to suit the dataset each task is drawn from, so that they measure what is
+      useful for that data rather than applying the same generic checks everywhere. GRPO will also become the
+      final task of round 3, the one that decides who goes through to the boss round. A later follow-up being
+      considered would score the rollouts a submitted model produces during evaluation directly.
+    why: >-
+      GRPO research has moved on since the task was last updated, and we want to expand what we offer
+      customers in this direction. Rollouts as training input and rewards matched to each dataset bring the
+      task in line with how GRPO is used now.
+    areas: [text]
+    status: planned
+    date: 2026-12-14
+    miner_action: >-
+      Before this date, update your GRPO pipeline to accept rollouts with rewards as training input when a task
+      includes them, and stop relying on a fixed set of reward functions: read each task's reward functions from
+      the task and test against a range of them.
     prs: []
     docs: []
     shipped_on: null
