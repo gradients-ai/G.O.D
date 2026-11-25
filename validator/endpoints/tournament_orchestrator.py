@@ -7,6 +7,7 @@ from fastapi import Response
 from core.logging import get_logger
 from core.models.trainer_contract_models import GPUInfo
 from validator.app.config import Config
+from validator.app.dependencies import get_admin_api_key
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db.sql import tournaments as tournament_sql
@@ -51,13 +52,13 @@ async def add_trainer(
 
     except httpx.RequestError as e:
         logger.error(f"Failed to contact trainer {trainer_ip}: {str(e)}")
-        raise HTTPException(status_code=503, detail=f"Failed to contact trainer: {str(e)}")
+        raise HTTPException(status_code=503, detail="Failed to contact trainer")
     except httpx.HTTPStatusError as e:
         logger.error(f"Trainer {trainer_ip} returned error status: {e.response.status_code}")
         raise HTTPException(status_code=502, detail=f"Trainer returned error: {e.response.status_code}")
     except Exception as e:
-        logger.error(f"Unexpected error adding trainer {trainer_ip}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception(f"Unexpected error adding trainer {trainer_ip}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def remove_trainer(
@@ -73,8 +74,8 @@ async def remove_trainer(
         return Response(content="Trainer removed successfully", status_code=200)
 
     except Exception as e:
-        logger.error(f"Error removing trainer {trainer_ip}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception(f"Error removing trainer {trainer_ip}: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def get_trainers(
@@ -89,8 +90,8 @@ async def get_trainers(
         return trainers
 
     except Exception as e:
-        logger.error(f"Error retrieving trainers: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception(f"Error retrieving trainers: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 async def get_training_stats(
@@ -105,14 +106,19 @@ async def get_training_stats(
         return stats
 
     except Exception as e:
-        logger.error(f"Error retrieving training stats: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        logger.exception(f"Error retrieving training stats: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def factory_router() -> APIRouter:
-    router = APIRouter(tags=["Tournament Orchestrator"], dependencies=[Depends(get_api_key)])
-    router.add_api_route(ADD_TRAINER_ENDPOINT, add_trainer, methods=["POST"])
-    router.add_api_route(REMOVE_TRAINER_ENDPOINT, remove_trainer, methods=["DELETE"])
-    router.add_api_route(GET_TRAINERS_ENDPOINT, get_trainers, methods=["GET"])
-    router.add_api_route(GET_TRAINING_STATS_ENDPOINT, get_training_stats, methods=["GET"])
+    router = APIRouter(tags=["Tournament Orchestrator"])
+    # Changes to the trainer pool need the admin key; the read-only routes keep the frontend key.
+    router.add_api_route(ADD_TRAINER_ENDPOINT, add_trainer, methods=["POST"], dependencies=[Depends(get_admin_api_key)])
+    router.add_api_route(
+        REMOVE_TRAINER_ENDPOINT, remove_trainer, methods=["DELETE"], dependencies=[Depends(get_admin_api_key)]
+    )
+    router.add_api_route(GET_TRAINERS_ENDPOINT, get_trainers, methods=["GET"], dependencies=[Depends(get_api_key)])
+    router.add_api_route(
+        GET_TRAINING_STATS_ENDPOINT, get_training_stats, methods=["GET"], dependencies=[Depends(get_api_key)]
+    )
     return router

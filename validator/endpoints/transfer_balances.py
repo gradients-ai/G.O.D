@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from core.logging import get_logger
 from validator.app.config import Config
+from validator.app.dependencies import get_admin_api_key
 from validator.app.dependencies import get_api_key
 from validator.app.dependencies import get_config
 from validator.db.sql.transfers import get_balance_events_by_coldkey
@@ -234,7 +235,7 @@ def factory_router() -> APIRouter:
         summary="Refund tournament participants",
         description="Refund all participation fees for a tournament",
         tags=["tournaments"],
-        dependencies=[Depends(get_api_key)],
+        dependencies=[Depends(get_admin_api_key)],
         include_in_schema=False,
     )
 
