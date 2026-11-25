@@ -205,14 +205,10 @@ def _instruct_row_digest(row: Mapping) -> bytes:
 
 def drop_duplicate_instruct_rows(dataset: Dataset) -> Dataset:
     """Drop duplicate rows (first occurrence kept) so no test row also appears in train."""
-    rows, row_key = dataset, _instruct_row_key
-    if memory_efficient_prep():
-        key_columns = [col for col in _INSTRUCT_KEY_COLUMNS if col in dataset.column_names]
-        rows = dataset.select_columns(key_columns) if key_columns else dataset
-        row_key = _instruct_row_digest
+    row_key = _instruct_row_digest if memory_efficient_prep() else _instruct_row_key
     seen: set = set()
     keep: list[int] = []
-    for idx, row in enumerate(rows):
+    for idx, row in enumerate(_rows(dataset, list(_INSTRUCT_KEY_COLUMNS))):
         key = row_key(row)
         if key in seen:
             continue
@@ -374,17 +370,30 @@ def _chat_fields(task: ChatRawTask | QuantRawTask) -> tuple[str, str]:
     return source.chat_role_field, source.chat_content_field
 
 
+_ROW_BATCH = 1_000  # rows read per Arrow batch: ~3x faster than row by row; larger batches are slower
+
+
+def _rows(dataset: Dataset, columns: list[str]):
+    """Rows as dicts. With memory-efficient prep, only the given columns, read in batches."""
+    if not memory_efficient_prep():
+        yield from dataset
+        return
+    present = [col for col in columns if col in dataset.column_names]
+    # Unused columns can be most of a dataset's bytes (e.g. test cases); never decode them.
+    source = dataset.select_columns(present) if present else dataset
+    for batch in source.iter(batch_size=_ROW_BATCH):
+        names = list(batch)
+        for values in zip(*(batch[name] for name in names)):
+            yield dict(zip(names, values))
+
+
 def _converted_rows(dataset: Dataset, columns: list[str], task: AnyTextTypeRawTask | QuantRawTask | None):
-    """Yield (row_dict, is_row_empty) for each row kept, reading only the sampled columns, one row at a time."""
+    """Yield (row_dict, is_row_empty) for each row kept."""
     is_chat_task = _is_chat_task(task)
     if is_chat_task:
         role_field, content_field = _chat_fields(task)
-    present = [col for col in columns if col in dataset.column_names]
-    if memory_efficient_prep() and present and len(present) < len(dataset.column_names):
-        # Unused columns can be most of a dataset's bytes (e.g. test cases); never decode them.
-        dataset = dataset.select_columns(present)
 
-    for row in dataset:
+    for row in _rows(dataset, columns):
         row_dict = {}
         is_row_empty = True
         for col in columns:
