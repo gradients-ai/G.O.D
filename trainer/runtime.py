@@ -412,10 +412,11 @@ async def run_trainer_container_image(
     if trigger_word:
         command += ["--trigger-word", trigger_word]
 
+    # No Hugging Face credentials: the job runs on the internal network from the read-only cache, and the uploader
+    # container does the upload.
     environment: dict[str, str] = {
         "TRANSFORMERS_CACHE": cst.HUGGINGFACE_CACHE_PATH,
         "HF_HOME": cst.HUGGINGFACE_CACHE_PATH,
-        **_hf_container_env(),
     }
     if model_type == ImageModelType.FLUX.value:
         environment.update(

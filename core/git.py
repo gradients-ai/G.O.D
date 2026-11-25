@@ -1,6 +1,29 @@
+import os
+import re
 from urllib.parse import quote
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
+
+
+GITHUB_REPO_URL_PATTERN = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?(\.git)?/?$")
+
+# Only https remotes: set on every git subprocess that clones or fetches a repository URL.
+GIT_ALLOWED_PROTOCOL_ENV = {"GIT_ALLOW_PROTOCOL": "https"}
+
+
+def validate_github_repo_url(repo_url: str) -> str:
+    """The URL unchanged if it is a plain https://github.com/<owner>/<repo> URL; ValueError otherwise."""
+    if not isinstance(repo_url, str) or not GITHUB_REPO_URL_PATTERN.fullmatch(repo_url):
+        raise ValueError("github_repo must be https://github.com/<owner>/<repo>")
+    owner, repo = repo_url.removeprefix("https://github.com/").rstrip("/").split("/")
+    if owner in (".", "..") or repo.removesuffix(".git") in ("", ".", ".."):
+        raise ValueError("github_repo must be https://github.com/<owner>/<repo>")
+    return repo_url
+
+
+def git_subprocess_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Environment for a git clone/fetch of a repository URL: the given (or current) environment, https only."""
+    return {**(os.environ if base is None else base), **GIT_ALLOWED_PROTOCOL_ENV}
 
 
 def build_authenticated_git_url(repo_url: str, github_token: str | None) -> str:

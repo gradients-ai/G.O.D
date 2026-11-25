@@ -83,6 +83,9 @@ def generate_trainer_config() -> dict[str, Any]:
         s3_compatible_access_key=input("🎯 Enter s3 compatible access key: "),
         s3_compatible_secret_key=input("🎯 Enter s3 compatible secret key: "),
         s3_region=input("🎯 Enter s3 region (default: us-east-1): ") or "us-east-1",
+        # Both are required: the trainer rejects every request without the key or from another IP.
+        trainer_api_key=input("🔐 Enter TRAINER_API_KEY (the value from the validator's .vali.env): "),
+        orchestrator_ips=input("🌐 Enter the validator IPs allowed to call this trainer (comma-separated): "),
         quant_decode_work_root=input(
             "📁 Enter the freeform quant decode work root, a directory of its own with ~3x the largest bf16 model free "
             "(default: ~/.local/share/god-trainer/quant_decode): "
@@ -99,6 +102,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     # Check if POSTGRES_PASSWORD already exists in the environment
     postgres_password = os.getenv("POSTGRES_PASSWORD")
     frontend_api_key = os.getenv("FRONTEND_API_KEY")
+    trainer_api_key = os.getenv("TRAINER_API_KEY")
 
     subtensor_network = input("🌐 Enter subtensor network (default: finney): ") or "finney"
     subtensor_address = (
@@ -138,6 +142,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
     discord_url = input("🎯 Enter your discord webhook url (optional): ") or None
 
     frontend_api_key = generate_secure_password() if not frontend_api_key else frontend_api_key
+    trainer_api_key = generate_secure_password(32) if not trainer_api_key else trainer_api_key
 
     config = ValidatorConfig(
         wallet_name=wallet_name,
@@ -157,6 +162,7 @@ def generate_validator_config(dev: bool = False) -> dict[str, Any]:
         s3_bucket_name=s3_bucket_name,
         s3_region=s3_region,
         frontend_api_key=frontend_api_key,
+        trainer_api_key=trainer_api_key,
         validator_port=validator_port,
         gpu_server=None,
         set_metagraph_weights=parse_bool_input(

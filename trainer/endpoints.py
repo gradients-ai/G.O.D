@@ -1,10 +1,8 @@
 import asyncio
-import os
 
 from fastapi import APIRouter
 from fastapi import Depends
 from fastapi import HTTPException
-from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from core.models.payload_models import ModelPrepJob
@@ -15,6 +13,7 @@ from core.models.payload_models import TrainerProxyRequest
 from core.models.payload_models import TrainerTaskLog
 from core.models.trainer_contract_models import GPUInfo
 from trainer import constants as cst
+from trainer.auth import verify_orchestrator_ip
 from trainer.containers.dataset_cache import download_whitelisted_datasets
 from trainer.host import are_gpus_available
 from trainer.host import clone_repo
@@ -105,18 +104,6 @@ async def _run_training_with_clone(req: TrainerProxyRequest) -> None:
             req.requested_datasets = None
 
     await start_training_task(req, local_repo_path)
-
-
-async def verify_orchestrator_ip(request: Request):
-    """Verify request comes from orchestrator IP"""
-    client_ip = request.client.host
-    allowed_ips_str = os.getenv("ORCHESTRATOR_IPS", os.getenv("ORCHESTRATOR_IP", "185.141.218.122"))
-    allowed_ips = [ip.strip() for ip in allowed_ips_str.split(",")]
-    allowed_ips.append("127.0.0.1")  # Always allow localhost
-
-    if client_ip not in allowed_ips:
-        raise HTTPException(status_code=403, detail="Access forbidden")
-    return client_ip
 
 
 async def start_training(req: TrainerProxyRequest) -> JSONResponse:

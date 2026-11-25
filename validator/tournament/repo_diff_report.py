@@ -13,8 +13,11 @@ from typing import Any
 import validator.tournament.constants as t_cst
 from core.constants.credentials import BUCKET_NAME
 from core.git import build_authenticated_git_url
+from core.git import git_subprocess_env
 from core.git import sanitize_git_text
 from core.logging import get_logger
+from validator.infrastructure.claude_sandbox import agent_env
+from validator.infrastructure.claude_sandbox import confine_to_cwd_hooks
 from validator.tasks.details import upload_file_to_minio
 
 
@@ -35,10 +38,13 @@ EXCLUDED_SUFFIXES = set(_CONFIG["excluded_suffixes"])
 EXCLUDED_NAMES = set(_CONFIG["excluded_names"])
 
 
-def _run(cmd: list[str], cwd: Path | None = None, timeout: int = 900) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str], cwd: Path | None = None, timeout: int = 900, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
+        env=env,
         timeout=timeout,
         check=True,
         text=True,
@@ -55,10 +61,10 @@ def _clone_repo(repo_url: str, dest: Path, commit_hash: str | None = None, githu
     logger.info(f"Cloning repository for diff report: {repo_url}")
     clone_url = build_authenticated_git_url(repo_url, github_token)
     try:
-        clone_cmd = ["git", "clone", clone_url, str(dest)]
+        clone_cmd = ["git", "clone", "--", clone_url, str(dest)]
         if not commit_hash:
             clone_cmd[2:2] = ["--depth", "1"]
-        _run(clone_cmd)
+        _run(clone_cmd, env=git_subprocess_env())
         if commit_hash:
             _run(["git", "checkout", commit_hash], cwd=dest)
     except Exception as exc:
@@ -197,6 +203,8 @@ async def _run_claude_report(prompt: str, cwd: Path) -> str:
         allowed_tools=["Read", "Glob", "Grep"],
         disallowed_tools=["Write", "Edit", "Bash"],
         setting_sources=[],
+        env=agent_env(),
+        hooks=confine_to_cwd_hooks(cwd),
         system_prompt=_CONFIG["system_prompt"],
     )
 

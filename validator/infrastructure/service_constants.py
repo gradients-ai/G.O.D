@@ -48,6 +48,8 @@ MODEL_PREP_STATUS_ENDPOINT = "/v1/trainer/model_prep/{task_id}"
 GET_GPU_AVAILABILITY_ENDPOINT = "/v1/trainer/get_gpu_availability"
 TASK_DETAILS_ENDPOINT = "/v1/trainer/{task_id}"
 GET_RECENT_TASKS_ENDPOINT = "/v1/trainer/get_recent_tasks"
+# Header carrying the shared TRAINER_API_KEY on every validator -> trainer request.
+TRAINER_AUTH_HEADER = "X-Trainer-Auth"
 
 # Dstack API endpoints
 DSTACK_RUNS_APPLY_ENDPOINT = "/api/project/{project}/runs/apply"

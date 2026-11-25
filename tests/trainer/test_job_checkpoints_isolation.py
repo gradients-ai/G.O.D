@@ -140,6 +140,24 @@ async def test_image_container_mounts_only_its_job_dir_and_a_read_only_cache(cli
     assert cst.CHECKPOINTS_VOLUME_NAME not in run["volumes"]
 
 
+async def test_image_container_gets_no_hugging_face_token(client: FakeDockerClient, monkeypatch):
+    monkeypatch.setenv("HUGGINGFACE_TOKEN", "hf-write-token")
+    await runtime.run_trainer_container_image(
+        task_id=TASK_ID,
+        tag="tag",
+        model="org/model",
+        dataset_zip="s3://bucket/images.zip",
+        model_type="flux",
+        expected_repo_name=REPO,
+        hours_to_complete=1.0,
+        hotkey=HOTKEY_A,
+    )
+
+    [run] = client.runs
+    assert not {"HUGGINGFACE_TOKEN", "HF_TOKEN"} & set(run["environment"])
+    assert "hf-write-token" not in run["environment"].values()
+
+
 async def test_two_jobs_of_one_task_share_no_writable_directory(client: FakeDockerClient):
     await _run_text(HOTKEY_A)
     await _run_text(HOTKEY_B)

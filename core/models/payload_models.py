@@ -14,6 +14,7 @@ from core.constants.datasets import MAX_IMAGE_TEXT_PAIRS
 from core.constants.datasets import MIN_IMAGE_TEXT_PAIRS
 from core.constants.environments import EnvironmentName
 from core.constants.training import YARN_VALID_FACTORS
+from core.git import validate_github_repo_url
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import EnvironmentDatasetType
 from core.models.dataset_models import FileFormat
@@ -197,6 +198,11 @@ class TrainerProxyRequest(BaseModel):
     github_token: str | None = None
     requested_datasets: list[str] | None = None
 
+    @field_validator("github_repo")
+    @classmethod
+    def validate_github_repo(cls, value: str) -> str:
+        return validate_github_repo_url(value)
+
     @model_validator(mode="before")
     @classmethod
     def validate_quant_payload_strictly(cls, data):
@@ -260,12 +266,17 @@ class ModelPrepJob(TrainerJob):
 
 
 class TrainingRepoResponse(BaseModel):
-    github_repo: str = Field(..., description="The GitHub repository URL")
+    github_repo: str = Field(..., description="The GitHub repository URL: https://github.com/<owner>/<repo>")
     commit_hash: str = Field(..., description="The commit hash of the repository")
     github_token: str | None = Field(default=None, description="Optional GitHub token for private repositories")
     requested_datasets: list[str] | None = Field(
         default=None, description="Optional list of HuggingFace dataset repo IDs from the whitelist"
     )
+
+    @field_validator("github_repo")
+    @classmethod
+    def validate_github_repo(cls, value: str) -> str:
+        return validate_github_repo_url(value)
 
 
 class EnvConfig(BaseModel):

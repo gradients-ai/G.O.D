@@ -6,7 +6,7 @@ if [ -z "$GRAFANA_USERNAME" ]; then
   echo GRAFANA_USERNAME=$GRAFANA_USERNAME >> .vali.env
 fi
 
-GRAFANA_PASSWORD=$(grep GRAFANA_PASSWORD .vali.env | cut -d= -f2)
+GRAFANA_PASSWORD=$(grep '^GRAFANA_PASSWORD=' .vali.env | cut -d= -f2)
 
 if [ -z "$GRAFANA_PASSWORD" ]; then
   GRAFANA_PASSWORD=$(openssl rand -hex 16)

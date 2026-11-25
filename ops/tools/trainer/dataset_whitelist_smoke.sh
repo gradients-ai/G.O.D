@@ -8,6 +8,8 @@
 
 TRAINER_IP="185.141.218.172"
 TRAINER_PORT="8001"
+# The trainer rejects requests without its shared key (TRAINER_API_KEY from .trainer.env / .vali.env).
+: "${TRAINER_API_KEY:?Set TRAINER_API_KEY to the shared trainer key}"
 TASK_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
 
 echo "=== Dataset Whitelist Direct Test ==="
@@ -47,6 +49,7 @@ RESPONSE=$(curl -s -w "\n%{http_code}" \
     -X POST \
     "http://${TRAINER_IP}:${TRAINER_PORT}/v1/trainer/start_training" \
     -H "Content-Type: application/json" \
+    -H "X-Trainer-Auth: ${TRAINER_API_KEY}" \
     -d "${PAYLOAD}")
 
 HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
@@ -58,7 +61,7 @@ echo ""
 
 if [ "${HTTP_CODE}" = "200" ]; then
     echo "Training request accepted. Monitor with:"
-    echo "  curl http://${TRAINER_IP}:${TRAINER_PORT}/v1/trainer/${TASK_ID}/5Gwwwk2hiYjsk7jhj9grvMagD7g6nqQDfFe4Y9NtM3C3KjXy"
+    echo "  curl -H \"X-Trainer-Auth: \$TRAINER_API_KEY\" http://${TRAINER_IP}:${TRAINER_PORT}/v1/trainer/${TASK_ID}/5Gwwwk2hiYjsk7jhj9grvMagD7g6nqQDfFe4Y9NtM3C3KjXy"
 else
     echo "FAILED: HTTP ${HTTP_CODE}"
 fi

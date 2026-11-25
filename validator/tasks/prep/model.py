@@ -13,6 +13,7 @@ from core.models.payload_models import EnvConfig
 from core.models.payload_models import ModelPrepRequest
 from core.models.payload_models import ModelPrepResponse
 from validator.infrastructure.service_constants import MODEL_PREP_ENDPOINT
+from validator.infrastructure.trainer_auth import trainer_auth_headers
 
 
 logger = get_logger(__name__)
@@ -82,7 +83,7 @@ async def dispatch_augmentation_and_stats(
     logger.info(f"Dispatching model prep to {url}")
 
     try:
-        async with httpx.AsyncClient(timeout=MODEL_PREP_TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=MODEL_PREP_TIMEOUT_SECONDS, headers=trainer_auth_headers()) as client:
             response = await client.post(url, json=request.model_dump())
             response.raise_for_status()
             result = ModelPrepResponse.model_validate(response.json())

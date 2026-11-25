@@ -6,6 +6,7 @@ import aiohttp
 from git import Repo
 from git.exc import GitCommandError
 
+from core.git import GIT_ALLOWED_PROTOCOL_ENV
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
 from core.logging import get_logger
@@ -79,7 +80,9 @@ def clone_and_push_repository(
     try:
         with tempfile.TemporaryDirectory() as temp_dir:
             source_clone_url = build_authenticated_git_url(repo_url, source_github_token)
-            repo = Repo.clone_from(source_clone_url, temp_dir)
+            # GitPython passes "--" before the URL; only https remotes are allowed.
+            repo = Repo.clone_from(source_clone_url, temp_dir, env=GIT_ALLOWED_PROTOCOL_ENV)
+            repo.git.update_environment(**GIT_ALLOWED_PROTOCOL_ENV)
 
             if commit_hash:
                 repo.git.fetch("--all")

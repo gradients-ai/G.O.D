@@ -14,6 +14,14 @@ REPO = "https://github.com/org/repo"
 VALIDATOR_ROOT = Path(github_validation.__file__).resolve().parents[2]
 
 
+@pytest.fixture
+def allow_local_clones(monkeypatch):
+    """The license tests clone a local repository; production clones allow only https."""
+    import core.git
+
+    monkeypatch.setattr(core.git, "GIT_ALLOWED_PROTOCOL_ENV", {"GIT_ALLOW_PROTOCOL": "https:file"})
+
+
 async def test_obfuscation_output_is_logged_without_the_token(monkeypatch):
     stdout = f"Cloning https://x-access-token:{TOKEN}@github.com/org/repo.git ... clean"
     monkeypatch.setattr(
@@ -37,7 +45,7 @@ def _git(repo: Path, *args: str) -> str:
 
 
 @pytest.fixture
-def license_repo(tmp_path: Path) -> tuple[str, str, str]:
+def license_repo(tmp_path: Path, allow_local_clones) -> tuple[str, str, str]:
     """A repo whose first commit has no LICENSE/NOTICE and whose second (the default branch head) adds them."""
     repo = tmp_path / "miner"
     repo.mkdir()

@@ -8,6 +8,7 @@ Clients for the external systems the validator uses, and the repository review a
 | --- | --- |
 | `cache.py` | Local Hugging Face cache and temp file cleanup. |
 | `cache_policy.py` | Cache size limits, lookup windows and the cleanup interval. |
+| `claude_sandbox.py` | Limits for the Claude review agents (code review, duplicate detection, diff report): a minimal environment and a hook that denies any tool call outside the checkout. |
 | `challenger_code_review.py` | Code review of a round 2 entrant's repository. |
 | `challenger_code_review_config.json` | Configuration of that review. |
 | `challenger_dependency_review.py` | Collects an entrant's third-party dependencies for the code review. |
@@ -22,6 +23,7 @@ Clients for the external systems the validator uses, and the repository review a
 | `repo_dedup_config.json` | Configuration of the duplicate detection. |
 | `retries.py` | Retry decorators. |
 | `service_constants.py` | Service endpoints, bucket names and shared field names. |
+| `trainer_auth.py` | The `X-Trainer-Auth` header (from `TRAINER_API_KEY`) sent on every request to a trainer. |
 | `substrate.py` | Substrate query helper. |
 
 ## See also

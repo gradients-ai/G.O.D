@@ -8,6 +8,7 @@ from git import GitCommandError
 from git import Repo
 
 import trainer.constants as cst
+from core.git import GIT_ALLOWED_PROTOCOL_ENV
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
 from core.models.trainer_contract_models import GPUInfo
@@ -120,7 +121,9 @@ def clone_repo(
 
     try:
         clone_url = build_authenticated_git_url(repo_url, github_token)
-        repo = Repo.clone_from(clone_url, repo_dir)
+        # GitPython passes "--" before the URL; only https remotes are allowed for the clone and the fetches.
+        repo = Repo.clone_from(clone_url, repo_dir, env=GIT_ALLOWED_PROTOCOL_ENV)
+        repo.git.update_environment(**GIT_ALLOWED_PROTOCOL_ENV)
         repo.git.fetch("--all")
         repo.git.fetch("origin")
         try:

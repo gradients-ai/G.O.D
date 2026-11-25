@@ -98,6 +98,7 @@ Written by `task config`:
 | `S3_BUCKET_NAME` | `core/constants/credentials.py` | Bucket for datasets and artifacts. |
 | `VALIDATOR_PORT` | `ops/validator_ops/start_validator.sh` | Port of the validator API. |
 | `FRONTEND_API_KEY` | `validator/app/dependencies.py` | API key for the protected validator endpoints. Generated for you. |
+| `TRAINER_API_KEY` | `validator/infrastructure/trainer_auth.py` | Shared key sent as the `X-Trainer-Auth` header on every request to a trainer. Every trainer must have the same value in its `.trainer.env`. Generated for you. |
 | `REFRESH_NODES` | `validator/app/config.py` | Whether to refresh nodes from the metagraph. |
 | `DISCORD_WEBHOOK` | `validator/app/config.py` | Optional webhook for alerts. |
 
@@ -113,6 +114,7 @@ Added by hand:
 | `ANTHROPIC_API_KEY` | `validator/infrastructure/`, `validator/tournament/repo_diff_report.py` | Key for code review, duplicate-submission review and repository diff reports. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Default `true` (HTTPS). Set `false` only for a plain-HTTP store. |
 | `SUBNET_API_PORT` | `ops/validator_ops/start_validator.sh` | Starts the public API. See [subnet_api/README.md](../subnet_api/README.md). |
+| `GRAFANA_PASSWORD` | `ops/compose/docker-compose.observability.yml` | Validator Grafana admin password. Required: compose refuses to start without it. `task validator` (`ops/validator_ops/setup_grafana.sh`) generates one when it is missing. |
 
 ```bash
 echo "HF_READ_ONLY_TOKEN=<read-only-token>" >> .vali.env
@@ -130,12 +132,13 @@ Written by `task trainer-config`:
 | `WANDB_TOKEN` | `trainer/runtime.py` | Weights & Biases token. |
 | `S3_COMPATIBLE_ENDPOINT`, `S3_COMPATIBLE_ACCESS_KEY`, `S3_COMPATIBLE_SECRET_KEY`, `S3_REGION` | `validator/infrastructure/minio_client.py` | The validator's S3-compatible store. Read when the trainer starts. |
 | `QUANT_DECODE_WORK_ROOT` | `trainer/constants.py` | Optional. Directory for the freeform decode. Default `~/.local/share/god-trainer/quant_decode`. |
+| `TRAINER_API_KEY` | `trainer/auth.py` | Required. The `TRAINER_API_KEY` from the validator's `.vali.env`. Every request must carry it in the `X-Trainer-Auth` header; without it set, the trainer rejects every request with 403 and logs an error at startup. |
+| `ORCHESTRATOR_IPS` | `trainer/auth.py` | Required. Comma-separated validator IPs allowed to call the trainer. There is no default; `127.0.0.1` is always allowed (still with the key). `ORCHESTRATOR_IP` is read when `ORCHESTRATOR_IPS` is unset. |
 
 Added by hand:
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `ORCHESTRATOR_IPS` | `trainer/endpoints.py` | Comma-separated validator IPs allowed to call the trainer. Always set it. `127.0.0.1` is always allowed. |
 | `MODEL_HASH_SALT` | `trainer/model_artifacts.py` | Salt for the anonymous model cache directory names. Keep it secret and stable. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Same value as on the validator. |
 | `TRAINER_PRUNE_BUILD_CACHE` | `trainer/constants.py` | Default `true`. Set `false` to keep the host Docker build cache. |
@@ -265,7 +268,7 @@ A trainer executes miner code. It needs Docker, NVIDIA drivers, the NVIDIA Conta
 4. Check that the GPUs are visible.
 
    ```bash
-   curl http://localhost:8001/v1/trainer/get_gpu_availability
+   curl -H "X-Trainer-Auth: <TRAINER_API_KEY>" http://localhost:8001/v1/trainer/get_gpu_availability
    ```
 
 5. Register the trainer with the validator. Run this where the validator API is reachable, with the `FRONTEND_API_KEY` from `.vali.env`.
@@ -285,7 +288,7 @@ The validator then reads the trainer's GPUs from port `8001` (or from `<ip>:<por
 
 The trainer builds each miner's Dockerfile, runs the training container and streams its logs. Outputs go to the `checkpoints` Docker volume, models and datasets to the `cache` volume, and finished models to Hugging Face. A training container mounts only its own job's directory of the `checkpoints` volume (`<task_id>/<hotkey>`), and the `cache` volume read-only.
 
-Endpoint paths are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`.
+Endpoint paths are defined in `validator/infrastructure/service_constants.py` and registered in `trainer/endpoints.py`. Every trainer route requires both an allowed source IP (`ORCHESTRATOR_IPS`) and the `X-Trainer-Auth: <TRAINER_API_KEY>` header (`trainer/auth.py`); the validator adds the header from its own `TRAINER_API_KEY`.
 
 ### GPU monitor
 
