@@ -30,6 +30,8 @@ import validator.tournament.constants as t_cst
 from core.git import sanitize_git_text
 from core.logging import get_logger
 from core.models.tournament_models import TournamentType
+from validator.infrastructure.claude_sandbox import agent_env
+from validator.infrastructure.claude_sandbox import confine_to_cwd_hooks
 from validator.tournament.models import DedupCluster
 from validator.tournament.models import DedupResult
 from validator.tournament.models import DedupTier
@@ -461,6 +463,8 @@ async def _judge_pair(cwd: Path, dir_a: str, dir_b: str, file_summary: str, runt
         allowed_tools=["Read", "Glob", "Grep"],
         disallowed_tools=["Write", "Edit", "Bash"],
         setting_sources=[],
+        env=agent_env(),
+        hooks=confine_to_cwd_hooks(cwd),
         system_prompt=config["system_prompt"],
     )
 

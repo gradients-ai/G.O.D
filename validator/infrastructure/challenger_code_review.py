@@ -13,6 +13,8 @@ from typing import Any
 import validator.tournament.constants as t_cst
 from core.logging import get_logger
 from validator.infrastructure.challenger_dependency_review import materialize_dependencies
+from validator.infrastructure.claude_sandbox import agent_env
+from validator.infrastructure.claude_sandbox import confine_to_cwd_hooks
 from validator.infrastructure.repo_dedup import _sanitize_reason
 from validator.infrastructure.repo_dedup import _snapshot_god_source
 from validator.tournament.models import IntegrityVerdict
@@ -91,6 +93,8 @@ async def _run_claude(cwd: Path, tournament_type: str, requested_datasets: list[
         allowed_tools=["Read", "Glob", "Grep"],
         disallowed_tools=["Write", "Edit", "Bash"],
         setting_sources=[],
+        env=agent_env(),
+        hooks=confine_to_cwd_hooks(cwd),
         system_prompt=config["system_prompt"],
     )
     result_text = ""

@@ -16,6 +16,8 @@ from core.git import build_authenticated_git_url
 from core.git import git_subprocess_env
 from core.git import sanitize_git_text
 from core.logging import get_logger
+from validator.infrastructure.claude_sandbox import agent_env
+from validator.infrastructure.claude_sandbox import confine_to_cwd_hooks
 from validator.tasks.details import upload_file_to_minio
 
 
@@ -201,6 +203,8 @@ async def _run_claude_report(prompt: str, cwd: Path) -> str:
         allowed_tools=["Read", "Glob", "Grep"],
         disallowed_tools=["Write", "Edit", "Bash"],
         setting_sources=[],
+        env=agent_env(),
+        hooks=confine_to_cwd_hooks(cwd),
         system_prompt=_CONFIG["system_prompt"],
     )
 
