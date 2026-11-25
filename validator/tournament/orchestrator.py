@@ -956,9 +956,16 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 waiting_for_reference.append(pending_training_tasks.pop())
                 continue
 
-            # Tournament rows run the image built once at tournament start (validator/tournament/image_builds.py).
+            # Trainers never build: the row runs the image built for its code (validator/tournament/image_builds.py).
             gate, gate_detail = await image_for_training(
-                tournament_id, oldest_task_training.hotkey, task.task_type, getattr(task, "model_type", None), config
+                tournament_id,
+                oldest_task_training.hotkey,
+                training_repo,
+                oldest_task_training.training_commit_hash,
+                oldest_task_training.github_token,
+                task.task_type,
+                getattr(task, "model_type", None),
+                config,
             )
             if gate == ImageGate.WAIT:
                 waiting_for_image.append(pending_training_tasks.pop())
@@ -973,7 +980,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 )
                 pending_training_tasks.pop()
                 continue
-            prebuilt_image = gate_detail if gate == ImageGate.READY else None
+            prebuilt_image = gate_detail
 
             # Determine required GPUs for this task
             required_gpus = get_task_gpu_requirement(task)
@@ -1112,8 +1119,8 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
 
     if waiting_for_image:
         logger.info(
-            f"Held {len(waiting_for_image)} training row(s) whose tournament image is still being built; they are checked "
-            f"again in the next cycle."
+            f"Held {len(waiting_for_image)} training row(s) whose image is not built yet; they are checked again in the next "
+            f"cycle."
         )
 
     if failing_quant_rows:
@@ -1487,7 +1494,7 @@ async def _create_training_request(
     github_token: str | None,
     requested_datasets: list[str] | None,
     config: Config,
-    prebuilt_image: str | None = None,
+    prebuilt_image: str,
 ) -> TrainerProxyRequest:
     """
     Create a TrainerProxyRequest based on the task type.

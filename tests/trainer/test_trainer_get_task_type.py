@@ -37,7 +37,13 @@ CALIBRATION = QuantCalibrationRequest(
 
 
 def _proxy(training_data) -> TrainerProxyRequest:
-    return TrainerProxyRequest(training_data=training_data, github_repo="https://github.com/org/repo", gpu_ids=[0], hotkey="hk")
+    return TrainerProxyRequest(
+        training_data=training_data,
+        github_repo="https://github.com/org/repo",
+        gpu_ids=[0],
+        hotkey="hk",
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
+    )
 
 
 @pytest.mark.parametrize(

@@ -91,16 +91,16 @@ def generate_trainer_config() -> dict[str, Any]:
             "(default: ~/.local/share/god-trainer/quant_decode): "
         )
         or None,
-        image_registry_username=input("📦 Enter the image registry read-only username (optional, from the image build box): ")
+        image_registry_username=input("📦 Enter the image registry read-only username (from the image build box): ")
         or None,
-        image_registry_password=input("📦 Enter the image registry read-only password (optional): ") or None,
+        image_registry_password=input("📦 Enter the image registry read-only password: ") or None,
     )
 
     return vars(config)
 
 
 def prompt_image_build_config() -> dict[str, str | None]:
-    """Tournament image builds (ops/image_builder/README.md). Skipped: trainers keep building images per job."""
+    """The image build box (ops/image_builder/README.md). Required: trainers never build, every job runs an image from it."""
     keys = [
         ("image_build_woodpecker_url", "Woodpecker URL of the image build box (https://<box>)"),
         ("image_build_woodpecker_token", "Woodpecker API token"),
@@ -111,8 +111,6 @@ def prompt_image_build_config() -> dict[str, str | None]:
         ("image_build_registry_username", "Registry read-only username"),
         ("image_build_registry_password", "Registry read-only password"),
     ]
-    if not parse_bool_input("Build tournament images once on an image build box?", default=False):
-        return {key: None for key, _ in keys}
     return {key: input(f"📦 {prompt}: ") or None for key, prompt in keys}
 
 

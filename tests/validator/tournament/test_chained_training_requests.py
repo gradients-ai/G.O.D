@@ -99,6 +99,7 @@ async def _request(task, hotkey: str):
         github_token=None,
         requested_datasets=None,
         config=CONFIG,
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
     )
 
 

@@ -82,6 +82,7 @@ def test_trainer_request_rejects_a_non_github_repo():
         },
         "gpu_ids": [0],
         "hotkey": "hk",
+        "prebuilt_image": "registry.example:5000/god/trainers@sha256:abc",
     }
     TrainerProxyRequest.model_validate({**payload, "github_repo": "https://github.com/o/r"})
     with pytest.raises(ValidationError):

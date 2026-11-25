@@ -354,7 +354,6 @@ async def test_cleanup_container_mounts_the_volumes_where_the_cleaner_deletes(mo
     monkeypatch.setattr(cleanup.docker, "from_env", lambda: fake)
     monkeypatch.setattr(cleanup, "stream_container_logs", lambda *args: None)
     monkeypatch.setattr(cleanup, "remove_stale_trainer_containers", lambda client: None)
-    monkeypatch.setattr(cleanup, "prune_build_leftovers", lambda: None)
     monkeypatch.setattr(cleanup.asyncio, "sleep", stop)
     monkeypatch.setattr(cleanup, "task_history", [FinishedJob()])
 

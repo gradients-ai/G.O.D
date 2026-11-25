@@ -77,12 +77,16 @@ class TournamentImageStatus(str, Enum):
 
 
 class TournamentImage(BaseModel):
-    """A trainer image built once per tournament participant and variant (table tournament_images)."""
+    """A trainer image, built once per (scope, source, variant) before training (table tournament_images)."""
 
-    tournament_id: str
-    hotkey: str
+    scope: str = Field(description="Tournament id, or 'untracked' for a training row outside a tournament.")
+    source: str = Field(description="sha256 of repo and commit, first 16 hex digits.")
     variant: TrainerImageVariant
-    status: TournamentImageStatus
+    repo: str
+    commit_hash: str | None = Field(default=None, description="None: the default branch when the snapshot is taken.")
+    github_token: str | None = Field(default=None, repr=False, description="Cleared once the snapshot is taken.")
+    hotkey: str | None = Field(default=None, description="The hotkey it was first wanted for (informational).")
+    status: TournamentImageStatus = TournamentImageStatus.PENDING
     build_number: int | None = Field(default=None, description="Woodpecker pipeline number of the current build.")
     build_attempts: int = Field(default=0, description="Failed attempts to snapshot the submission and start its build.")
     image_ref: str | None = Field(default=None, description="registry/repo@sha256:digest, set once the image is ready.")

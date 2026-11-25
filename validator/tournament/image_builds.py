@@ -1,20 +1,26 @@
 """
-Trainer images built once per tournament participant, when the tournament is active, instead of on every training job.
+Trainer images, built on the image build box before training. Trainers never build: every training job runs one of these.
 
-For each participant the validator copies the registered commit into a private snapshot repo (branch
-t/<tournament_id>/<hotkey>), then asks Woodpecker to build each Dockerfile variant the tournament needs. The build runs on
-the image build box (ops/image_builder/) and pushes to its Zot registry; the validator records the digest and the
-scheduler hands it to the trainer as TrainerProxyRequest.prebuilt_image. All images share one registry repository, so the
-layers participants have in common (base images, dependencies) are uploaded and stored once.
+An image is identified by (scope, source, variant): scope is the tournament id ('untracked' for a training row outside a
+tournament), source the code (repo and commit) and variant the Dockerfile family. When a tournament is active, its
+participants' images are queued at once, so they are built from the registered commits at the start. Any other training
+row (a benchmark, a hotkey added later) queues its own image the first time the scheduler sees it. The same code is built
+once per scope, whoever it is for.
+
+For each source the validator copies the commit into a private snapshot repo (branch t/<scope>/<source>), then asks
+Woodpecker to build each variant. The build runs on the image build box (ops/image_builder/) and pushes to its Zot
+registry; the validator records the digest and the scheduler hands it to the trainer as TrainerProxyRequest.prebuilt_image.
+All images share one registry repository, so the layers they have in common are uploaded and stored once.
 
 Row states (table tournament_images): pending -> building -> ready | failed. A pending row whose snapshot or build start
-fails is retried each cycle up to MAX_START_ATTEMPTS. The build recipe retries the build itself. A failed image fails the
-participant's training jobs that need it, the same as a failed build on the trainer.
+fails is retried each cycle up to MAX_START_ATTEMPTS; the build recipe retries the build itself. A failed image fails the
+training rows that need it. The snapshot branch is deleted once every variant of it is ready or failed.
 
-Disabled (the old per-job builds on the trainer) unless every IMAGE_BUILD_* setting below is set.
+Every IMAGE_BUILD_* setting is required. Without them no image is built and tournament training rows wait.
 """
 
 import asyncio
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -46,13 +52,13 @@ logger = get_logger(__name__)
 
 CYCLE_INTERVAL_SECONDS = 30
 MAX_START_ATTEMPTS = 3
-# Participants snapshotted and handed to Woodpecker at once. Woodpecker queues the builds and runs them as the agent allows.
+# Sources snapshotted and handed to Woodpecker at once. Woodpecker queues the builds and runs them as the agent allows.
 START_CONCURRENCY = 8
 GIT_TIMEOUT_SECONDS = 600
 HTTP_TIMEOUT_SECONDS = 30
-# A build still not finished after this long is failed (the recipe's own limit is 60 minutes per attempt run).
+# A build still not finished after this long is failed (the recipe's own limit is 60 minutes per run).
 BUILD_DEADLINE_SECONDS = 4 * 3600
-SNAPSHOT_PRUNE_INTERVAL_SECONDS = 24 * 3600
+UNTRACKED_SCOPE = "untracked"
 SNAPSHOT_BRANCH_PREFIX = "t/"
 REGISTRY_REPOSITORY = "god/trainers"
 
@@ -61,7 +67,7 @@ DOCKERFILE_PATHS: dict[TrainerImageVariant, tuple[str, ...]] = {
     TrainerImageVariant.IMAGE: IMAGE_DOCKERFILE_PATHS,
     TrainerImageVariant.IMAGE_TOOLKIT: IMAGE_TOOLKIT_DOCKERFILE_PATHS,
 }
-# Compression jobs build the text Dockerfile, like text jobs.
+# Compression jobs run the text Dockerfile, like text jobs.
 TOURNAMENT_VARIANTS: dict[TournamentType, tuple[TrainerImageVariant, ...]] = {
     TournamentType.TEXT: (TrainerImageVariant.TEXT,),
     TournamentType.QUANT: (TrainerImageVariant.TEXT,),
@@ -91,7 +97,7 @@ class ImageBuildSettings:
 
 
 def load_image_build_settings() -> ImageBuildSettings | None:
-    """The IMAGE_BUILD_* settings, or None (feature off) unless all are set."""
+    """The IMAGE_BUILD_* settings, or None when any is missing."""
     values = {
         "woodpecker_url": (os.getenv("IMAGE_BUILD_WOODPECKER_URL") or "").rstrip("/"),
         "woodpecker_token": os.getenv("IMAGE_BUILD_WOODPECKER_TOKEN") or "",
@@ -107,21 +113,39 @@ def load_image_build_settings() -> ImageBuildSettings | None:
     return ImageBuildSettings(**{**values, "woodpecker_repo_id": int(values["woodpecker_repo_id"])})
 
 
-def snapshot_branch(tournament_id: str, hotkey: str) -> str:
-    return f"{SNAPSHOT_BRANCH_PREFIX}{tournament_id}/{hotkey}"
+def source_key(repo: str, commit: str | None) -> str:
+    return hashlib.sha256(f"{repo}\n{commit or ''}".encode()).hexdigest()[:16]
 
 
-def image_tag(tournament_id: str, hotkey: str, variant: TrainerImageVariant) -> str:
-    return f"{tournament_id}-{hotkey}-{variant.value}"
+def snapshot_branch(scope: str, source: str) -> str:
+    return f"{SNAPSHOT_BRANCH_PREFIX}{scope}/{source}"
+
+
+def image_tag(image: TournamentImage) -> str:
+    return f"{image.scope}-{image.source}-{image.variant.value}"
 
 
 def variant_for_task(task_type: TaskType, model_type: ImageModelType | None = None) -> TrainerImageVariant | None:
-    """The image a training job runs, mirroring the trainer's Dockerfile choice (trainer.runtime.get_dockerfile_path)."""
+    """The Dockerfile family a training job runs: FLUX image jobs the image one, other image jobs the toolkit one."""
     if task_type == TaskType.IMAGETASK:
         return TrainerImageVariant.IMAGE if model_type == ImageModelType.FLUX else TrainerImageVariant.IMAGE_TOOLKIT
     if task_type == TaskType.ENVIRONMENTTASK:
         return None
     return TrainerImageVariant.TEXT
+
+
+def wanted_image(
+    scope: str, repo: str, commit: str | None, github_token: str | None, hotkey: str | None, variant: TrainerImageVariant
+) -> TournamentImage:
+    return TournamentImage(
+        scope=scope,
+        source=source_key(repo, commit),
+        variant=variant,
+        repo=repo,
+        commit_hash=commit,
+        github_token=github_token,
+        hotkey=hotkey,
+    )
 
 
 # ---------------------------------------------------------------------------------------------------------------- snapshot
@@ -144,8 +168,8 @@ def _git(args: list[str], cwd: str, *secrets: str | None) -> str:
 def snapshot_submission(
     repo: str, commit: str | None, github_token: str | None, branch: str, settings: ImageBuildSettings
 ) -> dict[TrainerImageVariant, str | None]:
-    """Copy the submission's tree at `commit` (the default branch when None) to `branch` of the snapshot repo, as a single
-    commit without history. Returns the first Dockerfile found for each variant (None: the submission has none)."""
+    """Copy the tree at `commit` (the default branch when None) to `branch` of the snapshot repo, as a single commit
+    without history. Returns the first Dockerfile found for each variant (None: the repository has none)."""
     with tempfile.TemporaryDirectory(prefix="god-snapshot-") as work:
         secrets = (github_token, settings.snapshot_token)
         _git(["init", "-q"], work)
@@ -159,20 +183,11 @@ def snapshot_submission(
     return {variant: next((p for p in paths if p in files), None) for variant, paths in DOCKERFILE_PATHS.items()}
 
 
-def list_snapshot_branches(settings: ImageBuildSettings) -> list[str]:
+def delete_snapshot_branch(branch: str, settings: ImageBuildSettings) -> None:
     with tempfile.TemporaryDirectory(prefix="god-snapshot-") as work:
+        _git(["init", "-q"], work)  # git push needs a repository, even to only delete a remote branch
         target = build_authenticated_git_url(settings.snapshot_repo, settings.snapshot_token)
-        out = _git(["ls-remote", "--heads", target, f"refs/heads/{SNAPSHOT_BRANCH_PREFIX}*"], work, settings.snapshot_token)
-    return [line.split("refs/heads/", 1)[1] for line in out.splitlines() if "refs/heads/" in line]
-
-
-def delete_snapshot_branches(branches: list[str], settings: ImageBuildSettings) -> None:
-    with tempfile.TemporaryDirectory(prefix="god-snapshot-") as work:
-        _git(["init", "-q"], work)  # git push needs a repository, even to only delete remote branches
-        target = build_authenticated_git_url(settings.snapshot_repo, settings.snapshot_token)
-        for start in range(0, len(branches), 100):
-            refs = [f":refs/heads/{branch}" for branch in branches[start : start + 100]]
-            _git(["push", "-q", target, *refs], work, settings.snapshot_token)
+        _git(["push", "-q", target, f":refs/heads/{branch}"], work, settings.snapshot_token)
 
 
 # --------------------------------------------------------------------------------------------------------- build service
@@ -239,32 +254,35 @@ def image_ref(settings: ImageBuildSettings, digest: str) -> str:
 
 
 async def add_tournament_images(tournament_id: str, tournament_type: TournamentType, config: Config) -> None:
-    """A pending row for every participant and variant of the tournament that has none yet."""
+    """Queue every participant's images when the tournament is active (existing rows are kept)."""
     variants = TOURNAMENT_VARIANTS.get(tournament_type, ())
     if not variants:
         return
-    participants = await tournament_sql.get_tournament_participants(tournament_id, config.psql_db)
-    wanted = [(p.hotkey, variant) for p in participants for variant in variants]
-    await images_sql.add_pending_images(tournament_id, wanted, config.psql_db)
-
-
-async def _start_participant(rows: list[TournamentImage], settings: ImageBuildSettings, config: Config) -> None:
-    """Snapshot one participant's submission and start the build of each of its pending variants."""
-    first = rows[0]
-    tag_context = f"{first.tournament_id}/{first.hotkey}"
-    try:
-        repo = await tournament_sql.get_tournament_training_repo_and_commit(first.hotkey, first.tournament_id, config.psql_db)
+    wanted = []
+    for participant in await tournament_sql.get_tournament_participants(tournament_id, config.psql_db):
+        repo = await tournament_sql.get_tournament_training_repo_and_commit(participant.hotkey, tournament_id, config.psql_db)
         if not repo.training_repo:
-            for row in rows:
-                await images_sql.mark_image_failed(row, "no training repository registered", config.psql_db)
-            return
-        branch = snapshot_branch(first.tournament_id, first.hotkey)
+            continue
+        for variant in variants:
+            wanted.append(
+                wanted_image(
+                    tournament_id, repo.training_repo, repo.training_commit_hash, repo.github_token, participant.hotkey, variant
+                )
+            )
+    await images_sql.add_pending_images(wanted, config.psql_db)
+
+
+async def _start_source(rows: list[TournamentImage], settings: ImageBuildSettings, config: Config) -> None:
+    """Snapshot one source and start the build of each of its pending variants."""
+    first = rows[0]
+    branch = snapshot_branch(first.scope, first.source)
+    try:
         dockerfiles = await asyncio.to_thread(
-            snapshot_submission, repo.training_repo, repo.training_commit_hash, repo.github_token, branch, settings
+            snapshot_submission, first.repo, first.commit_hash, first.github_token, branch, settings
         )
     except Exception as e:
         error = f"snapshot failed: {e}"
-        logger.warning(f"Image build for {tag_context}: {error}")
+        logger.warning(f"Image build for {first.repo} ({branch}): {error}")
         for row in rows:
             await images_sql.record_start_failure(row, error, MAX_START_ATTEMPTS, config.psql_db)
         return
@@ -276,64 +294,61 @@ async def _start_participant(rows: list[TournamentImage], settings: ImageBuildSe
             await images_sql.mark_image_failed(row, f"no Dockerfile at any of {paths}", config.psql_db)
             continue
         try:
-            number = await start_build(settings, branch, dockerfile, image_tag(row.tournament_id, row.hotkey, row.variant))
+            number = await start_build(settings, branch, dockerfile, image_tag(row))
         except Exception as e:
-            logger.warning(f"Image build for {tag_context} ({row.variant.value}) did not start: {e}")
+            logger.warning(f"Image build for {branch} ({row.variant.value}) did not start: {e}")
             await images_sql.record_start_failure(row, f"build did not start: {e}", MAX_START_ATTEMPTS, config.psql_db)
             continue
         await images_sql.mark_image_building(row, number, config.psql_db)
-        logger.info(f"Image build #{number} started for {tag_context} ({row.variant.value}, {dockerfile})")
+        logger.info(f"Image build #{number} started for {first.repo} ({branch}, {row.variant.value}, {dockerfile})")
+    await _drop_snapshot_if_done(first, settings, config)
 
 
 async def start_pending_builds(settings: ImageBuildSettings, config: Config) -> None:
     pending = await images_sql.get_images_with_status(TournamentImageStatus.PENDING, config.psql_db)
-    by_participant: dict[tuple[str, str], list[TournamentImage]] = {}
+    by_source: dict[tuple[str, str], list[TournamentImage]] = {}
     for row in pending:
-        by_participant.setdefault((row.tournament_id, row.hotkey), []).append(row)
+        by_source.setdefault((row.scope, row.source), []).append(row)
     semaphore = asyncio.Semaphore(START_CONCURRENCY)
 
     async def start(rows: list[TournamentImage]) -> None:
         async with semaphore:
-            await _start_participant(rows, settings, config)
+            await _start_source(rows, settings, config)
 
-    await asyncio.gather(*(start(rows) for rows in by_participant.values()))
+    await asyncio.gather(*(start(rows) for rows in by_source.values()))
+
+
+async def _drop_snapshot_if_done(image: TournamentImage, settings: ImageBuildSettings, config: Config) -> None:
+    """Delete the snapshot branch once no variant of it is pending or building (a rebuild takes a new snapshot)."""
+    if await images_sql.count_unfinished(image.scope, image.source, config.psql_db):
+        return
+    try:
+        await asyncio.to_thread(delete_snapshot_branch, snapshot_branch(image.scope, image.source), settings)
+    except Exception as e:
+        logger.warning(f"Could not delete snapshot branch {snapshot_branch(image.scope, image.source)}: {e}")
 
 
 async def refresh_building_images(settings: ImageBuildSettings, config: Config) -> None:
     for row in await images_sql.get_images_with_status(TournamentImageStatus.BUILDING, config.psql_db):
-        label = f"{row.tournament_id}/{row.hotkey} ({row.variant.value}) build #{row.build_number}"
+        label = f"{image_tag(row)} build #{row.build_number}"
         try:
             status, created = await build_state(settings, row.build_number)
             if status == WOODPECKER_DONE:
-                digest = await image_digest(settings, image_tag(row.tournament_id, row.hotkey, row.variant))
+                digest = await image_digest(settings, image_tag(row))
                 await images_sql.mark_image_ready(row, image_ref(settings, digest), config.psql_db)
-                logger.info(f"Image ready for {label}: {digest}")
+                logger.info(f"Image ready: {label}: {digest}")
             elif status in WOODPECKER_FAILED or status == "missing":
                 await images_sql.mark_image_failed(row, f"build #{row.build_number} ended: {status}", config.psql_db)
-                logger.warning(f"Image build failed for {label}: {status}")
+                logger.warning(f"Image build failed: {label}: {status}")
             elif created and time.time() - created > BUILD_DEADLINE_SECONDS:
-                await images_sql.mark_image_failed(
-                    row, f"build #{row.build_number} still {status} after the deadline", config.psql_db
-                )
-                logger.warning(f"Image build timed out for {label}")
+                error = f"build #{row.build_number} still {status} after the deadline"
+                await images_sql.mark_image_failed(row, error, config.psql_db)
+                logger.warning(f"Image build timed out: {label}")
+            else:
+                continue
+            await _drop_snapshot_if_done(row, settings, config)
         except Exception as e:
             logger.warning(f"Could not refresh {label}: {e}")
-
-
-async def prune_snapshot_branches(settings: ImageBuildSettings, config: Config) -> None:
-    """Delete the snapshot branches of tournaments that are over (completed, cancelled or gone)."""
-    branches = await asyncio.to_thread(list_snapshot_branches, settings)
-    by_tournament: dict[str, list[str]] = {}
-    for branch in branches:
-        by_tournament.setdefault(branch.removeprefix(SNAPSHOT_BRANCH_PREFIX).split("/", 1)[0], []).append(branch)
-    finished = []
-    for tournament_id, tournament_branches in by_tournament.items():
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament is None or tournament.status not in (TournamentStatus.PENDING, TournamentStatus.ACTIVE):
-            finished.extend(tournament_branches)
-    if finished:
-        await asyncio.to_thread(delete_snapshot_branches, finished, settings)
-        logger.info(f"Deleted {len(finished)} snapshot branches of finished tournaments")
 
 
 async def run_image_builds_cycle(settings: ImageBuildSettings, config: Config) -> None:
@@ -344,19 +359,15 @@ async def run_image_builds_cycle(settings: ImageBuildSettings, config: Config) -
 
 
 async def process_tournament_image_builds(config: Config) -> None:
-    settings = load_image_build_settings()
-    if settings is None:
-        logger.info("Tournament image builds are off (IMAGE_BUILD_* not set); trainers build images per job")
-        return
-    last_prune = 0.0
     while True:
-        try:
-            await run_image_builds_cycle(settings, config)
-            if time.time() - last_prune > SNAPSHOT_PRUNE_INTERVAL_SECONDS:
-                await prune_snapshot_branches(settings, config)
-                last_prune = time.time()
-        except Exception as e:
-            logger.error(f"Error in the tournament image build cycle: {e}", exc_info=True)
+        settings = load_image_build_settings()
+        if settings is None:
+            logger.error("Image builds are not configured (IMAGE_BUILD_* settings): no images, so no training starts")
+        else:
+            try:
+                await run_image_builds_cycle(settings, config)
+            except Exception as e:
+                logger.error(f"Error in the image build cycle: {e}", exc_info=True)
         await asyncio.sleep(CYCLE_INTERVAL_SECONDS)
 
 
@@ -364,7 +375,6 @@ async def process_tournament_image_builds(config: Config) -> None:
 
 
 class ImageGate(str, Enum):
-    NOT_USED = "not_used"  # build on the trainer as before (feature off, not a tournament participant, no variant)
     READY = "ready"
     WAIT = "wait"
     FAILED = "failed"
@@ -373,26 +383,27 @@ class ImageGate(str, Enum):
 async def image_for_training(
     tournament_id: str | None,
     hotkey: str,
+    training_repo: str,
+    training_commit_hash: str | None,
+    github_token: str | None,
     task_type: TaskType,
     model_type: ImageModelType | None,
     config: Config,
 ) -> tuple[ImageGate, str | None]:
-    """What the scheduler does with a training row: send the prebuilt image, wait for it, fail the row, or build as before.
-
-    Returns (gate, image_ref or error)."""
-    if tournament_id is None or load_image_build_settings() is None:
-        return ImageGate.NOT_USED, None
+    """The image a training row runs: (READY, image_ref), (WAIT, None) while it is queued or building (queueing it if
+    nobody has), or (FAILED, error)."""
     variant = variant_for_task(task_type, model_type)
     if variant is None:
-        return ImageGate.NOT_USED, None
-    image = await images_sql.get_tournament_image(tournament_id, hotkey, variant, config.psql_db)
+        return ImageGate.FAILED, f"no trainer image for task type {task_type}"
+    if load_image_build_settings() is None:
+        return ImageGate.WAIT, None
+    wanted = wanted_image(
+        tournament_id or UNTRACKED_SCOPE, training_repo, training_commit_hash, github_token, hotkey, variant
+    )
+    image = await images_sql.get_image(wanted.scope, wanted.source, variant, config.psql_db)
     if image is None:
-        tournament = await tournament_sql.get_tournament(tournament_id, config.psql_db)
-        if tournament is None or variant not in TOURNAMENT_VARIANTS.get(tournament.tournament_type, ()):
-            return ImageGate.NOT_USED, None
-        repo = await tournament_sql.get_tournament_training_repo_and_commit(hotkey, tournament_id, config.psql_db)
-        # Not a participant (no registered repo): nothing is built for it.
-        return (ImageGate.WAIT, None) if repo.training_repo else (ImageGate.NOT_USED, None)
+        await images_sql.add_pending_images([wanted], config.psql_db)
+        return ImageGate.WAIT, None
     if image.status == TournamentImageStatus.READY:
         return ImageGate.READY, image.image_ref
     if image.status == TournamentImageStatus.FAILED:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set up or update the tournament image build box. Run as root from this directory, with .env filled in (.env.example).
+# Set up or update the tournament image build box. Run as root from this directory, with .env filled in (env.example).
 #
 #   ./setup.sh                  certificate, registry users and config, BuildKit builder, Zot and Woodpecker (idempotent)
 #   ./setup.sh renew            renew the certificate and restart the services that serve it (daily cron)
@@ -13,7 +13,7 @@ STATE=$DIR/state
 LEGO_VERSION=v5.7.0
 BUILDKIT_IMAGE=moby/buildkit:v0.35.1
 
-[ -f .env ] || { echo "missing .env (copy .env.example)"; exit 1; }
+[ -f .env ] || { echo "missing .env (copy env.example)"; exit 1; }
 set -a; . ./.env; set +a
 : "${BUILD_BOX_HOST:?}"
 mkdir -p "$STATE/certs"; chmod 700 "$STATE"

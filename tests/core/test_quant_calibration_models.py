@@ -44,7 +44,13 @@ def _quant_payload(**overrides) -> dict:
 
 
 def _proxy(training_data: dict) -> dict:
-    return {"training_data": training_data, "github_repo": "https://github.com/o/r", "gpu_ids": [0], "hotkey": "hk"}
+    return {
+        "training_data": training_data,
+        "github_repo": "https://github.com/o/r",
+        "gpu_ids": [0],
+        "hotkey": "hk",
+        "prebuilt_image": "registry.example:5000/god/trainers@sha256:abc",
+    }
 
 
 def test_the_calibration_env_constant_is_the_contract_name():

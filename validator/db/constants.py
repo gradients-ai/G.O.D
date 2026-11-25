@@ -48,9 +48,15 @@ TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
 TOURNAMENT_TASK_FAILURE_REVIEWS_TABLE = "tournament_task_failure_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 
-# Tournament trainer images, built once per (participant, variant) at tournament start (validator/tournament/image_builds.py)
+# Trainer images, built once per (scope, source, variant) before training (validator/tournament/image_builds.py)
 TOURNAMENT_IMAGES_TABLE = "tournament_images"
+IMAGE_SCOPE = "scope"
+IMAGE_SOURCE = "source"
 IMAGE_VARIANT = "variant"
+IMAGE_REPO = "repo"
+IMAGE_COMMIT_HASH = "commit_hash"
+IMAGE_GITHUB_TOKEN = "github_token"
+IMAGE_HOTKEY = "hotkey"
 IMAGE_STATUS = "status"
 IMAGE_BUILD_NUMBER = "build_number"
 IMAGE_BUILD_ATTEMPTS = "build_attempts"

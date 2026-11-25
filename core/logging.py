@@ -147,32 +147,6 @@ def stream_container_logs(container: Container, logger: Logger | None = None, lo
             remove_context_tag("docker_container_name")
 
 
-def stream_image_build_logs(logs: list[dict], logger: Logger | None = None, log_context: dict = None):
-    if not logger:
-        logger = get_logger(__name__)
-    if not log_context:
-        log_context = {}
-
-    log_context["docker_stage"] = "image_build"
-
-    with LogContext(**log_context):
-        buffer = ""
-        try:
-            for chunk in logs:
-                log_text = chunk.get("stream") or chunk.get("status") or str(chunk)
-                buffer += log_text
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    if line.strip():
-                        logger.info(line.strip(), extra=log_context)
-            if buffer.strip():
-                logger.info(buffer.strip(), extra=log_context)
-        except Exception as e:
-            logger.error(f"Error streaming image build logs: {str(e)}", extra=log_context)
-        finally:
-            remove_context_tag("docker_stage")
-
-
 def get_logger(name: str) -> Logger:
     logger = _fiber_get_logger(name) if _fiber_get_logger is not None else logging.getLogger(name)
     if not any(isinstance(existing, ContextTagsFilter) for existing in logger.filters):

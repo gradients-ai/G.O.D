@@ -88,7 +88,13 @@ def _quant_request(
         quant_target=quant_target,
         calibration=calibration,
     )
-    return TrainerProxyRequest(training_data=training_data, github_repo="https://github.com/org/repo", gpu_ids=[0], hotkey="hk")
+    return TrainerProxyRequest(
+        training_data=training_data,
+        github_repo="https://github.com/org/repo",
+        gpu_ids=[0],
+        hotkey="hk",
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
+    )
 
 
 def _instruct_request() -> TrainerProxyRequest:
@@ -101,7 +107,13 @@ def _instruct_request() -> TrainerProxyRequest:
         file_format=FileFormat.S3,
         dataset_type=InstructTextDatasetType(),
     )
-    return TrainerProxyRequest(training_data=training_data, github_repo="https://github.com/org/repo", gpu_ids=[0], hotkey="hk")
+    return TrainerProxyRequest(
+        training_data=training_data,
+        github_repo="https://github.com/org/repo",
+        gpu_ids=[0],
+        hotkey="hk",
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
+    )
 
 
 def _write_quant_output(mountpoint: Path, track: str = "fixed") -> None:
@@ -178,7 +190,7 @@ class Recorder:
         self.reclaim_outcome: str | Exception | None = None
         self.calibration_calls: list[tuple] = []
         self.calibration_failure: Exception | None = None
-        self.image_builds: list[dict] = []
+        self.image_pulls: list[str] = []
 
 
 async def _noop(*args, **kwargs) -> None:
@@ -228,13 +240,12 @@ def recorder(monkeypatch, tmp_path: Path) -> Recorder:
 
     monkeypatch.setattr(runtime, "write_quant_calibration_file", write_calibration)
     monkeypatch.setattr(runtime, "create_volumes_if_dont_exist", _noop)
-    monkeypatch.setattr(runtime, "get_dockerfile_path", lambda *args: "Dockerfile")
     monkeypatch.setattr(runtime, "run_downloader_container", lambda **kwargs: (0, None))
-    def build_image(**kwargs):
-        rec.image_builds.append(kwargs)
+    def pull_image(image_ref, log_labels=None):
+        rec.image_pulls.append(image_ref)
         return "tag", None
 
-    monkeypatch.setattr(runtime, "build_docker_image", build_image)
+    monkeypatch.setattr(runtime, "pull_prebuilt_image", pull_image)
     monkeypatch.setattr(runtime, "delete_image_and_cleanup", lambda tag: None)
     monkeypatch.setattr(runtime, "run_trainer_container_text", run_text)
     monkeypatch.setattr(runtime, "update_container_name", _noop)
@@ -625,14 +636,14 @@ async def test_fixed_task_also_gets_the_calibration_env(recorder: Recorder, quan
     assert recorder.text_container_kwargs["extra_environment"] == CALIBRATION_ENV
 
 
-async def test_job_fails_before_the_image_build_when_the_calibration_file_cannot_be_produced(
+async def test_job_fails_before_its_container_when_the_calibration_file_cannot_be_produced(
     recorder: Recorder, freeform_output
 ):
     recorder.calibration_failure = RuntimeError("calibration set unavailable after 3 attempts (OSError)")
 
     await runtime.start_training_task(_quant_request(TaskType.QUANTFREEFORMTASK), "/repo")
 
-    assert recorder.image_builds == [] and recorder.text_container_kwargs is None
+    assert recorder.text_container_kwargs is None
     assert recorder.completed and not any(recorder.completed)  # reported failed, never successful
     assert recorder.uploads == [] and recorder.decode_calls == []
 

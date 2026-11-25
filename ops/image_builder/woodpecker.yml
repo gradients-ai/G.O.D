@@ -2,9 +2,9 @@
 # Woodpecker reads it. It builds one tournament trainer image from a snapshot branch and pushes it to Zot.
 #
 # Runs only when the validator starts it through the Woodpecker API (event: manual), with these variables:
-#   SNAPSHOT       snapshot branch, t/<tournament_id>/<hotkey>
+#   SNAPSHOT       snapshot branch, t/<tournament_id>/<source>
 #   DOCKERFILE     Dockerfile path inside the snapshot
-#   IMAGE          target in the registry, god/trainers:<tournament_id>-<hotkey>-<variant>
+#   IMAGE          target in the registry, god/trainers:<tournament_id>-<source>-<variant>
 #   REGISTRY       registry host:port
 #   SNAPSHOT_REPO  https URL of the snapshot repo
 # Woodpecker substitutes $VAR in this file, so shell variables are written as $$VAR.

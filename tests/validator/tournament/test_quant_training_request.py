@@ -192,6 +192,7 @@ async def _request(task, hotkey: str = HOTKEY):
         github_token=None,
         requested_datasets=None,
         config=SimpleNamespace(psql_db=None, discord_url=None),
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
     )
 
 

@@ -138,7 +138,13 @@ def _quant_train_payload(baseline_stats: dict) -> dict:
             "reference": {"model": "m", "loss": 2.0, "per_example_losses": [1.0], "sku": "s"},
         },
     }
-    return {"training_data": training_data, "github_repo": "https://github.com/o/r", "gpu_ids": [0], "hotkey": "hk"}
+    return {
+        "training_data": training_data,
+        "github_repo": "https://github.com/o/r",
+        "gpu_ids": [0],
+        "hotkey": "hk",
+        "prebuilt_image": "registry.example:5000/god/trainers@sha256:abc",
+    }
 
 
 def test_the_quant_train_request_carries_the_probes_inside_baseline_stats():

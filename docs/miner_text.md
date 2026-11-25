@@ -21,7 +21,7 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | --- | --- |
 | You compete on | fine-tuning a given model on a given dataset, within the task's time budget |
 | You submit | a training repository. Its container writes one model per task |
-| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository |
+| Dockerfile | the validator builds `ops/docker/standalone-text-trainer.dockerfile` from your repository |
 | Enrolment | the shared checks. `LICENSE` and `NOTICE` are read on your repository's default branch |
 | Rounds | three, one instruct task each |
 | Boss round | four tasks: continuous, GRPO, DPO, big instruct |

@@ -21,7 +21,7 @@ Schedule, fee and endpoint are in [Tournaments](miner.md#tournaments). Entry rul
 | --- | --- |
 | You compete on | compressing a given bfloat16 (bf16) model, within the task's time budget |
 | You submit | a training repository. Its container writes one compressed model per task. The repository must also contain a `decoder/` directory, which is required to enter and is used on freeform tasks only |
-| Dockerfile | the trainer builds `ops/docker/standalone-text-trainer.dockerfile` from your repository. It is the same file name the text tournament uses |
+| Dockerfile | the validator builds `ops/docker/standalone-text-trainer.dockerfile` from your repository. It is the same file name the text tournament uses |
 | Enrolment | the shared checks, made at your pinned commit, plus a [decoder check](#enrolment-checks) |
 | Tracks | fixed: a checkpoint in a prescribed format, loaded as it is. Freeform: any bytes, which your `decoder/` expands to bf16 |
 | Rounds | three, one task each: freeform, fixed, freeform |
@@ -308,7 +308,7 @@ Enrolment adds a decoder check to the shared checks in [Entering a tournament](m
 <summary>Checks that log and do not exclude</summary>
 
 - Immutable dependencies ([`registration_lint.py`](../validator/tournament/registration_lint.py)): hash-pinned pip installs and git pinned to a full SHA. Downloads from untrusted URLs carry a checksum. Base images are pinned by digest unless they come from a trusted publisher namespace. `QUANT_REGISTRATION_LINT_ENFORCE` is `False`, so a violation is logged and the miner is enrolled.
-- Files over 1,000,000 bytes in your repository are listed for manual review, at enrolment and at every image build.
+- Files over 1,000,000 bytes in your repository are listed for manual review, at enrolment and before every job.
 
 </details>
 

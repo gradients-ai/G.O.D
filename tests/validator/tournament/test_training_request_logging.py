@@ -51,6 +51,7 @@ def _request() -> TrainerProxyRequest:
         github_repo="https://github.com/org/repo",
         gpu_ids=[0],
         hotkey="hk",
+        prebuilt_image="registry.example:5000/god/trainers@sha256:abc",
         github_commit_hash="c" * 40,
         github_token=GITHUB_TOKEN,
     )

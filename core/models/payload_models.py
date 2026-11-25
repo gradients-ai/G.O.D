@@ -200,8 +200,9 @@ class TrainerProxyRequest(BaseModel):
     prebuilt_image: str | None = Field(
         default=None,
         description=(
-            "Tournament image built once at tournament start, as registry/repo@sha256:digest. When set, the trainer pulls "
-            "it instead of building the repo's Dockerfile. None: the trainer builds the Dockerfile as before."
+            "The job's image, built before training on the image build box, as registry/repo@sha256:digest. The trainer "
+            "pulls and runs it; it never builds the repository's Dockerfile, so its training endpoint refuses a request "
+            "without one. None only on requests the trainer rebuilds from its job history (the decode re-run)."
         ),
         examples=["185.141.218.72:5000/god/trainers@sha256:4eabcff204e555b1db0f13b07bf37ead6098a9d8df806cdb8141647c64abc7bf"],
     )

@@ -22,7 +22,7 @@ The compression tournament is `quant` in code (files, constants, task types). Mi
 | `freeform_release.py` | Public release of the champion's decoder and the boss-round decoded models. |
 | `github_validation.py` | Repository, licence, commit and obfuscation checks at enrolment. |
 | `gpu_requirements.py` | GPU requirement calculation for tournament tasks. |
-| `image_builds.py` | Trainer images built once per participant when a tournament is active: submission snapshots, Woodpecker builds, the scheduler's image gate. See [ops/image_builder/README.md](../../ops/image_builder/README.md). |
+| `image_builds.py` | Images for every training row, built before training on the image build box (trainers never build): submission snapshots, Woodpecker builds, the scheduler's image gate. See [ops/image_builder/README.md](../../ops/image_builder/README.md). |
 | `models.py` | Tournament schemas: rounds, seeds, source links, rank comparisons, responses. |
 | `notifications.py` | Discord notifications. |
 | `obfuscation_detection/` | Bundled detector binary used by repository validation. |
