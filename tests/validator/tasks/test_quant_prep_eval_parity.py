@@ -5,8 +5,9 @@ ids to the engine. So parity has three parts, checked here on a tokenizer saved 
 chat_template.jinja), fully offline:
 
 * the ids prep writes are the ids `apply_chat_template(tokenize=True)` gives on the same tokenizer;
-* the labelled tokens are exactly each assistant turn's content plus the template's turn end (chat_labels' rule, the
-  module the text eval and the miners' training share);
+* the labelled tokens are the ones the standard text eval scores (quant_chat_labels.label_chat_as_text_eval, axolotl's
+  `chat_template` rule): each assistant turn's content located in the render that ends with that turn, plus an eos
+  right after it;
 * the JSONL prep uploads loads back through the scorer's own loader unchanged, with the same fingerprint.
 
 tests/test_transformers_pins.py holds the validator's transformers equal to the quant evaluator image's.
@@ -19,10 +20,10 @@ import pytest
 
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import InstructTextDatasetType
-from validator.evaluation import chat_labels
 from validator.evaluation.chat_labels import IGNORE_INDEX
 from validator.evaluation.quant_loss import load_examples
 from validator.evaluation.quant_loss import quant_eval_set_fingerprint
+from validator.tasks import quant_chat_labels
 from validator.tasks import quant_eval_set
 from validator.tasks.quant_eval_set import build_quant_eval_set
 from validator.tasks.quant_eval_set import quant_eval_set_jsonl
@@ -35,10 +36,8 @@ chat_templates = pytest.importorskip("validator.evaluation.chat_templates")
 
 
 MAX_SEQUENCE_LEN = 4096
-TURN_END = "<|im_end|>\n"
-LAST_TURN_DECORATION = "<think>\n\n</think>\n\n"
 SPECIAL_TOKENS = ["<|endoftext|>", "<|im_start|>", "<|im_end|>", "<s>"]
-# Decorates only the last assistant turn: label spans must still land on every turn.
+# Decorates only the last assistant turn, as Qwen3's template does.
 CHAT_TEMPLATE = (
     "{% for message in messages %}<|im_start|>{{ message['role'] }}\n"
     "{% if message['role'] == 'assistant' and loop.last %}<think>\n\n</think>\n\n{% endif %}"
@@ -127,10 +126,10 @@ def test_the_fixture_is_saved_the_way_current_transformers_saves_a_tokenizer(mod
     assert "chat_template" not in json.loads((model_dir / "tokenizer_config.json").read_text())
 
 
-def test_prep_labels_chat_rows_with_the_shared_chat_labels_module(model_dir):
+def test_prep_labels_chat_rows_with_the_text_eval_rule(model_dir):
     labeller = quant_tokenizer.load_quant_tokenizer(str(model_dir)).chat_labeller(CHAT_DATASET.chat_template)
 
-    assert quant_eval_set.label_chat is chat_labels.label_chat
+    assert quant_eval_set.label_chat_as_text_eval is quant_chat_labels.label_chat_as_text_eval
     assert isinstance(labeller, chat_templates.HfChatTokenizer)
     assert labeller.chat_template == CHAT_TEMPLATE
 
@@ -142,13 +141,14 @@ def test_prep_chat_ids_and_labels_match_transformers_on_the_same_rows(model_dir,
     for row, example in zip(CHAT_ROWS, build.examples):
         messages = row["conversations"]
         assert example.input_ids == _ids(reference_tokenizer.apply_chat_template(messages, tokenize=True))
-        # The scored text starts where the generation prompt ends, so the last turn's decoration is scored with it.
-        expected_spans = [
-            (LAST_TURN_DECORATION if index == len(messages) - 1 else "") + message["content"] + TURN_END
-            for index, message in enumerate(messages)
-            if message["role"] == "assistant"
-        ]
-        assert [reference_tokenizer.decode(run) for run in _scored_runs(example.input_ids, example.labels)] == expected_spans
+    # The eos here is <|im_end|>, which the template emits right after each turn's content, so it is scored. The earlier
+    # turn of the two-turn row is located in the render that ends with it, where the template adds its 19-token think
+    # block, and those positions are scored in the full conversation: 19 tokens later, inside the next user turn.
+    expected_runs = [["Four.<|im_end|>"], ["er, ü", "Eleven — done.<|im_end|>"], ["Okay.<|im_end|>"]]
+    scored_runs = [
+        [reference_tokenizer.decode(run) for run in _scored_runs(example.input_ids, example.labels)] for example in build.examples
+    ]
+    assert scored_runs == expected_runs
 
 
 def test_prep_instruct_ids_match_transformers_on_the_same_rows(model_dir, reference_tokenizer):

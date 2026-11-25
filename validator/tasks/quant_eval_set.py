@@ -3,8 +3,10 @@
 Pure Python + pydantic: the tokenizer is injected through QuantTokenizer, so this module never imports
 transformers and runs on CPU with a fake tokenizer. The real one is validator/tasks/quant_tokenizer.py.
 
-Chat rows are labelled by validator/evaluation/chat_labels.label_chat, the same rule the standard text
-eval uses: every assistant turn is scored, through the template's own turn end.
+Every row is labelled as the standard text eval labels it, so a model scores the same tokens in both evals. Chat rows
+follow validator/tasks/quant_chat_labels.label_chat_as_text_eval (axolotl's `chat_template` strategy with its default
+options): the content of every assistant turn plus the tokenizer's eos where the template puts it right after the
+turn; role headers and other template decoration are not scored.
 
 Token ids are fixed here, from the validator's own download of the task's base tokenizer, so the
 reference and every entrant are scored on byte-identical examples.
@@ -19,13 +21,13 @@ from pydantic import BaseModel
 import validator.tasks.datasets.constants as cst
 from core.models.dataset_models import ChatTemplateDatasetType
 from core.models.dataset_models import InstructTextDatasetType
-from validator.evaluation.chat_labels import ChatLabelSkip
 from validator.evaluation.chat_labels import ChatTokenizer
 from validator.evaluation.chat_labels import chat_messages
 from validator.evaluation.chat_labels import chat_role_map
-from validator.evaluation.chat_labels import label_chat
 from validator.evaluation.quant_loss import IGNORE_INDEX
 from validator.evaluation.quant_loss import QuantEvalExample
+from validator.tasks.quant_chat_labels import conversation_with_row_system
+from validator.tasks.quant_chat_labels import label_chat_as_text_eval
 
 
 # Same defaults as the standard text eval when a task leaves a chat field None (validator/evaluation/text_eval_dataset);
@@ -130,16 +132,13 @@ def tokenize_instruct(tokenizer: QuantTokenizer, prompt: str, completion: str) -
 class SkipReason(str, Enum):
     EMPTY = "empty"  # nothing to supervise: empty output, no assistant turn, a malformed chat row, or no scored label
     LONG = "long"  # longer than max_sequence_len
-    RENDER = "render"  # the chat template rejects the row, or label_chat cannot locate its turns
-
-
-_CHAT_SKIP_REASON = {ChatLabelSkip.EMPTY: SkipReason.EMPTY, ChatLabelSkip.RENDER: SkipReason.RENDER}
+    RENDER = "render"  # the chat template rejects the row
 
 
 def tokenize_chat(
-    chat_tokenizer: ChatTokenizer, row: dict, dataset_type: ChatTemplateDatasetType
+    chat_tokenizer: ChatTokenizer, row: dict, dataset_type: ChatTemplateDatasetType, eos_token_id: int | None
 ) -> QuantEvalExample | SkipReason:
-    """One chat row labelled by chat_labels.label_chat.
+    """One chat row labelled by quant_chat_labels.label_chat_as_text_eval.
 
     Unlike the standard eval, which fails the whole eval, a row that is malformed or that the template
     refuses to render is skipped: prep would otherwise fail the task on one bad held-out row.
@@ -156,12 +155,10 @@ def tokenize_chat(
     except ValueError:
         return SkipReason.EMPTY
     try:
-        labelled = label_chat(chat_tokenizer, messages)
+        example = label_chat_as_text_eval(chat_tokenizer, conversation_with_row_system(row, messages), eos_token_id)
     except Exception:  # noqa: BLE001 - the template rejecting the row (system turn on gemma, None content, ...)
         return SkipReason.RENDER
-    if isinstance(labelled, ChatLabelSkip):
-        return _CHAT_SKIP_REASON[labelled]
-    return QuantEvalExample(input_ids=labelled.input_ids, labels=labelled.labels)
+    return SkipReason.EMPTY if example is None else example
 
 
 def _n_scored_labels(example: QuantEvalExample) -> int:
@@ -208,7 +205,7 @@ def build_quant_eval_set(
         chat_tokenizer = tokenizer.chat_labeller(dataset_type.chat_template)
 
         def tokenize_row(row: dict) -> QuantEvalExample | SkipReason:
-            return tokenize_chat(chat_tokenizer, row, dataset_type)
+            return tokenize_chat(chat_tokenizer, row, dataset_type, tokenizer.eos_token_id)
 
     examples = []
     skipped = Counter()
