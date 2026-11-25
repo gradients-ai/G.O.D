@@ -22,6 +22,12 @@ from validator.tournament.models import RespondingNode
 from validator.tournament.models import TournamentParticipant
 
 
+@pytest.fixture(autouse=True)
+def allow_local_clones(monkeypatch):
+    """These tests clone local repositories; production clones allow only https."""
+    monkeypatch.setattr(decoder_snapshot, "GIT_ALLOWED_PROTOCOL_ENV", {"GIT_ALLOW_PROTOCOL": "https:file"})
+
+
 _MISSING = [binary for binary in ("git", "tar", "xz") if shutil.which(binary) is None]
 pytestmark = pytest.mark.skipif(bool(_MISSING), reason=f"decoder snapshot tests need {', '.join(_MISSING)} on PATH")
 
