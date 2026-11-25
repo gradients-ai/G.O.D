@@ -45,8 +45,17 @@ DECODED_MODEL_URLS_ENV = "DECODED_MODEL_URLS"
 # Written last by the decode job, so its presence marks a complete upload.
 DECODED_MODEL_INDEX_NAME = "index.json"
 
-# A text entrant's training Dockerfile, first match wins. The trainer builds it per job and the validator's
-# registration lint (validator/tournament/registration_lint.py) checks it, so both read this one tuple.
+# An entrant's training Dockerfiles, first match wins. The trainer builds them when a job carries no prebuilt image,
+# the validator's tournament image builds (validator/tournament/image_builds.py) pick from the same tuples, and the
+# registration lint (validator/tournament/registration_lint.py) checks the text one.
 DEFAULT_TEXT_DOCKERFILE_PATH = "ops/docker/standalone-text-trainer.dockerfile"
 LEGACY_TEXT_DOCKERFILE_PATH = "dockerfiles/standalone-text-trainer.dockerfile"
 TEXT_DOCKERFILE_PATHS = (DEFAULT_TEXT_DOCKERFILE_PATH, LEGACY_TEXT_DOCKERFILE_PATH)
+
+DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
+LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
+IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
+
+DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
+LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
+IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)

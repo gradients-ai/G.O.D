@@ -1,0 +1,10 @@
+# BuildKit for tournament image builds (the buildx builder "god"). The cache is kept for reuse (shared base images,
+# retries, the next tournament) but capped: never more than 150GB, and trimmed oldest first whenever free disk on the
+# box drops below 100GB. A build in progress is never trimmed, so leave room for the builds running at once (~80GB each).
+[worker.oci]
+  max-parallelism = 6
+  gc = true
+  [[worker.oci.gcpolicy]]
+    reservedSpace = "20GB"
+    maxUsedSpace = "150GB"
+    minFreeSpace = "100GB"

@@ -197,6 +197,14 @@ class TrainerProxyRequest(BaseModel):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prebuilt_image: str | None = Field(
+        default=None,
+        description=(
+            "Tournament image built once at tournament start, as registry/repo@sha256:digest. When set, the trainer pulls "
+            "it instead of building the repo's Dockerfile. None: the trainer builds the Dockerfile as before."
+        ),
+        examples=["185.141.218.72:5000/god/trainers@sha256:4eabcff204e555b1db0f13b07bf37ead6098a9d8df806cdb8141647c64abc7bf"],
+    )
 
     @field_validator("github_repo")
     @classmethod
@@ -237,6 +245,7 @@ class TrainerTaskLog(TrainerJob):
     github_commit_hash: str | None = None
     github_token: str | None = None
     requested_datasets: list[str] | None = None
+    prebuilt_image: str | None = None
     wandb_url: str | None = None
     quant_decode: QuantDecodeResult | None = None
 

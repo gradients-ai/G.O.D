@@ -42,6 +42,15 @@ class ValidatorConfig(BaseConfig):
     database_url: str | None = None
     postgres_profile: str = "default"
     discord_webhook: str | None = None
+    # Tournament image builds on the image build box (ops/image_builder/). All unset: trainers build images per job.
+    image_build_woodpecker_url: str | None = None
+    image_build_woodpecker_token: str | None = None
+    image_build_woodpecker_repo_id: str | None = None
+    image_build_snapshot_repo: str | None = None
+    image_build_snapshot_token: str | None = None
+    image_build_registry: str | None = None
+    image_build_registry_username: str | None = None
+    image_build_registry_password: str | None = None
 
 
 @dataclass
@@ -56,6 +65,9 @@ class TrainerConfig:
     orchestrator_ips: str
     s3_region: str = "us-east-1"
     quant_decode_work_root: str | None = None
+    # Read-only login to the image build box's registry, to pull tournament images built at tournament start.
+    image_registry_username: str | None = None
+    image_registry_password: str | None = None
 
 
 @dataclass

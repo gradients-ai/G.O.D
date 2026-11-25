@@ -331,6 +331,28 @@ def build_docker_image(
                 executor.shutdown(wait=False, cancel_futures=True)
 
 
+def pull_prebuilt_image(image_ref: str, log_labels: dict[str, str] | None = None) -> tuple[str | None, str | None]:
+    """Pull a tournament image built at tournament start (`registry/repo@sha256:...`). Returns (ref, None) or (None, error).
+
+    The pull is by digest, so the trainer runs exactly the image built from the miner's registered commit. Layers come
+    from the registry's storage bucket (the registry redirects them), so this host only needs the read-only login.
+    """
+    client = docker.from_env(timeout=cst.PREBUILT_IMAGE_PULL_TIMEOUT_SECONDS)
+    registry = image_ref.split("/", 1)[0]
+    try:
+        if cst.IMAGE_REGISTRY_USERNAME and cst.IMAGE_REGISTRY_PASSWORD:
+            client.login(username=cst.IMAGE_REGISTRY_USERNAME, password=cst.IMAGE_REGISTRY_PASSWORD, registry=registry)
+        logger.info(f"Pulling prebuilt image {image_ref}", extra=log_labels)
+        client.images.pull(image_ref)
+        client.images.get(image_ref)
+    except (APIError, ImageNotFound) as e:
+        message = f"Pulling prebuilt image {image_ref} failed: {e}"
+        logger.error(message, extra=log_labels)
+        return None, message
+    logger.info("Prebuilt image pulled.", extra=log_labels)
+    return image_ref, None
+
+
 def _stream_build_logs(build_output: Iterator[dict], log_labels: dict[str, str] | None) -> None:
     # A build abandoned on timeout keeps running on the daemon until its stream ends, so it stays counted until then.
     with image_build_in_flight():
@@ -1081,6 +1103,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
         container = None
         env_server_containers = []
         tag = None
+        prebuilt_pull = None
         timeout_seconds = max(1, int(training_data.hours_to_complete * 3600))
         task_type = get_task_type(task)
         await create_volumes_if_dont_exist()
@@ -1098,7 +1121,12 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             ),
         }
 
-        dockerfile_path = get_dockerfile_path(task_type, training_data, local_repo_path)
+        if task.prebuilt_image:
+            # Built once at tournament start: pull it while the data downloads instead of building the Dockerfile.
+            prebuilt_pull = asyncio.ensure_future(asyncio.to_thread(pull_prebuilt_image, task.prebuilt_image, log_labels))
+            dockerfile_path = None
+        else:
+            dockerfile_path = get_dockerfile_path(task_type, training_data, local_repo_path)
 
         logger.info("Running Cache Download Container", extra=log_labels)
         await log_task(training_data.task_id, task.hotkey, "Downloading data")
@@ -1142,13 +1170,17 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             if review_message:
                 await log_task(training_data.task_id, task.hotkey, review_message)
 
-        tag, exc = await asyncio.to_thread(
-            build_docker_image,
-            dockerfile_path=dockerfile_path,
-            log_labels=log_labels,
-            is_image_task=(task_type == TaskType.IMAGETASK),
-            context_path=local_repo_path,
-        )
+        if prebuilt_pull is not None:
+            tag, exc = await prebuilt_pull
+            prebuilt_pull = None
+        else:
+            tag, exc = await asyncio.to_thread(
+                build_docker_image,
+                dockerfile_path=dockerfile_path,
+                log_labels=log_labels,
+                is_image_task=(task_type == TaskType.IMAGETASK),
+                context_path=local_repo_path,
+            )
 
         if not tag:
             message = f"[ERROR] Image Build failed | ExitCode: Unknown | LastError: {exc}"
@@ -1157,7 +1189,8 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
             await complete_task(training_data.task_id, task.hotkey, success=False)
             raise RuntimeError(f"Image build failed: {exc}")
 
-        await log_task(training_data.task_id, task.hotkey, f"Docker image built with tag: {tag}")
+        image_source = "pulled" if task.prebuilt_image else "built"
+        await log_task(training_data.task_id, task.hotkey, f"Docker image {image_source} with tag: {tag}")
 
         # A new attempt starts from an empty directory of its own, whatever an earlier attempt left there.
         docker_client = docker.from_env()
@@ -1274,7 +1307,7 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
     finally:
 
         async def _final_cleanup():
-            nonlocal success
+            nonlocal success, tag
 
             if is_gpu_throttle_failure(training_data.task_id, task.hotkey):
                 success = False
@@ -1302,6 +1335,12 @@ async def start_training_task(task: TrainerProxyRequest, local_repo_path: str):
                     await log_task(training_data.task_id, task.hotkey, f"Error during container cleanup: {cleanup_err}")
 
             logger.info("Cleaning up", extra=log_labels)
+            if prebuilt_pull is not None and not tag:
+                # The job failed while the prebuilt image was still pulling: wait for the pull so its image is removed too.
+                try:
+                    tag, _ = await prebuilt_pull
+                except Exception as pull_err:
+                    logger.warning(f"Prebuilt image pull failed during cleanup: {pull_err}", extra=log_labels)
             if tag:
                 await asyncio.to_thread(delete_image_and_cleanup, tag)
                 logger.info("Cleaned up Docker resources.", extra=log_labels)

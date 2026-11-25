@@ -12,6 +12,7 @@ Operational files for validator and trainer operators: image builds, Compose sta
 | `docker/` | Dockerfiles, Docker-only requirements, patches and build scripts. |
 | `editor/` | Editor configuration. |
 | `examples/` | Example HTTP requests and local training runs. |
+| `image_builder/` | The tournament image build box: Zot registry, Woodpecker and BuildKit, with its setup script. |
 | `maintenance/` | Host-level maintenance scripts. |
 | `observability/` | Grafana, Loki, Prometheus, Tempo, Vector and nginx configuration. |
 | `runbooks/` | Debugging guides for operators. |

@@ -28,6 +28,7 @@ Each directory's README lists its files. Start with [validator/README.md](../val
 | Miner | `task miner` | `7999` | Returns the miner's training repository for each tournament type. |
 | Trainer | `task trainer` | `8001` | Runs training jobs on GPUs and reports GPU availability to the validator. |
 | Validator | `task validator` | `VALIDATOR_PORT` (default `9001`) | Creates tasks and tournaments, calls miners and trainers, evaluates, sets weights. |
+| Image build box | `ops/image_builder/setup.sh` | `443`, `5000` | Optional. Builds each tournament participant's trainer image once when the tournament starts and serves it to trainers. See [ops/image_builder/README.md](../ops/image_builder/README.md). |
 
 The validator needs Postgres, Redis, S3-compatible storage, Docker and access to the Bittensor chain. Provision Postgres and the object store yourself: the compose stack starts Redis but no database. Set `DATABASE_URL` in `.vali.env`: dbmate (`task dbup`) reads only that variable. A trainer needs Docker with GPU support, Hugging Face credentials and disk for the model and dataset caches.
 
@@ -101,6 +102,7 @@ Written by `task config`:
 | `TRAINER_API_KEY` | `validator/infrastructure/trainer_auth.py` | Shared key sent as the `X-Trainer-Auth` header on every request to a trainer. Every trainer must have the same value in its `.trainer.env`. Generated for you. |
 | `REFRESH_NODES` | `validator/app/config.py` | Whether to refresh nodes from the metagraph. |
 | `DISCORD_WEBHOOK` | `validator/app/config.py` | Optional webhook for alerts. |
+| `IMAGE_BUILD_WOODPECKER_URL`, `IMAGE_BUILD_WOODPECKER_TOKEN`, `IMAGE_BUILD_WOODPECKER_REPO_ID`, `IMAGE_BUILD_SNAPSHOT_REPO`, `IMAGE_BUILD_SNAPSHOT_TOKEN`, `IMAGE_BUILD_REGISTRY`, `IMAGE_BUILD_REGISTRY_USERNAME`, `IMAGE_BUILD_REGISTRY_PASSWORD` | `validator/tournament/image_builds.py` | Optional. Build tournament images once on the image build box. All must be set; otherwise trainers build each job's image. See [ops/image_builder/README.md](../ops/image_builder/README.md#validator-settings). |
 
 Added by hand:
 
@@ -134,6 +136,7 @@ Written by `task trainer-config`:
 | `QUANT_DECODE_WORK_ROOT` | `trainer/constants.py` | Optional. Directory for the freeform decode. Default `~/.local/share/god-trainer/quant_decode`. |
 | `TRAINER_API_KEY` | `trainer/auth.py` | Required. The `TRAINER_API_KEY` from the validator's `.vali.env`. Every request must carry it in the `X-Trainer-Auth` header; without it set, the trainer rejects every request with 403 and logs an error at startup. |
 | `ORCHESTRATOR_IPS` | `trainer/auth.py` | Required. Comma-separated validator IPs allowed to call the trainer. There is no default; `127.0.0.1` is always allowed (still with the key). `ORCHESTRATOR_IP` is read when `ORCHESTRATOR_IPS` is unset. |
+| `IMAGE_REGISTRY_USERNAME`, `IMAGE_REGISTRY_PASSWORD` | `trainer/constants.py` | Read-only login to the image build box's registry, for jobs that carry a prebuilt tournament image. |
 
 Added by hand:
 

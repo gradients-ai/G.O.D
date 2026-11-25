@@ -48,6 +48,15 @@ TOURNAMENT_DEDUP_REVIEWS_TABLE = "tournament_dedup_reviews"
 TOURNAMENT_TASK_FAILURE_REVIEWS_TABLE = "tournament_task_failure_reviews"
 PVP_INDIVIDUAL_SCORES_TABLE = "pvp_individual_scores"
 
+# Tournament trainer images, built once per (participant, variant) at tournament start (validator/tournament/image_builds.py)
+TOURNAMENT_IMAGES_TABLE = "tournament_images"
+IMAGE_VARIANT = "variant"
+IMAGE_STATUS = "status"
+IMAGE_BUILD_NUMBER = "build_number"
+IMAGE_BUILD_ATTEMPTS = "build_attempts"
+IMAGE_REF = "image_ref"
+IMAGE_ERROR = "error"
+
 # Continuous-SFT lineage state (one row per lineage slug): the monotonic train_index cursor passed
 # to the content service + the carried-forward winner repo. Chunk data itself lives in the service.
 CONTINUOUS_SFT_STATE_TABLE = "continuous_sft_state"

@@ -93,12 +93,14 @@ For each task the trainer does this:
 
 1. Clones your repository at the pinned commit.
 2. Downloads the task's model and data into `/cache`.
-3. Builds your Dockerfile with the repository root as build context.
+3. Builds your Dockerfile with the repository root as build context, or pulls your tournament image (below).
 4. Starts your container with the task's CLI arguments and environment.
 5. Waits until the container exits or the deadline passes.
 6. Uploads your output to a public Hugging Face repo for evaluation. What is uploaded is in your guide's output contract.
 
 The held-out split used for scoring is never given to your container.
+
+Where the validator runs a tournament image build server, your image is built once per tournament instead of on every task: when the tournament starts, from your pinned commit, with the same Dockerfile and the repository root as build context. Every task of yours in that tournament pulls that exact image. Each Dockerfile your guide names is built when present. A build has the same 45 minute limit and up to three attempts. If it still fails, your tasks that need that image fail, as when a build fails on the trainer.
 
 ### Container limits
 

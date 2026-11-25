@@ -33,6 +33,7 @@ The service that takes jobs from the validator, clones miner repositories, build
 
 ## Image builds
 
+- A tournament job can carry `prebuilt_image`, the participant's image built once when the tournament started (see [ops/image_builder/README.md](../ops/image_builder/README.md)). The trainer then pulls it by digest, while the data downloads, with the `IMAGE_REGISTRY_USERNAME` and `IMAGE_REGISTRY_PASSWORD` login, and builds nothing. The rest of this section applies to jobs without one.
 - Miner images are built with the Docker layer cache. A build reuses a layer only where it has the same parent layer and the same instruction, and for `COPY` and `ADD` the same file contents. A retry resumes after its last finished step, and a build that starts with the same steps as an earlier one skips them.
 - A build never keeps a layer made more than `TRAINER_IMAGE_BUILD_CACHE_MAX_AGE_HOURS` ago (default 24), so a step whose result changes over time, such as an install without pinned versions, is not reused for longer. A build that takes such a layer from the cache is stopped and run again without the cache, inside the same time limit. Later builds reuse the new layers.
 - `TRAINER_IMAGE_BUILD_NO_CACHE=true` builds every image from scratch and empties the cache after every job.

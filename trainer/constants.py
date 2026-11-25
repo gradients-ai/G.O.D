@@ -2,7 +2,13 @@ import logging
 import os
 from pathlib import Path
 
+from core.constants.docker import DEFAULT_IMAGE_DOCKERFILE_PATH as DEFAULT_IMAGE_DOCKERFILE_PATH
+from core.constants.docker import DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH as DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH
 from core.constants.docker import DEFAULT_TEXT_DOCKERFILE_PATH as DEFAULT_TEXT_DOCKERFILE_PATH
+from core.constants.docker import IMAGE_DOCKERFILE_PATHS as IMAGE_DOCKERFILE_PATHS
+from core.constants.docker import IMAGE_TOOLKIT_DOCKERFILE_PATHS as IMAGE_TOOLKIT_DOCKERFILE_PATHS
+from core.constants.docker import LEGACY_IMAGE_DOCKERFILE_PATH as LEGACY_IMAGE_DOCKERFILE_PATH
+from core.constants.docker import LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH as LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH
 from core.constants.docker import LEGACY_TEXT_DOCKERFILE_PATH as LEGACY_TEXT_DOCKERFILE_PATH
 from core.constants.docker import TEXT_DOCKERFILE_PATHS as TEXT_DOCKERFILE_PATHS
 
@@ -35,15 +41,7 @@ def _env_number(name: str, default: float, minimum: float, parse: type) -> float
     return value
 
 
-# Training repository Dockerfiles (the text ones are defined once in core.constants.docker, shared with the validator lint)
-DEFAULT_IMAGE_DOCKERFILE_PATH = "ops/docker/standalone-image-trainer.dockerfile"
-DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH = "ops/docker/standalone-image-toolkit-trainer.dockerfile"
-
-LEGACY_IMAGE_DOCKERFILE_PATH = "dockerfiles/standalone-image-trainer.dockerfile"
-LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH = "dockerfiles/standalone-image-toolkit-trainer.dockerfile"
-
-IMAGE_DOCKERFILE_PATHS = (DEFAULT_IMAGE_DOCKERFILE_PATH, LEGACY_IMAGE_DOCKERFILE_PATH)
-IMAGE_TOOLKIT_DOCKERFILE_PATHS = (DEFAULT_IMAGE_TOOLKIT_DOCKERFILE_PATH, LEGACY_IMAGE_TOOLKIT_DOCKERFILE_PATH)
+# Training repository Dockerfiles are defined once in core.constants.docker (re-exported above), shared with the validator.
 
 
 # Runtime state
@@ -118,6 +116,14 @@ IMAGE_BUILD_CACHE_STATE_PATH = "trainer/image_build_cache_state.json"
 PRUNE_HOST_BUILD_CACHE = os.getenv("TRAINER_PRUNE_BUILD_CACHE", "true").lower() == "true"
 CONTAINER_START_MAX_RETRIES = 3
 CONTAINER_START_RETRY_DELAY_SECONDS = 3
+
+# Tournament jobs can carry a prebuilt image (TrainerProxyRequest.prebuilt_image, built once at tournament start on the
+# image build box, see ops/image_builder/). The trainer pulls it with this read-only registry login instead of building
+# the miner's Dockerfile.
+IMAGE_REGISTRY_USERNAME = os.getenv("IMAGE_REGISTRY_USERNAME") or None
+IMAGE_REGISTRY_PASSWORD = os.getenv("IMAGE_REGISTRY_PASSWORD") or None
+# Read timeout of the Docker API calls that pull a prebuilt image: a multi-GB layer streams for minutes.
+PREBUILT_IMAGE_PULL_TIMEOUT_SECONDS = 1800
 
 # Cache and output paths
 CACHE_ROOT_PATH = "/cache"

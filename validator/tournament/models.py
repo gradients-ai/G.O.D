@@ -61,6 +61,34 @@ class RoundStatus(str, Enum):
     COMPLETED = "completed"
 
 
+class TrainerImageVariant(str, Enum):
+    """The Dockerfile family a tournament trainer image is built from (core.constants.docker)."""
+
+    TEXT = "text"
+    IMAGE = "image"
+    IMAGE_TOOLKIT = "image-toolkit"
+
+
+class TournamentImageStatus(str, Enum):
+    PENDING = "pending"
+    BUILDING = "building"
+    READY = "ready"
+    FAILED = "failed"
+
+
+class TournamentImage(BaseModel):
+    """A trainer image built once per tournament participant and variant (table tournament_images)."""
+
+    tournament_id: str
+    hotkey: str
+    variant: TrainerImageVariant
+    status: TournamentImageStatus
+    build_number: int | None = Field(default=None, description="Woodpecker pipeline number of the current build.")
+    build_attempts: int = Field(default=0, description="Failed attempts to snapshot the submission and start its build.")
+    image_ref: str | None = Field(default=None, description="registry/repo@sha256:digest, set once the image is ready.")
+    error: str | None = None
+
+
 class RoundType(str, Enum):
     GROUP = "group"
     KNOCKOUT = "knockout"

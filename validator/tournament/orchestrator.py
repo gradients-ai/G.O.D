@@ -93,6 +93,9 @@ from validator.tasks.synthetics.scheduler import quant_training_hours
 from validator.tournament import chaining
 from validator.tournament import quant_sources
 from validator.tournament.gpu_requirements import get_task_gpu_requirement
+from validator.tournament.image_builds import ImageGate
+from validator.tournament.image_builds import image_for_training
+from validator.tournament.image_builds import process_tournament_image_builds
 from validator.tournament.models import ANY_BOSS_ROUND_SEED_ROLES
 from validator.tournament.models import ATTACHED_SEED_ROLES
 from validator.tournament.models import INPUT_SEED_ROLES
@@ -883,6 +886,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
     missing_calibration = []
     failing_quant_rows = []
     held_for_boss_seeds = []
+    waiting_for_image = []
     hold = BossSeedHold(config)
 
     # Rows are taken from the END of the list. Order them small input seed, large input seed, then every other row; the
@@ -952,6 +956,25 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                 waiting_for_reference.append(pending_training_tasks.pop())
                 continue
 
+            # Tournament rows run the image built once at tournament start (validator/tournament/image_builds.py).
+            gate, gate_detail = await image_for_training(
+                tournament_id, oldest_task_training.hotkey, task.task_type, getattr(task, "model_type", None), config
+            )
+            if gate == ImageGate.WAIT:
+                waiting_for_image.append(pending_training_tasks.pop())
+                continue
+            if gate == ImageGate.FAILED:
+                logger.warning(
+                    f"Image build failed for hotkey {oldest_task_training.hotkey} ({gate_detail}), marking task "
+                    f"{task.task_id} as failed"
+                )
+                await tournament_sql.update_tournament_task_training_status(
+                    task.task_id, oldest_task_training.hotkey, TrainingStatus.FAILURE, config.psql_db
+                )
+                pending_training_tasks.pop()
+                continue
+            prebuilt_image = gate_detail if gate == ImageGate.READY else None
+
             # Determine required GPUs for this task
             required_gpus = get_task_gpu_requirement(task)
             logger.info(f"Task {task.task_id} requires {required_gpus.value}")
@@ -982,6 +1005,7 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
                     training_task.github_token,
                     training_task.requested_datasets,
                     config,
+                    prebuilt_image,
                 )
                 training_result = await start_training_task(trainer_ip, training_request)
 
@@ -1086,6 +1110,12 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
             f"tournament; not training yet: {awaiting}. They are checked again in the next cycle."
         )
 
+    if waiting_for_image:
+        logger.info(
+            f"Held {len(waiting_for_image)} training row(s) whose tournament image is still being built; they are checked "
+            f"again in the next cycle."
+        )
+
     if failing_quant_rows:
         logger.warning(
             f"Deferred {len(failing_quant_rows)} quant training row(s) that raised while being scheduled; they are fetched "
@@ -1110,7 +1140,13 @@ async def schedule_tasks_for_training(pending_training_tasks: list[TournamentTas
         )
 
     logger.info(f"Completed scheduling cycle, {len(pending_training_tasks)} tasks remaining")
-    held = len(held_for_boss_seeds) + len(missing_calibration) + len(waiting_for_reference) + len(failing_quant_rows)
+    held = (
+        len(held_for_boss_seeds)
+        + len(missing_calibration)
+        + len(waiting_for_reference)
+        + len(failing_quant_rows)
+        + len(waiting_for_image)
+    )
     return n_rows > 0 and held == n_rows
 
 
@@ -1451,6 +1487,7 @@ async def _create_training_request(
     github_token: str | None,
     requested_datasets: list[str] | None,
     config: Config,
+    prebuilt_image: str | None = None,
 ) -> TrainerProxyRequest:
     """
     Create a TrainerProxyRequest based on the task type.
@@ -1549,6 +1586,7 @@ async def _create_training_request(
         github_commit_hash=training_commit_hash,
         github_token=github_token,
         requested_datasets=requested_datasets,
+        prebuilt_image=prebuilt_image,
     )
 
 
@@ -3609,6 +3647,7 @@ async def run_tournament_orchestrator_cycles():
         process_boss_round_seed_rows(config),
         process_seed_adapter_merges(config),
         measure_quant_references_cycle(config),
+        process_tournament_image_builds(config),
     )
 
 
