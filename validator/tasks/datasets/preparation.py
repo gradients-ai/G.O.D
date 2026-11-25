@@ -627,6 +627,25 @@ def pick_columns_to_sample(task: AnyTextTypeRawTask | QuantRawTask, dataset: Dat
     return columns_to_sample
 
 
+def _rename_to_standard_columns(dataset: Dataset, column_mapping: dict[str, str]) -> Dataset:
+    """Rename the selected columns to their standard names in one step.
+
+    One rename at a time broke on valid mappings: with instruct <- "content" and input <- "instruct",
+    renaming "content" first collided with the dataset's own "instruct" column. A single
+    rename_columns call applies the mapping as a whole. Unselected columns that already carry one of
+    the standard names are dropped first; otherwise they would sit beside the renamed column under the
+    same name.
+    """
+    mapping = {old: new for old, new in column_mapping.items() if old != new}
+    if not mapping:
+        return dataset
+    shadowing = (set(mapping.values()) & set(dataset.column_names)) - set(column_mapping)
+    if shadowing:
+        logger.info(f"Dropping unselected columns that use standard names: {sorted(shadowing)}")
+        dataset = dataset.remove_columns(sorted(shadowing))
+    return dataset.rename_columns(mapping)
+
+
 def standardize_column_names(dataset: Dataset, task: InstructTextRawTask) -> Dataset:
     return standardize_instruct_columns(dataset, task.field_instruction, task.field_input, task.field_output, task.field_system)
 
@@ -662,11 +681,7 @@ def standardize_instruct_columns(
         else:
             raise ValueError(f"System column {field_system} not found in dataset")
 
-    for old_name, new_name in column_mapping.items():
-        if old_name != new_name:
-            dataset = dataset.rename_column(old_name, new_name)
-
-    return dataset
+    return _rename_to_standard_columns(dataset, column_mapping)
 
 
 def standardize_dpo_column_names(dataset: Dataset, task: DpoRawTask) -> Dataset:
@@ -693,11 +708,7 @@ def standardize_dpo_column_names(dataset: Dataset, task: DpoRawTask) -> Dataset:
         else:
             raise ValueError(f"System column {task.field_system} not found in dataset")
 
-    for old_name, new_name in column_mapping.items():
-        if old_name != new_name:
-            dataset = dataset.rename_column(old_name, new_name)
-
-    return dataset
+    return _rename_to_standard_columns(dataset, column_mapping)
 
 
 def standardize_grpo_column_names(dataset: Dataset, task: GrpoRawTask) -> Dataset:
@@ -711,11 +722,7 @@ def standardize_grpo_column_names(dataset: Dataset, task: GrpoRawTask) -> Datase
     if task.extra_column and task.extra_column in dataset.column_names:
         column_mapping[task.extra_column] = cst.STANDARD_GRPO_EXTRA_COLUMN
 
-    for old_name, new_name in column_mapping.items():
-        if old_name != new_name:
-            dataset = dataset.rename_column(old_name, new_name)
-
-    return dataset
+    return _rename_to_standard_columns(dataset, column_mapping)
 
 def _is_quant_instruct_task(task: AnyTextTypeRawTask | QuantRawTask) -> bool:
     return isinstance(task, QuantRawTask) and isinstance(task.dataset_type, InstructTextDatasetType)
