@@ -1,6 +1,7 @@
 """Uploader container main(): UPLOAD_VERBATIM=1 uploads the output root untouched; without it behaviour is unchanged."""
 
 import importlib
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -90,3 +91,41 @@ def test_without_flag_detects_subfolder_and_patches_metadata(calls: Calls, tmp_p
     [upload] = FakeHfApi.uploads
     assert upload["folder_path"] == str(out / "codes")
     assert upload["ignore_patterns"] == uploader.TRAINING_STATE_PATTERNS
+
+
+@pytest.mark.parametrize("verbatim", [False, True])
+def test_symlinks_and_special_files_are_removed_before_upload(calls: Calls, monkeypatch, tmp_path: Path, verbatim):
+    out = _output(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("not for upload")
+    (out / "codes" / "leak.safetensors").symlink_to(outside / "secret.txt")
+    (out / "linked_dir").symlink_to(outside, target_is_directory=True)
+    (out / "dangling").symlink_to(tmp_path / "missing")
+    os.mkfifo(out / "pipe")
+    uploaded: list[set[str]] = []
+
+    def record(**kwargs):
+        root = Path(kwargs["folder_path"])
+        uploaded.append({str(p.relative_to(root)) for p in root.rglob("*")})
+
+    monkeypatch.setattr(FakeHfApi, "upload_folder", lambda self, **kwargs: record(**kwargs))
+    if verbatim:
+        monkeypatch.setenv("UPLOAD_VERBATIM", "1")
+
+    uploader.main()
+
+    [files] = uploaded
+    assert not any("leak" in f or "linked_dir" in f or "dangling" in f or "pipe" in f for f in files)
+    assert (outside / "secret.txt").read_text() == "not for upload"
+
+
+def test_a_symlinked_output_folder_is_refused(calls: Calls, monkeypatch, tmp_path: Path):
+    real = _output(tmp_path)
+    link = tmp_path / "linked-out"
+    link.symlink_to(real, target_is_directory=True)
+    monkeypatch.setenv("LOCAL_FOLDER", str(link))
+
+    with pytest.raises(ValueError, match="symlink"):
+        uploader.main()
+    assert FakeHfApi.uploads == []

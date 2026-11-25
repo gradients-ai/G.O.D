@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 
@@ -165,6 +166,28 @@ def detect_subfolder(base_folder: str) -> str | None:
     return None
 
 
+def remove_links_and_special_files(folder: str) -> list[str]:
+    """Deletes every symlink and every non-regular file (FIFO, socket, device) under `folder`, without following
+    links, so an upload of the folder can only contain regular files that live inside it. Returns the removed paths."""
+    removed: list[str] = []
+    for root, dirs, files in os.walk(folder, followlinks=False):
+        for name in list(dirs):
+            path = os.path.join(root, name)
+            if os.path.islink(path):
+                os.unlink(path)
+                dirs.remove(name)
+                removed.append(path)
+        for name in files:
+            path = os.path.join(root, name)
+            mode = os.lstat(path).st_mode
+            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+                os.unlink(path)
+                removed.append(path)
+    for path in removed:
+        print(f"[upload] Removed symlink or non-regular file before upload: {path}", flush=True)
+    return removed
+
+
 def main():
     hf_token = os.getenv("HUGGINGFACE_TOKEN")
     hf_user = os.getenv("HUGGINGFACE_USERNAME")
@@ -187,8 +210,12 @@ def main():
 
     repo_id = f"{hf_user}/{repo_name}"
 
+    if os.path.islink(local_folder):
+        raise ValueError(f"Local folder {local_folder} is a symlink. Nothing to upload.")
     if not os.path.isdir(local_folder):
         raise FileNotFoundError(f"Local folder {local_folder} does not exist")
+    # Before anything reads or patches the folder: only regular files inside it may be uploaded.
+    remove_links_and_special_files(local_folder)
 
     if verbatim:
         # Quant outputs: the bytes are the score and quant_manifest.json at the root lists paths relative to it.
