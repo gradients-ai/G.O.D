@@ -626,10 +626,7 @@ def _compute_dpo_stats(
     )
 
 
-def _compute_grpo_stats(
-    model, tokenizer, records: list[dict], device: str, max_samples: int,
-    reward_functions=None,
-) -> GrpoBaselineStats:
+def _compute_grpo_stats(model, tokenizer, records: list[dict], device: str, max_samples: int) -> GrpoBaselineStats:
     # Token-length stats on a random sample, scaled to the full record count.
     length_records, length_scale = _sample_for_lengths(records)
     length_prompts = _extract_grpo_texts(length_records)
@@ -655,56 +652,14 @@ def _compute_grpo_stats(
 
     base_dynamics = _compute_base_training_dynamics(model, tokenizer, prompts, device)
 
-    # Compute baseline reward scores
-    reward_scores: dict[str, float] = {}
-    if reward_functions:
-        completions = _generate_completions(model, tokenizer, prompts[:10], device)
-        for rf in reward_functions:
-            if isinstance(rf, dict):
-                func_code = rf.get("reward_func")
-            else:
-                func_code = rf.reward_func if hasattr(rf, "reward_func") else str(rf)
-            # Extract function name from source for clean keys
-            name_match = re.match(r"def\s+(\w+)", func_code.strip()) if func_code else None
-            fallback_name = name_match.group(1) if name_match else func_code[:30]
-            try:
-                namespace: dict = {}
-                exec(func_code, namespace)  # noqa: S102
-                callables = [
-                    (k, v) for k, v in namespace.items()
-                    if callable(v) and k != "__builtins__"
-                ]
-                if not callables:
-                    print(f"Warning: reward function code defined no callables: {func_code[:80]}", flush=True)
-                    reward_scores[fallback_name] = 0.0
-                    continue
-                func_name, func = callables[0]
-                scores = func(completions)
-                reward_scores[func_name] = float(np.mean(scores))
-            except Exception as exc:
-                print(f"Warning: reward function {fallback_name} failed: {exc}", flush=True)
-                reward_scores[fallback_name] = 0.0
-
-    training = GrpoTrainingDynamics(**base_dynamics, baseline_reward_scores=reward_scores)
+    # Reward functions are not run on the trainer: their scores are left empty.
+    training = GrpoTrainingDynamics(**base_dynamics, baseline_reward_scores={})
 
     return GrpoBaselineStats(
         dataset=dataset_stats,
         weights=compute_weight_stats(model),
         training=training,
     )
-
-
-def _generate_completions(model, tokenizer, prompts: list[str], device, max_new_tokens: int = 50) -> list[str]:
-    """Generate short completions from the base model."""
-    model.eval()
-    completions = []
-    for prompt in prompts:
-        enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=256).to(device)
-        with torch.no_grad():
-            output_ids = model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
-        generated = tokenizer.decode(output_ids[0][enc["input_ids"].shape[1]:], skip_special_tokens=True)
-        completions.append(generated)
-    return completions
 
 
 def _compute_quant_stats(
@@ -749,7 +704,6 @@ def compute_text_stats(
     data_records: list[dict],
     task_type: TaskType = TaskType.INSTRUCTTEXTTASK,
     max_samples: int = FORWARD_SAMPLE_SIZE,
-    reward_functions=None,
 ) -> BaselineStats:
     """Compute stats for text-based tasks (instruct, DPO, GRPO, chat); quant tasks also get device probes."""
     device = str(_get_model_device(model))
@@ -766,7 +720,7 @@ def compute_text_stats(
         stats = _compute_dpo_stats(model, tokenizer, data_records, device, max_samples)
     elif task_type == TaskType.GRPOTASK:
         print("Computing GRPO stats...", flush=True)
-        stats = _compute_grpo_stats(model, tokenizer, data_records, device, max_samples, reward_functions)
+        stats = _compute_grpo_stats(model, tokenizer, data_records, device, max_samples)
     else:
         print(f"Computing instruct stats (task_type={task_type})...", flush=True)
         stats = _compute_instruct_stats(model, tokenizer, data_records, device, max_samples)

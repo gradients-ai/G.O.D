@@ -166,7 +166,9 @@ def parse_args():
     parser.add_argument("--scope", choices=[s.value for s in AugmentationScope], default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--intensity", type=float, default=None)
-    parser.add_argument("--reward-functions", default=None, help="JSON list of reward function objects (for GRPO)")
+    # Accepted and ignored: reward function code is never run during model prep. Kept so an older trainer that
+    # still passes the flag does not fail argument parsing.
+    parser.add_argument("--reward-functions", default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--env-configs",
         default=None,
@@ -413,7 +415,6 @@ def main():
     t0 = time.time()
     try:
         data_records = load_training_data(args.training_data)
-        reward_functions = json.loads(args.reward_functions) if args.reward_functions else None
 
         if data_records:
             task_type_enum = TaskType(args.task_type)
@@ -421,7 +422,6 @@ def main():
             stats = compute_text_stats(
                 model, tokenizer, data_records,
                 task_type=task_type_enum,
-                reward_functions=reward_functions,
             )
         else:
             print("[model_prep] Warning: no training data available for stats", flush=True)

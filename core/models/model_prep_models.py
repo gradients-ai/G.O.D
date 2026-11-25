@@ -133,7 +133,8 @@ class DpoTrainingDynamics(TrainingDynamicsBase):
 
 
 class GrpoTrainingDynamics(TrainingDynamicsBase):
-    baseline_reward_scores: dict[str, float]
+    # Always empty: reward function code is not run during model prep. Kept for older stats that carry scores.
+    baseline_reward_scores: dict[str, float] = Field(default_factory=dict)
 
 
 # --- Throughput probe ---

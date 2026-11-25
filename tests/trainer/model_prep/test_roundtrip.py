@@ -153,6 +153,37 @@ class TestDpoGrpoRoundtrip:
         assert restored.task_type == "grpo"
 
 
+    def test_grpo_stats_without_reward_scores(self):
+        # Model prep no longer runs reward functions: scores are empty, and stats without the field still parse.
+        stats = GrpoBaselineStats(
+            dataset=GrpoDatasetStats(
+                total_tokens=1500, seq_length_distribution=_seq_dist(),
+                near_duplicate_rate=0.02, bits_per_byte=1.3, vocab_size=32000,
+                prompt_tokens=1500, prompt_length_distribution=_seq_dist(),
+            ),
+            weights=_weight_stats(),
+            training=GrpoTrainingDynamics(**_base_training_kwargs()),
+        )
+        assert stats.training.baseline_reward_scores == {}
+        payload = stats.model_dump(mode="json")
+        del payload["training"]["baseline_reward_scores"]
+        restored = TypeAdapter(BaselineStats).validate_python(payload)
+        assert isinstance(restored, GrpoBaselineStats)
+        assert restored.training.baseline_reward_scores == {}
+
+
+def test_model_prep_never_executes_reward_function_code():
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    for rel in ("trainer/model_prep/stats.py", "trainer/model_prep/entrypoint.py"):
+        tree = ast.parse((root / rel).read_text())
+        calls = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert not calls & {"exec", "eval", "compile"}, rel
+    runtime = (root / "trainer" / "runtime.py").read_text()
+    assert "--reward-functions" not in runtime
+
 # --- 6e: ModelPrepResponse with both fields ---
 
 
