@@ -102,7 +102,7 @@ class AsyncMinioClient:
 
             new_presigned_url = await self.get_presigned_url(bucket_name, object_name)
 
-            logger.info(f"Generated new presigned URL for object {object_name} in bucket {bucket_name}")
+            logger.debug(f"Generated new presigned URL for object {object_name} in bucket {bucket_name}")
             return new_presigned_url
 
         except Exception as e:

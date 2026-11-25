@@ -10,6 +10,7 @@ from validator.db.sql.auditing import get_latest_scores_url
 from validator.db.sql.auditing import get_recent_tasks
 from validator.db.sql.auditing import get_recent_tasks_for_hotkey
 from validator.db.sql.auditing import get_task_with_hotkey_details
+from validator.infrastructure.presigned import resign_presigned_urls
 from validator.tasks.models import AnyTypeTask
 from validator.tasks.models import AnyTypeTaskWithHotkeyDetails
 
@@ -18,25 +19,21 @@ router = APIRouter(tags=["auditing"])
 
 
 @router.get("/auditing/tasks")
-async def audit_recent_tasks_endpoint(
-    limit: int = 100, page: int = 1, config: Config = Depends(get_config)
-) -> list[AnyTypeTask]:
-    return await get_recent_tasks(None, limit=limit, page=page, config=config)
+async def audit_recent_tasks_endpoint(limit: int = 100, page: int = 1, config: Config = Depends(get_config)) -> list[AnyTypeTask]:
+    return await resign_presigned_urls(await get_recent_tasks(None, limit=limit, page=page, config=config))
 
 
 @router.get("/auditing/tasks/hotkey/{hotkey}")
 async def audit_recent_tasks_for_hotkey_endpoint(
     hotkey: str, limit: int = 100, page: int = 1, config: Config = Depends(get_config)
 ) -> list[AnyTypeTaskWithHotkeyDetails]:
-    return await get_recent_tasks_for_hotkey(hotkey, limit=limit, page=page, config=config)
+    return await resign_presigned_urls(await get_recent_tasks_for_hotkey(hotkey, limit=limit, page=page, config=config))
 
 
 @router.get("/auditing/tasks/{task_id}")
-async def audit_task_details_endpoint(
-    task_id: str, config: Config = Depends(get_config)
-) -> AnyTypeTaskWithHotkeyDetails:
+async def audit_task_details_endpoint(task_id: str, config: Config = Depends(get_config)) -> AnyTypeTaskWithHotkeyDetails:
     logger.info(f"Getting task details for task {task_id}")
-    return await get_task_with_hotkey_details(task_id, config)
+    return await resign_presigned_urls(await get_task_with_hotkey_details(task_id, config))
 
 
 class ScoresUrlResponse(BaseModel):
@@ -51,7 +48,7 @@ async def audit_latest_scores_url_endpoint(config: Config = Depends(get_config))
     url = await get_latest_scores_url(config)
     if url is None:
         raise HTTPException(status_code=400, detail="No scores url found... sorry :/")
-    return ScoresUrlResponse(url=url)
+    return ScoresUrlResponse(url=await resign_presigned_urls(url))
 
 
 def factory_router():
