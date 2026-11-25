@@ -18,6 +18,12 @@ from validator.tournament.registration_lint import RegistrationLintFailed
 from validator.tournament.registration_lint import check_registration_lint
 
 
+@pytest.fixture(autouse=True)
+def allow_local_clones(monkeypatch):
+    """These tests clone local repositories; production clones allow only https."""
+    monkeypatch.setattr(decoder_snapshot, "GIT_ALLOWED_PROTOCOL_ENV", {"GIT_ALLOW_PROTOCOL": "https:file"})
+
+
 _MISSING = [binary for binary in ("git", "tar", "xz") if shutil.which(binary) is None]
 pytestmark = pytest.mark.skipif(bool(_MISSING), reason=f"decoder snapshot tests need {', '.join(_MISSING)} on PATH")
 
@@ -371,3 +377,28 @@ async def test_tree_sha_changes_with_decoder_content_but_not_with_other_files(tm
 
     assert shas[0] == shas[1]
     assert shas[2] != shas[0]
+
+
+def test_clone_puts_the_url_after_a_separator_and_allows_only_https(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs.get("env") or {}))
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(decoder_snapshot, "_run", fake_run)
+    clone_at_commit("https://github.com/x/y", "0" * 40, None, tmp_path / "clone")
+
+    clone_args, clone_env = calls[0]
+    assert clone_args[clone_args.index("--") + 1] == "https://github.com/x/y"
+    assert clone_env["GIT_ALLOW_PROTOCOL"] == "https"
+
+
+def test_a_local_path_is_refused_by_the_production_clone(tmp_path, monkeypatch):
+    monkeypatch.undo()
+    origin = tmp_path / "origin"
+    commit = _make_repo(origin, _DECODER_FILES)
+
+    with pytest.raises(RuntimeError, match="not allowed"):
+        clone_at_commit(str(origin), commit, None, tmp_path / "clone")

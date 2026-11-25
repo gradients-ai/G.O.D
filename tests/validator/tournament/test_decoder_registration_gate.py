@@ -164,7 +164,7 @@ class TestRegistrationGate:
     async def test_unexpected_error_is_logged_without_the_token(self, monkeypatch):
         token = "ghp_secret"
         node = _node(1)
-        repo = TrainingRepoResponse(github_repo=node.hotkey, commit_hash=COMMIT, github_token=token)
+        repo = TrainingRepoResponse(github_repo=f"https://github.com/{node.hotkey}/repo", commit_hash=COMMIT, github_token=token)
         monkeypatch.setattr(tm, "snapshot_decoder", AsyncMock(side_effect=OSError(f"https://x:{token}@github.com: disk full")))
         logged = []
         monkeypatch.setattr(tm.logger, "error", logged.append)

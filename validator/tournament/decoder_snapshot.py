@@ -35,6 +35,7 @@ from core.constants.quant import DECODER_DIR_NAME
 from core.constants.quant import DECODER_ENTRYPOINT
 from core.constants.quant import DECODER_MAX_EXTRACTED_BYTES
 from core.constants.quant import DECODER_MAX_XZ_BYTES
+from core.git import GIT_ALLOWED_PROTOCOL_ENV
 from core.git import build_authenticated_git_url
 from core.git import sanitize_git_text
 from core.logging import get_logger
@@ -113,7 +114,7 @@ def _run(args: list[str], *, timeout: float = SUBPROCESS_TIMEOUT_SECONDS, **kwar
 
 
 def _git_env() -> dict[str, str]:
-    return {**os.environ, **_ISOLATED_GIT_ENV}
+    return {**os.environ, **_ISOLATED_GIT_ENV, **GIT_ALLOWED_PROTOCOL_ENV}
 
 
 def sha256_file(path: Path) -> str:
@@ -127,7 +128,7 @@ def sha256_file(path: Path) -> str:
 def clone_at_commit(repo_url: str, commit_hash: str, github_token: str | None, dest: Path) -> None:
     clone_url = build_authenticated_git_url(repo_url, github_token)
     clone_proc = _run(
-        ["git", "clone", "--quiet", clone_url, str(dest)],
+        ["git", "clone", "--quiet", "--", clone_url, str(dest)],
         timeout=CLONE_TIMEOUT_SECONDS,
         capture_output=True,
         text=True,

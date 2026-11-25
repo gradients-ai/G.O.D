@@ -554,7 +554,11 @@ def _download(url: str, dest: Path) -> Path:
 
 
 def _clone(url: str, commit: str | None, dest: Path) -> Path:
-    subprocess.run(["git", "clone", "--quiet", url, str(dest)], check=True, env={**os.environ, **GIT_ENV})
+    subprocess.run(
+        ["git", "clone", "--quiet", "--", url, str(dest)],
+        check=True,
+        env={**os.environ, **GIT_ENV, "GIT_ALLOW_PROTOCOL": "https"},
+    )
     if commit:
         subprocess.run(["git", "-C", str(dest), "checkout", "--quiet", commit], check=True, env={**os.environ, **GIT_ENV})
     return dest

@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 import httpx
 
 from core.git import build_authenticated_git_url
+from core.git import git_subprocess_env
 from core.git import sanitize_git_text
 from core.logging import get_logger
 from validator.tournament import constants as t_cst
@@ -36,7 +37,7 @@ async def validate_repo_obfuscation(
         if commit_hash:
             cmd += ["--commit", commit_hash]
 
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=git_subprocess_env())
 
         logger.info(f"Obfuscation detection output: {sanitize_git_text(proc.stdout, github_token)}")
 
@@ -72,10 +73,11 @@ async def validate_repo_license(repo_url: str, github_token: str | None = None, 
             clone_url = build_authenticated_git_url(repo_url, github_token)
 
             clone_proc = subprocess.run(
-                ["git", "clone", clone_url, temp_dir],
+                ["git", "clone", "--", clone_url, temp_dir],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=git_subprocess_env(),
             )
 
             if clone_proc.returncode != 0:

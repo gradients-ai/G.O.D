@@ -219,7 +219,7 @@ To use a different repository or commit per tournament, branch on `task_type` be
 
 | Field | Rule |
 | --- | --- |
-| `github_repo` | Repository URL. Must stay reachable until the tournament completes. |
+| `github_repo` | Repository URL of the form `https://github.com/<owner>/<repo>` (optionally ending in `.git` or `/`). Any other form is rejected. Must stay reachable until the tournament completes. |
 | `commit_hash` | Full 40-character hex SHA (`git rev-parse HEAD`). A branch name is rejected. |
 | `github_token` | Optional. Needed only for a private repository. |
 | `requested_datasets` | Leave as `None`. |
