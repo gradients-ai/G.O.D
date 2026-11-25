@@ -115,6 +115,7 @@ Added by hand:
 | `ANTHROPIC_API_KEY` | `validator/infrastructure/`, `validator/tournament/repo_diff_report.py` | Key for code review, duplicate-submission review and repository diff reports. |
 | `S3_SECURE` | `validator/infrastructure/minio_client.py` | Default `true` (HTTPS). Set `false` only for a plain-HTTP store. |
 | `SUBNET_API_PORT` | `ops/validator_ops/start_validator.sh` | Starts the public API. See [subnet_api/README.md](../subnet_api/README.md). |
+| `GRAFANA_PASSWORD` | `ops/compose/docker-compose.observability.yml` | Validator Grafana admin password. Required: compose refuses to start without it. `task validator` (`ops/validator_ops/setup_grafana.sh`) generates one when it is missing. |
 
 ```bash
 echo "HF_READ_ONLY_TOKEN=<read-only-token>" >> .vali.env

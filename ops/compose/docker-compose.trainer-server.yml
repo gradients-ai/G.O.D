@@ -19,9 +19,9 @@ services:
       - /var/lib/docker/containers:/var/lib/docker/containers:ro
       - vector-data:/var/lib/vector
     ports:
-      - "8686:8686"   # Vector API
-      - "9090:9090"   # Prometheus metrics exporter
-      - "8688:8688"   # FastAPI logs endpoint
+      - "127.0.0.1:8686:8686"   # Vector API
+      - "127.0.0.1:9090:9090"   # Prometheus metrics exporter
+      - "127.0.0.1:8688:8688"   # FastAPI logs endpoint
     deploy:
       resources:
         limits:

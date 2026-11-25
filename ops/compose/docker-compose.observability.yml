@@ -6,7 +6,7 @@ services:
     environment:
       # these are the defaults, you should probably change them in deployment
       GF_SECURITY_ADMIN_USER: ${GRAFANA_USERNAME:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .vali.env (ops/validator_ops/setup_grafana.sh generates one)}
       GF_INSTALL_PLUGINS: redis-datasource
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -63,7 +63,7 @@ services:
     volumes:
       - ../observability/otel-config.yaml:/etc/otelcol-contrib/config.yaml
     ports:
-      - "0.0.0.0:4317:4317"
+      - "127.0.0.1:4317:4317"
 
   tempo-init:
     scale: 0
@@ -170,9 +170,8 @@ services:
       - --storage.tsdb.retention.time=30d
       - --web.console.libraries=/usr/share/prometheus/console_libraries
       - --web.console.templates=/usr/share/prometheus/consoles
-      - --web.enable-lifecycle
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     volumes:
       - prometheus-training:/prometheus
       - ../observability/prometheus-training-config.yaml:/etc/prometheus/prometheus.yml:ro
