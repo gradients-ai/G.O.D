@@ -316,16 +316,22 @@ On the validator:
 task deploy-observability-server
 ```
 
-Optional `.vali.env` values for it:
+`.vali.env` values for it (`GRAFANA_TRAINING_PASSWORD` and `LOKI_PASSWORD` are required):
 
 | Variable | Meaning |
 | --- | --- |
 | `OBSERVABILITY_DOMAIN` | Domain or IP of the server. Detected from the public IP when unset. |
-| `GRAFANA_TRAINING_USERNAME`, `GRAFANA_TRAINING_PASSWORD` | Grafana login. Set your own password. |
+| `GRAFANA_TRAINING_USERNAME`, `GRAFANA_TRAINING_PASSWORD` | Grafana admin login. Required; there is no default. |
 | `GRAFANA_ANONYMOUS_ENABLED` | Default `true`. Set `false` to require a login. |
-| `LOKI_USERNAME`, `LOKI_PASSWORD` | Credentials the trainers push logs with. |
+| `LOKI_USERNAME`, `LOKI_PASSWORD` | Credentials the trainers push logs with. `LOKI_PASSWORD` is required. |
 
-Grafana listens on port `3001` and the Loki push endpoint on `3101`. The stack serves Loki on that port over plain HTTP and without authentication. Restrict the port to your trainers.
+Grafana listens on port `3001`. Loki itself is not published: `loki-gateway` (nginx, `ops/observability/nginx/nginx.conf`) serves port `3101` over plain HTTP, and
+
+- pushing logs (`POST /loki/api/v1/push`) needs `LOKI_USERNAME`/`LOKI_PASSWORD`;
+- anyone may read: `GET` on `query`, `query_range`, `labels`, `label/<name>/values`, `series`, `index/stats` and `tail`;
+- everything else (deleting logs, config, other push paths, any other method) is refused with `403`.
+
+The deploy writes the push credentials to `ops/observability/nginx/.htpasswd` from `.vali.env` every time, so changing `LOKI_PASSWORD` there and redeploying is enough on the server.
 
 On each trainer, set these in `.trainer.env`:
 

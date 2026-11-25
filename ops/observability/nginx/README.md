@@ -1,9 +1,9 @@
 # Observability nginx
 
-Nginx configuration that exposes the observability services.
+`nginx.conf` runs as `loki-gateway`, the only way in to the training Loki (port `3101`):
 
-## Contents
+- `POST /loki/api/v1/push` needs the trainers' `LOKI_USERNAME`/`LOKI_PASSWORD` (`.htpasswd`, written by `task deploy-observability-server` from `.vali.env`).
+- The public may only `GET` the query endpoints: `query`, `query_range`, `labels`, `label/<name>/values`, `series`, `index/stats` and `tail`.
+- Everything else returns `403`.
 
-| Path | Purpose |
-| --- | --- |
-| `nginx.conf` | Reverse proxy and authentication for the training Grafana and Loki endpoints. |
+`.htpasswd` is generated and git-ignored.

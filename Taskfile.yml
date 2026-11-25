@@ -162,9 +162,13 @@ tasks:
           echo "Auto-detected OBSERVABILITY_DOMAIN: $OBSERVABILITY_DOMAIN"
         fi
 
-        # Use default passwords if not set
-        GRAFANA_TRAINING_PASSWORD=${GRAFANA_TRAINING_PASSWORD:-changeme123}
-        LOKI_PASSWORD=${LOKI_PASSWORD:-trainerlogs123}
+        # No defaults: a default password in this public repo would make Loki push and the Grafana
+        # admin open to anyone.
+        if [ -z "$GRAFANA_TRAINING_PASSWORD" ] || [ -z "$LOKI_PASSWORD" ]; then
+          echo "ERROR: set GRAFANA_TRAINING_PASSWORD and LOKI_PASSWORD in .vali.env"
+          echo "  (LOKI_PASSWORD must match the trainers' LOKI_PASSWORD)"
+          exit 1
+        fi
 
         # Create observability env from .vali.env variables
         cat > .env.observability << EOF
@@ -177,33 +181,22 @@ tasks:
         LOKI_PASSWORD=${LOKI_PASSWORD}
         EOF
       - |
-        # Auto-create SSL certs if missing
-        mkdir -p ops/observability/nginx/ssl ops/observability/nginx
-        if [ ! -f ops/observability/nginx/ssl/cert.pem ]; then
-          export $(cat .vali.env | grep -v '^#' | xargs)
-          openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-            -keyout ops/observability/nginx/ssl/key.pem \
-            -out ops/observability/nginx/ssl/cert.pem \
-            -subj "/C=US/ST=State/L=City/O=Training/CN=${OBSERVABILITY_DOMAIN}" 2>/dev/null
+        # Loki push credentials for loki-gateway, rewritten on every deploy so a changed
+        # LOKI_PASSWORD in .vali.env always takes effect.
+        export $(cat .vali.env | grep -v '^#' | xargs)
+        mkdir -p ops/observability/nginx
+        if command -v htpasswd >/dev/null 2>&1; then
+          htpasswd -b -B -c ops/observability/nginx/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD} 2>/dev/null
+        else
+          docker run --rm -v $(pwd)/ops/observability/nginx:/work httpd:alpine htpasswd -b -B -c /work/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD}
         fi
-      - |
-        # Auto-create basic auth file with password from .vali.env
-        if [ ! -f ops/observability/nginx/.htpasswd ] || [ "$LOKI_PASSWORD_UPDATED" = "true" ]; then
-          export $(cat .vali.env | grep -v '^#' | xargs)
-          # Check if htpasswd is available, if not use Docker
-          if command -v htpasswd >/dev/null 2>&1; then
-            htpasswd -b -B -c ops/observability/nginx/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD} 2>/dev/null
-          else
-            # Use Docker to generate htpasswd file
-            docker run --rm -v $(pwd)/ops/observability/nginx:/work httpd:alpine htpasswd -b -B -c /work/.htpasswd ${LOKI_USERNAME:-trainer} ${LOKI_PASSWORD}
-          fi
-        fi
+        chmod 644 ops/observability/nginx/.htpasswd
       - docker compose -f ops/compose/docker-compose.observability-server.yml --env-file .env.observability up -d
       - |
         export $(cat .vali.env | grep -v '^#' | xargs)
         echo "========================================="
         echo "Observability server started!"
-        echo "Grafana: https://$(hostname -I | awk '{print $1}' 2>/dev/null || echo ${OBSERVABILITY_DOMAIN}):3001"
+        echo "Grafana: http://$(hostname -I | awk '{print $1}' 2>/dev/null || echo ${OBSERVABILITY_DOMAIN}):3001"
         echo "Login: ${GRAFANA_TRAINING_USERNAME:-admin} / [password from .vali.env]"
         echo "========================================="
 
@@ -221,7 +214,7 @@ tasks:
         if [ ! -f .trainer.env ]; then
           echo "ERROR: .trainer.env file not found!"
           echo "Please add the following variables to .trainer.env:"
-          echo "  LOKI_ENDPOINT=https://validator-server:3101"
+          echo "  LOKI_ENDPOINT=http://validator-server:3101"
           echo "  LOKI_PASSWORD=your-loki-password"
           exit 1
         fi

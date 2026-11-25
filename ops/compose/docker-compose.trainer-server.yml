@@ -11,7 +11,7 @@ services:
     environment:
       LOKI_ENDPOINT: ${LOKI_ENDPOINT:-http://94.156.8.230:3101}
       LOKI_USERNAME: ${LOKI_USERNAME:-trainer}
-      LOKI_PASSWORD: ${LOKI_PASSWORD:-trainerlogs123}
+      LOKI_PASSWORD: ${LOKI_PASSWORD:?set LOKI_PASSWORD (the observability server's LOKI_PASSWORD)}
       VECTOR_LOG: ${VECTOR_LOG_LEVEL:-info}
     volumes:
       - ../observability/vector/vector.toml:/etc/vector/vector.toml:ro
