@@ -142,8 +142,9 @@ services:
     command: -config.file=/etc/loki/local-config.yaml
     environment:
       LOKI_AUTH_ENABLED: ${LOKI_AUTH_ENABLED:-false}
-    ports:
-      - "3101:3100"
+    # Not published: loki-gateway serves port 3101 (trainer-only push, public read-only).
+    expose:
+      - "3100"
     volumes:
       - loki-training:/loki
       - ../observability/loki-training-config.yaml:/etc/loki/local-config.yaml:ro
@@ -159,6 +160,20 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+
+  # The only way in to the training Loki. Push needs the trainers' LOKI_USERNAME/LOKI_PASSWORD
+  # (.htpasswd, written by `task deploy-observability-server`); the public may only run queries.
+  loki-gateway:
+    container_name: god-loki-gateway
+    image: nginx:1.27-alpine
+    restart: always
+    ports:
+      - "3101:3101"
+    volumes:
+      - ../observability/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../observability/nginx/.htpasswd:/etc/nginx/.htpasswd:ro
+    depends_on:
+      - loki-training
 
   prometheus-training:
     container_name: god-prometheus-training
